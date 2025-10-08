@@ -600,6 +600,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_docking"
+version = "0.13.0-alpha.0"
+dependencies = [
+ "ahash",
+ "eframe",
+ "egui",
+ "env_logger",
+ "itertools",
+ "log",
+ "ron",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,21 +630,6 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "winit",
-]
-
-[[package]]
-name = "egui_tiles"
-version = "0.12.0"
-dependencies = [
- "ahash",
- "eframe",
- "egui",
- "env_logger",
- "itertools",
- "log",
- "ron",
- "serde",
- "serde_json",
 ]
 
 [[package]]

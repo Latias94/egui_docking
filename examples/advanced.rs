@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
-use egui_tiles::{Tile, TileId, Tiles};
+use egui_docking::{Tile, TileId, Tiles};
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -10,7 +10,7 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
     eframe::run_native(
-        "egui_tiles example",
+        "egui_docking example",
         options,
         Box::new(|_cc| {
             #[cfg_attr(not(feature = "serde"), allow(unused_mut))]
@@ -42,7 +42,7 @@ impl Pane {
         Self { nr }
     }
 
-    pub fn ui(&self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
+    pub fn ui(&self, ui: &mut egui::Ui) -> egui_docking::UiResponse {
         let color = egui::epaint::Hsva::new(0.103 * self.nr as f32, 0.5, 0.5, 1.0);
         ui.painter().rect_filled(ui.max_rect(), 0.0, color);
         let dragged = ui
@@ -50,18 +50,18 @@ impl Pane {
             .on_hover_cursor(egui::CursorIcon::Grab)
             .dragged();
         if dragged {
-            egui_tiles::UiResponse::DragStarted
+            egui_docking::UiResponse::DragStarted
         } else {
-            egui_tiles::UiResponse::None
+            egui_docking::UiResponse::None
         }
     }
 }
 
 struct TreeBehavior {
-    simplification_options: egui_tiles::SimplificationOptions,
+    simplification_options: egui_docking::SimplificationOptions,
     tab_bar_height: f32,
     gap_width: f32,
-    add_child_to: Option<egui_tiles::TileId>,
+    add_child_to: Option<egui_docking::TileId>,
 }
 
 impl Default for TreeBehavior {
@@ -113,13 +113,13 @@ impl TreeBehavior {
     }
 }
 
-impl egui_tiles::Behavior<Pane> for TreeBehavior {
+impl egui_docking::Behavior<Pane> for TreeBehavior {
     fn pane_ui(
         &mut self,
         ui: &mut egui::Ui,
-        _tile_id: egui_tiles::TileId,
+        _tile_id: egui_docking::TileId,
         view: &mut Pane,
-    ) -> egui_tiles::UiResponse {
+    ) -> egui_docking::UiResponse {
         view.ui(ui)
     }
 
@@ -129,10 +129,10 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 
     fn top_bar_right_ui(
         &mut self,
-        _tiles: &egui_tiles::Tiles<Pane>,
+        _tiles: &egui_docking::Tiles<Pane>,
         ui: &mut egui::Ui,
-        tile_id: egui_tiles::TileId,
-        _tabs: &egui_tiles::Tabs,
+        tile_id: egui_docking::TileId,
+        _tabs: &egui_docking::Tabs,
         _scroll_offset: &mut f32,
     ) {
         if ui.button("➕").clicked() {
@@ -151,7 +151,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
         self.gap_width
     }
 
-    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+    fn simplification_options(&self) -> egui_docking::SimplificationOptions {
         self.simplification_options
     }
 
@@ -188,7 +188,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 struct MyApp {
-    tree: egui_tiles::Tree<Pane>,
+    tree: egui_docking::Tree<Pane>,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     behavior: TreeBehavior,
@@ -203,7 +203,7 @@ impl Default for MyApp {
             view
         };
 
-        let mut tiles = egui_tiles::Tiles::default();
+        let mut tiles = egui_docking::Tiles::default();
 
         let mut tabs = vec![];
         let tab_tile = {
@@ -227,7 +227,7 @@ impl Default for MyApp {
 
         let root = tiles.insert_tab_tile(tabs);
 
-        let tree = egui_tiles::Tree::new("my_tree", root, tiles);
+        let tree = egui_docking::Tree::new("my_tree", root, tiles);
 
         Self {
             tree,
@@ -257,7 +257,7 @@ impl eframe::App for MyApp {
             ui.collapsing("Active tiles", |ui| {
                 let active = self.tree.active_tiles();
                 for tile_id in active {
-                    use egui_tiles::Behavior as _;
+                    use egui_docking::Behavior as _;
                     let name = self.behavior.tab_title_for_tile(&self.tree.tiles, tile_id);
                     ui.label(format!("{} - {tile_id:?}", name.text()));
                 }
@@ -271,7 +271,7 @@ impl eframe::App for MyApp {
 
             if let Some(parent) = self.behavior.add_child_to.take() {
                 let new_child = self.tree.tiles.insert_pane(Pane::with_nr(100));
-                if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+                if let Some(egui_docking::Tile::Container(egui_docking::Container::Tabs(tabs))) =
                     self.tree.tiles.get_mut(parent)
                 {
                     tabs.add_child(new_child);
@@ -293,9 +293,9 @@ impl eframe::App for MyApp {
 
 fn tree_ui(
     ui: &mut egui::Ui,
-    behavior: &mut dyn egui_tiles::Behavior<Pane>,
-    tiles: &mut egui_tiles::Tiles<Pane>,
-    tile_id: egui_tiles::TileId,
+    behavior: &mut dyn egui_docking::Behavior<Pane>,
+    tiles: &mut egui_docking::Tiles<Pane>,
+    tile_id: egui_docking::TileId,
 ) {
     // Get the name BEFORE we remove the tile below!
     let text = format!(
@@ -322,13 +322,13 @@ fn tree_ui(
         tiles.set_visible(tile_id, visible);
     })
     .body(|ui| match &mut tile {
-        egui_tiles::Tile::Pane(_) => {}
-        egui_tiles::Tile::Container(container) => {
+        egui_docking::Tile::Pane(_) => {}
+        egui_docking::Tile::Container(container) => {
             let mut kind = container.kind();
             egui::ComboBox::from_label("Kind")
                 .selected_text(format!("{kind:?}"))
                 .show_ui(ui, |ui| {
-                    for alternative in egui_tiles::ContainerKind::ALL {
+                    for alternative in egui_docking::ContainerKind::ALL {
                         ui.selectable_value(&mut kind, alternative, format!("{alternative:?}"))
                             .clicked();
                     }

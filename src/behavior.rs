@@ -5,6 +5,15 @@ use egui::{
 
 use super::{ResizeState, SimplificationOptions, Tile, TileId, Tiles, UiResponse};
 
+#[derive(Clone, Copy, Debug)]
+pub enum DockIndicatorStyle {
+    None,
+    Bars { frac: f32 },
+    Wedges { frac: f32 },
+    ImguiLike { size: f32, gap: f32, rounding: f32 },
+    Custom,
+}
+
 /// The kind of edit that triggered the call to [`Behavior::on_edit`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditAction {
@@ -276,6 +285,24 @@ pub trait Behavior<Pane> {
         SimplificationOptions::default()
     }
 
+    /// Should a dragged tile tear-off into a floating window when released outside any dropzone?
+    fn tear_off_outside_dropzone(&self) -> bool {
+        true
+    }
+
+    /// Optional drag modifier required to allow tear-off.
+    ///
+    /// If `Some(mods)`, tear-off only triggers while these modifiers are pressed.
+    /// If `None`, no modifier is required.
+    fn drag_modifier(&self) -> Option<egui::Modifiers> {
+        None
+    }
+
+    /// Whether a given tile is allowed to float.
+    fn can_float(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
+        true
+    }
+
     /// Add some custom painting on top of a tile (container or pane), e.g. draw an outline on top of it.
     fn paint_on_top_of_tile(
         &self,
@@ -283,6 +310,107 @@ pub trait Behavior<Pane> {
         _style: &egui::Style,
         _tile_id: TileId,
         _rect: Rect,
+    ) {
+    }
+
+    /// Return how to draw dock indicators.
+    fn dock_indicator_style(&self) -> DockIndicatorStyle {
+        DockIndicatorStyle::ImguiLike {
+            size: 18.0,
+            gap: 6.0,
+            rounding: 3.0,
+        }
+    }
+
+    /// Paint dock indicator depending on `dock_indicator_style()`.
+    fn paint_dock_indicator(
+        &self,
+        painter: &egui::Painter,
+        style: &egui::Style,
+        rect: Rect,
+        hovered: Option<crate::DockSide>,
+    ) {
+        match self.dock_indicator_style() {
+            DockIndicatorStyle::None => {}
+            DockIndicatorStyle::Bars { frac } => {
+                let stroke = self.drag_preview_stroke(&style.visuals);
+                let color_inactive = self.drag_preview_color(&style.visuals).gamma_multiply(0.5);
+                let color_active = self.drag_preview_color(&style.visuals);
+                let t = (rect.size().min_elem() * frac).clamp(6.0, 24.0);
+                let top = Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(rect.width(), t));
+                let bottom = Rect::from_min_max(rect.left_bottom() - egui::vec2(0.0, t), rect.right_bottom());
+                let left = Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(t, rect.height()));
+                let right = Rect::from_min_max(rect.right_top() - egui::vec2(t, 0.0), rect.right_bottom());
+                let center = rect.shrink2(egui::vec2(t + 2.0, t + 2.0));
+                let draw = |r: Rect, active: bool| {
+                    let c = if active { color_active } else { color_inactive };
+                    painter.rect(r, 2.0, c, stroke, egui::StrokeKind::Inside);
+                };
+                draw(left, hovered == Some(crate::DockSide::Left));
+                draw(right, hovered == Some(crate::DockSide::Right));
+                draw(top, hovered == Some(crate::DockSide::Top));
+                draw(bottom, hovered == Some(crate::DockSide::Bottom));
+                draw(center, hovered == Some(crate::DockSide::Center));
+            }
+            DockIndicatorStyle::Wedges { frac } => {
+                // Keep existing wedge preview
+                let stroke = self.drag_preview_stroke(&style.visuals);
+                let fill = self.drag_preview_color(&style.visuals).gamma_multiply(0.6);
+                let t = (rect.size().min_elem() * frac).clamp(6.0, 24.0);
+                let mut wedge = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, side: crate::DockSide| {
+                    let c_fill = if hovered == Some(side) { fill } else { fill.gamma_multiply(0.6) };
+                    painter.add(egui::epaint::Shape::convex_polygon(vec![a, b, c], c_fill, stroke));
+                };
+                let center = rect.center();
+                wedge(rect.left_top(), rect.left_bottom(), center, crate::DockSide::Left);
+                wedge(rect.right_top(), rect.right_bottom(), center, crate::DockSide::Right);
+                wedge(rect.left_top(), rect.right_top(), center, crate::DockSide::Top);
+                wedge(rect.left_bottom(), rect.right_bottom(), center, crate::DockSide::Bottom);
+                let center_rect = rect.shrink2(egui::vec2(t + 2.0, t + 2.0));
+                painter.rect(
+                    center_rect,
+                    2.0,
+                    if hovered == Some(crate::DockSide::Center) {
+                        fill
+                    } else {
+                        fill.gamma_multiply(0.6)
+                    },
+                    stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            DockIndicatorStyle::ImguiLike { size, gap, rounding } => {
+                let visuals = &style.visuals;
+                let stroke = self.drag_preview_stroke(visuals);
+                let fill_inactive = self.drag_preview_color(visuals).gamma_multiply(0.5);
+                let fill_active = self.drag_preview_color(visuals);
+                let c = rect.center();
+                let s = size;
+                let g = gap;
+                let mut draw_box = |center: egui::Pos2, active: bool| {
+                    let r = egui::Rect::from_center_size(center, egui::vec2(s, s));
+                    painter.rect(r, rounding, if active { fill_active } else { fill_inactive }, stroke, egui::StrokeKind::Inside);
+                };
+                draw_box(c + vec2(-(s + g), 0.0), hovered == Some(crate::DockSide::Left));
+                draw_box(c + vec2((s + g), 0.0), hovered == Some(crate::DockSide::Right));
+                draw_box(c + vec2(0.0, -(s + g)), hovered == Some(crate::DockSide::Top));
+                draw_box(c + vec2(0.0, (s + g)), hovered == Some(crate::DockSide::Bottom));
+                draw_box(c, hovered == Some(crate::DockSide::Center));
+                // Optional arrowheads inside boxes could be drawn here later
+            }
+            DockIndicatorStyle::Custom => {
+                self.paint_custom_dock_indicator(painter, style, rect, hovered);
+            }
+        }
+    }
+
+    /// When `dock_indicator_style()` returns `Custom`, this will be called to paint the indicator.
+    fn paint_custom_dock_indicator(
+        &self,
+        _painter: &egui::Painter,
+        _style: &egui::Style,
+        _rect: Rect,
+        _hovered: Option<crate::DockSide>,
     ) {
     }
 
@@ -399,6 +527,50 @@ pub trait Behavior<Pane> {
         );
     }
 
+    /// Same as `paint_drag_preview`, but with an optional logical docking side hint.
+    /// Default implementation delegates to `paint_drag_preview`.
+    fn paint_drag_preview_with_side(
+        &self,
+        visuals: &Visuals,
+        painter: &egui::Painter,
+        parent_rect: Option<Rect>,
+        preview_rect: Rect,
+        _side: Option<crate::DockSide>,
+    ) {
+        if let Some(parent_rect) = parent_rect {
+            painter.rect_stroke(parent_rect, 1.0, self.drag_preview_stroke(visuals), egui::StrokeKind::Inside);
+        }
+
+        let stroke = self.drag_preview_stroke(visuals);
+        let fill = self.drag_preview_color(visuals);
+
+        match _side {
+            Some(crate::DockSide::Center) | None => {
+                painter.rect(preview_rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
+            }
+            Some(crate::DockSide::Left) => {
+                let c = preview_rect.center();
+                let pts = vec![preview_rect.left_top(), preview_rect.left_bottom(), c];
+                painter.add(egui::epaint::Shape::convex_polygon(pts, fill, stroke));
+            }
+            Some(crate::DockSide::Right) => {
+                let c = preview_rect.center();
+                let pts = vec![preview_rect.right_top(), preview_rect.right_bottom(), c];
+                painter.add(egui::epaint::Shape::convex_polygon(pts, fill, stroke));
+            }
+            Some(crate::DockSide::Top) => {
+                let c = preview_rect.center();
+                let pts = vec![preview_rect.left_top(), preview_rect.right_top(), c];
+                painter.add(egui::epaint::Shape::convex_polygon(pts, fill, stroke));
+            }
+            Some(crate::DockSide::Bottom) => {
+                let c = preview_rect.center();
+                let pts = vec![preview_rect.left_bottom(), preview_rect.right_bottom(), c];
+                painter.add(egui::epaint::Shape::convex_polygon(pts, fill, stroke));
+            }
+        }
+    }
+
     /// How many columns should we use for a [`crate::Grid`] put into [`crate::GridLayout::Auto`]?
     ///
     /// The default heuristic tried to find a good column count that results in a per-tile aspect-ratio
@@ -425,6 +597,12 @@ pub trait Behavior<Pane> {
     /// Called if the user edits the tree somehow, e.g. changes the size of some container,
     /// clicks a tab, or drags a tile.
     fn on_edit(&mut self, _edit_action: EditAction) {}
+
+    /// Called when a tile was torn off into a floating window.
+    fn on_tile_floated(&mut self, _tile_id: TileId) {}
+
+    /// Called when a tile was docked from a floating window into a container.
+    fn on_tile_docked(&mut self, _tile_id: TileId) {}
 }
 
 /// How many columns should we use to fit `n` children in a grid?

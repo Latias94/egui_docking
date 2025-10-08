@@ -4,17 +4,17 @@ authors = [
   "rerun.io <opensource@rerun.io>",
 ]
 categories = ["gui"]
-description = "A tiling layout engine for egui with drag-and-drop and resizing"
+description = "Docking & tiling for egui with tear-off floating windows and drag-and-drop"
 edition = "2024"
-homepage = "https://github.com/rerun-io/egui_tiles"
+homepage = "https://github.com/Latias94/egui_docking"
 include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml"]
 keywords = ["egui", "gui", "tile", "dock", "layout"]
 license = "MIT OR Apache-2.0"
-name = "egui_tiles"
+name = "egui_docking"
 readme = "README.md"
-repository = "https://github.com/rerun-io/egui_tiles"
+repository = "https://github.com/Latias94/egui_docking"
 rust-version = "1.85"
-version = "0.12.0"
+version = "0.13.0-alpha.0"
 
 [package.metadata.docs.rs]
 all-features = true

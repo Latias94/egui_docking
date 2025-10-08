@@ -114,19 +114,34 @@
 
 #![forbid(unsafe_code)]
 
-use egui::{Pos2, Rect};
+use egui::{Pos2, Rect, pos2};
 
 mod behavior;
 mod container;
+mod floating;
 mod tile;
 mod tiles;
 mod tree;
 
 pub use behavior::{Behavior, EditAction, TabState};
 pub use container::{Container, ContainerKind, Grid, GridLayout, Linear, LinearDir, Shares, Tabs};
+pub use floating::FloatingWindow;
 pub use tile::{Tile, TileId};
 pub use tiles::Tiles;
 pub use tree::Tree;
+
+/// Five-way docking side used for visuals and builder APIs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DockSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
+mod builder;
+pub use builder::DockBuilder;
 
 // ----------------------------------------------------------------------------
 
@@ -334,33 +349,62 @@ impl DropContext {
             return;
         }
 
-        if tile.kind() != Some(ContainerKind::Horizontal) {
-            self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Horizontal(0)),
-                rect.split_left_right_at_fraction(0.5).0,
-            );
-            self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Horizontal(usize::MAX)),
-                rect.split_left_right_at_fraction(0.5).1,
-            );
-        }
+        let Some(mouse) = self.mouse_pos else { return; };
 
-        if tile.kind() != Some(ContainerKind::Vertical) {
-            self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Vertical(0)),
-                rect.split_top_bottom_at_fraction(0.5).0,
-            );
-            self.suggest_rect(
-                InsertionPoint::new(parent_id, ContainerInsertion::Vertical(usize::MAX)),
-                rect.split_top_bottom_at_fraction(0.5).1,
-            );
-        }
+        // Determine which directions are allowed for this tile (avoid splitting into same kind).
+        let allow_h = tile.kind() != Some(ContainerKind::Horizontal);
+        let allow_v = tile.kind() != Some(ContainerKind::Vertical);
 
-        self.suggest_rect(
-            InsertionPoint::new(parent_id, ContainerInsertion::Tabs(usize::MAX)),
-            rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
-                .1,
-        );
+        // Determine candidate side by position relative to rect center, with a central catch-zone.
+        let center = rect.center();
+        let v = mouse - center;
+        let frac = 0.35;
+        let center_rect = rect.shrink2(egui::vec2(rect.width() * frac, rect.height() * frac));
+        let mut candidate_side = if center_rect.contains(mouse) {
+            crate::DockSide::Center
+        } else if v.x.abs() > v.y.abs() {
+            if v.x < 0.0 { crate::DockSide::Left } else { crate::DockSide::Right }
+        } else {
+            if v.y < 0.0 { crate::DockSide::Top } else { crate::DockSide::Bottom }
+        };
+
+        // If side not allowed, fallback preferences.
+        candidate_side = match candidate_side {
+            crate::DockSide::Left | crate::DockSide::Right if !allow_h => crate::DockSide::Center,
+            crate::DockSide::Top | crate::DockSide::Bottom if !allow_v => crate::DockSide::Center,
+            side => side,
+        };
+
+        // Use a fraction of rect for preview band; center uses content area below tabbar.
+        let preview_rect = match candidate_side {
+            crate::DockSide::Left if allow_h => {
+                let x = rect.left() + rect.width() * frac;
+                Rect::from_min_max(rect.min, pos2(x, rect.max.y))
+            }
+            crate::DockSide::Right if allow_h => {
+                let x = rect.right() - rect.width() * frac;
+                Rect::from_min_max(pos2(x, rect.min.y), rect.max)
+            }
+            crate::DockSide::Top if allow_v => {
+                let y = rect.top() + rect.height() * frac;
+                Rect::from_min_max(rect.min, pos2(rect.max.x, y))
+            }
+            crate::DockSide::Bottom if allow_v => {
+                let y = rect.bottom() - rect.height() * frac;
+                Rect::from_min_max(pos2(rect.min.x, y), rect.max)
+            }
+            _ => rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style)).1,
+        };
+
+        let insertion = match candidate_side {
+            crate::DockSide::Left if allow_h => ContainerInsertion::Horizontal(0),
+            crate::DockSide::Right if allow_h => ContainerInsertion::Horizontal(usize::MAX),
+            crate::DockSide::Top if allow_v => ContainerInsertion::Vertical(0),
+            crate::DockSide::Bottom if allow_v => ContainerInsertion::Vertical(usize::MAX),
+            _ => ContainerInsertion::Tabs(usize::MAX),
+        };
+
+        self.suggest_rect(InsertionPoint::new(parent_id, insertion), preview_rect);
     }
 
     fn suggest_rect(&mut self, insertion: InsertionPoint, preview_rect: Rect) {

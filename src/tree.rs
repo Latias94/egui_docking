@@ -53,6 +53,10 @@ pub struct Tree<Pane> {
         serde(deserialize_with = "deserialize_f32_null_as_infinity")
     )]
     width: f32,
+
+    /// Floating windows holding detached roots.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub floating: Vec<crate::FloatingWindow>,
 }
 
 // Workaround for JSON which doesn't support infinity, because JSON is stupid.
@@ -116,6 +120,7 @@ impl<Pane: std::fmt::Debug> std::fmt::Debug for Tree<Pane> {
             tiles,
             width,
             height,
+            floating: _,
         } = self;
 
         if let Some(root) = root {
@@ -145,6 +150,7 @@ impl<Pane> Tree<Pane> {
             tiles: Default::default(),
             width: f32::INFINITY,
             height: f32::INFINITY,
+            floating: Vec::new(),
         }
     }
 
@@ -160,6 +166,7 @@ impl<Pane> Tree<Pane> {
             tiles,
             width: f32::INFINITY,
             height: f32::INFINITY,
+            floating: Vec::new(),
         }
     }
 
@@ -317,9 +324,11 @@ impl<Pane> Tree<Pane> {
         }
         if let Some(root) = self.root {
             self.tiles.layout_tile(ui.style(), behavior, rect, root);
-
             self.tile_ui(behavior, &mut drop_context, ui, root);
         }
+
+        // Draw floating windows on top:
+        self.ui_floating_windows(behavior, &mut drop_context, ui);
 
         self.preview_dragged_tile(behavior, &drop_context, ui);
         ui.advance_cursor_after_rect(rect);
@@ -401,6 +410,21 @@ impl<Pane> Tree<Pane> {
 
             behavior.paint_on_top_of_tile(ui.painter(), ui.style(), tile_id, rect);
 
+            // Paint optional dock ring segments around this tile while dragging
+            if let (Some(dragged), Some(ip)) = (drop_context.dragged_tile_id, drop_context.best_insertion) {
+                if ip.parent_id == tile_id && dragged != tile_id {
+                    let hovered_side = match ip.insertion {
+                        super::ContainerInsertion::Horizontal(0) => Some(crate::DockSide::Left),
+                        super::ContainerInsertion::Horizontal(_) => Some(crate::DockSide::Right),
+                        super::ContainerInsertion::Vertical(0) => Some(crate::DockSide::Top),
+                        super::ContainerInsertion::Vertical(_) => Some(crate::DockSide::Bottom),
+                        super::ContainerInsertion::Tabs(_) => Some(crate::DockSide::Center),
+                        super::ContainerInsertion::Grid(_) => None,
+                    };
+                    behavior.paint_dock_indicator(ui.painter(), ui.style(), rect, hovered_side);
+                }
+            }
+
             self.tiles.insert(tile_id, tile);
             drop_context.enabled = drop_context_was_enabled;
         });
@@ -452,7 +476,22 @@ impl<Pane> Tree<Pane> {
                 .best_insertion
                 .and_then(|insertion_point| self.tiles.rect(insertion_point.parent_id));
 
-            behavior.paint_drag_preview(ui.visuals(), ui.painter(), parent_rect, preview_rect);
+            let side = drop_context.best_insertion.map(|ip| match ip.insertion {
+                super::ContainerInsertion::Horizontal(0) => crate::DockSide::Left,
+                super::ContainerInsertion::Horizontal(_) => crate::DockSide::Right,
+                super::ContainerInsertion::Vertical(0) => crate::DockSide::Top,
+                super::ContainerInsertion::Vertical(_) => crate::DockSide::Bottom,
+                super::ContainerInsertion::Tabs(_) => crate::DockSide::Center,
+                super::ContainerInsertion::Grid(_) => crate::DockSide::Center,
+            });
+
+            behavior.paint_drag_preview_with_side(
+                ui.visuals(),
+                ui.painter(),
+                parent_rect,
+                preview_rect,
+                side,
+            );
 
             if behavior.preview_dragged_panes() {
                 // TODO(emilk): add support for previewing containers too.
@@ -474,9 +513,303 @@ impl<Pane> Tree<Pane> {
             if let Some(insertion_point) = drop_context.best_insertion {
                 behavior.on_edit(EditAction::TileDropped);
                 self.move_tile(dragged_tile_id, insertion_point, false);
+                // If this tile was the root of a floating window, remove that window entry now.
+                if self.floating.iter().any(|fw| fw.root == dragged_tile_id) {
+                    self.floating.retain(|fw| fw.root != dragged_tile_id);
+                    behavior.on_tile_docked(dragged_tile_id);
+                }
+            } else if behavior.tear_off_outside_dropzone()
+                && behavior.can_float(&self.tiles, dragged_tile_id)
+                && ui.input(|i| match behavior.drag_modifier() {
+                    Some(m) => i.modifiers == m,
+                    None => true,
+                })
+            {
+                // No valid drop target – tear off into a floating window.
+                // Use the last rect of the dragged tile if available, fallback to a sensible default.
+                let pos = drop_context
+                    .mouse_pos
+                    .unwrap_or_else(|| ui.max_rect().center());
+                let default_size = egui::vec2(320.0, 240.0);
+                let size = self
+                    .tiles
+                    .rect(dragged_tile_id)
+                    .map(|r| r.size())
+                    .unwrap_or(default_size);
+                self.undock_to_floating(dragged_tile_id, pos - size * 0.5, size);
+                behavior.on_tile_floated(dragged_tile_id);
+                behavior.on_edit(EditAction::TileDropped);
             }
             clear_smooth_preview_rect(ui.ctx(), dragged_tile_id);
         }
+    }
+
+    fn ui_floating_windows(
+        &mut self,
+        behavior: &mut dyn Behavior<Pane>,
+        drop_context: &mut DropContext,
+        ui: &mut Ui,
+    ) {
+        // Simple painting order by z (stable):
+        self.floating
+            .sort_by(|a, b| a.z.cmp(&b.z));
+
+        // Render each floating window
+        let handle_h = behavior.tab_bar_height(ui.style());
+        let bg = behavior.tab_bar_color(ui.visuals());
+        let outline = behavior.tab_bar_hline_stroke(ui.visuals());
+
+        let mut to_remove = vec![];
+
+        for idx in 0..self.floating.len() {
+            // Snapshot to avoid conflicting borrows of `self` when calling into `tile_ui`.
+            let (root, mut pos, mut size, mut z) = {
+                let fw = &self.floating[idx];
+                (fw.root, fw.pos, fw.size, fw.z)
+            };
+
+            let frame_rect = egui::Rect::from_min_size(pos, size);
+
+            // Window background & outline:
+            ui.painter().rect(frame_rect, 2.0, bg, outline, egui::StrokeKind::Inside);
+
+            // Drag handle at the top:
+            let handle_rect = egui::Rect::from_min_max(
+                frame_rect.left_top(),
+                frame_rect.left_top() + egui::vec2(frame_rect.width(), handle_h),
+            );
+            let handle_id = ui.id().with(("float_handle", root));
+            let handle_resp = ui
+                .interact(handle_rect, handle_id, egui::Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::Move);
+            if handle_resp.dragged() {
+                let delta = handle_resp.drag_delta();
+                pos += delta;
+                ui.ctx().request_repaint();
+                // Bump z-order when interacted with
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            } else if handle_resp.clicked() {
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // ---
+            // Resize handles (left/right/bottom + corners). We avoid top edge to not conflict with the move-handle.
+            let resize_thickness = 6.0;
+            let min_size = behavior.min_size();
+
+            // Right edge
+            let right_rect = egui::Rect::from_min_max(
+                frame_rect.right_top() - egui::vec2(resize_thickness, -handle_h),
+                frame_rect.right_bottom(),
+            );
+            let right_resp = ui.interact(
+                right_rect,
+                ui.id().with(("float_resize_r", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if right_resp.dragged() {
+                let dx = right_resp.drag_delta().x;
+                let mut w = (size.x + dx).max(min_size);
+                // Clamp so left stays in place
+                let max_w = ui.max_rect().right() - pos.x;
+                w = w.min(max_w);
+                let new_size = egui::vec2(w, size.y);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+                size = new_size;
+            }
+
+            // Bottom edge
+            let bottom_rect = egui::Rect::from_min_max(
+                frame_rect.left_bottom() - egui::vec2(0.0, resize_thickness),
+                frame_rect.right_bottom(),
+            );
+            let bottom_resp = ui.interact(
+                bottom_rect,
+                ui.id().with(("float_resize_b", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if bottom_resp.dragged() {
+                let dy = bottom_resp.drag_delta().y;
+                let mut h = (size.y + dy).max(min_size);
+                let max_h = ui.max_rect().bottom() - pos.y;
+                h = h.min(max_h);
+                let new_size = egui::vec2(size.x, h);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+                size = new_size;
+            }
+
+            // Left edge (below handle)
+            let left_rect = egui::Rect::from_min_max(
+                frame_rect.left_top() + egui::vec2(0.0, handle_h),
+                frame_rect.left_bottom() + egui::vec2(resize_thickness, 0.0),
+            );
+            let left_resp = ui.interact(
+                left_rect,
+                ui.id().with(("float_resize_l", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if left_resp.dragged() {
+                let dx = left_resp.drag_delta().x;
+                // When dragging left edge, pos.x increases as width shrinks and vice versa
+                let mut new_x = (pos.x + dx).min(pos.x + size.x - min_size);
+                new_x = new_x.max(ui.max_rect().left());
+                let new_w = (pos.x + size.x) - new_x;
+                pos.x = new_x;
+                size = egui::vec2(new_w, size.y);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // Corners – prioritize over edges and handle for resizing.
+            // Bottom-right corner
+            let br_rect = egui::Rect::from_min_size(
+                frame_rect.right_bottom() - egui::vec2(resize_thickness, resize_thickness),
+                egui::vec2(resize_thickness, resize_thickness),
+            );
+            let br_resp = ui.interact(
+                br_rect,
+                ui.id().with(("float_resize_br", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if br_resp.dragged() {
+                let d = br_resp.drag_delta();
+                let mut w = (size.x + d.x).max(min_size);
+                let mut h = (size.y + d.y).max(min_size);
+                w = w.min(ui.max_rect().right() - pos.x);
+                h = h.min(ui.max_rect().bottom() - pos.y);
+                size = egui::vec2(w, h);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // Bottom-left corner
+            let bl_rect = egui::Rect::from_min_size(
+                frame_rect.left_bottom() - egui::vec2(0.0, resize_thickness),
+                egui::vec2(resize_thickness, resize_thickness),
+            );
+            let bl_resp = ui.interact(
+                bl_rect,
+                ui.id().with(("float_resize_bl", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if bl_resp.dragged() {
+                let d = bl_resp.drag_delta();
+                // width changes with left edge, height with bottom edge
+                let mut new_x = (pos.x + d.x).min(pos.x + size.x - min_size);
+                new_x = new_x.max(ui.max_rect().left());
+                let new_w = (pos.x + size.x) - new_x;
+                let mut h = (size.y + d.y).max(min_size);
+                h = h.min(ui.max_rect().bottom() - pos.y);
+                pos.x = new_x;
+                size = egui::vec2(new_w, h);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // Top-right corner (overlaps handle, but corner has priority)
+            let tr_rect = egui::Rect::from_min_size(
+                frame_rect.right_top() - egui::vec2(resize_thickness, 0.0),
+                egui::vec2(resize_thickness, resize_thickness),
+            );
+            let tr_resp = ui.interact(
+                tr_rect,
+                ui.id().with(("float_resize_tr", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if tr_resp.dragged() {
+                let d = tr_resp.drag_delta();
+                let mut w = (size.x + d.x).max(min_size);
+                w = w.min(ui.max_rect().right() - pos.x);
+                let mut new_y = (pos.y + d.y).min(pos.y + size.y - min_size);
+                new_y = new_y.max(ui.max_rect().top());
+                let new_h = (pos.y + size.y) - new_y;
+                pos.y = new_y;
+                size = egui::vec2(w, new_h);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // Top-left corner
+            let tl_rect = egui::Rect::from_min_size(
+                frame_rect.left_top(),
+                egui::vec2(resize_thickness, resize_thickness),
+            );
+            let tl_resp = ui.interact(
+                tl_rect,
+                ui.id().with(("float_resize_tl", root)),
+                egui::Sense::click_and_drag(),
+            );
+            if tl_resp.dragged() {
+                let d = tl_resp.drag_delta();
+                let mut new_x = (pos.x + d.x).min(pos.x + size.x - min_size);
+                new_x = new_x.max(ui.max_rect().left());
+                let new_w = (pos.x + size.x) - new_x;
+                let mut new_y = (pos.y + d.y).min(pos.y + size.y - min_size);
+                new_y = new_y.max(ui.max_rect().top());
+                let new_h = (pos.y + size.y) - new_y;
+                pos.x = new_x;
+                pos.y = new_y;
+                size = egui::vec2(new_w, new_h);
+                z = ui.input(|i| (i.time * 1.0e9) as u64);
+            }
+
+            // Content rect below the handle, recomputed after potential move/resize
+            let frame_rect_after = egui::Rect::from_min_size(pos, size);
+            let handle_rect_after = egui::Rect::from_min_max(
+                frame_rect_after.left_top(),
+                frame_rect_after.left_top() + egui::vec2(frame_rect_after.width(), handle_h),
+            );
+            let content_rect = egui::Rect::from_min_max(
+                handle_rect_after.left_bottom(),
+                frame_rect_after.right_bottom(),
+            );
+
+            // Register drop zones for the floating container itself
+            if let Some(tile) = self.tiles.get(root) {
+                drop_context.on_tile(behavior, ui.style(), root, content_rect, tile);
+            }
+
+            // Layout and show the floating root tile
+            self.tiles
+                .layout_tile(ui.style(), behavior, content_rect, root);
+
+            let mut child_ui = egui::Ui::new(
+                ui.ctx().clone(),
+                ui.id().with((root, "floating")),
+                egui::UiBuilder::new()
+                    .layer_id(ui.layer_id())
+                    .max_rect(content_rect),
+            );
+            self.tile_ui(behavior, drop_context, &mut child_ui, root);
+            crate::cover_tile_if_dragged(self, behavior, &mut child_ui, root);
+
+            // Remove this floating window if its root was deleted by simplification
+            if self.tiles.get(root).is_none() {
+                to_remove.push(idx);
+            }
+
+            // Write back any updates to the floating window entry
+            if let Some(fw) = self.floating.get_mut(idx) {
+                fw.pos = pos;
+                fw.z = z;
+                fw.size = size;
+            }
+        }
+
+        // Remove invalid windows from the end to preserve indices
+        for &i in to_remove.iter().rev() {
+            self.floating.remove(i);
+        }
+    }
+
+    /// Create a floating window for the given tile by removing it from its parent.
+    pub fn undock_to_floating(&mut self, tile_id: TileId, pos: egui::Pos2, size: egui::Vec2) {
+        if self.is_root(tile_id) {
+            return; // don't float the main root
+        }
+
+        // Remove from parent list, but keep the tile in self.tiles
+        let _ = self.remove_tile_id_from_parent(tile_id);
+
+        // Insert new floating window
+        let z = (self.floating.iter().map(|f| f.z).max().unwrap_or(0)).saturating_add(1);
+        self.floating.push(crate::FloatingWindow::new(tile_id, pos, size, z));
     }
 
     /// Simplify and normalize the tree using the given options.
