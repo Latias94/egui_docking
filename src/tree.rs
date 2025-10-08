@@ -344,6 +344,10 @@ impl<Pane> Tree<Pane> {
                 None
             },
             no_docking_in_central: self.central_no_docking,
+            modifiers: ui.input(|i| i.modifiers),
+            activation_sq: behavior.docking_activation_distance().powi(2),
+            hysteresis_sq: behavior.docking_hysteresis_distance().powi(2),
+            snap_px: behavior.docking_snap_distance(),
         };
 
         let mut rect = ui.available_rect_before_wrap();

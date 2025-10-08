@@ -73,6 +73,11 @@ struct TreeBehavior {
     show_tab_bar: bool,
     allow_center_dock: bool,
     allow_side_splits: bool,
+    // Dock interaction tuning
+    snap_px: f32,
+    activation_px: f32,
+    hysteresis_px: f32,
+    dock_requires_shift: bool,
 }
 
 impl Default for TreeBehavior {
@@ -91,6 +96,10 @@ impl Default for TreeBehavior {
             show_tab_bar: true,
             allow_center_dock: true,
             allow_side_splits: true,
+            snap_px: 8.0,
+            activation_px: 4.0,
+            hysteresis_px: 6.0,
+            dock_requires_shift: false,
         }
     }
 }
@@ -189,6 +198,37 @@ impl TreeBehavior {
                         .speed(0.01),
                 );
                 ui.end_row();
+
+                ui.separator();
+                ui.end_row();
+
+                ui.label("Require SHIFT to dock:");
+                ui.checkbox(&mut self.dock_requires_shift, "");
+                ui.end_row();
+
+                ui.label("Dock snap distance (px):");
+                ui.add(
+                    egui::DragValue::new(&mut self.snap_px)
+                        .range(0.0..=40.0)
+                        .speed(0.5),
+                );
+                ui.end_row();
+
+                ui.label("Dock activation distance (px):");
+                ui.add(
+                    egui::DragValue::new(&mut self.activation_px)
+                        .range(0.0..=40.0)
+                        .speed(0.5),
+                );
+                ui.end_row();
+
+                ui.label("Dock hysteresis (px):");
+                ui.add(
+                    egui::DragValue::new(&mut self.hysteresis_px)
+                        .range(0.0..=60.0)
+                        .speed(0.5),
+                );
+                ui.end_row();
             });
     }
 }
@@ -285,6 +325,28 @@ impl egui_docking::Behavior<Pane> for TreeBehavior {
     }
     fn docking_mask_opacity(&self) -> f32 {
         self.mask_opacity
+    }
+
+    fn dock_requires_modifier(&self) -> Option<egui::Modifiers> {
+        if self.dock_requires_shift {
+            let mut m = egui::Modifiers::default();
+            m.shift = true;
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    fn docking_snap_distance(&self) -> f32 {
+        self.snap_px
+    }
+
+    fn docking_activation_distance(&self) -> f32 {
+        self.activation_px
+    }
+
+    fn docking_hysteresis_distance(&self) -> f32 {
+        self.hysteresis_px
     }
 
     fn is_tab_closable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
@@ -410,6 +472,12 @@ impl eframe::App for MyApp {
             ui.horizontal(|ui| {
                 ui.label("Central: No docking");
                 ui.checkbox(&mut self.tree.central_no_docking, "");
+                if ui.small_button("Use root as central").clicked() {
+                    self.tree.central = self.tree.root();
+                }
+                if ui.small_button("Clear central").clicked() {
+                    self.tree.central = None;
+                }
             });
 
             ui.separator();

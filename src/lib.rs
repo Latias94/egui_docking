@@ -380,6 +380,18 @@ struct DropContext {
     central_id: Option<TileId>,
     /// If true, disallow docking into the central tile.
     no_docking_in_central: bool,
+
+    /// Current keyboard modifiers (for requiring a modifier to allow docking).
+    modifiers: egui::Modifiers,
+
+    /// Activation threshold squared (pixels^2) before docking is considered.
+    activation_sq: f32,
+
+    /// Hysteresis (pixels^2) when changing candidates.
+    hysteresis_sq: f32,
+
+    /// Snap distance in pixels used to widen edge bands for docking.
+    snap_px: f32,
 }
 
 impl DropContext {
@@ -399,6 +411,13 @@ impl DropContext {
         let Some(mouse) = self.mouse_pos else {
             return;
         };
+
+        // Require modifier for docking if requested by behavior
+        if let Some(req) = behavior.dock_requires_modifier() {
+            if self.modifiers != req {
+                return;
+            }
+        }
 
         // Determine which directions are allowed for this tile (avoid splitting into same kind).
         let allow_h = tile.kind() != Some(ContainerKind::Horizontal);
@@ -420,6 +439,7 @@ impl DropContext {
 
         // Determine candidate side by position relative to rect center, with a central catch-zone.
         let center = rect.center();
+        let snap = self.snap_px;
         let v = mouse - center;
         let frac = behavior.docking_edge_fraction();
         let center_rect = rect.shrink2(egui::vec2(rect.width() * frac, rect.height() * frac));
@@ -476,19 +496,23 @@ impl DropContext {
         // Use a fraction of rect for preview band; center uses content area below tabbar.
         let preview_rect = match candidate_side {
             crate::DockSide::Left if allow_h => {
-                let x = rect.left() + rect.width() * frac;
+                let bw = rect.width() * frac + snap;
+                let x = (rect.left() + bw).min(rect.right());
                 Rect::from_min_max(rect.min, pos2(x, rect.max.y))
             }
             crate::DockSide::Right if allow_h => {
-                let x = rect.right() - rect.width() * frac;
+                let bw = rect.width() * frac + snap;
+                let x = (rect.right() - bw).max(rect.left());
                 Rect::from_min_max(pos2(x, rect.min.y), rect.max)
             }
             crate::DockSide::Top if allow_v => {
-                let y = rect.top() + rect.height() * frac;
+                let bh = rect.height() * frac + snap;
+                let y = (rect.top() + bh).min(rect.bottom());
                 Rect::from_min_max(rect.min, pos2(rect.max.x, y))
             }
             crate::DockSide::Bottom if allow_v => {
-                let y = rect.bottom() - rect.height() * frac;
+                let bh = rect.height() * frac + snap;
+                let y = (rect.bottom() - bh).max(rect.top());
                 Rect::from_min_max(pos2(rect.min.x, y), rect.max)
             }
             _ => {
@@ -529,7 +553,7 @@ impl DropContext {
         let target_point = preview_rect.center();
         if let Some(mouse_pos) = self.mouse_pos {
             let dist_sq = mouse_pos.distance_sq(target_point);
-            if dist_sq < self.best_dist_sq {
+            if dist_sq + self.hysteresis_sq < self.best_dist_sq {
                 self.best_dist_sq = dist_sq;
                 self.best_insertion = Some(insertion);
                 self.preview_rect = Some(preview_rect);

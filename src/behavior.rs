@@ -1,3 +1,4 @@
+use egui::NumExt as _;
 use egui::{
     Color32, Id, Rect, Response, Rgba, Sense, Stroke, TextStyle, Ui, Vec2, Visuals, WidgetText,
     vec2,
@@ -338,6 +339,14 @@ pub trait Behavior<Pane> {
         true
     }
 
+    /// Optional modifier required to allow docking (i.e. to produce dock candidates).
+    ///
+    /// If `Some(mods)`, docking candidates will only be computed while these modifiers are pressed.
+    /// If `None`, docking is always allowed (subject to other policies).
+    fn dock_requires_modifier(&self) -> Option<egui::Modifiers> {
+        None
+    }
+
     /// Optional drag modifier required to allow tear-off.
     ///
     /// If `Some(mods)`, tear-off only triggers while these modifiers are pressed.
@@ -481,7 +490,14 @@ pub trait Behavior<Pane> {
                 let s = if size > 0.0 {
                     size
                 } else {
-                    (interact_h * 0.8).clamp(10.0, rect.size().min_elem() * 0.35)
+                    let auto_base = interact_h * 0.8;
+                    let max_s = (rect.size().min_elem() * 0.35).at_most(48.0);
+                    if max_s <= 10.0 {
+                        // Very small rect: pick a safe small size, avoid clamp(min>max)
+                        max_s.at_least(4.0)
+                    } else {
+                        auto_base.clamp(10.0, max_s)
+                    }
                 };
                 let g = if gap > 0.0 {
                     gap
@@ -761,14 +777,23 @@ pub trait Behavior<Pane> {
     fn docking_mask_opacity(&self) -> f32 {
         0.08
     }
+    /// Pixel distance within which docking zones feel \"sticky\" (wider hit area).
+    fn docking_snap_distance(&self) -> f32 {
+        8.0
+    }
 
-    /// How many columns should we use for a [`crate::Grid`] put into [`crate::GridLayout::Auto`]?
-    ///
-    /// The default heuristic tried to find a good column count that results in a per-tile aspect-ratio
-    /// of [`Self::ideal_tile_aspect_ratio`].
-    ///
-    /// The `rect` is the available space for the grid,
-    /// and `gap` is the distance between each column and row.
+    /// Minimum pointer movement (pixels) from press origin before docking is considered.
+    /// Helps avoid accidental dock candidates on small drags.
+    fn docking_activation_distance(&self) -> f32 {
+        4.0
+    }
+
+    /// Hysteresis distance (pixels) when switching between candidates to reduce flicker.
+    fn docking_hysteresis_distance(&self) -> f32 {
+        6.0
+    }
+
+    /// How many columns should we use for a [crate::Grid] put into [crate::GridLayout::Auto]?
     fn grid_auto_column_count(&self, num_visible_children: usize, rect: Rect, gap: f32) -> usize {
         num_columns_heuristic(
             num_visible_children,
@@ -778,17 +803,14 @@ pub trait Behavior<Pane> {
         )
     }
 
-    /// When using [`crate::GridLayout::Auto`], what is the ideal aspect ratio of a tile?
+    /// When using [crate::GridLayout::Auto], what is the ideal aspect ratio of a tile?
     fn ideal_tile_aspect_ratio(&self) -> f32 {
         4.0 / 3.0
     }
 
-    // Callbacks:
-
     /// Called if the user edits the tree somehow, e.g. changes the size of some container,
     /// clicks a tab, or drags a tile.
     fn on_edit(&mut self, _edit_action: EditAction) {}
-
     /// Called when a tile was torn off into a floating window.
     fn on_tile_floated(&mut self, _tile_id: TileId) {}
 

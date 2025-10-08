@@ -350,6 +350,25 @@ impl Linear {
                 ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
                 did_any = true;
             }
+            ui.separator();
+            // Container Flags (Linear)
+            let mut flags_changed = false;
+            if ui.checkbox(&mut self.flags.no_split, "No split").changed() {
+                flags_changed = true;
+            }
+            if ui
+                .checkbox(&mut self.flags.no_tabs, "No tabs (center merge)")
+                .changed()
+            {
+                flags_changed = true;
+            }
+            if ui
+                .checkbox(&mut self.flags.lock_layout, "Lock layout")
+                .changed()
+            {
+                flags_changed = true;
+            }
+            did_any |= flags_changed;
             behavior.container_context_menu_ui(
                 tree,
                 ui,
@@ -521,6 +540,25 @@ impl Linear {
                 ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
                 did_any = true;
             }
+            ui.separator();
+            // Container Flags (Linear)
+            let mut flags_changed = false;
+            if ui.checkbox(&mut self.flags.no_split, "No split").changed() {
+                flags_changed = true;
+            }
+            if ui
+                .checkbox(&mut self.flags.no_tabs, "No tabs (center merge)")
+                .changed()
+            {
+                flags_changed = true;
+            }
+            if ui
+                .checkbox(&mut self.flags.lock_layout, "Lock layout")
+                .changed()
+            {
+                flags_changed = true;
+            }
+            did_any |= flags_changed;
             behavior.container_context_menu_ui(
                 tree,
                 ui,

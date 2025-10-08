@@ -346,6 +346,30 @@ impl Tabs {
                 ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
                 did_any = true;
             }
+            ui.separator();
+            // Container Flags (Tabs)
+            if let Some(egui_docking_tile) = tree.tiles.get_mut(tile_id) {
+                if let crate::Tile::Container(crate::Container::Tabs(t)) = egui_docking_tile {
+                    let mut flags = t.flags;
+                    let mut flags_changed = false;
+                    if ui.checkbox(&mut flags.no_split, "No split").changed() {
+                        flags_changed = true;
+                    }
+                    if ui
+                        .checkbox(&mut flags.no_tabs, "No tabs (center merge)")
+                        .changed()
+                    {
+                        flags_changed = true;
+                    }
+                    if ui.checkbox(&mut flags.lock_layout, "Lock layout").changed() {
+                        flags_changed = true;
+                    }
+                    if flags_changed {
+                        t.flags = flags;
+                        did_any = true;
+                    }
+                }
+            }
             // Custom entries
             behavior.container_context_menu_ui(tree, ui, tile_id, crate::ContainerKind::Tabs);
             if did_any {
