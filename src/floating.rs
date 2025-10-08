@@ -16,4 +16,3 @@ impl FloatingWindow {
         Self { root, pos, size, z }
     }
 }
-

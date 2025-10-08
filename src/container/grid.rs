@@ -51,6 +51,10 @@ pub struct Grid {
     /// ui point y ranges for each row, recomputed during layout
     #[cfg_attr(feature = "serde", serde(skip))]
     row_ranges: Vec<Rangef>,
+
+    /// Per-container behavior flags.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub flags: super::ContainerFlags,
 }
 
 impl PartialEq for Grid {
@@ -62,6 +66,7 @@ impl PartialEq for Grid {
             row_shares,
             col_ranges: _, // ignored because they are recomputed each frame
             row_ranges: _, // ignored because they are recomputed each frame
+            flags: _,      // flags do not affect equality semantics for layout
         } = self;
 
         layout == &other.layout
@@ -250,6 +255,105 @@ impl Grid {
         ui: &egui::Ui,
         tile_id: TileId,
     ) {
+        // Container-level context menu on the whole grid rect
+        let parent_rect = tree.tiles.rect_or_die(tile_id);
+        let cm_resp = ui.interact(
+            parent_rect,
+            ui.id().with((tile_id, "grid_ctx")),
+            egui::Sense::click(),
+        );
+        cm_resp.context_menu(|ui| {
+            let mut did_any = false;
+            if ui.button("Close Container").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::CloseContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if !tree.is_root(tile_id) && ui.button("Float Container").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::FloatContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if self
+                .children
+                .iter()
+                .filter(|c| c.map_or(false, |id| tree.is_visible(id)))
+                .count()
+                == 1
+            {
+                if ui.button("Unwrap (single child)").clicked() {
+                    let id = ui.id().with((tile_id, "ctx_menu"));
+                    let mut actions = ui
+                        .ctx()
+                        .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                        .unwrap_or_default();
+                    actions.push(crate::MenuAction::UnwrapContainer);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                    did_any = true;
+                }
+            }
+
+            ui.separator();
+            if ui.button("Convert to Tabs").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Tabs));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Horizontal").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Horizontal,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Vertical").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Vertical,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Grid").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Grid));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            behavior.container_context_menu_ui(tree, ui, tile_id, crate::ContainerKind::Grid);
+            if did_any {
+                ui.close();
+            }
+        });
+
         for &child in &self.children {
             if let Some(child) = child {
                 if tree.is_visible(child) {

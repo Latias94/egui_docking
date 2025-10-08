@@ -18,6 +18,10 @@ pub struct Tabs {
 
     /// The currently open tab.
     pub active: Option<TileId>,
+
+    /// Per-container behavior flags.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub flags: super::ContainerFlags,
 }
 
 /// The current tab scrolling state
@@ -133,7 +137,11 @@ impl ScrollState {
 impl Tabs {
     pub fn new(children: Vec<TileId>) -> Self {
         let active = children.first().copied();
-        Self { children, active }
+        Self {
+            children,
+            active,
+            flags: Default::default(),
+        }
     }
 
     pub fn add_child(&mut self, child: TileId) {
@@ -200,8 +208,11 @@ impl Tabs {
         let next_active = self.tab_bar_ui(tree, behavior, ui, rect, drop_context, tile_id);
 
         if let Some(active) = self.active {
-            tree.tile_ui(behavior, drop_context, ui, active);
-            crate::cover_tile_if_dragged(tree, behavior, ui, active);
+            let suppress_content = tree.central_passthrough && tree.is_central(tile_id);
+            if !suppress_content {
+                tree.tile_ui(behavior, drop_context, ui, active);
+                crate::cover_tile_if_dragged(tree, behavior, ui, active);
+            }
         }
 
         // We have only laid out the active tab, so we need to switch active tab _after_ the ui pass above:
@@ -222,8 +233,125 @@ impl Tabs {
         let mut next_active = self.active;
 
         let tab_bar_height = behavior.tab_bar_height(ui.style());
-        let tab_bar_rect = rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0;
+        let show_bar = {
+            let mut show = behavior.show_tab_bar(&tree.tiles, tile_id);
+            if show && behavior.auto_hide_single_tab() {
+                let visible_count = self
+                    .children
+                    .iter()
+                    .filter(|&&c| tree.tiles.is_visible(c))
+                    .count();
+                if visible_count <= 1 {
+                    show = false;
+                }
+            }
+            show
+        };
+        let tab_bar_rect = if show_bar {
+            rect.split_top_bottom_at_y(rect.top() + tab_bar_height).0
+        } else {
+            Rect::from_min_max(rect.min, rect.min) // zero-height bar
+        };
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(tab_bar_rect));
+
+        // Container-level context menu on the tab bar area
+        let bar_resp = ui.interact(
+            ui.max_rect(),
+            ui.id().with((tile_id, "tabbar_ctx")),
+            egui::Sense::click(),
+        );
+        bar_resp.context_menu(|ui| {
+            let mut did_any = false;
+            if ui.button("Close Container").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::CloseContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if !tree.is_root(tile_id) && ui.button("Float Container").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::FloatContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if self
+                .children
+                .iter()
+                .filter(|&&c| tree.is_visible(c))
+                .count()
+                == 1
+            {
+                if ui.button("Unwrap (single child)").clicked() {
+                    let id = ui.id().with((tile_id, "ctx_menu"));
+                    let mut actions = ui
+                        .ctx()
+                        .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                        .unwrap_or_default();
+                    actions.push(crate::MenuAction::UnwrapContainer);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                    did_any = true;
+                }
+            }
+
+            ui.separator();
+            if ui.button("Convert to Tabs").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Tabs));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Horizontal").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Horizontal,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Vertical").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Vertical,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Grid").clicked() {
+                let id = ui.id().with((tile_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Grid));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            // Custom entries
+            behavior.container_context_menu_ui(tree, ui, tile_id, crate::ContainerKind::Tabs);
+            if did_any {
+                ui.close();
+            }
+        });
 
         let mut button_rects = ahash::HashMap::default();
         let mut dragged_index = None;
@@ -245,8 +373,10 @@ impl Tabs {
 
             let scroll_area_width = scroll_state.update(ui);
 
-            // We're in a right-to-left layout, so start with the right scroll-arrow:
-            scroll_state.right_arrow(ui);
+            if show_bar {
+                // We're in a right-to-left layout, so start with the right scroll-arrow:
+                scroll_state.right_arrow(ui);
+            }
 
             ui.allocate_ui_with_layout(
                 ui.available_size(),
@@ -299,7 +429,7 @@ impl Tabs {
                                 closable: behavior.is_tab_closable(&tree.tiles, child_id),
                             };
 
-                            let response =
+                        let response =
                                 behavior.tab_ui(&mut tree.tiles, ui, id, child_id, &tab_state);
 
                             if response.clicked() {
@@ -321,12 +451,168 @@ impl Tabs {
                             if is_being_dragged {
                                 dragged_index = Some(i);
                             }
+
+                            // Tab-level context menu
+                            response.context_menu(|ui| {
+                                let mut did_any = false;
+                                ui.label("Split");
+                                ui.indent("split_menu", |ui| {
+                                    if ui.small_button("Left").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::SplitTileLeft(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                    if ui.small_button("Right").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::SplitTileRight(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                    if ui.small_button("Top").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::SplitTileTop(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                    if ui.small_button("Bottom").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::SplitTileBottom(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                });
+                                ui.separator();
+                                ui.label("Reorder");
+                                ui.indent("reorder_menu", |ui| {
+                                    if ui.small_button("Move Left").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::MoveTabLeft(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                    if ui.small_button("Move Right").clicked() {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                        actions.push(crate::MenuAction::MoveTabRight(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                });
+
+                                // Move out to parent linear neighbor
+                                if let Some(parent_id) = tree.tiles.parent_of(tile_id) {
+                                    if let Some(crate::Tile::Container(crate::Container::Linear(parent))) = tree.tiles.get(parent_id) {
+                                        ui.separator();
+                                        ui.label("Move to neighbor (sibling)");
+                                        ui.indent("move_neighbor", |ui| {
+                                            match parent.dir {
+                                                crate::LinearDir::Horizontal => {
+                                                    if ui.small_button("Left Neighbor").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MoveToLeftNeighbor(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Right Neighbor").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MoveToRightNeighbor(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Merge into Left Tabs").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MergeIntoLeftNeighborTabs(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Merge into Right Tabs").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MergeIntoRightNeighborTabs(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                }
+                                                crate::LinearDir::Vertical => {
+                                                    if ui.small_button("Top Neighbor").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MoveToTopNeighbor(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Bottom Neighbor").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MoveToBottomNeighbor(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Merge into Top Tabs").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MergeIntoTopNeighborTabs(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                    if ui.small_button("Merge into Bottom Tabs").clicked() {
+                                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                                        let mut actions = ui.ctx().memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id)).unwrap_or_default();
+                                                        actions.push(crate::MenuAction::MergeIntoBottomNeighborTabs(child_id));
+                                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                                        did_any = true;
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                if behavior.is_tab_closable(&tree.tiles, child_id)
+                                    && ui.button("Close Tab").clicked()
+                                {
+                                    if behavior.on_tab_close(&mut tree.tiles, child_id) {
+                                        let id = ui.id().with((tile_id, "ctx_menu"));
+                                        let mut actions = ui
+                                            .ctx()
+                                            .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                                            .unwrap_or_default();
+                                        actions.push(crate::MenuAction::CloseTile(child_id));
+                                        ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                        did_any = true;
+                                    }
+                                }
+                                if ui.button("Float").clicked() {
+                                    let id = ui.id().with((tile_id, "ctx_menu"));
+                                    let mut actions = ui
+                                        .ctx()
+                                        .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                                        .unwrap_or_default();
+                                    actions.push(crate::MenuAction::FloatTile(child_id));
+                                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                                    did_any = true;
+                                }
+                                behavior.tab_context_menu_ui(tree, ui, child_id);
+                                if did_any {
+                                    ui.close();
+                                }
+                            });
                         }
                     });
 
-                    scroll_state.offset = output.state.offset.x;
-                    scroll_state.content_size = output.content_size;
-                    scroll_state.available = output.inner_rect.size();
+                    if show_bar {
+                        scroll_state.offset = output.state.offset.x;
+                        scroll_state.content_size = output.content_size;
+                        scroll_state.available = output.inner_rect.size();
+                    }
                 },
             );
 

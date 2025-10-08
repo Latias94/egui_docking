@@ -117,14 +117,20 @@
 use egui::{Pos2, Rect, pos2};
 
 mod behavior;
+mod blueprint;
 mod container;
 mod floating;
 mod tile;
 mod tiles;
 mod tree;
 
-pub use behavior::{Behavior, EditAction, TabState};
-pub use container::{Container, ContainerKind, Grid, GridLayout, Linear, LinearDir, Shares, Tabs};
+pub use behavior::{Behavior, DockIndicatorStyle, EditAction, TabState};
+pub use blueprint::{
+    FullBlueprint, Node as DockBlueprintNode, export_tree, export_tree_full, to_blueprint,
+};
+pub use container::{
+    Container, ContainerFlags, ContainerKind, Grid, GridLayout, Linear, LinearDir, Shares, Tabs,
+};
 pub use floating::FloatingWindow;
 pub use tile::{Tile, TileId};
 pub use tiles::Tiles;
@@ -138,6 +144,41 @@ pub enum DockSide {
     Top,
     Bottom,
     Center,
+}
+
+// Actions requested from UI context menus, queued in egui memory and applied in `Tree::tile_ui` after reinserting tiles.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum MenuAction {
+    /// Close a specific tile (pane or container), removing it (and its subtree) from the tree.
+    CloseTile(TileId),
+    /// Float a specific tile into a floating window.
+    FloatTile(TileId),
+    /// Close the current container tile_id.
+    CloseContainer,
+    /// Float the current container tile_id.
+    FloatContainer,
+    /// Convert the current container to a different kind.
+    ConvertKind(ContainerKind),
+    /// If container has a single child, unwrap container, replacing it with the child.
+    UnwrapContainer,
+    /// Split a specific tile out of its current parent to the given side.
+    SplitTileLeft(TileId),
+    SplitTileRight(TileId),
+    SplitTileTop(TileId),
+    SplitTileBottom(TileId),
+    /// Reorder a tab within its Tabs container
+    MoveTabLeft(TileId),
+    MoveTabRight(TileId),
+    /// Move tab out of its Tabs into parent linear as a sibling next to this container
+    MoveToLeftNeighbor(TileId),
+    MoveToRightNeighbor(TileId),
+    MoveToTopNeighbor(TileId),
+    MoveToBottomNeighbor(TileId),
+    /// Merge tab into neighbor tile (wrap neighbor into Tabs if needed), next to current container
+    MergeIntoLeftNeighborTabs(TileId),
+    MergeIntoRightNeighborTabs(TileId),
+    MergeIntoTopNeighborTabs(TileId),
+    MergeIntoBottomNeighborTabs(TileId),
 }
 
 mod builder;
@@ -334,6 +375,11 @@ struct DropContext {
     best_insertion: Option<InsertionPoint>,
     best_dist_sq: f32,
     preview_rect: Option<Rect>,
+
+    /// Optional central tile id that should not accept docking.
+    central_id: Option<TileId>,
+    /// If true, disallow docking into the central tile.
+    no_docking_in_central: bool,
 }
 
 impl DropContext {
@@ -341,6 +387,7 @@ impl DropContext {
         &mut self,
         behavior: &dyn Behavior<Pane>,
         style: &egui::Style,
+        tiles: &Tiles<Pane>,
         parent_id: TileId,
         rect: Rect,
         tile: &Tile<Pane>,
@@ -349,23 +396,47 @@ impl DropContext {
             return;
         }
 
-        let Some(mouse) = self.mouse_pos else { return; };
+        let Some(mouse) = self.mouse_pos else {
+            return;
+        };
 
         // Determine which directions are allowed for this tile (avoid splitting into same kind).
         let allow_h = tile.kind() != Some(ContainerKind::Horizontal);
         let allow_v = tile.kind() != Some(ContainerKind::Vertical);
 
+        // Container-level flags to constrain docking behavior
+        let (no_split, no_tabs, lock_layout) = match tile {
+            Tile::Container(container) => {
+                let f = container.flags();
+                (f.no_split, f.no_tabs, f.lock_layout)
+            }
+            _ => (false, false, false),
+        };
+
+        // Early out: central tile should not accept docking
+        if self.no_docking_in_central && Some(parent_id) == self.central_id {
+            return;
+        }
+
         // Determine candidate side by position relative to rect center, with a central catch-zone.
         let center = rect.center();
         let v = mouse - center;
-        let frac = 0.35;
+        let frac = behavior.docking_edge_fraction();
         let center_rect = rect.shrink2(egui::vec2(rect.width() * frac, rect.height() * frac));
         let mut candidate_side = if center_rect.contains(mouse) {
             crate::DockSide::Center
         } else if v.x.abs() > v.y.abs() {
-            if v.x < 0.0 { crate::DockSide::Left } else { crate::DockSide::Right }
+            if v.x < 0.0 {
+                crate::DockSide::Left
+            } else {
+                crate::DockSide::Right
+            }
         } else {
-            if v.y < 0.0 { crate::DockSide::Top } else { crate::DockSide::Bottom }
+            if v.y < 0.0 {
+                crate::DockSide::Top
+            } else {
+                crate::DockSide::Bottom
+            }
         };
 
         // If side not allowed, fallback preferences.
@@ -374,6 +445,33 @@ impl DropContext {
             crate::DockSide::Top | crate::DockSide::Bottom if !allow_v => crate::DockSide::Center,
             side => side,
         };
+
+        // Container flag filtering: forbid certain actions
+        let candidate_side = match candidate_side {
+            crate::DockSide::Center if no_tabs || lock_layout => {
+                // Center merge would create or use tabs - disabled
+                return;
+            }
+            s @ (crate::DockSide::Left
+            | crate::DockSide::Right
+            | crate::DockSide::Top
+            | crate::DockSide::Bottom)
+                if no_split || lock_layout =>
+            {
+                // Splitting disabled
+                return;
+            }
+            s => s,
+        };
+
+        // Behavior-level can_split/can_dock filtering
+        let side_ok = match candidate_side {
+            crate::DockSide::Center => true,
+            s => behavior.can_split(tiles, parent_id, s),
+        };
+        if !side_ok {
+            return;
+        }
 
         // Use a fraction of rect for preview band; center uses content area below tabbar.
         let preview_rect = match candidate_side {
@@ -393,7 +491,10 @@ impl DropContext {
                 let y = rect.bottom() - rect.height() * frac;
                 Rect::from_min_max(pos2(rect.min.x, y), rect.max)
             }
-            _ => rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style)).1,
+            _ => {
+                rect.split_top_bottom_at_y(rect.top() + behavior.tab_bar_height(style))
+                    .1
+            }
         };
 
         let insertion = match candidate_side {
@@ -403,6 +504,20 @@ impl DropContext {
             crate::DockSide::Bottom if allow_v => ContainerInsertion::Vertical(usize::MAX),
             _ => ContainerInsertion::Tabs(usize::MAX),
         };
+
+        // Behavior-level can_dock check
+        if let Some(src) = self.dragged_tile_id {
+            let side = match insertion {
+                ContainerInsertion::Horizontal(0) => crate::DockSide::Left,
+                ContainerInsertion::Horizontal(_) => crate::DockSide::Right,
+                ContainerInsertion::Vertical(0) => crate::DockSide::Top,
+                ContainerInsertion::Vertical(_) => crate::DockSide::Bottom,
+                _ => crate::DockSide::Center,
+            };
+            if !behavior.can_dock(tiles, src, parent_id, side) {
+                return;
+            }
+        }
 
         self.suggest_rect(InsertionPoint::new(parent_id, insertion), preview_rect);
     }

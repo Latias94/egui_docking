@@ -1,3 +1,4 @@
+use crate::LinearDir;
 use egui::{NumExt as _, Rect, Ui};
 
 use crate::behavior::EditAction;
@@ -57,6 +58,18 @@ pub struct Tree<Pane> {
     /// Floating windows holding detached roots.
     #[cfg_attr(feature = "serde", serde(default))]
     pub floating: Vec<crate::FloatingWindow>,
+
+    /// Optional: mark a tile as the central overlay target.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub central: Option<TileId>,
+
+    /// If true, the central tile will not draw its active content (used for passthrough overlays).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub central_passthrough: bool,
+
+    /// If true, disallow any docking into the central tile (like ImGui's NoDockingInCentralNode).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub central_no_docking: bool,
 }
 
 // Workaround for JSON which doesn't support infinity, because JSON is stupid.
@@ -121,6 +134,7 @@ impl<Pane: std::fmt::Debug> std::fmt::Debug for Tree<Pane> {
             width,
             height,
             floating: _,
+            ..
         } = self;
 
         if let Some(root) = root {
@@ -151,6 +165,9 @@ impl<Pane> Tree<Pane> {
             width: f32::INFINITY,
             height: f32::INFINITY,
             floating: Vec::new(),
+            central: None,
+            central_passthrough: false,
+            central_no_docking: false,
         }
     }
 
@@ -167,6 +184,9 @@ impl<Pane> Tree<Pane> {
             width: f32::INFINITY,
             height: f32::INFINITY,
             floating: Vec::new(),
+            central: None,
+            central_passthrough: false,
+            central_no_docking: false,
         }
     }
 
@@ -250,6 +270,11 @@ impl<Pane> Tree<Pane> {
         self.id
     }
 
+    #[inline]
+    pub fn is_central(&self, tile: TileId) -> bool {
+        self.central == Some(tile)
+    }
+
     /// Check if [`Self::root`] is [`None`].
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -313,6 +338,12 @@ impl<Pane> Tree<Pane> {
             best_dist_sq: f32::INFINITY,
             best_insertion: None,
             preview_rect: None,
+            central_id: if self.central_no_docking {
+                self.central
+            } else {
+                None
+            },
+            no_docking_in_central: self.central_no_docking,
         };
 
         let mut rect = ui.available_rect_before_wrap();
@@ -384,7 +415,7 @@ impl<Pane> Tree<Pane> {
             // Can't drag a tile onto self or any children
             drop_context.enabled = false;
         }
-        drop_context.on_tile(behavior, ui.style(), tile_id, rect, &tile);
+        drop_context.on_tile(behavior, ui.style(), &self.tiles, tile_id, rect, &tile);
 
         // Each tile gets its own `Ui`, nested inside each other, with proper clip rectangles.
         let enabled = ui.is_enabled();
@@ -411,7 +442,9 @@ impl<Pane> Tree<Pane> {
             behavior.paint_on_top_of_tile(ui.painter(), ui.style(), tile_id, rect);
 
             // Paint optional dock ring segments around this tile while dragging
-            if let (Some(dragged), Some(ip)) = (drop_context.dragged_tile_id, drop_context.best_insertion) {
+            if let (Some(dragged), Some(ip)) =
+                (drop_context.dragged_tile_id, drop_context.best_insertion)
+            {
                 if ip.parent_id == tile_id && dragged != tile_id {
                     let hovered_side = match ip.insertion {
                         super::ContainerInsertion::Horizontal(0) => Some(crate::DockSide::Left),
@@ -426,6 +459,299 @@ impl<Pane> Tree<Pane> {
             }
 
             self.tiles.insert(tile_id, tile);
+
+            // Apply any queued context-menu actions for this tile
+            let menu_id = ui.id().with((tile_id, "ctx_menu"));
+            if let Some(actions) = ui
+                .ctx()
+                .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(menu_id))
+            {
+                for action in actions {
+                    match action {
+                        crate::MenuAction::CloseTile(target) => {
+                            self.remove_recursively(target);
+                        }
+                        crate::MenuAction::FloatTile(target) => {
+                            if !self.is_root(target) {
+                                let pos = ui
+                                    .input(|i| i.pointer.interact_pos())
+                                    .unwrap_or_else(|| ui.max_rect().center());
+                                let size = self
+                                    .tiles
+                                    .rect(target)
+                                    .map(|r| r.size())
+                                    .unwrap_or(egui::vec2(320.0, 240.0));
+                                self.undock_to_floating(target, pos - size * 0.5, size);
+                                behavior.on_tile_floated(target);
+                            }
+                        }
+                        crate::MenuAction::CloseContainer => {
+                            self.remove_recursively(tile_id);
+                        }
+                        crate::MenuAction::FloatContainer => {
+                            if !self.is_root(tile_id) {
+                                let pos = ui
+                                    .input(|i| i.pointer.interact_pos())
+                                    .unwrap_or_else(|| ui.max_rect().center());
+                                let size = self
+                                    .tiles
+                                    .rect(tile_id)
+                                    .map(|r| r.size())
+                                    .unwrap_or(egui::vec2(360.0, 260.0));
+                                self.undock_to_floating(tile_id, pos - size * 0.5, size);
+                                behavior.on_tile_floated(tile_id);
+                            }
+                        }
+                        crate::MenuAction::UnwrapContainer => {
+                            // Only unwrap containers with a single child
+                            if let Some(Tile::Container(container)) = self.tiles.get(tile_id) {
+                                if let Some(only) = container.only_child() {
+                                    // Remove container from parent and replace with child
+                                    if let Some((parent_id, idx)) =
+                                        self.remove_tile_id_from_parent(tile_id)
+                                    {
+                                        if let Some(Tile::Container(parent)) =
+                                            self.tiles.get_mut(parent_id)
+                                        {
+                                            match parent {
+                                                Container::Tabs(t) => t.children.insert(idx, only),
+                                                Container::Linear(l) => {
+                                                    l.children.insert(idx, only)
+                                                }
+                                                Container::Grid(g) => g.insert_at(idx, only),
+                                            }
+                                        }
+                                    } else {
+                                        // tile_id is root
+                                        self.root = Some(only);
+                                    }
+                                    // Drop the container tile itself
+                                    let _ = self.tiles.remove(tile_id);
+                                }
+                            }
+                        }
+                        crate::MenuAction::ConvertKind(kind) => {
+                            if let Some(mut t) = self.tiles.remove(tile_id) {
+                                if let Tile::Container(ref mut c) = t {
+                                    c.set_kind(kind);
+                                }
+                                self.tiles.insert(tile_id, t);
+                            }
+                        }
+                        crate::MenuAction::MoveTabLeft(child)
+                        | crate::MenuAction::MoveTabRight(child) => {
+                            if let Some(parent_id) = self.tiles.parent_of(child) {
+                                if let Some(Tile::Container(Container::Tabs(tabs))) =
+                                    self.tiles.get_mut(parent_id)
+                                {
+                                    if let Some(idx) =
+                                        tabs.children.iter().position(|&c| c == child)
+                                    {
+                                        let to_idx = match action {
+                                            crate::MenuAction::MoveTabLeft(_) => {
+                                                idx.saturating_sub(1)
+                                            }
+                                            _ => {
+                                                (idx + 1).min(tabs.children.len().saturating_sub(1))
+                                            }
+                                        };
+                                        if to_idx != idx {
+                                            tabs.children.remove(idx);
+                                            tabs.children.insert(to_idx, child);
+                                            tabs.active = Some(child);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::MenuAction::MoveToLeftNeighbor(child)
+                        | crate::MenuAction::MoveToRightNeighbor(child)
+                        | crate::MenuAction::MoveToTopNeighbor(child)
+                        | crate::MenuAction::MoveToBottomNeighbor(child) => {
+                            // parent linear container of current tile_id (the Tabs container that owned the menu)
+                            if let Some(parent_id) = self.tiles.parent_of(tile_id) {
+                                // Snapshot needed info to avoid borrow conflicts
+                                let (dir_opt, idx_opt) =
+                                    if let Some(Tile::Container(Container::Linear(parent))) =
+                                        self.tiles.get(parent_id)
+                                    {
+                                        let dir = parent.dir;
+                                        let idx =
+                                            parent.children.iter().position(|&c| c == tile_id);
+                                        (Some(dir), idx)
+                                    } else {
+                                        (None, None)
+                                    };
+
+                                if let (Some(dir), Some(idx)) = (dir_opt, idx_opt) {
+                                    // Remove the child from its current parent (Tabs)
+                                    let _ = self.remove_tile_id_from_parent(child);
+
+                                    match (action, dir) {
+                                        (
+                                            crate::MenuAction::MoveToLeftNeighbor(_),
+                                            LinearDir::Horizontal,
+                                        ) => {
+                                            self.tiles.insert_at(
+                                                InsertionPoint::new(
+                                                    parent_id,
+                                                    ContainerInsertion::Horizontal(idx),
+                                                ),
+                                                child,
+                                            );
+                                        }
+                                        (
+                                            crate::MenuAction::MoveToRightNeighbor(_),
+                                            LinearDir::Horizontal,
+                                        ) => {
+                                            self.tiles.insert_at(
+                                                InsertionPoint::new(
+                                                    parent_id,
+                                                    ContainerInsertion::Horizontal(idx + 1),
+                                                ),
+                                                child,
+                                            );
+                                        }
+                                        (
+                                            crate::MenuAction::MoveToTopNeighbor(_),
+                                            LinearDir::Vertical,
+                                        ) => {
+                                            self.tiles.insert_at(
+                                                InsertionPoint::new(
+                                                    parent_id,
+                                                    ContainerInsertion::Vertical(idx),
+                                                ),
+                                                child,
+                                            );
+                                        }
+                                        (
+                                            crate::MenuAction::MoveToBottomNeighbor(_),
+                                            LinearDir::Vertical,
+                                        ) => {
+                                            self.tiles.insert_at(
+                                                InsertionPoint::new(
+                                                    parent_id,
+                                                    ContainerInsertion::Vertical(idx + 1),
+                                                ),
+                                                child,
+                                            );
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        crate::MenuAction::MergeIntoLeftNeighborTabs(child)
+                        | crate::MenuAction::MergeIntoRightNeighborTabs(child)
+                        | crate::MenuAction::MergeIntoTopNeighborTabs(child)
+                        | crate::MenuAction::MergeIntoBottomNeighborTabs(child) => {
+                            if let Some(parent_id) = self.tiles.parent_of(tile_id) {
+                                // Snapshot parent dir, container index and neighbor index/id
+                                let (dir_opt, idx_opt, neighbor_opt) =
+                                    if let Some(Tile::Container(Container::Linear(parent))) =
+                                        self.tiles.get(parent_id)
+                                    {
+                                        let dir = parent.dir;
+                                        let idx =
+                                            parent.children.iter().position(|&c| c == tile_id);
+                                        let neighbor_idx = idx.and_then(|i| match (action, dir) {
+                                            (
+                                                crate::MenuAction::MergeIntoLeftNeighborTabs(_),
+                                                LinearDir::Horizontal,
+                                            ) => i.checked_sub(1),
+                                            (
+                                                crate::MenuAction::MergeIntoRightNeighborTabs(_),
+                                                LinearDir::Horizontal,
+                                            ) => Some(i + 1),
+                                            (
+                                                crate::MenuAction::MergeIntoTopNeighborTabs(_),
+                                                LinearDir::Vertical,
+                                            ) => i.checked_sub(1),
+                                            (
+                                                crate::MenuAction::MergeIntoBottomNeighborTabs(_),
+                                                LinearDir::Vertical,
+                                            ) => Some(i + 1),
+                                            _ => None,
+                                        });
+                                        let neigh = neighbor_idx
+                                            .and_then(|ni| parent.children.get(ni).copied());
+                                        (Some(dir), idx, neigh)
+                                    } else {
+                                        (None, None, None)
+                                    };
+
+                                if let (Some(_dir), Some(_idx), Some(neighbor_id)) =
+                                    (dir_opt, idx_opt, neighbor_opt)
+                                {
+                                    // Remove the child from its current parent (Tabs)
+                                    let _ = self.remove_tile_id_from_parent(child);
+
+                                    // If neighbor is Tabs, insert there; otherwise wrap neighbor into Tabs and insert
+                                    let mut new_tabs_id = None;
+                                    if let Some(Tile::Container(Container::Tabs(tabs))) =
+                                        self.tiles.get_mut(neighbor_id)
+                                    {
+                                        tabs.add_child(child);
+                                        tabs.set_active(child);
+                                    } else {
+                                        // Replace neighbor in parent with a new Tabs containing [neighbor, child]
+                                        if let Some(mut neighbor_tile) =
+                                            self.tiles.remove(neighbor_id)
+                                        {
+                                            let tabs =
+                                                Container::new_tabs(vec![neighbor_id, child]);
+                                            let tabs_id =
+                                                self.tiles.insert_new(Tile::Container(tabs));
+                                            new_tabs_id = Some(tabs_id);
+                                            // Put back the neighbor tile under its original id
+                                            self.tiles.insert(neighbor_id, neighbor_tile);
+
+                                            if let Some(Tile::Container(Container::Linear(
+                                                parent,
+                                            ))) = self.tiles.get_mut(parent_id)
+                                            {
+                                                if let Some(npos) = parent
+                                                    .children
+                                                    .iter()
+                                                    .position(|&c| c == neighbor_id)
+                                                {
+                                                    parent.children[npos] = tabs_id;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        crate::MenuAction::SplitTileLeft(child)
+                        | crate::MenuAction::SplitTileRight(child)
+                        | crate::MenuAction::SplitTileTop(child)
+                        | crate::MenuAction::SplitTileBottom(child) => {
+                            // Remove the child from its parent and reinsert around current container
+                            let _ = self.remove_tile_id_from_parent(child);
+                            let insertion = match action {
+                                crate::MenuAction::SplitTileLeft(_) => {
+                                    super::ContainerInsertion::Horizontal(0)
+                                }
+                                crate::MenuAction::SplitTileRight(_) => {
+                                    super::ContainerInsertion::Horizontal(usize::MAX)
+                                }
+                                crate::MenuAction::SplitTileTop(_) => {
+                                    super::ContainerInsertion::Vertical(0)
+                                }
+                                crate::MenuAction::SplitTileBottom(_) => {
+                                    super::ContainerInsertion::Vertical(usize::MAX)
+                                }
+                                _ => unreachable!(),
+                            };
+                            self.tiles
+                                .insert_at(InsertionPoint::new(tile_id, insertion), child);
+                        }
+                    }
+                }
+                ui.ctx()
+                    .memory_mut(|m| m.data.remove_temp::<Vec<crate::MenuAction>>(menu_id));
+            }
             drop_context.enabled = drop_context_was_enabled;
         });
     }
@@ -551,8 +877,7 @@ impl<Pane> Tree<Pane> {
         ui: &mut Ui,
     ) {
         // Simple painting order by z (stable):
-        self.floating
-            .sort_by(|a, b| a.z.cmp(&b.z));
+        self.floating.sort_by(|a, b| a.z.cmp(&b.z));
 
         // Render each floating window
         let handle_h = behavior.tab_bar_height(ui.style());
@@ -571,7 +896,8 @@ impl<Pane> Tree<Pane> {
             let frame_rect = egui::Rect::from_min_size(pos, size);
 
             // Window background & outline:
-            ui.painter().rect(frame_rect, 2.0, bg, outline, egui::StrokeKind::Inside);
+            ui.painter()
+                .rect(frame_rect, 2.0, bg, outline, egui::StrokeKind::Inside);
 
             // Drag handle at the top:
             let handle_rect = egui::Rect::from_min_max(
@@ -762,7 +1088,7 @@ impl<Pane> Tree<Pane> {
 
             // Register drop zones for the floating container itself
             if let Some(tile) = self.tiles.get(root) {
-                drop_context.on_tile(behavior, ui.style(), root, content_rect, tile);
+                drop_context.on_tile(behavior, ui.style(), &self.tiles, root, content_rect, tile);
             }
 
             // Layout and show the floating root tile
@@ -809,7 +1135,8 @@ impl<Pane> Tree<Pane> {
 
         // Insert new floating window
         let z = (self.floating.iter().map(|f| f.z).max().unwrap_or(0)).saturating_add(1);
-        self.floating.push(crate::FloatingWindow::new(tile_id, pos, size, z));
+        self.floating
+            .push(crate::FloatingWindow::new(tile_id, pos, size, z));
     }
 
     /// Simplify and normalize the tree using the given options.

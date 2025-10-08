@@ -14,6 +14,23 @@ pub use tabs::Tabs;
 
 // ----------------------------------------------------------------------------
 
+/// Per-container behavior flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct ContainerFlags {
+    /// Disallow splitting this container (no left/right/top/bottom docking).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub no_split: bool,
+
+    /// Disallow tabbing (no center docking that would merge into/create Tabs).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub no_tabs: bool,
+
+    /// Lock layout: prevents any structural edits (split/tab insert).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub lock_layout: bool,
+}
+
 /// The layout type of a [`Container`].
 ///
 /// This is used to describe a [`Container`], and to change it to a different layout type.
@@ -77,6 +94,24 @@ impl Container {
             ContainerKind::Horizontal => Self::new_horizontal(children),
             ContainerKind::Vertical => Self::new_vertical(children),
             ContainerKind::Grid => Self::new_grid(children),
+        }
+    }
+
+    /// Access flags for this container.
+    pub fn flags(&self) -> &ContainerFlags {
+        match self {
+            Self::Tabs(t) => &t.flags,
+            Self::Linear(l) => &l.flags,
+            Self::Grid(g) => &g.flags,
+        }
+    }
+
+    /// Mutable access to flags for this container.
+    pub fn flags_mut(&mut self) -> &mut ContainerFlags {
+        match self {
+            Self::Tabs(t) => &mut t.flags,
+            Self::Linear(l) => &mut l.flags,
+            Self::Grid(g) => &mut g.flags,
         }
     }
 

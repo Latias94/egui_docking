@@ -25,6 +25,12 @@ Supports:
 Tear-off floating windows demo:
 `cargo r --example docking`
 
+DockBuilder & Blueprint demo:
+`cargo r --example builder`
+
+Roadmap:
+see `docs/ROADMAP.md`
+
 ### Comparison with [egui_dock](https://github.com/Adanos020/egui_dock)
 [egui_dock](https://github.com/Adanos020/egui_dock) is an excellent crate serving similar needs. `egui_tiles` aims to become a more flexible and feature-rich alternative to `egui_dock`.
 

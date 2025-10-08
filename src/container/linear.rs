@@ -105,6 +105,9 @@ pub struct Linear {
     pub children: Vec<TileId>,
     pub dir: LinearDir,
     pub shares: Shares,
+    /// Per-container behavior flags.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub flags: super::ContainerFlags,
 }
 
 impl Linear {
@@ -255,6 +258,111 @@ impl Linear {
         // resizing:
 
         let parent_rect = tree.tiles.rect_or_die(parent_id);
+        // Container-level context menu on the whole parent rect
+        let cm_resp = ui.interact(
+            parent_rect,
+            ui.id().with((parent_id, "linear_ctx")),
+            egui::Sense::click(),
+        );
+        cm_resp.context_menu(|ui| {
+            let mut did_any = false;
+            if ui.button("Close Container").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::CloseContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if !tree.is_root(parent_id) && ui.button("Float Container").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::FloatContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if self
+                .children
+                .iter()
+                .filter(|&&c| tree.is_visible(c))
+                .count()
+                == 1
+            {
+                if ui.button("Unwrap (single child)").clicked() {
+                    let id = ui.id().with((parent_id, "ctx_menu"));
+                    let mut actions = ui
+                        .ctx()
+                        .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                        .unwrap_or_default();
+                    actions.push(crate::MenuAction::UnwrapContainer);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                    did_any = true;
+                }
+            }
+
+            ui.separator();
+            if ui.button("Convert to Tabs").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Tabs));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Horizontal").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Horizontal,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Vertical").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Vertical,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Grid").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Grid));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            behavior.container_context_menu_ui(
+                tree,
+                ui,
+                parent_id,
+                match self.dir {
+                    super::LinearDir::Horizontal => crate::ContainerKind::Horizontal,
+                    _ => crate::ContainerKind::Vertical,
+                },
+            );
+            if did_any {
+                ui.close();
+            }
+        });
         for (i, (left, right)) in visible_children.iter().copied().tuple_windows().enumerate() {
             let resize_id = ui.id().with((parent_id, "resize", i));
 
@@ -321,6 +429,111 @@ impl Linear {
         // resizing:
 
         let parent_rect = tree.tiles.rect_or_die(parent_id);
+        // Container-level context menu on the whole parent rect
+        let cm_resp = ui.interact(
+            parent_rect,
+            ui.id().with((parent_id, "linear_ctx")),
+            egui::Sense::click(),
+        );
+        cm_resp.context_menu(|ui| {
+            let mut did_any = false;
+            if ui.button("Close Container").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::CloseContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if !tree.is_root(parent_id) && ui.button("Float Container").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::FloatContainer);
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if self
+                .children
+                .iter()
+                .filter(|&&c| tree.is_visible(c))
+                .count()
+                == 1
+            {
+                if ui.button("Unwrap (single child)").clicked() {
+                    let id = ui.id().with((parent_id, "ctx_menu"));
+                    let mut actions = ui
+                        .ctx()
+                        .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                        .unwrap_or_default();
+                    actions.push(crate::MenuAction::UnwrapContainer);
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                    did_any = true;
+                }
+            }
+
+            ui.separator();
+            if ui.button("Convert to Tabs").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Tabs));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Horizontal").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Horizontal,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Vertical").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(
+                    crate::ContainerKind::Vertical,
+                ));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            if ui.button("Convert to Grid").clicked() {
+                let id = ui.id().with((parent_id, "ctx_menu"));
+                let mut actions = ui
+                    .ctx()
+                    .memory_mut(|m| m.data.get_temp::<Vec<crate::MenuAction>>(id))
+                    .unwrap_or_default();
+                actions.push(crate::MenuAction::ConvertKind(crate::ContainerKind::Grid));
+                ui.ctx().memory_mut(|m| m.data.insert_temp(id, actions));
+                did_any = true;
+            }
+            behavior.container_context_menu_ui(
+                tree,
+                ui,
+                parent_id,
+                match self.dir {
+                    super::LinearDir::Horizontal => crate::ContainerKind::Horizontal,
+                    _ => crate::ContainerKind::Vertical,
+                },
+            );
+            if did_any {
+                ui.close();
+            }
+        });
         for (i, (top, bottom)) in visible_children.iter().copied().tuple_windows().enumerate() {
             let resize_id = ui.id().with((parent_id, "resize", i));
 

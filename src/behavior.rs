@@ -228,6 +228,27 @@ pub trait Behavior<Pane> {
         button_response
     }
 
+    /// Optional: add entries to a tab's context menu.
+    /// Default: no extra entries.
+    fn tab_context_menu_ui(
+        &mut self,
+        _tree: &mut crate::Tree<Pane>,
+        _ui: &mut Ui,
+        _tile_id: TileId,
+    ) {
+    }
+
+    /// Optional: add entries to a container's context menu.
+    /// Default: no extra entries.
+    fn container_context_menu_ui(
+        &mut self,
+        _tree: &mut crate::Tree<Pane>,
+        _ui: &mut Ui,
+        _tile_id: TileId,
+        _kind: crate::ContainerKind,
+    ) {
+    }
+
     /// Return `false` if a given pane should be removed from its parent.
     fn retain_pane(&mut self, _pane: &Pane) -> bool {
         true
@@ -251,6 +272,33 @@ pub trait Behavior<Pane> {
     ) {
         // if ui.button("➕").clicked() {
         // }
+    }
+
+    /// Should we show the tab bar for this tile?
+    /// Useful for overlay/passthrough modes where the central area should be clean.
+    fn show_tab_bar(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
+        true
+    }
+
+    /// Auto-hide the tab bar when there is only a single visible tab in a Tabs container.
+    fn auto_hide_single_tab(&self) -> bool {
+        false
+    }
+
+    /// Filter whether `src_tile` may dock into `dst_parent` on the given side.
+    fn can_dock(
+        &self,
+        _tiles: &Tiles<Pane>,
+        _src_tile: TileId,
+        _dst_parent: TileId,
+        _side: crate::DockSide,
+    ) -> bool {
+        true
+    }
+
+    /// Filter whether `dst_parent` may be split on the given side.
+    fn can_split(&self, _tiles: &Tiles<Pane>, _dst_parent: TileId, _side: crate::DockSide) -> bool {
+        true
     }
 
     /// The height of the bar holding tab titles.
@@ -337,10 +385,20 @@ pub trait Behavior<Pane> {
                 let color_inactive = self.drag_preview_color(&style.visuals).gamma_multiply(0.5);
                 let color_active = self.drag_preview_color(&style.visuals);
                 let t = (rect.size().min_elem() * frac).clamp(6.0, 24.0);
-                let top = Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(rect.width(), t));
-                let bottom = Rect::from_min_max(rect.left_bottom() - egui::vec2(0.0, t), rect.right_bottom());
-                let left = Rect::from_min_max(rect.left_top(), rect.left_top() + egui::vec2(t, rect.height()));
-                let right = Rect::from_min_max(rect.right_top() - egui::vec2(t, 0.0), rect.right_bottom());
+                let top = Rect::from_min_max(
+                    rect.left_top(),
+                    rect.left_top() + egui::vec2(rect.width(), t),
+                );
+                let bottom = Rect::from_min_max(
+                    rect.left_bottom() - egui::vec2(0.0, t),
+                    rect.right_bottom(),
+                );
+                let left = Rect::from_min_max(
+                    rect.left_top(),
+                    rect.left_top() + egui::vec2(t, rect.height()),
+                );
+                let right =
+                    Rect::from_min_max(rect.right_top() - egui::vec2(t, 0.0), rect.right_bottom());
                 let center = rect.shrink2(egui::vec2(t + 2.0, t + 2.0));
                 let draw = |r: Rect, active: bool| {
                     let c = if active { color_active } else { color_inactive };
@@ -357,15 +415,44 @@ pub trait Behavior<Pane> {
                 let stroke = self.drag_preview_stroke(&style.visuals);
                 let fill = self.drag_preview_color(&style.visuals).gamma_multiply(0.6);
                 let t = (rect.size().min_elem() * frac).clamp(6.0, 24.0);
-                let mut wedge = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, side: crate::DockSide| {
-                    let c_fill = if hovered == Some(side) { fill } else { fill.gamma_multiply(0.6) };
-                    painter.add(egui::epaint::Shape::convex_polygon(vec![a, b, c], c_fill, stroke));
-                };
+                let mut wedge =
+                    |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2, side: crate::DockSide| {
+                        let c_fill = if hovered == Some(side) {
+                            fill
+                        } else {
+                            fill.gamma_multiply(0.6)
+                        };
+                        painter.add(egui::epaint::Shape::convex_polygon(
+                            vec![a, b, c],
+                            c_fill,
+                            stroke,
+                        ));
+                    };
                 let center = rect.center();
-                wedge(rect.left_top(), rect.left_bottom(), center, crate::DockSide::Left);
-                wedge(rect.right_top(), rect.right_bottom(), center, crate::DockSide::Right);
-                wedge(rect.left_top(), rect.right_top(), center, crate::DockSide::Top);
-                wedge(rect.left_bottom(), rect.right_bottom(), center, crate::DockSide::Bottom);
+                wedge(
+                    rect.left_top(),
+                    rect.left_bottom(),
+                    center,
+                    crate::DockSide::Left,
+                );
+                wedge(
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    center,
+                    crate::DockSide::Right,
+                );
+                wedge(
+                    rect.left_top(),
+                    rect.right_top(),
+                    center,
+                    crate::DockSide::Top,
+                );
+                wedge(
+                    rect.left_bottom(),
+                    rect.right_bottom(),
+                    center,
+                    crate::DockSide::Bottom,
+                );
                 let center_rect = rect.shrink2(egui::vec2(t + 2.0, t + 2.0));
                 painter.rect(
                     center_rect,
@@ -379,24 +466,115 @@ pub trait Behavior<Pane> {
                     egui::StrokeKind::Inside,
                 );
             }
-            DockIndicatorStyle::ImguiLike { size, gap, rounding } => {
+            DockIndicatorStyle::ImguiLike {
+                size,
+                gap,
+                rounding,
+            } => {
                 let visuals = &style.visuals;
                 let stroke = self.drag_preview_stroke(visuals);
                 let fill_inactive = self.drag_preview_color(visuals).gamma_multiply(0.5);
                 let fill_active = self.drag_preview_color(visuals);
                 let c = rect.center();
-                let s = size;
-                let g = gap;
-                let mut draw_box = |center: egui::Pos2, active: bool| {
-                    let r = egui::Rect::from_center_size(center, egui::vec2(s, s));
-                    painter.rect(r, rounding, if active { fill_active } else { fill_inactive }, stroke, egui::StrokeKind::Inside);
+                // Auto sizing from style if non-positive
+                let interact_h = style.spacing.interact_size.y;
+                let s = if size > 0.0 {
+                    size
+                } else {
+                    (interact_h * 0.8).clamp(10.0, rect.size().min_elem() * 0.35)
                 };
-                draw_box(c + vec2(-(s + g), 0.0), hovered == Some(crate::DockSide::Left));
-                draw_box(c + vec2((s + g), 0.0), hovered == Some(crate::DockSide::Right));
-                draw_box(c + vec2(0.0, -(s + g)), hovered == Some(crate::DockSide::Top));
-                draw_box(c + vec2(0.0, (s + g)), hovered == Some(crate::DockSide::Bottom));
-                draw_box(c, hovered == Some(crate::DockSide::Center));
-                // Optional arrowheads inside boxes could be drawn here later
+                let g = if gap > 0.0 {
+                    gap
+                } else {
+                    (s * 0.35).clamp(4.0, 24.0)
+                };
+                let rounding = if rounding > 0.0 { rounding } else { s * 0.2 };
+
+                // Faint mask over tile to increase contrast
+                let mask = self
+                    .drag_preview_color(visuals)
+                    .gamma_multiply(self.docking_mask_opacity());
+                painter.rect(
+                    rect,
+                    0.0,
+                    mask,
+                    egui::Stroke::NONE,
+                    egui::StrokeKind::Inside,
+                );
+                let draw_box = |center: egui::Pos2, active: bool| {
+                    let r = egui::Rect::from_center_size(center, egui::vec2(s, s));
+                    painter.rect(
+                        r,
+                        rounding,
+                        if active { fill_active } else { fill_inactive },
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                };
+                let left_c = c + vec2(-(s + g), 0.0);
+                let right_c = c + vec2((s + g), 0.0);
+                let top_c = c + vec2(0.0, -(s + g));
+                let bottom_c = c + vec2(0.0, (s + g));
+                let center_c = c;
+
+                draw_box(left_c, hovered == Some(crate::DockSide::Left));
+                draw_box(right_c, hovered == Some(crate::DockSide::Right));
+                draw_box(top_c, hovered == Some(crate::DockSide::Top));
+                draw_box(bottom_c, hovered == Some(crate::DockSide::Bottom));
+                draw_box(center_c, hovered == Some(crate::DockSide::Center));
+
+                // Draw arrows inside directional boxes (triangles pointing outwards)
+                let arrow_size = s * 0.35;
+                let arrow = |center: egui::Pos2, side: crate::DockSide| -> [egui::Pos2; 3] {
+                    let a = arrow_size;
+                    match side {
+                        crate::DockSide::Left => [
+                            center + vec2(-a, 0.0),
+                            center + vec2(a * 0.6, -a * 0.6),
+                            center + vec2(a * 0.6, a * 0.6),
+                        ],
+                        crate::DockSide::Right => [
+                            center + vec2(a, 0.0),
+                            center + vec2(-a * 0.6, a * 0.6),
+                            center + vec2(-a * 0.6, -a * 0.6),
+                        ],
+                        crate::DockSide::Top => [
+                            center + vec2(0.0, -a),
+                            center + vec2(-a * 0.6, a * 0.6),
+                            center + vec2(a * 0.6, a * 0.6),
+                        ],
+                        crate::DockSide::Bottom => [
+                            center + vec2(0.0, a),
+                            center + vec2(a * 0.6, -a * 0.6),
+                            center + vec2(-a * 0.6, -a * 0.6),
+                        ],
+                        crate::DockSide::Center => [center; 3],
+                    }
+                };
+
+                let arrow_color_active = stroke.color;
+                let arrow_color_inactive = stroke.color.gamma_multiply(0.6);
+                let mut draw_arrow = |center: egui::Pos2, side: crate::DockSide| {
+                    if matches!(side, crate::DockSide::Center) {
+                        return;
+                    }
+                    let pts = arrow(center, side);
+                    let color = if hovered == Some(side) {
+                        arrow_color_active
+                    } else {
+                        arrow_color_inactive
+                    };
+                    painter.add(egui::epaint::Shape::convex_polygon(
+                        pts.to_vec(),
+                        color,
+                        stroke,
+                    ));
+                };
+
+                draw_arrow(left_c, crate::DockSide::Left);
+                draw_arrow(right_c, crate::DockSide::Right);
+                draw_arrow(top_c, crate::DockSide::Top);
+                draw_arrow(bottom_c, crate::DockSide::Bottom);
             }
             DockIndicatorStyle::Custom => {
                 self.paint_custom_dock_indicator(painter, style, rect, hovered);
@@ -538,10 +716,13 @@ pub trait Behavior<Pane> {
         _side: Option<crate::DockSide>,
     ) {
         if let Some(parent_rect) = parent_rect {
-            painter.rect_stroke(parent_rect, 1.0, self.drag_preview_stroke(visuals), egui::StrokeKind::Inside);
+            let mut parent_stroke = self.drag_preview_stroke(visuals);
+            parent_stroke.width = (parent_stroke.width * 1.2).max(parent_stroke.width + 0.5);
+            painter.rect_stroke(parent_rect, 1.0, parent_stroke, egui::StrokeKind::Inside);
         }
 
-        let stroke = self.drag_preview_stroke(visuals);
+        let mut stroke = self.drag_preview_stroke(visuals);
+        stroke.width = (stroke.width * 1.2).max(stroke.width + 0.5);
         let fill = self.drag_preview_color(visuals);
 
         match _side {
@@ -569,6 +750,16 @@ pub trait Behavior<Pane> {
                 painter.add(egui::epaint::Shape::convex_polygon(pts, fill, stroke));
             }
         }
+    }
+
+    /// Fraction used to size edge previews and center catch zone.
+    fn docking_edge_fraction(&self) -> f32 {
+        0.35
+    }
+
+    /// Opacity multiplier for a faint mask over the candidate tile while showing indicators.
+    fn docking_mask_opacity(&self) -> f32 {
+        0.08
     }
 
     /// How many columns should we use for a [`crate::Grid`] put into [`crate::GridLayout::Auto`]?

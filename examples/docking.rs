@@ -43,14 +43,18 @@ impl Default for App {
         let b = tiles.insert_pane(Pane(2));
         let c = tiles.insert_pane(Pane(3));
         let root = tiles.insert_tab_tile(vec![a, b, c]);
-        Self { tree: egui_docking::Tree::new("demo_tree", root, tiles) }
+        Self {
+            tree: egui_docking::Tree::new("demo_tree", root, tiles),
+        }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.label("Tip: drag a tab outside to tear-off into a floating window. Drag it back to dock.");
+            ui.label(
+                "Tip: drag a tab outside to tear-off into a floating window. Drag it back to dock.",
+            );
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {

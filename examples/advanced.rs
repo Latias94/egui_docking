@@ -62,6 +62,17 @@ struct TreeBehavior {
     tab_bar_height: f32,
     gap_width: f32,
     add_child_to: Option<egui_docking::TileId>,
+    // Dock indicator tuning
+    indicator_size: f32,
+    indicator_gap: f32,
+    indicator_rounding: f32,
+    edge_frac: f32,
+    mask_opacity: f32,
+    // Demo policy toggles
+    auto_hide_single_tab: bool,
+    show_tab_bar: bool,
+    allow_center_dock: bool,
+    allow_side_splits: bool,
 }
 
 impl Default for TreeBehavior {
@@ -71,6 +82,15 @@ impl Default for TreeBehavior {
             tab_bar_height: 24.0,
             gap_width: 2.0,
             add_child_to: None,
+            indicator_size: -1.0,     // auto
+            indicator_gap: -1.0,      // auto
+            indicator_rounding: -1.0, // auto
+            edge_frac: 0.35,
+            mask_opacity: 0.08,
+            auto_hide_single_tab: false,
+            show_tab_bar: true,
+            allow_center_dock: true,
+            allow_side_splits: true,
         }
     }
 }
@@ -82,6 +102,7 @@ impl TreeBehavior {
             tab_bar_height,
             gap_width,
             add_child_to: _,
+            ..
         } = self;
 
         egui::Grid::new("behavior_ui")
@@ -108,6 +129,65 @@ impl TreeBehavior {
 
                 ui.label("Gap width:");
                 ui.add(egui::DragValue::new(gap_width).range(0.0..=20.0).speed(1.0));
+                ui.end_row();
+
+                ui.label("Auto-hide single-tab bar:");
+                ui.checkbox(&mut self.auto_hide_single_tab, "");
+                ui.end_row();
+
+                ui.label("Show tab bar (when not auto-hidden):");
+                ui.checkbox(&mut self.show_tab_bar, "");
+                ui.end_row();
+
+                ui.label("Allow center dock (tab-merge):");
+                ui.checkbox(&mut self.allow_center_dock, "");
+                ui.end_row();
+
+                ui.label("Allow side splits (L/R/T/B):");
+                ui.checkbox(&mut self.allow_side_splits, "");
+                ui.end_row();
+
+                ui.separator();
+                ui.end_row();
+
+                ui.label("Dock indicator size (auto<0):");
+                ui.add(
+                    egui::DragValue::new(&mut self.indicator_size)
+                        .range(-1.0..=64.0)
+                        .speed(1.0),
+                );
+                ui.end_row();
+
+                ui.label("Dock indicator gap (auto<0):");
+                ui.add(
+                    egui::DragValue::new(&mut self.indicator_gap)
+                        .range(-1.0..=64.0)
+                        .speed(1.0),
+                );
+                ui.end_row();
+
+                ui.label("Dock indicator rounding (auto<0):");
+                ui.add(
+                    egui::DragValue::new(&mut self.indicator_rounding)
+                        .range(-1.0..=32.0)
+                        .speed(1.0),
+                );
+                ui.end_row();
+
+                ui.label("Dock edge fraction:");
+                ui.add(
+                    egui::DragValue::new(&mut self.edge_frac)
+                        .range(0.1..=0.8)
+                        .speed(0.01),
+                );
+                ui.end_row();
+
+                ui.label("Dock mask opacity:");
+                ui.add(
+                    egui::DragValue::new(&mut self.mask_opacity)
+                        .range(0.0..=0.5)
+                        .speed(0.01),
+                );
                 ui.end_row();
             });
     }
@@ -155,6 +235,58 @@ impl egui_docking::Behavior<Pane> for TreeBehavior {
         self.simplification_options
     }
 
+    fn show_tab_bar(
+        &self,
+        _tiles: &egui_docking::Tiles<Pane>,
+        _tile_id: egui_docking::TileId,
+    ) -> bool {
+        self.show_tab_bar
+    }
+
+    fn auto_hide_single_tab(&self) -> bool {
+        self.auto_hide_single_tab
+    }
+
+    fn can_dock(
+        &self,
+        _tiles: &egui_docking::Tiles<Pane>,
+        _src_tile: egui_docking::TileId,
+        _dst_parent: egui_docking::TileId,
+        side: egui_docking::DockSide,
+    ) -> bool {
+        match side {
+            egui_docking::DockSide::Center => self.allow_center_dock,
+            _ => self.allow_side_splits,
+        }
+    }
+
+    fn can_split(
+        &self,
+        _tiles: &egui_docking::Tiles<Pane>,
+        _dst_parent: egui_docking::TileId,
+        side: egui_docking::DockSide,
+    ) -> bool {
+        match side {
+            egui_docking::DockSide::Center => true,
+            _ => self.allow_side_splits,
+        }
+    }
+
+    fn dock_indicator_style(&self) -> egui_docking::DockIndicatorStyle {
+        egui_docking::DockIndicatorStyle::ImguiLike {
+            size: self.indicator_size,
+            gap: self.indicator_gap,
+            rounding: self.indicator_rounding,
+        }
+    }
+
+    fn docking_edge_fraction(&self) -> f32 {
+        self.edge_frac
+    }
+    fn docking_mask_opacity(&self) -> f32 {
+        self.mask_opacity
+    }
+
     fn is_tab_closable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
         true
     }
@@ -192,6 +324,32 @@ struct MyApp {
 
     #[cfg_attr(feature = "serde", serde(skip))]
     behavior: TreeBehavior,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    selected_container: Option<egui_docking::TileId>,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    apply_include_self: bool,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    apply_kind_filter: Option<egui_docking::ContainerKind>,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    apply_scope: ApplyScope,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ApplyScope {
+    Subtree,
+    WholeTree,
+    Siblings,
+    Ancestors,
+}
+
+impl Default for ApplyScope {
+    fn default() -> Self {
+        ApplyScope::Subtree
+    }
 }
 
 impl Default for MyApp {
@@ -232,6 +390,10 @@ impl Default for MyApp {
         Self {
             tree,
             behavior: Default::default(),
+            selected_container: None,
+            apply_include_self: true,
+            apply_kind_filter: None,
+            apply_scope: ApplyScope::Subtree,
         }
     }
 }
@@ -243,6 +405,12 @@ impl eframe::App for MyApp {
                 *self = Default::default();
             }
             self.behavior.ui(ui);
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Central: No docking");
+                ui.checkbox(&mut self.tree.central_no_docking, "");
+            });
 
             ui.separator();
 
@@ -260,6 +428,238 @@ impl eframe::App for MyApp {
                     use egui_docking::Behavior as _;
                     let name = self.behavior.tab_title_for_tile(&self.tree.tiles, tile_id);
                     ui.label(format!("{} - {tile_id:?}", name.text()));
+                }
+            });
+
+            ui.separator();
+            ui.collapsing("Container Flags", |ui| {
+                if ui.button("Reset flags (whole tree)").clicked() {
+                    // Set all container flags back to default
+                    let ids: Vec<_> = self
+                        .tree
+                        .tiles
+                        .iter()
+                        .filter_map(|(tid, tile)| match tile {
+                            egui_docking::Tile::Container(_) => Some(*tid),
+                            _ => None,
+                        })
+                        .collect();
+                    for tid in ids {
+                        if let Some(egui_docking::Tile::Container(c)) = self.tree.tiles.get_mut(tid)
+                        {
+                            *c.flags_mut() = egui_docking::ContainerFlags::default();
+                        }
+                    }
+                }
+                // Collect all containers
+                let mut containers: Vec<(egui_docking::TileId, egui_docking::ContainerKind)> =
+                    Vec::new();
+                for (id, tile) in self.tree.tiles.iter() {
+                    if let egui_docking::Tile::Container(c) = tile {
+                        containers.push((*id, c.kind()));
+                    }
+                }
+
+                // Selection UI
+                let mut sel = self.selected_container;
+                egui::ComboBox::from_label("Select container")
+                    .selected_text(
+                        sel.map(|t| format!("{t:?}"))
+                            .unwrap_or_else(|| "<none>".into()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (id, kind) in &containers {
+                            let text = format!("{id:?} - {:?}", kind);
+                            if ui.selectable_label(sel == Some(*id), text).clicked() {
+                                sel = Some(*id);
+                            }
+                        }
+                    });
+                self.selected_container = sel;
+
+                if let Some(id) = self.selected_container {
+                    if let Some(egui_docking::Tile::Container(c)) = self.tree.tiles.get_mut(id) {
+                        let flags = c.flags_mut();
+                        ui.checkbox(&mut flags.no_split, "No split");
+                        ui.checkbox(&mut flags.no_tabs, "No tabs (center merge)");
+                        ui.checkbox(&mut flags.lock_layout, "Lock layout");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.apply_include_self, "Include self");
+                            egui::ComboBox::from_label("Filter kind")
+                                .selected_text(match self.apply_kind_filter {
+                                    None => "All".to_owned(),
+                                    Some(k) => format!("{:?}", k),
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(self.apply_kind_filter.is_none(), "All")
+                                        .clicked()
+                                    {
+                                        self.apply_kind_filter = None;
+                                    }
+                                    for k in egui_docking::ContainerKind::ALL {
+                                        if ui
+                                            .selectable_label(
+                                                self.apply_kind_filter == Some(k),
+                                                format!("{:?}", k),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.apply_kind_filter = Some(k);
+                                        }
+                                    }
+                                });
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Scope:");
+                            ui.selectable_value(
+                                &mut self.apply_scope,
+                                ApplyScope::Subtree,
+                                "Subtree",
+                            );
+                            ui.selectable_value(
+                                &mut self.apply_scope,
+                                ApplyScope::WholeTree,
+                                "Whole tree",
+                            );
+                            ui.selectable_value(
+                                &mut self.apply_scope,
+                                ApplyScope::Siblings,
+                                "Siblings",
+                            );
+                            ui.selectable_value(
+                                &mut self.apply_scope,
+                                ApplyScope::Ancestors,
+                                "Ancestors",
+                            );
+                        });
+
+                        if ui.button("Apply").clicked() {
+                            let target_flags = *flags;
+                            match self.apply_scope {
+                                ApplyScope::Subtree => {
+                                    let mut stack = vec![id];
+                                    while let Some(tid) = stack.pop() {
+                                        let mut children: Vec<egui_docking::TileId> = Vec::new();
+                                        if let Some(tile) = self.tree.tiles.get_mut(tid) {
+                                            if let egui_docking::Tile::Container(container) = tile {
+                                                let kind = container.kind();
+                                                let pass_kind = self
+                                                    .apply_kind_filter
+                                                    .map_or(true, |k| k == kind);
+                                                let pass_self =
+                                                    self.apply_include_self || tid != id;
+                                                if pass_kind && pass_self {
+                                                    *container.flags_mut() = target_flags;
+                                                }
+                                                children = container.children_vec();
+                                            }
+                                        }
+                                        stack.extend(children);
+                                    }
+                                }
+                                ApplyScope::WholeTree => {
+                                    let ids: Vec<_> = self
+                                        .tree
+                                        .tiles
+                                        .iter()
+                                        .filter_map(|(tid, tile)| match tile {
+                                            egui_docking::Tile::Container(c) => {
+                                                Some((*tid, c.kind()))
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    for (tid, kind) in ids {
+                                        if self.apply_kind_filter.map_or(true, |k| k == kind) {
+                                            if let Some(egui_docking::Tile::Container(c)) =
+                                                self.tree.tiles.get_mut(tid)
+                                            {
+                                                *c.flags_mut() = target_flags;
+                                            }
+                                        }
+                                    }
+                                }
+                                ApplyScope::Siblings => {
+                                    if let Some(parent_id) = self.tree.tiles.parent_of(id) {
+                                        // Optionally include self, then siblings
+                                        if self.apply_include_self {
+                                            if let Some(egui_docking::Tile::Container(c)) =
+                                                self.tree.tiles.get_mut(id)
+                                            {
+                                                if self
+                                                    .apply_kind_filter
+                                                    .map_or(true, |k| k == c.kind())
+                                                {
+                                                    *c.flags_mut() = target_flags;
+                                                }
+                                            }
+                                        }
+                                        // Apply to siblings
+                                        if let Some(egui_docking::Tile::Container(parent)) =
+                                            self.tree.tiles.get(parent_id)
+                                        {
+                                            let child_ids: Vec<_> =
+                                                parent.children().copied().collect();
+                                            for child in child_ids {
+                                                if child == id {
+                                                    continue;
+                                                }
+                                                if let Some(egui_docking::Tile::Container(c)) =
+                                                    self.tree.tiles.get_mut(child)
+                                                {
+                                                    if self
+                                                        .apply_kind_filter
+                                                        .map_or(true, |k| k == c.kind())
+                                                    {
+                                                        *c.flags_mut() = target_flags;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ApplyScope::Ancestors => {
+                                    // Walk up to root and apply to ancestor containers (respect filter); include self flag controls first step
+                                    let mut cur = id;
+                                    let mut first = true;
+                                    while let Some(parent_id) = self.tree.tiles.parent_of(cur) {
+                                        if first {
+                                            if self.apply_include_self {
+                                                if let Some(egui_docking::Tile::Container(c)) =
+                                                    self.tree.tiles.get_mut(cur)
+                                                {
+                                                    if self
+                                                        .apply_kind_filter
+                                                        .map_or(true, |k| k == c.kind())
+                                                    {
+                                                        *c.flags_mut() = target_flags;
+                                                    }
+                                                }
+                                            }
+                                            first = false;
+                                        }
+                                        if let Some(egui_docking::Tile::Container(c)) =
+                                            self.tree.tiles.get_mut(parent_id)
+                                        {
+                                            if self
+                                                .apply_kind_filter
+                                                .map_or(true, |k| k == c.kind())
+                                            {
+                                                *c.flags_mut() = target_flags;
+                                            }
+                                        }
+                                        cur = parent_id;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        ui.label("Selected tile is not a container (or missing)");
+                    }
+                } else {
+                    ui.small("Select a container to edit flags");
                 }
             });
 
