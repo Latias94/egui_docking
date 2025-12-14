@@ -1,0 +1,30 @@
+[package]
+name = "egui_docking"
+version = "0.1.0"
+edition = "2024"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Docking + multi-viewport bridge for egui (tear-off tabs into native windows and re-dock)"
+homepage = "https://github.com/Latias94/egui_docking"
+repository = "https://github.com/Latias94/egui_docking"
+documentation = "https://docs.rs/egui_docking"
+readme = "README.md"
+keywords = ["egui", "docking", "multiview", "viewport", "editor"]
+categories = ["gui"]
+rust-version = "1.88"
+exclude = ["repo-ref/**", "target/**"]
+
+[dependencies]
+egui = { version = "0.33.0", default-features = false }
+egui_tiles = { package = "egui_tiles_docking", version = "0.14.0", default-features = false }
+
+[dev-dependencies]
+eframe = { version = "0.33.0", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "persistence",
+  "wayland",
+] }
+
+[patch.crates-io]
+egui_tiles_docking = { path = "repo-ref/egui_tiles_docking" }
