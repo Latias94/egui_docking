@@ -32,3 +32,11 @@ docking.ui(ctx, &mut behavior);
 ```sh
 cargo run --example multi_viewport_docking
 ```
+
+## Tips
+- Tear-off: drag a tab/pane and release outside the dock area, or hold `ALT` while releasing to force a new native window.
+- Docking: while dragging over a dock, use the overlay targets to choose left/right/top/bottom/center docking.
+
+## Docs
+
+- `docs/ARCHITECTURE.md`

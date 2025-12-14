@@ -33,8 +33,12 @@ impl egui_tiles::Behavior<Pane> for DemoBehavior {
             ui.add(egui::Label::new(format!("tile: {tile_id:?}")).selectable(false));
             ui.add(
                 egui::Label::new(
-                    "Drag a tab/pane to tear-off. Drag tab-bar background to tear off/move the whole tab-group. \
-                     In detached windows, drag any tab (or tab-bar background) back to root.",
+                    "Tear-off: drag a tab/pane and release outside the dock. \
+                     SHIFT: detach the whole tab-group (parent Tabs). \
+                     ALT: force tear-off on release even inside the dock. \
+                     CTRL: tear-off into a contained floating window (instead of a native window). \
+                     Docking overlay targets show while dragging; hover to choose split direction. \
+                     To dock back, drag any tab (or tab-bar background) into another window and release.",
                 )
                 .selectable(false),
             );
@@ -103,10 +107,26 @@ impl Default for App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("egui_docking_demo_help").show(ctx, |ui| {
+            let modifiers = ctx.input(|i| i.modifiers);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(format!(
+                        "detached: {} | floating: {} | modifiers: ctrl={} shift={} alt={}",
+                        self.docking.detached_viewport_count(),
+                        self.docking.floating_window_count(),
+                        modifiers.ctrl,
+                        modifiers.shift,
+                        modifiers.alt,
+                    ))
+                    .selectable(false),
+                );
+            });
             ui.add(
                 egui::Label::new(
-                    "Tip: Drag a tab/pane to tear-off. Drag tab-bar background to move the whole tab-group. \
-                     To dock back, drag a tab (or tab-bar background) into any other window and release.",
+                    "Tip: release outside dock = new native window. SHIFT detaches whole tab-group; ALT forces tear-off. \
+                     Hold CTRL while tearing off to create a contained floating window. \
+                     While dragging, use the overlay targets for center/left/right/top/bottom docking. \
+                     Drag into any other window to dock back.",
                 )
                 .selectable(false),
             );
