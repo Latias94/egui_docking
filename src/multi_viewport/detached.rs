@@ -70,7 +70,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
-                egui::TopBottomPanel::top("egui_docking_detached_top_bar").show(ctx, |ui| {
+                egui::Panel::top("egui_docking_detached_top_bar").show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         let response = ui
                             .add(
@@ -237,6 +237,11 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             if detached.tree.root.is_none() {
                 // Empty: stop calling `show_viewport_immediate` so the native viewport closes.
+                if self.options.debug_event_log {
+                    self.debug_log_event(format!(
+                        "detached_viewport EMPTY -> close viewport={viewport_id:?}"
+                    ));
+                }
                 continue;
             }
 

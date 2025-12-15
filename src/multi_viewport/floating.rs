@@ -523,6 +523,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                 let source_empty = source_window.tree.root.is_none();
 
                 if source_empty {
+                    if self.options.debug_event_log {
+                        self.debug_log_event(format!(
+                            "floating_window EMPTY after extract -> remove viewport={viewport_id:?} floating={source_floating:?}"
+                        ));
+                    }
                     manager.windows.remove(&source_floating);
                     manager.z_order.retain(|&id| id != source_floating);
                 }
@@ -644,6 +649,11 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         if let Some(w) = manager.windows.get(&floating_id) {
             if w.tree.root.is_none() {
+                if self.options.debug_event_log {
+                    self.debug_log_event(format!(
+                        "floating_window EMPTY after extract_subtree -> remove viewport={viewport_id:?} floating={floating_id:?}"
+                    ));
+                }
                 manager.windows.remove(&floating_id);
             }
         }

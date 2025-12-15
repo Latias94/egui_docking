@@ -33,6 +33,10 @@ docking.ui(ctx, &mut behavior);
 cargo run --example multi_viewport_docking
 ```
 
+## Debugging
+- Enable drop target visualization + event log via `DockingMultiViewportOptions { debug_drop_targets: true, ..Default::default() }`.
+- For backend/input troubleshooting, run with `RUST_LOG=debug` (the `repo-ref/egui` fork logs when it synthesizes missing mouse-up during drags).
+
 ## Tips
 - Tear-off: drag a tab/pane and release outside the dock area, or hold `ALT` while releasing to force a new native window.
 - Live tear-off (ghost): by default, dragging a tab/pane outside the dock area will immediately spawn a floating "ghost" window that follows the pointer, and can be docked back before release; leaving the native window upgrades it to a new native window (disable via `DockingMultiViewportOptions::ghost_tear_off`).
@@ -41,3 +45,5 @@ cargo run --example multi_viewport_docking
 ## Docs
 
 - `docs/ARCHITECTURE.md`
+- `docs/IMGUI_PARITY.md`
+- `docs/REFACTOR_PLAN.md`

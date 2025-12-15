@@ -38,6 +38,18 @@ Bridge `egui_tiles` (dock tree model) with `egui` multi-viewport (multiple nativ
 3. **One window concept**: native viewports and contained floating windows must share the same chrome (frame/title/controls) and the same drag semantics.
 4. **Debuggability by copy-paste**: every confusing interaction must be explainable via deterministic, copyable logs.
 
+## Stability invariants (must never be violated)
+
+These invariants define the “closed loop” correctness contract:
+
+1. Tree integrity after any mutation: no unreachable tiles; tabs active must be in children.
+2. Never insert a moved subtree into a parent inside itself (no self-parent insertion).
+3. Internal dock→dock operations stay in `egui_tiles` (the bridge must not re-apply them).
+4. A release is handled at most once (single apply per drag session).
+5. Empty detached/floating windows are cleaned deterministically and logged.
+
+For a full parity checklist and acceptance checks, see `docs/IMGUI_PARITY.md`.
+
 ## Data model and responsibilities
 
 ### Viewports and trees
@@ -124,9 +136,22 @@ Avoid adding “bridge policy” into tiles; the bridge owns multi-viewport poli
 - Add keyboard shortcuts for copy-to-clipboard logs, because dragging prevents clicking.
 - Maintain an integrity pass to detect tree inconsistencies (e.g., Tabs active not in children) and make these failures copyable.
 
+## Testing strategy (current + next)
+
+We prefer tests that validate the mutation algebra without relying on GUI automation:
+
+- Pure logic unit tests (fast, deterministic):
+  - `src/multi_viewport/drop_sanitize.rs`
+  - `src/multi_viewport/drop_policy.rs`
+- Next: “model tests” that generate small trees and sequences of extract/insert operations, asserting the invariants above after every step.
+
 ## Roadmap
 
 See `docs/ROADMAP.md` for the prioritized execution plan.
+
+## Refactor plan
+
+See `docs/REFACTOR_PLAN.md` for the stability-first refactor phases and invariant protection strategy.
 
 High-level milestones:
 
@@ -144,3 +169,7 @@ Ghost tear-off is enabled by default and is intended to converge on ImGui’s �
 - A ghost window is created immediately.
 - By default, the ghost is spawned as a native viewport window as soon as it leaves the dock area (see `ghost_spawn_native_on_leave_dock`).
 - Re-dock by hovering a valid overlay target in any dock surface and releasing.
+
+## Status snapshot
+
+See `docs/STATUS.md` for what is implemented today and what gaps remain to match ImGui.

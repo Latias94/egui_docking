@@ -1,7 +1,55 @@
 use egui::{Context, ViewportId};
+use egui_tiles::{TileId, Tree};
 
 use super::DockingMultiViewport;
 use super::integrity;
+
+fn debug_tree_summary<Pane>(tree: &Tree<Pane>, max_nodes: usize) -> String {
+    let Some(root) = tree.root else {
+        return "root=None".to_owned();
+    };
+
+    let total_tiles = tree.tiles.iter().count();
+    let mut seen: std::collections::HashSet<TileId> = std::collections::HashSet::new();
+    let mut stack: Vec<TileId> = vec![root];
+    let mut lines: Vec<String> = Vec::new();
+
+    while let Some(tile_id) = stack.pop() {
+        if !seen.insert(tile_id) {
+            continue;
+        }
+
+        let visible = tree.is_visible(tile_id);
+        let Some(tile) = tree.tiles.get(tile_id) else {
+            lines.push(format!("{tile_id:?} MISSING visible={visible}"));
+            continue;
+        };
+
+        match tile {
+            egui_tiles::Tile::Pane(_) => {
+                lines.push(format!("{tile_id:?} Pane visible={visible}"));
+            }
+            egui_tiles::Tile::Container(container) => {
+                let kind = container.kind();
+                let children: Vec<TileId> = container.children().copied().collect();
+                lines.push(format!(
+                    "{tile_id:?} Container({kind:?}) visible={visible} children={children:?}"
+                ));
+                stack.extend(children);
+            }
+        }
+
+        if lines.len() >= max_nodes {
+            break;
+        }
+    }
+
+    format!(
+        "root={root:?} reachable={} total={total_tiles}\n{}",
+        seen.len(),
+        lines.join("\n")
+    )
+}
 
 impl<Pane> DockingMultiViewport<Pane> {
     pub(super) fn debug_log_event(&mut self, message: impl Into<String>) {
@@ -100,6 +148,24 @@ impl<Pane> DockingMultiViewport<Pane> {
         for issue in &issues {
             self.debug_integrity_log_event(issue.clone());
         }
+        // Include a short tree summary to make copy-paste debugging self contained.
+        let summary = if viewport_id == ViewportId::ROOT && tree_id == self.tree.id() {
+            debug_tree_summary(&self.tree, 48)
+        } else if let Some(detached) = self.detached.get(&viewport_id)
+            && detached.tree.id() == tree_id
+        {
+            debug_tree_summary(&detached.tree, 48)
+        } else if let Some(manager) = self.floating.get(&viewport_id) {
+            manager
+                .windows
+                .values()
+                .find(|w| w.tree.id() == tree_id)
+                .map(|w| debug_tree_summary(&w.tree, 48))
+                .unwrap_or_else(|| "(tree summary unavailable)".to_owned())
+        } else {
+            "(tree summary unavailable)".to_owned()
+        };
+        self.debug_integrity_log_event(format!("integrity tree_summary:\n{summary}"));
 
         if self.options.debug_integrity_panic && cfg!(debug_assertions) {
             panic!(
@@ -124,7 +190,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         egui::Window::new("Dock Debug")
             .id(egui::Id::new((tree_id, viewport_id, "egui_docking_debug_window")))
-            .frame(egui::Frame::window(ctx.style().as_ref()))
+            .frame(egui::Frame::window(ctx.global_style().as_ref()))
             .default_pos(egui::Pos2::new(12.0, 12.0))
             .resizable(true)
             .show(ctx, |ui| {

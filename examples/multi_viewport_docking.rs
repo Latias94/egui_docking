@@ -112,7 +112,7 @@ impl Default for App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("egui_docking_demo_help").show(ctx, |ui| {
+        egui::Panel::top("egui_docking_demo_help").show(ctx, |ui| {
             let modifiers = ctx.input(|i| i.modifiers);
             ui.horizontal(|ui| {
                 ui.add(

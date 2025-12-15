@@ -5,7 +5,10 @@ use egui_tiles::{Behavior, ContainerKind, InsertionPoint, Tile, TileId, Tree};
 
 mod debug;
 mod detached;
-mod drop;
+mod drop_apply;
+mod drop_policy;
+mod drop_queue;
+mod drop_sanitize;
 mod floating;
 mod geometry;
 mod ghost;
@@ -16,6 +19,9 @@ mod session;
 mod surface;
 mod title;
 mod types;
+
+#[cfg(test)]
+mod model_tests;
 
 pub use options::DockingMultiViewportOptions;
 
@@ -247,9 +253,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         // Apply after all viewports have had a chance to run `tree.ui` this frame so we can use
         // the computed rectangles for accurate docking.
-        self.apply_pending_drop(ctx, behavior);
-        self.apply_pending_internal_drop(behavior);
-        self.apply_pending_local_drop(ctx, behavior);
+        self.apply_pending_actions(ctx, behavior);
         self.clear_bridge_payload_on_release(ctx);
         self.finish_ghost_if_released_or_aborted(ctx);
 
