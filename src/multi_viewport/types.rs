@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use egui::{Pos2, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{InsertionPoint, TileId, Tree};
 
+use super::surface::DockSurface;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DockPayload {
     pub(super) bridge_id: egui::Id,
@@ -29,8 +31,7 @@ pub(super) type FloatingId = u64;
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingLocalDrop {
     pub(super) payload: DockPayload,
-    pub(super) target_viewport: ViewportId,
-    pub(super) target_floating: Option<FloatingId>,
+    pub(super) target_surface: DockSurface,
     pub(super) pointer_local: Pos2,
 }
 
@@ -115,4 +116,3 @@ pub(super) enum DropAction {
         insertion: Option<InsertionPoint>,
     },
 }
-

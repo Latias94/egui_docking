@@ -101,6 +101,7 @@ impl Default for App {
         let mut docking = egui_docking::DockingMultiViewport::new(tree);
         docking.options.debug_drop_targets = true;
         docking.options.debug_event_log = true;
+        docking.options.debug_integrity = true;
 
         Self {
             docking,

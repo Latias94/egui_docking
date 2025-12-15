@@ -32,6 +32,13 @@ pub struct DockingMultiViewportOptions {
     /// Pointer distance (in points) outside the dock area required to trigger ghost tear-off.
     pub ghost_tear_off_threshold: f32,
 
+    /// If true, ghost tear-off will spawn a native viewport window immediately once the pointer
+    /// leaves the dock area beyond `ghost_tear_off_threshold` (ImGui-like "it becomes a new OS window while dragging").
+    ///
+    /// If false, ghost tear-off starts as a contained floating window and may later be upgraded
+    /// to a native viewport depending on other options.
+    pub ghost_spawn_native_on_leave_dock: bool,
+
     /// If true, a contained ghost window will be upgraded to a native viewport once the pointer leaves
     /// the source viewport's inner rectangle.
     pub ghost_upgrade_to_native_on_leave_viewport: bool,
@@ -45,6 +52,12 @@ pub struct DockingMultiViewportOptions {
 
     /// Maximum number of debug log lines to keep (ring buffer).
     pub debug_event_log_capacity: usize,
+
+    /// If true, run tree integrity checks each frame (debug-only).
+    pub debug_integrity: bool,
+
+    /// If true, panic on integrity issues (debug-only).
+    pub debug_integrity_panic: bool,
 }
 
 impl Default for DockingMultiViewportOptions {
@@ -58,10 +71,13 @@ impl Default for DockingMultiViewportOptions {
             tear_off_to_floating_on_ctrl: true,
             ghost_tear_off: true,
             ghost_tear_off_threshold: 8.0,
+            ghost_spawn_native_on_leave_dock: true,
             ghost_upgrade_to_native_on_leave_viewport: true,
             debug_drop_targets: false,
             debug_event_log: false,
             debug_event_log_capacity: 200,
+            debug_integrity: false,
+            debug_integrity_panic: false,
         }
     }
 }

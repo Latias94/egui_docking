@@ -1,12 +1,75 @@
-use egui::{Context, Rect, Vec2, ViewportBuilder, ViewportId};
+use egui::{Context, Pos2, Rect, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{Behavior, Tree};
 
-use super::geometry::{infer_detached_geometry, root_inner_rect_in_global};
+use super::DockingMultiViewport;
+use super::geometry::{infer_detached_geometry, pointer_pos_in_global, root_inner_rect_in_global};
 use super::title::title_for_detached_subtree;
 use super::types::{DetachedDock, DockPayload, FloatingDockWindow, GhostDrag, GhostDragMode};
-use super::DockingMultiViewport;
 
 impl<Pane> DockingMultiViewport<Pane> {
+    fn spawn_native_ghost_from_subtree(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        subtree: egui_tiles::SubTree<Pane>,
+        size: Vec2,
+        grab_offset: Vec2,
+        pointer_global_hint: Option<Pos2>,
+    ) -> ViewportId {
+        let title = title_for_detached_subtree(&subtree, behavior);
+
+        let pointer_global = pointer_global_hint
+            .or_else(|| pointer_pos_in_global(ctx))
+            .or(self.last_pointer_global);
+        let pos = pointer_global
+            .map(|p| p - grab_offset)
+            .unwrap_or(Pos2::new(64.0, 64.0));
+
+        let (viewport_id, serial) = self.allocate_detached_viewport_id();
+        let builder = ViewportBuilder::default()
+            .with_title(title)
+            .with_position(pos)
+            .with_inner_size(size);
+
+        let detached_tree_id =
+            egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
+        let detached_tree = Tree::new(detached_tree_id, subtree.root, subtree.tiles);
+
+        self.detached.insert(
+            viewport_id,
+            DetachedDock {
+                tree: detached_tree,
+                builder,
+            },
+        );
+
+        egui::DragAndDrop::set_payload(
+            ctx,
+            DockPayload {
+                bridge_id: self.tree.id(),
+                source_viewport: viewport_id,
+                source_floating: None,
+                tile_id: None,
+            },
+        );
+        ctx.request_repaint_of(ViewportId::ROOT);
+        self.ghost = Some(GhostDrag {
+            mode: GhostDragMode::Native {
+                viewport: viewport_id,
+            },
+            grab_offset,
+        });
+
+        if self.options.debug_event_log {
+            self.debug_log_event(format!(
+                "ghost_spawn_native viewport={viewport_id:?} size=({:.1},{:.1}) grab=({:.1},{:.1})",
+                size.x, size.y, grab_offset.x, grab_offset.y
+            ));
+        }
+
+        viewport_id
+    }
+
     pub(super) fn set_payload_from_root_drag_if_any(&mut self, ctx: &Context) {
         if self.pending_drop.is_some() || self.pending_local_drop.is_some() {
             return;
@@ -111,7 +174,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             .with_position(pos)
             .with_inner_size(size);
 
-        let detached_tree_id = egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
+        let detached_tree_id =
+            egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
         let detached_tree = Tree::new(detached_tree_id, subtree.root, subtree.tiles);
 
         self.detached.insert(
@@ -155,10 +219,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         if !force_detach {
             let pointer_pos = ctx.input(|i| i.pointer.latest_pos());
             let dropped_inside_any_surface = pointer_pos.is_some_and(|p| {
-                dock_rect.contains(p)
-                    || self
-                        .floating_under_pointer(current_viewport, p)
-                        .is_some()
+                dock_rect.contains(p) || self.floating_under_pointer(current_viewport, p).is_some()
             });
             if dropped_inside_any_surface {
                 return;
@@ -212,7 +273,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             .with_position(pos)
             .with_inner_size(size);
 
-        let detached_tree_id = egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
+        let detached_tree_id =
+            egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
         let detached_tree = Tree::new(detached_tree_id, subtree.root, subtree.tiles);
 
         self.detached.insert(
@@ -263,7 +325,10 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
         let viewport_id = ViewportId::ROOT;
-        if self.floating_under_pointer(viewport_id, pointer_local).is_some() {
+        if self
+            .floating_under_pointer(viewport_id, pointer_local)
+            .is_some()
+        {
             return;
         }
 
@@ -288,6 +353,21 @@ impl<Pane> DockingMultiViewport<Pane> {
             .unwrap_or(self.options.default_detached_inner_size);
 
         let grab_offset = Vec2::new(20.0, 10.0);
+        let ctrl_floating =
+            self.options.tear_off_to_floating_on_ctrl && ctx.input(|i| i.modifiers.ctrl);
+        if self.options.ghost_spawn_native_on_leave_dock && !ctrl_floating {
+            self.spawn_native_ghost_from_subtree(
+                ctx,
+                behavior,
+                subtree,
+                size,
+                grab_offset,
+                self.last_pointer_global,
+            );
+            ctx.request_repaint();
+            return;
+        }
+
         let mut offset_in_dock = (pointer_local - dock_rect.min) - grab_offset;
         offset_in_dock.x = offset_in_dock
             .x
@@ -381,7 +461,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         {
             return;
         }
-        if self.floating_under_pointer(viewport_id, pointer_local).is_some() {
+        if self
+            .floating_under_pointer(viewport_id, pointer_local)
+            .is_some()
+        {
             return;
         }
 
@@ -402,6 +485,25 @@ impl<Pane> DockingMultiViewport<Pane> {
             .unwrap_or(self.options.default_detached_inner_size);
 
         let grab_offset = Vec2::new(20.0, 10.0);
+        let ctrl_floating =
+            self.options.tear_off_to_floating_on_ctrl && ctx.input(|i| i.modifiers.ctrl);
+        if self.options.ghost_spawn_native_on_leave_dock && !ctrl_floating {
+            self.spawn_native_ghost_from_subtree(
+                ctx,
+                behavior,
+                subtree,
+                size,
+                grab_offset,
+                self.last_pointer_global,
+            );
+            if tree.root.is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            ctx.request_repaint();
+            ctx.request_repaint_of(ViewportId::ROOT);
+            return;
+        }
+
         let mut offset_in_dock = (pointer_local - dock_rect.min) - grab_offset;
         offset_in_dock.x = offset_in_dock
             .x
@@ -487,8 +589,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         if ctx.input(|i| i.pointer.any_released()) {
+            // Drop has priority: if some other release handler already took ownership this frame,
+            // we just stop tracking the ghost without performing any extra finalize logic here.
+            let _took = self.try_take_release_action_silent_if_taken("ghost_finalize");
             self.ghost = None;
         }
     }
 }
-

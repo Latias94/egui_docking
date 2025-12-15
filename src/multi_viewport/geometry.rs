@@ -8,7 +8,10 @@ pub(super) fn pointer_pos_in_global(ctx: &Context) -> Option<Pos2> {
     })
 }
 
-pub(super) fn pointer_pos_in_viewport_space(ctx: &Context, pointer_global: Option<Pos2>) -> Option<Pos2> {
+pub(super) fn pointer_pos_in_viewport_space(
+    ctx: &Context,
+    pointer_global: Option<Pos2>,
+) -> Option<Pos2> {
     let pointer_global = pointer_global?;
     let inner = ctx.input(|i| i.viewport().inner_rect)?;
     if !inner.contains(pointer_global) {
@@ -34,7 +37,10 @@ pub(super) fn pointer_pos_in_target_viewport_space(
     })
 }
 
-pub(super) fn viewport_under_pointer_global(ctx: &Context, pointer_global: Pos2) -> Option<ViewportId> {
+pub(super) fn viewport_under_pointer_global(
+    ctx: &Context,
+    pointer_global: Pos2,
+) -> Option<ViewportId> {
     fn area(rect: Rect) -> f32 {
         rect.width() * rect.height()
     }
@@ -44,6 +50,31 @@ pub(super) fn viewport_under_pointer_global(ctx: &Context, pointer_global: Pos2)
             .viewports
             .iter()
             .filter_map(|(id, info)| {
+                let rect = info.inner_rect?;
+                rect.contains(pointer_global).then_some((*id, rect))
+            })
+            .min_by(|a, b| area(a.1).total_cmp(&area(b.1)))
+            .map(|(id, _rect)| id)
+    })
+}
+
+pub(super) fn viewport_under_pointer_global_excluding(
+    ctx: &Context,
+    pointer_global: Pos2,
+    excluded: Option<ViewportId>,
+) -> Option<ViewportId> {
+    fn area(rect: Rect) -> f32 {
+        rect.width() * rect.height()
+    }
+
+    ctx.input(|i| {
+        i.raw
+            .viewports
+            .iter()
+            .filter_map(|(id, info)| {
+                if excluded == Some(*id) {
+                    return None;
+                }
                 let rect = info.inner_rect?;
                 rect.contains(pointer_global).then_some((*id, rect))
             })
@@ -68,7 +99,8 @@ pub(super) fn infer_detached_geometry(
 
     let pos = if let Some(pointer_global) = pointer_global_fallback {
         pointer_global - Vec2::new(20.0, 10.0)
-    } else if let (Some(root_inner_rect), Some(pane_rect)) = (root_inner_rect_global, pane_rect_in_root)
+    } else if let (Some(root_inner_rect), Some(pane_rect)) =
+        (root_inner_rect_global, pane_rect_in_root)
     {
         root_inner_rect.min + pane_rect.min.to_vec2()
     } else {
@@ -77,4 +109,3 @@ pub(super) fn infer_detached_geometry(
 
     (pos, size)
 }
-

@@ -96,10 +96,6 @@ pub(super) struct DockingOverlay {
 }
 
 impl DockingOverlay {
-    pub(super) fn is_hovered(self) -> bool {
-        self.hovered.is_some()
-    }
-
     pub(super) fn hovered_target(self) -> Option<OverlayTarget> {
         self.hovered.map(|(t, _)| t)
     }
@@ -178,10 +174,6 @@ pub(super) struct OuterDockingOverlay {
 }
 
 impl OuterDockingOverlay {
-    pub(super) fn is_hovered(self) -> bool {
-        self.hovered.is_some()
-    }
-
     pub(super) fn hovered_target(self) -> Option<OverlayTarget> {
         self.hovered.map(|(t, _)| t)
     }
@@ -254,6 +246,23 @@ pub(super) fn outer_overlay_for_dock_rect(
     })
 }
 
+pub(super) fn outer_overlay_for_dock_rect_explicit(
+    dock_rect: Rect,
+    pointer: Pos2,
+) -> Option<OuterDockingOverlay> {
+    if !pointer_in_outer_band(dock_rect, pointer) {
+        return None;
+    }
+
+    let targets = outer_overlay_targets_in_rect(dock_rect)?;
+    let hovered = targets.hit_test_boxes(pointer);
+    Some(OuterDockingOverlay {
+        dock_rect,
+        targets,
+        hovered,
+    })
+}
+
 fn outer_insertion_for_tree<Pane>(
     tree: &Tree<Pane>,
     dock_rect: Rect,
@@ -267,16 +276,18 @@ fn outer_insertion_for_tree<Pane>(
     let (target, _rect) = overlay.hovered?;
 
     Some(match target {
-        OverlayTarget::Left => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(0)),
-        OverlayTarget::Right => InsertionPoint::new(
-            root,
-            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
-        ),
-        OverlayTarget::Top => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0)),
-        OverlayTarget::Bottom => InsertionPoint::new(
-            root,
-            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
-        ),
+        OverlayTarget::Left => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(0))
+        }
+        OverlayTarget::Right => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(usize::MAX))
+        }
+        OverlayTarget::Top => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0))
+        }
+        OverlayTarget::Bottom => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(usize::MAX))
+        }
         OverlayTarget::Center => return None,
     })
 }
@@ -293,16 +304,18 @@ fn outer_insertion_for_tree_explicit<Pane>(
     let targets = outer_overlay_targets_in_rect(dock_rect)?;
     let (target, _rect) = targets.hit_test_boxes(pointer)?;
     Some(match target {
-        OverlayTarget::Left => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(0)),
-        OverlayTarget::Right => InsertionPoint::new(
-            root,
-            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
-        ),
-        OverlayTarget::Top => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0)),
-        OverlayTarget::Bottom => InsertionPoint::new(
-            root,
-            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
-        ),
+        OverlayTarget::Left => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(0))
+        }
+        OverlayTarget::Right => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Horizontal(usize::MAX))
+        }
+        OverlayTarget::Top => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0))
+        }
+        OverlayTarget::Bottom => {
+            InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(usize::MAX))
+        }
         OverlayTarget::Center => return None,
     })
 }
@@ -319,15 +332,77 @@ pub(super) fn overlay_insertion_for_tree_with_outer<Pane>(
     }
 }
 
-pub(super) fn overlay_insertion_for_tree_explicit_with_outer<Pane>(
+fn best_tile_under_pointer_considering_dragged<Pane>(
+    tree: &Tree<Pane>,
+    pointer: Pos2,
+    dragged_tile: Option<TileId>,
+) -> Option<(TileId, Rect)> {
+    let (tile_id, tile_rect) = best_tile_under_pointer(tree, pointer)?;
+    if dragged_tile != Some(tile_id) {
+        return Some((tile_id, tile_rect));
+    }
+
+    if let Some(parent) = tree.tiles.parent_of(tile_id) {
+        if let Some(parent_rect) = tree.tiles.rect(parent) {
+            return Some((parent, parent_rect));
+        }
+    }
+
+    if let Some(root) = tree.root {
+        if let Some(root_rect) = tree.tiles.rect(root) {
+            return Some((root, root_rect));
+        }
+    }
+
+    Some((tile_id, tile_rect))
+}
+
+fn overlay_insertion_for_tree_explicit_considering_dragged<Pane>(
+    tree: &Tree<Pane>,
+    pointer: Pos2,
+    dragged_tile: Option<TileId>,
+) -> Option<InsertionPoint> {
+    let (tile_id, tile_rect) =
+        best_tile_under_pointer_considering_dragged(tree, pointer, dragged_tile)?;
+
+    let kind = tree.tiles.get(tile_id).and_then(|t| t.kind());
+    let allow_lr = kind != Some(ContainerKind::Horizontal);
+    let allow_tb = kind != Some(ContainerKind::Vertical);
+
+    let targets = overlay_targets_in_rect(tile_rect, allow_lr, allow_tb);
+    let (target, _rect) = targets.hit_test_boxes(pointer)?;
+
+    Some(match target {
+        OverlayTarget::Center => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Tabs(usize::MAX))
+        }
+        OverlayTarget::Left => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Horizontal(0))
+        }
+        OverlayTarget::Right => InsertionPoint::new(
+            tile_id,
+            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
+        ),
+        OverlayTarget::Top => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Vertical(0))
+        }
+        OverlayTarget::Bottom => InsertionPoint::new(
+            tile_id,
+            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
+        ),
+    })
+}
+
+pub(super) fn overlay_insertion_for_tree_explicit_with_outer_considering_dragged<Pane>(
     tree: &Tree<Pane>,
     dock_rect: Rect,
     pointer: Pos2,
+    dragged_tile: Option<TileId>,
 ) -> Option<InsertionPoint> {
     if pointer_in_outer_band(dock_rect, pointer) {
         outer_insertion_for_tree_explicit(tree, dock_rect, pointer)
     } else {
-        overlay_insertion_for_tree_explicit(tree, pointer)
+        overlay_insertion_for_tree_explicit_considering_dragged(tree, pointer, dragged_tile)
     }
 }
 
@@ -338,16 +413,19 @@ fn overlay_insertion_for_tree<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<
     let tile_id = best_tile_under_pointer(tree, pointer)?.0;
 
     Some(match target {
-        OverlayTarget::Center => InsertionPoint::new(
-            tile_id,
-            egui_tiles::ContainerInsertion::Tabs(usize::MAX),
-        ),
-        OverlayTarget::Left => InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Horizontal(0)),
+        OverlayTarget::Center => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Tabs(usize::MAX))
+        }
+        OverlayTarget::Left => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Horizontal(0))
+        }
         OverlayTarget::Right => InsertionPoint::new(
             tile_id,
             egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
         ),
-        OverlayTarget::Top => InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Vertical(0)),
+        OverlayTarget::Top => {
+            InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Vertical(0))
+        }
         OverlayTarget::Bottom => InsertionPoint::new(
             tile_id,
             egui_tiles::ContainerInsertion::Vertical(usize::MAX),
@@ -355,7 +433,10 @@ fn overlay_insertion_for_tree<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<
     })
 }
 
-fn overlay_insertion_for_tree_explicit<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<InsertionPoint> {
+pub(super) fn overlay_for_tree_at_pointer<Pane>(
+    tree: &Tree<Pane>,
+    pointer: Pos2,
+) -> Option<DockingOverlay> {
     let (tile_id, tile_rect) = best_tile_under_pointer(tree, pointer)?;
 
     let kind = tree.tiles.get(tile_id).and_then(|t| t.kind());
@@ -363,28 +444,42 @@ fn overlay_insertion_for_tree_explicit<Pane>(tree: &Tree<Pane>, pointer: Pos2) -
     let allow_tb = kind != Some(ContainerKind::Vertical);
 
     let targets = overlay_targets_in_rect(tile_rect, allow_lr, allow_tb);
-    let (target, _rect) = targets.hit_test_boxes(pointer)?;
+    let hovered = targets.hit_test(pointer, tile_rect.center());
 
-    Some(match target {
-        OverlayTarget::Center => InsertionPoint::new(
-            tile_id,
-            egui_tiles::ContainerInsertion::Tabs(usize::MAX),
-        ),
-        OverlayTarget::Left => InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Horizontal(0)),
-        OverlayTarget::Right => InsertionPoint::new(
-            tile_id,
-            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
-        ),
-        OverlayTarget::Top => InsertionPoint::new(tile_id, egui_tiles::ContainerInsertion::Vertical(0)),
-        OverlayTarget::Bottom => InsertionPoint::new(
-            tile_id,
-            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
-        ),
+    Some(DockingOverlay {
+        tile_rect,
+        targets,
+        hovered,
     })
 }
 
-pub(super) fn overlay_for_tree_at_pointer<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<DockingOverlay> {
+pub(super) fn overlay_for_tree_at_pointer_explicit<Pane>(
+    tree: &Tree<Pane>,
+    pointer: Pos2,
+) -> Option<DockingOverlay> {
     let (tile_id, tile_rect) = best_tile_under_pointer(tree, pointer)?;
+
+    let kind = tree.tiles.get(tile_id).and_then(|t| t.kind());
+    let allow_lr = kind != Some(ContainerKind::Horizontal);
+    let allow_tb = kind != Some(ContainerKind::Vertical);
+
+    let targets = overlay_targets_in_rect(tile_rect, allow_lr, allow_tb);
+    let hovered = targets.hit_test_boxes(pointer);
+
+    Some(DockingOverlay {
+        tile_rect,
+        targets,
+        hovered,
+    })
+}
+
+pub(super) fn overlay_for_tree_at_pointer_considering_dragged<Pane>(
+    tree: &Tree<Pane>,
+    pointer: Pos2,
+    dragged_tile: Option<TileId>,
+) -> Option<DockingOverlay> {
+    let (tile_id, tile_rect) =
+        best_tile_under_pointer_considering_dragged(tree, pointer, dragged_tile)?;
 
     let kind = tree.tiles.get(tile_id).and_then(|t| t.kind());
     let allow_lr = kind != Some(ContainerKind::Horizontal);
@@ -452,7 +547,11 @@ fn overlay_targets_in_rect(tile_rect: Rect, allow_lr: bool, allow_tb: bool) -> O
     }
 }
 
-pub(super) fn tile_contains_descendant<Pane>(tree: &Tree<Pane>, root: TileId, candidate: TileId) -> bool {
+pub(super) fn tile_contains_descendant<Pane>(
+    tree: &Tree<Pane>,
+    root: TileId,
+    candidate: TileId,
+) -> bool {
     if root == candidate {
         return true;
     }
@@ -636,11 +735,17 @@ fn paint_overlay_icon(
         OverlayTarget::Center => {
             let mid = icon_rect.center();
             painter.line_segment(
-                [Pos2::new(icon_rect.left(), mid.y), Pos2::new(icon_rect.right(), mid.y)],
+                [
+                    Pos2::new(icon_rect.left(), mid.y),
+                    Pos2::new(icon_rect.right(), mid.y),
+                ],
                 stroke,
             );
             painter.line_segment(
-                [Pos2::new(mid.x, icon_rect.top()), Pos2::new(mid.x, icon_rect.bottom())],
+                [
+                    Pos2::new(mid.x, icon_rect.top()),
+                    Pos2::new(mid.x, icon_rect.bottom()),
+                ],
                 stroke,
             );
         }
@@ -653,7 +758,10 @@ fn paint_overlay_icon(
                 fill,
             );
             painter.line_segment(
-                [Pos2::new(split_x, icon_rect.top()), Pos2::new(split_x, icon_rect.bottom())],
+                [
+                    Pos2::new(split_x, icon_rect.top()),
+                    Pos2::new(split_x, icon_rect.bottom()),
+                ],
                 stroke,
             );
         }
@@ -666,7 +774,10 @@ fn paint_overlay_icon(
                 fill,
             );
             painter.line_segment(
-                [Pos2::new(split_x, icon_rect.top()), Pos2::new(split_x, icon_rect.bottom())],
+                [
+                    Pos2::new(split_x, icon_rect.top()),
+                    Pos2::new(split_x, icon_rect.bottom()),
+                ],
                 stroke,
             );
         }
@@ -679,7 +790,10 @@ fn paint_overlay_icon(
                 fill,
             );
             painter.line_segment(
-                [Pos2::new(icon_rect.left(), split_y), Pos2::new(icon_rect.right(), split_y)],
+                [
+                    Pos2::new(icon_rect.left(), split_y),
+                    Pos2::new(icon_rect.right(), split_y),
+                ],
                 stroke,
             );
         }
@@ -692,7 +806,10 @@ fn paint_overlay_icon(
                 fill,
             );
             painter.line_segment(
-                [Pos2::new(icon_rect.left(), split_y), Pos2::new(icon_rect.right(), split_y)],
+                [
+                    Pos2::new(icon_rect.left(), split_y),
+                    Pos2::new(icon_rect.right(), split_y),
+                ],
                 stroke,
             );
         }

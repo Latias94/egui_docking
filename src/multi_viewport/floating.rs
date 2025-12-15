@@ -1,13 +1,15 @@
+use egui::emath::GuiRounding as _;
+use egui::epaint::MarginF32;
 use egui::{Context, Order, Pos2, Rect, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{Behavior, InsertionPoint, TileId, Tree};
 
+use super::DockingMultiViewport;
 use super::geometry::pointer_pos_in_viewport_space;
 use super::title::title_for_detached_tree;
 use super::types::{
     DockPayload, FloatingDockWindow, FloatingDragState, FloatingId, FloatingResizeState, GhostDrag,
     GhostDragMode,
 };
-use super::DockingMultiViewport;
 
 impl<Pane> DockingMultiViewport<Pane> {
     pub(super) fn spawn_floating_subtree_in_viewport(
@@ -75,6 +77,8 @@ impl<Pane> DockingMultiViewport<Pane> {
     ) {
         self.last_floating_rects
             .retain(|(vid, _fid), _| *vid != viewport_id);
+        self.last_floating_content_rects
+            .retain(|(vid, _fid), _| *vid != viewport_id);
 
         let mut manager = self.floating.remove(&viewport_id).unwrap_or_default();
         manager
@@ -87,11 +91,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         if let Some(GhostDrag {
-            mode:
-                GhostDragMode::Contained {
-                    viewport,
-                    floating,
-                },
+            mode: GhostDragMode::Contained { viewport, floating },
             grab_offset,
         }) = self.ghost
         {
@@ -168,6 +168,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         let bridge_id = self.tree.id();
 
         let ids = manager.z_order.clone();
+        let topmost_id = manager.z_order.last().copied();
         let mut bring_to_front: Vec<FloatingId> = Vec::new();
         let mut close_windows: Vec<FloatingId> = Vec::new();
         let mut dock_windows: Vec<FloatingId> = Vec::new();
@@ -180,13 +181,47 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             let title = title_for_detached_tree(&window.tree, behavior);
 
-            let title_height = 24.0;
+            let mut title_frame = egui::Frame::window(ui.style());
+            // We control the outer rect explicitly via `Area` + `allocate_exact_size`.
+            // Keep the frame outer margin at zero so it doesn't conceptually "expand" the window.
+            title_frame.outer_margin = egui::Margin::ZERO;
+
+            let title_widget_text =
+                egui::WidgetText::from(title.clone()).fallback_text_style(egui::TextStyle::Heading);
+            let title_galley = title_widget_text.clone().into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Heading,
+            );
+            let title_bar_metrics = egui::containers::window_chrome::title_bar_metrics(
+                ui.ctx(),
+                &title_widget_text,
+                &mut title_frame,
+                true,
+                window.collapsed,
+            );
+            let title_height = title_bar_metrics.height_with_margin;
+            let title_min_width = {
+                let inner_height = (title_height - title_frame.inner_margin.sum().y).max(0.0);
+                let item_spacing = ui.spacing().item_spacing;
+                let button_size = Vec2::splat(ui.spacing().icon_width.min(inner_height));
+                let left_pad = ((inner_height - button_size.y) / 2.0).round_ui();
+
+                let content_min_width =
+                    2.0 * (left_pad + button_size.x + item_spacing.x) + title_galley.size().x;
+
+                (content_min_width
+                    + title_frame.inner_margin.sum().x
+                    + 2.0 * title_frame.stroke.width)
+                    .max(96.0)
+            };
             let min_size = Vec2::new(220.0, 120.0);
             window.size.x = window.size.x.max(min_size.x);
             window.size.y = window.size.y.max(min_size.y);
 
             let size = if window.collapsed {
-                Vec2::new(window.size.x, title_height)
+                Vec2::new(title_min_width, title_height)
             } else {
                 window.size
             };
@@ -222,36 +257,53 @@ impl<Pane> DockingMultiViewport<Pane> {
                     let (alloc_rect, alloc_resp) =
                         ui.allocate_exact_size(rect.size(), egui::Sense::hover());
 
-                    let visuals = ui.visuals();
-                    ui.painter()
-                        .rect_filled(alloc_rect, 6.0, visuals.window_fill());
-                    ui.painter().rect_stroke(
-                        alloc_rect,
-                        6.0,
-                        visuals.widgets.noninteractive.bg_stroke,
-                        egui::StrokeKind::Inside,
-                    );
+                    let frame = title_frame;
+
+                    let stroke_margin = MarginF32::from(frame.stroke.width);
+                    let inner_margin = MarginF32::from(frame.inner_margin);
+                    let frame_content_rect = alloc_rect - inner_margin - stroke_margin;
+                    ui.painter().add(frame.paint(frame_content_rect));
+                    let header_background = ui.painter().add(egui::Shape::Noop);
 
                     if alloc_resp.clicked() {
                         bring_to_front.push(floating_id);
                     }
 
                     let title_rect = Rect::from_min_size(
-                        alloc_rect.min,
-                        Vec2::new(alloc_rect.width(), title_height),
+                        frame_content_rect.min,
+                        Vec2::new(frame_content_rect.width(), title_height),
                     );
 
-                    let title_resp = ui.interact(
-                        title_rect,
-                        ui.id().with((floating_id, "floating_title_bar")),
+                    let mut title_bar_rect = alloc_rect.shrink(frame.stroke.width);
+                    title_bar_rect.max.y = title_bar_rect.min.y + title_height;
+
+                    let title_bar_buttons =
+                        egui::containers::window_chrome::title_bar_button_rects(ui, title_bar_rect);
+                    let mut title_drag_rect = title_bar_rect;
+                    title_drag_rect.min.x = title_bar_buttons.collapse.max.x + 4.0;
+                    title_drag_rect.max.x = title_bar_buttons.close.min.x - 4.0;
+
+                    egui::containers::window_chrome::paint_title_bar_background(
+                        ui,
+                        header_background,
+                        title_bar_rect,
+                        &frame,
+                        frame.fill,
+                        window.collapsed,
+                        topmost_id == Some(floating_id),
+                    );
+
+                    let title_drag_resp = ui.interact(
+                        title_drag_rect,
+                        ui.id().with((floating_id, "floating_title_drag")),
                         egui::Sense::click_and_drag(),
                     );
 
-                    if title_resp.clicked() || title_resp.drag_started() {
+                    if title_drag_resp.clicked() || title_drag_resp.drag_started() {
                         bring_to_front.push(floating_id);
                     }
 
-                    if title_resp.drag_started() {
+                    if title_drag_resp.drag_started() {
                         if let Some(pointer_start) = ctx.input(|i| i.pointer.latest_pos()) {
                             window.drag = Some(FloatingDragState {
                                 pointer_start,
@@ -281,30 +333,60 @@ impl<Pane> DockingMultiViewport<Pane> {
                         }
                     }
 
+                    title_drag_resp.context_menu(|ui| {
+                        if ui.button("Dock").clicked() {
+                            dock_windows.push(floating_id);
+                            ui.close();
+                        }
+                    });
+
                     {
-                        let mut title_ui =
-                            ui.new_child(egui::UiBuilder::new().max_rect(title_rect));
-                        title_ui.style_mut().interaction.selectable_labels = false;
-                        title_ui.horizontal(|ui| {
-                            let collapse_label = if window.collapsed { "▸" } else { "▾" };
-                            if ui.button(collapse_label).clicked() {
-                                window.collapsed = !window.collapsed;
-                            }
-
-                            ui.label(title);
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("✕").clicked() {
-                                        close_windows.push(floating_id);
-                                    }
-                                    if ui.button("Dock").clicked() {
-                                        dock_windows.push(floating_id);
-                                    }
-                                },
-                            );
+                        let collapse_id = ui.id().with((floating_id, "floating_collapse"));
+                        let collapse_resp = ui.interact(
+                            title_bar_buttons.collapse,
+                            collapse_id,
+                            egui::Sense::click(),
+                        );
+                        collapse_resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                ui.is_enabled(),
+                                if window.collapsed { "Show" } else { "Hide" },
+                            )
                         });
+                        if collapse_resp.clicked() {
+                            window.collapsed = !window.collapsed;
+                        }
+                        egui::containers::collapsing_header::paint_default_icon(
+                            ui,
+                            if window.collapsed { 0.0 } else { 1.0 },
+                            &collapse_resp,
+                        );
+
+                        if egui::containers::window_chrome::window_close_button(
+                            ui,
+                            title_bar_buttons.close,
+                        )
+                        .clicked()
+                        {
+                            close_windows.push(floating_id);
+                        }
+
+                        if title_drag_resp.double_clicked() {
+                            window.collapsed = !window.collapsed;
+                        }
+
+                        let text_pos = egui::emath::align::center_size_in_rect(
+                            title_galley.size(),
+                            title_bar_rect,
+                        )
+                        .left_top();
+                        let text_pos = text_pos - title_galley.rect.min.to_vec2();
+                        ui.painter().galley(
+                            text_pos,
+                            title_galley.clone(),
+                            ui.visuals().text_color(),
+                        );
                     }
 
                     if !window.collapsed {
@@ -340,10 +422,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                             }
                         }
 
-                        let content_rect = Rect::from_min_max(
-                            title_rect.left_bottom(),
-                            alloc_rect.right_bottom(),
-                        );
+                        let content_rect =
+                            Rect::from_min_max(title_rect.left_bottom(), frame_content_rect.max);
+                        self.last_floating_content_rects
+                            .insert((viewport_id, floating_id), content_rect);
 
                         if ghost_from_floating.is_none()
                             && self.options.ghost_tear_off
@@ -614,12 +696,71 @@ impl<Pane> DockingMultiViewport<Pane> {
         None
     }
 
+    pub(super) fn floating_under_pointer_excluding(
+        &self,
+        viewport_id: ViewportId,
+        pointer_local: Pos2,
+        excluded: Option<FloatingId>,
+    ) -> Option<FloatingId> {
+        let manager = self.floating.get(&viewport_id)?;
+        for id in manager.z_order.iter().rev().copied() {
+            if excluded == Some(id) {
+                continue;
+            }
+            if self
+                .last_floating_rects
+                .get(&(viewport_id, id))
+                .is_some_and(|r| r.contains(pointer_local))
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    pub(super) fn floating_content_under_pointer_excluding(
+        &self,
+        viewport_id: ViewportId,
+        pointer_local: Pos2,
+        excluded: Option<FloatingId>,
+    ) -> Option<FloatingId> {
+        let manager = self.floating.get(&viewport_id)?;
+        for id in manager.z_order.iter().rev().copied() {
+            if excluded == Some(id) {
+                continue;
+            }
+            if self
+                .last_floating_content_rects
+                .get(&(viewport_id, id))
+                .is_some_and(|r| r.contains(pointer_local))
+            {
+                return Some(id);
+            }
+        }
+        None
+    }
+
     pub(super) fn floating_tree_id_under_pointer(
         &self,
         viewport_id: ViewportId,
         pointer_local: Pos2,
     ) -> Option<egui::Id> {
         let floating_id = self.floating_under_pointer(viewport_id, pointer_local)?;
+        self.floating
+            .get(&viewport_id)?
+            .windows
+            .get(&floating_id)
+            .map(|w| w.tree.id())
+    }
+
+    pub(super) fn floating_tree_id_under_pointer_excluding(
+        &self,
+        viewport_id: ViewportId,
+        pointer_local: Pos2,
+        excluded: Option<FloatingId>,
+    ) -> Option<egui::Id> {
+        let floating_id =
+            self.floating_under_pointer_excluding(viewport_id, pointer_local, excluded)?;
         self.floating
             .get(&viewport_id)?
             .windows

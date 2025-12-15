@@ -39,4 +39,3 @@ pub(super) fn title_for_detached_tree<Pane>(
 
     format!("{root:?}")
 }
-

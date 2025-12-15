@@ -27,4 +27,14 @@ eframe = { version = "0.33.0", default-features = false, features = [
 ] }
 
 [patch.crates-io]
+ecolor = { path = "repo-ref/egui/crates/ecolor" }
+eframe = { path = "repo-ref/egui/crates/eframe" }
+egui = { path = "repo-ref/egui/crates/egui" }
+egui-wgpu = { path = "repo-ref/egui/crates/egui-wgpu" }
+egui-winit = { path = "repo-ref/egui/crates/egui-winit" }
+egui_extras = { path = "repo-ref/egui/crates/egui_extras" }
+egui_glow = { path = "repo-ref/egui/crates/egui_glow" }
+emath = { path = "repo-ref/egui/crates/emath" }
+epaint = { path = "repo-ref/egui/crates/epaint" }
+epaint_default_fonts = { path = "repo-ref/egui/crates/epaint_default_fonts" }
 egui_tiles_docking = { path = "repo-ref/egui_tiles_docking" }
