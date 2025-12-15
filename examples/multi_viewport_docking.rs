@@ -32,12 +32,13 @@ impl egui_tiles::Behavior<Pane> for DemoBehavior {
         ui.horizontal(|ui| {
             ui.add(egui::Label::new(format!("tile: {tile_id:?}")).selectable(false));
             ui.add(
-                egui::Label::new(
-                    "Tear-off: drag a tab/pane and release outside the dock. \
+                    egui::Label::new(
+                        "Tear-off: drag a tab/pane and release outside the dock. \
+                     Live tear-off (ghost): drag outside the dock to spawn a floating ghost window before release (leaving the native window upgrades it to a new native window). \
                      SHIFT: detach the whole tab-group (parent Tabs). \
                      ALT: force tear-off on release even inside the dock. \
                      CTRL: tear-off into a contained floating window (instead of a native window). \
-                     Docking overlay targets show while dragging; hover to choose split direction. \
+                     Docking overlay targets show while dragging; hover to choose split direction (inner 5-way + outer edge markers; outer shows near dock edges). \
                      To dock back, drag any tab (or tab-bar background) into another window and release.",
                 )
                 .selectable(false),

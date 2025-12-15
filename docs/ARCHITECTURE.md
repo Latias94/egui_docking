@@ -110,6 +110,7 @@
   - 绘制在前景层（Foreground）
   - hover 时显示预览 rect（当前为 50/50 split，尽量与 tiles 默认一致）
   - 采用 ImGui 类似的抗抖动 hit-test（半径阈值 + 象限优先）
+  - 同时提供 outer docking targets（dockspace 边缘吸附），仅当指针靠近 dockspace 边缘时显示，避免与 inner 5-way overlay 竞争；命中后以 root tile 为 parent 进行分屏插入（更贴近 ImGui 的 outer markers）
 
 ### 已实现（M2，部分）
 
@@ -132,6 +133,15 @@
 #### M3：Ghost viewport（ImGui-like live tear-off）
 
 目的：拖拽过程中就产生“跟随鼠标的浮动窗口”，松手决定“dock 回去”还是“保留浮动/升级原生窗口”。
+
+当前实现状态（初版）：
+
+- Root/Detached viewport 内拖拽 tab/pane 超出 dock 边界阈值 → 立即生成 contained floating ghost 并跟随鼠标
+- Contained floating window 内拖拽 tab/pane 超出窗口边界阈值 → 拆出新的 contained floating ghost 并跟随鼠标
+- 指针离开当前原生窗口 inner rect → 自动升级为 native viewport（新的 detached viewport）
+- 松手：
+  - 落在任意 dock：回收并 dock
+  - 不落在 dock：保留为 floating / detached
 
 推荐交互：
 

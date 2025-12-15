@@ -20,9 +20,24 @@ pub struct DockingMultiViewportOptions {
     /// If true, show ImGui-style docking overlay targets even for drags that stay within the same viewport.
     pub show_overlay_for_internal_drags: bool,
 
+    /// If true, show ImGui-style *outer* docking targets (dockspace edge markers),
+    /// allowing quick splits at the dockspace boundary (dear imgui style outer docking).
+    pub show_outer_overlay_targets: bool,
+
     /// If true, holding CTRL while tearing off will create a contained floating window (within the current viewport)
     /// instead of a native viewport window.
     pub tear_off_to_floating_on_ctrl: bool,
+
+    /// If true, dragging a tab/pane outside the dock area will immediately create a "ghost" floating window
+    /// that follows the pointer, and can be docked back before releasing (dear imgui style).
+    pub ghost_tear_off: bool,
+
+    /// Pointer distance (in points) outside the dock area required to trigger ghost tear-off.
+    pub ghost_tear_off_threshold: f32,
+
+    /// If true, a contained ghost window will be upgraded to a native viewport once the pointer leaves
+    /// the source viewport's inner rectangle.
+    pub ghost_upgrade_to_native_on_leave_viewport: bool,
 }
 
 impl Default for DockingMultiViewportOptions {
@@ -32,7 +47,11 @@ impl Default for DockingMultiViewportOptions {
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
             show_overlay_for_internal_drags: true,
+            show_outer_overlay_targets: true,
             tear_off_to_floating_on_ctrl: true,
+            ghost_tear_off: true,
+            ghost_tear_off_threshold: 8.0,
+            ghost_upgrade_to_native_on_leave_viewport: true,
         }
     }
 }
@@ -66,6 +85,23 @@ struct PendingLocalDrop {
     target_viewport: ViewportId,
     target_floating: Option<FloatingId>,
     pointer_local: Pos2,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GhostDragMode {
+    Contained {
+        viewport: ViewportId,
+        floating: FloatingId,
+    },
+    Native {
+        viewport: ViewportId,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GhostDrag {
+    mode: GhostDragMode,
+    grab_offset: Vec2,
 }
 
 #[derive(Debug)]
@@ -164,6 +200,8 @@ pub struct DockingMultiViewport<Pane> {
     floating: BTreeMap<ViewportId, FloatingManager<Pane>>,
     next_floating_serial: u64,
     last_floating_rects: BTreeMap<(ViewportId, FloatingId), Rect>,
+
+    ghost: Option<GhostDrag>,
 }
 
 impl<Pane> DockingMultiViewport<Pane> {
@@ -186,6 +224,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             floating: BTreeMap::new(),
             next_floating_serial: 1,
             last_floating_rects: BTreeMap::new(),
+            ghost: None,
         }
     }
 
@@ -264,6 +303,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             // every drop as "somewhere" inside the tree.
             self.try_tear_off_from_root(ui.ctx(), behavior, dock_rect);
 
+            self.maybe_start_ghost_from_root(ui.ctx(), behavior, dock_rect);
+
             self.tree.ui(behavior, ui);
 
             self.set_payload_from_root_drag_if_any(ui.ctx());
@@ -288,6 +329,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         self.apply_pending_internal_drop(behavior);
         self.apply_pending_local_drop(ctx, behavior);
         self.clear_bridge_payload_on_release(ctx);
+        self.finish_ghost_if_released_or_aborted(ctx);
     }
 
     fn ui_detached_viewports(&mut self, ctx: &Context, behavior: &mut dyn Behavior<Pane>) {
@@ -304,6 +346,20 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             ctx.show_viewport_immediate(viewport_id, builder, |ctx, class| {
                 self.update_last_pointer_global_from_active_viewport(ctx);
+
+                if let Some(GhostDrag {
+                    mode: GhostDragMode::Native { viewport },
+                    grab_offset,
+                }) = self.ghost
+                {
+                    if viewport == viewport_id {
+                        if let Some(pointer_global) = self.last_pointer_global {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                                pointer_global - grab_offset,
+                            ));
+                        }
+                    }
+                }
 
                 let title = title_for_detached_tree(&detached.tree, behavior);
 
@@ -408,9 +464,20 @@ impl<Pane> DockingMultiViewport<Pane> {
                         &mut did_tear_off,
                     );
 
+                    self.maybe_start_ghost_from_tree_in_viewport(
+                        ctx,
+                        behavior,
+                        dock_rect,
+                        viewport_id,
+                        &mut detached.tree,
+                    );
+
                     detached.tree.ui(behavior, ui);
 
-                    if self.pending_drop.is_none() && self.pending_local_drop.is_none() {
+                    if self.pending_drop.is_none()
+                        && self.pending_local_drop.is_none()
+                        && self.ghost.is_none()
+                    {
                         if let Some(dragged_tile) = detached.tree.dragged_id_including_root(ctx) {
                             egui::DragAndDrop::set_payload(
                                 ctx,
@@ -464,6 +531,9 @@ impl<Pane> DockingMultiViewport<Pane> {
 
     fn set_payload_from_root_drag_if_any(&mut self, ctx: &Context) {
         if self.pending_drop.is_some() || self.pending_local_drop.is_some() {
+            return;
+        }
+        if self.ghost.is_some() {
             return;
         }
 
@@ -705,6 +775,261 @@ impl<Pane> DockingMultiViewport<Pane> {
         serial
     }
 
+    fn maybe_start_ghost_from_root(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        dock_rect: Rect,
+    ) {
+        if !self.options.ghost_tear_off {
+            return;
+        }
+        if self.ghost.is_some()
+            || self.pending_drop.is_some()
+            || self.pending_internal_drop.is_some()
+            || self.pending_local_drop.is_some()
+        {
+            return;
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            return;
+        }
+
+        let Some(pointer_local) = ctx.input(|i| i.pointer.latest_pos()) else {
+            return;
+        };
+
+        if dock_rect
+            .expand(self.options.ghost_tear_off_threshold)
+            .contains(pointer_local)
+        {
+            return;
+        }
+        let viewport_id = ViewportId::ROOT;
+        if self.floating_under_pointer(viewport_id, pointer_local).is_some() {
+            return;
+        }
+
+        let tree = &mut self.tree;
+
+        let Some(dragged_tile) = tree.dragged_id_including_root(ctx) else {
+            return;
+        };
+        let detach_tile = pick_detach_tile_for_tree(ctx, &self.options, tree, dragged_tile);
+
+        // Transfer authority away from egui_tiles internal drag-drop as soon as we switch
+        // to a cross-surface "ghost" payload.
+        ctx.stop_dragging();
+
+        let pane_rect_last = tree.tiles.rect(detach_tile);
+        let Some(subtree) = tree.extract_subtree(detach_tile) else {
+            return;
+        };
+
+        let size = pane_rect_last
+            .map(|r| Vec2::new(r.width().max(220.0), r.height().max(120.0)))
+            .unwrap_or(self.options.default_detached_inner_size);
+
+        let grab_offset = Vec2::new(20.0, 10.0);
+        let mut offset_in_dock = (pointer_local - dock_rect.min) - grab_offset;
+        offset_in_dock.x = offset_in_dock
+            .x
+            .clamp(0.0, (dock_rect.width() - size.x).max(0.0));
+        offset_in_dock.y = offset_in_dock
+            .y
+            .clamp(0.0, (dock_rect.height() - size.y).max(0.0));
+
+        // Title derived from the tree each frame; keep it for future customization.
+        let _title = title_for_detached_subtree(&subtree, behavior);
+
+        let floating_id = self.allocate_floating_id();
+        let floating_tree_id =
+            egui::Id::new((self.tree.id(), viewport_id, "egui_docking_floating_tree", floating_id));
+        let floating_tree = Tree::new(floating_tree_id, subtree.root, subtree.tiles);
+
+        let mut manager = self.floating.remove(&viewport_id).unwrap_or_default();
+        manager.windows.insert(
+            floating_id,
+            FloatingDockWindow {
+                tree: floating_tree,
+                offset_in_dock,
+                size,
+                collapsed: false,
+                drag: None,
+                resize: None,
+            },
+        );
+        manager.bring_to_front(floating_id);
+        self.floating.insert(viewport_id, manager);
+
+        // Use a "whole tree" payload while dragging the ghost surface around.
+        egui::DragAndDrop::set_payload(
+            ctx,
+            DockPayload {
+                bridge_id: self.tree.id(),
+                source_viewport: viewport_id,
+                source_floating: Some(floating_id),
+                tile_id: None,
+            },
+        );
+
+        ctx.request_repaint_of(ViewportId::ROOT);
+        self.ghost = Some(GhostDrag {
+            mode: GhostDragMode::Contained {
+                viewport: viewport_id,
+                floating: floating_id,
+            },
+            grab_offset,
+        });
+    }
+
+    fn maybe_start_ghost_from_tree_in_viewport(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        dock_rect: Rect,
+        viewport_id: ViewportId,
+        tree: &mut Tree<Pane>,
+    ) {
+        if viewport_id == ViewportId::ROOT {
+            // Root uses a specialized implementation to avoid borrowing conflicts.
+            return;
+        }
+
+        if !self.options.ghost_tear_off {
+            return;
+        }
+        if self.ghost.is_some()
+            || self.pending_drop.is_some()
+            || self.pending_internal_drop.is_some()
+            || self.pending_local_drop.is_some()
+        {
+            return;
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            return;
+        }
+
+        let Some(pointer_local) = ctx.input(|i| i.pointer.latest_pos()) else {
+            return;
+        };
+
+        if dock_rect
+            .expand(self.options.ghost_tear_off_threshold)
+            .contains(pointer_local)
+        {
+            return;
+        }
+        if self.floating_under_pointer(viewport_id, pointer_local).is_some() {
+            return;
+        }
+
+        let Some(dragged_tile) = tree.dragged_id_including_root(ctx) else {
+            return;
+        };
+        let detach_tile = pick_detach_tile_for_tree(ctx, &self.options, tree, dragged_tile);
+
+        ctx.stop_dragging();
+
+        let pane_rect_last = tree.tiles.rect(detach_tile);
+        let Some(subtree) = tree.extract_subtree(detach_tile) else {
+            return;
+        };
+
+        let size = pane_rect_last
+            .map(|r| Vec2::new(r.width().max(220.0), r.height().max(120.0)))
+            .unwrap_or(self.options.default_detached_inner_size);
+
+        let grab_offset = Vec2::new(20.0, 10.0);
+        let mut offset_in_dock = (pointer_local - dock_rect.min) - grab_offset;
+        offset_in_dock.x = offset_in_dock
+            .x
+            .clamp(0.0, (dock_rect.width() - size.x).max(0.0));
+        offset_in_dock.y = offset_in_dock
+            .y
+            .clamp(0.0, (dock_rect.height() - size.y).max(0.0));
+
+        let _title = title_for_detached_subtree(&subtree, behavior);
+
+        let floating_id = self.allocate_floating_id();
+        let floating_tree_id = egui::Id::new((
+            self.tree.id(),
+            viewport_id,
+            "egui_docking_floating_tree",
+            floating_id,
+        ));
+        let floating_tree = Tree::new(floating_tree_id, subtree.root, subtree.tiles);
+
+        let mut manager = self.floating.remove(&viewport_id).unwrap_or_default();
+        manager.windows.insert(
+            floating_id,
+            FloatingDockWindow {
+                tree: floating_tree,
+                offset_in_dock,
+                size,
+                collapsed: false,
+                drag: None,
+                resize: None,
+            },
+        );
+        manager.bring_to_front(floating_id);
+        self.floating.insert(viewport_id, manager);
+
+        egui::DragAndDrop::set_payload(
+            ctx,
+            DockPayload {
+                bridge_id: self.tree.id(),
+                source_viewport: viewport_id,
+                source_floating: Some(floating_id),
+                tile_id: None,
+            },
+        );
+
+        ctx.request_repaint_of(ViewportId::ROOT);
+        self.ghost = Some(GhostDrag {
+            mode: GhostDragMode::Contained {
+                viewport: viewport_id,
+                floating: floating_id,
+            },
+            grab_offset,
+        });
+    }
+
+    fn finish_ghost_if_released_or_aborted(&mut self, ctx: &Context) {
+        let Some(ghost) = self.ghost else {
+            return;
+        };
+
+        // If the payload is already gone (cleared by another viewport), stop tracking the ghost.
+        if egui::DragAndDrop::payload::<DockPayload>(ctx).is_none() {
+            self.ghost = None;
+            return;
+        }
+
+        let abort = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if abort {
+            self.ghost = None;
+            match ghost.mode {
+                GhostDragMode::Contained { viewport, floating } => {
+                    if let Some(subtree) = self.take_whole_floating_tree(viewport, floating) {
+                        self.dock_subtree_into_root(subtree, None);
+                    }
+                }
+                GhostDragMode::Native { viewport } => {
+                    if let Some(detached) = self.detached.remove(&viewport) {
+                        self.dock_tree_into_root(detached.tree, None);
+                        ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Close);
+                    }
+                }
+            }
+            return;
+        }
+
+        if ctx.input(|i| i.pointer.any_released()) {
+            self.ghost = None;
+        }
+    }
+
     fn spawn_floating_subtree_in_viewport(
         &mut self,
         ctx: &Context,
@@ -781,12 +1106,93 @@ impl<Pane> DockingMultiViewport<Pane> {
             }
         }
 
+        if let Some(GhostDrag {
+            mode:
+                GhostDragMode::Contained {
+                    viewport,
+                    floating,
+                },
+            grab_offset,
+        }) = self.ghost
+        {
+            if viewport == viewport_id {
+                let ctx = ui.ctx();
+                let pointer_global = self.last_pointer_global;
+
+                let should_upgrade = self.options.ghost_upgrade_to_native_on_leave_viewport
+                    && pointer_global.is_some()
+                    && pointer_pos_in_viewport_space(ctx, pointer_global).is_none();
+
+                if should_upgrade {
+                    if let (Some(pointer_global), Some(mut window)) =
+                        (pointer_global, manager.windows.remove(&floating))
+                    {
+                        manager.z_order.retain(|&id| id != floating);
+
+                        if let Some(root) = window.tree.root.take() {
+                            let (ghost_viewport_id, serial) = self.allocate_detached_viewport_id();
+                            let title = title_for_detached_tree(&window.tree, behavior);
+                            let builder = ViewportBuilder::default()
+                                .with_title(title)
+                                .with_position(pointer_global - grab_offset)
+                                .with_inner_size(window.size);
+
+                            let tiles = std::mem::take(&mut window.tree.tiles);
+
+                            let detached_tree_id = egui::Id::new((
+                                self.tree.id(),
+                                "egui_docking_detached_tree",
+                                serial,
+                            ));
+                            let detached_tree = Tree::new(detached_tree_id, root, tiles);
+
+                            self.detached.insert(
+                                ghost_viewport_id,
+                                DetachedDock {
+                                    tree: detached_tree,
+                                    builder,
+                                },
+                            );
+
+                            egui::DragAndDrop::set_payload(
+                                ctx,
+                                DockPayload {
+                                    bridge_id: self.tree.id(),
+                                    source_viewport: ghost_viewport_id,
+                                    source_floating: None,
+                                    tile_id: None,
+                                },
+                            );
+
+                            self.ghost = Some(GhostDrag {
+                                mode: GhostDragMode::Native {
+                                    viewport: ghost_viewport_id,
+                                },
+                                grab_offset,
+                            });
+                            ctx.request_repaint_of(ViewportId::ROOT);
+                        } else {
+                            // Empty tree; drop the ghost.
+                            self.ghost = None;
+                        }
+                    }
+                } else if let Some(pointer_local) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+                    if let Some(window) = manager.windows.get_mut(&floating) {
+                        window.offset_in_dock =
+                            (pointer_local - dock_rect.min) - grab_offset;
+                        manager.bring_to_front(floating);
+                    }
+                }
+            }
+        }
+
         let bridge_id = self.tree.id();
 
         let ids = manager.z_order.clone();
         let mut bring_to_front: Vec<FloatingId> = Vec::new();
         let mut close_windows: Vec<FloatingId> = Vec::new();
         let mut dock_windows: Vec<FloatingId> = Vec::new();
+        let mut ghost_from_floating: Option<(FloatingId, TileId, Pos2)> = None;
 
         for floating_id in ids {
             let Some(window) = manager.windows.get_mut(&floating_id) else {
@@ -958,6 +1364,29 @@ impl<Pane> DockingMultiViewport<Pane> {
                         let content_rect =
                             Rect::from_min_max(title_rect.left_bottom(), alloc_rect.right_bottom());
 
+                        if ghost_from_floating.is_none()
+                            && self.options.ghost_tear_off
+                            && self.ghost.is_none()
+                            && self.pending_drop.is_none()
+                            && self.pending_internal_drop.is_none()
+                            && self.pending_local_drop.is_none()
+                            && !ctx.input(|i| i.pointer.any_released())
+                        {
+                            if let (Some(pointer_local), Some(dragged_tile)) = (
+                                ctx.input(|i| i.pointer.latest_pos()),
+                                window.tree.dragged_id_including_root(&ctx),
+                            ) {
+                                if !alloc_rect
+                                    .expand(self.options.ghost_tear_off_threshold)
+                                    .contains(pointer_local)
+                                {
+                                    ghost_from_floating =
+                                        Some((floating_id, dragged_tile, pointer_local));
+                                    ctx.stop_dragging();
+                                }
+                            }
+                        }
+
                         if let (Some(pointer_local), Some(dragged_tile)) = (
                             ctx.input(|i| i.pointer.latest_pos()),
                             window.tree.dragged_id_including_root(&ctx),
@@ -988,7 +1417,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                             window.tree.ui(behavior, &mut content_ui);
                         }
 
-                        if self.pending_drop.is_none() && self.pending_local_drop.is_none() {
+                        if self.pending_drop.is_none()
+                            && self.pending_local_drop.is_none()
+                            && self.ghost.is_none()
+                        {
                             if let Some(dragged_tile) = window.tree.dragged_id_including_root(&ctx)
                             {
                                 egui::DragAndDrop::set_payload(
@@ -1013,6 +1445,81 @@ impl<Pane> DockingMultiViewport<Pane> {
                         );
                     }
                 });
+        }
+
+        if let Some((source_floating, dragged_tile, pointer_local)) = ghost_from_floating {
+            if let Some(source_window) = manager.windows.get_mut(&source_floating) {
+                let detach_tile = pick_detach_tile_for_tree(
+                    ui.ctx(),
+                    &self.options,
+                    &source_window.tree,
+                    dragged_tile,
+                );
+                let pane_rect_last = source_window.tree.tiles.rect(detach_tile);
+                let extracted = source_window.tree.extract_subtree(detach_tile);
+                let source_empty = source_window.tree.root.is_none();
+
+                if source_empty {
+                    manager.windows.remove(&source_floating);
+                    manager.z_order.retain(|&id| id != source_floating);
+                }
+
+                if let Some(subtree) = extracted {
+                    let size = pane_rect_last
+                        .map(|r| Vec2::new(r.width().max(220.0), r.height().max(120.0)))
+                        .unwrap_or(self.options.default_detached_inner_size);
+
+                    let grab_offset = Vec2::new(20.0, 10.0);
+                    let mut offset_in_dock = (pointer_local - dock_rect.min) - grab_offset;
+                    offset_in_dock.x = offset_in_dock
+                        .x
+                        .clamp(0.0, (dock_rect.width() - size.x).max(0.0));
+                    offset_in_dock.y = offset_in_dock
+                        .y
+                        .clamp(0.0, (dock_rect.height() - size.y).max(0.0));
+
+                    let floating_id = self.allocate_floating_id();
+                    let floating_tree_id = egui::Id::new((
+                        self.tree.id(),
+                        viewport_id,
+                        "egui_docking_floating_tree",
+                        floating_id,
+                    ));
+                    let floating_tree = Tree::new(floating_tree_id, subtree.root, subtree.tiles);
+
+                    manager.windows.insert(
+                        floating_id,
+                        FloatingDockWindow {
+                            tree: floating_tree,
+                            offset_in_dock,
+                            size,
+                            collapsed: false,
+                            drag: None,
+                            resize: None,
+                        },
+                    );
+                    manager.bring_to_front(floating_id);
+
+                    egui::DragAndDrop::set_payload(
+                        ui.ctx(),
+                        DockPayload {
+                            bridge_id: self.tree.id(),
+                            source_viewport: viewport_id,
+                            source_floating: Some(floating_id),
+                            tile_id: None,
+                        },
+                    );
+
+                    ui.ctx().request_repaint_of(ViewportId::ROOT);
+                    self.ghost = Some(GhostDrag {
+                        mode: GhostDragMode::Contained {
+                            viewport: viewport_id,
+                            floating: floating_id,
+                        },
+                        grab_offset,
+                    });
+                }
+            }
         }
 
         for id in bring_to_front {
@@ -1258,20 +1765,28 @@ impl<Pane> DockingMultiViewport<Pane> {
         pointer_local: Pos2,
     ) -> Option<InsertionPoint> {
         if let Some(floating_id) = target_floating {
+            let dock_rect = self
+                .last_floating_rects
+                .get(&(viewport_id, floating_id))
+                .copied()?;
             let tree = self
                 .floating
                 .get(&viewport_id)?
                 .windows
                 .get(&floating_id)
                 .map(|w| &w.tree)?;
-            return overlay_insertion_for_tree(tree, pointer_local).or_else(|| {
+            return overlay_insertion_for_tree_with_outer(tree, dock_rect, pointer_local).or_else(
+                || {
                 tree.dock_zone_at(behavior, style, pointer_local)
                     .map(|z| z.insertion_point)
-            });
+            },
+            );
         }
 
         if viewport_id == ViewportId::ROOT {
-            return overlay_insertion_for_tree(&self.tree, pointer_local).or_else(|| {
+            let dock_rect = self.last_dock_rects.get(&ViewportId::ROOT).copied()?;
+            return overlay_insertion_for_tree_with_outer(&self.tree, dock_rect, pointer_local)
+                .or_else(|| {
                 self.tree
                     .dock_zone_at(behavior, style, pointer_local)
                     .map(|z| z.insertion_point)
@@ -1279,7 +1794,8 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let tree = self.detached.get(&viewport_id).map(|d| &d.tree)?;
-        overlay_insertion_for_tree(tree, pointer_local).or_else(|| {
+        let dock_rect = self.last_dock_rects.get(&viewport_id).copied()?;
+        overlay_insertion_for_tree_with_outer(tree, dock_rect, pointer_local).or_else(|| {
             tree.dock_zone_at(behavior, style, pointer_local)
                 .map(|z| z.insertion_point)
         })
@@ -1388,8 +1904,16 @@ impl<Pane> DockingMultiViewport<Pane> {
                         }
                     }
 
-                    overlay_for_tree_at_pointer(tree, pointer_local)
-                        .is_some_and(|o| o.hovered.is_some())
+                    let outer_mode =
+                        self.options.show_outer_overlay_targets && pointer_in_outer_band(dock_rect, pointer_local);
+
+                    if outer_mode {
+                        outer_overlay_for_dock_rect(dock_rect, pointer_local)
+                            .is_some_and(|o| o.hovered.is_some())
+                    } else {
+                        overlay_for_tree_at_pointer(tree, pointer_local)
+                            .is_some_and(|o| o.hovered.is_some())
+                    }
                 });
 
         ctx.data_mut(|d| {
@@ -1468,7 +1992,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             return None;
         }
 
-        let insertion = overlay_insertion_for_tree_explicit(tree, pointer_local)?;
+        let insertion =
+            overlay_insertion_for_tree_explicit_with_outer(tree, dock_rect, pointer_local)?;
         if tile_contains_descendant(tree, dragged_tile, insertion.parent_id) {
             return None;
         }
@@ -1571,9 +2096,12 @@ impl<Pane> DockingMultiViewport<Pane> {
         if dock_rect.is_some_and(|r| !r.contains(pointer_local)) {
             return None;
         }
+        let dock_rect = dock_rect?;
 
         if target_viewport == ViewportId::ROOT {
-            if let Some(insertion) = overlay_insertion_for_tree(&self.tree, pointer_local) {
+            if let Some(insertion) =
+                overlay_insertion_for_tree_with_outer(&self.tree, dock_rect, pointer_local)
+            {
                 return Some(insertion);
             }
             return self
@@ -1585,7 +2113,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         let Some(detached) = self.detached.get(&target_viewport) else {
             return None;
         };
-        if let Some(insertion) = overlay_insertion_for_tree(&detached.tree, pointer_local) {
+        if let Some(insertion) =
+            overlay_insertion_for_tree_with_outer(&detached.tree, dock_rect, pointer_local)
+        {
             return Some(insertion);
         }
         detached
@@ -1864,7 +2394,17 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
 
-        if let Some(overlay) = overlay_for_tree_at_pointer(tree, pointer_local) {
+        let outer_mode =
+            self.options.show_outer_overlay_targets && pointer_in_outer_band(dock_rect, pointer_local);
+        if outer_mode {
+            if let Some(overlay) = outer_overlay_for_dock_rect(dock_rect, pointer_local) {
+                let painter = ui.ctx().layer_painter(LayerId::new(
+                    Order::Foreground,
+                    egui::Id::new((tree.id(), target_viewport, "egui_docking_outer_overlay")),
+                ));
+                paint_outer_overlay(&painter, ui.visuals(), overlay);
+            }
+        } else if let Some(overlay) = overlay_for_tree_at_pointer(tree, pointer_local) {
             let painter = ui.ctx().layer_painter(LayerId::new(
                 Order::Foreground,
                 egui::Id::new((tree.id(), target_viewport, "egui_docking_overlay")),
@@ -1886,32 +2426,41 @@ impl<Pane> DockingMultiViewport<Pane> {
     }
 
     fn pick_detach_tile(&self, ctx: &Context, dragged_tile: TileId) -> TileId {
-        if !self.options.detach_parent_tabs_on_shift {
-            return dragged_tile;
-        }
-
-        let shift = ctx.input(|i| i.modifiers.shift);
-        if !shift {
-            return dragged_tile;
-        }
-
-        if !matches!(self.tree.tiles.get(dragged_tile), Some(Tile::Pane(_))) {
-            return dragged_tile;
-        }
-
-        let Some(parent) = self.tree.tiles.parent_of(dragged_tile) else {
-            return dragged_tile;
-        };
-
-        let parent_kind = self.tree.tiles.get(parent).and_then(|t| t.kind());
-        if parent_kind == Some(ContainerKind::Tabs) {
-            parent
-        } else {
-            dragged_tile
-        }
+        pick_detach_tile_for_tree(ctx, &self.options, &self.tree, dragged_tile)
     }
 
     // `paint_root_drop_preview_if_any` replaced by `paint_drop_preview_if_any_for_tree`.
+}
+
+fn pick_detach_tile_for_tree<Pane>(
+    ctx: &Context,
+    options: &DockingMultiViewportOptions,
+    tree: &Tree<Pane>,
+    dragged_tile: TileId,
+) -> TileId {
+    if !options.detach_parent_tabs_on_shift {
+        return dragged_tile;
+    }
+
+    let shift = ctx.input(|i| i.modifiers.shift);
+    if !shift {
+        return dragged_tile;
+    }
+
+    if !matches!(tree.tiles.get(dragged_tile), Some(Tile::Pane(_))) {
+        return dragged_tile;
+    }
+
+    let Some(parent) = tree.tiles.parent_of(dragged_tile) else {
+        return dragged_tile;
+    };
+
+    let parent_kind = tree.tiles.get(parent).and_then(|t| t.kind());
+    if parent_kind == Some(ContainerKind::Tabs) {
+        parent
+    } else {
+        dragged_tile
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2006,6 +2555,228 @@ struct DockingOverlay {
     tile_rect: Rect,
     targets: OverlayTargets,
     hovered: Option<(OverlayTarget, Rect)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OuterOverlayTargets {
+    left: Rect,
+    right: Rect,
+    top: Rect,
+    bottom: Rect,
+}
+
+impl OuterOverlayTargets {
+    fn iter(self) -> impl Iterator<Item = (OverlayTarget, Rect)> {
+        [
+            (OverlayTarget::Left, self.left),
+            (OverlayTarget::Right, self.right),
+            (OverlayTarget::Top, self.top),
+            (OverlayTarget::Bottom, self.bottom),
+        ]
+        .into_iter()
+    }
+
+    fn hit_test(self, pointer: Pos2, parent_center: Pos2) -> Option<(OverlayTarget, Rect)> {
+        let hs_w = self.left.width() * 0.5;
+        if hs_w > 0.0 {
+            let delta = pointer - parent_center;
+            let len2 = delta.x * delta.x + delta.y * delta.y;
+
+            let r_threshold_sides = hs_w * (1.4 + 1.2);
+            if len2 < r_threshold_sides * r_threshold_sides {
+                let prefer_horizontal = delta.x.abs() >= delta.y.abs();
+                if prefer_horizontal {
+                    if delta.x < 0.0 {
+                        return Some((OverlayTarget::Left, self.left));
+                    }
+                    return Some((OverlayTarget::Right, self.right));
+                }
+
+                if delta.y < 0.0 {
+                    return Some((OverlayTarget::Top, self.top));
+                }
+                return Some((OverlayTarget::Bottom, self.bottom));
+            }
+
+            let expand = (hs_w * 0.30).round();
+            if let Some(hit) = self
+                .iter()
+                .find(|(_t, rect)| rect.expand(expand).contains(pointer))
+            {
+                return Some(hit);
+            }
+        }
+
+        self.iter().find(|(_t, rect)| rect.contains(pointer))
+    }
+
+    fn hit_test_boxes(self, pointer: Pos2) -> Option<(OverlayTarget, Rect)> {
+        let hs_w = self.left.width() * 0.5;
+        let expand = if hs_w > 0.0 {
+            (hs_w * 0.30).round()
+        } else {
+            0.0
+        };
+        self.iter()
+            .find(|(_t, rect)| rect.expand(expand).contains(pointer))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct OuterDockingOverlay {
+    dock_rect: Rect,
+    targets: OuterOverlayTargets,
+    hovered: Option<(OverlayTarget, Rect)>,
+}
+
+fn pointer_in_outer_band(dock_rect: Rect, pointer: Pos2) -> bool {
+    if !dock_rect.contains(pointer) {
+        return false;
+    }
+
+    let min_dim = dock_rect.width().min(dock_rect.height());
+    if min_dim <= 0.0 {
+        return false;
+    }
+
+    let band = (min_dim * 0.22).clamp(32.0, 80.0);
+    let dx = (pointer.x - dock_rect.left()).min(dock_rect.right() - pointer.x);
+    let dy = (pointer.y - dock_rect.top()).min(dock_rect.bottom() - pointer.y);
+    dx.min(dy) <= band
+}
+
+fn outer_overlay_targets_in_rect(dock_rect: Rect) -> Option<OuterOverlayTargets> {
+    let min_dim = dock_rect.width().min(dock_rect.height());
+    if min_dim <= 0.0 {
+        return None;
+    }
+
+    let size = (min_dim * 0.12).clamp(22.0, 56.0);
+    let hs = size * 0.5;
+    let margin = (size * 0.35).clamp(6.0, 18.0);
+
+    let center = dock_rect.center();
+    let left_center = Pos2::new(dock_rect.left() + margin + hs, center.y);
+    let right_center = Pos2::new(dock_rect.right() - margin - hs, center.y);
+    let top_center = Pos2::new(center.x, dock_rect.top() + margin + hs);
+    let bottom_center = Pos2::new(center.x, dock_rect.bottom() - margin - hs);
+
+    // If there isn't enough room to place non-overlapping targets near edges, skip outer overlay.
+    if left_center.x + hs >= right_center.x - hs || top_center.y + hs >= bottom_center.y - hs {
+        return None;
+    }
+
+    let left = Rect::from_center_size(left_center, Vec2::splat(size)).intersect(dock_rect);
+    let right = Rect::from_center_size(right_center, Vec2::splat(size)).intersect(dock_rect);
+    let top = Rect::from_center_size(top_center, Vec2::splat(size)).intersect(dock_rect);
+    let bottom = Rect::from_center_size(bottom_center, Vec2::splat(size)).intersect(dock_rect);
+
+    (left.is_positive() && right.is_positive() && top.is_positive() && bottom.is_positive())
+        .then_some(OuterOverlayTargets {
+            left,
+            right,
+            top,
+            bottom,
+        })
+}
+
+fn outer_overlay_for_dock_rect(dock_rect: Rect, pointer: Pos2) -> Option<OuterDockingOverlay> {
+    if !pointer_in_outer_band(dock_rect, pointer) {
+        return None;
+    }
+
+    let targets = outer_overlay_targets_in_rect(dock_rect)?;
+    let hovered = targets.hit_test(pointer, dock_rect.center());
+    Some(OuterDockingOverlay {
+        dock_rect,
+        targets,
+        hovered,
+    })
+}
+
+fn outer_insertion_for_tree<Pane>(
+    tree: &Tree<Pane>,
+    dock_rect: Rect,
+    pointer: Pos2,
+) -> Option<InsertionPoint> {
+    let root = tree.root?;
+    if !pointer_in_outer_band(dock_rect, pointer) {
+        return None;
+    }
+    let overlay = outer_overlay_for_dock_rect(dock_rect, pointer)?;
+    let (target, _rect) = overlay.hovered?;
+
+    Some(match target {
+        OverlayTarget::Left => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Horizontal(0),
+        ),
+        OverlayTarget::Right => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
+        ),
+        OverlayTarget::Top => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0)),
+        OverlayTarget::Bottom => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
+        ),
+        OverlayTarget::Center => return None,
+    })
+}
+
+fn outer_insertion_for_tree_explicit<Pane>(
+    tree: &Tree<Pane>,
+    dock_rect: Rect,
+    pointer: Pos2,
+) -> Option<InsertionPoint> {
+    let root = tree.root?;
+    if !pointer_in_outer_band(dock_rect, pointer) {
+        return None;
+    }
+    let targets = outer_overlay_targets_in_rect(dock_rect)?;
+    let (target, _rect) = targets.hit_test_boxes(pointer)?;
+    Some(match target {
+        OverlayTarget::Left => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Horizontal(0),
+        ),
+        OverlayTarget::Right => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
+        ),
+        OverlayTarget::Top => InsertionPoint::new(root, egui_tiles::ContainerInsertion::Vertical(0)),
+        OverlayTarget::Bottom => InsertionPoint::new(
+            root,
+            egui_tiles::ContainerInsertion::Vertical(usize::MAX),
+        ),
+        OverlayTarget::Center => return None,
+    })
+}
+
+fn overlay_insertion_for_tree_with_outer<Pane>(
+    tree: &Tree<Pane>,
+    dock_rect: Rect,
+    pointer: Pos2,
+) -> Option<InsertionPoint> {
+    // Only consider "outer" docking when the pointer is near the dockspace edge, otherwise it
+    // competes visually with the inner 5-way overlay.
+    if pointer_in_outer_band(dock_rect, pointer) {
+        outer_insertion_for_tree(tree, dock_rect, pointer)
+    } else {
+        overlay_insertion_for_tree(tree, pointer)
+    }
+}
+
+fn overlay_insertion_for_tree_explicit_with_outer<Pane>(
+    tree: &Tree<Pane>,
+    dock_rect: Rect,
+    pointer: Pos2,
+) -> Option<InsertionPoint> {
+    if pointer_in_outer_band(dock_rect, pointer) {
+        outer_insertion_for_tree_explicit(tree, dock_rect, pointer)
+    } else {
+        overlay_insertion_for_tree_explicit(tree, pointer)
+    }
 }
 
 fn overlay_insertion_for_tree<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<InsertionPoint> {
@@ -2210,6 +2981,65 @@ fn paint_overlay(painter: &egui::Painter, visuals: &egui::Visuals, overlay: Dock
                 .split_top_bottom_at_fraction(split_frac)
                 .1
                 .shrink(1.0),
+        };
+
+        let stroke = visuals.selection.stroke;
+        let base = visuals.selection.bg_fill;
+        let fill = with_alpha(base, ((base.a() as f32) * 0.45) as u8);
+        painter.rect(preview_rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
+    }
+
+    let panel_fill = visuals.window_fill().gamma_multiply(0.75);
+    let panel_stroke = visuals.widgets.inactive.bg_stroke;
+    let active_fill = visuals.selection.bg_fill.gamma_multiply(0.85);
+    let active_stroke = visuals.selection.stroke;
+    let inactive_icon = visuals.widgets.inactive.fg_stroke.color;
+    let active_icon = visuals.selection.stroke.color;
+
+    for (t, rect) in overlay.targets.iter() {
+        let hovered = overlay.hovered.is_some_and(|(ht, _)| ht == t);
+        let (fill, stroke) = if hovered {
+            (active_fill, active_stroke)
+        } else {
+            (panel_fill, panel_stroke)
+        };
+
+        painter.rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
+
+        let icon_color = if hovered { active_icon } else { inactive_icon };
+        paint_overlay_icon(painter, rect, t, icon_color);
+    }
+}
+
+fn paint_outer_overlay(
+    painter: &egui::Painter,
+    visuals: &egui::Visuals,
+    overlay: OuterDockingOverlay,
+) {
+    if let Some((target, _rect)) = overlay.hovered {
+        let split_frac = 0.5;
+        let preview_rect = match target {
+            OverlayTarget::Left => overlay
+                .dock_rect
+                .split_left_right_at_fraction(split_frac)
+                .0
+                .shrink(1.0),
+            OverlayTarget::Right => overlay
+                .dock_rect
+                .split_left_right_at_fraction(split_frac)
+                .1
+                .shrink(1.0),
+            OverlayTarget::Top => overlay
+                .dock_rect
+                .split_top_bottom_at_fraction(split_frac)
+                .0
+                .shrink(1.0),
+            OverlayTarget::Bottom => overlay
+                .dock_rect
+                .split_top_bottom_at_fraction(split_frac)
+                .1
+                .shrink(1.0),
+            OverlayTarget::Center => overlay.dock_rect.shrink(1.0),
         };
 
         let stroke = visuals.selection.stroke;
