@@ -98,8 +98,12 @@ impl Default for App {
         let root = tiles.insert_tab_tile(panes);
         let tree = egui_tiles::Tree::new("root_dock", root, tiles);
 
+        let mut docking = egui_docking::DockingMultiViewport::new(tree);
+        docking.options.debug_drop_targets = true;
+        docking.options.debug_event_log = true;
+
         Self {
-            docking: egui_docking::DockingMultiViewport::new(tree),
+            docking,
             behavior: DemoBehavior,
         }
     }
