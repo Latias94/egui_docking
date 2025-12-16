@@ -241,8 +241,12 @@ mod tests {
             .last_dock_rects
             .insert(egui::ViewportId::ROOT, dock_rect);
 
-        let a_rect = docking.tree.tiles.rect(a).expect("pane must have rect");
-        let pointer_over_self = a_rect.center();
+        let root_rect = docking
+            .tree
+            .tiles
+            .rect(root)
+            .expect("root must have rect");
+        let pointer_over_self = root_rect.center();
 
         let surface = DockSurface::DockTree {
             viewport: egui::ViewportId::ROOT,
@@ -258,7 +262,7 @@ mod tests {
             &style,
             surface,
             pointer_over_self,
-            Some(a),
+            Some(root),
         );
         assert!(insertion_with_filter.is_none());
     }

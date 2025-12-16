@@ -430,10 +430,36 @@ fn best_tile_under_pointer<Pane>(tree: &Tree<Pane>, pointer: Pos2) -> Option<(Ti
         if !rect.contains(pointer) {
             continue;
         }
-        let area = rect.width() * rect.height();
+
+        let Some(tile) = tree.tiles.get(tile_id) else {
+            continue;
+        };
+
+        // ImGui parity: the "dock node" under the pointer is a leaf (tab stack), not an
+        // arbitrary split container. Prefer a Tabs container (tab bar + content) as the target.
+        let kind = tile.kind();
+        let (candidate_id, candidate_rect) = match tile {
+            Tile::Pane(_) => {
+                let parent_tabs = tree.tiles.parent_of(tile_id).filter(|&p| {
+                    tree.tiles.get(p).and_then(|t| t.kind()) == Some(ContainerKind::Tabs)
+                });
+                if let Some(parent) = parent_tabs
+                    && let Some(parent_rect) = tree.tiles.rect(parent)
+                    && parent_rect.contains(pointer)
+                {
+                    (parent, parent_rect)
+                } else {
+                    (tile_id, rect)
+                }
+            }
+            Tile::Container(_) if kind == Some(ContainerKind::Tabs) => (tile_id, rect),
+            _ => continue,
+        };
+
+        let area = candidate_rect.width() * candidate_rect.height();
         if area < best_area {
             best_area = area;
-            best = Some((tile_id, rect));
+            best = Some((candidate_id, candidate_rect));
         }
     }
 
