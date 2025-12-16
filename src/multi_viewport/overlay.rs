@@ -57,6 +57,10 @@ impl DockingOverlay {
         self.tile_id
     }
 
+    pub(super) fn tile_rect(self) -> Rect {
+        self.tile_rect
+    }
+
     pub(super) fn hovered_target(self) -> Option<OverlayTarget> {
         self.hovered.map(|(t, _)| t)
     }

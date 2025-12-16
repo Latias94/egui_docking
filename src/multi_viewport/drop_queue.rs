@@ -123,11 +123,13 @@ impl<Pane> DockingMultiViewport<Pane> {
             DockSurface::DockTree { viewport } => WindowHost::DockTree { viewport },
             DockSurface::Floating { viewport, floating } => WindowHost::Floating { viewport, floating },
         };
+        let modifiers = ctx.input(|i| i.modifiers);
         self.pending_local_drop = Some(PendingLocalDrop {
             payload: *payload,
             target_surface,
             target_host,
             pointer_local,
+            modifiers,
         });
 
         egui::DragAndDrop::clear_payload(ctx);
@@ -192,6 +194,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 }
             },
             pointer_local,
+            modifiers: ctx.input(|i| i.modifiers),
         });
 
         egui::DragAndDrop::clear_payload(ctx);
@@ -235,9 +238,11 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
 
+        let modifiers = ctx.input(|i| i.modifiers);
         self.pending_drop = Some(PendingDrop {
             payload: *payload,
             pointer_global,
+            modifiers,
         });
 
         egui::DragAndDrop::clear_payload(ctx);

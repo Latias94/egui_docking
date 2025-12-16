@@ -56,6 +56,10 @@ impl egui_tiles::Behavior<Pane> for DemoBehavior {
         }
     }
 
+    fn is_tab_closable(&self, _tiles: &egui_tiles::Tiles<Pane>, _tile_id: egui_tiles::TileId) -> bool {
+        true
+    }
+
     fn on_tab_button(
         &mut self,
         _tiles: &egui_tiles::Tiles<Pane>,
@@ -132,6 +136,7 @@ impl eframe::App for App {
                     "Tip: release outside dock = new native window. SHIFT detaches whole tab-group; ALT forces tear-off. \
                      Hold CTRL while tearing off to create a contained floating window. \
                      While dragging, use the overlay targets for center/left/right/top/bottom docking. \
+                     Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving. \
                      Drag into any other window to dock back.",
                 )
                 .selectable(false),

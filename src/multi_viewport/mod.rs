@@ -61,6 +61,7 @@ pub struct DockingMultiViewport<Pane> {
     last_dock_rects: BTreeMap<ViewportId, Rect>,
 
     last_pointer_global: Option<Pos2>,
+    last_drag_modifiers: egui::Modifiers,
 
     pending_drop: Option<PendingDrop>,
     pending_internal_drop: Option<PendingInternalDrop>,
@@ -97,6 +98,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             last_root_dock_rect: None,
             last_dock_rects: BTreeMap::new(),
             last_pointer_global: None,
+            last_drag_modifiers: Default::default(),
             pending_drop: None,
             pending_internal_drop: None,
             pending_local_drop: None,
@@ -276,6 +278,17 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
     }
 
+    fn window_move_docking_enabled_now(&self, ctx: &Context) -> bool {
+        let shift = if egui::DragAndDrop::payload::<DockPayload>(ctx)
+            .is_some_and(|p| p.bridge_id == self.tree.id() && p.tile_id.is_none())
+        {
+            self.last_drag_modifiers.shift
+        } else {
+            ctx.input(|i| i.modifiers.shift)
+        };
+        self.options.window_move_docking_enabled_by_shift(shift)
+    }
+
     fn allocate_floating_id(&mut self) -> FloatingId {
         let serial = self.next_floating_serial;
         self.next_floating_serial = self.next_floating_serial.saturating_add(1);
@@ -328,6 +341,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         };
         if payload.bridge_id != self.tree.id() {
             return;
+        }
+        if ctx.viewport_id() == payload.source_viewport {
+            self.last_drag_modifiers = ctx.input(|i| i.modifiers);
         }
         if let Some(msg) = self
             .drag_session
@@ -505,6 +521,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
         let is_cross_viewport = payload.source_viewport != target_viewport;
         let is_window_move = payload.tile_id.is_none();
+        let window_move_docking_enabled = !is_window_move || self.window_move_docking_enabled_now(ui.ctx());
 
         let is_fresh = if let Some(floating_id) = payload.source_floating {
             self.floating
@@ -566,17 +583,28 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let style = ui.ctx().global_style();
-        let decision = decide_overlay_for_tree(
-            tree,
-            behavior,
-            &style,
-            dock_rect,
-            pointer_local,
-            self.options.show_outer_overlay_targets,
-            drag_kind,
-        );
+        let decision = if window_move_docking_enabled {
+            decide_overlay_for_tree(
+                tree,
+                behavior,
+                &style,
+                dock_rect,
+                pointer_local,
+                self.options.show_outer_overlay_targets,
+                drag_kind,
+            )
+        } else {
+            overlay_decision::OverlayDecision {
+                paint: None,
+                insertion_explicit: None,
+                fallback_zone: None,
+                insertion_final: None,
+                disable_tiles_preview: false,
+            }
+        };
 
-        if let Some(paint) = decision.paint {
+        if window_move_docking_enabled {
+            if let Some(paint) = decision.paint {
             match paint {
                 OverlayPaint::Inner(overlay) => {
                     let painter = ui.ctx().layer_painter(LayerId::new(
@@ -594,10 +622,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                 }
             }
         }
+        }
 
         // Subtree moves: if no explicit target is hit, fall back to `dock_zone_at` preview,
-        // matching `egui_tiles` behavior (ImGui parity: explicit targets win).
-        if matches!(drag_kind, DragKind::Subtree { internal: false, .. })
+        // matching `egui_tiles` behavior. Window moves: fall back to "dock as tab" preview.
+        if window_move_docking_enabled
+            && matches!(drag_kind, DragKind::Subtree { internal: false, .. } | DragKind::WindowMove)
             && decision.insertion_explicit.is_none()
         {
             if let Some(zone) = decision.fallback_zone {
@@ -664,6 +694,13 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             lines.push(format!("is_cross_viewport={is_cross_viewport}"));
             lines.push(format!("drag_kind={drag_kind:?}"));
+            if is_window_move {
+                lines.push(format!(
+                    "window_move_docking_enabled={window_move_docking_enabled} config_docking_with_shift={} shift_held={}",
+                    self.options.config_docking_with_shift,
+                    ui.ctx().input(|i| i.modifiers.shift),
+                ));
+            }
             lines.push(format!(
                 "overlay_paint={}",
                 match decision.paint {

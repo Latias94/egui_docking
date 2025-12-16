@@ -142,4 +142,25 @@ impl<Pane> DockingMultiViewport<Pane> {
             None,
         )
     }
+
+    pub(super) fn window_move_insertion_at_pointer_local(
+        &self,
+        behavior: &dyn Behavior<Pane>,
+        style: &egui::Style,
+        surface: DockSurface,
+        pointer_local: Pos2,
+    ) -> Option<InsertionPoint> {
+        let dock_rect = self.dock_rect_for_surface(surface)?;
+        let tree = self.tree_for_surface(surface)?;
+        let decision = decide_overlay_for_tree(
+            tree,
+            behavior,
+            style,
+            dock_rect,
+            pointer_local,
+            self.options.show_outer_overlay_targets,
+            DragKind::WindowMove,
+        );
+        decision.insertion_final
+    }
 }

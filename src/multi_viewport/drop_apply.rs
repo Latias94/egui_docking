@@ -98,8 +98,30 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         let is_moving_floating_window =
             pending.payload.source_floating.is_some() && pending.payload.tile_id.is_none();
+        if is_moving_floating_window {
+            if !self
+                .options
+                .window_move_docking_enabled_by_shift(pending.modifiers.shift)
+            {
+                if self.options.debug_event_log {
+                    self.debug_log_event(format!(
+                        "apply_local_drop SKIP (shift gating) viewport={:?} floating={:?} shift_held={} config_docking_with_shift={}",
+                        pending.target_surface.viewport(),
+                        pending.payload.source_floating,
+                        pending.modifiers.shift,
+                        self.options.config_docking_with_shift
+                    ));
+                }
+                return;
+            }
+        }
         let insertion = if is_moving_floating_window {
-            self.explicit_insertion_at_pointer_local(pending.target_surface, pending.pointer_local)
+            self.window_move_insertion_at_pointer_local(
+                behavior,
+                ctx.global_style().as_ref(),
+                pending.target_surface,
+                pending.pointer_local,
+            )
         } else {
             self.insertion_at_pointer_local(
                 behavior,
@@ -183,6 +205,23 @@ impl<Pane> DockingMultiViewport<Pane> {
         let Some(pending) = self.pending_drop.take() else {
             return;
         };
+
+        if pending.payload.tile_id.is_none()
+            && !self
+                .options
+                .window_move_docking_enabled_by_shift(pending.modifiers.shift)
+        {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "apply_pending_drop SKIP (shift gating) source_host={:?} source_viewport={:?} shift_held={} config_docking_with_shift={}",
+                    pending.payload.source_host(),
+                    pending.payload.source_viewport,
+                    pending.modifiers.shift,
+                    self.options.config_docking_with_shift
+                ));
+            }
+            return;
+        }
 
         let resolved = self.resolve_cross_viewport_drop(ctx, behavior, pending.payload, pending.pointer_global);
         let Some(resolved) = resolved else {

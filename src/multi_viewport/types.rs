@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use egui::{Pos2, Vec2, ViewportBuilder, ViewportId};
+use egui::{Modifiers, Pos2, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{InsertionPoint, TileId, Tree};
 
 use super::surface::DockSurface;
@@ -47,6 +47,7 @@ pub(super) struct ResolvedDropTarget {
 pub(super) struct PendingDrop {
     pub(super) payload: DockPayload,
     pub(super) pointer_global: Pos2,
+    pub(super) modifiers: Modifiers,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -71,6 +72,7 @@ pub(super) struct PendingLocalDrop {
     pub(super) target_surface: DockSurface,
     pub(super) target_host: WindowHost,
     pub(super) pointer_local: Pos2,
+    pub(super) modifiers: Modifiers,
 }
 
 #[derive(Clone, Copy, Debug)]

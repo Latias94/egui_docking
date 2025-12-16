@@ -3,6 +3,14 @@ use egui::Vec2;
 /// Options for [`super::DockingMultiViewport`].
 #[derive(Clone, Debug)]
 pub struct DockingMultiViewportOptions {
+    /// ImGui parity: controls whether docking during "window move" requires holding SHIFT.
+    ///
+    /// - `false` (ImGui default): holding SHIFT disables docking (useful to move without docking).
+    /// - `true`: holding SHIFT enables docking (reduces visual noise, allows moving freely by default).
+    ///
+    /// This only affects "window move" drags (i.e. payloads with `tile_id == None`), not subtree/tab drags.
+    pub config_docking_with_shift: bool,
+
     /// Fallback inner size (in points) when we can't infer a better size for a torn-off pane.
     pub default_detached_inner_size: Vec2,
 
@@ -63,6 +71,7 @@ pub struct DockingMultiViewportOptions {
 impl Default for DockingMultiViewportOptions {
     fn default() -> Self {
         Self {
+            config_docking_with_shift: false,
             default_detached_inner_size: Vec2::new(480.0, 360.0),
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
@@ -79,5 +88,36 @@ impl Default for DockingMultiViewportOptions {
             debug_integrity: false,
             debug_integrity_panic: false,
         }
+    }
+}
+
+impl DockingMultiViewportOptions {
+    pub(crate) fn window_move_docking_enabled_by_shift(&self, shift_held: bool) -> bool {
+        self.config_docking_with_shift == shift_held
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_docking_with_shift_matches_imgui_default() {
+        let opt = DockingMultiViewportOptions {
+            config_docking_with_shift: false,
+            ..Default::default()
+        };
+        assert!(opt.window_move_docking_enabled_by_shift(false));
+        assert!(!opt.window_move_docking_enabled_by_shift(true));
+    }
+
+    #[test]
+    fn config_docking_with_shift_inverts_behavior_when_enabled() {
+        let opt = DockingMultiViewportOptions {
+            config_docking_with_shift: true,
+            ..Default::default()
+        };
+        assert!(!opt.window_move_docking_enabled_by_shift(false));
+        assert!(opt.window_move_docking_enabled_by_shift(true));
     }
 }

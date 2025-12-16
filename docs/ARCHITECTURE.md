@@ -94,6 +94,12 @@ Policy:
 - External drags (cross-host/cross-viewport): `egui_docking` paints the preview.
   - Subtree moves: explicit overlay targets win; otherwise fall back to `dock_zone_at` (default heuristic).
   - Window moves (`payload.tile_id == None`): docking is **explicit-only** (no docking unless a target is hit).
+    - ImGui parity: also respects SHIFT gating (`DockingMultiViewportOptions::config_docking_with_shift`):
+      - default `false`: holding SHIFT disables docking while moving
+      - `true`: holding SHIFT enables docking while moving
+    - ImGui explicit target rect: for window-move drags, “tab docking” is only allowed when hovering the target:
+      - Tabs tab bar (preferred, supports insertion index), or
+      - the top “title band” of a non-Tabs tile (height = `Behavior::tab_bar_height`).
 
 ## Interaction state machine
 
@@ -110,6 +116,30 @@ We intentionally support two kinds of “windows”, but with one unified UX:
 - **Contained floating window**: `Area`-based window inside a viewport. Used for ghost tear-off and tool windows that must stay inside the editor viewport.
 
 Contained floating windows will never fully match OS-level isolation; that’s acceptable. What must match is **chrome + drag semantics + docking behavior**.
+
+## Tabs & tab-bar UX (tiles-level, ImGui parity)
+
+Important decision: **tab appearance and interaction lives in `egui_tiles` (`repo-ref/egui_tiles_docking`)**, not in `egui_docking`.
+
+Rationale:
+- `egui` does not have a first-class “TabBar/TabItem” widget like Dear ImGui.
+- `egui_tiles` already owns tabs rendering and exposes customization hooks via `Behavior`.
+- If `egui_docking` draws its own tab visuals, we will end up with a third styling system and a fragmented UX.
+
+What we will do (frozen plan):
+- Keep `egui_docking` responsible for multi-viewport bridging and drop policy only (overlay decision, host moves, tear-off).
+- Make ImGui-like tab behavior achievable by configuring `egui_tiles::Behavior`:
+  - title formatting (icon + text)
+  - close button visibility + placement (`Behavior::is_tab_closable`, `on_tab_close`, sizes)
+  - tab active/hover feedback and “drag-over selects tab” semantics
+  - tab bar background as a draggable handle for the parent container (already supported in `egui_tiles`)
+  - tab bar padding/spacing/color to match the editor theme
+- If we need additional controls (e.g. left-side buttons, dock-node menu), we add them as Behavior hooks in `egui_tiles_docking` (default methods only, no breaking API).
+
+Acceptance criteria (ImGui-like baseline):
+- While dragging across windows, the hovered tab target is visually obvious.
+- Releasing over a dock node without explicit split target docks as a tab/center by default.
+- Split docking only happens when explicitly hovering the split targets (directional intent is unambiguous).
 
 ## egui fork plan (recommended changes)
 
