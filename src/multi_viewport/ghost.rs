@@ -7,6 +7,18 @@ use super::title::title_for_detached_subtree;
 use super::types::{DetachedDock, DockPayload, FloatingDockWindow, GhostDrag, GhostDragMode};
 
 impl<Pane> DockingMultiViewport<Pane> {
+    fn is_window_move_payload_active_in_viewport(
+        &self,
+        ctx: &Context,
+        viewport_id: ViewportId,
+    ) -> bool {
+        egui::DragAndDrop::payload::<DockPayload>(ctx).is_some_and(|payload| {
+            payload.bridge_id == self.tree.id()
+                && payload.source_viewport == viewport_id
+                && payload.tile_id.is_none()
+        })
+    }
+
     fn spawn_native_ghost_from_subtree(
         &mut self,
         ctx: &Context,
@@ -99,6 +111,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         behavior: &mut dyn Behavior<Pane>,
         dock_rect: Rect,
     ) {
+        if self.is_window_move_payload_active_in_viewport(ctx, ViewportId::ROOT) {
+            return;
+        }
         if self.pending_drop.is_some()
             || self.pending_internal_drop.is_some()
             || self.pending_local_drop.is_some()
@@ -198,6 +213,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         tree: &mut Tree<Pane>,
         did_tear_off: &mut bool,
     ) {
+        if self.is_window_move_payload_active_in_viewport(ctx, current_viewport) {
+            return;
+        }
         if self.pending_drop.is_some()
             || self.pending_internal_drop.is_some()
             || self.pending_local_drop.is_some()
@@ -300,6 +318,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         behavior: &mut dyn Behavior<Pane>,
         dock_rect: Rect,
     ) {
+        if self.is_window_move_payload_active_in_viewport(ctx, ViewportId::ROOT) {
+            // When moving a whole window (window-move docking), do not start ghost tear-off.
+            return;
+        }
         if !self.options.ghost_tear_off {
             return;
         }
@@ -434,6 +456,17 @@ impl<Pane> DockingMultiViewport<Pane> {
     ) {
         if viewport_id == ViewportId::ROOT {
             // Root uses a specialized implementation to avoid borrowing conflicts.
+            return;
+        }
+        if self.is_window_move_payload_active_in_viewport(ctx, viewport_id) {
+            // IMPORTANT: while we are moving a whole native/contained window host, starting a ghost
+            // tear-off here can extract the whole tree, making the source viewport temporarily empty
+            // (and thus close), which looks like the window "disappeared mid-drag".
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "ghost_skip (window_move payload) viewport={viewport_id:?}"
+                ));
+            }
             return;
         }
 

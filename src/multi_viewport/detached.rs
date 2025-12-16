@@ -4,6 +4,7 @@ use egui_tiles::Behavior;
 use super::DockingMultiViewport;
 use super::title::title_for_detached_tree;
 use super::types::{GhostDrag, GhostDragMode};
+use super::types::DockPayload;
 
 impl<Pane> DockingMultiViewport<Pane> {
     pub(super) fn ui_detached_viewports(
@@ -70,34 +71,129 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
-                egui::Panel::top("egui_docking_detached_top_bar").show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let response = ui
-                            .add(
-                                egui::Label::new(title)
-                                    .selectable(false)
-                                    .sense(egui::Sense::click_and_drag()),
-                            )
-                            .on_hover_cursor(egui::CursorIcon::Grab);
-
-                        if response.drag_started() {
-                            egui::DragAndDrop::set_payload(
-                                ctx,
-                                super::types::DockPayload {
-                                    bridge_id,
-                                    source_viewport: viewport_id,
-                                    source_floating: None,
-                                    tile_id: None,
-                                },
-                            );
-                            ctx.request_repaint_of(ViewportId::ROOT);
-                        }
-                    });
-                });
-
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let dock_rect = ui.available_rect_before_wrap();
                     self.last_dock_rects.insert(viewport_id, dock_rect);
+                    // Hit-testing and drop preview must not depend on draw order. Rebuild the floating
+                    // rect cache before any release/overlay logic runs for this viewport.
+                    self.rebuild_floating_rect_cache_for_viewport(
+                        ctx,
+                        behavior,
+                        dock_rect,
+                        viewport_id,
+                    );
+
+                    // ImGui-like: dragging the tab-bar background of a detached window should move the
+                    // native viewport itself (window-move docking), without adding a second custom title bar.
+                    //
+                    // We only enable this when the detached tree is hosted as a single Tabs root node.
+                    // More complex split layouts should be redocked by dragging individual tabs/panes.
+                    let move_active_id =
+                        egui::Id::new((bridge_id, viewport_id, "egui_docking_detached_window_move_active"));
+                    let grab_id =
+                        egui::Id::new((bridge_id, viewport_id, "egui_docking_detached_window_move_grab"));
+                    let last_local_id = egui::Id::new((
+                        bridge_id,
+                        viewport_id,
+                        "egui_docking_detached_window_move_last_pointer_local",
+                    ));
+
+                    let root_is_tabs = detached
+                        .tree
+                        .root
+                        .and_then(|r| detached.tree.tiles.get(r).and_then(|t| t.kind()))
+                        == Some(egui_tiles::ContainerKind::Tabs);
+                    let dragged_tile = detached.tree.dragged_id_including_root(ctx);
+                    let should_start_window_move =
+                        root_is_tabs && dragged_tile == detached.tree.root && ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false) == false;
+
+                    if should_start_window_move {
+                        self.observe_tiles_drag_detached();
+                        ctx.data_mut(|d| d.insert_temp(move_active_id, true));
+
+                        if self.options.focus_detached_on_custom_title_drag {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        }
+
+                        if let Some(pointer_global) = self.drag_state.pointer_global_fallback(ctx) {
+                            let window_rect =
+                                ctx.input(|i| i.viewport().outer_rect.or(i.viewport().inner_rect));
+                            if let Some(window_rect) = window_rect {
+                                let grab_offset = pointer_global - window_rect.min;
+                                ctx.data_mut(|d| d.insert_temp(grab_id, grab_offset));
+                            }
+                        }
+
+                        egui::DragAndDrop::set_payload(
+                            ctx,
+                            DockPayload {
+                                bridge_id,
+                                source_viewport: viewport_id,
+                                source_floating: None,
+                                tile_id: None,
+                            },
+                        );
+
+                        // Transfer authority away from egui_tiles; we are now in "window move" mode.
+                        ctx.stop_dragging();
+                        ctx.request_repaint_of(ViewportId::ROOT);
+
+                        if self.options.debug_event_log {
+                            self.debug_log_event(format!(
+                                "detached_window_move START viewport={viewport_id:?} root={:?}",
+                                detached.tree.root
+                            ));
+                        }
+                    }
+
+                    let window_move_active =
+                        ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false);
+                    if window_move_active {
+                        // Keep the viewport following the pointer while the payload is active.
+                        //
+                        // IMPORTANT: some platforms stop delivering cursor updates while the native window is moving.
+                        // If we keep recomputing pointer_global from a stale local pointer, we can drift forever.
+                        let pointer_local_now = ctx.input(|i| i.pointer.latest_pos());
+                        let pointer_local_prev = ctx.data(|d| d.get_temp::<egui::Pos2>(last_local_id));
+                        let local_is_fresh = match (pointer_local_now, pointer_local_prev) {
+                            (Some(now), Some(prev)) => (now - prev).length_sq() > 0.25, // ~0.5px threshold
+                            (Some(_), None) => true,
+                            _ => false,
+                        };
+                        if let Some(now) = pointer_local_now {
+                            ctx.data_mut(|d| d.insert_temp(last_local_id, now));
+                        }
+
+                        if local_is_fresh {
+                            if let Some(grab_offset) = ctx.data(|d| d.get_temp::<egui::Vec2>(grab_id))
+                                && let Some(pointer_global) = self.drag_state.pointer_global_fallback(ctx)
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                                    pointer_global - grab_offset,
+                                ));
+                            }
+                        } else if self.options.debug_event_log {
+                            self.debug_log_event(format!(
+                                "detached_window_move SKIP (stale pointer_local) viewport={viewport_id:?} local_now={pointer_local_now:?} local_prev={pointer_local_prev:?}"
+                            ));
+                        }
+
+                        // End on any release.
+                        if ctx.input(|i| i.pointer.any_released()) {
+                            ctx.data_mut(|d| {
+                                d.remove::<bool>(move_active_id);
+                                d.remove::<egui::Vec2>(grab_id);
+                                d.remove::<egui::Pos2>(last_local_id);
+                            });
+                            if self.options.debug_event_log {
+                                self.debug_log_event(format!(
+                                    "detached_window_move END viewport={viewport_id:?}"
+                                ));
+                            }
+                        } else {
+                            ctx.request_repaint_of(ViewportId::ROOT);
+                        }
+                    }
 
                     let took_over_internal_drop = self.process_release_before_detached_tree_ui(
                         ctx,

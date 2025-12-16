@@ -228,6 +228,22 @@ impl<Pane> DockingMultiViewport<Pane> {
         let Some(resolved) = resolved else {
             return;
         };
+
+        // ImGui parity: if we are moving a whole window host (native viewport / contained floating)
+        // and we did not hover an explicit overlay target, releasing must *not* mutate the dock tree.
+        if resolved.payload.tile_id.is_none() && resolved.target.insertion.is_none() {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "apply_pending_drop CANCEL (no overlay target) source_host={:?} target_surface={:?} pointer_local=({:.1},{:.1})",
+                    resolved.payload.source_host(),
+                    resolved.target.target_surface,
+                    resolved.target.pointer_local.x,
+                    resolved.target.pointer_local.y
+                ));
+            }
+            return;
+        }
+
         self.apply_resolved_cross_viewport_drop(ctx, behavior, resolved);
     }
 
@@ -255,7 +271,11 @@ impl<Pane> DockingMultiViewport<Pane> {
         let tree = self.tree_for_surface(target_surface)?;
         let style = ctx.global_style();
         let drag_kind = if is_window_move {
-            DragKind::WindowMove
+            DragKind::WindowMove {
+                tab_dock_requires_explicit_target: self
+                    .options
+                    .window_move_tab_dock_requires_explicit_target,
+            }
         } else {
             DragKind::Subtree {
                 dragged_tile: None,
@@ -312,6 +332,19 @@ impl<Pane> DockingMultiViewport<Pane> {
         behavior: &mut dyn Behavior<Pane>,
         resolved: ResolvedDrop,
     ) {
+        // Defensive guard: some callers may bypass `apply_pending_drop` and call this directly.
+        // If we are moving a whole window host and there is no valid insertion, this must be a no-op.
+        if resolved.payload.tile_id.is_none() && resolved.target.insertion.is_none() {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "apply_cross_viewport_drop CANCEL (no overlay target) source_host={:?} target_surface={:?}",
+                    resolved.payload.source_host(),
+                    resolved.target.target_surface
+                ));
+            }
+            return;
+        }
+
         let source_host = resolved.payload.source_host();
         let subtree = match resolved.payload.tile_id {
             Some(tile_id) => self.take_subtree_from_host_for_drop(ctx, behavior, source_host, tile_id),
@@ -467,5 +500,98 @@ impl<Pane> DockingMultiViewport<Pane> {
             .clone()
             .with_title(title_for_detached_tree(&detached.tree, behavior));
         self.detached.insert(pending.viewport, detached);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::multi_viewport::surface::DockSurface;
+    use crate::multi_viewport::types::{DockPayload, ResolvedDrop, ResolvedDropTarget};
+    use crate::multi_viewport::host::WindowHost;
+
+    #[derive(Default)]
+    struct DummyBehavior;
+
+    impl egui_tiles::Behavior<()> for DummyBehavior {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: egui_tiles::TileId,
+            _pane: &mut (),
+        ) -> egui_tiles::UiResponse {
+            Default::default()
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+            egui::WidgetText::from("pane")
+        }
+    }
+
+    fn new_tree_tabs(id: egui::Id, panes: usize) -> egui_tiles::Tree<()> {
+        let panes = panes.max(1);
+        let mut tiles = egui_tiles::Tiles::default();
+        let mut ids = Vec::with_capacity(panes);
+        for _ in 0..panes {
+            ids.push(tiles.insert_pane(()));
+        }
+        let root = tiles.insert_tab_tile(ids);
+        egui_tiles::Tree::new(id, root, tiles)
+    }
+
+    #[test]
+    fn cross_viewport_window_move_without_target_is_noop() {
+        let root_tree = new_tree_tabs(egui::Id::new("root"), 2);
+        let mut docking = DockingMultiViewport::new(root_tree);
+
+        let detached_viewport = ViewportId::from_hash_of("detached");
+        let detached_tree = new_tree_tabs(egui::Id::new("detached_tree"), 3);
+        let detached_tiles_before = detached_tree.tiles.tile_ids().count();
+        docking.detached.insert(
+            detached_viewport,
+            crate::multi_viewport::types::DetachedDock {
+                tree: detached_tree,
+                builder: egui::ViewportBuilder::default(),
+            },
+        );
+        let root_tiles_before = docking.tree.tiles.tile_ids().count();
+
+        let ctx = egui::Context::default();
+        let mut behavior = DummyBehavior::default();
+        let resolved = ResolvedDrop {
+            payload: DockPayload {
+                bridge_id: docking.tree.id(),
+                source_viewport: detached_viewport,
+                source_floating: None,
+                tile_id: None,
+            },
+            pointer_global: egui::Pos2::new(10.0, 10.0),
+            target: ResolvedDropTarget {
+                target_surface: DockSurface::DockTree {
+                    viewport: ViewportId::ROOT,
+                },
+                target_host: WindowHost::DockTree {
+                    viewport: ViewportId::ROOT,
+                },
+                pointer_local: egui::Pos2::new(100.0, 100.0),
+                insertion: None,
+            },
+        };
+
+        docking.apply_resolved_cross_viewport_drop(&ctx, &mut behavior, resolved);
+
+        assert!(docking.detached.contains_key(&detached_viewport));
+        assert_eq!(docking.tree.tiles.tile_ids().count(), root_tiles_before);
+        assert_eq!(
+            docking
+                .detached
+                .get(&detached_viewport)
+                .unwrap()
+                .tree
+                .tiles
+                .tile_ids()
+                .count(),
+            detached_tiles_before
+        );
     }
 }

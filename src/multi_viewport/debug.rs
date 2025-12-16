@@ -182,6 +182,15 @@ impl<Pane> DockingMultiViewport<Pane> {
         viewport_id: ViewportId,
         tree_id: egui::Id,
     ) {
+        // UX: while dragging, the debug window frequently steals hover/click and makes docking feel broken
+        // (especially when every viewport has a debug window). During an active drag session for this bridge,
+        // hide the debug window and rely on hotkeys for copy-to-clipboard.
+        if egui::DragAndDrop::payload::<super::types::DockPayload>(ctx)
+            .is_some_and(|p| p.bridge_id == self.tree.id())
+        {
+            return;
+        }
+
         let last_drop_debug =
             ctx.data(|d| d.get_temp::<String>(last_drop_debug_text_id(tree_id, viewport_id)));
         let tiles_last_ui =

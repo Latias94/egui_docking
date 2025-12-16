@@ -3,6 +3,18 @@ use egui_tiles::{Behavior, Container, Tile, TileId, Tiles, Tree};
 
 use super::overlay_decision::{decide_overlay_for_tree, DragKind, OverlayPaint};
 
+fn window_move_strict() -> DragKind {
+    DragKind::WindowMove {
+        tab_dock_requires_explicit_target: true,
+    }
+}
+
+fn window_move_relaxed() -> DragKind {
+    DragKind::WindowMove {
+        tab_dock_requires_explicit_target: false,
+    }
+}
+
 #[derive(Default)]
 struct DummyBehavior;
 
@@ -18,6 +30,31 @@ impl Behavior<()> for DummyBehavior {
 
     fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
         "pane".into()
+    }
+}
+
+#[derive(Default)]
+struct NoTabsBehavior;
+
+impl Behavior<()> for NoTabsBehavior {
+    fn pane_ui(
+        &mut self,
+        _ui: &mut egui::Ui,
+        _tile_id: TileId,
+        _pane: &mut (),
+    ) -> egui_tiles::UiResponse {
+        Default::default()
+    }
+
+    fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+        "pane".into()
+    }
+
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        egui_tiles::SimplificationOptions {
+            all_panes_must_have_tabs: false,
+            ..Default::default()
+        }
     }
 }
 
@@ -104,14 +141,16 @@ fn internal_drag_only_paints_on_explicit_hit() {
 }
 
 #[test]
-fn window_move_docks_from_content_area_without_explicit_target() {
+fn window_move_does_not_dock_from_content_area_without_explicit_target() {
     let mut behavior = DummyBehavior::default();
     let (mut tree, _a, b) = tabs_tree_two_panes_active(1);
     let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
 
     let b_rect = tree.tiles.rect(b).expect("active pane must have rect");
 
-    // Pick a point inside the active tile but away from the center overlay target boxes.
+    // Pick a point inside the active tile but away from both:
+    // - the explicit target rect (tab bar)
+    // - the center overlay target boxes
     let pointer_no_hit =
         b_rect.center() + Vec2::new((b_rect.width() * 0.35).min(240.0), 0.0);
     let decision = decide_overlay_for_tree(
@@ -121,12 +160,12 @@ fn window_move_docks_from_content_area_without_explicit_target() {
         dock_rect,
         pointer_no_hit,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
     assert!(decision.paint.is_some());
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_some());
-    assert!(decision.insertion_final.is_some());
+    assert!(decision.fallback_zone.is_none());
+    assert!(decision.insertion_final.is_none());
 
     let pointer_hit = b_rect.center();
     let decision = decide_overlay_for_tree(
@@ -136,9 +175,33 @@ fn window_move_docks_from_content_area_without_explicit_target() {
         dock_rect,
         pointer_hit,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
     // If you hit the explicit center overlay target, docking is allowed.
+    assert!(decision.insertion_final.is_some());
+}
+
+#[test]
+fn window_move_can_be_configured_to_tab_dock_from_content_area() {
+    let mut behavior = DummyBehavior::default();
+    let (mut tree, _a, b) = tabs_tree_two_panes_active(1);
+    let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
+
+    let b_rect = tree.tiles.rect(b).expect("active pane must have rect");
+    let pointer_no_hit =
+        b_rect.center() + Vec2::new((b_rect.width() * 0.35).min(240.0), 0.0);
+
+    let decision = decide_overlay_for_tree(
+        &tree,
+        &behavior,
+        &style,
+        dock_rect,
+        pointer_no_hit,
+        true,
+        window_move_relaxed(),
+    );
+    assert!(decision.insertion_explicit.is_none());
+    assert!(decision.fallback_zone.is_some());
     assert!(decision.insertion_final.is_some());
 }
 
@@ -160,17 +223,16 @@ fn window_move_docks_when_hovering_tab_bar() {
         dock_rect,
         pointer_tab_bar,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
-    assert!(matches!(decision.paint, Some(OverlayPaint::Inner(_))));
-    assert!(decision.insertion_explicit.is_none());
+    // Strict window-move docking from the tab bar should always be allowed and deterministic.
     assert!(decision.fallback_zone.is_some());
     assert!(decision.insertion_final.is_some());
 }
 
 #[test]
 fn window_move_docks_when_hovering_title_band_on_non_tabs_tile() {
-    let mut behavior = DummyBehavior::default();
+    let mut behavior = NoTabsBehavior::default();
     let (mut tree, root) = single_pane_tree();
     let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
 
@@ -185,12 +247,12 @@ fn window_move_docks_when_hovering_title_band_on_non_tabs_tile() {
         dock_rect,
         pointer_title_band,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
     assert!(decision.fallback_zone.is_some());
     assert!(decision.insertion_final.is_some());
 
-    // A point in the content area but away from the overlay target boxes.
+    // A point in the content area but away from the overlay target boxes and title band.
     let pointer_content = root_rect.center() + Vec2::new((root_rect.width() * 0.35).min(240.0), 0.0);
     let decision = decide_overlay_for_tree(
         &tree,
@@ -199,15 +261,15 @@ fn window_move_docks_when_hovering_title_band_on_non_tabs_tile() {
         dock_rect,
         pointer_content,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_some());
-    assert!(decision.insertion_final.is_some());
+    assert!(decision.fallback_zone.is_none());
+    assert!(decision.insertion_final.is_none());
 }
 
 #[test]
-fn window_move_in_outer_band_without_explicit_target_still_allows_tab_dock() {
+fn window_move_in_outer_band_without_explicit_target_is_disallowed() {
     let mut behavior = DummyBehavior::default();
     let (mut tree, _a, b) = tabs_tree_two_panes_active(1);
     let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
@@ -228,12 +290,12 @@ fn window_move_in_outer_band_without_explicit_target_still_allows_tab_dock() {
         dock_rect,
         pointer_outer_band,
         true,
-        DragKind::WindowMove,
+        window_move_strict(),
     );
     assert!(matches!(decision.paint, Some(OverlayPaint::Outer(_))));
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_some());
-    assert!(decision.insertion_final.is_some());
+    assert!(decision.fallback_zone.is_none());
+    assert!(decision.insertion_final.is_none());
 }
 
 #[test]

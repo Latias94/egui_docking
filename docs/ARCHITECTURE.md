@@ -38,6 +38,23 @@ Bridge `egui_tiles` (dock tree model) with `egui` multi-viewport (multiple nativ
 3. **One window concept**: native viewports and contained floating windows must share the same chrome (frame/title/controls) and the same drag semantics.
 4. **Debuggability by copy-paste**: every confusing interaction must be explainable via deterministic, copyable logs.
 
+## Fixed constraints & trade-offs (frozen)
+
+To keep the design closed-loop and avoid drifting UX, we freeze these constraints:
+
+1. **`egui::Window` is not the docking unit**
+   - `egui::Window` remains a floating/overlay container (dialogs, popups, inspectors), not something that becomes a docked tab.
+   - Docking units are modeled as tiles/panes (and window hosts) managed by `egui_tiles` + `egui_docking`.
+2. **Dockable things use a single abstraction**
+   - “Dockable/Tool windows” are represented as panes/trees that can be hosted as: docked, contained-floating, or native viewport.
+   - We do not try to embed an `egui::Window` as a docked tab; that would create two window systems with conflicting input/z-order semantics.
+3. **Native OS chrome is kept initially**
+   - Detached native viewports keep OS decorations while we stabilize interaction parity.
+   - Client-side decorations remain an optional later step (P2) for full ImGui-like unity, at the cost of platform edge cases.
+4. **Discoverability wins by default**
+   - Single-tab dock nodes keep a visible header/tab bar by default (ImGui baseline).
+   - Optional “auto-hide tab bar for single tab” is allowed as a non-default preference.
+
 ## Stability invariants (must never be violated)
 
 These invariants define the “closed loop” correctness contract:
@@ -100,6 +117,14 @@ Policy:
     - ImGui explicit target rect: for window-move drags, “tab docking” is only allowed when hovering the target:
       - Tabs tab bar (preferred, supports insertion index), or
       - the top “title band” of a non-Tabs tile (height = `Behavior::tab_bar_height`).
+    - Release without a hovered target must be a no-op (keep the window floating); it must not mutate any dock tree.
+
+### Geometry cache (hit-testing must not depend on draw order)
+
+Some targets (contained floating windows) are not part of `egui_tiles` layout and require our own rect tracking.
+
+Rule: every viewport rebuilds its “floating rect cache” *before* any overlay decision / drop resolution runs for that frame.
+This keeps hit-testing and preview stable regardless of whether floating windows are drawn before or after the dock tree.
 
 ## Interaction state machine
 
@@ -116,6 +141,26 @@ We intentionally support two kinds of “windows”, but with one unified UX:
 - **Contained floating window**: `Area`-based window inside a viewport. Used for ghost tear-off and tool windows that must stay inside the editor viewport.
 
 Contained floating windows will never fully match OS-level isolation; that’s acceptable. What must match is **chrome + drag semantics + docking behavior**.
+
+### Detached viewport drag handle (ImGui-like)
+
+Detached native viewports should not show an extra, second “title label” widget. Instead, we treat the `egui_tiles` tab bar as the drag handle:
+
+- Drag the **tab-bar background** of a detached window to move the native viewport and perform window-move docking (moves the whole dock node, like ImGui when a floating dock node has multiple tabs).
+- Drag individual tabs/panes to move/tear-off those panes (subtree drag), as usual.
+
+This keeps the UI consistent: a single, discoverable handle per dock node.
+
+## DockableWindow / ToolWindow model (recommended)
+
+We treat the editor as a collection of “dockable windows” that can be hosted in three ways:
+
+- **Docked**: rendered as an `egui_tiles` pane within a dock tree (tab/split managed by tiles).
+- **Contained floating**: rendered as an `Area`-based floating window inside a viewport (same chrome, clipped).
+- **Native viewport**: rendered in a real OS window via `show_viewport_immediate` (initially with OS decorations).
+
+`egui::Window` remains available inside any viewport (including detached ones), but only for overlay UI
+that should not participate in docking (dialogs/pickers/context UI).
 
 ## Tabs & tab-bar UX (tiles-level, ImGui parity)
 
@@ -134,6 +179,8 @@ What we will do (frozen plan):
   - tab active/hover feedback and “drag-over selects tab” semantics
   - tab bar background as a draggable handle for the parent container (already supported in `egui_tiles`)
   - tab bar padding/spacing/color to match the editor theme
+- Default policy (ImGui baseline): every dock node shows a header/tab bar even when it contains a single tab/pane. This keeps the drag handle discoverable and makes window-move docking targets reliable.
+- Optional polish (non-default): an “auto-hide tab bar when single tab” toggle (ImGui has `AutoHideTabBar`-like behavior) for users who prefer a Unity-like cleaner layout.
 - If we need additional controls (e.g. left-side buttons, dock-node menu), we add them as Behavior hooks in `egui_tiles_docking` (default methods only, no breaking API).
 
 Acceptance criteria (ImGui-like baseline):

@@ -30,6 +30,8 @@ mod model_tests;
 mod world_model_tests;
 #[cfg(test)]
 mod overlay_decision_tests;
+#[cfg(test)]
+mod ghost_tests;
 
 pub use options::DockingMultiViewportOptions;
 
@@ -154,6 +156,12 @@ impl<Pane> DockingMultiViewport<Pane> {
             let dock_rect = ui.available_rect_before_wrap();
             self.last_root_dock_rect = Some(dock_rect);
             self.last_dock_rects.insert(ViewportId::ROOT, dock_rect);
+            self.rebuild_floating_rect_cache_for_viewport(
+                ui.ctx(),
+                behavior,
+                dock_rect,
+                ViewportId::ROOT,
+            );
 
             let took_over_internal_drop =
                 self.process_release_before_root_tree_ui(ui.ctx(), behavior, dock_rect);
@@ -478,18 +486,136 @@ impl<Pane> DockingMultiViewport<Pane> {
         } else {
             self.detached.contains_key(&payload.source_viewport)
         };
+
+        let pointer_global_last = self.drag_state.last_pointer_global();
+        let pointer_local_opt = pointer_pos_in_viewport_space(ui.ctx(), pointer_global_last);
+        let pointer_in_dock = pointer_local_opt.is_some_and(|p| dock_rect.contains(p));
+
+        let show_debug = |debug_text: String| {
+            let log_text = self.debug_log_text();
+            let ctx = ui.ctx();
+            ctx.data_mut(|d| {
+                d.insert_temp(
+                    last_drop_debug_text_id(tree.id(), target_viewport),
+                    debug_text.clone(),
+                );
+            });
+
+            let (copy_drop_debug, copy_event_log) = ctx.input(|i| {
+                let primary = i.modifiers.command || i.modifiers.ctrl;
+                let shift = i.modifiers.shift;
+                (
+                    primary && shift && i.key_pressed(egui::Key::D),
+                    primary && shift && i.key_pressed(egui::Key::L),
+                )
+            });
+            if copy_drop_debug {
+                ctx.copy_text(debug_text.clone());
+            }
+            if copy_event_log {
+                ctx.copy_text(log_text.clone());
+            }
+
+            let debug_id = egui::Id::new((
+                tree.id(),
+                target_viewport,
+                "egui_docking_debug_drop_targets",
+            ));
+            egui::Area::new(debug_id)
+                .order(Order::Foreground)
+                .fixed_pos(dock_rect.left_top() + egui::Vec2::new(8.0, 8.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(dock_rect));
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_max_width((dock_rect.width() * 0.75).max(240.0));
+                        if self.options.debug_event_log {
+                            ui.label(
+                                "提示：拖拽中无法点击按钮；请用快捷键 Cmd/Ctrl+Shift+D/L 复制，或松手后在 Dock Debug 窗口点击按钮。",
+                            );
+                            ui.separator();
+                        }
+
+                        ui.label(debug_text);
+
+                        if self.options.debug_event_log {
+                            ui.separator();
+                            egui::ScrollArea::vertical()
+                                .id_salt((tree.id(), target_viewport, "egui_docking_debug_drop_targets_log"))
+                                .max_height(180.0)
+                                .show(ui, |ui| {
+                                    ui.label(log_text);
+                                });
+                        }
+                    });
+                });
+        };
+
         if !is_fresh {
+            if self.options.debug_drop_targets {
+                let mut lines = Vec::new();
+                lines.push(format!("viewport={target_viewport:?}"));
+                lines.push(format!("tree_root={:?}", tree.root));
+                lines.push(format!("payload_source_viewport={:?}", payload.source_viewport));
+                lines.push(format!("payload_source_floating={:?}", payload.source_floating));
+                lines.push(format!("payload_tile_id={:?}", payload.tile_id));
+                lines.push(format!("is_cross_viewport={is_cross_viewport}"));
+                lines.push(format!("is_fresh=false (stale payload)"));
+                if let Some(p) = pointer_global_last {
+                    lines.push(format!("pointer_global_last=({:.1},{:.1})", p.x, p.y));
+                } else {
+                    lines.push("pointer_global_last=None".to_owned());
+                }
+                lines.push(format!("pointer_local={pointer_local_opt:?}"));
+                lines.push(format!("pointer_in_dock={pointer_in_dock}"));
+                show_debug(lines.join("\n"));
+            }
+            ui.ctx().request_repaint();
             return;
         }
 
-        let Some(pointer_local) = pointer_pos_in_viewport_space(
-            ui.ctx(),
-            self.drag_state.last_pointer_global(),
-        )
-        else {
+        let Some(pointer_local) = pointer_local_opt else {
+            if self.options.debug_drop_targets {
+                let mut lines = Vec::new();
+                lines.push(format!("viewport={target_viewport:?}"));
+                lines.push(format!("tree_root={:?}", tree.root));
+                lines.push(format!("payload_source_viewport={:?}", payload.source_viewport));
+                lines.push(format!("payload_source_floating={:?}", payload.source_floating));
+                lines.push(format!("payload_tile_id={:?}", payload.tile_id));
+                lines.push(format!("is_cross_viewport={is_cross_viewport}"));
+                lines.push("pointer_local=None (global pointer not mapped into this viewport)".to_owned());
+                if let Some(p) = pointer_global_last {
+                    lines.push(format!("pointer_global_last=({:.1},{:.1})", p.x, p.y));
+                } else {
+                    lines.push("pointer_global_last=None".to_owned());
+                }
+                show_debug(lines.join("\n"));
+            }
+            ui.ctx().request_repaint();
             return;
         };
+
         if !dock_rect.contains(pointer_local) {
+            if self.options.debug_drop_targets {
+                let mut lines = Vec::new();
+                lines.push(format!("viewport={target_viewport:?}"));
+                lines.push(format!("tree_root={:?}", tree.root));
+                lines.push(format!("payload_source_viewport={:?}", payload.source_viewport));
+                lines.push(format!("payload_source_floating={:?}", payload.source_floating));
+                lines.push(format!("payload_tile_id={:?}", payload.tile_id));
+                lines.push(format!("is_cross_viewport={is_cross_viewport}"));
+                lines.push(format!(
+                    "pointer_local=({:.1},{:.1}) outside dock_rect",
+                    pointer_local.x, pointer_local.y
+                ));
+                if let Some(p) = pointer_global_last {
+                    lines.push(format!("pointer_global_last=({:.1},{:.1})", p.x, p.y));
+                } else {
+                    lines.push("pointer_global_last=None".to_owned());
+                }
+                show_debug(lines.join("\n"));
+            }
+            ui.ctx().request_repaint();
             return;
         }
         let excluded_floating = (payload.source_viewport == target_viewport)
@@ -503,6 +629,21 @@ impl<Pane> DockingMultiViewport<Pane> {
             )
             .is_some_and(|floating_tree_id| floating_tree_id != tree.id())
         {
+            if self.options.debug_drop_targets {
+                let mut lines = Vec::new();
+                lines.push(format!("viewport={target_viewport:?}"));
+                lines.push(format!("tree_root={:?}", tree.root));
+                lines.push(format!("payload_source_viewport={:?}", payload.source_viewport));
+                lines.push(format!("payload_source_floating={:?}", payload.source_floating));
+                lines.push(format!("payload_tile_id={:?}", payload.tile_id));
+                lines.push(format!("is_cross_viewport={is_cross_viewport}"));
+                lines.push(format!(
+                    "pointer_local=({:.1},{:.1}) pointer over other floating tree -> skip",
+                    pointer_local.x, pointer_local.y
+                ));
+                show_debug(lines.join("\n"));
+            }
+            ui.ctx().request_repaint();
             return;
         }
 
@@ -510,7 +651,11 @@ impl<Pane> DockingMultiViewport<Pane> {
             .then(|| tree.dragged_id_including_root(ui.ctx()))
             .flatten();
         let drag_kind = if is_window_move {
-            DragKind::WindowMove
+            DragKind::WindowMove {
+                tab_dock_requires_explicit_target: self
+                    .options
+                    .window_move_tab_dock_requires_explicit_target,
+            }
         } else {
             DragKind::Subtree {
                 dragged_tile: internal_dragged_tile,
@@ -520,6 +665,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         if matches!(drag_kind, DragKind::Subtree { internal: true, .. })
             && !self.options.show_overlay_for_internal_drags
         {
+            ui.ctx().request_repaint();
             return;
         }
 
@@ -568,19 +714,20 @@ impl<Pane> DockingMultiViewport<Pane> {
         // Subtree moves: if no explicit target is hit, fall back to `dock_zone_at` preview,
         // matching `egui_tiles` behavior. Window moves: fall back to "dock as tab" preview.
         if window_move_docking_enabled
-            && matches!(drag_kind, DragKind::Subtree { internal: false, .. } | DragKind::WindowMove)
+            && matches!(drag_kind, DragKind::Subtree { internal: false, .. } | DragKind::WindowMove { .. })
             && decision.insertion_explicit.is_none()
         {
             if let Some(zone) = decision.fallback_zone {
                 let stroke = ui.visuals().selection.stroke;
                 let fill = stroke.color.gamma_multiply(0.25);
-                ui.painter().rect(
-                    zone.preview_rect,
-                    1.0,
-                    fill,
-                    stroke,
-                    egui::StrokeKind::Inside,
-                );
+                // Paint on the foreground layer so the highlight remains visible even when
+                // floating windows are drawn above the dock UI.
+                let painter = ui.ctx().layer_painter(LayerId::new(
+                    Order::Foreground,
+                    egui::Id::new((tree.id(), target_viewport, "egui_docking_fallback_preview")),
+                ));
+                let painter = painter.with_clip_rect(dock_rect);
+                painter.rect(zone.preview_rect, 1.0, fill, stroke, egui::StrokeKind::Inside);
             }
         }
 
@@ -646,6 +793,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                     self.options.config_docking_with_shift,
                     ui.ctx().input(|i| i.modifiers.shift),
                 ));
+                lines.push(format!(
+                    "window_move_tab_dock_requires_explicit_target={}",
+                    self.options.window_move_tab_dock_requires_explicit_target
+                ));
             }
             lines.push(format!(
                 "overlay_paint={}",
@@ -670,64 +821,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 decision.disable_tiles_preview
             ));
 
-            let debug_text = lines.join("\n");
-            let log_text = self.debug_log_text();
-            let ctx = ui.ctx();
-            ctx.data_mut(|d| {
-                d.insert_temp(
-                    last_drop_debug_text_id(tree.id(), target_viewport),
-                    debug_text.clone(),
-                );
-            });
-
-            let (copy_drop_debug, copy_event_log) = ctx.input(|i| {
-                let primary = i.modifiers.command || i.modifiers.ctrl;
-                let shift = i.modifiers.shift;
-                (
-                    primary && shift && i.key_pressed(egui::Key::D),
-                    primary && shift && i.key_pressed(egui::Key::L),
-                )
-            });
-            if copy_drop_debug {
-                ctx.copy_text(debug_text.clone());
-            }
-            if copy_event_log {
-                ctx.copy_text(log_text.clone());
-            }
-
-            let debug_id = egui::Id::new((
-                tree.id(),
-                target_viewport,
-                "egui_docking_debug_drop_targets",
-            ));
-            egui::Area::new(debug_id)
-                .order(Order::Foreground)
-                .fixed_pos(dock_rect.left_top() + egui::Vec2::new(8.0, 8.0))
-                .interactable(false)
-                .show(ctx, |ui| {
-                    ui.set_clip_rect(ui.clip_rect().intersect(dock_rect));
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_max_width((dock_rect.width() * 0.75).max(240.0));
-                        if self.options.debug_event_log {
-                            ui.label(
-                                "提示：拖拽中无法点击按钮；请用快捷键 Cmd/Ctrl+Shift+D/L 复制，或松手后在 Dock Debug 窗口点击按钮。",
-                            );
-                            ui.separator();
-                        }
-
-                        ui.label(debug_text);
-
-                        if self.options.debug_event_log {
-                            ui.separator();
-                            egui::ScrollArea::vertical()
-                                .id_salt((tree.id(), target_viewport, "egui_docking_debug_drop_targets_log"))
-                                .max_height(180.0)
-                                .show(ui, |ui| {
-                                    ui.label(log_text);
-                                });
-                        }
-                    });
-                });
+            show_debug(lines.join("\n"));
         }
 
         ui.ctx().request_repaint();

@@ -175,7 +175,11 @@ impl<Pane> DockingMultiViewport<Pane> {
             dock_rect,
             pointer_local,
             self.options.show_outer_overlay_targets,
-            DragKind::WindowMove,
+            DragKind::WindowMove {
+                tab_dock_requires_explicit_target: self
+                    .options
+                    .window_move_tab_dock_requires_explicit_target,
+            },
         );
         decision.insertion_final
     }

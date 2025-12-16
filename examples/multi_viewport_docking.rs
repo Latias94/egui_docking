@@ -131,12 +131,31 @@ impl eframe::App for App {
                     .selectable(false),
                 );
             });
+            ui.horizontal(|ui| {
+                ui.checkbox(
+                    &mut self.docking.options.config_docking_with_shift,
+                    "ImGui: io.ConfigDockingWithShift",
+                );
+                ui.checkbox(
+                    &mut self
+                        .docking
+                        .options
+                        .window_move_tab_dock_requires_explicit_target,
+                    "ImGui: window-move tab dock requires target title/tab-bar",
+                );
+                ui.checkbox(
+                    &mut self.docking.options.focus_detached_on_custom_title_drag,
+                    "Focus detached while dragging custom title bar",
+                );
+            });
             ui.add(
                 egui::Label::new(
                     "Tip: release outside dock = new native window. SHIFT detaches whole tab-group; ALT forces tear-off. \
                      Hold CTRL while tearing off to create a contained floating window. \
                      While dragging, use the overlay targets for center/left/right/top/bottom docking. \
-                     Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving. \
+                     Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving (unless ConfigDockingWithShift is enabled). \
+                     In a detached viewport, drag the custom top bar label to move the native window (avoids OS title-bar capture issues). \
+                     For window-move tab docking, hover the target window's title/tab bar (or use overlay targets). \
                      Drag into any other window to dock back.",
                 )
                 .selectable(false),

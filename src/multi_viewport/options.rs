@@ -22,6 +22,16 @@ pub struct DockingMultiViewportOptions {
     /// even if the cursor is still inside the dock area.
     pub detach_on_alt_release_anywhere: bool,
 
+    /// ImGui parity: when moving a whole window host (native viewport or contained floating),
+    /// only allow "dock as tab" when hovering an explicit target rect (the target tab bar / title bar).
+    ///
+    /// If `false`, allow "dock as tab" anywhere over a dock node (more forgiving, but diverges from ImGui).
+    pub window_move_tab_dock_requires_explicit_target: bool,
+
+    /// If true, dragging the detached viewport's custom top bar will also request `ViewportCommand::Focus`,
+    /// so the moving window is brought to front (reduces confusion when the window moves behind others).
+    pub focus_detached_on_custom_title_drag: bool,
+
     /// If true, show ImGui-style docking overlay targets even for drags that stay within the same viewport.
     pub show_overlay_for_internal_drags: bool,
 
@@ -75,6 +85,8 @@ impl Default for DockingMultiViewportOptions {
             default_detached_inner_size: Vec2::new(480.0, 360.0),
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
+            window_move_tab_dock_requires_explicit_target: true,
+            focus_detached_on_custom_title_drag: true,
             show_overlay_for_internal_drags: true,
             show_outer_overlay_targets: true,
             tear_off_to_floating_on_ctrl: true,

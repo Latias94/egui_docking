@@ -8,11 +8,29 @@ use super::overlay::{
     OverlayTarget,
 };
 
-fn best_tile_under_pointer<Pane>(tree: &Tree<Pane>, pointer_local: Pos2) -> Option<(TileId, Rect)> {
+fn best_tabs_or_pane_under_pointer<Pane>(
+    tree: &Tree<Pane>,
+    pointer_local: Pos2,
+) -> Option<(TileId, Rect)> {
     let mut best: Option<(TileId, Rect)> = None;
     let mut best_area = f32::INFINITY;
 
     for tile_id in tree.active_tiles() {
+        // For ImGui parity we only want to consider:
+        // - leaf panes (window content)
+        // - Tabs containers (tab bar/title region)
+        //
+        // Never consider Linear/Grid containers as "tab docking" targets, otherwise we can end up
+        // turning an entire split layout into a single tab.
+        let is_pane = matches!(tree.tiles.get(tile_id), Some(egui_tiles::Tile::Pane(_)));
+        let is_tabs = tree
+            .tiles
+            .get(tile_id)
+            .and_then(|t| t.kind())
+            == Some(egui_tiles::ContainerKind::Tabs);
+        if !(is_pane || is_tabs) {
+            continue;
+        }
         let Some(rect) = tree.tiles.rect(tile_id) else {
             continue;
         };
@@ -35,18 +53,29 @@ fn window_move_explicit_target_zone_at_pointer<Pane>(
     style: &egui::Style,
     pointer_local: Pos2,
 ) -> Option<DockZone> {
-    let (hit_tile, _rect) = best_tile_under_pointer(tree, pointer_local)?;
+    let (hit_tile, rect) = best_tabs_or_pane_under_pointer(tree, pointer_local)?;
 
     // ImGui explicit target rect:
     // - for docked tabs: the tab bar rect
-    // - otherwise: a title-bar band at the top of the hovered tile
-    let header_tile = tree
+    // - otherwise: a title-bar band at the top of the hovered pane
+    let header_tile = if tree
         .tiles
-        .parent_of(hit_tile)
-        .filter(|&p| tree.tiles.get(p).and_then(|t| t.kind()) == Some(egui_tiles::ContainerKind::Tabs))
-        .unwrap_or(hit_tile);
+        .get(hit_tile)
+        .and_then(|t| t.kind())
+        == Some(egui_tiles::ContainerKind::Tabs)
+    {
+        hit_tile
+    } else {
+        tree.tiles
+            .parent_of(hit_tile)
+            .filter(|&p| {
+                tree.tiles.get(p).and_then(|t| t.kind())
+                    == Some(egui_tiles::ContainerKind::Tabs)
+            })
+            .unwrap_or(hit_tile)
+    };
 
-    let header_rect = tree.tiles.rect(header_tile)?;
+    let header_rect = tree.tiles.rect(header_tile).unwrap_or(rect);
     let title_bar_h = behavior.tab_bar_height(style).at_least(0.0);
     let y = (header_rect.top() + title_bar_h).at_most(header_rect.bottom());
     let title_bar_rect = header_rect.split_top_bottom_at_y(y).0;
@@ -96,12 +125,23 @@ fn window_move_tab_drop_zone_at_pointer<Pane>(
         });
     }
 
-    let (hit_tile, rect) = best_tile_under_pointer(tree, pointer_local)?;
-    let target = tree
+    let (hit_tile, rect) = best_tabs_or_pane_under_pointer(tree, pointer_local)?;
+    let target = if tree
         .tiles
-        .parent_of(hit_tile)
-        .filter(|&p| tree.tiles.get(p).and_then(|t| t.kind()) == Some(egui_tiles::ContainerKind::Tabs))
-        .unwrap_or(hit_tile);
+        .get(hit_tile)
+        .and_then(|t| t.kind())
+        == Some(egui_tiles::ContainerKind::Tabs)
+    {
+        hit_tile
+    } else {
+        tree.tiles
+            .parent_of(hit_tile)
+            .filter(|&p| {
+                tree.tiles.get(p).and_then(|t| t.kind())
+                    == Some(egui_tiles::ContainerKind::Tabs)
+            })
+            .unwrap_or(hit_tile)
+    };
     let preview_rect = tree.tiles.rect(target).unwrap_or(rect);
 
     Some(DockZone {
@@ -113,8 +153,12 @@ fn window_move_tab_drop_zone_at_pointer<Pane>(
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DragKind {
     /// Moving a whole window host (native viewport title bar or contained floating header).
-    /// Splits must be explicit-only; non-split docking falls back to "dock as tab".
-    WindowMove,
+    /// Splits must be explicit-only; tab docking can optionally fall back to wider hit areas.
+    WindowMove {
+        /// If true, only allow "dock as tab" when hovering the explicit target rect (tab bar/title bar),
+        /// matching Dear ImGui behavior.
+        tab_dock_requires_explicit_target: bool,
+    },
     /// Moving a subtree (tab/pane/container).
     Subtree {
         dragged_tile: Option<TileId>,
@@ -221,15 +265,20 @@ pub(super) fn decide_overlay_for_tree<Pane>(
         // Subtree moves: fall back to tiles' heuristic when the overlay isn't explicitly hit.
         DragKind::Subtree { internal: false, .. } => tree.dock_zone_at(behavior, style, pointer_local),
 
-        // Window moves (ImGui-like): if you are not explicitly hitting a split target, default to
-        // "dock as tab" anywhere over a dock node. Splits remain explicit-only.
-        DragKind::WindowMove => window_move_tab_drop_zone_at_pointer(tree, behavior, style, pointer_local),
+        // Window moves (ImGui-like): splits remain explicit-only; tab docking requires hovering
+        // the explicit target rect (tab bar / title bar) unless a more permissive mode is enabled.
+        DragKind::WindowMove {
+            tab_dock_requires_explicit_target: true,
+        } => window_move_explicit_zone,
+        DragKind::WindowMove {
+            tab_dock_requires_explicit_target: false,
+        } => window_move_tab_drop_zone_at_pointer(tree, behavior, style, pointer_local),
 
         _ => None,
     };
 
     let insertion_final = match drag_kind {
-        DragKind::WindowMove => insertion_explicit.or_else(|| fallback_zone.map(|z| z.insertion_point)),
+        DragKind::WindowMove { .. } => insertion_explicit.or_else(|| fallback_zone.map(|z| z.insertion_point)),
         DragKind::Subtree { internal: true, .. } => insertion_explicit,
         DragKind::Subtree { internal: false, .. } => {
             insertion_explicit.or_else(|| fallback_zone.map(|z| z.insertion_point))

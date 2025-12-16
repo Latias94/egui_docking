@@ -12,6 +12,106 @@ use super::types::{
 };
 
 impl<Pane> DockingMultiViewport<Pane> {
+    pub(super) fn rebuild_floating_rect_cache_for_viewport(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        dock_rect: Rect,
+        viewport_id: ViewportId,
+    ) {
+        self.last_floating_rects
+            .retain(|(vid, _fid), _| *vid != viewport_id);
+        self.last_floating_content_rects
+            .retain(|(vid, _fid), _| *vid != viewport_id);
+
+        let Some(manager) = self.floating.get_mut(&viewport_id) else {
+            return;
+        };
+
+        // Ensure z-order is always valid even if callers mutate `manager.windows` directly.
+        manager
+            .z_order
+            .retain(|id| manager.windows.contains_key(id));
+        for id in manager.windows.keys().copied().collect::<Vec<_>>() {
+            if !manager.z_order.contains(&id) {
+                manager.z_order.push(id);
+            }
+        }
+
+        for (&floating_id, window) in manager.windows.iter_mut() {
+            // Keep interactive drags/resizes reflected in the cache even before `ui_floating_windows_in_viewport`
+            // runs this frame (preview/hit-test must not depend on draw order).
+            if let Some(drag) = window.drag {
+                if let Some(pointer) = ctx.input(|i| i.pointer.latest_pos()) {
+                    window.offset_in_dock = drag.offset_start + (pointer - drag.pointer_start);
+                }
+                if ctx.input(|i| i.pointer.any_released()) {
+                    window.drag = None;
+                }
+            }
+            if let Some(resize) = window.resize {
+                let min_size = Vec2::new(220.0, 120.0);
+                if let Some(pointer) = ctx.input(|i| i.pointer.latest_pos()) {
+                    let delta = pointer - resize.pointer_start;
+                    window.size = (resize.size_start + delta).max(min_size);
+                }
+                if ctx.input(|i| i.pointer.any_released()) {
+                    window.resize = None;
+                }
+            }
+
+            let title = title_for_detached_tree(&window.tree, behavior);
+            let mut title_frame = egui::Frame::window(ctx.global_style().as_ref());
+            title_frame.outer_margin = egui::Margin::ZERO;
+            let title_widget_text =
+                egui::WidgetText::from(title).fallback_text_style(egui::TextStyle::Heading);
+            let title_bar_metrics = egui::containers::window_chrome::title_bar_metrics(
+                ctx,
+                &title_widget_text,
+                &mut title_frame,
+                true,
+                window.collapsed,
+            );
+            let title_height = title_bar_metrics.height_with_margin;
+
+            let min_size = Vec2::new(220.0, 120.0);
+            window.size.x = window.size.x.max(min_size.x);
+            window.size.y = window.size.y.max(min_size.y);
+
+            let size = if window.collapsed {
+                Vec2::new(window.size.x.max(96.0), title_height)
+            } else {
+                window.size
+            };
+
+            window.offset_in_dock.x = window
+                .offset_in_dock
+                .x
+                .clamp(0.0, (dock_rect.width() - size.x).max(0.0));
+            window.offset_in_dock.y = window
+                .offset_in_dock
+                .y
+                .clamp(0.0, (dock_rect.height() - size.y).max(0.0));
+
+            let rect = Rect::from_min_size(dock_rect.min + window.offset_in_dock, size);
+            self.last_floating_rects
+                .insert((viewport_id, floating_id), rect);
+
+            let stroke_margin = MarginF32::from(title_frame.stroke.width);
+            let inner_margin = MarginF32::from(title_frame.inner_margin);
+            let frame_content_rect = rect - inner_margin - stroke_margin;
+
+            let title_rect = Rect::from_min_size(
+                frame_content_rect.min,
+                Vec2::new(frame_content_rect.width(), title_height),
+            );
+            let content_rect =
+                Rect::from_min_max(title_rect.left_bottom(), frame_content_rect.max);
+            self.last_floating_content_rects
+                .insert((viewport_id, floating_id), content_rect);
+        }
+    }
+
     pub(super) fn spawn_floating_subtree_in_viewport(
         &mut self,
         ctx: &Context,
@@ -75,11 +175,6 @@ impl<Pane> DockingMultiViewport<Pane> {
         dock_rect: Rect,
         viewport_id: ViewportId,
     ) {
-        self.last_floating_rects
-            .retain(|(vid, _fid), _| *vid != viewport_id);
-        self.last_floating_content_rects
-            .retain(|(vid, _fid), _| *vid != viewport_id);
-
         let mut manager = self.floating.remove(&viewport_id).unwrap_or_default();
         manager
             .z_order
@@ -617,6 +712,15 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         if !manager.windows.is_empty() {
             self.floating.insert(viewport_id, manager);
+            // Refresh caches after any mutations (close/dock/resize/drag) so late-frame hit-testing
+            // (e.g. release handling) doesn't depend on draw order.
+            self.rebuild_floating_rect_cache_for_viewport(ui.ctx(), behavior, dock_rect, viewport_id);
+        } else {
+            // No windows: ensure caches are cleared for this viewport.
+            self.last_floating_rects
+                .retain(|(vid, _fid), _| *vid != viewport_id);
+            self.last_floating_content_rects
+                .retain(|(vid, _fid), _| *vid != viewport_id);
         }
     }
 
@@ -777,5 +881,90 @@ impl<Pane> DockingMultiViewport<Pane> {
             .windows
             .get(&floating_id)
             .map(|w| w.tree.id())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct DummyBehavior;
+
+    impl egui_tiles::Behavior<()> for DummyBehavior {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: egui_tiles::TileId,
+            _pane: &mut (),
+        ) -> egui_tiles::UiResponse {
+            Default::default()
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+            "pane".into()
+        }
+    }
+
+    #[test]
+    fn floating_rect_cache_exists_before_floating_ui() {
+        let mut tiles: egui_tiles::Tiles<()> = egui_tiles::Tiles::default();
+        let root = tiles.insert_pane(());
+        let tree = egui_tiles::Tree::new(egui::Id::new("root"), root, tiles);
+        let mut docking = DockingMultiViewport::new(tree);
+
+        let viewport_id = ViewportId::ROOT;
+        let floating_id = 1_u64;
+        let mut floating_tiles: egui_tiles::Tiles<()> = egui_tiles::Tiles::default();
+        let floating_root = floating_tiles.insert_pane(());
+        let floating_tree =
+            egui_tiles::Tree::new(egui::Id::new("float_tree"), floating_root, floating_tiles);
+
+        docking.floating.insert(
+            viewport_id,
+            super::super::types::FloatingManager {
+                windows: std::collections::BTreeMap::from([(
+                    floating_id,
+                    FloatingDockWindow {
+                        tree: floating_tree,
+                        offset_in_dock: Vec2::new(40.0, 50.0),
+                        size: Vec2::new(320.0, 200.0),
+                        collapsed: false,
+                        drag: None,
+                        resize: None,
+                    },
+                )]),
+                z_order: vec![floating_id],
+            },
+        );
+
+        let ctx = egui::Context::default();
+        let dock_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let mut behavior = DummyBehavior::default();
+
+        // `title_bar_metrics` needs fonts, which are initialized by the first `Context::run`.
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(dock_rect),
+                ..Default::default()
+            },
+            |ctx| {
+                docking.rebuild_floating_rect_cache_for_viewport(
+                    ctx,
+                    &mut behavior,
+                    dock_rect,
+                    viewport_id,
+                );
+            },
+        );
+
+        assert!(docking
+            .last_floating_rects
+            .get(&(viewport_id, floating_id))
+            .is_some());
+        assert!(docking
+            .last_floating_content_rects
+            .get(&(viewport_id, floating_id))
+            .is_some());
     }
 }
