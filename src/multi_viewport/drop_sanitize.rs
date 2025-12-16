@@ -24,12 +24,31 @@ mod tests {
         egui_tiles::SubTree { root, tiles }
     }
 
+    fn subtree_with_child() -> (egui_tiles::SubTree<()>, TileId) {
+        let mut tiles = egui_tiles::Tiles::default();
+        let a = tiles.insert_pane(());
+        let b = tiles.insert_pane(());
+        let root = tiles.insert_tab_tile(vec![a, b]);
+        (egui_tiles::SubTree { root, tiles }, a)
+    }
+
     #[test]
     fn drops_parent_inside_subtree() {
         let subtree = subtree_with_root();
         let insertion = Some(InsertionPoint::new(
             subtree.root,
             egui_tiles::ContainerInsertion::Horizontal(usize::MAX),
+        ));
+        let sanitized = sanitize_insertion_for_subtree(insertion, &subtree, |_| true);
+        assert!(sanitized.is_none());
+    }
+
+    #[test]
+    fn drops_parent_inside_subtree_child() {
+        let (subtree, child) = subtree_with_child();
+        let insertion = Some(InsertionPoint::new(
+            child,
+            egui_tiles::ContainerInsertion::Tabs(usize::MAX),
         ));
         let sanitized = sanitize_insertion_for_subtree(insertion, &subtree, |_| true);
         assert!(sanitized.is_none());

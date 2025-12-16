@@ -1,13 +1,12 @@
 use egui::{Context, Rect, ViewportId};
-use egui_tiles::{TileId, Tree};
+use egui_tiles::{Behavior, TileId, Tree};
 
 use super::DockingMultiViewport;
 use super::drop_policy;
 use super::geometry::{pointer_pos_in_global, viewport_under_pointer_global_excluding};
-use super::overlay::{
-    overlay_insertion_for_tree_explicit_with_outer_considering_dragged, tile_contains_descendant,
-};
+use super::overlay_decision::{decide_overlay_for_tree, DragKind};
 use super::surface::DockSurface;
+use super::host::WindowHost;
 use super::types::{DockPayload, FloatingId, PendingDrop, PendingInternalDrop, PendingLocalDrop};
 
 impl<Pane> DockingMultiViewport<Pane> {
@@ -94,8 +93,8 @@ impl<Pane> DockingMultiViewport<Pane> {
         ) {
             if self.options.debug_event_log {
                 self.debug_log_event(format!(
-                    "local_drop_skip internal_dock_to_dock viewport={viewport_id:?} tile_id={:?}",
-                    payload.tile_id
+                    "local_drop_skip internal_dock_to_dock viewport={viewport_id:?} payload={:?} target_surface={target_surface:?}",
+                    *payload
                 ));
             }
             return;
@@ -120,9 +119,14 @@ impl<Pane> DockingMultiViewport<Pane> {
             ));
         }
 
+        let target_host = match target_surface {
+            DockSurface::DockTree { viewport } => WindowHost::DockTree { viewport },
+            DockSurface::Floating { viewport, floating } => WindowHost::Floating { viewport, floating },
+        };
         self.pending_local_drop = Some(PendingLocalDrop {
             payload: *payload,
             target_surface,
+            target_host,
             pointer_local,
         });
 
@@ -181,6 +185,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                 tile_id: Some(dragged_tile),
             },
             target_surface,
+            target_host: match target_surface {
+                DockSurface::DockTree { viewport } => WindowHost::DockTree { viewport },
+                DockSurface::Floating { viewport, floating } => {
+                    WindowHost::Floating { viewport, floating }
+                }
+            },
             pointer_local,
         });
 
@@ -238,6 +248,7 @@ impl<Pane> DockingMultiViewport<Pane> {
     pub(super) fn pending_internal_overlay_drop_on_release(
         &self,
         ctx: &Context,
+        behavior: &dyn Behavior<Pane>,
         dock_rect: Rect,
         viewport_id: ViewportId,
         tree: &Tree<Pane>,
@@ -264,15 +275,20 @@ impl<Pane> DockingMultiViewport<Pane> {
             return None;
         }
 
-        let insertion = overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
+        let style = ctx.global_style();
+        let decision = decide_overlay_for_tree(
             tree,
+            behavior,
+            &style,
             dock_rect,
             pointer_local,
-            Some(dragged_tile),
-        )?;
-        if tile_contains_descendant(tree, dragged_tile, insertion.parent_id) {
-            return None;
-        }
+            self.options.show_outer_overlay_targets,
+            DragKind::Subtree {
+                dragged_tile: Some(dragged_tile),
+                internal: true,
+            },
+        );
+        let insertion = decision.insertion_final?;
 
         Some(PendingInternalDrop {
             viewport: viewport_id,

@@ -467,6 +467,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
                         self.set_tiles_disable_drop_preview_if_overlay_hovered(
                             &ctx,
+                            behavior,
                             content_rect,
                             viewport_id,
                             &window.tree,

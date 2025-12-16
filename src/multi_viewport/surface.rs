@@ -6,10 +6,8 @@ use super::geometry::{
     pointer_pos_in_target_viewport_space, viewport_under_pointer_global,
     viewport_under_pointer_global_excluding,
 };
-use super::overlay::{
-    overlay_insertion_for_tree_explicit_with_outer_considering_dragged,
-    overlay_insertion_for_tree_with_outer,
-};
+use super::overlay::overlay_insertion_for_tree_explicit_with_outer_considering_dragged;
+use super::overlay_decision::{decide_overlay_for_tree, DragKind};
 use super::types::FloatingId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,11 +113,19 @@ impl<Pane> DockingMultiViewport<Pane> {
     ) -> Option<InsertionPoint> {
         let dock_rect = self.dock_rect_for_surface(surface)?;
         let tree = self.tree_for_surface(surface)?;
-
-        overlay_insertion_for_tree_with_outer(tree, dock_rect, pointer_local).or_else(|| {
-            tree.dock_zone_at(behavior, style, pointer_local)
-                .map(|z| z.insertion_point)
-        })
+        let decision = decide_overlay_for_tree(
+            tree,
+            behavior,
+            style,
+            dock_rect,
+            pointer_local,
+            self.options.show_outer_overlay_targets,
+            DragKind::Subtree {
+                dragged_tile: None,
+                internal: false,
+            },
+        );
+        decision.insertion_final
     }
 
     pub(super) fn explicit_insertion_at_pointer_local(

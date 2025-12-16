@@ -88,6 +88,13 @@ Policy:
 - If overlay has a valid insertion target, overlay is authoritative (and tiles preview is disabled).
 - Otherwise, tiles is authoritative (overlay is hidden).
 
+### Preview/hit-test rules (to avoid “double highlights”)
+
+- Internal drags (within the same tiles tree): `egui_tiles` paints the default preview. `egui_docking` only paints an overlay when it is going to take over (explicit target hit).
+- External drags (cross-host/cross-viewport): `egui_docking` paints the preview.
+  - Subtree moves: explicit overlay targets win; otherwise fall back to `dock_zone_at` (default heuristic).
+  - Window moves (`payload.tile_id == None`): docking is **explicit-only** (no docking unless a target is hit).
+
 ## Interaction state machine
 
 We treat the whole drag as a session, with explicit arbitration on release:

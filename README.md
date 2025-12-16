@@ -45,5 +45,8 @@ cargo run --example multi_viewport_docking
 ## Docs
 
 - `docs/ARCHITECTURE.md`
+- `docs/STATUS.md`
 - `docs/IMGUI_PARITY.md`
+- `docs/ROADMAP.md`
 - `docs/REFACTOR_PLAN.md`
+- `docs/EGUI_FORK_PLAN.md`

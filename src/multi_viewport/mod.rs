@@ -12,9 +12,11 @@ mod drop_sanitize;
 mod floating;
 mod geometry;
 mod ghost;
+mod host;
 mod integrity;
 mod options;
 mod overlay;
+mod overlay_decision;
 mod session;
 mod surface;
 mod title;
@@ -22,17 +24,17 @@ mod types;
 
 #[cfg(test)]
 mod model_tests;
+#[cfg(test)]
+mod world_model_tests;
+#[cfg(test)]
+mod overlay_decision_tests;
 
 pub use options::DockingMultiViewportOptions;
 
 use debug::{debug_clear_event_log_id, last_drop_debug_text_id, tiles_debug_visit_enabled_id};
 use geometry::{pointer_pos_in_global, pointer_pos_in_viewport_space};
-use overlay::overlay_insertion_for_tree_explicit_with_outer_considering_dragged;
-use overlay::{
-    outer_overlay_for_dock_rect, outer_overlay_for_dock_rect_explicit, overlay_for_tree_at_pointer,
-    overlay_for_tree_at_pointer_considering_dragged, overlay_for_tree_at_pointer_explicit,
-    paint_outer_overlay, paint_overlay, pointer_in_outer_band,
-};
+use overlay::{paint_outer_overlay, paint_overlay, pointer_in_outer_band};
+use overlay_decision::{decide_overlay_for_tree, DragKind, OverlayPaint};
 use session::DragSession;
 use types::*;
 
@@ -157,15 +159,16 @@ impl<Pane> DockingMultiViewport<Pane> {
             // Queue cross-viewport drops first so we don't accidentally tear-off when the release
             // is captured by the source window while the pointer is over a different viewport.
             self.queue_pending_drop_on_release(ui.ctx());
-            let internal_drop =
-                if self.pending_drop.is_none() && self.pending_internal_drop.is_none() {
-                    self.pending_internal_overlay_drop_on_release(
-                        ui.ctx(),
-                        dock_rect,
-                        ViewportId::ROOT,
-                        &self.tree,
-                    )
-                } else {
+                    let internal_drop =
+                        if self.pending_drop.is_none() && self.pending_internal_drop.is_none() {
+                            self.pending_internal_overlay_drop_on_release(
+                                ui.ctx(),
+                                behavior,
+                                dock_rect,
+                                ViewportId::ROOT,
+                                &self.tree,
+                            )
+                        } else {
                     None
                 };
             let took_over_internal_drop = internal_drop.is_some();
@@ -199,6 +202,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             );
             self.set_tiles_disable_drop_preview_if_overlay_hovered(
                 ui.ctx(),
+                behavior,
                 dock_rect,
                 ViewportId::ROOT,
                 &self.tree,
@@ -403,46 +407,47 @@ impl<Pane> DockingMultiViewport<Pane> {
     fn set_tiles_disable_drop_preview_if_overlay_hovered(
         &self,
         ctx: &Context,
+        behavior: &dyn Behavior<Pane>,
         dock_rect: Rect,
         viewport_id: ViewportId,
         tree: &Tree<Pane>,
     ) {
-        let dragged_tile = tree.dragged_id_including_root(ctx);
-        let disable_preview = self.options.show_overlay_for_internal_drags
-            && dragged_tile.is_some()
-            && !(self.options.detach_on_alt_release_anywhere && ctx.input(|i| i.modifiers.alt))
-            && ctx
-                .input(|i| i.pointer.latest_pos())
-                .is_some_and(|pointer_local| {
-                    if !dock_rect.contains(pointer_local) {
+        let disable_preview = if !self.options.show_overlay_for_internal_drags {
+            false
+        } else if self.options.detach_on_alt_release_anywhere && ctx.input(|i| i.modifiers.alt) {
+            false
+        } else {
+            let dragged_tile = tree.dragged_id_including_root(ctx);
+            let pointer_local = ctx.input(|i| i.pointer.latest_pos());
+            dragged_tile.zip(pointer_local).is_some_and(|(dragged_tile, pointer_local)| {
+                if !dock_rect.contains(pointer_local) {
+                    return false;
+                }
+
+                if let Some(floating_tree_id) =
+                    self.floating_tree_id_under_pointer(viewport_id, pointer_local)
+                {
+                    if floating_tree_id != tree.id() {
                         return false;
                     }
+                }
 
-                    if let Some(floating_tree_id) =
-                        self.floating_tree_id_under_pointer(viewport_id, pointer_local)
-                    {
-                        if floating_tree_id != tree.id() {
-                            return false;
-                        }
-                    }
-
-                    let Some(dragged_tile) = dragged_tile else {
-                        return false;
-                    };
-
-                    let Some(insertion) =
-                        overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
-                            tree,
-                            dock_rect,
-                            pointer_local,
-                            Some(dragged_tile),
-                        )
-                    else {
-                        return false;
-                    };
-
-                    !overlay::tile_contains_descendant(tree, dragged_tile, insertion.parent_id)
-                });
+                let style = ctx.global_style();
+                let decision = decide_overlay_for_tree(
+                    tree,
+                    behavior,
+                    &style,
+                    dock_rect,
+                    pointer_local,
+                    self.options.show_outer_overlay_targets,
+                    DragKind::Subtree {
+                        dragged_tile: Some(dragged_tile),
+                        internal: true,
+                    },
+                );
+                decision.disable_tiles_preview
+            })
+        };
 
         ctx.data_mut(|d| {
             d.insert_temp(
@@ -499,9 +504,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
         let is_cross_viewport = payload.source_viewport != target_viewport;
-        if !is_cross_viewport && !self.options.show_overlay_for_internal_drags {
-            return;
-        }
+        let is_window_move = payload.tile_id.is_none();
 
         let is_fresh = if let Some(floating_id) = payload.source_floating {
             self.floating
@@ -545,43 +548,59 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
 
-        let internal_dragged_tile = (!is_cross_viewport)
+        let internal_dragged_tile = (payload.source_viewport == target_viewport)
             .then(|| tree.dragged_id_including_root(ui.ctx()))
             .flatten();
-        let is_external_to_tree = internal_dragged_tile.is_none();
+        let drag_kind = if is_window_move {
+            DragKind::WindowMove
+        } else {
+            DragKind::Subtree {
+                dragged_tile: internal_dragged_tile,
+                internal: internal_dragged_tile.is_some(),
+            }
+        };
+        if matches!(drag_kind, DragKind::Subtree { internal: true, .. })
+            && !self.options.show_overlay_for_internal_drags
+        {
+            return;
+        }
 
-        let outer_mode = self.options.show_outer_overlay_targets
-            && pointer_in_outer_band(dock_rect, pointer_local);
+        let style = ui.ctx().global_style();
+        let decision = decide_overlay_for_tree(
+            tree,
+            behavior,
+            &style,
+            dock_rect,
+            pointer_local,
+            self.options.show_outer_overlay_targets,
+            drag_kind,
+        );
 
-        let overlay_insertion = internal_dragged_tile.and_then(|dragged| {
-            overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
-                tree,
-                dock_rect,
-                pointer_local,
-                Some(dragged),
-            )
-            .filter(|ins| !overlay::tile_contains_descendant(tree, dragged, ins.parent_id))
-        });
-
-        // UI principle: show exactly one preview system at a time.
-        // - If the ImGui-style overlay has a valid insertion (i.e. it will be used on release),
-        //   show it and disable the built-in `egui_tiles` drag preview.
-        // - Otherwise fall back to `dock_zone_at` preview, matching `egui_tiles` behavior.
-        if outer_mode {
-            if is_external_to_tree || overlay_insertion.is_some() {
-                let overlay = if is_external_to_tree {
-                    outer_overlay_for_dock_rect_explicit(dock_rect, pointer_local)
-                } else {
-                    outer_overlay_for_dock_rect(dock_rect, pointer_local)
-                };
-                if let Some(overlay) = overlay {
+        if let Some(paint) = decision.paint {
+            match paint {
+                OverlayPaint::Inner(overlay) => {
+                    let painter = ui.ctx().layer_painter(LayerId::new(
+                        Order::Foreground,
+                        egui::Id::new((tree.id(), target_viewport, "egui_docking_overlay")),
+                    ));
+                    paint_overlay(&painter, ui.visuals(), overlay);
+                }
+                OverlayPaint::Outer(overlay) => {
                     let painter = ui.ctx().layer_painter(LayerId::new(
                         Order::Foreground,
                         egui::Id::new((tree.id(), target_viewport, "egui_docking_outer_overlay")),
                     ));
                     paint_outer_overlay(&painter, ui.visuals(), overlay);
                 }
-            } else if let Some(zone) = tree.dock_zone_at(behavior, ui.style(), pointer_local) {
+            }
+        }
+
+        // Subtree moves: if no explicit target is hit, fall back to `dock_zone_at` preview,
+        // matching `egui_tiles` behavior (ImGui parity: explicit targets win).
+        if matches!(drag_kind, DragKind::Subtree { internal: false, .. })
+            && decision.insertion_explicit.is_none()
+        {
+            if let Some(zone) = decision.fallback_zone {
                 let stroke = ui.visuals().selection.stroke;
                 let fill = stroke.color.gamma_multiply(0.25);
                 ui.painter().rect(
@@ -592,34 +611,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                     egui::StrokeKind::Inside,
                 );
             }
-        } else if is_external_to_tree || overlay_insertion.is_some() {
-            let overlay = if is_external_to_tree {
-                overlay_for_tree_at_pointer_explicit(tree, pointer_local)
-                    .or_else(|| overlay_for_tree_at_pointer(tree, pointer_local))
-            } else {
-                overlay_for_tree_at_pointer_considering_dragged(
-                    tree,
-                    pointer_local,
-                    internal_dragged_tile,
-                )
-            };
-            if let Some(overlay) = overlay {
-                let painter = ui.ctx().layer_painter(LayerId::new(
-                    Order::Foreground,
-                    egui::Id::new((tree.id(), target_viewport, "egui_docking_overlay")),
-                ));
-                paint_overlay(&painter, ui.visuals(), overlay);
-            }
-        } else if let Some(zone) = tree.dock_zone_at(behavior, ui.style(), pointer_local) {
-            let stroke = ui.visuals().selection.stroke;
-            let fill = stroke.color.gamma_multiply(0.25);
-            ui.painter().rect(
-                zone.preview_rect,
-                1.0,
-                fill,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
         }
 
         if self.options.debug_drop_targets {
@@ -631,10 +622,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                 tree.dragged_id_including_root(ui.ctx())
             ));
             lines.push(format!(
-                "payload_source_viewport={:?} payload_source_floating={:?}",
-                payload.source_viewport, payload.source_floating
+                "payload_source_host={:?}",
+                payload.source_host()
             ));
             lines.push(format!("payload_tile_id={:?}", payload.tile_id));
+            let outer_mode =
+                self.options.show_outer_overlay_targets && pointer_in_outer_band(dock_rect, pointer_local);
             lines.push(format!(
                 "pointer_local=({:.1},{:.1}) outer_mode={outer_mode}",
                 pointer_local.x, pointer_local.y
@@ -669,71 +662,30 @@ impl<Pane> DockingMultiViewport<Pane> {
                 lines.push(s.to_owned());
             }
 
-            if outer_mode {
-                let overlay = if is_external_to_tree {
-                    outer_overlay_for_dock_rect_explicit(dock_rect, pointer_local)
-                } else {
-                    outer_overlay_for_dock_rect(dock_rect, pointer_local)
-                };
-                if let Some(overlay) = overlay {
-                    lines.push(format!("outer_hover={:?}", overlay.hovered_target()));
-                    lines.push(format!(
-                        "outer_insertion={:?}",
-                        if is_external_to_tree {
-                            overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
-                                tree,
-                                dock_rect,
-                                pointer_local,
-                                None,
-                            )
-                        } else {
-                            overlay::overlay_insertion_for_tree_with_outer(
-                                tree,
-                                dock_rect,
-                                pointer_local,
-                            )
-                        }
-                    ));
-                } else {
-                    lines.push("outer_hover=None".to_owned());
+            lines.push(format!("is_cross_viewport={is_cross_viewport}"));
+            lines.push(format!("drag_kind={drag_kind:?}"));
+            lines.push(format!(
+                "overlay_paint={}",
+                match decision.paint {
+                    Some(OverlayPaint::Inner(_)) => "Inner",
+                    Some(OverlayPaint::Outer(_)) => "Outer",
+                    None => "None",
                 }
-            } else if let Some(overlay) = if is_external_to_tree {
-                overlay_for_tree_at_pointer_explicit(tree, pointer_local)
-                    .or_else(|| overlay_for_tree_at_pointer(tree, pointer_local))
-            } else {
-                overlay_for_tree_at_pointer_considering_dragged(
-                    tree,
-                    pointer_local,
-                    internal_dragged_tile,
-                )
-            } {
-                lines.push(format!("inner_hover={:?}", overlay.hovered_target()));
-                lines.push(format!(
-                    "inner_insertion={:?}",
-                    if is_external_to_tree {
-                        overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
-                            tree,
-                            dock_rect,
-                            pointer_local,
-                            None,
-                        )
-                    } else {
-                        internal_dragged_tile.and_then(|dragged| {
-                            overlay_insertion_for_tree_explicit_with_outer_considering_dragged(
-                                tree,
-                                dock_rect,
-                                pointer_local,
-                                Some(dragged),
-                            )
-                        })
-                    }
-                ));
-            } else if let Some(zone) = tree.dock_zone_at(behavior, ui.style(), pointer_local) {
-                lines.push("inner_hover=None".to_owned());
-                lines.push(format!("tiles_zone_insertion={:?}", zone.insertion_point));
-            } else {
-                lines.push("no_target".to_owned());
-            }
+            ));
+            lines.push(format!(
+                "overlay_hover={:?}",
+                decision.paint.and_then(|p| p.hovered_target())
+            ));
+            lines.push(format!(
+                "fallback_insertion={:?}",
+                decision.fallback_zone.map(|z| z.insertion_point)
+            ));
+            lines.push(format!("insertion_explicit={:?}", decision.insertion_explicit));
+            lines.push(format!("insertion_final={:?}", decision.insertion_final));
+            lines.push(format!(
+                "disable_tiles_preview={}",
+                decision.disable_tiles_preview
+            ));
 
             let debug_text = lines.join("\n");
             let log_text = self.debug_log_text();

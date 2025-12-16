@@ -105,6 +105,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                         if self.pending_drop.is_none() && self.pending_internal_drop.is_none() {
                             self.pending_internal_overlay_drop_on_release(
                                 ctx,
+                                behavior,
                                 dock_rect,
                                 viewport_id,
                                 &detached.tree,
@@ -145,6 +146,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                     );
                     self.set_tiles_disable_drop_preview_if_overlay_hovered(
                         ctx,
+                        behavior,
                         dock_rect,
                         viewport_id,
                         &detached.tree,

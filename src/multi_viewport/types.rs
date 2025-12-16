@@ -4,6 +4,7 @@ use egui::{Pos2, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{InsertionPoint, TileId, Tree};
 
 use super::surface::DockSurface;
+use super::host::WindowHost;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DockPayload {
@@ -13,10 +14,46 @@ pub(super) struct DockPayload {
     pub(super) tile_id: Option<TileId>,
 }
 
+impl DockPayload {
+    pub(super) fn source_host(&self) -> WindowHost {
+        if let Some(floating) = self.source_floating {
+            return WindowHost::Floating {
+                viewport: self.source_viewport,
+                floating,
+            };
+        }
+
+        if self.tile_id.is_none() && self.source_viewport != ViewportId::ROOT {
+            return WindowHost::NativeViewport {
+                viewport: self.source_viewport,
+            };
+        }
+
+        WindowHost::DockTree {
+            viewport: self.source_viewport,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ResolvedDropTarget {
+    pub(super) target_surface: DockSurface,
+    pub(super) target_host: WindowHost,
+    pub(super) pointer_local: Pos2,
+    pub(super) insertion: Option<InsertionPoint>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PendingDrop {
     pub(super) payload: DockPayload,
     pub(super) pointer_global: Pos2,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ResolvedDrop {
+    pub(super) payload: DockPayload,
+    pub(super) pointer_global: Pos2,
+    pub(super) target: ResolvedDropTarget,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +69,7 @@ pub(super) type FloatingId = u64;
 pub(super) struct PendingLocalDrop {
     pub(super) payload: DockPayload,
     pub(super) target_surface: DockSurface,
+    pub(super) target_host: WindowHost,
     pub(super) pointer_local: Pos2,
 }
 
@@ -100,19 +138,4 @@ impl<Pane> FloatingManager<Pane> {
         self.z_order.retain(|&x| x != id);
         self.z_order.push(id);
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) enum DropAction {
-    MoveSubtree {
-        source_viewport: ViewportId,
-        source_floating: Option<FloatingId>,
-        tile_id: TileId,
-        insertion: Option<InsertionPoint>,
-    },
-    MoveWholeTree {
-        source_viewport: ViewportId,
-        source_floating: Option<FloatingId>,
-        insertion: Option<InsertionPoint>,
-    },
 }

@@ -123,12 +123,18 @@ fn new_tree_random(id: egui::Id, rng: &mut Rng, panes: usize) -> egui_tiles::Tre
     egui_tiles::Tree::new(id, nodes[0], tiles)
 }
 
+fn sorted_tile_ids(tree: &egui_tiles::Tree<()>) -> Vec<egui_tiles::TileId> {
+    let mut ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+    ids.sort_by_key(|id| id.0);
+    ids
+}
+
 fn random_insertion_point(
     rng: &mut Rng,
     tree: &egui_tiles::Tree<()>,
     prefer_container_parent: bool,
 ) -> Option<egui_tiles::InsertionPoint> {
-    let all_tile_ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+    let all_tile_ids: Vec<egui_tiles::TileId> = sorted_tile_ids(tree);
     if all_tile_ids.is_empty() {
         return None;
     }
@@ -241,7 +247,7 @@ fn model_random_extract_insert_stays_integrity_ok() {
                 let Some(root) = tree.root else {
                     continue;
                 };
-                let ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+                let ids: Vec<egui_tiles::TileId> = sorted_tile_ids(tree);
                 if ids.len() <= 1 {
                     continue;
                 }
@@ -256,7 +262,7 @@ fn model_random_extract_insert_stays_integrity_ok() {
                 let Some(root) = tree.root else {
                     continue;
                 };
-                let ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+                let ids: Vec<egui_tiles::TileId> = sorted_tile_ids(tree);
                 if ids.len() <= 1 {
                     continue;
                 }
@@ -307,7 +313,7 @@ fn model_random_extract_insert_stays_integrity_ok() {
                     (&mut b, &mut a)
                 };
 
-                let ids: Vec<egui_tiles::TileId> = src.tiles.tile_ids().collect();
+                let ids: Vec<egui_tiles::TileId> = sorted_tile_ids(src);
                 if ids.is_empty() {
                     continue;
                 }
@@ -339,7 +345,7 @@ fn model_random_extract_insert_stays_integrity_ok() {
                 // Same-tree move: use `extract_subtree_no_reserve`.
                 let tree = if rng.next_bool() { &mut a } else { &mut b };
 
-                let ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+                let ids: Vec<egui_tiles::TileId> = sorted_tile_ids(tree);
                 if ids.is_empty() {
                     continue;
                 }
@@ -387,7 +393,7 @@ fn model_random_extract_insert_stays_integrity_ok() {
 
             if do_simplify_children {
                 let tree = if rng.next_bool() { &mut a } else { &mut b };
-                let ids: Vec<egui_tiles::TileId> = tree.tiles.tile_ids().collect();
+                let ids: Vec<egui_tiles::TileId> = sorted_tile_ids(tree);
                 let container_candidates: Vec<_> = ids
                     .iter()
                     .copied()

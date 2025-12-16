@@ -1,12 +1,15 @@
 use egui::{Context, ViewportId};
-use egui_tiles::{Behavior, EditAction, InsertionPoint, TileId, Tree};
+use egui_tiles::{Behavior, EditAction, TileId, Tree};
 
 use super::DockingMultiViewport;
+use super::drop_policy;
 use super::drop_sanitize;
+use super::host::WindowHost;
 use super::integrity;
+use super::overlay_decision::{decide_overlay_for_tree, DragKind};
 use super::surface::DockSurface;
 use super::title::title_for_detached_tree;
-use super::types::{DetachedDock, DockPayload, DropAction, FloatingId};
+use super::types::{DockPayload, ResolvedDrop, ResolvedDropTarget};
 
 fn force_subtree_visible<Pane>(subtree: &mut egui_tiles::SubTree<Pane>) {
     let ids: Vec<egui_tiles::TileId> = subtree.tiles.tile_ids().collect();
@@ -63,82 +66,6 @@ fn debug_tree_summary<Pane>(tree: &Tree<Pane>, max_nodes: usize) -> String {
 }
 
 impl<Pane> DockingMultiViewport<Pane> {
-    fn take_subtree_from_source_for_cross_viewport_drop(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        source_viewport: ViewportId,
-        source_floating: Option<FloatingId>,
-        tile_id: TileId,
-    ) -> Option<egui_tiles::SubTree<Pane>> {
-        if source_viewport == ViewportId::ROOT && source_floating.is_none() {
-            return self.tree.extract_subtree(tile_id);
-        }
-
-        if let Some(floating_id) = source_floating {
-            return self.extract_subtree_from_floating(source_viewport, floating_id, tile_id);
-        }
-
-        let Some(mut source) = self.detached.remove(&source_viewport) else {
-            return None;
-        };
-
-        let extracted = source.tree.extract_subtree(tile_id);
-        if extracted.is_some() {
-            if source.tree.root.is_some() {
-                source.builder = source
-                    .builder
-                    .clone()
-                    .with_title(title_for_detached_tree(&source.tree, behavior));
-                self.detached.insert(source_viewport, source);
-            } else {
-                ctx.send_viewport_cmd_to(source_viewport, egui::ViewportCommand::Close);
-            }
-        } else {
-            self.detached.insert(source_viewport, source);
-        }
-
-        extracted
-    }
-
-    fn take_whole_tree_from_source_for_cross_viewport_drop(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        source_viewport: ViewportId,
-        source_floating: Option<FloatingId>,
-    ) -> Option<egui_tiles::SubTree<Pane>> {
-        if source_viewport == ViewportId::ROOT {
-            // Not supported: moving the whole root dock tree.
-            return None;
-        }
-
-        if let Some(floating_id) = source_floating {
-            return self.take_whole_floating_tree(source_viewport, floating_id);
-        }
-
-        let Some(mut source) = self.detached.remove(&source_viewport) else {
-            return None;
-        };
-
-        let Some(root) = source.tree.root.take() else {
-            // Should not happen, but keep the map consistent.
-            if source.tree.root.is_some() {
-                source.builder = source
-                    .builder
-                    .clone()
-                    .with_title(title_for_detached_tree(&source.tree, behavior));
-                self.detached.insert(source_viewport, source);
-            }
-            return None;
-        };
-        let tiles = std::mem::take(&mut source.tree.tiles);
-        let subtree = egui_tiles::SubTree { root, tiles };
-
-        ctx.send_viewport_cmd_to(source_viewport, egui::ViewportCommand::Close);
-        Some(subtree)
-    }
-
     pub(super) fn apply_pending_local_drop(
         &mut self,
         ctx: &Context,
@@ -148,7 +75,24 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         };
 
-        if pending.target_surface.viewport() != pending.payload.source_viewport {
+        if pending.target_host.viewport() != pending.payload.source_viewport {
+            return;
+        }
+
+        // Safety net: if this is an internal dock→dock drop inside the same viewport, we must not
+        // re-apply extract+insert here. `egui_tiles` already handled it (or will handle it).
+        if drop_policy::should_skip_local_drop_internal_dock_to_dock(
+            &pending.payload,
+            pending.target_surface.viewport(),
+            pending.target_surface,
+        ) {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "apply_local_drop SKIP internal_dock_to_dock viewport={:?} payload_tile_id={:?}",
+                    pending.target_host.viewport(),
+                    pending.payload.tile_id
+                ));
+            }
             return;
         }
 
@@ -177,34 +121,19 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
 
-        let subtree = match (pending.payload.source_floating, pending.payload.tile_id) {
-            (Some(floating_id), Some(tile_id)) => self.extract_subtree_from_floating(
-                pending.target_surface.viewport(),
-                floating_id,
-                tile_id,
-            ),
-            (Some(floating_id), None) => {
-                self.take_whole_floating_tree(pending.target_surface.viewport(), floating_id)
+        let source_host = pending.payload.source_host();
+        let subtree = match pending.payload.tile_id {
+            Some(tile_id) => {
+                self.take_subtree_from_host_for_drop(ctx, behavior, source_host, tile_id)
             }
-            (None, Some(tile_id)) => {
-                if pending.target_surface.viewport() == ViewportId::ROOT {
-                    self.tree.extract_subtree(tile_id)
-                } else if let Some(detached) =
-                    self.detached.get_mut(&pending.target_surface.viewport())
-                {
-                    detached.tree.extract_subtree(tile_id)
-                } else {
-                    None
-                }
-            }
-            (None, None) => None,
+            None => self.take_whole_tree_from_host_for_drop(ctx, behavior, source_host),
         };
 
         let Some(mut subtree) = subtree else {
             if self.options.debug_event_log {
                 self.debug_log_event(format!(
                     "apply_local_drop FAILED extract subtree viewport={:?} source_floating={:?} tile_id={:?}",
-                    pending.target_surface.viewport(),
+                    pending.target_host.viewport(),
                     pending.payload.source_floating,
                     pending.payload.tile_id
                 ));
@@ -213,22 +142,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         };
         force_subtree_visible(&mut subtree);
 
-        let target_parent_exists = |parent_id: TileId| match pending.target_surface {
-            DockSurface::DockTree { viewport } => {
-                if viewport == ViewportId::ROOT {
-                    self.tree.tiles.get(parent_id).is_some()
-                } else {
-                    self.detached
-                        .get(&viewport)
-                        .is_some_and(|d| d.tree.tiles.get(parent_id).is_some())
-                }
-            }
-            DockSurface::Floating { viewport, floating } => self
-                .floating
-                .get(&viewport)
-                .and_then(|m| m.windows.get(&floating))
-                .is_some_and(|w| w.tree.tiles.get(parent_id).is_some()),
-        };
+        let target_host = pending.target_host;
+        let target_parent_exists = |parent_id: TileId| self
+            .tree_for_host(target_host)
+            .is_some_and(|t| t.tiles.get(parent_id).is_some());
         let insertion_sanitized = drop_sanitize::sanitize_insertion_for_subtree(
             insertion,
             &subtree,
@@ -241,21 +158,17 @@ impl<Pane> DockingMultiViewport<Pane> {
             ));
         }
 
-        match pending.target_surface {
-            DockSurface::DockTree { viewport } => {
-                self.dock_subtree_into_dock_tree(viewport, subtree, insertion_sanitized);
-            }
-            DockSurface::Floating { viewport, floating } => {
-                let mut manager = self.floating.remove(&viewport).unwrap_or_default();
-                if let Some(w) = manager.windows.get_mut(&floating) {
-                    w.tree.insert_subtree_at(subtree, insertion_sanitized);
-                    manager.bring_to_front(floating);
-                    self.floating.insert(viewport, manager);
-                } else {
-                    // Target floating disappeared; fall back to dock tree.
-                    self.dock_subtree_into_dock_tree(viewport, subtree, insertion_sanitized);
-                }
-            }
+        let subtree = match self.insert_subtree_into_host(target_host, subtree, insertion_sanitized)
+        {
+            Ok(()) => None,
+            Err(subtree) => Some(subtree),
+        };
+        if let Some(subtree) = subtree {
+            // Target host disappeared; fall back to dock tree in the same viewport.
+            let fallback = WindowHost::DockTree {
+                viewport: pending.target_host.viewport(),
+            };
+            let _ = self.insert_subtree_into_host(fallback, subtree, insertion_sanitized);
         }
         behavior.on_edit(egui_tiles::EditAction::TileDropped);
         if self.options.debug_event_log {
@@ -271,25 +184,139 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         };
 
-        let exclude_viewport = pending
-            .payload
-            .tile_id
-            .is_none()
-            .then_some(pending.payload.source_viewport);
-        let Some((target_surface, pointer_local)) =
-            self.surface_under_pointer_global(ctx, pending.pointer_global, exclude_viewport, None)
-        else {
+        let resolved = self.resolve_cross_viewport_drop(ctx, behavior, pending.payload, pending.pointer_global);
+        let Some(resolved) = resolved else {
             return;
         };
+        self.apply_resolved_cross_viewport_drop(ctx, behavior, resolved);
+    }
+
+    fn resolve_cross_viewport_drop(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        payload: DockPayload,
+        pointer_global: egui::Pos2,
+    ) -> Option<ResolvedDrop> {
+        let is_window_move = payload.tile_id.is_none();
+
+        let exclude_viewport = payload.tile_id.is_none().then_some(payload.source_viewport);
+        let Some((target_surface, pointer_local)) =
+            self.surface_under_pointer_global(ctx, pointer_global, exclude_viewport, None)
+        else {
+            return None;
+        };
         let target_viewport = target_surface.viewport();
-        if target_viewport == pending.payload.source_viewport {
-            return;
+        if target_viewport == payload.source_viewport {
+            return None;
         }
 
+        let dock_rect = self.dock_rect_for_surface(target_surface)?;
+        let tree = self.tree_for_surface(target_surface)?;
         let style = ctx.global_style();
-        let insertion =
-            self.insertion_at_pointer_local(behavior, &style, target_surface, pointer_local);
-        self.apply_drop_to_surface(ctx, behavior, target_surface, insertion, pending.payload);
+        let drag_kind = if is_window_move {
+            DragKind::WindowMove
+        } else {
+            DragKind::Subtree {
+                dragged_tile: None,
+                internal: false,
+            }
+        };
+        let decision = decide_overlay_for_tree(
+            tree,
+            behavior,
+            &style,
+            dock_rect,
+            pointer_local,
+            self.options.show_outer_overlay_targets,
+            drag_kind,
+        );
+        let insertion = decision.insertion_final;
+
+        let target_host = match target_surface {
+            DockSurface::DockTree { viewport } => WindowHost::DockTree { viewport },
+            DockSurface::Floating { viewport, floating } => WindowHost::Floating { viewport, floating },
+        };
+        let resolved = ResolvedDrop {
+            payload,
+            pointer_global,
+            target: ResolvedDropTarget {
+                target_surface,
+                target_host,
+                pointer_local,
+                insertion,
+            },
+        };
+
+        if self.options.debug_event_log {
+            self.debug_log_event(format!(
+                "resolve_cross_viewport_drop window_move={is_window_move} source_host={:?} payload_tile_id={:?} pointer_global=({:.1},{:.1}) target_host={:?} target_surface={:?} pointer_local=({:.1},{:.1}) insertion={:?}",
+                resolved.payload.source_host(),
+                resolved.payload.tile_id,
+                resolved.pointer_global.x,
+                resolved.pointer_global.y,
+                resolved.target.target_host,
+                resolved.target.target_surface,
+                resolved.target.pointer_local.x,
+                resolved.target.pointer_local.y,
+                resolved.target.insertion,
+            ));
+        }
+
+        Some(resolved)
+    }
+
+    fn apply_resolved_cross_viewport_drop(
+        &mut self,
+        ctx: &Context,
+        behavior: &mut dyn Behavior<Pane>,
+        resolved: ResolvedDrop,
+    ) {
+        let source_host = resolved.payload.source_host();
+        let subtree = match resolved.payload.tile_id {
+            Some(tile_id) => self.take_subtree_from_host_for_drop(ctx, behavior, source_host, tile_id),
+            None => self.take_whole_tree_from_host_for_drop(ctx, behavior, source_host),
+        };
+        let Some(mut subtree) = subtree else {
+            return;
+        };
+        force_subtree_visible(&mut subtree);
+
+        let target_host = resolved.target.target_host;
+        let target_parent_exists = |parent_id: TileId| self
+            .tree_for_host(target_host)
+            .is_some_and(|t| t.tiles.get(parent_id).is_some());
+        let insertion_sanitized = drop_sanitize::sanitize_insertion_for_subtree(
+            resolved.target.insertion,
+            &subtree,
+            target_parent_exists,
+        );
+
+        let subtree = match self.insert_subtree_into_host(target_host, subtree, insertion_sanitized)
+        {
+            Ok(()) => None,
+            Err(subtree) => Some(subtree),
+        };
+        if let Some(subtree) = subtree {
+            // Target host disappeared; fall back to dock tree in the same viewport.
+            let fallback = WindowHost::DockTree {
+                viewport: target_host.viewport(),
+            };
+            let _ = self.insert_subtree_into_host(fallback, subtree, insertion_sanitized);
+        }
+
+        // Keep detached window title in sync to avoid one-frame mismatch after drops.
+        if let WindowHost::DockTree { viewport } = target_host
+            && viewport != ViewportId::ROOT
+            && let Some(detached) = self.detached.get_mut(&viewport)
+        {
+            detached.builder = detached
+                .builder
+                .clone()
+                .with_title(title_for_detached_tree(&detached.tree, behavior));
+        }
+
+        behavior.on_edit(egui_tiles::EditAction::TileDropped);
     }
 
     pub(super) fn apply_pending_actions(
@@ -400,300 +427,5 @@ impl<Pane> DockingMultiViewport<Pane> {
             .clone()
             .with_title(title_for_detached_tree(&detached.tree, behavior));
         self.detached.insert(pending.viewport, detached);
-    }
-
-    pub(super) fn apply_drop_to_surface(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        target_surface: DockSurface,
-        insertion: Option<InsertionPoint>,
-        payload: DockPayload,
-    ) {
-        match target_surface {
-            DockSurface::DockTree { viewport } => {
-                if viewport == ViewportId::ROOT {
-                    self.apply_drop_to_root(ctx, behavior, insertion, payload);
-                } else {
-                    self.apply_drop_to_detached(ctx, behavior, viewport, insertion, payload);
-                }
-            }
-            DockSurface::Floating { viewport, floating } => {
-                self.apply_drop_to_floating(ctx, behavior, viewport, floating, insertion, payload);
-            }
-        }
-    }
-
-    pub(super) fn apply_drop_to_floating(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        target_viewport: ViewportId,
-        target_floating: FloatingId,
-        insertion: Option<InsertionPoint>,
-        payload: DockPayload,
-    ) {
-        if payload.source_viewport == target_viewport
-            && payload.source_floating == Some(target_floating)
-        {
-            return;
-        }
-
-        let Some(mut manager) = self.floating.remove(&target_viewport) else {
-            // Target disappeared; fall back to the dock tree.
-            self.apply_drop_to_surface(
-                ctx,
-                behavior,
-                DockSurface::DockTree {
-                    viewport: target_viewport,
-                },
-                insertion,
-                payload,
-            );
-            return;
-        };
-        let Some(target_window) = manager.windows.get_mut(&target_floating) else {
-            self.floating.insert(target_viewport, manager);
-            self.apply_drop_to_surface(
-                ctx,
-                behavior,
-                DockSurface::DockTree {
-                    viewport: target_viewport,
-                },
-                insertion,
-                payload,
-            );
-            return;
-        };
-
-        let action = match payload.tile_id {
-            Some(tile_id) => DropAction::MoveSubtree {
-                source_viewport: payload.source_viewport,
-                source_floating: payload.source_floating,
-                tile_id,
-                insertion,
-            },
-            None => DropAction::MoveWholeTree {
-                source_viewport: payload.source_viewport,
-                source_floating: payload.source_floating,
-                insertion,
-            },
-        };
-
-        match action {
-            DropAction::MoveSubtree {
-                source_viewport,
-                source_floating,
-                tile_id,
-                insertion,
-            } => {
-                let subtree = if source_viewport == ViewportId::ROOT && source_floating.is_none() {
-                    self.tree.extract_subtree(tile_id)
-                } else if source_viewport == target_viewport
-                    && source_floating == Some(target_floating)
-                {
-                    None
-                } else if let Some(floating_id) = source_floating {
-                    self.extract_subtree_from_floating(source_viewport, floating_id, tile_id)
-                } else if let Some(mut source) = self.detached.remove(&source_viewport) {
-                    let extracted = source.tree.extract_subtree(tile_id);
-                    if extracted.is_some() {
-                        if source.tree.root.is_some() {
-                            source.builder = source
-                                .builder
-                                .clone()
-                                .with_title(title_for_detached_tree(&source.tree, behavior));
-                            self.detached.insert(source_viewport, source);
-                        } else {
-                            ctx.send_viewport_cmd_to(source_viewport, egui::ViewportCommand::Close);
-                        }
-                    } else {
-                        self.detached.insert(source_viewport, source);
-                    }
-                    extracted
-                } else {
-                    None
-                };
-
-                if let Some(mut subtree) = subtree {
-                    force_subtree_visible(&mut subtree);
-                    target_window.tree.insert_subtree_at(subtree, insertion);
-                    manager.bring_to_front(target_floating);
-                }
-            }
-            DropAction::MoveWholeTree {
-                source_viewport,
-                source_floating,
-                insertion,
-            } => {
-                if source_viewport == ViewportId::ROOT || source_viewport == target_viewport {
-                    self.floating.insert(target_viewport, manager);
-                    return;
-                }
-
-                if let Some(floating_id) = source_floating {
-                    if let Some(mut subtree) =
-                        self.take_whole_floating_tree(source_viewport, floating_id)
-                    {
-                        force_subtree_visible(&mut subtree);
-                        target_window.tree.insert_subtree_at(subtree, insertion);
-                        manager.bring_to_front(target_floating);
-                    }
-                    self.floating.insert(target_viewport, manager);
-                    return;
-                }
-
-                let Some(mut source) = self.detached.remove(&source_viewport) else {
-                    self.floating.insert(target_viewport, manager);
-                    return;
-                };
-
-                let Some(source_root) = source.tree.root.take() else {
-                    self.floating.insert(target_viewport, manager);
-                    return;
-                };
-                let source_tiles = std::mem::take(&mut source.tree.tiles);
-                let subtree = egui_tiles::SubTree {
-                    root: source_root,
-                    tiles: source_tiles,
-                };
-                target_window.tree.insert_subtree_at(subtree, insertion);
-                manager.bring_to_front(target_floating);
-
-                ctx.send_viewport_cmd_to(source_viewport, egui::ViewportCommand::Close);
-            }
-        }
-
-        self.floating.insert(target_viewport, manager);
-    }
-
-    pub(super) fn apply_drop_to_root(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        insertion: Option<InsertionPoint>,
-        payload: DockPayload,
-    ) {
-        if payload.source_viewport == ViewportId::ROOT {
-            return;
-        }
-        if let Some(tile_id) = payload.tile_id {
-            if let Some(subtree) = self.take_subtree_from_source_for_cross_viewport_drop(
-                ctx,
-                behavior,
-                payload.source_viewport,
-                payload.source_floating,
-                tile_id,
-            ) {
-                self.dock_subtree_into_root(subtree, insertion);
-            }
-        } else if let Some(subtree) = self.take_whole_tree_from_source_for_cross_viewport_drop(
-            ctx,
-            behavior,
-            payload.source_viewport,
-            payload.source_floating,
-        ) {
-            self.dock_subtree_into_root(subtree, insertion);
-        }
-    }
-
-    pub(super) fn apply_drop_to_detached(
-        &mut self,
-        ctx: &Context,
-        behavior: &mut dyn Behavior<Pane>,
-        target_viewport: ViewportId,
-        insertion: Option<InsertionPoint>,
-        payload: DockPayload,
-    ) {
-        let Some(mut target) = self.detached.remove(&target_viewport) else {
-            return;
-        };
-
-        if payload.source_viewport == target_viewport {
-            self.detached.insert(target_viewport, target);
-            return;
-        }
-
-        let action = match payload.tile_id {
-            Some(tile_id) => DropAction::MoveSubtree {
-                source_viewport: payload.source_viewport,
-                source_floating: payload.source_floating,
-                tile_id,
-                insertion,
-            },
-            None => DropAction::MoveWholeTree {
-                source_viewport: payload.source_viewport,
-                source_floating: payload.source_floating,
-                insertion,
-            },
-        };
-
-        self.apply_drop_action_to_detached_target(
-            ctx,
-            target_viewport,
-            &mut target,
-            action,
-            behavior,
-        );
-
-        target.builder = target
-            .builder
-            .clone()
-            .with_title(title_for_detached_tree(&target.tree, behavior));
-        self.detached.insert(target_viewport, target);
-    }
-
-    pub(super) fn apply_drop_action_to_detached_target(
-        &mut self,
-        ctx: &Context,
-        target_viewport: ViewportId,
-        target: &mut DetachedDock<Pane>,
-        action: DropAction,
-        behavior: &mut dyn Behavior<Pane>,
-    ) {
-        match action {
-            DropAction::MoveSubtree {
-                source_viewport,
-                source_floating,
-                tile_id,
-                insertion,
-            } => {
-                let subtree = if source_viewport == target_viewport {
-                    None
-                } else {
-                    self.take_subtree_from_source_for_cross_viewport_drop(
-                        ctx,
-                        behavior,
-                        source_viewport,
-                        source_floating,
-                        tile_id,
-                    )
-                };
-
-                if let Some(mut subtree) = subtree {
-                    force_subtree_visible(&mut subtree);
-                    target.tree.insert_subtree_at(subtree, insertion);
-                }
-            }
-
-            DropAction::MoveWholeTree {
-                source_viewport,
-                source_floating,
-                insertion,
-            } => {
-                if source_viewport == ViewportId::ROOT || source_viewport == target_viewport {
-                    return;
-                }
-                if let Some(mut subtree) = self.take_whole_tree_from_source_for_cross_viewport_drop(
-                    ctx,
-                    behavior,
-                    source_viewport,
-                    source_floating,
-                ) {
-                    force_subtree_visible(&mut subtree);
-                    target.tree.insert_subtree_at(subtree, insertion);
-                }
-            }
-        }
     }
 }
