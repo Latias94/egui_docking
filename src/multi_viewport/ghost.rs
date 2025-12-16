@@ -7,6 +7,36 @@ use super::title::title_for_detached_subtree;
 use super::types::{DetachedDock, DockPayload, FloatingDockWindow, GhostDrag, GhostDragMode};
 
 impl<Pane> DockingMultiViewport<Pane> {
+    fn ghost_skip_window_move_logged_id(&self, viewport_id: ViewportId) -> egui::Id {
+        egui::Id::new((
+            self.tree.id(),
+            viewport_id,
+            "egui_docking_ghost_skip_window_move_logged",
+        ))
+    }
+
+    fn clear_ghost_skip_window_move_log_flag(&self, ctx: &Context, viewport_id: ViewportId) {
+        let id = self.ghost_skip_window_move_logged_id(viewport_id);
+        ctx.data_mut(|d| d.remove::<bool>(id));
+    }
+
+    fn debug_log_ghost_skip_window_move_once(&mut self, ctx: &Context, viewport_id: ViewportId) {
+        if !self.options.debug_event_log {
+            return;
+        }
+
+        let id = self.ghost_skip_window_move_logged_id(viewport_id);
+        let already = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+        if already {
+            return;
+        }
+
+        ctx.data_mut(|d| d.insert_temp(id, true));
+        self.debug_log_event(format!(
+            "ghost_skip (window_move payload) viewport={viewport_id:?}"
+        ));
+    }
+
     fn is_window_move_payload_active_in_viewport(
         &self,
         ctx: &Context,
@@ -320,8 +350,10 @@ impl<Pane> DockingMultiViewport<Pane> {
     ) {
         if self.is_window_move_payload_active_in_viewport(ctx, ViewportId::ROOT) {
             // When moving a whole window (window-move docking), do not start ghost tear-off.
+            self.clear_ghost_skip_window_move_log_flag(ctx, ViewportId::ROOT);
             return;
         }
+        self.clear_ghost_skip_window_move_log_flag(ctx, ViewportId::ROOT);
         if !self.options.ghost_tear_off {
             return;
         }
@@ -462,13 +494,10 @@ impl<Pane> DockingMultiViewport<Pane> {
             // IMPORTANT: while we are moving a whole native/contained window host, starting a ghost
             // tear-off here can extract the whole tree, making the source viewport temporarily empty
             // (and thus close), which looks like the window "disappeared mid-drag".
-            if self.options.debug_event_log {
-                self.debug_log_event(format!(
-                    "ghost_skip (window_move payload) viewport={viewport_id:?}"
-                ));
-            }
+            self.debug_log_ghost_skip_window_move_once(ctx, viewport_id);
             return;
         }
+        self.clear_ghost_skip_window_move_log_flag(ctx, viewport_id);
 
         if !self.options.ghost_tear_off {
             return;

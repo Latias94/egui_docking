@@ -73,6 +73,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                                 .with_title(title_for_detached_tree(&source.tree, behavior));
                             self.detached.insert(viewport, source);
                         } else {
+                            if self.options.debug_event_log {
+                                self.debug_log_event(format!(
+                                    "take_subtree_from_detached CLOSE viewport={viewport:?} (tree became empty)"
+                                ));
+                            }
                             ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Close);
                         }
                     } else {
@@ -115,6 +120,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                     return None;
                 };
                 let tiles = std::mem::take(&mut source.tree.tiles);
+                if self.options.debug_event_log {
+                    self.debug_log_event(format!(
+                        "take_whole_detached_tree CLOSE viewport={viewport:?} (moved whole host)"
+                    ));
+                }
                 ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Close);
                 Some(egui_tiles::SubTree { root, tiles })
             }

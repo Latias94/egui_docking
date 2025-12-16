@@ -346,6 +346,26 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let source_host = resolved.payload.source_host();
+        let target_host = resolved.target.target_host;
+        if self.options.debug_event_log {
+            let source_before = self
+                .tree_for_host(source_host)
+                .map(|t| debug_tree_summary(t, 40))
+                .unwrap_or_else(|| "missing".to_owned());
+            let target_before = self
+                .tree_for_host(target_host)
+                .map(|t| debug_tree_summary(t, 40))
+                .unwrap_or_else(|| "missing".to_owned());
+            self.debug_log_event(format!(
+                "apply_cross_viewport_drop BEGIN source_host={source_host:?} payload_tile_id={:?} target_host={target_host:?} target_surface={:?} insertion={:?}",
+                resolved.payload.tile_id,
+                resolved.target.target_surface,
+                resolved.target.insertion
+            ));
+            self.debug_log_event(format!("source_before:\n{source_before}"));
+            self.debug_log_event(format!("target_before:\n{target_before}"));
+        }
+
         let subtree = match resolved.payload.tile_id {
             Some(tile_id) => self.take_subtree_from_host_for_drop(ctx, behavior, source_host, tile_id),
             None => self.take_whole_tree_from_host_for_drop(ctx, behavior, source_host),
@@ -355,7 +375,6 @@ impl<Pane> DockingMultiViewport<Pane> {
         };
         force_subtree_visible(&mut subtree);
 
-        let target_host = resolved.target.target_host;
         let target_parent_exists = |parent_id: TileId| self
             .tree_for_host(target_host)
             .is_some_and(|t| t.tiles.get(parent_id).is_some());
@@ -390,6 +409,25 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         behavior.on_edit(egui_tiles::EditAction::TileDropped);
+        if self.options.debug_event_log {
+            for issue in integrity::tree_integrity_issues(&self.tree) {
+                self.debug_log_event(issue);
+            }
+
+            let source_after = self
+                .tree_for_host(source_host)
+                .map(|t| debug_tree_summary(t, 40))
+                .unwrap_or_else(|| "missing".to_owned());
+            let target_after = self
+                .tree_for_host(target_host)
+                .map(|t| debug_tree_summary(t, 40))
+                .unwrap_or_else(|| "missing".to_owned());
+            self.debug_log_event(format!(
+                "apply_cross_viewport_drop END source_host={source_host:?} target_host={target_host:?} insertion_sanitized={insertion_sanitized:?}",
+            ));
+            self.debug_log_event(format!("source_after:\n{source_after}"));
+            self.debug_log_event(format!("target_after:\n{target_after}"));
+        }
     }
 
     pub(super) fn apply_pending_actions(
