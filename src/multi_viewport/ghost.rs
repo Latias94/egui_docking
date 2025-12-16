@@ -20,7 +20,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         let pointer_global = pointer_global_hint
             .or_else(|| pointer_pos_in_global(ctx))
-            .or(self.last_pointer_global);
+            .or(self.drag_state.last_pointer_global());
         let pos = pointer_global
             .map(|p| p - grab_offset)
             .unwrap_or(Pos2::new(64.0, 64.0));
@@ -138,7 +138,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let pane_rect_last = self.tree.tiles.rect(detach_tile);
-        let global_fallback_pos = self.last_pointer_global;
+        let global_fallback_pos = self.drag_state.last_pointer_global();
         let root_inner_rect = root_inner_rect_in_global(ctx);
 
         let Some(subtree) = self.tree.extract_subtree(detach_tile) else {
@@ -234,7 +234,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let pane_rect_last = tree.tiles.rect(dragged_tile);
-        let global_fallback_pos = self.last_pointer_global;
+        let global_fallback_pos = self.drag_state.last_pointer_global();
         let inner_rect = ctx.input(|i| i.viewport().inner_rect);
 
         let Some(subtree) = tree.extract_subtree(dragged_tile) else {
@@ -362,7 +362,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 subtree,
                 size,
                 grab_offset,
-                self.last_pointer_global,
+                self.drag_state.last_pointer_global(),
             );
             ctx.request_repaint();
             return;
@@ -494,7 +494,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 subtree,
                 size,
                 grab_offset,
-                self.last_pointer_global,
+                self.drag_state.last_pointer_global(),
             );
             if tree.root.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);

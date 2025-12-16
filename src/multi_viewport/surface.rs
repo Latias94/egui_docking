@@ -110,6 +110,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         style: &egui::Style,
         surface: DockSurface,
         pointer_local: Pos2,
+        dragged_tile: Option<egui_tiles::TileId>,
     ) -> Option<InsertionPoint> {
         let dock_rect = self.dock_rect_for_surface(surface)?;
         let tree = self.tree_for_surface(surface)?;
@@ -125,7 +126,22 @@ impl<Pane> DockingMultiViewport<Pane> {
                 internal: false,
             },
         );
-        decision.insertion_final
+        let insertion = decision.insertion_final;
+        let Some(dragged_tile) = dragged_tile else {
+            return insertion;
+        };
+        let Some(ins) = insertion else {
+            return None;
+        };
+
+        // If we are dropping a subtree back into the same tree (e.g. floating → dock),
+        // never allow an insertion that targets the subtree itself.
+        if ins.parent_id == dragged_tile
+            || super::overlay::tile_contains_descendant(tree, dragged_tile, ins.parent_id)
+        {
+            return None;
+        }
+        Some(ins)
     }
 
     pub(super) fn explicit_insertion_at_pointer_local(
@@ -162,5 +178,84 @@ impl<Pane> DockingMultiViewport<Pane> {
             DragKind::WindowMove,
         );
         decision.insertion_final
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct DummyBehavior;
+
+    impl egui_tiles::Behavior<()> for DummyBehavior {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: egui_tiles::TileId,
+            _pane: &mut (),
+        ) -> egui_tiles::UiResponse {
+            Default::default()
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &()) -> egui::WidgetText {
+            "pane".into()
+        }
+    }
+
+    fn layout_tree(tree: &mut egui_tiles::Tree<()>, behavior: &mut dyn egui_tiles::Behavior<()>) -> egui::Rect {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        ctx.begin_pass(raw);
+        let mut dock_rect = egui::Rect::NOTHING;
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            dock_rect = ui.available_rect_before_wrap();
+            tree.ui(behavior, ui);
+        });
+        let _ = ctx.end_pass();
+        dock_rect
+    }
+
+    #[test]
+    fn insertion_filters_self_target_when_dragged_tile_provided() {
+        let mut tiles: egui_tiles::Tiles<()> = egui_tiles::Tiles::default();
+        let a = tiles.insert_pane(());
+        let b = tiles.insert_pane(());
+        let root = tiles.insert_tab_tile(vec![a, b]);
+        let tree = egui_tiles::Tree::new(egui::Id::new("tree"), root, tiles);
+        let mut docking = DockingMultiViewport::new(tree);
+
+        let mut behavior = DummyBehavior::default();
+        let dock_rect = layout_tree(&mut docking.tree, &mut behavior);
+        docking
+            .last_dock_rects
+            .insert(egui::ViewportId::ROOT, dock_rect);
+
+        let a_rect = docking.tree.tiles.rect(a).expect("pane must have rect");
+        let pointer_over_self = a_rect.center();
+
+        let surface = DockSurface::DockTree {
+            viewport: egui::ViewportId::ROOT,
+        };
+        let style = egui::Style::default();
+
+        let insertion_without_filter =
+            docking.insertion_at_pointer_local(&behavior, &style, surface, pointer_over_self, None);
+        assert!(insertion_without_filter.is_some());
+
+        let insertion_with_filter = docking.insertion_at_pointer_local(
+            &behavior,
+            &style,
+            surface,
+            pointer_over_self,
+            Some(a),
+        );
+        assert!(insertion_with_filter.is_none());
     }
 }

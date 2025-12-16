@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use egui::{Context, LayerId, Order, Pos2, Rect, ViewportId};
+use egui::{Context, LayerId, Order, Rect, ViewportId};
 use egui_tiles::{Behavior, ContainerKind, InsertionPoint, Tile, TileId, Tree};
 
 mod debug;
+mod drag_state;
 mod detached;
 mod drop_apply;
 mod drop_policy;
@@ -17,6 +18,7 @@ mod integrity;
 mod options;
 mod overlay;
 mod overlay_decision;
+mod release;
 mod session;
 mod surface;
 mod title;
@@ -32,10 +34,10 @@ mod overlay_decision_tests;
 pub use options::DockingMultiViewportOptions;
 
 use debug::{debug_clear_event_log_id, last_drop_debug_text_id, tiles_debug_visit_enabled_id};
-use geometry::{pointer_pos_in_global, pointer_pos_in_viewport_space};
+use drag_state::DragState;
+use geometry::pointer_pos_in_viewport_space;
 use overlay::{paint_outer_overlay, paint_overlay, pointer_in_outer_band};
 use overlay_decision::{decide_overlay_for_tree, DragKind, OverlayPaint};
-use session::DragSession;
 use types::*;
 
 /// Bridge `egui_tiles` docking with `egui` multi-viewports.
@@ -60,8 +62,7 @@ pub struct DockingMultiViewport<Pane> {
     last_root_dock_rect: Option<Rect>,
     last_dock_rects: BTreeMap<ViewportId, Rect>,
 
-    last_pointer_global: Option<Pos2>,
-    last_drag_modifiers: egui::Modifiers,
+    drag_state: DragState,
 
     pending_drop: Option<PendingDrop>,
     pending_internal_drop: Option<PendingInternalDrop>,
@@ -79,8 +80,6 @@ pub struct DockingMultiViewport<Pane> {
     debug_last_disable_drop_apply: BTreeMap<(u64, ViewportId), bool>,
     debug_last_integrity_hash: BTreeMap<(u64, ViewportId), u64>,
 
-    drag_session: DragSession,
-
     detached_rendered_frame: BTreeMap<ViewportId, u64>,
 }
 
@@ -97,8 +96,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             next_viewport_serial: 1,
             last_root_dock_rect: None,
             last_dock_rects: BTreeMap::new(),
-            last_pointer_global: None,
-            last_drag_modifiers: Default::default(),
+            drag_state: DragState::default(),
             pending_drop: None,
             pending_internal_drop: None,
             pending_local_drop: None,
@@ -111,7 +109,6 @@ impl<Pane> DockingMultiViewport<Pane> {
             debug_frame: 0,
             debug_last_disable_drop_apply: BTreeMap::new(),
             debug_last_integrity_hash: BTreeMap::new(),
-            drag_session: DragSession::default(),
             detached_rendered_frame: BTreeMap::new(),
         }
     }
@@ -131,7 +128,7 @@ impl<Pane> DockingMultiViewport<Pane> {
     /// Call this from your `eframe::App::update` (or equivalent).
     pub fn ui(&mut self, ctx: &Context, behavior: &mut dyn Behavior<Pane>) {
         self.debug_frame = self.debug_frame.wrapping_add(1);
-        self.drag_session.begin_frame();
+        self.drag_state.begin_frame();
         self.detached_rendered_frame
             .retain(|viewport_id, _| self.detached.contains_key(viewport_id));
         if self.options.debug_event_log || self.options.debug_integrity {
@@ -158,43 +155,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             self.last_root_dock_rect = Some(dock_rect);
             self.last_dock_rects.insert(ViewportId::ROOT, dock_rect);
 
-            // Queue cross-viewport drops first so we don't accidentally tear-off when the release
-            // is captured by the source window while the pointer is over a different viewport.
-            self.queue_pending_drop_on_release(ui.ctx());
-                    let internal_drop =
-                        if self.pending_drop.is_none() && self.pending_internal_drop.is_none() {
-                            self.pending_internal_overlay_drop_on_release(
-                                ui.ctx(),
-                                behavior,
-                                dock_rect,
-                                ViewportId::ROOT,
-                                &self.tree,
-                            )
-                        } else {
-                    None
-                };
-            let took_over_internal_drop = internal_drop.is_some();
-            if let Some(pending) = internal_drop {
-                if !self.try_take_release_action("internal_overlay_drop_root") {
-                    // Another release handler already took ownership this frame.
-                } else {
-                    self.debug_log_event(format!(
-                        "queue_internal_drop viewport={:?} tile_id={:?} insertion={:?}",
-                        pending.viewport, pending.tile_id, pending.insertion
-                    ));
-                    ui.ctx().stop_dragging();
-                    if let Some(payload) = egui::DragAndDrop::payload::<DockPayload>(ui.ctx()) {
-                        if payload.bridge_id == self.tree.id()
-                            && payload.source_viewport == pending.viewport
-                        {
-                            egui::DragAndDrop::clear_payload(ui.ctx());
-                        }
-                    }
-
-                    self.pending_internal_drop = Some(pending);
-                    ui.ctx().request_repaint_of(ViewportId::ROOT);
-                }
-            }
+            let took_over_internal_drop =
+                self.process_release_before_root_tree_ui(ui.ctx(), behavior, dock_rect);
 
             self.set_tiles_disable_drop_apply_if_taken_over(
                 ui.ctx(),
@@ -241,9 +203,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             self.ui_floating_windows_in_viewport(ui, behavior, dock_rect, ViewportId::ROOT);
 
-            self.queue_pending_local_drop_on_release(ui.ctx(), dock_rect, ViewportId::ROOT);
-
-            self.clear_bridge_payload_if_released_in_ctx(ui.ctx());
+            self.process_release_after_floating_ui(ui.ctx(), dock_rect, ViewportId::ROOT);
         });
 
         // 3) Late detached viewports: ghost tear-off can create new viewports during the root UI.
@@ -267,25 +227,19 @@ impl<Pane> DockingMultiViewport<Pane> {
             self.debug_check_integrity_all();
         }
 
-        if let Some(msg) = self.drag_session.end_frame(self.debug_frame) {
+        if let Some(msg) = self.drag_state.end_frame(self.debug_frame) {
             self.debug_log_event(msg);
         }
     }
 
     fn update_last_pointer_global_from_active_viewport(&mut self, ctx: &Context) {
-        if let Some(pos) = pointer_pos_in_global(ctx) {
-            self.last_pointer_global = Some(pos);
-        }
+        self.drag_state.update_pointer_global_from_ctx(ctx);
     }
 
     fn window_move_docking_enabled_now(&self, ctx: &Context) -> bool {
-        let shift = if egui::DragAndDrop::payload::<DockPayload>(ctx)
-            .is_some_and(|p| p.bridge_id == self.tree.id() && p.tile_id.is_none())
-        {
-            self.last_drag_modifiers.shift
-        } else {
-            ctx.input(|i| i.modifiers.shift)
-        };
+        let shift = self
+            .drag_state
+            .window_move_shift_held_now(ctx, self.tree.id());
         self.options.window_move_docking_enabled_by_shift(shift)
     }
 
@@ -331,50 +285,36 @@ impl<Pane> DockingMultiViewport<Pane> {
 
     fn observe_drag_sources_in_ctx(&mut self, ctx: &Context) {
         if self.ghost.is_some() {
-            if let Some(msg) = self.drag_session.observe_active(self.debug_frame, "ghost") {
+            if let Some(msg) = self.drag_state.observe_source(self.debug_frame, "ghost") {
                 self.debug_log_event(msg);
             }
         }
 
-        let Some(payload) = egui::DragAndDrop::payload::<DockPayload>(ctx) else {
+        let Some(_payload) = self
+            .drag_state
+            .observe_payload(self.debug_frame, ctx, self.tree.id())
+        else {
             return;
         };
-        if payload.bridge_id != self.tree.id() {
-            return;
-        }
-        if ctx.viewport_id() == payload.source_viewport {
-            self.last_drag_modifiers = ctx.input(|i| i.modifiers);
-        }
-        if let Some(msg) = self
-            .drag_session
-            .observe_active(self.debug_frame, "payload")
-        {
+        if let Some(msg) = self.drag_state.observe_source(self.debug_frame, "payload") {
             self.debug_log_event(msg);
         }
     }
 
     fn observe_tiles_drag_root(&mut self) {
-        if let Some(msg) = self
-            .drag_session
-            .observe_active(self.debug_frame, "tiles_drag_root")
-        {
+        if let Some(msg) = self.drag_state.observe_source(self.debug_frame, "tiles_drag_root") {
             self.debug_log_event(msg);
         }
     }
 
     fn observe_tiles_drag_detached(&mut self) {
-        if let Some(msg) = self
-            .drag_session
-            .observe_active(self.debug_frame, "tiles_drag_detached")
-        {
+        if let Some(msg) = self.drag_state.observe_source(self.debug_frame, "tiles_drag_detached") {
             self.debug_log_event(msg);
         }
     }
 
     fn try_take_release_action(&mut self, kind: &'static str) -> bool {
-        let (ok, msg) = self
-            .drag_session
-            .take_release_action(self.debug_frame, kind);
+        let (ok, msg) = self.drag_state.take_release_action(self.debug_frame, kind);
         if let Some(msg) = msg {
             self.debug_log_event(msg);
         }
@@ -382,9 +322,7 @@ impl<Pane> DockingMultiViewport<Pane> {
     }
 
     fn try_take_release_action_silent_if_taken(&mut self, kind: &'static str) -> bool {
-        let (ok, msg) = self
-            .drag_session
-            .take_release_action(self.debug_frame, kind);
+        let (ok, msg) = self.drag_state.take_release_action(self.debug_frame, kind);
         if ok {
             if let Some(msg) = msg {
                 self.debug_log_event(msg);
@@ -544,7 +482,10 @@ impl<Pane> DockingMultiViewport<Pane> {
             return;
         }
 
-        let Some(pointer_local) = pointer_pos_in_viewport_space(ui.ctx(), self.last_pointer_global)
+        let Some(pointer_local) = pointer_pos_in_viewport_space(
+            ui.ctx(),
+            self.drag_state.last_pointer_global(),
+        )
         else {
             return;
         };
@@ -662,6 +603,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                 "pointer_local=({:.1},{:.1}) outer_mode={outer_mode}",
                 pointer_local.x, pointer_local.y
             ));
+            if let Some(p) = self.drag_state.last_pointer_global() {
+                lines.push(format!("pointer_global_last=({:.1},{:.1})", p.x, p.y));
+            } else {
+                lines.push("pointer_global_last=None".to_owned());
+            }
             let hovered_floating_raw = self.floating_under_pointer(target_viewport, pointer_local);
             let hovered_floating_excluding_source = self.floating_under_pointer_excluding(
                 target_viewport,

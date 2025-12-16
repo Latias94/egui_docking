@@ -3,7 +3,7 @@ use egui_tiles::{Behavior, TileId, Tree};
 
 use super::DockingMultiViewport;
 use super::drop_policy;
-use super::geometry::{pointer_pos_in_global, viewport_under_pointer_global_excluding};
+use super::geometry::viewport_under_pointer_global_excluding;
 use super::overlay_decision::{decide_overlay_for_tree, DragKind};
 use super::surface::DockSurface;
 use super::host::WindowHost;
@@ -219,7 +219,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         // Prefer the active viewport's computed global pointer, but fall back to the last known
         // global pointer from any viewport if needed.
-        let pointer_global = pointer_pos_in_global(ctx).or(self.last_pointer_global);
+        let pointer_global = self.drag_state.pointer_global_fallback(ctx);
         let Some(pointer_global) = pointer_global else {
             return;
         };

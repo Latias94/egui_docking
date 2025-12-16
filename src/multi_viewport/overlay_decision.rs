@@ -75,10 +75,45 @@ fn window_move_explicit_target_zone_at_pointer<Pane>(
     })
 }
 
+fn window_move_tab_drop_zone_at_pointer<Pane>(
+    tree: &Tree<Pane>,
+    behavior: &dyn Behavior<Pane>,
+    style: &egui::Style,
+    pointer_local: Pos2,
+) -> Option<DockZone> {
+    // Prefer `egui_tiles`' tab-bar insertion index when it is available, but force the fallback
+    // mode to be "dock as tab" (splits must be explicit via overlay targets for ImGui parity).
+    if let Some(zone) = tree.dock_zone_at(behavior, style, pointer_local)
+        && zone.insertion_point.insertion.kind() == egui_tiles::ContainerKind::Tabs
+    {
+        let preview_rect = tree
+            .tiles
+            .rect(zone.insertion_point.parent_id)
+            .unwrap_or(zone.preview_rect);
+        return Some(DockZone {
+            insertion_point: zone.insertion_point,
+            preview_rect,
+        });
+    }
+
+    let (hit_tile, rect) = best_tile_under_pointer(tree, pointer_local)?;
+    let target = tree
+        .tiles
+        .parent_of(hit_tile)
+        .filter(|&p| tree.tiles.get(p).and_then(|t| t.kind()) == Some(egui_tiles::ContainerKind::Tabs))
+        .unwrap_or(hit_tile);
+    let preview_rect = tree.tiles.rect(target).unwrap_or(rect);
+
+    Some(DockZone {
+        insertion_point: InsertionPoint::new(target, egui_tiles::ContainerInsertion::Tabs(usize::MAX)),
+        preview_rect,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum DragKind {
     /// Moving a whole window host (native viewport title bar or contained floating header).
-    /// Splits must be explicit-only; tab-dock requires hovering the target tab bar/title bar.
+    /// Splits must be explicit-only; non-split docking falls back to "dock as tab".
     WindowMove,
     /// Moving a subtree (tab/pane/container).
     Subtree {
@@ -186,12 +221,9 @@ pub(super) fn decide_overlay_for_tree<Pane>(
         // Subtree moves: fall back to tiles' heuristic when the overlay isn't explicitly hit.
         DragKind::Subtree { internal: false, .. } => tree.dock_zone_at(behavior, style, pointer_local),
 
-        // Window moves (ImGui-like): docking is only allowed when hovering either:
-        // - an explicit docking target (overlay button / drop-rect), or
-        // - the target tab bar / title bar (explicit target rect).
-        //
-        // If neither is true, we do not provide a fallback insertion (dropping does nothing).
-        DragKind::WindowMove => window_move_explicit_zone,
+        // Window moves (ImGui-like): if you are not explicitly hitting a split target, default to
+        // "dock as tab" anywhere over a dock node. Splits remain explicit-only.
+        DragKind::WindowMove => window_move_tab_drop_zone_at_pointer(tree, behavior, style, pointer_local),
 
         _ => None,
     };

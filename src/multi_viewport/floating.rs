@@ -97,7 +97,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         {
             if viewport == viewport_id {
                 let ctx = ui.ctx();
-                let pointer_global = self.last_pointer_global;
+                let pointer_global = self.drag_state.last_pointer_global();
 
                 let should_upgrade = self.options.ghost_upgrade_to_native_on_leave_viewport
                     && pointer_global.is_some()

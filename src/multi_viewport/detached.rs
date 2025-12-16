@@ -42,7 +42,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 }) = self.ghost
                 {
                     if viewport == viewport_id {
-                        if let Some(pointer_global) = self.last_pointer_global {
+                        if let Some(pointer_global) = self.drag_state.last_pointer_global() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
                                 pointer_global - grab_offset,
                             ));
@@ -99,44 +99,14 @@ impl<Pane> DockingMultiViewport<Pane> {
                     let dock_rect = ui.available_rect_before_wrap();
                     self.last_dock_rects.insert(viewport_id, dock_rect);
 
-                    // Same as root: queue cross-viewport drops before we consider tearing off.
-                    self.queue_pending_drop_on_release(ctx);
-                    let internal_drop =
-                        if self.pending_drop.is_none() && self.pending_internal_drop.is_none() {
-                            self.pending_internal_overlay_drop_on_release(
-                                ctx,
-                                behavior,
-                                dock_rect,
-                                viewport_id,
-                                &detached.tree,
-                            )
-                        } else {
-                            None
-                        };
-                    let took_over_internal_drop = internal_drop.is_some();
-                    if let Some(pending) = internal_drop {
-                        if !self.try_take_release_action("internal_overlay_drop_detached") {
-                            // Another release handler already took ownership this frame.
-                        } else {
-                            self.debug_log_event(format!(
-                                "queue_internal_drop viewport={:?} tile_id={:?} insertion={:?}",
-                                pending.viewport, pending.tile_id, pending.insertion
-                            ));
-                            ctx.stop_dragging();
-                            if let Some(payload) =
-                                egui::DragAndDrop::payload::<super::types::DockPayload>(ctx)
-                            {
-                                if payload.bridge_id == self.tree.id()
-                                    && payload.source_viewport == pending.viewport
-                                {
-                                    egui::DragAndDrop::clear_payload(ctx);
-                                }
-                            }
-
-                            self.pending_internal_drop = Some(pending);
-                            ctx.request_repaint_of(ViewportId::ROOT);
-                        }
-                    }
+                    let took_over_internal_drop = self.process_release_before_detached_tree_ui(
+                        ctx,
+                        behavior,
+                        dock_rect,
+                        viewport_id,
+                        &detached.tree,
+                        "internal_overlay_drop_detached",
+                    );
 
                     self.set_tiles_disable_drop_apply_if_taken_over(
                         ctx,
@@ -212,8 +182,7 @@ impl<Pane> DockingMultiViewport<Pane> {
 
                     self.ui_floating_windows_in_viewport(ui, behavior, dock_rect, viewport_id);
 
-                    self.queue_pending_local_drop_on_release(ctx, dock_rect, viewport_id);
-                    self.clear_bridge_payload_if_released_in_ctx(ctx);
+                    self.process_release_after_floating_ui(ctx, dock_rect, viewport_id);
 
                     if self.options.debug_drop_targets
                         || self.options.debug_event_log

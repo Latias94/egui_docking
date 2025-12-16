@@ -104,16 +104,14 @@ fn internal_drag_only_paints_on_explicit_hit() {
 }
 
 #[test]
-fn window_move_does_not_dock_from_content_area_without_explicit_target() {
+fn window_move_docks_from_content_area_without_explicit_target() {
     let mut behavior = DummyBehavior::default();
     let (mut tree, _a, b) = tabs_tree_two_panes_active(1);
     let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
 
     let b_rect = tree.tiles.rect(b).expect("active pane must have rect");
 
-    // Pick a point inside the active tile but away from both:
-    // - outer band (dockspace edge overlay)
-    // - the center overlay target boxes
+    // Pick a point inside the active tile but away from the center overlay target boxes.
     let pointer_no_hit =
         b_rect.center() + Vec2::new((b_rect.width() * 0.35).min(240.0), 0.0);
     let decision = decide_overlay_for_tree(
@@ -127,8 +125,8 @@ fn window_move_does_not_dock_from_content_area_without_explicit_target() {
     );
     assert!(decision.paint.is_some());
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_none());
-    assert!(decision.insertion_final.is_none());
+    assert!(decision.fallback_zone.is_some());
+    assert!(decision.insertion_final.is_some());
 
     let pointer_hit = b_rect.center();
     let decision = decide_overlay_for_tree(
@@ -204,12 +202,12 @@ fn window_move_docks_when_hovering_title_band_on_non_tabs_tile() {
         DragKind::WindowMove,
     );
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_none());
-    assert!(decision.insertion_final.is_none());
+    assert!(decision.fallback_zone.is_some());
+    assert!(decision.insertion_final.is_some());
 }
 
 #[test]
-fn window_move_in_outer_band_without_explicit_target_is_disallowed() {
+fn window_move_in_outer_band_without_explicit_target_still_allows_tab_dock() {
     let mut behavior = DummyBehavior::default();
     let (mut tree, _a, b) = tabs_tree_two_panes_active(1);
     let (dock_rect, style) = layout_tree(&mut tree, &mut behavior);
@@ -234,8 +232,8 @@ fn window_move_in_outer_band_without_explicit_target_is_disallowed() {
     );
     assert!(matches!(decision.paint, Some(OverlayPaint::Outer(_))));
     assert!(decision.insertion_explicit.is_none());
-    assert!(decision.fallback_zone.is_none());
-    assert!(decision.insertion_final.is_none());
+    assert!(decision.fallback_zone.is_some());
+    assert!(decision.insertion_final.is_some());
 }
 
 #[test]

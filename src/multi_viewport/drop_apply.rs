@@ -128,6 +128,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                 ctx.global_style().as_ref(),
                 pending.target_surface,
                 pending.pointer_local,
+                pending.payload.tile_id,
             )
         };
         if is_moving_floating_window && insertion.is_none() {
