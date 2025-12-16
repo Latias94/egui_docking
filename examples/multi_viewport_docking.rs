@@ -39,7 +39,8 @@ impl egui_tiles::Behavior<Pane> for DemoBehavior {
                      ALT: force tear-off on release even inside the dock. \
                      CTRL: tear-off into a contained floating window (instead of a native window). \
                      Docking overlay targets show while dragging; hover to choose split direction (inner 5-way + outer edge markers; outer shows near dock edges). \
-                     To dock back, drag any tab (or tab-bar background) into another window and release.",
+                     To dock back, drag any tab (or tab-bar background) into another window and release. \
+                     Dragging a tab-bar background moves the whole dock node (ImGui-style).",
                 )
                 .selectable(false),
             );
@@ -145,7 +146,11 @@ impl eframe::App for App {
                 );
                 ui.checkbox(
                     &mut self.docking.options.focus_detached_on_custom_title_drag,
-                    "Focus detached while dragging custom title bar",
+                    "Focus detached while window-move dragging",
+                );
+                ui.checkbox(
+                    &mut self.docking.options.allow_container_tabbing,
+                    "Allow container tabbing (Unity-like, non-ImGui)",
                 );
             });
             ui.add(
@@ -154,7 +159,7 @@ impl eframe::App for App {
                      Hold CTRL while tearing off to create a contained floating window. \
                      While dragging, use the overlay targets for center/left/right/top/bottom docking. \
                      Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving (unless ConfigDockingWithShift is enabled). \
-                     In a detached viewport, drag the custom top bar label to move the native window (avoids OS title-bar capture issues). \
+                     In a detached viewport, drag the tab-bar background to move the native window (avoids OS title-bar capture issues). \
                      For window-move tab docking, hover the target window's title/tab bar (or use overlay targets). \
                      Drag into any other window to dock back.",
                 )

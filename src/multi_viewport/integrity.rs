@@ -97,6 +97,45 @@ pub(super) fn tree_integrity_issues<Pane>(tree: &Tree<Pane>) -> Vec<String> {
     issues
 }
 
+/// ImGui parity warnings (non-fatal): patterns that are structurally valid in `egui_tiles`,
+/// but differ from Dear ImGui's DockSpace mental model.
+pub(super) fn tree_parity_warnings<Pane>(tree: &Tree<Pane>) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let Some(root) = tree.root else {
+        return warnings;
+    };
+
+    let mut visited: HashSet<TileId> = HashSet::new();
+    let mut stack: Vec<TileId> = vec![root];
+
+    while let Some(tile_id) = stack.pop() {
+        if !visited.insert(tile_id) {
+            continue;
+        }
+        let Some(tile) = tree.tiles.get(tile_id) else {
+            continue;
+        };
+        let Tile::Container(container) = tile else {
+            continue;
+        };
+
+        if let Container::Tabs(tabs) = container {
+            for &child in &tabs.children {
+                if let Some(Tile::Container(container_child)) = tree.tiles.get(child) {
+                    warnings.push(format!(
+                        "parity: tabs {tile_id:?} contains non-pane child {child:?} kind={:?} (container tabbing)",
+                        container_child.kind()
+                    ));
+                }
+            }
+        }
+
+        stack.extend(container.children().copied());
+    }
+
+    warnings
+}
+
 pub(super) fn hash_issues(lines: &[String]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for line in lines {

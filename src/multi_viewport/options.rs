@@ -28,6 +28,15 @@ pub struct DockingMultiViewportOptions {
     /// If `false`, allow "dock as tab" anywhere over a dock node (more forgiving, but diverges from ImGui).
     pub window_move_tab_dock_requires_explicit_target: bool,
 
+    /// ImGui parity: prevent "container tabbing" by default.
+    ///
+    /// In Dear ImGui, tab bars represent leaf windows, not split containers. If you tab-dock a
+    /// subtree that contains split containers, we flatten it into its leaf panes instead of
+    /// inserting the container as a tab item.
+    ///
+    /// Set this to `true` only if you intentionally want to tab containers as a "workspace/layout tab".
+    pub allow_container_tabbing: bool,
+
     /// If true, dragging the detached viewport's custom top bar will also request `ViewportCommand::Focus`,
     /// so the moving window is brought to front (reduces confusion when the window moves behind others).
     pub focus_detached_on_custom_title_drag: bool,
@@ -86,6 +95,7 @@ impl Default for DockingMultiViewportOptions {
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
             window_move_tab_dock_requires_explicit_target: true,
+            allow_container_tabbing: false,
             focus_detached_on_custom_title_drag: true,
             show_overlay_for_internal_drags: true,
             show_outer_overlay_targets: true,

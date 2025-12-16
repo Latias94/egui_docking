@@ -6,6 +6,91 @@ use super::DockingMultiViewport;
 use super::title::title_for_detached_tree;
 use super::types::FloatingId;
 
+fn collect_leaf_panes_and_containers_in_tree<Pane>(
+    tree: &Tree<Pane>,
+    root: TileId,
+) -> (Vec<TileId>, Vec<TileId>) {
+    let mut panes: Vec<TileId> = Vec::new();
+    let mut containers: Vec<TileId> = Vec::new();
+
+    let mut stack: Vec<TileId> = vec![root];
+    while let Some(tile_id) = stack.pop() {
+        let Some(tile) = tree.tiles.get(tile_id) else {
+            continue;
+        };
+        match tile {
+            egui_tiles::Tile::Pane(_) => panes.push(tile_id),
+            egui_tiles::Tile::Container(container) => {
+                containers.push(tile_id);
+                let children: Vec<TileId> = container.children().copied().collect();
+                for child in children.into_iter().rev() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    (panes, containers)
+}
+
+fn insert_subtree_as_tabs_flattened_if_needed<Pane>(
+    tree: &mut Tree<Pane>,
+    subtree: egui_tiles::SubTree<Pane>,
+    insertion: egui_tiles::InsertionPoint,
+    allow_container_tabbing: bool,
+) -> Result<(), egui_tiles::SubTree<Pane>> {
+    let inserted_root = subtree.root;
+    tree.insert_subtree_at(subtree, Some(insertion));
+
+    if allow_container_tabbing {
+        return Ok(());
+    }
+
+    if insertion.insertion.kind() != egui_tiles::ContainerKind::Tabs {
+        return Ok(());
+    }
+
+    if matches!(tree.tiles.get(inserted_root), Some(egui_tiles::Tile::Pane(_))) {
+        return Ok(());
+    }
+
+    let (panes, containers) = collect_leaf_panes_and_containers_in_tree(tree, inserted_root);
+    if panes.is_empty() {
+        return Ok(());
+    }
+
+    let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(parent_tabs))) =
+        tree.tiles.get_mut(insertion.parent_id)
+    else {
+        return Ok(());
+    };
+
+    if let Some(pos) = parent_tabs.children.iter().position(|&id| id == inserted_root) {
+        parent_tabs.children.remove(pos);
+    }
+
+    let mut index = match insertion.insertion {
+        egui_tiles::ContainerInsertion::Tabs(i) if i != usize::MAX => i,
+        _ => parent_tabs.children.len(),
+    };
+    index = index.min(parent_tabs.children.len());
+
+    for (offset, pane_id) in panes.iter().copied().enumerate() {
+        let at = (index + offset).min(parent_tabs.children.len());
+        parent_tabs.children.insert(at, pane_id);
+    }
+    if let Some(&last) = panes.last() {
+        parent_tabs.set_active(last);
+    }
+
+    let _ = parent_tabs;
+    for container_id in containers {
+        let _ = tree.tiles.remove(container_id);
+    }
+
+    Ok(())
+}
+
 /// A “window host” is where a dock tree (or a subtree) lives.
 ///
 /// This is the core abstraction we want to converge on (ImGui mental model):
@@ -146,9 +231,29 @@ impl<Pane> DockingMultiViewport<Pane> {
         match host {
             WindowHost::DockTree { viewport } => {
                 if viewport == ViewportId::ROOT {
+                    if let Some(ins) = insertion
+                        && ins.insertion.kind() == egui_tiles::ContainerKind::Tabs
+                    {
+                        return insert_subtree_as_tabs_flattened_if_needed(
+                            &mut self.tree,
+                            subtree,
+                            ins,
+                            self.options.allow_container_tabbing,
+                        );
+                    }
                     self.dock_subtree_into_root(subtree, insertion);
                     Ok(())
                 } else if let Some(detached) = self.detached.get_mut(&viewport) {
+                    if let Some(ins) = insertion
+                        && ins.insertion.kind() == egui_tiles::ContainerKind::Tabs
+                    {
+                        return insert_subtree_as_tabs_flattened_if_needed(
+                            &mut detached.tree,
+                            subtree,
+                            ins,
+                            self.options.allow_container_tabbing,
+                        );
+                    }
                     detached.tree.insert_subtree_at(subtree, insertion);
                     Ok(())
                 } else {
@@ -161,6 +266,16 @@ impl<Pane> DockingMultiViewport<Pane> {
                     return Err(subtree);
                 }
                 if let Some(detached) = self.detached.get_mut(&viewport) {
+                    if let Some(ins) = insertion
+                        && ins.insertion.kind() == egui_tiles::ContainerKind::Tabs
+                    {
+                        return insert_subtree_as_tabs_flattened_if_needed(
+                            &mut detached.tree,
+                            subtree,
+                            ins,
+                            self.options.allow_container_tabbing,
+                        );
+                    }
                     detached.tree.insert_subtree_at(subtree, insertion);
                     Ok(())
                 } else {
@@ -175,6 +290,16 @@ impl<Pane> DockingMultiViewport<Pane> {
                 let Some(window) = manager.windows.get_mut(&floating) else {
                     return Err(subtree);
                 };
+                if let Some(ins) = insertion
+                    && ins.insertion.kind() == egui_tiles::ContainerKind::Tabs
+                {
+                    return insert_subtree_as_tabs_flattened_if_needed(
+                        &mut window.tree,
+                        subtree,
+                        ins,
+                        self.options.allow_container_tabbing,
+                    );
+                }
                 window.tree.insert_subtree_at(subtree, insertion);
                 manager.bring_to_front(floating);
                 Ok(())

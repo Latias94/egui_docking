@@ -260,6 +260,41 @@ impl<Pane> DockingMultiViewport<Pane> {
                             ui.label(log_text);
                         });
                 }
+
+                // Parity warnings are not structural integrity failures, but they explain
+                // "why this feels unlike ImGui" when container tabbing sneaks in.
+                if self.options.debug_integrity {
+                    let parity = if viewport_id == ViewportId::ROOT && tree_id == self.tree.id() {
+                        integrity::tree_parity_warnings(&self.tree)
+                    } else if let Some(detached) = self.detached.get(&viewport_id)
+                        && detached.tree.id() == tree_id
+                    {
+                        integrity::tree_parity_warnings(&detached.tree)
+                    } else if let Some(manager) = self.floating.get(&viewport_id) {
+                        manager
+                            .windows
+                            .values()
+                            .find(|w| w.tree.id() == tree_id)
+                            .map(|w| integrity::tree_parity_warnings(&w.tree))
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !parity.is_empty() {
+                        ui.separator();
+                        ui.heading("ImGui parity warnings");
+                        ui.label("These are valid in egui_tiles, but differ from ImGui DockSpace.");
+                        egui::ScrollArea::vertical()
+                            .id_salt("parity_warnings")
+                            .max_height(160.0)
+                            .show(ui, |ui| {
+                                for line in parity {
+                                    ui.label(line);
+                                }
+                            });
+                    }
+                }
             });
     }
 }
