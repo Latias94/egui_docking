@@ -8,9 +8,22 @@ use super::title::title_for_detached_tree;
 use super::types::DockPayload;
 use super::types::{GhostDrag, GhostDragMode};
 
+fn detached_root_tabs_redock_requested_id(
+    bridge_id: egui::Id,
+    viewport_id: ViewportId,
+) -> egui::Id {
+    egui::Id::new((
+        bridge_id,
+        viewport_id,
+        "egui_docking_detached_root_tabs_redock_requested",
+    ))
+}
+
 struct DetachedRootTabsCsdBehavior<'a, Pane> {
     inner: &'a mut dyn Behavior<Pane>,
     root_tabs: egui_tiles::TileId,
+    bridge_id: egui::Id,
+    viewport_id: ViewportId,
     enabled: bool,
 }
 
@@ -18,11 +31,15 @@ impl<'a, Pane> DetachedRootTabsCsdBehavior<'a, Pane> {
     fn new(
         inner: &'a mut dyn Behavior<Pane>,
         root_tabs: egui_tiles::TileId,
+        bridge_id: egui::Id,
+        viewport_id: ViewportId,
         enabled: bool,
     ) -> Self {
         Self {
             inner,
             root_tabs,
+            bridge_id,
+            viewport_id,
             enabled,
         }
     }
@@ -54,7 +71,8 @@ impl<'a, Pane> DetachedRootTabsCsdBehavior<'a, Pane> {
         // widget we add becomes the right-most one (Windows-like ordering).
         let close = button(ui, "Close window", "csd_close", CsdButtonIcon::Close);
         if close.clicked() {
-            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+            let id = detached_root_tabs_redock_requested_id(self.bridge_id, self.viewport_id);
+            ui.ctx().data_mut(|d| d.insert_temp(id, true));
         }
 
         ui.add_space(gap);
@@ -1075,11 +1093,29 @@ impl<Pane> DockingMultiViewport<Pane> {
                         let mut wrapped = DetachedRootTabsCsdBehavior::new(
                             behavior,
                             root_tabs,
+                            bridge_id,
+                            viewport_id,
                             self.options.detached_csd_window_controls,
                         );
                         detached.tree.ui(&mut wrapped, ui);
                     } else {
                         detached.tree.ui(behavior, ui);
+                    }
+
+                    if ctx.data(|d| {
+                        d.get_temp::<bool>(detached_root_tabs_redock_requested_id(
+                            bridge_id,
+                            viewport_id,
+                        ))
+                        .unwrap_or(false)
+                    }) {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(
+                                detached_root_tabs_redock_requested_id(bridge_id, viewport_id),
+                                false,
+                            );
+                        });
+                        should_redock_to_root = true;
                     }
 
                     // ImGui-like: double-click tab-bar background toggles maximize.
