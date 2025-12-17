@@ -241,6 +241,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                     resolved.target.pointer_local.y
                 ));
             }
+            // Important: releasing a window-move drag without docking must still end window move.
+            // The OS may swallow the mouse-up for the source viewport, so we must clear the move
+            // state here to prevent the window from "resuming" motion on the next pointer update.
+            self.clear_detached_window_move_state(ctx, resolved.payload.source_viewport);
             return;
         }
 
@@ -342,6 +346,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                     resolved.target.target_surface
                 ));
             }
+            self.clear_detached_window_move_state(ctx, resolved.payload.source_viewport);
             return;
         }
 
@@ -409,6 +414,14 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         behavior.on_edit(egui_tiles::EditAction::TileDropped);
+
+        // If we were in "window move" mode for a detached native viewport, make sure we clear any
+        // per-viewport move state. OS-level window moves may swallow the mouse-up for the source
+        // viewport, and we don't want the window to keep following the cursor after the drop.
+        if resolved.payload.tile_id.is_none() {
+            self.clear_detached_window_move_state(ctx, resolved.payload.source_viewport);
+        }
+
         if self.options.debug_event_log {
             for issue in integrity::tree_integrity_issues(&self.tree) {
                 self.debug_log_event(issue);
@@ -547,6 +560,7 @@ mod tests {
     use crate::multi_viewport::surface::DockSurface;
     use crate::multi_viewport::types::{DockPayload, ResolvedDrop, ResolvedDropTarget};
     use crate::multi_viewport::host::WindowHost;
+    use egui_tiles::InsertionPoint;
 
     #[derive(Default)]
     struct DummyBehavior;
@@ -596,6 +610,16 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut behavior = DummyBehavior::default();
+
+        // Seed fake window-move state (what detached.rs creates). This must be cleared even if the
+        // release doesn't dock anywhere.
+        ctx.data_mut(|d| {
+            d.insert_temp(docking.detached_window_move_active_id(detached_viewport), true);
+            d.insert_temp(
+                docking.detached_window_move_grab_id(detached_viewport),
+                egui::Vec2::ZERO,
+            );
+        });
         let resolved = ResolvedDrop {
             payload: DockPayload {
                 bridge_id: docking.tree.id(),
@@ -618,6 +642,10 @@ mod tests {
 
         docking.apply_resolved_cross_viewport_drop(&ctx, &mut behavior, resolved);
 
+        let active = ctx.data(|d| {
+            d.get_temp::<bool>(docking.detached_window_move_active_id(detached_viewport))
+        });
+        assert!(active.is_none());
         assert!(docking.detached.contains_key(&detached_viewport));
         assert_eq!(docking.tree.tiles.tile_ids().count(), root_tiles_before);
         assert_eq!(
@@ -631,5 +659,63 @@ mod tests {
                 .count(),
             detached_tiles_before
         );
+    }
+
+    #[test]
+    fn cross_viewport_window_move_clears_detached_window_move_state() {
+        let root_tree = new_tree_tabs(egui::Id::new("root"), 2);
+        let mut docking = DockingMultiViewport::new(root_tree);
+
+        let detached_viewport = ViewportId::from_hash_of("detached");
+        docking.detached.insert(
+            detached_viewport,
+            crate::multi_viewport::types::DetachedDock {
+                tree: new_tree_tabs(egui::Id::new("detached_tree"), 1),
+                builder: egui::ViewportBuilder::default(),
+            },
+        );
+
+        let ctx = egui::Context::default();
+        let mut behavior = DummyBehavior::default();
+
+        // Seed fake window-move state (what detached.rs creates).
+        ctx.data_mut(|d| {
+            d.insert_temp(docking.detached_window_move_active_id(detached_viewport), true);
+            d.insert_temp(
+                docking.detached_window_move_grab_id(detached_viewport),
+                egui::Vec2::ZERO,
+            );
+        });
+
+        let root_id = docking.tree.root.unwrap();
+        let resolved = ResolvedDrop {
+            payload: DockPayload {
+                bridge_id: docking.tree.id(),
+                source_viewport: detached_viewport,
+                source_floating: None,
+                tile_id: None,
+            },
+            pointer_global: egui::Pos2::new(10.0, 10.0),
+            target: ResolvedDropTarget {
+                target_surface: DockSurface::DockTree {
+                    viewport: ViewportId::ROOT,
+                },
+                target_host: WindowHost::DockTree {
+                    viewport: ViewportId::ROOT,
+                },
+                pointer_local: egui::Pos2::new(100.0, 100.0),
+                insertion: Some(InsertionPoint {
+                    parent_id: root_id,
+                    insertion: egui_tiles::ContainerInsertion::Horizontal(0),
+                }),
+            },
+        };
+
+        docking.apply_resolved_cross_viewport_drop(&ctx, &mut behavior, resolved);
+
+        let active = ctx.data(|d| {
+            d.get_temp::<bool>(docking.detached_window_move_active_id(detached_viewport))
+        });
+        assert!(active.is_none());
     }
 }

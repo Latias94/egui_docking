@@ -71,7 +71,8 @@ impl<Pane> DockingMultiViewport<Pane> {
         let builder = ViewportBuilder::default()
             .with_title(title)
             .with_position(pos)
-            .with_inner_size(size);
+            .with_inner_size(size)
+            .with_decorations(self.options.detached_viewport_decorations);
 
         let detached_tree_id =
             egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
@@ -217,7 +218,8 @@ impl<Pane> DockingMultiViewport<Pane> {
         let builder = ViewportBuilder::default()
             .with_title(title)
             .with_position(pos)
-            .with_inner_size(size);
+            .with_inner_size(size)
+            .with_decorations(self.options.detached_viewport_decorations);
 
         let detached_tree_id =
             egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
@@ -319,7 +321,8 @@ impl<Pane> DockingMultiViewport<Pane> {
         let builder = ViewportBuilder::default()
             .with_title(title)
             .with_position(pos)
-            .with_inner_size(size);
+            .with_inner_size(size)
+            .with_decorations(self.options.detached_viewport_decorations);
 
         let detached_tree_id =
             egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));

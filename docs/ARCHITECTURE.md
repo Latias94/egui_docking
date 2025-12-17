@@ -151,6 +151,9 @@ Detached native viewports should not show an extra, second “title label” wid
 
 This keeps the UI consistent: a single, discoverable handle per dock node.
 
+Implementation note: for native window moves we prefer `ViewportCommand::StartDrag` (OS-native window dragging) over driving `ViewportCommand::OuterPosition` each frame.
+`OuterPosition` remains useful for "live tear-off" ghost behavior where we must keep a newly spawned window under the cursor immediately.
+
 ## DockableWindow / ToolWindow model (recommended)
 
 We treat the editor as a collection of “dockable windows” that can be hosted in three ways:

@@ -91,7 +91,19 @@ impl<Pane> DockingMultiViewport<Pane> {
         exclude_viewport: Option<ViewportId>,
         exclude_floating: Option<FloatingId>,
     ) -> Option<(DockSurface, Pos2)> {
-        let viewport = if exclude_viewport.is_some() {
+        // Prefer the viewport that the OS/backend is currently sending pointer events to.
+        // This mirrors Dear ImGui's `io.MouseHoveredViewport` behavior and avoids incorrect
+        // hit-testing when viewports overlap (geometry-only inference is ambiguous).
+        let preferred_viewport = self.drag_state.last_hovered_viewport();
+        let preferred_ok = preferred_viewport
+            .filter(|vp| exclude_viewport != Some(*vp))
+            .and_then(|vp| {
+                pointer_pos_in_target_viewport_space(ctx, vp, pointer_global).map(|_| vp)
+            });
+
+        let viewport = if let Some(vp) = preferred_ok {
+            Some(vp)
+        } else if exclude_viewport.is_some() {
             viewport_under_pointer_global_excluding(ctx, pointer_global, exclude_viewport)
                 .or_else(|| viewport_under_pointer_global(ctx, pointer_global))
         } else {

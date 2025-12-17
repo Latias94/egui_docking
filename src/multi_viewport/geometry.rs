@@ -109,3 +109,29 @@ pub(super) fn infer_detached_geometry(
 
     (pos, size)
 }
+
+pub(super) fn outer_position_for_window_move(
+    pointer_global: Pos2,
+    grab_offset_in_inner: Vec2,
+    outer_from_inner_offset: Vec2,
+) -> Pos2 {
+    pointer_global - grab_offset_in_inner - outer_from_inner_offset
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outer_position_window_move_keeps_grabbed_point_under_pointer() {
+        let outer_from_inner = Vec2::new(0.0, 24.0); // e.g. macOS title bar + border
+        let grab_inner = Vec2::new(10.0, 10.0);
+        let pointer_global = Pos2::new(100.0, 100.0);
+
+        let outer_min = outer_position_for_window_move(pointer_global, grab_inner, outer_from_inner);
+        let inner_min = outer_min + outer_from_inner;
+        let grabbed_point_global = inner_min + grab_inner;
+
+        assert!((grabbed_point_global - pointer_global).length_sq() < 1e-6);
+    }
+}

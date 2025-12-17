@@ -210,7 +210,8 @@ impl<Pane> DockingMultiViewport<Pane> {
                             let builder = ViewportBuilder::default()
                                 .with_title(title)
                                 .with_position(pointer_global - grab_offset)
-                                .with_inner_size(window.size);
+                                .with_inner_size(window.size)
+                                .with_decorations(self.options.detached_viewport_decorations);
 
                             let tiles = std::mem::take(&mut window.tree.tiles);
 

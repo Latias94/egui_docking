@@ -107,6 +107,8 @@ impl Default for App {
         docking.options.debug_drop_targets = true;
         docking.options.debug_event_log = true;
         docking.options.debug_integrity = true;
+        docking.options.debug_log_file_path = Some("target/egui_docking_debug.log".into());
+        docking.options.debug_log_window_move_every_send = true;
 
         Self {
             docking,
@@ -152,6 +154,18 @@ impl eframe::App for App {
                     &mut self.docking.options.allow_container_tabbing,
                     "Allow container tabbing (Unity-like, non-ImGui)",
                 );
+                ui.checkbox(
+                    &mut self.docking.options.detached_viewport_decorations,
+                    "Detached native decorations (OS title bar)",
+                );
+                ui.checkbox(
+                    &mut self.docking.options.debug_log_file_flush_each_line,
+                    "Debug log file: flush each line",
+                );
+                ui.checkbox(
+                    &mut self.docking.options.debug_log_window_move_every_send,
+                    "Debug log: window-move every send (verbose)",
+                );
             });
             ui.add(
                 egui::Label::new(
@@ -159,12 +173,21 @@ impl eframe::App for App {
                      Hold CTRL while tearing off to create a contained floating window. \
                      While dragging, use the overlay targets for center/left/right/top/bottom docking. \
                      Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving (unless ConfigDockingWithShift is enabled). \
-                     In a detached viewport, drag the tab-bar background to move the native window (avoids OS title-bar capture issues). \
+                     In a detached viewport, drag the tab-bar background to move the native window. \
+                     Disabling OS decorations can improve docking drags (no native title bar/menu bar intercept), but you'll want custom resize/close UI for full parity. \
                      For window-move tab docking, hover the target window's title/tab bar (or use overlay targets). \
                      Drag into any other window to dock back.",
                 )
                 .selectable(false),
             );
+            if let Some(path) = self.docking.options.debug_log_file_path.as_deref() {
+                ui.separator();
+                ui.label(format!(
+                    "Debug log file: {} (auto-truncate on start: {})",
+                    path.display(),
+                    self.docking.options.debug_log_file_clear_on_start
+                ));
+            }
         });
         self.docking.ui(ctx, &mut self.behavior);
     }

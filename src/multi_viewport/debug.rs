@@ -4,6 +4,10 @@ use egui_tiles::{TileId, Tree};
 use super::DockingMultiViewport;
 use super::integrity;
 
+use std::fs::{create_dir_all, File, OpenOptions};
+use std::io::{BufWriter, Write as _};
+use std::path::Path;
+
 fn debug_tree_summary<Pane>(tree: &Tree<Pane>, max_nodes: usize) -> String {
     let Some(root) = tree.root else {
         return "root=None".to_owned();
@@ -52,6 +56,125 @@ fn debug_tree_summary<Pane>(tree: &Tree<Pane>, max_nodes: usize) -> String {
 }
 
 impl<Pane> DockingMultiViewport<Pane> {
+    pub(super) fn debug_log_file_prepare_if_needed(&mut self) {
+        let configured_path = self.options.debug_log_file_path.as_deref();
+        if self.debug_log_file_open_path.as_deref() != configured_path {
+            self.debug_log_file_writer = None;
+            self.debug_log_file_open_path = configured_path.map(ToOwned::to_owned);
+            self.debug_log_file_inited_for_path = false;
+            self.debug_log_file_last_error = None;
+        }
+
+        let Some(path) = self.debug_log_file_open_path.as_deref() else {
+            return;
+        };
+
+        if self.debug_log_file_inited_for_path {
+            return;
+        }
+
+        if self.options.debug_log_file_clear_on_start {
+            if let Err(err) = self.truncate_debug_log_file(path) {
+                self.debug_log_file_last_error =
+                    Some(format!("truncate {} failed: {err}", path.display()));
+            }
+        }
+
+        self.debug_log_file_inited_for_path = true;
+    }
+
+    pub(super) fn debug_log_file_truncate_now(&mut self) {
+        let Some(path) = self.options.debug_log_file_path.as_deref() else {
+            return;
+        };
+
+        self.debug_log_file_writer = None;
+        if let Err(err) = self.truncate_debug_log_file(path) {
+            self.debug_log_file_last_error = Some(format!("truncate {} failed: {err}", path.display()));
+        } else {
+            self.debug_log_file_last_error = None;
+        }
+        // After a manual clear, we consider the file "initialized" for this path.
+        self.debug_log_file_open_path = Some(path.to_path_buf());
+        self.debug_log_file_inited_for_path = true;
+    }
+
+    fn truncate_debug_log_file(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent)?;
+        }
+        File::create(path).map(|_| ())
+    }
+
+    fn debug_log_file_writer(&mut self) -> Option<&mut BufWriter<File>> {
+        let Some(path) = self.options.debug_log_file_path.as_deref() else {
+            self.debug_log_file_writer = None;
+            return None;
+        };
+
+        if self.debug_log_file_open_path.as_deref() != Some(path) {
+            // Config changed without going through `debug_log_file_prepare_if_needed` yet.
+            self.debug_log_file_open_path = Some(path.to_path_buf());
+            self.debug_log_file_inited_for_path = false;
+            self.debug_log_file_writer = None;
+        }
+
+        if self.debug_log_file_writer.is_none() {
+            if let Some(parent) = path.parent() {
+                if let Err(err) = create_dir_all(parent) {
+                    self.debug_log_file_last_error =
+                        Some(format!("create_dir_all {} failed: {err}", parent.display()));
+                    return None;
+                }
+            }
+
+            match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(file) => {
+                    self.debug_log_file_writer = Some(BufWriter::new(file));
+                    self.debug_log_file_last_error = None;
+                }
+                Err(err) => {
+                    self.debug_log_file_last_error =
+                        Some(format!("open {} failed: {err}", path.display()));
+                    return None;
+                }
+            }
+        }
+
+        self.debug_log_file_writer.as_mut()
+    }
+
+    fn debug_log_file_append_line(&mut self, line: &str) {
+        let flush_each_line = self.options.debug_log_file_flush_each_line;
+
+        let Some(writer) = self.debug_log_file_writer() else {
+            return;
+        };
+
+        if let Err(err) = writeln!(writer, "{line}") {
+            self.debug_log_file_writer = None;
+            if let Some(path) = self.options.debug_log_file_path.as_deref() {
+                self.debug_log_file_last_error =
+                    Some(format!("write {} failed: {err}", path.display()));
+            } else {
+                self.debug_log_file_last_error = Some(format!("write failed: {err}"));
+            }
+            return;
+        }
+
+        if flush_each_line {
+            if let Err(err) = writer.flush() {
+                self.debug_log_file_writer = None;
+                if let Some(path) = self.options.debug_log_file_path.as_deref() {
+                    self.debug_log_file_last_error =
+                        Some(format!("flush {} failed: {err}", path.display()));
+                } else {
+                    self.debug_log_file_last_error = Some(format!("flush failed: {err}"));
+                }
+            }
+        }
+    }
+
     pub(super) fn debug_log_event(&mut self, message: impl Into<String>) {
         if !self.options.debug_event_log {
             return;
@@ -67,12 +190,17 @@ impl<Pane> DockingMultiViewport<Pane> {
     }
 
     pub(super) fn push_debug_log_line(&mut self, message: String) {
+        self.debug_log_file_prepare_if_needed();
+
         let cap = self.options.debug_event_log_capacity.max(1).min(10_000);
         while self.debug_log.len() >= cap {
             self.debug_log.pop_front();
         }
-        self.debug_log
-            .push_back(format!("[frame {}] {}", self.debug_frame, message));
+        let line = format!("[frame {}] {}", self.debug_frame, message);
+        self.debug_log.push_back(line.clone());
+        if self.options.debug_log_file_path.is_some() {
+            self.debug_log_file_append_line(&line);
+        }
     }
 
     pub(super) fn debug_log_clear(&mut self) {
@@ -231,6 +359,24 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 });
 
+                if let Some(path) = self.options.debug_log_file_path.as_deref() {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Log file: {}", path.display()));
+                        if ui.button("Copy path").clicked() {
+                            ctx.copy_text(path.display().to_string());
+                        }
+                        if ui.button("Clear log file").clicked() {
+                            ctx.data_mut(|d| {
+                                d.insert_temp(debug_clear_log_file_id(self.tree.id()), true);
+                            });
+                        }
+                    });
+                    if let Some(err) = self.debug_log_file_last_error.as_deref() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, format!("Log file error: {err}"));
+                    }
+                }
+
                 if let Some(text) = last_drop_debug {
                     ui.separator();
                     egui::ScrollArea::vertical()
@@ -301,6 +447,10 @@ impl<Pane> DockingMultiViewport<Pane> {
 
 pub(super) fn debug_clear_event_log_id(bridge_id: egui::Id) -> egui::Id {
     egui::Id::new((bridge_id, "egui_docking_clear_event_log"))
+}
+
+pub(super) fn debug_clear_log_file_id(bridge_id: egui::Id) -> egui::Id {
+    egui::Id::new((bridge_id, "egui_docking_clear_log_file"))
 }
 
 pub(super) fn last_drop_debug_text_id(tree_id: egui::Id, viewport_id: ViewportId) -> egui::Id {

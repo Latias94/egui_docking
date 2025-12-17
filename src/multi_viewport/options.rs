@@ -1,4 +1,5 @@
 use egui::Vec2;
+use std::path::PathBuf;
 
 /// Options for [`super::DockingMultiViewport`].
 #[derive(Clone, Debug)]
@@ -13,6 +14,15 @@ pub struct DockingMultiViewportOptions {
 
     /// Fallback inner size (in points) when we can't infer a better size for a torn-off pane.
     pub default_detached_inner_size: Vec2,
+
+    /// Whether detached native viewports should use OS window decorations (title bar, standard buttons).
+    ///
+    /// ImGui parity: multi-viewport docking feels most unified when platform windows are undecorated
+    /// (client-side "dock node" chrome). Disabling decorations also avoids the OS title bar/menu bar
+    /// intercepting pointer events during window-move docking.
+    ///
+    /// Note: if you disable decorations, you likely want custom resize handles and close buttons.
+    pub detached_viewport_decorations: bool,
 
     /// If true, holding SHIFT while tearing off a pane will instead tear off the closest parent `Tabs` container,
     /// preserving the whole tab-group (dear imgui style "dock node tear-off").
@@ -77,6 +87,24 @@ pub struct DockingMultiViewportOptions {
     /// and show it in the debug panel for easy copy-paste.
     pub debug_event_log: bool,
 
+    /// If set, also append the debug log lines to a file (one line per event).
+    ///
+    /// Useful when the on-screen debug window is disabled during drags, or when you want to run
+    /// `rg`/`tail -f` on the log from a terminal.
+    pub debug_log_file_path: Option<PathBuf>,
+
+    /// If true, truncate the log file once per process run before the first write.
+    pub debug_log_file_clear_on_start: bool,
+
+    /// If true, flush the log file on each line (better for tailing, slower).
+    pub debug_log_file_flush_each_line: bool,
+
+    /// If true, log every window-move `ViewportCommand::OuterPosition` send (very verbose).
+    ///
+    /// Useful to diagnose "jitter" where the desired outer position flips by ~1px between frames.
+    /// Recommended to enable only when `debug_log_file_path` is set.
+    pub debug_log_window_move_every_send: bool,
+
     /// Maximum number of debug log lines to keep (ring buffer).
     pub debug_event_log_capacity: usize,
 
@@ -92,6 +120,7 @@ impl Default for DockingMultiViewportOptions {
         Self {
             config_docking_with_shift: false,
             default_detached_inner_size: Vec2::new(480.0, 360.0),
+            detached_viewport_decorations: true,
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
             window_move_tab_dock_requires_explicit_target: true,
@@ -106,6 +135,10 @@ impl Default for DockingMultiViewportOptions {
             ghost_upgrade_to_native_on_leave_viewport: true,
             debug_drop_targets: false,
             debug_event_log: false,
+            debug_log_file_path: None,
+            debug_log_file_clear_on_start: true,
+            debug_log_file_flush_each_line: true,
+            debug_log_window_move_every_send: false,
             debug_event_log_capacity: 200,
             debug_integrity: false,
             debug_integrity_panic: false,

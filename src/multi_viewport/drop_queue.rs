@@ -219,8 +219,23 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         // Prefer the active viewport's computed global pointer, but fall back to the last known
         // global pointer from any viewport if needed.
-        let pointer_global = self.drag_state.pointer_global_fallback(ctx);
+        //
+        // During OS-level window moves (window-move payload), the source viewport may keep receiving
+        // events while the cursor is physically above a different window, and its local cursor
+        // position may remain constant. In that case we must prefer the integrated global pointer.
+        let pointer_global = if payload.tile_id.is_none() && payload.source_viewport == ctx.viewport_id() {
+            self.drag_state.pointer_global_prefer_integrated(ctx)
+        } else {
+            self.drag_state.pointer_global_fallback(ctx)
+        };
         let Some(pointer_global) = pointer_global else {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "cross_drop_skip no_pointer_global viewport={:?} payload={:?}",
+                    ctx.viewport_id(),
+                    *payload
+                ));
+            }
             return;
         };
 
@@ -228,9 +243,28 @@ impl<Pane> DockingMultiViewport<Pane> {
         let Some(target_viewport) =
             viewport_under_pointer_global_excluding(ctx, pointer_global, exclude_viewport)
         else {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "cross_drop_skip no_target_viewport viewport={:?} exclude_viewport={exclude_viewport:?} payload={:?} pointer_global=({:.1},{:.1}) last_hovered_viewport={:?}",
+                    ctx.viewport_id(),
+                    *payload,
+                    pointer_global.x,
+                    pointer_global.y,
+                    self.drag_state.last_hovered_viewport(),
+                ));
+            }
             return;
         };
         if target_viewport == payload.source_viewport {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "cross_drop_skip target_is_source viewport={:?} payload={:?} pointer_global=({:.1},{:.1}) target_viewport={target_viewport:?}",
+                    ctx.viewport_id(),
+                    *payload,
+                    pointer_global.x,
+                    pointer_global.y,
+                ));
+            }
             return;
         }
 
