@@ -10,6 +10,16 @@ Multi-viewport docking for [`egui`](https://github.com/emilk/egui): bridges `egu
 ## Status
 Experimental / WIP. Targeted at editor-like workflows.
 
+## Forks (required for now)
+
+This project is developed and tested against these forks:
+
+- `egui_tiles_docking`: https://github.com/Latias94/egui_tiles_docking
+- `egui` (incl. `egui-winit` / `eframe`): https://github.com/Latias94/egui
+
+The `egui` fork is currently required because `egui_docking` uses `egui::containers::window_chrome` (not public in upstream `egui 0.33`),
+and because editor-grade cross-viewport docking benefits from backend-provided input hints/fallbacks.
+
 ## Usage
 `egui_docking` uses `egui_tiles` types in its public API. If you want the multi-viewport bridge features, use the forked tiles crate:
 
@@ -18,6 +28,17 @@ Experimental / WIP. Targeted at editor-like workflows.
 egui = "0.33"
 egui_docking = "0.1"
 egui_tiles = { package = "egui_tiles_docking", version = "0.14" }
+```
+
+Patch `egui` to the fork (required for now):
+
+```toml
+[patch.crates-io]
+egui = { git = "https://github.com/Latias94/egui" }
+egui-winit = { git = "https://github.com/Latias94/egui" }
+egui-wgpu = { git = "https://github.com/Latias94/egui" }
+egui_glow = { git = "https://github.com/Latias94/egui" }
+eframe = { git = "https://github.com/Latias94/egui" }
 ```
 
 Then, in your app update loop:
@@ -35,7 +56,7 @@ cargo run --example multi_viewport_docking
 
 ## Debugging
 - Enable drop target visualization + event log via `DockingMultiViewportOptions { debug_drop_targets: true, ..Default::default() }`.
-- For backend/input troubleshooting, run with `RUST_LOG=debug` (the `repo-ref/egui` fork logs when it synthesizes missing mouse-up during drags).
+- For backend/input troubleshooting, run with `RUST_LOG=debug` (the forked `egui` logs when it synthesizes missing mouse-up during drags).
 
 ## Tips
 - Tear-off: drag a tab/pane and release outside the dock area, or hold `ALT` while releasing to force a new native window.
@@ -45,8 +66,3 @@ cargo run --example multi_viewport_docking
 ## Docs
 
 - `docs/ARCHITECTURE.md`
-- `docs/STATUS.md`
-- `docs/IMGUI_PARITY.md`
-- `docs/ROADMAP.md`
-- `docs/REFACTOR_PLAN.md`
-- `docs/EGUI_FORK_PLAN.md`

@@ -1,8 +1,7 @@
-# egui_docking Architecture (Frozen)
+# egui_docking Architecture
 
-This document freezes the current design goals, architecture boundaries, interaction rules, and the development roadmap for `egui_docking`, so we can iterate without drifting UX.
-
-For the previous Chinese version, see `docs/ARCHITECTURE.zh-CN.md`.
+This document captures the current design goals, architecture boundaries, and interaction rules for `egui_docking`.
+It aims to keep UX decisions stable while the implementation evolves toward Dear ImGui-like “Docking + Viewports”.
 
 ## Goals
 
@@ -25,11 +24,17 @@ Bridge `egui_tiles` (dock tree model) with `egui` multi-viewport (multiple nativ
 - `egui_docking` (this repo)
   - Responsibility: multi-viewport bridge, drag/drop state machine, docking overlay and insertion decisions, detached viewport lifecycle.
   - Main entry: `src/multi_viewport/mod.rs`.
-- `repo-ref/egui_tiles_docking` (fork of `egui_tiles`)
+- `egui_tiles_docking` (fork of `egui_tiles`, https://github.com/Latias94/egui_tiles_docking)
   - Responsibility: expose the minimal APIs needed by the bridge (subtree extract/insert, dock-zone query, root-tab drag id, and debug hooks).
   - Policy: keep the library name as `egui_tiles` to stay drop-in.
-- `repo-ref/egui` (your fork of egui)
-  - Responsibility: provide the missing primitives to make the experience as “unified and predictable” as ImGui (see “egui fork plan” below).
+- `egui` fork (https://github.com/Latias94/egui)
+  - Responsibility: provide a few missing primitives to make the experience as “unified and predictable” as ImGui.
+
+This project is experimental and currently intended to be consumed via git dependencies (no crates.io release planned short-term).
+
+- The `egui` fork is currently required because `egui_docking` uses `egui::containers::window_chrome` (not public in upstream `egui 0.33`).
+- The bridge *runtime* is designed to degrade gracefully when fork-only backend hints are absent, but the ImGui-like
+  “cross-window drag reliability” still benefits from backend cooperation (see below).
 
 ## Core UX principles (what makes ImGui feel good)
 
@@ -65,8 +70,6 @@ These invariants define the “closed loop” correctness contract:
 4. A release is handled at most once (single apply per drag session).
 5. Empty detached/floating windows are cleaned deterministically and logged.
 
-For a full parity checklist and acceptance checks, see `docs/IMGUI_PARITY.md`.
-
 ## Data model and responsibilities
 
 ### Viewports and trees
@@ -89,6 +92,14 @@ Some backends/platforms can keep pointer capture in the source viewport, so “r
 
 - `pending_drop: Option<PendingDrop { payload, pointer_global }>`
 - Collected on release and applied at the end of the root frame, after all trees have produced layout rects.
+
+To make this reliable across overlapping windows (and during OS-native window moves), we also benefit from backend-provided hints:
+
+- **Hovered native viewport**: `egui-winit::mouse_hovered_viewport_id` (ImGui analog: `io.MouseHoveredViewport`).
+- **Global pointer position**: `egui-winit::pointer_global_points` (ImGui analog: `io.MousePos`), used when window-local cursor
+  positions are stale or never delivered to the target window.
+
+When these hints are missing, we fall back to geometry-only inference (`inner_rect + local pointer`) which is necessarily less robust.
 
 ## Docking authority and preview policy
 
@@ -167,7 +178,7 @@ that should not participate in docking (dialogs/pickers/context UI).
 
 ## Tabs & tab-bar UX (tiles-level, ImGui parity)
 
-Important decision: **tab appearance and interaction lives in `egui_tiles` (`repo-ref/egui_tiles_docking`)**, not in `egui_docking`.
+Important decision: **tab appearance and interaction lives in `egui_tiles` (`egui_tiles_docking` fork)**, not in `egui_docking`.
 
 Rationale:
 - `egui` does not have a first-class “TabBar/TabItem” widget like Dear ImGui.
@@ -191,21 +202,18 @@ Acceptance criteria (ImGui-like baseline):
 - Releasing over a dock node without explicit split target docks as a tab/center by default.
 - Split docking only happens when explicitly hovering the split targets (directional intent is unambiguous).
 
-## egui fork plan (recommended changes)
+## egui fork (what we rely on today)
 
-To eliminate the “split personality” between `egui::Window` and contained floating windows, we want to reuse the same chrome implementation in both places.
+The forked `egui` (https://github.com/Latias94/egui) currently provides a few UX-oriented primitives used by `egui_docking`:
 
-Proposed direction in `repo-ref/egui`:
+- **Reusable window chrome**: `egui::containers::window_chrome` is exposed so contained floating windows and borderless
+  detached windows can share the same title-bar layout/controls as `egui::Window`.
+- **Backend hover authority**: `egui-winit` stores `mouse_hovered_viewport_id` in `Context::data` on cursor enter/move/leave.
+- **Backend global pointer + release fallbacks** (eframe integrations): during active drags, device events maintain a best-effort
+  global pointer position, synthesize pointer moves into the best viewport, and force-release pointer buttons when the OS swallows
+  mouse-up outside all windows.
 
-1. **Extract window chrome into a reusable component**
-   - Make the title bar layout/interaction (drag region, close/collapse buttons, header background) reusable outside `egui::Window`.
-   - Goal: allow `Area`-based windows to render and behave like `egui::Window` without copy-pasting private code.
-2. **Public API for “window-like frame + title bar”**
-   - Something like a `WindowChrome`/`TitleBar` builder that can be embedded in custom containers.
-3. **Keep `egui::Window` as a convenience wrapper**
-   - `Window` remains the main high-level API, but internally uses the extracted chrome module.
-
-These changes are intentionally UX-oriented, not “docking-specific”, so they can be upstreamed later if desired.
+These changes are intentionally UX-oriented (not “docking-specific”) and are good candidates for upstreaming once APIs settle.
 
 ## egui_tiles fork plan (minimal surface)
 
@@ -232,15 +240,7 @@ We prefer tests that validate the mutation algebra without relying on GUI automa
   - `src/multi_viewport/drop_policy.rs`
 - Next: “model tests” that generate small trees and sequences of extract/insert operations, asserting the invariants above after every step.
 
-## Roadmap
-
-See `docs/ROADMAP.md` for the prioritized execution plan.
-
-## Refactor plan
-
-See `docs/REFACTOR_PLAN.md` for the stability-first refactor phases and invariant protection strategy.
-
-High-level milestones:
+## Milestones (high-level)
 
 1. **Drag reliability across viewports**: stable pointer feed + deterministic release handling (cross-window drop must never be flaky).
 2. **One Window Host abstraction**: unify docked/contained/native into a single host model and state machine.
@@ -256,7 +256,3 @@ Ghost tear-off is enabled by default and is intended to converge on ImGui’s �
 - A ghost window is created immediately.
 - By default, the ghost is spawned as a native viewport window as soon as it leaves the dock area (see `ghost_spawn_native_on_leave_dock`).
 - Re-dock by hovering a valid overlay target in any dock surface and releasing.
-
-## Status snapshot
-
-See `docs/STATUS.md` for what is implemented today and what gaps remain to match ImGui.
