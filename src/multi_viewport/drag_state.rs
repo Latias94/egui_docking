@@ -5,8 +5,8 @@ use super::geometry::pointer_pos_in_global;
 use super::session::DragSession;
 use super::types::DockPayload;
 
-// Keep in sync with `egui-winit` (repo-ref) backend key:
-// `repo-ref/egui/crates/egui-winit/src/lib.rs`.
+// Keep in sync with the `egui-winit` backend context keys used by the egui fork:
+// https://github.com/Latias94/egui (crates/egui-winit/src/lib.rs).
 const BACKEND_MOUSE_HOVERED_VIEWPORT_ID_KEY: &str = "egui-winit::mouse_hovered_viewport_id";
 const BACKEND_POINTER_GLOBAL_POINTS_KEY: &str = "egui-winit::pointer_global_points";
 

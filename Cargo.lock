@@ -453,6 +453,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ecolor"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "bytemuck",
  "emath",
@@ -462,6 +463,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -498,6 +500,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "accesskit",
  "ahash",
@@ -516,6 +519,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -534,6 +538,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -563,6 +568,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "bytemuck",
  "egui",
@@ -578,6 +584,7 @@ dependencies = [
 [[package]]
 name = "egui_tiles_docking"
 version = "0.14.0"
+source = "git+https://github.com/Latias94/egui_tiles_docking#79d2e3c22982d6676f8167dbeed639767308bf35"
 dependencies = [
  "ahash",
  "egui",
@@ -594,6 +601,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "emath"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "bytemuck",
  "serde",
@@ -613,6 +621,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -632,6 +641,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.33.3"
+source = "git+https://github.com/Latias94/egui#60e91cb8df3ef9975328f6195982ca11c71f863b"
 
 [[package]]
 name = "equivalent"
@@ -3105,7 +3115,3 @@ checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "egui_extras"
-version = "0.33.3"

@@ -8,7 +8,7 @@ Multi-viewport docking for [`egui`](https://github.com/emilk/egui): bridges `egu
 - Drag back into the main dock
 
 ## Status
-Experimental / WIP. Targeted at editor-like workflows.
+Experimental / WIP. Targeted at editor-like workflows. No crates.io release planned short-term.
 
 ## Forks (required for now)
 
@@ -21,23 +21,19 @@ The `egui` fork is currently required because `egui_docking` uses `egui::contain
 and because editor-grade cross-viewport docking benefits from backend-provided input hints/fallbacks.
 
 ## Usage
-`egui_docking` uses `egui_tiles` types in its public API. If you want the multi-viewport bridge features, use the forked tiles crate:
+`egui_docking` uses `egui_tiles` types in its public API. Use git dependencies + patch `egui`/`eframe` to the fork (required for now):
 
 ```toml
 [dependencies]
+egui_docking = { git = "https://github.com/Latias94/egui_docking" }
+egui_tiles = { package = "egui_tiles_docking", git = "https://github.com/Latias94/egui_tiles_docking", default-features = false }
 egui = "0.33"
-egui_docking = "0.1"
-egui_tiles = { package = "egui_tiles_docking", version = "0.14" }
-```
 
-Patch `egui` to the fork (required for now):
+# If you use eframe:
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland"] }
 
-```toml
 [patch.crates-io]
 egui = { git = "https://github.com/Latias94/egui" }
-egui-winit = { git = "https://github.com/Latias94/egui" }
-egui-wgpu = { git = "https://github.com/Latias94/egui" }
-egui_glow = { git = "https://github.com/Latias94/egui" }
 eframe = { git = "https://github.com/Latias94/egui" }
 ```
 

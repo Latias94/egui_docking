@@ -32,6 +32,9 @@ Bridge `egui_tiles` (dock tree model) with `egui` multi-viewport (multiple nativ
 
 This project is experimental and currently intended to be consumed via git dependencies (no crates.io release planned short-term).
 
+Build setup note: `egui_tiles_docking` currently depends on crates.io `egui`, so consumers should apply a top-level `[patch.crates-io]`
+override to keep a single `egui` source (the fork) across the whole workspace.
+
 - The `egui` fork is currently required because `egui_docking` uses `egui::containers::window_chrome` (not public in upstream `egui 0.33`).
 - The bridge *runtime* is designed to degrade gracefully when fork-only backend hints are absent, but the ImGui-like
   “cross-window drag reliability” still benefits from backend cooperation (see below).
