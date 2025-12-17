@@ -24,6 +24,16 @@ pub struct DockingMultiViewportOptions {
     /// Note: if you disable decorations, you likely want custom resize handles and close buttons.
     pub detached_viewport_decorations: bool,
 
+    /// Borderless (CSD) resize edge thickness in points.
+    ///
+    /// Only used when `detached_viewport_decorations == false`.
+    pub detached_csd_resize_edge_thickness: f32,
+
+    /// Borderless (CSD) resize corner size in points.
+    ///
+    /// Only used when `detached_viewport_decorations == false`.
+    pub detached_csd_resize_corner_size: f32,
+
     /// If true, and `detached_viewport_decorations == false`, render client-side window controls
     /// (close/minimize/maximize) for detached native viewports.
     ///
@@ -129,6 +139,8 @@ impl Default for DockingMultiViewportOptions {
             config_docking_with_shift: false,
             default_detached_inner_size: Vec2::new(480.0, 360.0),
             detached_viewport_decorations: true,
+            detached_csd_resize_edge_thickness: 6.0,
+            detached_csd_resize_corner_size: 14.0,
             detached_csd_window_controls: true,
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,

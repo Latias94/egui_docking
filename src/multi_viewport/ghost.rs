@@ -3,6 +3,7 @@ use egui_tiles::{Behavior, Tree};
 
 use super::DockingMultiViewport;
 use super::geometry::{infer_detached_geometry, pointer_pos_in_global, root_inner_rect_in_global};
+use super::monitor_clamp::clamp_outer_pos_if_monitors_available;
 use super::title::title_for_detached_subtree;
 use super::types::{DetachedDock, DockPayload, FloatingDockWindow, GhostDrag, GhostDragMode};
 
@@ -66,6 +67,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         let pos = pointer_global
             .map(|p| p - grab_offset)
             .unwrap_or(Pos2::new(64.0, 64.0));
+        let pos = clamp_outer_pos_if_monitors_available(ctx, pos, size);
 
         let (viewport_id, serial) = self.allocate_detached_viewport_id();
         let builder = ViewportBuilder::default()
@@ -81,6 +83,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         self.detached.insert(
             viewport_id,
             DetachedDock {
+                serial,
                 tree: detached_tree,
                 builder,
             },
@@ -198,6 +201,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             root_inner_rect,
             self.options.default_detached_inner_size,
         );
+        let pos = clamp_outer_pos_if_monitors_available(ctx, pos, size);
 
         let ctrl_floating =
             self.options.tear_off_to_floating_on_ctrl && ctx.input(|i| i.modifiers.ctrl);
@@ -228,6 +232,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         self.detached.insert(
             viewport_id,
             DetachedDock {
+                serial,
                 tree: detached_tree,
                 builder,
             },
@@ -298,6 +303,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             inner_rect,
             self.options.default_detached_inner_size,
         );
+        let pos = clamp_outer_pos_if_monitors_available(ctx, pos, size);
 
         let ctrl_floating =
             self.options.tear_off_to_floating_on_ctrl && ctx.input(|i| i.modifiers.ctrl);
@@ -331,6 +337,7 @@ impl<Pane> DockingMultiViewport<Pane> {
         self.detached.insert(
             viewport_id,
             DetachedDock {
+                serial,
                 tree: detached_tree,
                 builder,
             },
@@ -631,6 +638,24 @@ impl<Pane> DockingMultiViewport<Pane> {
         // If the payload is already gone (cleared by another viewport), stop tracking the ghost.
         if egui::DragAndDrop::payload::<DockPayload>(ctx).is_none() {
             self.ghost = None;
+            return;
+        }
+
+        // Some OS/backends may swallow the mouse-up event during native window moves.
+        // If no viewport reports the pointer as down this frame, stop the ghost drag
+        // to avoid the window "following" the mouse after release.
+        if !self.drag_state.any_pointer_down_this_frame() {
+            if self.options.debug_event_log {
+                self.debug_log_event(format!(
+                    "ghost_finalize STOP reason=pointer_up_no_release={}",
+                    !self.drag_state.any_pointer_released_this_frame(),
+                ));
+            }
+            self.ghost = None;
+            if egui::DragAndDrop::payload::<DockPayload>(ctx).is_some_and(|p| p.bridge_id == self.tree.id()) {
+                egui::DragAndDrop::clear_payload(ctx);
+                ctx.stop_dragging();
+            }
             return;
         }
 

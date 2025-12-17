@@ -49,9 +49,28 @@ Then, in your app update loop:
 docking.ui(ctx, &mut behavior);
 ```
 
+## Optional: layout persistence (RON)
+
+Enable the `persistence` feature to save/load the docking layout (ImGui `.ini`-like), serialized as RON.
+
+- This does **not** serialize your `Pane` state.
+- You provide a `PaneId` mapping (recommended via `PaneRegistry` / `SimplePaneRegistry`).
+- If some panes are removed over time, implement `PaneRegistry::try_pane_from_id` and return `None` to drop missing panes on load.
+- Snapshot format is experimental and versioned; breaking changes may require regenerating your `.ron`.
+
+```toml
+egui_docking = { git = "https://github.com/Latias94/egui_docking", features = ["persistence"] }
+```
+
 ## Example
 ```sh
 cargo run --example multi_viewport_docking
+```
+
+With layout Save/Load buttons:
+
+```sh
+cargo run --example multi_viewport_docking --features persistence
 ```
 
 ## Debugging

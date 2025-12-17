@@ -602,6 +602,7 @@ mod tests {
         docking.detached.insert(
             detached_viewport,
             crate::multi_viewport::types::DetachedDock {
+                serial: 1,
                 tree: detached_tree,
                 builder: egui::ViewportBuilder::default(),
             },
@@ -615,10 +616,6 @@ mod tests {
         // release doesn't dock anywhere.
         ctx.data_mut(|d| {
             d.insert_temp(docking.detached_window_move_active_id(detached_viewport), true);
-            d.insert_temp(
-                docking.detached_window_move_grab_id(detached_viewport),
-                egui::Vec2::ZERO,
-            );
         });
         let resolved = ResolvedDrop {
             payload: DockPayload {
@@ -670,6 +667,7 @@ mod tests {
         docking.detached.insert(
             detached_viewport,
             crate::multi_viewport::types::DetachedDock {
+                serial: 1,
                 tree: new_tree_tabs(egui::Id::new("detached_tree"), 1),
                 builder: egui::ViewportBuilder::default(),
             },
@@ -681,10 +679,6 @@ mod tests {
         // Seed fake window-move state (what detached.rs creates).
         ctx.data_mut(|d| {
             d.insert_temp(docking.detached_window_move_active_id(detached_viewport), true);
-            d.insert_temp(
-                docking.detached_window_move_grab_id(detached_viewport),
-                egui::Vec2::ZERO,
-            );
         });
 
         let root_id = docking.tree.root.unwrap();

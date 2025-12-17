@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::BufWriter;
 use std::path::PathBuf;
 
-use egui::emath::GuiRounding as _;
-use egui::{Context, LayerId, Order, Pos2, Rect, Vec2, ViewportCommand, ViewportId};
+use egui::{Context, LayerId, Order, Rect, Vec2, ViewportId};
 use egui_tiles::{Behavior, ContainerKind, InsertionPoint, Tile, TileId, Tree};
 
 mod debug;
+mod backend_hints;
 mod drag_state;
 mod detached;
 mod drop_apply;
@@ -18,9 +18,14 @@ mod geometry;
 mod ghost;
 mod host;
 mod integrity;
+mod monitor_clamp;
 mod options;
 mod overlay;
 mod overlay_decision;
+#[cfg(feature = "persistence")]
+mod persistence;
+#[cfg(feature = "persistence")]
+mod pane_registry;
 mod release;
 mod session;
 mod surface;
@@ -37,6 +42,16 @@ mod overlay_decision_tests;
 mod ghost_tests;
 
 pub use options::DockingMultiViewportOptions;
+pub use backend_hints::{
+    backend_monitors_outer_rects_points, backend_mouse_hovered_viewport_id,
+    backend_pointer_global_points, clear_backend_monitors_outer_rects_points,
+    set_backend_monitors_outer_rects_points, BACKEND_MONITORS_OUTER_RECTS_POINTS_KEY,
+    BACKEND_MOUSE_HOVERED_VIEWPORT_ID_KEY, BACKEND_POINTER_GLOBAL_POINTS_KEY,
+};
+#[cfg(feature = "persistence")]
+pub use persistence::{LayoutPersistenceError, LayoutSnapshot, LAYOUT_SNAPSHOT_VERSION};
+#[cfg(feature = "persistence")]
+pub use pane_registry::{PaneRegistry, SimplePaneRegistry};
 
 use debug::{debug_clear_event_log_id, last_drop_debug_text_id, tiles_debug_visit_enabled_id};
 use drag_state::DragState;
@@ -45,11 +60,8 @@ use overlay::{paint_outer_overlay, paint_overlay, pointer_in_outer_band};
 use overlay_decision::{decide_overlay_for_tree, DragKind, OverlayPaint};
 use types::*;
 
-#[derive(Debug, Clone, Copy)]
-struct ActiveWindowMove {
-    viewport: ViewportId,
-    grab_offset_in_inner: Vec2,
-    last_sent_outer: Option<Pos2>,
+fn backend_hints_log_state_id(tree_id: egui::Id) -> egui::Id {
+    egui::Id::new((tree_id, "egui_docking_backend_hints_log_state"))
 }
 
 /// Bridge `egui_tiles` docking with `egui` multi-viewports.
@@ -82,8 +94,6 @@ pub struct DockingMultiViewport<Pane> {
 
     drag_state: DragState,
 
-    active_window_move: Option<ActiveWindowMove>,
-
     pending_drop: Option<PendingDrop>,
     pending_internal_drop: Option<PendingInternalDrop>,
     pending_local_drop: Option<PendingLocalDrop>,
@@ -106,6 +116,9 @@ pub struct DockingMultiViewport<Pane> {
     debug_log_file_last_error: Option<String>,
 
     detached_rendered_frame: BTreeMap<ViewportId, u64>,
+
+    #[cfg(feature = "persistence")]
+    last_viewport_runtime: BTreeMap<ViewportId, persistence::ViewportRuntime>,
 }
 
 impl<Pane> DockingMultiViewport<Pane> {
@@ -123,7 +136,6 @@ impl<Pane> DockingMultiViewport<Pane> {
             last_dock_rects: BTreeMap::new(),
             viewport_outer_from_inner_offset: BTreeMap::new(),
             drag_state: DragState::default(),
-            active_window_move: None,
             pending_drop: None,
             pending_internal_drop: None,
             pending_local_drop: None,
@@ -141,6 +153,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             debug_log_file_inited_for_path: false,
             debug_log_file_last_error: None,
             detached_rendered_frame: BTreeMap::new(),
+            #[cfg(feature = "persistence")]
+            last_viewport_runtime: BTreeMap::new(),
         }
     }
 
@@ -191,7 +205,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         self.debug_frame = self.debug_frame.wrapping_add(1);
         self.drag_state.begin_frame();
         self.update_viewport_outer_from_inner_offset(ctx);
+        #[cfg(feature = "persistence")]
+        self.capture_viewport_runtime(ctx);
         self.debug_log_file_prepare_if_needed();
+        self.debug_log_backend_hints_if_changed(ctx);
         // Important: detached viewports are rendered before the root dock UI. When the pointer is
         // above the root window (common while re-docking), we still want detached window-move
         // logic to see a fresh global pointer position in the same frame.
@@ -293,8 +310,6 @@ impl<Pane> DockingMultiViewport<Pane> {
         //    Render newly-created viewports once in the same frame to reduce perceived latency.
         self.ui_detached_viewports(ctx, behavior);
 
-        self.drive_active_window_move(ctx);
-
         if self.options.debug_drop_targets
             || self.options.debug_event_log
             || self.options.debug_integrity
@@ -305,7 +320,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         // Apply after all viewports have had a chance to run `tree.ui` this frame so we can use
         // the computed rectangles for accurate docking.
         self.apply_pending_actions(ctx, behavior);
+        self.cleanup_bridge_payload_if_no_pointer_down(ctx);
         self.clear_bridge_payload_on_release(ctx);
+        self.cleanup_detached_window_move_sessions(ctx);
         self.finish_ghost_if_released_or_aborted(ctx);
 
         if self.options.debug_integrity {
@@ -314,6 +331,94 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         if let Some(msg) = self.drag_state.end_frame(self.debug_frame) {
             self.debug_log_event(msg);
+        }
+    }
+
+    fn cleanup_detached_window_move_sessions(&mut self, ctx: &Context) {
+        // Detached window-move uses a per-viewport temp flag to suppress tiles payload re-seeding.
+        //
+        // If the payload is cleared from a different viewport (e.g. cross-viewport drop), or if a backend
+        // loses the mouse-up event, the per-viewport flag can otherwise get stuck and keep forcing repaints.
+        let any_pointer_down = self.drag_state.any_pointer_down_this_frame();
+
+        // Snapshot the payload once: it is global to the egui `Context`.
+        let payload = egui::DragAndDrop::payload::<DockPayload>(ctx)
+            .as_deref()
+            .copied();
+
+        let detached_ids: Vec<ViewportId> = self.detached.keys().copied().collect();
+        for viewport_id in detached_ids {
+            let move_active_id = self.detached_window_move_active_id(viewport_id);
+            let active = ctx.data(|d| d.get_temp::<bool>(move_active_id).unwrap_or(false));
+            if !active {
+                continue;
+            }
+
+            let payload_matches = payload.is_some_and(|p| {
+                p.bridge_id == self.tree.id()
+                    && p.tile_id.is_none()
+                    && p.source_viewport == viewport_id
+            });
+
+            if payload_matches {
+                // Fallback: stop a stuck window-move session if no viewport reports the pointer as down.
+                if !any_pointer_down {
+                    if self.options.debug_event_log {
+                        self.debug_log_event(format!(
+                            "detached_window_move STOP viewport={viewport_id:?} reason=pointer_up_no_release={}",
+                            !self.drag_state.any_pointer_released_this_frame(),
+                        ));
+                    }
+                    self.clear_detached_window_move_state(ctx, viewport_id);
+                    if egui::DragAndDrop::payload::<DockPayload>(ctx).is_some_and(|p| {
+                        p.bridge_id == self.tree.id()
+                            && p.tile_id.is_none()
+                            && p.source_viewport == viewport_id
+                    }) {
+                        egui::DragAndDrop::clear_payload(ctx);
+                        ctx.stop_dragging();
+                    }
+                }
+            } else {
+                // Payload no longer matches this session: clear the stale per-viewport flag.
+                if self.options.debug_event_log {
+                    self.debug_log_event(format!(
+                        "detached_window_move CLEANUP viewport={viewport_id:?} reason=payload_missing_or_mismatch"
+                    ));
+                }
+                self.clear_detached_window_move_state(ctx, viewport_id);
+            }
+        }
+    }
+
+    fn cleanup_bridge_payload_if_no_pointer_down(&mut self, ctx: &Context) {
+        if self.drag_state.any_pointer_down_this_frame() {
+            return;
+        }
+        let Some(payload) = egui::DragAndDrop::payload::<DockPayload>(ctx) else {
+            return;
+        };
+        if payload.bridge_id != self.tree.id() {
+            return;
+        }
+
+        if self.options.debug_event_log {
+            self.debug_log_event(format!(
+                "bridge_payload CLEAR reason=pointer_up_no_release={}",
+                !self.drag_state.any_pointer_released_this_frame(),
+            ));
+        }
+
+        egui::DragAndDrop::clear_payload(ctx);
+        ctx.stop_dragging();
+
+        // Also stop any contained floating interactions so windows don't keep "following" the cursor
+        // if a backend swallowed the mouse-up event.
+        for manager in self.floating.values_mut() {
+            for window in manager.windows.values_mut() {
+                window.drag = None;
+                window.resize = None;
+            }
         }
     }
 
@@ -326,138 +431,16 @@ impl<Pane> DockingMultiViewport<Pane> {
         // When the OS is moving the window for us (ViewportCommand::StartDrag), using interact-pos
         // is safe: the window position is authoritative and we want pointer-global tracking to follow it.
         let viewport_id = ctx.viewport_id();
-        let self_driven_window_move = self
-            .active_window_move
-            .is_some_and(|m| m.viewport == viewport_id)
-            || self.ghost.is_some_and(|g| match g.mode {
-                types::GhostDragMode::Native { viewport } => viewport == viewport_id,
-                _ => false,
-            });
-        let disallow_interact_pos = self_driven_window_move;
+        let disallow_interact_pos = self.ghost.is_some_and(|g| match g.mode {
+            types::GhostDragMode::Native { viewport } => viewport == viewport_id,
+            _ => false,
+        });
 
         self.drag_state.update_pointer_global_from_ctx(
             self.debug_frame,
             ctx,
             !disallow_interact_pos,
         );
-    }
-
-    fn drive_active_window_move(&mut self, ctx: &Context) {
-        let Some(mut active) = self.active_window_move else {
-            return;
-        };
-
-        // Some OS/backends may swallow the mouse-up event during native window moves.
-        // If no viewport reports the pointer as down this frame, stop the window-move
-        // to avoid the window "following" the mouse after release.
-        if !self.drag_state.any_pointer_down_this_frame() {
-            if self.options.debug_event_log {
-                self.debug_log_event(format!(
-                    "window_move STOP viewport={:?} reason=pointer_up_no_release={}",
-                    active.viewport,
-                    !self.drag_state.any_pointer_released_this_frame(),
-                ));
-            }
-            self.clear_detached_window_move_state(ctx, active.viewport);
-            if egui::DragAndDrop::payload::<DockPayload>(ctx).is_some_and(|p| {
-                p.bridge_id == self.tree.id()
-                    && p.tile_id.is_none()
-                    && p.source_viewport == active.viewport
-            }) {
-                egui::DragAndDrop::clear_payload(ctx);
-            }
-            return;
-        }
-
-        let payload_ok = egui::DragAndDrop::payload::<DockPayload>(ctx).is_some_and(|p| {
-            p.bridge_id == self.tree.id()
-                && p.tile_id.is_none()
-                && p.source_viewport == active.viewport
-        });
-        if !payload_ok {
-            if self.options.debug_event_log {
-                self.debug_log_event(format!(
-                    "window_move STOP viewport={:?} reason=payload_mismatch",
-                    active.viewport
-                ));
-            }
-            self.clear_detached_window_move_state(ctx, active.viewport);
-            return;
-        }
-
-        let Some(pointer_global) = self.drag_state.pointer_global_prefer_integrated(ctx) else {
-            if self.options.debug_event_log {
-                let warn_id = egui::Id::new((
-                    self.tree.id(),
-                    active.viewport,
-                    "egui_docking_window_move_missing_pointer_global_warned",
-                ));
-                let warned = ctx.data(|d| d.get_temp::<bool>(warn_id).unwrap_or(false));
-                if !warned {
-                    self.debug_log_event(format!(
-                        "window_move WARN viewport={:?} reason=no_pointer_global",
-                        active.viewport
-                    ));
-                    ctx.data_mut(|d| d.insert_temp(warn_id, true));
-                }
-            }
-            return;
-        };
-
-        let outer_from_inner = self.viewport_outer_from_inner_offset(active.viewport);
-        let desired_outer = geometry::outer_position_for_window_move(
-            pointer_global,
-            active.grab_offset_in_inner,
-            outer_from_inner,
-        );
-        // Avoid sub-pixel churn which can cause visible jitter on some platforms.
-        let desired_outer = desired_outer
-            .round_to_pixels(ctx.pixels_per_point())
-            .round_ui();
-
-        let should_send = match active.last_sent_outer {
-            Some(prev) => desired_outer != prev,
-            None => true,
-        };
-        if should_send {
-            ctx.send_viewport_cmd_to(
-                active.viewport,
-                ViewportCommand::OuterPosition(desired_outer),
-            );
-            active.last_sent_outer = Some(desired_outer);
-            self.active_window_move = Some(active);
-
-            if self.options.debug_event_log {
-                let step_id = egui::Id::new((
-                    self.tree.id(),
-                    active.viewport,
-                    "egui_docking_window_move_step_count",
-                ));
-                let step = ctx
-                    .data(|d| d.get_temp::<u64>(step_id).unwrap_or(0))
-                    .saturating_add(1);
-                ctx.data_mut(|d| d.insert_temp(step_id, step));
-                let log_every_send = self.options.debug_log_window_move_every_send
-                    && self.options.debug_log_file_path.is_some();
-                if log_every_send || step == 1 || step % 20 == 0 {
-                    self.debug_log_event(format!(
-                        "window_move step={step} viewport={:?} pointer_global=({:.1},{:.1}) grab_in_inner=({:.1},{:.1}) outer_from_inner=({:.1},{:.1}) desired_outer=({:.1},{:.1})",
-                        active.viewport,
-                        pointer_global.x,
-                        pointer_global.y,
-                        active.grab_offset_in_inner.x,
-                        active.grab_offset_in_inner.y,
-                        outer_from_inner.x,
-                        outer_from_inner.y,
-                        desired_outer.x,
-                        desired_outer.y
-                    ));
-                }
-            }
-        }
-
-        ctx.request_repaint_of(ViewportId::ROOT);
-        ctx.request_repaint_of(active.viewport);
     }
 
     pub(super) fn detached_window_move_active_id(
@@ -471,67 +454,13 @@ impl<Pane> DockingMultiViewport<Pane> {
         ))
     }
 
-    pub(super) fn detached_window_move_grab_id(
-        &self,
-        viewport_id: ViewportId,
-    ) -> egui::Id {
-        egui::Id::new((
-            self.tree.id(),
-            viewport_id,
-            "egui_docking_detached_window_move_grab",
-        ))
-    }
-
-    pub(super) fn detached_window_move_last_local_id(
-        &self,
-        viewport_id: ViewportId,
-    ) -> egui::Id {
-        egui::Id::new((
-            self.tree.id(),
-            viewport_id,
-            "egui_docking_detached_window_move_last_pointer_local",
-        ))
-    }
-
-    pub(super) fn detached_window_move_last_sent_outer_id(
-        &self,
-        viewport_id: ViewportId,
-    ) -> egui::Id {
-        egui::Id::new((
-            self.tree.id(),
-            viewport_id,
-            "egui_docking_detached_window_move_last_sent_outer",
-        ))
-    }
-
-    pub(super) fn detached_window_move_last_pointer_global_id(
-        &self,
-        viewport_id: ViewportId,
-    ) -> egui::Id {
-        egui::Id::new((
-            self.tree.id(),
-            viewport_id,
-            "egui_docking_detached_window_move_last_pointer_global",
-        ))
-    }
-
     pub(super) fn clear_detached_window_move_state(
         &mut self,
         ctx: &Context,
         viewport_id: ViewportId,
     ) {
-        if self
-            .active_window_move
-            .is_some_and(|m| m.viewport == viewport_id)
-        {
-            self.active_window_move = None;
-        }
         ctx.data_mut(|d| {
             d.remove::<bool>(self.detached_window_move_active_id(viewport_id));
-            d.remove::<egui::Vec2>(self.detached_window_move_grab_id(viewport_id));
-            d.remove::<egui::Pos2>(self.detached_window_move_last_local_id(viewport_id));
-            d.remove::<egui::Pos2>(self.detached_window_move_last_sent_outer_id(viewport_id));
-            d.remove::<egui::Pos2>(self.detached_window_move_last_pointer_global_id(viewport_id));
         });
     }
 
@@ -1120,6 +1049,42 @@ impl<Pane> DockingMultiViewport<Pane> {
 
     fn pick_detach_tile(&self, ctx: &Context, dragged_tile: TileId) -> TileId {
         pick_detach_tile_for_tree(ctx, &self.options, &self.tree, dragged_tile)
+    }
+
+    fn debug_log_backend_hints_if_changed(&mut self, ctx: &Context) {
+        if !self.options.debug_event_log {
+            return;
+        }
+
+        let hovered = backend_mouse_hovered_viewport_id(ctx);
+        let pointer = backend_pointer_global_points(ctx);
+        let monitors = backend_monitors_outer_rects_points(ctx);
+
+        let state_id = backend_hints_log_state_id(self.tree.id());
+        let next_state = (hovered, pointer, monitors.as_ref().map(|m| m.len()));
+        let prev_state = ctx.data(|d| {
+            d.get_temp::<(Option<ViewportId>, Option<egui::Pos2>, Option<usize>)>(state_id)
+        });
+        if prev_state == Some(next_state) {
+            return;
+        }
+
+        ctx.data_mut(|d| d.insert_temp(state_id, next_state));
+
+        match monitors.as_ref() {
+            Some(monitors) => {
+                self.debug_log_event(format!(
+                    "backend_hints hovered={hovered:?} pointer={pointer:?} monitors_outer_rects_points={} first={:?}",
+                    monitors.len(),
+                    monitors.first().map(|r| (r.min, r.max))
+                ));
+            }
+            None => {
+                self.debug_log_event(format!(
+                    "backend_hints hovered={hovered:?} pointer={pointer:?} monitors_outer_rects_points=<missing>"
+                ));
+            }
+        }
     }
 
     // `paint_root_drop_preview_if_any` replaced by `paint_drop_preview_if_any_for_tree`.

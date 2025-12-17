@@ -153,6 +153,7 @@ fn world_model_cross_host_moves_keep_integrity() {
         docking.detached.insert(
             detached_viewport,
             super::types::DetachedDock {
+                serial: 1,
                 tree: new_tree_tabs(egui::Id::new(("detached_tree", seed)), 3),
                 builder: egui::ViewportBuilder::default(),
             },

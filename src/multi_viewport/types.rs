@@ -94,6 +94,8 @@ pub(super) struct GhostDrag {
 
 #[derive(Debug)]
 pub(super) struct DetachedDock<Pane> {
+    #[allow(dead_code)]
+    pub(super) serial: u64,
     pub(super) tree: Tree<Pane>,
     pub(super) builder: ViewportBuilder,
 }

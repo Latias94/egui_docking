@@ -486,7 +486,7 @@ dependencies = [
  "percent-encoding",
  "profiling",
  "raw-window-handle",
- "ron",
+ "ron 0.11.0",
  "serde",
  "static_assertions",
  "wasm-bindgen",
@@ -510,7 +510,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "profiling",
- "ron",
+ "ron 0.11.0",
  "serde",
  "smallvec",
  "unicode-segmentation",
@@ -563,6 +563,8 @@ dependencies = [
  "eframe",
  "egui",
  "egui_tiles_docking",
+ "ron 0.10.1",
+ "serde",
 ]
 
 [[package]]
@@ -584,12 +586,12 @@ dependencies = [
 [[package]]
 name = "egui_tiles_docking"
 version = "0.14.0"
-source = "git+https://github.com/Latias94/egui_tiles_docking#79d2e3c22982d6676f8167dbeed639767308bf35"
 dependencies = [
  "ahash",
  "egui",
  "itertools",
  "log",
+ "serde",
 ]
 
 [[package]]
@@ -1842,6 +1844,19 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "ron"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beceb6f7bf81c73e73aeef6dd1356d9a1b2b4909e1f0fc3e59b034f9572d7b7f"
+dependencies = [
+ "base64",
+ "bitflags 2.10.0",
+ "serde",
+ "serde_derive",
+ "unicode-ident",
+]
 
 [[package]]
 name = "ron"

@@ -691,8 +691,28 @@ impl<Pane> DockingMultiViewport<Pane> {
             .frame(egui::Frame::new().fill(style.visuals.window_fill()))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
+
+                let reserved_w = if self.options.detached_csd_window_controls {
+                    // 3 buttons + gaps + padding, matching `csd_window_controls_ui`.
+                    ui.spacing().icon_width * 3.0 + 4.0 * 2.0 + 6.0 * 2.0 + 4.0
+                } else {
+                    ui.spacing().icon_width + 12.0
+                };
+                let text_rect = match Self::csd_controls_side() {
+                    CsdControlsSide::Left => Rect::from_min_max(
+                        rect.min + egui::vec2(reserved_w + 8.0, 0.0),
+                        rect.max - egui::vec2(8.0, 0.0),
+                    ),
+                    CsdControlsSide::Right => Rect::from_min_max(
+                        rect.min + egui::vec2(8.0, 0.0),
+                        rect.max - egui::vec2(reserved_w, 0.0),
+                    ),
+                };
+
                 let drag_id = ui.id().with("drag");
-                let drag = ui.interact(rect, drag_id, egui::Sense::click_and_drag());
+                let drag = ui
+                    .interact(text_rect, drag_id, egui::Sense::click_and_drag())
+                    .on_hover_cursor(egui::CursorIcon::Grab);
                 if drag.drag_started() {
                     self.start_detached_window_move(ctx, viewport_id);
                 }
@@ -715,22 +735,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
-                let reserved_w = if self.options.detached_csd_window_controls {
-                    // 3 buttons + gaps + padding, matching `csd_window_controls_ui`.
-                    ui.spacing().icon_width * 3.0 + 4.0 * 2.0 + 6.0 * 2.0 + 4.0
-                } else {
-                    ui.spacing().icon_width + 12.0
-                };
-                let text_rect = match Self::csd_controls_side() {
-                    CsdControlsSide::Left => Rect::from_min_max(
-                        rect.min + egui::vec2(reserved_w + 8.0, 0.0),
-                        rect.max - egui::vec2(8.0, 0.0),
-                    ),
-                    CsdControlsSide::Right => Rect::from_min_max(
-                        rect.min + egui::vec2(8.0, 0.0),
-                        rect.max - egui::vec2(reserved_w, 0.0),
-                    ),
-                };
                 ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(title).strong());
@@ -741,9 +745,33 @@ impl<Pane> DockingMultiViewport<Pane> {
     }
 
     fn ui_borderless_resize_handles(&self, ctx: &Context, viewport_id: ViewportId) {
-        let thickness = 6.0;
-        let corner = 14.0;
-        let screen_rect = ctx.input(|i| i.content_rect());
+        let maximized_or_fullscreen = ctx.input(|i| {
+            i.viewport().maximized.unwrap_or(false) || i.viewport().fullscreen.unwrap_or(false)
+        });
+        if maximized_or_fullscreen {
+            return;
+        }
+
+        let viewport_rect = ctx.viewport_rect();
+        if !viewport_rect.is_positive() {
+            return;
+        }
+
+        let thickness = self
+            .options
+            .detached_csd_resize_edge_thickness
+            .max(1.0)
+            .min(viewport_rect.width().min(viewport_rect.height()) * 0.5);
+        let corner = self
+            .options
+            .detached_csd_resize_corner_size
+            .max(thickness)
+            .min(viewport_rect.width().min(viewport_rect.height()) * 0.5);
+
+        let active_id = egui::Id::new((self.tree.id(), viewport_id, "borderless_resize_active"));
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            ctx.data_mut(|d| d.remove::<u8>(active_id));
+        }
 
         fn dir_key(dir: ResizeDirection) -> u8 {
             match dir {
@@ -761,10 +789,10 @@ impl<Pane> DockingMultiViewport<Pane> {
         let layer_id = egui::Id::new((self.tree.id(), viewport_id, "borderless_resize_area"));
         egui::Area::new(layer_id)
             .order(Order::Foreground)
-            .fixed_pos(screen_rect.min)
+            .fixed_pos(viewport_rect.min)
             .show(ctx, |ui| {
-                ui.set_clip_rect(screen_rect);
-                let ui = ui.new_child(egui::UiBuilder::new().max_rect(screen_rect));
+                ui.set_clip_rect(viewport_rect);
+                let ui = ui.new_child(egui::UiBuilder::new().max_rect(viewport_rect));
 
                 let make = |rect: Rect, dir: ResizeDirection, cursor: egui::CursorIcon| {
                     let id = egui::Id::new((
@@ -776,12 +804,17 @@ impl<Pane> DockingMultiViewport<Pane> {
                     let resp = ui
                         .interact(rect, id, egui::Sense::click_and_drag())
                         .on_hover_cursor(cursor);
-                    if resp.drag_started() {
+                    let already_active = ctx.data(|d| d.get_temp::<u8>(active_id)).is_some();
+                    if !already_active
+                        && resp.is_pointer_button_down_on()
+                        && ctx.input(|i| i.pointer.primary_down())
+                    {
                         ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+                        ctx.data_mut(|d| d.insert_temp(active_id, dir_key(dir)));
                     }
                 };
 
-                let r = screen_rect;
+                let r = viewport_rect;
                 let left = Rect::from_min_max(r.min, egui::pos2(r.min.x + thickness, r.max.y));
                 let right = Rect::from_min_max(egui::pos2(r.max.x - thickness, r.min.y), r.max);
                 let top = Rect::from_min_max(r.min, egui::pos2(r.max.x, r.min.y + thickness));
@@ -798,10 +831,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                 );
                 let se = Rect::from_min_max(r.max - egui::vec2(corner, corner), r.max);
 
-                make(nw, ResizeDirection::NorthWest, egui::CursorIcon::ResizeNwSe);
-                make(ne, ResizeDirection::NorthEast, egui::CursorIcon::ResizeNeSw);
-                make(sw, ResizeDirection::SouthWest, egui::CursorIcon::ResizeNeSw);
-                make(se, ResizeDirection::SouthEast, egui::CursorIcon::ResizeNwSe);
                 make(
                     left,
                     ResizeDirection::West,
@@ -822,6 +851,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                     ResizeDirection::South,
                     egui::CursorIcon::ResizeVertical,
                 );
+
+                // Corners must win over edges.
+                make(nw, ResizeDirection::NorthWest, egui::CursorIcon::ResizeNwSe);
+                make(ne, ResizeDirection::NorthEast, egui::CursorIcon::ResizeNeSw);
+                make(sw, ResizeDirection::SouthWest, egui::CursorIcon::ResizeNeSw);
+                make(se, ResizeDirection::SouthEast, egui::CursorIcon::ResizeNwSe);
             });
     }
 
@@ -859,6 +894,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             ctx.show_viewport_immediate(viewport_id, builder, |ctx, class| {
                 self.update_last_pointer_global_from_active_viewport(ctx);
                 self.update_viewport_outer_from_inner_offset(ctx);
+                #[cfg(feature = "persistence")]
+                self.capture_viewport_runtime(ctx);
                 self.observe_drag_sources_in_ctx(ctx);
 
                 if let Some(GhostDrag {
@@ -947,6 +984,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
+                if !self.options.detached_viewport_decorations {
+                    // Important: render borderless resize handles early so later chrome/controls
+                    // (tab-bar controls, overlays) can take pointer priority.
+                    self.ui_borderless_resize_handles(ctx, viewport_id);
+                }
+
                 // For borderless detached windows:
                 // - If root is a Tabs container, the tab bar is the only "chrome" (ImGui-like).
                 // - Otherwise, render a small custom title bar above the dock surface.
@@ -980,22 +1023,33 @@ impl<Pane> DockingMultiViewport<Pane> {
                     // More complex split layouts should be redocked by dragging individual tabs/panes.
                     let move_active_id = self.detached_window_move_active_id(viewport_id);
 
-                    let (root_is_tabs, root_tabs_single_child) = detached
+                    let (root_tabs_tile, root_tabs_single_child, root_tabs_visible_children_all_panes) = detached
                         .tree
                         .root
                         .and_then(|root| detached.tree.tiles.get(root).map(|t| (root, t)))
-                        .and_then(|(_root, tile)| match tile {
+                        .and_then(|(root, tile)| match tile {
                             egui_tiles::Tile::Container(container)
                                 if container.kind() == egui_tiles::ContainerKind::Tabs =>
                             {
                                 let children: Vec<egui_tiles::TileId> =
                                     container.children().copied().collect();
                                 let single_child = (children.len() == 1).then_some(children[0]);
-                                Some((true, single_child))
+                                let visible_children_all_panes = children
+                                    .iter()
+                                    .copied()
+                                    .filter(|&child| {
+                                        detached.tree.tiles.get(child).is_some()
+                                            && detached.tree.tiles.is_visible(child)
+                                    })
+                                    .all(|child| {
+                                        matches!(detached.tree.tiles.get(child), Some(egui_tiles::Tile::Pane(_)))
+                                    });
+                                Some((Some(root), single_child, visible_children_all_panes))
                             }
-                            _ => Some((false, None)),
+                            _ => Some((None, None, false)),
                         })
-                        .unwrap_or((false, None));
+                        .unwrap_or((None, None, false));
+                    let root_is_tabs = root_tabs_tile.is_some();
 
                     if !self.options.detached_viewport_decorations
                         && root_is_tabs
@@ -1005,30 +1059,29 @@ impl<Pane> DockingMultiViewport<Pane> {
                         // (so tab scrolling/layout accounts for the reserved width).
                     }
 
-                    let dragged_tile = detached.tree.dragged_id_including_root(ctx);
-                    let should_start_window_move =
-                        root_is_tabs && dragged_tile == detached.tree.root && ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false) == false;
+                    let mut window_move_active =
+                        ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false);
 
-                    if should_start_window_move {
+                    // If egui_tiles is already dragging the root Tabs tile (tab-bar background drag),
+                    // transfer authority to the viewport host and use OS/native window dragging.
+                    if !window_move_active
+                        && root_tabs_tile.is_some()
+                        && root_tabs_visible_children_all_panes
+                        && detached.tree.dragged_id_including_root(ctx) == root_tabs_tile
+                    {
                         self.start_detached_window_move(ctx, viewport_id);
+                        window_move_active = true;
                     }
 
-                    let window_move_active =
-                        ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false);
                     if window_move_active {
-                        // End on any release.
-                        if ctx.input(|i| i.pointer.any_released()) {
-                            self.clear_detached_window_move_state(ctx, viewport_id);
-                            if self.options.debug_event_log {
-                                self.debug_log_event(format!(
-                                    "detached_window_move END viewport={viewport_id:?}"
-                                ));
-                            }
-                        } else {
-                            // Keep both the moving window and the root preview alive while dragging.
-                            ctx.request_repaint();
-                            ctx.request_repaint_of(ViewportId::ROOT);
-                        }
+                        // Keep both the moving window and the root preview alive while dragging.
+                        //
+                        // We intentionally don't end the session here: the release may be queued/handled
+                        // by a different viewport (cross-viewport drop), and some backends may swallow
+                        // the mouse-up event during native window moves. A late cleanup pass in
+                        // `DockingMultiViewport::ui` clears stale per-viewport flags.
+                        ctx.request_repaint();
+                        ctx.request_repaint_of(ViewportId::ROOT);
                     }
 
                     let took_over_internal_drop = self.process_release_before_detached_tree_ui(
@@ -1119,82 +1172,20 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
 
                     // ImGui-like: double-click tab-bar background toggles maximize.
-                    //
-                    // We can't reliably get a background widget `Id` from egui_tiles without extra hooks,
-                    // so we approximate:
-                    // - require pointer double-click in the tab-bar rect,
-                    // - exclude the CSD controls region,
-                    // - exclude double-clicks that landed on a real tab button (or its close button).
                     if !self.options.detached_viewport_decorations
                         && root_is_tabs
-                        && self.options.detached_csd_window_controls
                         && ctx.dragged_id().is_none()
-                        && ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
-                        && let Some(pointer) = ctx.input(|i| i.pointer.latest_pos())
                     {
-                        let tab_bar_height = behavior.tab_bar_height(ui.style()).max(24.0);
-                        let tab_bar_rect = Rect::from_min_size(
-                            dock_rect.min,
-                            egui::vec2(dock_rect.width(), tab_bar_height),
-                        );
-
-                        if tab_bar_rect.contains(pointer) {
-                            let controls_height = tab_bar_rect.height();
-                            let button_size = ctx
-                                .global_style()
-                                .spacing
-                                .icon_width
-                                .min(controls_height)
-                                .max(12.0);
-                            let gap = 4.0;
-                            let padding_x = 6.0;
-                            let total_w = padding_x * 2.0 + button_size * 3.0 + gap * 2.0;
-                            // For root Tabs hosts, window controls are injected via `top_bar_right_ui`,
-                            // which always places them on the right side of the tab bar.
-                            let controls_rect = Rect::from_min_max(
-                                egui::pos2(
-                                    (tab_bar_rect.max.x - total_w).max(tab_bar_rect.min.x),
-                                    tab_bar_rect.min.y,
-                                ),
-                                tab_bar_rect.max,
-                            );
-
-                            if !controls_rect.contains(pointer) {
-                                let clicked_id = ctx.interaction_snapshot(|s| s.clicked);
-                                let clicked_is_tab = clicked_id.is_some_and(|clicked| {
-                                    detached
-                                        .tree
-                                        .root
-                                        .and_then(|root| detached.tree.tiles.get(root))
-                                        .and_then(|tile| match tile {
-                                            egui_tiles::Tile::Container(container)
-                                                if container.kind()
-                                                    == egui_tiles::ContainerKind::Tabs =>
-                                            {
-                                                Some(
-                                                    container
-                                                        .children()
-                                                        .copied()
-                                                        .filter(|&child| detached.tree.is_visible(child))
-                                                        .collect::<Vec<_>>(),
-                                                )
-                                            }
-                                            _ => None,
-                                        })
-                                        .unwrap_or_default()
-                                        .into_iter()
-                                        .any(|child| {
-                                            let tab_id = child.egui_id(detached.tree.id());
-                                            clicked == tab_id || clicked == tab_id.with("tab_close_btn")
-                                        })
-                                });
-
-                                if !clicked_is_tab {
-                                    let maximized =
-                                        ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                                    ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-                                }
-                            }
+                        if let Some(root_tabs) = root_tabs_tile
+                            && egui_tiles::take_tab_bar_background_double_clicked(
+                                ctx,
+                                detached.tree.id(),
+                                root_tabs,
+                            )
+                        {
+                            let maximized =
+                                ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                            ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                         }
                     }
 
@@ -1206,8 +1197,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                     let dragged_tile_after_ui = detached.tree.dragged_id_including_root(ctx);
                     let should_upgrade_single_tab_to_window_move = !window_move_active
                         && root_tabs_single_child.is_some_and(|child| Some(child) == dragged_tile_after_ui);
-                    let should_start_window_move_late =
-                        !window_move_active && root_is_tabs && dragged_tile_after_ui == detached.tree.root;
+                    let should_start_window_move_late = !window_move_active
+                        && root_tabs_tile.is_some()
+                        && root_tabs_visible_children_all_panes
+                        && dragged_tile_after_ui == root_tabs_tile;
                     if should_upgrade_single_tab_to_window_move || should_start_window_move_late {
                         self.start_detached_window_move(ctx, viewport_id);
                     }
@@ -1257,10 +1250,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                         ctx.request_repaint_of(ViewportId::ROOT);
                     }
                 });
-
-                if !self.options.detached_viewport_decorations {
-                    self.ui_borderless_resize_handles(ctx, viewport_id);
-                }
 
                 if ctx.input(|i| i.viewport().close_requested()) {
                     // Safe default: closing the native window re-docks it to the root.

@@ -39,6 +39,14 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         for (&floating_id, window) in manager.windows.iter_mut() {
+            // If the backend swallowed the mouse-up event, `window.drag/resize` can get stuck and keep
+            // moving/resizing even after the button is released. Use the cross-viewport pointer-down
+            // signal to force-stop these interactions.
+            if !self.drag_state.any_pointer_down_this_frame() {
+                window.drag = None;
+                window.resize = None;
+            }
+
             // Keep interactive drags/resizes reflected in the cache even before `ui_floating_windows_in_viewport`
             // runs this frame (preview/hit-test must not depend on draw order).
             if let Some(drag) = window.drag {
@@ -225,6 +233,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                             self.detached.insert(
                                 ghost_viewport_id,
                                 super::types::DetachedDock {
+                                    serial,
                                     tree: detached_tree,
                                     builder,
                                 },
@@ -577,11 +586,83 @@ impl<Pane> DockingMultiViewport<Pane> {
                             window.tree.ui(behavior, &mut content_ui);
                         }
 
+                        // ImGui-like: double-click tab-bar background toggles collapse for floating hosts.
+                        if let Some(root_tabs) = window
+                            .tree
+                            .root
+                            .and_then(|root| window.tree.tiles.get(root).map(|t| (root, t)))
+                            .and_then(|(root, tile)| match tile {
+                                egui_tiles::Tile::Container(container)
+                                    if container.kind() == egui_tiles::ContainerKind::Tabs =>
+                                {
+                                    Some(root)
+                                }
+                                _ => None,
+                            })
+                            && egui_tiles::take_tab_bar_background_double_clicked(
+                                &ctx,
+                                window.tree.id(),
+                                root_tabs,
+                            )
+                        {
+                            window.collapsed = !window.collapsed;
+                        }
+
+                        // ImGui-like: for floating dock nodes whose root is a Tabs container, dragging the
+                        // tab-bar background (or the lone tab) should move the whole floating window host.
+                        //
+                        // `egui_tiles` implements background-drag by setting `ctx.dragged_id` to the Tabs
+                        // tile id. We transfer authority to the floating host and use a window-move payload.
+                        if window.drag.is_none()
+                            && let Some((root_tabs, root_tabs_single_child)) = window
+                                .tree
+                                .root
+                                .and_then(|root| window.tree.tiles.get(root).map(|t| (root, t)))
+                                .and_then(|(root, tile)| match tile {
+                                    egui_tiles::Tile::Container(container)
+                                        if container.kind() == egui_tiles::ContainerKind::Tabs =>
+                                    {
+                                        let children: Vec<TileId> =
+                                            container.children().copied().collect();
+                                        let single_child =
+                                            (children.len() == 1).then_some(children[0]);
+                                        Some((root, single_child))
+                                    }
+                                    _ => None,
+                                })
+                            && let Some(dragged) = window.tree.dragged_id_including_root(&ctx)
+                        {
+                            let should_start_window_move =
+                                dragged == root_tabs
+                                    || root_tabs_single_child.is_some_and(|child| child == dragged);
+                            if should_start_window_move {
+                                if let Some(pointer_start) = ctx.input(|i| i.pointer.latest_pos()) {
+                                    bring_to_front.push(floating_id);
+                                    window.drag = Some(FloatingDragState {
+                                        pointer_start,
+                                        offset_start: window.offset_in_dock,
+                                    });
+                                    egui::DragAndDrop::set_payload(
+                                        &ctx,
+                                        DockPayload {
+                                            bridge_id,
+                                            source_viewport: viewport_id,
+                                            source_floating: Some(floating_id),
+                                            tile_id: None,
+                                        },
+                                    );
+                                    ctx.stop_dragging();
+                                    ctx.request_repaint_of(ViewportId::ROOT);
+                                }
+                            }
+                        }
+
                         if self.pending_drop.is_none()
                             && self.pending_local_drop.is_none()
                             && self.ghost.is_none()
                         {
-                            if let Some(dragged_tile) = window.tree.dragged_id_including_root(&ctx)
+                            if window.drag.is_none()
+                                && let Some(dragged_tile) = window.tree.dragged_id_including_root(&ctx)
                             {
                                 egui::DragAndDrop::set_payload(
                                     &ctx,

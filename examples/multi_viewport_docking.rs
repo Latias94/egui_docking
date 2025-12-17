@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
+#[cfg(feature = "persistence")]
+use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 struct Pane {
@@ -10,6 +12,10 @@ struct Pane {
 struct App {
     docking: egui_docking::DockingMultiViewport<Pane>,
     behavior: DemoBehavior,
+    #[cfg(feature = "persistence")]
+    layout_path: PathBuf,
+    #[cfg(feature = "persistence")]
+    last_layout_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -117,6 +123,10 @@ impl Default for App {
         Self {
             docking,
             behavior: DemoBehavior,
+            #[cfg(feature = "persistence")]
+            layout_path: PathBuf::from("target/egui_docking_layout.ron"),
+            #[cfg(feature = "persistence")]
+            last_layout_error: None,
         }
     }
 }
@@ -196,6 +206,72 @@ impl eframe::App for App {
                     path.display(),
                     self.docking.options.debug_log_file_clear_on_start
                 ));
+            }
+
+            ui.separator();
+            ui.collapsing("Backend hints (for cross-viewport UX)", |ui| {
+                let hovered = egui_docking::backend_mouse_hovered_viewport_id(ctx);
+                let pointer = egui_docking::backend_pointer_global_points(ctx);
+                let monitors = egui_docking::backend_monitors_outer_rects_points(ctx);
+
+                ui.label(format!("mouse_hovered_viewport_id: {hovered:?}"));
+                ui.label(format!("pointer_global_points: {pointer:?}"));
+
+                match monitors {
+                    Some(ref m) if !m.is_empty() => {
+                        ui.label(format!("monitors_outer_rects_points: {} monitor(s)", m.len()));
+                        for (idx, r) in m.iter().enumerate() {
+                            ui.label(format!("  {idx}: min={:?} max={:?}", r.min, r.max));
+                        }
+                    }
+                    _ => {
+                        ui.label("monitors_outer_rects_points: <missing>");
+                        ui.label(
+                            "Note: Dear ImGui-style multi-viewport backends typically provide a monitor list. \
+                             If missing, layout restore can only do best-effort clamping to the current monitor.",
+                        );
+                    }
+                }
+            });
+
+            #[cfg(feature = "persistence")]
+            {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(format!("Layout: {}", self.layout_path.display()));
+
+                    if ui.button("Save layout").clicked() {
+                        let mut registry = egui_docking::SimplePaneRegistry::new(
+                            |pane: &Pane| pane.id,
+                            |id| Pane { id },
+                        );
+                        self.last_layout_error = self
+                            .docking
+                            .save_layout_to_ron_file_with_registry(&self.layout_path, &mut registry)
+                            .err()
+                            .map(|e| e.to_string());
+                    }
+
+                    if ui.button("Load layout").clicked() {
+                        let mut registry = egui_docking::SimplePaneRegistry::new(
+                            |pane: &Pane| pane.id,
+                            |id| Pane { id },
+                        );
+                        self.last_layout_error = self
+                            .docking
+                            .load_layout_from_ron_file_in_ctx_with_registry(
+                                ctx,
+                                &self.layout_path,
+                                &mut registry,
+                            )
+                            .err()
+                            .map(|e| e.to_string());
+                    }
+                });
+
+                if let Some(err) = self.last_layout_error.as_deref() {
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
             }
         });
         self.docking.ui(ctx, &mut self.behavior);

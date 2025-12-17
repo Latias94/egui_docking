@@ -351,6 +351,7 @@ mod tests {
         docking.detached.insert(
             viewport,
             super::super::types::DetachedDock {
+                serial: 1,
                 tree: detached_tree,
                 builder: egui::ViewportBuilder::default(),
             },
@@ -383,6 +384,7 @@ mod tests {
         docking.detached.insert(
             viewport,
             super::super::types::DetachedDock {
+                serial: 1,
                 tree: detached_tree,
                 builder: egui::ViewportBuilder::default(),
             },

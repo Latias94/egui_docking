@@ -1,26 +1,10 @@
 use egui::{Context, Modifiers, Pos2, ViewportId};
 use std::collections::BTreeMap;
 
+use super::backend_hints::{backend_mouse_hovered_viewport_id, backend_pointer_global_points};
 use super::geometry::pointer_pos_in_global;
 use super::session::DragSession;
 use super::types::DockPayload;
-
-// Keep in sync with the `egui-winit` backend context keys used by the egui fork:
-// https://github.com/Latias94/egui (crates/egui-winit/src/lib.rs).
-const BACKEND_MOUSE_HOVERED_VIEWPORT_ID_KEY: &str = "egui-winit::mouse_hovered_viewport_id";
-const BACKEND_POINTER_GLOBAL_POINTS_KEY: &str = "egui-winit::pointer_global_points";
-
-#[inline]
-fn backend_mouse_hovered_viewport(ctx: &Context) -> Option<ViewportId> {
-    let id = egui::Id::new(BACKEND_MOUSE_HOVERED_VIEWPORT_ID_KEY);
-    ctx.data(|d| d.get_temp::<Option<ViewportId>>(id).flatten())
-}
-
-#[inline]
-fn backend_pointer_global_points(ctx: &Context) -> Option<Pos2> {
-    let id = egui::Id::new(BACKEND_POINTER_GLOBAL_POINTS_KEY);
-    ctx.data(|d| d.get_temp::<Option<Pos2>>(id).flatten())
-}
 
 #[derive(Debug, Default)]
 pub(super) struct DragState {
@@ -57,7 +41,7 @@ impl DragState {
             self.last_interact_update_frame = frame;
         }
 
-        if let Some(vp) = backend_mouse_hovered_viewport(ctx) {
+        if let Some(vp) = backend_mouse_hovered_viewport_id(ctx) {
             self.last_hovered_viewport = Some(vp);
         }
 

@@ -17,6 +17,17 @@ exclude = ["target/**"]
 [dependencies]
 egui = { version = "0.33.0", default-features = false }
 egui_tiles = { package = "egui_tiles_docking", git = "https://github.com/Latias94/egui_tiles_docking", default-features = false }
+ron = { version = "0.10.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = []
+## Layout persistence helpers (ImGui .ini-like), implemented via `serde` + `ron`.
+##
+## This does NOT serialize your Pane state. Instead, you provide a `PaneId` mapping:
+## - save: `FnMut(&Pane) -> PaneId`
+## - load: `FnMut(PaneId) -> Pane`
+persistence = ["dep:serde", "dep:ron", "egui/serde", "egui_tiles/serde"]
 
 [dev-dependencies]
 eframe = { version = "0.33.0", default-features = false, features = [

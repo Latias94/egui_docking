@@ -219,6 +219,32 @@ The forked `egui` (https://github.com/Latias94/egui) currently provides a few UX
 
 These changes are intentionally UX-oriented (not “docking-specific”) and are good candidates for upstreaming once APIs settle.
 
+## Backend hints contract (ImGui-style Platform/IO bridge)
+
+To reach Dear ImGui-like reliability for cross-viewport docking, the backend must provide a few “platform hints” each frame.
+`egui_docking` reads these from `Context::data` (temp storage):
+
+- `egui-winit::mouse_hovered_viewport_id` → `ViewportId` (or `Option<ViewportId>`)
+  - Equivalent mental model: ImGui `io.MouseHoveredViewport`.
+  - Used to decide which viewport should receive the docking preview/overlay during cross-window drags.
+- `egui-winit::pointer_global_points` → `Pos2` (or `Option<Pos2>`)
+  - Best-effort global pointer position in **points** (desktop/global coordinates).
+  - Used as a fallback when some viewports stop receiving `CursorMoved` (e.g. during OS-native window moves).
+- `egui-winit::monitors_outer_rects_points` → `Vec<Rect>` (or `Option<Vec<Rect>>`)
+  - A list of monitor rectangles in global coordinates, in **points**.
+  - Used for best-effort clamping when restoring/saving native viewport window positions.
+  - Backend note: for `eframe`/winit, this can be refreshed on each redraw using `ActiveEventLoop::available_monitors()`.
+
+If these hints are absent, `egui_docking` degrades gracefully (it can still dock within a single window), but the “editor-grade”
+cross-window experience will be less reliable.
+
+### Monitor work area (known limitation)
+
+Dear ImGui exposes both “main area” and “work area” (`MainPos/MainSize` vs `WorkPos/WorkSize`).
+In winit, true work-area insets (taskbar/menu bar) are not consistently available cross-platform, so backends often fall back to
+using the full monitor bounds as the work area. This is acceptable for now because our current usage is “window restore clamping”,
+not precise taskbar-aware placement.
+
 ## CSD notes (ImGui-like unity)
 
 When `detached_viewport_decorations=false`, we aim for “one chrome” per detached native viewport:
@@ -251,6 +277,21 @@ We prefer tests that validate the mutation algebra without relying on GUI automa
   - `src/multi_viewport/drop_sanitize.rs`
   - `src/multi_viewport/drop_policy.rs`
 - Next: “model tests” that generate small trees and sequences of extract/insert operations, asserting the invariants above after every step.
+
+## Layout persistence (ImGui .ini-like)
+
+`egui_docking` provides an optional `persistence` feature that saves/loads the *layout* as RON:
+
+- Scope: root dock tree + detached native viewports + contained floating windows (geometry + z-order + collapsed state).
+- Important: we **do not** serialize `Pane` values. Instead, the user provides a stable `PaneId` mapping via `PaneRegistry`:
+  - `PaneRegistry::pane_id(&Pane) -> PaneId`
+  - `PaneRegistry::pane_from_id(PaneId) -> Pane`
+- Goal: keep the persistence format easy to diff and hand-edit while we iterate, similar to ImGui’s `.ini`.
+
+Practical note: if your app removes panes over time, you can implement `PaneRegistry::try_pane_from_id` and return `None` for missing ids;
+the loader will drop those panes and keep the remaining layout.
+
+This persistence format is versioned and intentionally unstable while the project is experimental.
 
 ## Milestones (high-level)
 
