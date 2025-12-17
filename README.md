@@ -21,17 +21,21 @@ The `egui` fork is currently required because `egui_docking` uses `egui::contain
 and because editor-grade cross-viewport docking benefits from backend-provided input hints/fallbacks.
 
 ## Usage
-`egui_docking` uses `egui_tiles` types in its public API. Use git dependencies + patch `egui`/`eframe` to the fork (required for now):
+`egui_docking` uses `egui_tiles` types in its public API. Prefer git dependencies for all related crates to keep a single `egui` source:
 
 ```toml
 [dependencies]
 egui_docking = { git = "https://github.com/Latias94/egui_docking" }
 egui_tiles = { package = "egui_tiles_docking", git = "https://github.com/Latias94/egui_tiles_docking", default-features = false }
-egui = "0.33"
+egui = { git = "https://github.com/Latias94/egui", default-features = false }
 
 # If you use eframe:
-eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland"] }
+eframe = { git = "https://github.com/Latias94/egui", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland"] }
+```
 
+If your workspace also pulls crates.io `egui`/`eframe` elsewhere, add a top-level `[patch.crates-io]` override to avoid duplicate `egui` versions.
+
+```toml
 [patch.crates-io]
 egui = { git = "https://github.com/Latias94/egui" }
 eframe = { git = "https://github.com/Latias94/egui" }
