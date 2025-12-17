@@ -57,7 +57,11 @@ impl egui_tiles::Behavior<Pane> for DemoBehavior {
         }
     }
 
-    fn is_tab_closable(&self, _tiles: &egui_tiles::Tiles<Pane>, _tile_id: egui_tiles::TileId) -> bool {
+    fn is_tab_closable(
+        &self,
+        _tiles: &egui_tiles::Tiles<Pane>,
+        _tile_id: egui_tiles::TileId,
+    ) -> bool {
         true
     }
 
@@ -159,6 +163,10 @@ impl eframe::App for App {
                     "Detached native decorations (OS title bar)",
                 );
                 ui.checkbox(
+                    &mut self.docking.options.detached_csd_window_controls,
+                    "CSD window controls (close/min/max) for detached",
+                );
+                ui.checkbox(
                     &mut self.docking.options.debug_log_file_flush_each_line,
                     "Debug log file: flush each line",
                 );
@@ -174,7 +182,8 @@ impl eframe::App for App {
                      While dragging, use the overlay targets for center/left/right/top/bottom docking. \
                      Window-move docking matches ImGui: hold SHIFT to temporarily disable docking while moving (unless ConfigDockingWithShift is enabled). \
                      In a detached viewport, drag the tab-bar background to move the native window. \
-                     Disabling OS decorations can improve docking drags (no native title bar/menu bar intercept), but you'll want custom resize/close UI for full parity. \
+                     ImGui-like: double-click the detached window's tab-bar background to toggle maximize. \
+                     Disabling OS decorations (CSD) can improve docking drags (no native title bar/menu bar intercept); enable CSD window controls for close/min/max. \
                      For window-move tab docking, hover the target window's title/tab bar (or use overlay targets). \
                      Drag into any other window to dock back.",
                 )

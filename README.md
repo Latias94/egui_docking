@@ -62,6 +62,7 @@ cargo run --example multi_viewport_docking
 - Tear-off: drag a tab/pane and release outside the dock area, or hold `ALT` while releasing to force a new native window.
 - Live tear-off (ghost): by default, dragging a tab/pane outside the dock area will immediately spawn a floating "ghost" window that follows the pointer, and can be docked back before release; leaving the native window upgrades it to a new native window (disable via `DockingMultiViewportOptions::ghost_tear_off`).
 - Docking: while dragging over a dock, use the overlay targets to choose left/right/top/bottom/center docking; outer edge markers enable dockspace-level splits (dear imgui style outer docking).
+- CSD (ImGui-like): set `DockingMultiViewportOptions::detached_viewport_decorations = false` and keep `detached_csd_window_controls = true` for client-side close/min/max on detached native windows.
 
 ## Docs
 

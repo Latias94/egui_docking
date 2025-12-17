@@ -24,6 +24,14 @@ pub struct DockingMultiViewportOptions {
     /// Note: if you disable decorations, you likely want custom resize handles and close buttons.
     pub detached_viewport_decorations: bool,
 
+    /// If true, and `detached_viewport_decorations == false`, render client-side window controls
+    /// (close/minimize/maximize) for detached native viewports.
+    ///
+    /// For detached windows whose root tile is a `Tabs` container, the controls are integrated into
+    /// the tab bar (single "chrome" like Dear ImGui). For other root layouts, the controls are shown
+    /// on a small custom title bar above the dock surface.
+    pub detached_csd_window_controls: bool,
+
     /// If true, holding SHIFT while tearing off a pane will instead tear off the closest parent `Tabs` container,
     /// preserving the whole tab-group (dear imgui style "dock node tear-off").
     pub detach_parent_tabs_on_shift: bool,
@@ -121,6 +129,7 @@ impl Default for DockingMultiViewportOptions {
             config_docking_with_shift: false,
             default_detached_inner_size: Vec2::new(480.0, 360.0),
             detached_viewport_decorations: true,
+            detached_csd_window_controls: true,
             detach_parent_tabs_on_shift: true,
             detach_on_alt_release_anywhere: true,
             window_move_tab_dock_requires_explicit_target: true,

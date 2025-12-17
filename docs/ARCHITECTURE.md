@@ -56,9 +56,10 @@ To keep the design closed-loop and avoid drifting UX, we freeze these constraint
 2. **Dockable things use a single abstraction**
    - “Dockable/Tool windows” are represented as panes/trees that can be hosted as: docked, contained-floating, or native viewport.
    - We do not try to embed an `egui::Window` as a docked tab; that would create two window systems with conflicting input/z-order semantics.
-3. **Native OS chrome is kept initially**
-   - Detached native viewports keep OS decorations while we stabilize interaction parity.
-   - Client-side decorations remain an optional later step (P2) for full ImGui-like unity, at the cost of platform edge cases.
+3. **Client-side decorations (CSD) are a first-class path**
+   - Detached native viewports may be undecorated (`detached_viewport_decorations=false`) for an ImGui-like unified feel.
+   - When borderless, we prefer **one chrome**: the dock-node tab bar acts as the title bar (move + controls) whenever the detached root is a `Tabs` container.
+   - OS decorations remain a supported fallback for platforms/backends where CSD is undesirable or incomplete.
 4. **Discoverability wins by default**
    - Single-tab dock nodes keep a visible header/tab bar by default (ImGui baseline).
    - Optional “auto-hide tab bar for single tab” is allowed as a non-default preference.
@@ -174,7 +175,7 @@ We treat the editor as a collection of “dockable windows” that can be hosted
 
 - **Docked**: rendered as an `egui_tiles` pane within a dock tree (tab/split managed by tiles).
 - **Contained floating**: rendered as an `Area`-based floating window inside a viewport (same chrome, clipped).
-- **Native viewport**: rendered in a real OS window via `show_viewport_immediate` (initially with OS decorations).
+- **Native viewport**: rendered in a real OS window via `show_viewport_immediate` (OS decorations optional; CSD is supported for ImGui-like unity).
 
 `egui::Window` remains available inside any viewport (including detached ones), but only for overlay UI
 that should not participate in docking (dialogs/pickers/context UI).
@@ -217,6 +218,14 @@ The forked `egui` (https://github.com/Latias94/egui) currently provides a few UX
   mouse-up outside all windows.
 
 These changes are intentionally UX-oriented (not “docking-specific”) and are good candidates for upstreaming once APIs settle.
+
+## CSD notes (ImGui-like unity)
+
+When `detached_viewport_decorations=false`, we aim for “one chrome” per detached native viewport:
+
+- If the detached root is a `Tabs` container, we inject close/min/max controls into the root tab bar (so tab scrolling/layout accounts for the reserved width).
+- If the detached root is not `Tabs` (e.g. split-root layouts), we show a small custom title bar above the dock surface with the same controls.
+- Double-clicking the detached window’s tab-bar background toggles maximize (best-effort; excludes clicks on tabs and window buttons).
 
 ## egui_tiles fork plan (minimal surface)
 

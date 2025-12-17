@@ -5,10 +5,348 @@ use egui_tiles::Behavior;
 use super::DockingMultiViewport;
 use super::geometry::outer_position_for_window_move;
 use super::title::title_for_detached_tree;
-use super::types::{GhostDrag, GhostDragMode};
 use super::types::DockPayload;
+use super::types::{GhostDrag, GhostDragMode};
+
+struct DetachedRootTabsCsdBehavior<'a, Pane> {
+    inner: &'a mut dyn Behavior<Pane>,
+    root_tabs: egui_tiles::TileId,
+    enabled: bool,
+}
+
+impl<'a, Pane> DetachedRootTabsCsdBehavior<'a, Pane> {
+    fn new(
+        inner: &'a mut dyn Behavior<Pane>,
+        root_tabs: egui_tiles::TileId,
+        enabled: bool,
+    ) -> Self {
+        Self {
+            inner,
+            root_tabs,
+            enabled,
+        }
+    }
+
+    fn window_controls_ui(&mut self, ui: &mut egui::Ui) {
+        let minimized = ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
+        let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+
+        let button_size = ui.spacing().icon_width.max(12.0);
+        let button_size = egui::Vec2::splat(button_size);
+        let gap = 4.0;
+
+        let button = |ui: &mut egui::Ui,
+                      label: &'static str,
+                      id_suffix: &'static str,
+                      icon: CsdButtonIcon|
+         -> egui::Response {
+            let (id, rect) = ui.allocate_space(button_size);
+            let id = id.with(id_suffix);
+            let resp = ui.interact(rect, id, egui::Sense::click());
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+            });
+            DockingMultiViewport::<Pane>::paint_csd_button_icon(ui, rect, &resp, icon);
+            resp
+        };
+
+        // `top_bar_right_ui` is called under a right-to-left layout in egui_tiles, so the first
+        // widget we add becomes the right-most one (Windows-like ordering).
+        let close = button(ui, "Close window", "csd_close", CsdButtonIcon::Close);
+        if close.clicked() {
+            ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+        }
+
+        ui.add_space(gap);
+
+        let max_icon = if maximized {
+            CsdButtonIcon::Restore
+        } else {
+            CsdButtonIcon::Maximize
+        };
+        let max_label = if maximized {
+            "Restore window"
+        } else {
+            "Maximize window"
+        };
+        let max = button(ui, max_label, "csd_maximize", max_icon);
+        if max.clicked() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+        }
+
+        ui.add_space(gap);
+
+        let min_label = if minimized {
+            "Restore from minimized"
+        } else {
+            "Minimize window"
+        };
+        let min = button(ui, min_label, "csd_minimize", CsdButtonIcon::Minimize);
+        if min.clicked() {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Minimized(!minimized));
+        }
+    }
+}
+
+impl<'a, Pane> Behavior<Pane> for DetachedRootTabsCsdBehavior<'a, Pane> {
+    fn pane_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        tile_id: egui_tiles::TileId,
+        pane: &mut Pane,
+    ) -> egui_tiles::UiResponse {
+        self.inner.pane_ui(ui, tile_id, pane)
+    }
+
+    fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
+        self.inner.tab_title_for_pane(pane)
+    }
+
+    fn tab_hover_cursor_icon(&self) -> egui::CursorIcon {
+        self.inner.tab_hover_cursor_icon()
+    }
+
+    fn is_tab_closable(
+        &self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+    ) -> bool {
+        self.inner.is_tab_closable(tiles, tile_id)
+    }
+
+    fn on_tab_close(
+        &mut self,
+        tiles: &mut egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+    ) -> bool {
+        self.inner.on_tab_close(tiles, tile_id)
+    }
+
+    fn show_tab_close_button(&self, state: &egui_tiles::TabState, tab_hovered: bool) -> bool {
+        self.inner.show_tab_close_button(state, tab_hovered)
+    }
+
+    fn close_tab_on_middle_click(&self) -> bool {
+        self.inner.close_tab_on_middle_click()
+    }
+
+    fn tab_switch_on_drag_hover_delay(&self) -> f32 {
+        self.inner.tab_switch_on_drag_hover_delay()
+    }
+
+    fn close_button_outer_size(&self) -> f32 {
+        self.inner.close_button_outer_size()
+    }
+
+    fn close_button_inner_margin(&self) -> f32 {
+        self.inner.close_button_inner_margin()
+    }
+
+    fn tab_title_for_tile(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+    ) -> egui::WidgetText {
+        self.inner.tab_title_for_tile(tiles, tile_id)
+    }
+
+    fn tab_ui(
+        &mut self,
+        tiles: &mut egui_tiles::Tiles<Pane>,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Response {
+        self.inner.tab_ui(tiles, ui, id, tile_id, state)
+    }
+
+    fn drag_ui(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        ui: &mut egui::Ui,
+        tile_id: egui_tiles::TileId,
+    ) {
+        self.inner.drag_ui(tiles, ui, tile_id)
+    }
+
+    fn on_tab_button(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+        button_response: egui::Response,
+    ) -> egui::Response {
+        self.inner.on_tab_button(tiles, tile_id, button_response)
+    }
+
+    fn retain_pane(&mut self, pane: &Pane) -> bool {
+        self.inner.retain_pane(pane)
+    }
+
+    fn top_bar_right_ui(
+        &mut self,
+        tiles: &egui_tiles::Tiles<Pane>,
+        ui: &mut egui::Ui,
+        tile_id: egui_tiles::TileId,
+        tabs: &egui_tiles::Tabs,
+        scroll_offset: &mut f32,
+    ) {
+        if self.enabled && tile_id == self.root_tabs {
+            self.window_controls_ui(ui);
+            ui.add_space(6.0);
+        }
+        self.inner
+            .top_bar_right_ui(tiles, ui, tile_id, tabs, scroll_offset);
+    }
+
+    fn tab_bar_height(&self, style: &egui::Style) -> f32 {
+        self.inner.tab_bar_height(style)
+    }
+
+    fn gap_width(&self, style: &egui::Style) -> f32 {
+        self.inner.gap_width(style)
+    }
+
+    fn min_size(&self) -> f32 {
+        self.inner.min_size()
+    }
+
+    fn preview_dragged_panes(&self) -> bool {
+        self.inner.preview_dragged_panes()
+    }
+
+    fn dragged_overlay_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        self.inner.dragged_overlay_color(visuals)
+    }
+
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        self.inner.simplification_options()
+    }
+
+    fn auto_hide_tab_bar_when_single_tab(&self) -> bool {
+        self.inner.auto_hide_tab_bar_when_single_tab()
+    }
+
+    fn paint_on_top_of_tile(
+        &self,
+        painter: &egui::Painter,
+        style: &egui::Style,
+        tile_id: egui_tiles::TileId,
+        rect: Rect,
+    ) {
+        self.inner
+            .paint_on_top_of_tile(painter, style, tile_id, rect)
+    }
+
+    fn resize_stroke(
+        &self,
+        style: &egui::Style,
+        resize_state: egui_tiles::ResizeState,
+    ) -> egui::Stroke {
+        self.inner.resize_stroke(style, resize_state)
+    }
+
+    fn tab_title_spacing(&self, visuals: &egui::Visuals) -> f32 {
+        self.inner.tab_title_spacing(visuals)
+    }
+
+    fn tab_bar_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        self.inner.tab_bar_color(visuals)
+    }
+
+    fn tab_bg_color(
+        &self,
+        visuals: &egui::Visuals,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Color32 {
+        self.inner.tab_bg_color(visuals, tiles, tile_id, state)
+    }
+
+    fn tab_outline_stroke(
+        &self,
+        visuals: &egui::Visuals,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Stroke {
+        self.inner
+            .tab_outline_stroke(visuals, tiles, tile_id, state)
+    }
+
+    fn tab_bar_hline_stroke(&self, visuals: &egui::Visuals) -> egui::Stroke {
+        self.inner.tab_bar_hline_stroke(visuals)
+    }
+
+    fn tab_text_color(
+        &self,
+        visuals: &egui::Visuals,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> egui::Color32 {
+        self.inner.tab_text_color(visuals, tiles, tile_id, state)
+    }
+
+    fn drag_preview_stroke(&self, visuals: &egui::Visuals) -> egui::Stroke {
+        self.inner.drag_preview_stroke(visuals)
+    }
+
+    fn drag_preview_color(&self, visuals: &egui::Visuals) -> egui::Color32 {
+        self.inner.drag_preview_color(visuals)
+    }
+
+    fn paint_drag_preview(
+        &self,
+        visuals: &egui::Visuals,
+        painter: &egui::Painter,
+        parent_rect: Option<Rect>,
+        preview_rect: Rect,
+    ) {
+        self.inner
+            .paint_drag_preview(visuals, painter, parent_rect, preview_rect)
+    }
+
+    fn grid_auto_column_count(&self, num_visible_children: usize, rect: Rect, gap: f32) -> usize {
+        self.inner
+            .grid_auto_column_count(num_visible_children, rect, gap)
+    }
+
+    fn ideal_tile_aspect_ratio(&self) -> f32 {
+        self.inner.ideal_tile_aspect_ratio()
+    }
+
+    fn on_edit(&mut self, edit_action: egui_tiles::EditAction) {
+        self.inner.on_edit(edit_action)
+    }
+}
 
 impl<Pane> DockingMultiViewport<Pane> {
+    fn csd_controls_side() -> CsdControlsSide {
+        if cfg!(target_os = "macos") {
+            CsdControlsSide::Left
+        } else {
+            CsdControlsSide::Right
+        }
+    }
+
+    fn detached_root_is_tabs(detached: &super::types::DetachedDock<Pane>) -> bool {
+        detached
+            .tree
+            .root
+            .and_then(|root| detached.tree.tiles.get(root))
+            .is_some_and(|tile| {
+                matches!(
+                    tile,
+                    egui_tiles::Tile::Container(container)
+                        if container.kind() == egui_tiles::ContainerKind::Tabs
+                )
+            })
+    }
+
     fn start_detached_window_move(&mut self, ctx: &Context, viewport_id: ViewportId) {
         let bridge_id = self.tree.id();
         let move_active_id = self.detached_window_move_active_id(viewport_id);
@@ -55,6 +393,269 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
     }
 
+    fn paint_csd_button_icon(
+        ui: &egui::Ui,
+        rect: Rect,
+        response: &egui::Response,
+        icon: CsdButtonIcon,
+    ) {
+        let visuals = ui.style().interact(response);
+        let stroke = visuals.fg_stroke;
+        let rect = rect.shrink(2.0).expand(visuals.expansion);
+
+        match icon {
+            CsdButtonIcon::Close => {
+                ui.painter()
+                    .line_segment([rect.left_top(), rect.right_bottom()], stroke);
+                ui.painter()
+                    .line_segment([rect.right_top(), rect.left_bottom()], stroke);
+            }
+            CsdButtonIcon::Minimize => {
+                ui.painter().hline(rect.x_range(), rect.center().y, stroke);
+            }
+            CsdButtonIcon::Maximize => {
+                ui.painter()
+                    .rect_stroke(rect.shrink(1.0), 0.0, stroke, egui::StrokeKind::Inside);
+            }
+            CsdButtonIcon::Restore => {
+                let a = rect.shrink(2.0);
+                let b = a.translate(egui::vec2(-3.0, 3.0));
+                ui.painter()
+                    .rect_stroke(a, 0.0, stroke, egui::StrokeKind::Inside);
+                ui.painter()
+                    .rect_stroke(b, 0.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
+    }
+
+    fn csd_window_controls_ui(
+        &mut self,
+        ctx: &Context,
+        viewport_id: ViewportId,
+        bar_rect: Rect,
+        should_redock_to_root: &mut bool,
+    ) {
+        if !self.options.detached_csd_window_controls {
+            return;
+        }
+
+        let bar_rect = bar_rect.round_to_pixels(ctx.pixels_per_point()).round_ui();
+        let controls_height = bar_rect.height();
+        let button_size = ctx
+            .global_style()
+            .spacing
+            .icon_width
+            .min(controls_height)
+            .max(12.0);
+        let button_size = egui::Vec2::splat(button_size);
+        let gap = 4.0;
+        let padding_x = 6.0;
+
+        let total_w = padding_x * 2.0 + button_size.x * 3.0 + gap * 2.0;
+        let controls_rect = match Self::csd_controls_side() {
+            CsdControlsSide::Left => Rect::from_min_max(
+                bar_rect.min,
+                egui::pos2(
+                    (bar_rect.min.x + total_w).min(bar_rect.max.x),
+                    bar_rect.max.y,
+                ),
+            ),
+            CsdControlsSide::Right => Rect::from_min_max(
+                egui::pos2(
+                    (bar_rect.max.x - total_w).max(bar_rect.min.x),
+                    bar_rect.min.y,
+                ),
+                bar_rect.max,
+            ),
+        };
+
+        let area_id = egui::Id::new((self.tree.id(), viewport_id, "csd_controls"));
+        egui::Area::new(area_id)
+            .order(Order::Foreground)
+            .fixed_pos(controls_rect.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                ui.set_clip_rect(controls_rect);
+                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
+
+                let side = Self::csd_controls_side();
+                let layout = match side {
+                    CsdControlsSide::Left => egui::Layout::left_to_right(egui::Align::Center),
+                    CsdControlsSide::Right => egui::Layout::right_to_left(egui::Align::Center),
+                };
+
+                ui.with_layout(layout, |ui| {
+                    ui.add_space(padding_x);
+
+                    let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+                    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+
+                    match side {
+                        CsdControlsSide::Left => {
+                            // close
+                            let close_id = ui.id().with("close");
+                            let (_, close_rect) = ui.allocate_space(button_size);
+                            let close_resp =
+                                ui.interact(close_rect, close_id, egui::Sense::click());
+                            close_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    "Close window (re-dock to root)",
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                close_rect,
+                                &close_resp,
+                                CsdButtonIcon::Close,
+                            );
+                            if close_resp.clicked() {
+                                *should_redock_to_root = true;
+                            }
+                            ui.add_space(gap);
+
+                            // minimize
+                            let min_id = ui.id().with("minimize");
+                            let (_, min_rect) = ui.allocate_space(button_size);
+                            let min_resp = ui.interact(min_rect, min_id, egui::Sense::click());
+                            min_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    if minimized {
+                                        "Restore from minimized"
+                                    } else {
+                                        "Minimize window"
+                                    },
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                min_rect,
+                                &min_resp,
+                                CsdButtonIcon::Minimize,
+                            );
+                            if min_resp.clicked() {
+                                ctx.send_viewport_cmd(ViewportCommand::Minimized(!minimized));
+                            }
+                            ui.add_space(gap);
+
+                            // maximize
+                            let max_id = ui.id().with("maximize");
+                            let (_, max_rect) = ui.allocate_space(button_size);
+                            let max_resp = ui.interact(max_rect, max_id, egui::Sense::click());
+                            max_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    if maximized {
+                                        "Restore window"
+                                    } else {
+                                        "Maximize window"
+                                    },
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                max_rect,
+                                &max_resp,
+                                if maximized {
+                                    CsdButtonIcon::Restore
+                                } else {
+                                    CsdButtonIcon::Maximize
+                                },
+                            );
+                            if max_resp.clicked() {
+                                ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                            }
+                        }
+                        CsdControlsSide::Right => {
+                            // close
+                            let close_id = ui.id().with("close");
+                            let (_, close_rect) = ui.allocate_space(button_size);
+                            let close_resp =
+                                ui.interact(close_rect, close_id, egui::Sense::click());
+                            close_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    "Close window (re-dock to root)",
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                close_rect,
+                                &close_resp,
+                                CsdButtonIcon::Close,
+                            );
+                            if close_resp.clicked() {
+                                *should_redock_to_root = true;
+                            }
+                            ui.add_space(gap);
+
+                            // maximize
+                            let max_id = ui.id().with("maximize");
+                            let (_, max_rect) = ui.allocate_space(button_size);
+                            let max_resp = ui.interact(max_rect, max_id, egui::Sense::click());
+                            max_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    if maximized {
+                                        "Restore window"
+                                    } else {
+                                        "Maximize window"
+                                    },
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                max_rect,
+                                &max_resp,
+                                if maximized {
+                                    CsdButtonIcon::Restore
+                                } else {
+                                    CsdButtonIcon::Maximize
+                                },
+                            );
+                            if max_resp.clicked() {
+                                ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                            }
+                            ui.add_space(gap);
+
+                            // minimize
+                            let min_id = ui.id().with("minimize");
+                            let (_, min_rect) = ui.allocate_space(button_size);
+                            let min_resp = ui.interact(min_rect, min_id, egui::Sense::click());
+                            min_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    ui.is_enabled(),
+                                    if minimized {
+                                        "Restore from minimized"
+                                    } else {
+                                        "Minimize window"
+                                    },
+                                )
+                            });
+                            Self::paint_csd_button_icon(
+                                ui,
+                                min_rect,
+                                &min_resp,
+                                CsdButtonIcon::Minimize,
+                            );
+                            if min_resp.clicked() {
+                                ctx.send_viewport_cmd(ViewportCommand::Minimized(!minimized));
+                            }
+                        }
+                    }
+
+                    ui.add_space(padding_x);
+                });
+            });
+    }
+
     fn ui_borderless_detached_chrome(
         &mut self,
         ctx: &Context,
@@ -77,21 +678,41 @@ impl<Pane> DockingMultiViewport<Pane> {
                 if drag.drag_started() {
                     self.start_detached_window_move(ctx, viewport_id);
                 }
-
-                let button_rects =
-                    egui::containers::window_chrome::title_bar_button_rects(ui, rect);
-                let close = egui::containers::window_chrome::window_close_button(
-                    ui,
-                    button_rects.close,
-                );
-                if close.clicked() {
-                    *should_redock_to_root = true;
+                if drag.double_clicked() && self.options.detached_csd_window_controls {
+                    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                 }
 
-                let text_rect = Rect::from_min_max(
-                    rect.min + egui::vec2(8.0, 0.0),
-                    rect.max - egui::vec2(ui.spacing().icon_width + 12.0, 0.0),
-                );
+                if self.options.detached_csd_window_controls {
+                    self.csd_window_controls_ui(ctx, viewport_id, rect, should_redock_to_root);
+                } else {
+                    let button_rects =
+                        egui::containers::window_chrome::title_bar_button_rects(ui, rect);
+                    let close = egui::containers::window_chrome::window_close_button(
+                        ui,
+                        button_rects.close,
+                    );
+                    if close.clicked() {
+                        *should_redock_to_root = true;
+                    }
+                }
+
+                let reserved_w = if self.options.detached_csd_window_controls {
+                    // 3 buttons + gaps + padding, matching `csd_window_controls_ui`.
+                    ui.spacing().icon_width * 3.0 + 4.0 * 2.0 + 6.0 * 2.0 + 4.0
+                } else {
+                    ui.spacing().icon_width + 12.0
+                };
+                let text_rect = match Self::csd_controls_side() {
+                    CsdControlsSide::Left => Rect::from_min_max(
+                        rect.min + egui::vec2(reserved_w + 8.0, 0.0),
+                        rect.max - egui::vec2(8.0, 0.0),
+                    ),
+                    CsdControlsSide::Right => Rect::from_min_max(
+                        rect.min + egui::vec2(8.0, 0.0),
+                        rect.max - egui::vec2(reserved_w, 0.0),
+                    ),
+                };
                 ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(title).strong());
@@ -143,22 +764,10 @@ impl<Pane> DockingMultiViewport<Pane> {
                 };
 
                 let r = screen_rect;
-                let left = Rect::from_min_max(
-                    r.min,
-                    egui::pos2(r.min.x + thickness, r.max.y),
-                );
-                let right = Rect::from_min_max(
-                    egui::pos2(r.max.x - thickness, r.min.y),
-                    r.max,
-                );
-                let top = Rect::from_min_max(
-                    r.min,
-                    egui::pos2(r.max.x, r.min.y + thickness),
-                );
-                let bottom = Rect::from_min_max(
-                    egui::pos2(r.min.x, r.max.y - thickness),
-                    r.max,
-                );
+                let left = Rect::from_min_max(r.min, egui::pos2(r.min.x + thickness, r.max.y));
+                let right = Rect::from_min_max(egui::pos2(r.max.x - thickness, r.min.y), r.max);
+                let top = Rect::from_min_max(r.min, egui::pos2(r.max.x, r.min.y + thickness));
+                let bottom = Rect::from_min_max(egui::pos2(r.min.x, r.max.y - thickness), r.max);
 
                 let nw = Rect::from_min_max(r.min, r.min + egui::vec2(corner, corner));
                 let ne = Rect::from_min_max(
@@ -175,10 +784,26 @@ impl<Pane> DockingMultiViewport<Pane> {
                 make(ne, ResizeDirection::NorthEast, egui::CursorIcon::ResizeNeSw);
                 make(sw, ResizeDirection::SouthWest, egui::CursorIcon::ResizeNeSw);
                 make(se, ResizeDirection::SouthEast, egui::CursorIcon::ResizeNwSe);
-                make(left, ResizeDirection::West, egui::CursorIcon::ResizeHorizontal);
-                make(right, ResizeDirection::East, egui::CursorIcon::ResizeHorizontal);
-                make(top, ResizeDirection::North, egui::CursorIcon::ResizeVertical);
-                make(bottom, ResizeDirection::South, egui::CursorIcon::ResizeVertical);
+                make(
+                    left,
+                    ResizeDirection::West,
+                    egui::CursorIcon::ResizeHorizontal,
+                );
+                make(
+                    right,
+                    ResizeDirection::East,
+                    egui::CursorIcon::ResizeHorizontal,
+                );
+                make(
+                    top,
+                    ResizeDirection::North,
+                    egui::CursorIcon::ResizeVertical,
+                );
+                make(
+                    bottom,
+                    ResizeDirection::South,
+                    egui::CursorIcon::ResizeVertical,
+                );
             });
     }
 
@@ -204,6 +829,8 @@ impl<Pane> DockingMultiViewport<Pane> {
             let Some(mut detached) = self.detached.remove(&viewport_id) else {
                 continue;
             };
+
+            let root_is_tabs = Self::detached_root_is_tabs(&detached);
 
             let builder = detached
                 .builder
@@ -302,7 +929,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
-                if !self.options.detached_viewport_decorations {
+                // For borderless detached windows:
+                // - If root is a Tabs container, the tab bar is the only "chrome" (ImGui-like).
+                // - Otherwise, render a small custom title bar above the dock surface.
+                let use_borderless_chrome = !self.options.detached_viewport_decorations && !root_is_tabs;
+                if use_borderless_chrome {
                     self.ui_borderless_detached_chrome(
                         ctx,
                         behavior,
@@ -347,6 +978,15 @@ impl<Pane> DockingMultiViewport<Pane> {
                             _ => Some((false, None)),
                         })
                         .unwrap_or((false, None));
+
+                    if !self.options.detached_viewport_decorations
+                        && root_is_tabs
+                        && self.options.detached_csd_window_controls
+                    {
+                        // Window controls are injected into the root Tabs tab bar via a Behavior wrapper
+                        // (so tab scrolling/layout accounts for the reserved width).
+                    }
+
                     let dragged_tile = detached.tree.dragged_id_including_root(ctx);
                     let should_start_window_move =
                         root_is_tabs && dragged_tile == detached.tree.root && ctx.data(|d| d.get_temp::<bool>(move_active_id)).unwrap_or(false) == false;
@@ -426,7 +1066,101 @@ impl<Pane> DockingMultiViewport<Pane> {
                     );
 
                     self.set_tiles_debug_visit_enabled(ctx, detached.tree.id(), viewport_id);
-                    detached.tree.ui(behavior, ui);
+                    let enable_root_tabs_controls = !self.options.detached_viewport_decorations
+                        && root_is_tabs
+                        && self.options.detached_csd_window_controls
+                        && detached.tree.root.is_some();
+                    if enable_root_tabs_controls {
+                        let root_tabs = detached.tree.root.expect("checked above");
+                        let mut wrapped = DetachedRootTabsCsdBehavior::new(
+                            behavior,
+                            root_tabs,
+                            self.options.detached_csd_window_controls,
+                        );
+                        detached.tree.ui(&mut wrapped, ui);
+                    } else {
+                        detached.tree.ui(behavior, ui);
+                    }
+
+                    // ImGui-like: double-click tab-bar background toggles maximize.
+                    //
+                    // We can't reliably get a background widget `Id` from egui_tiles without extra hooks,
+                    // so we approximate:
+                    // - require pointer double-click in the tab-bar rect,
+                    // - exclude the CSD controls region,
+                    // - exclude double-clicks that landed on a real tab button (or its close button).
+                    if !self.options.detached_viewport_decorations
+                        && root_is_tabs
+                        && self.options.detached_csd_window_controls
+                        && ctx.dragged_id().is_none()
+                        && ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
+                        && let Some(pointer) = ctx.input(|i| i.pointer.latest_pos())
+                    {
+                        let tab_bar_height = behavior.tab_bar_height(ui.style()).max(24.0);
+                        let tab_bar_rect = Rect::from_min_size(
+                            dock_rect.min,
+                            egui::vec2(dock_rect.width(), tab_bar_height),
+                        );
+
+                        if tab_bar_rect.contains(pointer) {
+                            let controls_height = tab_bar_rect.height();
+                            let button_size = ctx
+                                .global_style()
+                                .spacing
+                                .icon_width
+                                .min(controls_height)
+                                .max(12.0);
+                            let gap = 4.0;
+                            let padding_x = 6.0;
+                            let total_w = padding_x * 2.0 + button_size * 3.0 + gap * 2.0;
+                            // For root Tabs hosts, window controls are injected via `top_bar_right_ui`,
+                            // which always places them on the right side of the tab bar.
+                            let controls_rect = Rect::from_min_max(
+                                egui::pos2(
+                                    (tab_bar_rect.max.x - total_w).max(tab_bar_rect.min.x),
+                                    tab_bar_rect.min.y,
+                                ),
+                                tab_bar_rect.max,
+                            );
+
+                            if !controls_rect.contains(pointer) {
+                                let clicked_id = ctx.interaction_snapshot(|s| s.clicked);
+                                let clicked_is_tab = clicked_id.is_some_and(|clicked| {
+                                    detached
+                                        .tree
+                                        .root
+                                        .and_then(|root| detached.tree.tiles.get(root))
+                                        .and_then(|tile| match tile {
+                                            egui_tiles::Tile::Container(container)
+                                                if container.kind()
+                                                    == egui_tiles::ContainerKind::Tabs =>
+                                            {
+                                                Some(
+                                                    container
+                                                        .children()
+                                                        .copied()
+                                                        .filter(|&child| detached.tree.is_visible(child))
+                                                        .collect::<Vec<_>>(),
+                                                )
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or_default()
+                                        .into_iter()
+                                        .any(|child| {
+                                            let tab_id = child.egui_id(detached.tree.id());
+                                            clicked == tab_id || clicked == tab_id.with("tab_close_btn")
+                                        })
+                                });
+
+                                if !clicked_is_tab {
+                                    let maximized =
+                                        ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                                    ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                                }
+                            }
+                        }
+                    }
 
                     // If the detached viewport is a single-tab host, treat dragging that lone tab
                     // as a window-move drag (ImGui-style), so the native viewport follows the cursor
@@ -531,4 +1265,18 @@ impl<Pane> DockingMultiViewport<Pane> {
             serial,
         )
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CsdButtonIcon {
+    Close,
+    Minimize,
+    Maximize,
+    Restore,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CsdControlsSide {
+    Left,
+    Right,
 }
