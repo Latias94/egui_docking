@@ -278,11 +278,7 @@ struct App {
 
 impl Default for App {
     fn default() -> Self {
-        let mut docking = egui_docking::DockingMultiViewport::new(egui_tiles::Tree::empty("init"));
-        docking.options.debug_drop_targets = true;
-        docking.options.debug_event_log = true;
-        docking.options.debug_integrity = true;
-        docking.options.debug_log_file_path = Some("target/egui_docking_debug.log".into());
+        let docking = egui_docking::DockingMultiViewport::new(egui_tiles::Tree::empty("init"));
 
         Self {
             docking,
