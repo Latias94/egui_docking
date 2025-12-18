@@ -98,8 +98,20 @@ pub struct DockingMultiViewportOptions {
     /// the source viewport's inner rectangle.
     pub ghost_upgrade_to_native_on_leave_viewport: bool,
 
+    /// If true, `egui_docking` will paint a default background behind each pane (tab contents).
+    ///
+    /// This matches Dear ImGui's default behavior where docked windows have a background.
+    /// Without this, panes that don't paint their own background will show the OS clear color
+    /// (often near-black), which looks like "black tab contents".
+    pub fill_pane_background: bool,
+
     /// If true, show on-screen debug info about drop targeting (inner/outer overlay, hit targets, insertion points).
     pub debug_drop_targets: bool,
+
+    /// If true, show the on-screen debug window (event log / integrity status / backend hints).
+    ///
+    /// This is independent of `debug_log_file_path`: you may want file logging without any UI.
+    pub debug_show_window: bool,
 
     /// If true, record debug events (drop decisions + integrity checks) in a small ring buffer
     /// and show it in the debug panel for easy copy-paste.
@@ -154,7 +166,9 @@ impl Default for DockingMultiViewportOptions {
             ghost_tear_off_threshold: 8.0,
             ghost_spawn_native_on_leave_dock: true,
             ghost_upgrade_to_native_on_leave_viewport: true,
+            fill_pane_background: true,
             debug_drop_targets: false,
+            debug_show_window: false,
             debug_event_log: false,
             debug_log_file_path: None,
             debug_log_file_clear_on_start: true,
@@ -168,6 +182,18 @@ impl Default for DockingMultiViewportOptions {
 }
 
 impl DockingMultiViewportOptions {
+    /// Recommended defaults when aiming for Dear ImGui-like "Docking + Viewports" unity.
+    ///
+    /// In particular, this opts into client-side decorations (CSD) for detached viewports
+    /// so the tab bar can act as the single chrome (move + controls) without OS title bars
+    /// intercepting pointer input.
+    pub fn imgui_defaults() -> Self {
+        Self {
+            detached_viewport_decorations: false,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn window_move_docking_enabled_by_shift(&self, shift_held: bool) -> bool {
         self.config_docking_with_shift == shift_held
     }

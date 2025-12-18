@@ -9,6 +9,18 @@ pub(super) fn clamp_outer_pos_if_monitors_available(ctx: &Context, pos: Pos2, si
         return clamp_pos_to_monitors_best_effort(pos, size, &monitors);
     }
 
+    // Fallback: clamp into the current monitor's coordinate space.
+    // See `clamp_outer_pos_best_effort` for the rationale.
+    if pos.x >= 0.0
+        && pos.y >= 0.0
+        && let Some(monitor_size) = ctx.input(|i| i.viewport().monitor_size)
+        && size.x.is_finite()
+        && size.y.is_finite()
+    {
+        let max = (monitor_size - size).max(Vec2::ZERO);
+        return egui::pos2(pos.x.clamp(0.0, max.x), pos.y.clamp(0.0, max.y));
+    }
+
     pos
 }
 

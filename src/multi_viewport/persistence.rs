@@ -1119,6 +1119,38 @@ impl<Pane> super::DockingMultiViewport<Pane> {
         let ron_str = std::fs::read_to_string(path)?;
         self.load_layout_from_ron_str_in_ctx_with_registry(ctx, &ron_str, registry)
     }
+
+    /// Load a layout from a RON file. If the file is missing, apply `fallback` instead.
+    ///
+    /// If the file exists but fails to parse or is otherwise invalid, this will also apply
+    /// `fallback`, but return the error so callers can surface it in the UI.
+    ///
+    /// Returns:
+    /// - `Ok(true)` if the layout was loaded from disk
+    /// - `Ok(false)` if the file was missing and `fallback` was applied
+    /// - `Err(e)` if loading failed and `fallback` was applied
+    pub fn load_layout_from_ron_file_in_ctx_with_registry_or_apply_workspace<R>(
+        &mut self,
+        ctx: &Context,
+        path: impl AsRef<Path>,
+        registry: &mut R,
+        fallback: impl FnOnce() -> crate::workspace::WorkspaceLayout<Pane>,
+    ) -> Result<bool, LayoutPersistenceError>
+    where
+        R: PaneRegistry<Pane>,
+    {
+        match self.load_layout_from_ron_file_in_ctx_with_registry(ctx, path.as_ref(), registry) {
+            Ok(()) => Ok(true),
+            Err(LayoutPersistenceError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.set_workspace_layout_in_ctx(ctx, fallback());
+                Ok(false)
+            }
+            Err(err) => {
+                self.set_workspace_layout_in_ctx(ctx, fallback());
+                Err(err)
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "persistence"))]

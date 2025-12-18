@@ -586,6 +586,7 @@ dependencies = [
 [[package]]
 name = "egui_tiles_docking"
 version = "0.14.0"
+source = "git+https://github.com/Latias94/egui_tiles_docking#2e2274b6bb6ed33a3f5c87fa2f94f0f438783163"
 dependencies = [
  "ahash",
  "egui",

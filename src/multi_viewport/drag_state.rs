@@ -2,7 +2,7 @@ use egui::{Context, Modifiers, Pos2, ViewportId};
 use std::collections::BTreeMap;
 
 use super::backend_hints::{backend_mouse_hovered_viewport_id, backend_pointer_global_points};
-use super::geometry::pointer_pos_in_global;
+use super::geometry::{pointer_pos_in_global, viewport_under_pointer_global};
 use super::session::DragSession;
 use super::types::DockPayload;
 
@@ -39,6 +39,7 @@ impl DragState {
         if let Some(pos) = backend_pointer_global_points(ctx) {
             self.last_pointer_global = Some(pos);
             self.last_interact_update_frame = frame;
+            self.last_hovered_viewport = viewport_under_pointer_global(ctx, pos);
         }
 
         if let Some(vp) = backend_mouse_hovered_viewport_id(ctx) {
@@ -77,7 +78,8 @@ impl DragState {
         {
             self.last_pointer_global = Some(pos);
             self.last_interact_update_frame = frame;
-            self.last_hovered_viewport.get_or_insert(ctx.viewport_id());
+            self.last_hovered_viewport = viewport_under_pointer_global(ctx, pos)
+                .or_else(|| Some(ctx.viewport_id()));
             return;
         }
 
@@ -119,7 +121,10 @@ impl DragState {
                 // would otherwise prevent the real source viewport from updating the global pointer.
                 if self.last_delta_integrated_frame != frame {
                     self.last_delta_integrated_frame = frame;
-                    self.last_pointer_global = Some(prev + delta_points);
+                    let next = prev + delta_points;
+                    self.last_pointer_global = Some(next);
+                    self.last_hovered_viewport = viewport_under_pointer_global(ctx, next)
+                        .or(self.last_hovered_viewport);
                 }
             }
         }

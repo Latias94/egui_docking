@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::BufWriter;
 use std::path::PathBuf;
 
-use egui::{Context, LayerId, Order, Rect, Vec2, ViewportId};
+use egui::{Context, LayerId, Order, Rect, Vec2, ViewportBuilder, ViewportId};
 use egui_tiles::{Behavior, ContainerKind, InsertionPoint, Tile, TileId, Tree};
 
 mod debug;
 mod backend_hints;
+mod behavior_wrap;
 mod drag_state;
 mod detached;
 mod drop_apply;
@@ -54,11 +55,14 @@ pub use persistence::{LayoutPersistenceError, LayoutSnapshot, LAYOUT_SNAPSHOT_VE
 pub use pane_registry::{PaneRegistry, SimplePaneRegistry};
 
 use debug::{debug_clear_event_log_id, last_drop_debug_text_id, tiles_debug_visit_enabled_id};
+use behavior_wrap::PaneBackgroundBehavior;
 use drag_state::DragState;
 use geometry::pointer_pos_in_viewport_space;
 use overlay::{paint_outer_overlay, paint_overlay, pointer_in_outer_band};
 use overlay_decision::{decide_overlay_for_tree, DragKind, OverlayPaint};
 use types::*;
+
+use crate::workspace::WorkspaceLayout;
 
 fn backend_hints_log_state_id(tree_id: egui::Id) -> egui::Id {
     egui::Id::new((tree_id, "egui_docking_backend_hints_log_state"))
@@ -158,6 +162,96 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
     }
 
+    /// Replace the root dock tree and clear all transient multi-viewport state.
+    ///
+    /// This is the recommended way to apply a scripted "workspace preset" (Unity-like layout)
+    /// without reconstructing the entire `DockingMultiViewport` instance.
+    ///
+    /// Notes:
+    /// - All detached native viewports and contained floating windows are closed (cleared).
+    /// - Any in-flight drag/drop session is canceled.
+    pub fn set_root_tree(&mut self, tree: Tree<Pane>) {
+        self.tree = tree;
+
+        self.detached.clear();
+        self.floating.clear();
+        self.ghost = None;
+
+        self.pending_drop = None;
+        self.pending_internal_drop = None;
+        self.pending_local_drop = None;
+
+        self.last_root_dock_rect = None;
+        self.last_dock_rects.clear();
+        self.last_floating_rects.clear();
+        self.last_floating_content_rects.clear();
+        self.viewport_outer_from_inner_offset.clear();
+        self.detached_rendered_frame.clear();
+
+        #[cfg(feature = "persistence")]
+        {
+            self.last_viewport_runtime.clear();
+        }
+    }
+
+    /// Like [`Self::set_root_tree`], but also clears any active `egui::DragAndDrop` payload in `ctx`.
+    pub fn set_root_tree_in_ctx(&mut self, ctx: &Context, tree: Tree<Pane>) {
+        egui::DragAndDrop::clear_payload(ctx);
+        ctx.stop_dragging();
+        ctx.request_repaint();
+        ctx.request_repaint_of(ViewportId::ROOT);
+        self.set_root_tree(tree);
+    }
+
+    /// Add a new detached native viewport (OS window) hosting `tree`.
+    ///
+    /// Notes:
+    /// - `tree` will be re-wrapped into an internal tree id to avoid collisions between multiple
+    ///   detached viewports.
+    /// - Detached viewports currently share global options (decorations/CSD) from `self.options`.
+    pub fn add_detached_viewport(
+        &mut self,
+        mut tree: Tree<Pane>,
+        builder: ViewportBuilder,
+    ) -> Option<ViewportId> {
+        let Some(root) = tree.root.take() else {
+            return None;
+        };
+        let tiles = std::mem::take(&mut tree.tiles);
+
+        let (viewport_id, serial) = self.allocate_detached_viewport_id();
+        let detached_tree_id = egui::Id::new((self.tree.id(), "egui_docking_detached_tree", serial));
+        let detached_tree = Tree::new(detached_tree_id, root, tiles);
+
+        let builder = builder.with_decorations(self.options.detached_viewport_decorations);
+
+        self.detached.insert(
+            viewport_id,
+            DetachedDock {
+                serial,
+                tree: detached_tree,
+                builder,
+            },
+        );
+
+        Some(viewport_id)
+    }
+
+    /// Apply a scripted workspace preset (root tree + detached native viewport trees).
+    ///
+    /// This clears any existing detached/floating windows and cancels in-flight drags.
+    pub fn set_workspace_layout_in_ctx(&mut self, ctx: &Context, layout: WorkspaceLayout<Pane>) {
+        let WorkspaceLayout { root, detached } = layout;
+        self.set_root_tree_in_ctx(ctx, root);
+
+        for spec in detached {
+            let _ = self.add_detached_viewport(spec.tree, spec.builder);
+        }
+
+        ctx.request_repaint();
+        ctx.request_repaint_of(ViewportId::ROOT);
+    }
+
     pub(super) fn update_viewport_outer_from_inner_offset(&mut self, ctx: &Context) {
         let viewport_id = ctx.viewport_id();
         let offset = ctx.input(|i| {
@@ -202,6 +296,8 @@ impl<Pane> DockingMultiViewport<Pane> {
     ///
     /// Call this from your `eframe::App::update` (or equivalent).
     pub fn ui(&mut self, ctx: &Context, behavior: &mut dyn Behavior<Pane>) {
+        let mut behavior = PaneBackgroundBehavior::new(behavior, self.options.fill_pane_background);
+
         self.debug_frame = self.debug_frame.wrapping_add(1);
         self.drag_state.begin_frame();
         self.update_viewport_outer_from_inner_offset(ctx);
@@ -238,25 +334,34 @@ impl<Pane> DockingMultiViewport<Pane> {
 
         // 1) Detached viewports first: they can re-dock into the root tree, and we want the root
         //    dock to reflect that immediately within the same frame.
-        self.ui_detached_viewports(ctx, behavior);
+        self.ui_detached_viewports(ctx, &mut behavior);
 
         // 2) Root dock (ViewportId::ROOT).
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let root_frame = {
+            let style = ctx.global_style();
+            egui::Frame::central_panel(style.as_ref()).fill(style.visuals.window_fill())
+        };
+        egui::CentralPanel::default().frame(root_frame).show(ctx, |ui| {
             self.update_last_pointer_global_from_active_viewport(ui.ctx());
             self.observe_drag_sources_in_ctx(ui.ctx());
 
             let dock_rect = ui.available_rect_before_wrap();
             self.last_root_dock_rect = Some(dock_rect);
             self.last_dock_rects.insert(ViewportId::ROOT, dock_rect);
+            // ImGui parity: dockspace has an explicit background fill so pane contents
+            // don't fall back to the OS clear color (often near-black) when the user
+            // doesn't paint a background inside each pane.
+            ui.painter()
+                .rect_filled(dock_rect, 0.0, ui.visuals().panel_fill);
             self.rebuild_floating_rect_cache_for_viewport(
                 ui.ctx(),
-                behavior,
+                &mut behavior,
                 dock_rect,
                 ViewportId::ROOT,
             );
 
             let took_over_internal_drop =
-                self.process_release_before_root_tree_ui(ui.ctx(), behavior, dock_rect);
+                self.process_release_before_root_tree_ui(ui.ctx(), &mut behavior, dock_rect);
 
             self.set_tiles_disable_drop_apply_if_taken_over(
                 ui.ctx(),
@@ -266,7 +371,7 @@ impl<Pane> DockingMultiViewport<Pane> {
             );
             self.set_tiles_disable_drop_preview_if_overlay_hovered(
                 ui.ctx(),
-                behavior,
+                &behavior,
                 dock_rect,
                 ViewportId::ROOT,
                 &self.tree,
@@ -285,41 +390,42 @@ impl<Pane> DockingMultiViewport<Pane> {
 
             // Tear-off detection must happen before `tree.ui`, otherwise egui_tiles will interpret
             // every drop as "somewhere" inside the tree.
-            self.try_tear_off_from_root(ui.ctx(), behavior, dock_rect);
+            self.try_tear_off_from_root(ui.ctx(), &mut behavior, dock_rect);
 
-            self.maybe_start_ghost_from_root(ui.ctx(), behavior, dock_rect);
+            self.maybe_start_ghost_from_root(ui.ctx(), &mut behavior, dock_rect);
 
             self.set_tiles_debug_visit_enabled(ui.ctx(), self.tree.id(), ViewportId::ROOT);
-            self.tree.ui(behavior, ui);
+            self.tree.ui(&mut behavior, ui);
 
             self.set_payload_from_root_drag_if_any(ui.ctx());
             self.paint_drop_preview_if_any_for_tree(
                 ui,
-                behavior,
+                &mut behavior,
                 &self.tree,
                 dock_rect,
                 ViewportId::ROOT,
             );
 
-            self.ui_floating_windows_in_viewport(ui, behavior, dock_rect, ViewportId::ROOT);
+            self.ui_floating_windows_in_viewport(ui, &mut behavior, dock_rect, ViewportId::ROOT);
 
             self.process_release_after_floating_ui(ui.ctx(), dock_rect, ViewportId::ROOT);
         });
 
         // 3) Late detached viewports: ghost tear-off can create new viewports during the root UI.
         //    Render newly-created viewports once in the same frame to reduce perceived latency.
-        self.ui_detached_viewports(ctx, behavior);
+        self.ui_detached_viewports(ctx, &mut behavior);
 
-        if self.options.debug_drop_targets
-            || self.options.debug_event_log
-            || self.options.debug_integrity
+        if self.options.debug_show_window
+            && (self.options.debug_drop_targets
+                || self.options.debug_event_log
+                || self.options.debug_integrity)
         {
             self.ui_debug_window(ctx, ViewportId::ROOT, self.tree.id());
         }
 
         // Apply after all viewports have had a chance to run `tree.ui` this frame so we can use
         // the computed rectangles for accurate docking.
-        self.apply_pending_actions(ctx, behavior);
+        self.apply_pending_actions(ctx, &mut behavior);
         self.cleanup_bridge_payload_if_no_pointer_down(ctx);
         self.clear_bridge_payload_on_release(ctx);
         self.cleanup_detached_window_move_sessions(ctx);

@@ -3,7 +3,10 @@ use egui_tiles::{Behavior, TileId, Tree};
 
 use super::DockingMultiViewport;
 use super::drop_policy;
-use super::geometry::viewport_under_pointer_global_excluding;
+use super::geometry::{
+    pointer_pos_in_target_viewport_space, viewport_under_pointer_global,
+    viewport_under_pointer_global_excluding,
+};
 use super::overlay_decision::{decide_overlay_for_tree, DragKind};
 use super::surface::DockSurface;
 use super::host::WindowHost;
@@ -240,8 +243,14 @@ impl<Pane> DockingMultiViewport<Pane> {
         };
 
         let exclude_viewport = payload.tile_id.is_none().then_some(payload.source_viewport);
-        let Some(target_viewport) =
-            viewport_under_pointer_global_excluding(ctx, pointer_global, exclude_viewport)
+        let preferred_viewport = self.drag_state.last_hovered_viewport();
+        let preferred_ok = preferred_viewport
+            .filter(|vp| exclude_viewport != Some(*vp))
+            .and_then(|vp| pointer_pos_in_target_viewport_space(ctx, vp, pointer_global).map(|_| vp));
+
+        let Some(target_viewport) = preferred_ok
+            .or_else(|| viewport_under_pointer_global_excluding(ctx, pointer_global, exclude_viewport))
+            .or_else(|| viewport_under_pointer_global(ctx, pointer_global))
         else {
             if self.options.debug_event_log {
                 self.debug_log_event(format!(

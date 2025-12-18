@@ -132,6 +132,12 @@ impl Default for App {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        // Make the OS window background match egui's theme (less "black frame" around panels).
+        let c = visuals.window_fill();
+        egui::Color32::from_rgb(c.r(), c.g(), c.b()).to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::Panel::top("egui_docking_demo_help").show(ctx, |ui| {
             let modifiers = ctx.input(|i| i.modifiers);

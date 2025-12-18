@@ -1030,9 +1030,15 @@ impl<Pane> DockingMultiViewport<Pane> {
                     );
                 }
 
-                egui::CentralPanel::default().show(ctx, |ui| {
+                let frame = {
+                    let style = ctx.global_style();
+                    egui::Frame::central_panel(style.as_ref()).fill(style.visuals.window_fill())
+                };
+                egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
                     let dock_rect = ui.available_rect_before_wrap();
                     self.last_dock_rects.insert(viewport_id, dock_rect);
+                    ui.painter()
+                        .rect_filled(dock_rect, 0.0, ui.visuals().panel_fill);
                     // Hit-testing and drop preview must not depend on draw order. Rebuild the floating
                     // rect cache before any release/overlay logic runs for this viewport.
                     self.rebuild_floating_rect_cache_for_viewport(
@@ -1049,7 +1055,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                     // More complex split layouts should be redocked by dragging individual tabs/panes.
                     let move_active_id = self.detached_window_move_active_id(viewport_id);
 
-                    let (root_tabs_tile, root_tabs_single_child, root_tabs_visible_children_all_panes) = detached
+                    let (root_tabs_tile, root_tabs_single_child) = detached
                         .tree
                         .root
                         .and_then(|root| detached.tree.tiles.get(root).map(|t| (root, t)))
@@ -1060,21 +1066,11 @@ impl<Pane> DockingMultiViewport<Pane> {
                                 let children: Vec<egui_tiles::TileId> =
                                     container.children().copied().collect();
                                 let single_child = (children.len() == 1).then_some(children[0]);
-                                let visible_children_all_panes = children
-                                    .iter()
-                                    .copied()
-                                    .filter(|&child| {
-                                        detached.tree.tiles.get(child).is_some()
-                                            && detached.tree.tiles.is_visible(child)
-                                    })
-                                    .all(|child| {
-                                        matches!(detached.tree.tiles.get(child), Some(egui_tiles::Tile::Pane(_)))
-                                    });
-                                Some((Some(root), single_child, visible_children_all_panes))
+                                Some((Some(root), single_child))
                             }
-                            _ => Some((None, None, false)),
+                            _ => Some((None, None)),
                         })
-                        .unwrap_or((None, None, false));
+                        .unwrap_or((None, None));
                     let root_is_tabs = root_tabs_tile.is_some();
 
                     if !self.options.detached_viewport_decorations
@@ -1092,7 +1088,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                     // transfer authority to the viewport host and use OS/native window dragging.
                     if !window_move_active
                         && root_tabs_tile.is_some()
-                        && root_tabs_visible_children_all_panes
                         && detached.tree.dragged_id_including_root(ctx) == root_tabs_tile
                     {
                         self.start_detached_window_move(ctx, viewport_id);
@@ -1212,6 +1207,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                             let maximized =
                                 ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                             ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                            if self.options.debug_event_log {
+                                self.debug_log_event(format!(
+                                    "root_tabs_bg DOUBLE_CLICK maximize_toggle viewport={viewport_id:?} -> {}",
+                                    !maximized
+                                ));
+                            }
                         }
                     }
 
@@ -1225,7 +1226,6 @@ impl<Pane> DockingMultiViewport<Pane> {
                         && root_tabs_single_child.is_some_and(|child| Some(child) == dragged_tile_after_ui);
                     let should_start_window_move_late = !window_move_active
                         && root_tabs_tile.is_some()
-                        && root_tabs_visible_children_all_panes
                         && dragged_tile_after_ui == root_tabs_tile;
                     if should_upgrade_single_tab_to_window_move || should_start_window_move_late {
                         self.start_detached_window_move(ctx, viewport_id);
