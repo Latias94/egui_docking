@@ -739,6 +739,12 @@ impl<Pane> DockingMultiViewport<Pane> {
                 if drag.double_clicked() {
                     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                     ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                    if self.options.debug_event_log {
+                        self.debug_log_event(format!(
+                            "csd_titlebar DOUBLE_CLICK maximize_toggle viewport={viewport_id:?} -> {}",
+                            !maximized
+                        ));
+                    }
                 }
 
                 if self.options.detached_csd_window_controls {
