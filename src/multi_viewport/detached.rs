@@ -458,34 +458,9 @@ impl<Pane> DockingMultiViewport<Pane> {
         }
 
         let bar_rect = bar_rect.round_to_pixels(ctx.pixels_per_point()).round_ui();
-        let controls_height = bar_rect.height();
-        let button_size = ctx
-            .global_style()
-            .spacing
-            .icon_width
-            .min(controls_height)
-            .max(12.0);
-        let button_size = egui::Vec2::splat(button_size);
+        let controls_rect = self.csd_window_controls_rect(ctx, bar_rect);
         let gap = 4.0;
         let padding_x = 6.0;
-
-        let total_w = padding_x * 2.0 + button_size.x * 3.0 + gap * 2.0;
-        let controls_rect = match Self::csd_controls_side() {
-            CsdControlsSide::Left => Rect::from_min_max(
-                bar_rect.min,
-                egui::pos2(
-                    (bar_rect.min.x + total_w).min(bar_rect.max.x),
-                    bar_rect.max.y,
-                ),
-            ),
-            CsdControlsSide::Right => Rect::from_min_max(
-                egui::pos2(
-                    (bar_rect.max.x - total_w).max(bar_rect.min.x),
-                    bar_rect.min.y,
-                ),
-                bar_rect.max,
-            ),
-        };
 
         let area_id = egui::Id::new((self.tree.id(), viewport_id, "csd_controls"));
         egui::Area::new(area_id)
@@ -497,6 +472,14 @@ impl<Pane> DockingMultiViewport<Pane> {
                 let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(controls_rect));
 
                 let side = Self::csd_controls_side();
+                let controls_height = controls_rect.height();
+                let button_size = ctx
+                    .global_style()
+                    .spacing
+                    .icon_width
+                    .min(controls_height)
+                    .max(12.0);
+                let button_size = egui::Vec2::splat(button_size);
                 let layout = match side {
                     CsdControlsSide::Left => egui::Layout::left_to_right(egui::Align::Center),
                     CsdControlsSide::Right => egui::Layout::right_to_left(egui::Align::Center),
@@ -674,6 +657,37 @@ impl<Pane> DockingMultiViewport<Pane> {
             });
     }
 
+    fn csd_window_controls_rect(&self, ctx: &Context, bar_rect: Rect) -> Rect {
+        let controls_height = bar_rect.height();
+        let button_size = ctx
+            .global_style()
+            .spacing
+            .icon_width
+            .min(controls_height)
+            .max(12.0);
+        let button_size = egui::Vec2::splat(button_size);
+        let gap = 4.0;
+        let padding_x = 6.0;
+
+        let total_w = padding_x * 2.0 + button_size.x * 3.0 + gap * 2.0;
+        match Self::csd_controls_side() {
+            CsdControlsSide::Left => Rect::from_min_max(
+                bar_rect.min,
+                egui::pos2(
+                    (bar_rect.min.x + total_w).min(bar_rect.max.x),
+                    bar_rect.max.y,
+                ),
+            ),
+            CsdControlsSide::Right => Rect::from_min_max(
+                egui::pos2(
+                    (bar_rect.max.x - total_w).max(bar_rect.min.x),
+                    bar_rect.min.y,
+                ),
+                bar_rect.max,
+            ),
+        }
+    }
+
     fn ui_borderless_detached_chrome(
         &mut self,
         ctx: &Context,
@@ -692,31 +706,37 @@ impl<Pane> DockingMultiViewport<Pane> {
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
 
-                let reserved_w = if self.options.detached_csd_window_controls {
-                    // 3 buttons + gaps + padding, matching `csd_window_controls_ui`.
-                    ui.spacing().icon_width * 3.0 + 4.0 * 2.0 + 6.0 * 2.0 + 4.0
+                let padding_x = 8.0;
+
+                // Choose a drag rect that never overlaps window buttons.
+                let mut drag_rect = rect.shrink2(egui::vec2(padding_x, 0.0));
+                if self.options.detached_csd_window_controls {
+                    let controls_rect = self.csd_window_controls_rect(ctx, rect);
+                    if controls_rect.center().x <= rect.center().x {
+                        drag_rect.min.x = (controls_rect.max.x + padding_x).min(rect.max.x);
+                    } else {
+                        drag_rect.max.x = (controls_rect.min.x - padding_x).max(rect.min.x);
+                    }
                 } else {
-                    ui.spacing().icon_width + 12.0
-                };
-                let text_rect = match Self::csd_controls_side() {
-                    CsdControlsSide::Left => Rect::from_min_max(
-                        rect.min + egui::vec2(reserved_w + 8.0, 0.0),
-                        rect.max - egui::vec2(8.0, 0.0),
-                    ),
-                    CsdControlsSide::Right => Rect::from_min_max(
-                        rect.min + egui::vec2(8.0, 0.0),
-                        rect.max - egui::vec2(reserved_w, 0.0),
-                    ),
-                };
+                    let button_rects =
+                        egui::containers::window_chrome::title_bar_button_rects(ui, rect);
+                    let close_rect = button_rects.close;
+                    if close_rect.center().x <= rect.center().x {
+                        drag_rect.min.x = (close_rect.max.x + padding_x).min(rect.max.x);
+                    } else {
+                        drag_rect.max.x = (close_rect.min.x - padding_x).max(rect.min.x);
+                    }
+                }
+                drag_rect = drag_rect.intersect(rect);
 
                 let drag_id = ui.id().with("drag");
                 let drag = ui
-                    .interact(text_rect, drag_id, egui::Sense::click_and_drag())
+                    .interact(drag_rect, drag_id, egui::Sense::click_and_drag())
                     .on_hover_cursor(egui::CursorIcon::Grab);
                 if drag.drag_started() {
                     self.start_detached_window_move(ctx, viewport_id);
                 }
-                if drag.double_clicked() && self.options.detached_csd_window_controls {
+                if drag.double_clicked() {
                     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                     ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                 }
@@ -735,7 +755,7 @@ impl<Pane> DockingMultiViewport<Pane> {
                     }
                 }
 
-                ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(drag_rect), |ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(title).strong());
                     });
