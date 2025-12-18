@@ -10,6 +10,8 @@ Multi-viewport docking for [`egui`](https://github.com/emilk/egui): bridges `egu
 ## Status
 Experimental / WIP. Targeted at editor-like workflows. No crates.io release planned short-term.
 
+![](https://raw.githubusercontent.com/Latias94/egui_docking/main/screenshots/docking.gif)
+
 ## Forks (required for now)
 
 This project is developed and tested against these forks:
