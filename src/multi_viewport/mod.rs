@@ -1083,6 +1083,9 @@ impl<Pane> DockingMultiViewport<Pane> {
                 self.debug_log_event(format!(
                     "backend_hints hovered={hovered:?} pointer={pointer:?} monitors_outer_rects_points=<missing>"
                 ));
+                self.debug_log_event(
+                    "backend_hints_tip: update your egui/eframe fork to write `egui-winit::monitors_outer_rects_points`, then run `cargo update -p egui -p eframe -p egui-winit` (Cargo.lock pins git rev).",
+                );
             }
         }
     }
