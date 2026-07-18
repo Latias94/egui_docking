@@ -1,0 +1,190 @@
+//! Atomic engine transition records returned after successful publication.
+
+use crate::command::CommandOutcome;
+use crate::error::CommandError;
+use crate::event::WorkspaceEvent;
+use crate::ids::{InputSequence, WorkspaceEpoch, WorkspaceRevision};
+
+/// Version of all workspace and policy state used to derive semantic input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct WorkspaceVersion {
+    epoch: WorkspaceEpoch,
+    revision: WorkspaceRevision,
+}
+
+impl WorkspaceVersion {
+    /// Creates a version from distinct replacement and mutation counters.
+    #[must_use]
+    pub const fn new(epoch: WorkspaceEpoch, revision: WorkspaceRevision) -> Self {
+        Self { epoch, revision }
+    }
+
+    /// Returns the replacement epoch.
+    #[must_use]
+    pub const fn epoch(self) -> WorkspaceEpoch {
+        self.epoch
+    }
+
+    /// Returns the mutation revision within the current epoch.
+    #[must_use]
+    pub const fn revision(self) -> WorkspaceRevision {
+        self.revision
+    }
+}
+
+/// Normative source-class priority used by the single reducer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum InputPriority {
+    /// Workspace replacement and native lifecycle control.
+    LifecycleControl,
+    /// Authoritative facts supplied by a platform provider.
+    PlatformObservation,
+    /// Checked commands and application policy changes.
+    ApplicationCommand,
+    /// Semantic input produced while painting a sealed scene.
+    RendererIntent,
+    /// Validation and other state-neutral upkeep.
+    Maintenance,
+}
+
+/// Result of reducing one sequenced input.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputOutcome {
+    /// The complete workspace was replaced and all older derived state became stale.
+    WorkspaceReplaced {
+        /// Version before replacement.
+        before: WorkspaceVersion,
+        /// Version after replacement.
+        after: WorkspaceVersion,
+    },
+    /// One checked command committed or produced a valid no-op.
+    CommandProcessed {
+        /// Structured command result.
+        outcome: CommandOutcome,
+        /// Whether the complete workspace changed.
+        changed: bool,
+        /// Version after processing this input.
+        version: WorkspaceVersion,
+    },
+    /// A checked command was deterministically rejected and consumed.
+    CommandRejected {
+        /// Typed reason the command could not apply to the candidate state.
+        error: CommandError,
+        /// Published version, unchanged by this input.
+        version: WorkspaceVersion,
+    },
+    /// Application policy was replaced or found equal.
+    PolicyReplaced {
+        /// Whether policy state changed.
+        changed: bool,
+        /// Version after processing this input.
+        version: WorkspaceVersion,
+    },
+    /// A maintenance validation completed without mutation.
+    WorkspaceValidated {
+        /// Version which was validated.
+        version: WorkspaceVersion,
+    },
+    /// Input derived from an old state was rejected without mutation.
+    StaleRejected {
+        /// Version carried by the input.
+        expected: WorkspaceVersion,
+        /// Shared state version accepted for application inputs in this boundary.
+        accepted_base: WorkspaceVersion,
+    },
+}
+
+/// One input and its outcome in normative reduction order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReducedInput {
+    sequence: InputSequence,
+    priority: InputPriority,
+    outcome: InputOutcome,
+}
+
+impl ReducedInput {
+    pub(crate) const fn new(
+        sequence: InputSequence,
+        priority: InputPriority,
+        outcome: InputOutcome,
+    ) -> Self {
+        Self {
+            sequence,
+            priority,
+            outcome,
+        }
+    }
+
+    /// Returns the writer-assigned sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> InputSequence {
+        self.sequence
+    }
+
+    /// Returns the normative source-class priority.
+    #[must_use]
+    pub const fn priority(&self) -> InputPriority {
+        self.priority
+    }
+
+    /// Returns the structured reduction outcome.
+    #[must_use]
+    pub const fn outcome(&self) -> &InputOutcome {
+        &self.outcome
+    }
+}
+
+/// Complete result of one successfully published engine boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineTransition {
+    before: WorkspaceVersion,
+    after: WorkspaceVersion,
+    reduced: Vec<ReducedInput>,
+    events: Vec<WorkspaceEvent>,
+}
+
+impl EngineTransition {
+    pub(crate) fn new(
+        before: WorkspaceVersion,
+        after: WorkspaceVersion,
+        reduced: Vec<ReducedInput>,
+        events: Vec<WorkspaceEvent>,
+    ) -> Self {
+        Self {
+            before,
+            after,
+            reduced,
+            events,
+        }
+    }
+
+    /// Returns the state version before reduction.
+    #[must_use]
+    pub const fn before(&self) -> WorkspaceVersion {
+        self.before
+    }
+
+    /// Returns the published state version.
+    #[must_use]
+    pub const fn after(&self) -> WorkspaceVersion {
+        self.after
+    }
+
+    /// Returns inputs in normative reduction order.
+    #[must_use]
+    pub fn reduced_inputs(&self) -> &[ReducedInput] {
+        &self.reduced
+    }
+
+    /// Returns events generated only after the candidate committed.
+    #[must_use]
+    pub fn events(&self) -> &[WorkspaceEvent] {
+        &self.events
+    }
+
+    /// Returns whether any durable or policy state changed.
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        self.before != self.after
+    }
+}

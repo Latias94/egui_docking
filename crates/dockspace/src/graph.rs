@@ -312,7 +312,37 @@ pub struct ContainedFloating {
     /// Logical bounds relative to the owning surface.
     pub rect: LogicalRect,
     /// Explicit stacking order within the surface.
+    ///
+    /// Larger values are frontmost. Equal values are ordered by
+    /// [`FloatingPresentationId`], also with the larger identity frontmost.
     pub z_order: u64,
+}
+
+/// Deterministic stacking key for one contained-floating presentation.
+///
+/// Keys compare back-to-front: a larger z-order is frontmost, with the larger
+/// stable presentation identity breaking equal-z ties.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContainedStackKey {
+    z_order: u64,
+    floating: FloatingPresentationId,
+}
+
+impl ContainedStackKey {
+    /// Creates a stacking key from explicit presentation state.
+    pub const fn new(z_order: u64, floating: FloatingPresentationId) -> Self {
+        Self { z_order, floating }
+    }
+
+    /// Returns the explicit z-order.
+    pub const fn z_order(self) -> u64 {
+        self.z_order
+    }
+
+    /// Returns the stable presentation identity used for tie-breaking.
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
 }
 
 impl ContainedFloating {
@@ -331,6 +361,14 @@ impl ContainedFloating {
             rect,
             z_order,
         }
+    }
+
+    /// Returns the deterministic back-to-front stacking key.
+    ///
+    /// Comparing these keys directly makes the larger key frontmost and gives
+    /// equal z-orders a stable identity tie-break.
+    pub const fn stacking_key(self) -> ContainedStackKey {
+        ContainedStackKey::new(self.z_order, self.id)
     }
 }
 

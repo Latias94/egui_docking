@@ -59,3 +59,54 @@ stable_id!(
     FloatingPresentationId,
     "Stable identity for a contained floating presentation."
 );
+
+macro_rules! transient_counter_id {
+    ($name:ident, $description:literal) => {
+        #[doc = $description]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $name(u64);
+
+        impl $name {
+            /// Creates a typed counter from its runtime representation.
+            #[must_use]
+            pub const fn new(value: u64) -> Self {
+                Self(value)
+            }
+
+            /// Returns the runtime counter representation.
+            #[must_use]
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+
+            /// Advances the counter without wrapping.
+            #[must_use]
+            pub const fn checked_next(self) -> Option<Self> {
+                match self.0.checked_add(1) {
+                    Some(value) => Some(Self(value)),
+                    None => None,
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+    };
+}
+
+transient_counter_id!(
+    WorkspaceEpoch,
+    "Runtime epoch invalidating state derived from a replaced workspace."
+);
+transient_counter_id!(
+    WorkspaceRevision,
+    "Runtime revision invalidating inputs derived from older workspace or policy state."
+);
+transient_counter_id!(
+    InputSequence,
+    "Monotonic sequence assigned by the engine's single input writer."
+);

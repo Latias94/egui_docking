@@ -610,6 +610,8 @@ impl<'workspace> Validator<'workspace> {
 
     fn validate_presentations(&mut self) {
         let mut presented: HashMap<RootId, PresentationLocation> = HashMap::new();
+        let mut surface_rosters: HashMap<SurfaceId, HashSet<FloatingPresentationId>> =
+            HashMap::with_capacity(self.workspace.surfaces.len());
 
         for (&surface_id, surface) in &self.workspace.surfaces {
             if self.workspace.roots.contains_key(&surface.main_root) {
@@ -666,6 +668,7 @@ impl<'workspace> Validator<'workspace> {
                         });
                 }
             }
+            surface_rosters.insert(surface_id, roster);
         }
 
         for (&key, floating) in &self.workspace.contained_floatings {
@@ -676,8 +679,8 @@ impl<'workspace> Validator<'workspace> {
                         record: floating.id,
                     });
             }
-            match self.workspace.surfaces.get(&floating.surface) {
-                Some(surface) if !surface.contained.contains(&key) => {
+            match surface_rosters.get(&floating.surface) {
+                Some(roster) if !roster.contains(&key) => {
                     self.errors
                         .push(WorkspaceValidationError::MissingFloatingBacklink {
                             floating: key,
