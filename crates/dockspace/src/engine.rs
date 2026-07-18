@@ -527,9 +527,10 @@ impl DockEngine {
         &self,
         surface: crate::ids::SurfaceId,
         rect: crate::geometry::LogicalRect,
+        work_area: crate::viewport::WorkAreaToken,
     ) -> Result<crate::coordinates::ViewportPlacementProof, crate::coordinates::CoordinateUnavailable>
     {
-        self.viewport.placement(surface, rect)
+        self.viewport.placement(surface, rect, work_area)
     }
 
     /// Queues complete scene facts against the currently published state.
@@ -1287,6 +1288,9 @@ impl DockEngine {
                 PlatformCapability::Supported => return None,
             });
         }
+        if dependencies.native && transition.work_areas_changed() {
+            return Some(InteractionCancelReason::NativePlacementUnavailable);
+        }
         let current_routing = self.viewport.capabilities().cross_surface_routing();
         if dependencies.routed && previous_routing.is_supported() && !current_routing.is_supported()
         {
@@ -1832,7 +1836,7 @@ impl DockEngine {
             } => self.resolve_native_tear_off(
                 input,
                 payload,
-                proposal.clone(),
+                proposal.as_ref().clone(),
                 *contained_fallback,
                 request,
                 routed,

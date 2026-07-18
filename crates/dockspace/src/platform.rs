@@ -11,7 +11,7 @@ use crate::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use crate::intent::{
     Authority, AuthorityUnavailableReason, PointerButton, PointerButtonState, PointerId,
 };
-use crate::viewport::WindowToken;
+use crate::viewport::{WindowToken, WorkAreaToken};
 
 /// One independently degradable platform requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -246,7 +246,6 @@ pub struct ObservedWindow {
     content_bounds: Authority<PhysicalRect>,
     outer_bounds: Authority<PhysicalRect>,
     scale_factor: Authority<ScaleFactor>,
-    work_area: Authority<Option<PhysicalRect>>,
     input_state: Authority<WindowInputState>,
     focused: Authority<bool>,
     close_requested: Authority<bool>,
@@ -261,7 +260,6 @@ impl ObservedWindow {
             content_bounds: unavailable(),
             outer_bounds: unavailable(),
             scale_factor: unavailable(),
-            work_area: unavailable(),
             input_state: unavailable(),
             focused: unavailable(),
             close_requested: unavailable(),
@@ -286,11 +284,6 @@ impl ObservedWindow {
     #[must_use]
     pub const fn scale_factor(&self) -> &Authority<ScaleFactor> {
         &self.scale_factor
-    }
-
-    #[must_use]
-    pub const fn work_area(&self) -> &Authority<Option<PhysicalRect>> {
-        &self.work_area
     }
 
     #[must_use]
@@ -327,12 +320,6 @@ impl ObservedWindow {
     }
 
     #[must_use]
-    pub fn with_work_area(mut self, value: Authority<Option<PhysicalRect>>) -> Self {
-        self.work_area = value;
-        self
-    }
-
-    #[must_use]
     pub fn with_input_state(mut self, value: Authority<WindowInputState>) -> Self {
         self.input_state = value;
         self
@@ -348,6 +335,44 @@ impl ObservedWindow {
     pub fn with_close_requested(mut self, value: Authority<bool>) -> Self {
         self.close_requested = value;
         self
+    }
+}
+
+/// One explicitly selectable monitor work area in desktop physical coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObservedWorkArea {
+    token: WorkAreaToken,
+    bounds: PhysicalRect,
+    scale_factor: ScaleFactor,
+}
+
+impl ObservedWorkArea {
+    #[must_use]
+    pub const fn new(
+        token: WorkAreaToken,
+        bounds: PhysicalRect,
+        scale_factor: ScaleFactor,
+    ) -> Self {
+        Self {
+            token,
+            bounds,
+            scale_factor,
+        }
+    }
+
+    #[must_use]
+    pub const fn token(self) -> WorkAreaToken {
+        self.token
+    }
+
+    #[must_use]
+    pub const fn bounds(self) -> PhysicalRect {
+        self.bounds
+    }
+
+    #[must_use]
+    pub const fn scale_factor(self) -> ScaleFactor {
+        self.scale_factor
     }
 }
 
@@ -467,6 +492,7 @@ pub struct PlatformSnapshot {
     capabilities: PlatformCapabilities,
     windows: Vec<ObservedWindow>,
     pointers: Vec<PointerObservation>,
+    work_areas: Vec<ObservedWorkArea>,
 }
 
 impl PlatformSnapshot {
@@ -474,20 +500,31 @@ impl PlatformSnapshot {
     ///
     /// # Errors
     ///
-    /// Returns [`PlatformSnapshotError`] for duplicate window or pointer identities.
+    /// Returns [`PlatformSnapshotError`] for duplicate identities or a work-area roster that
+    /// contradicts the declared capability.
     pub fn new(
         capabilities: PlatformCapabilities,
         mut windows: Vec<ObservedWindow>,
         mut pointers: Vec<PointerObservation>,
+        mut work_areas: Vec<ObservedWorkArea>,
     ) -> Result<Self, PlatformSnapshotError> {
         windows.sort_by_key(ObservedWindow::token);
         reject_duplicate_windows(&windows)?;
         pointers.sort_by_key(PointerObservation::pointer);
         reject_duplicate_pointers(&pointers)?;
+        work_areas.sort_by_key(|work_area| work_area.token);
+        validate_work_areas(&work_areas)?;
+        if capabilities.work_area().is_supported() && work_areas.is_empty() {
+            return Err(PlatformSnapshotError::MissingWorkAreaRoster);
+        }
+        if !capabilities.work_area().is_supported() && !work_areas.is_empty() {
+            return Err(PlatformSnapshotError::WorkAreaRosterWithoutCapability);
+        }
         Ok(Self {
             capabilities,
             windows,
             pointers,
+            work_areas,
         })
     }
 
@@ -505,6 +542,28 @@ impl PlatformSnapshot {
     pub fn pointers(&self) -> &[PointerObservation] {
         &self.pointers
     }
+
+    #[must_use]
+    pub fn work_areas(&self) -> &[ObservedWorkArea] {
+        &self.work_areas
+    }
+}
+
+fn validate_work_areas(work_areas: &[ObservedWorkArea]) -> Result<(), PlatformSnapshotError> {
+    let mut tokens = BTreeSet::new();
+    for work_area in work_areas {
+        if !tokens.insert(work_area.token) {
+            return Err(PlatformSnapshotError::DuplicateWorkArea {
+                token: work_area.token,
+            });
+        }
+        if work_area.bounds.width() == 0.0 || work_area.bounds.height() == 0.0 {
+            return Err(PlatformSnapshotError::EmptyWorkArea {
+                token: work_area.token,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn reject_duplicate_windows(windows: &[ObservedWindow]) -> Result<(), PlatformSnapshotError> {
@@ -538,6 +597,14 @@ pub enum PlatformSnapshotError {
     DuplicateWindow { token: WindowToken },
     #[error("platform snapshot repeats pointer {pointer:?}")]
     DuplicatePointer { pointer: PointerId },
+    #[error("platform snapshot repeats work-area token {token:?}")]
+    DuplicateWorkArea { token: WorkAreaToken },
+    #[error("platform snapshot contains an empty work area: {token:?}")]
+    EmptyWorkArea { token: WorkAreaToken },
+    #[error("supported work-area capability requires a non-empty complete roster")]
+    MissingWorkAreaRoster,
+    #[error("a work-area roster was supplied without supported work-area capability")]
+    WorkAreaRosterWithoutCapability,
     #[error("pointer {pointer:?} repeats button {button:?}")]
     DuplicateButton {
         pointer: PointerId,
@@ -589,6 +656,7 @@ mod tests {
                 PlatformCapabilities::default(),
                 vec![window.clone(), window],
                 Vec::new(),
+                Vec::new(),
             ),
             Err(PlatformSnapshotError::DuplicateWindow { .. })
         ));
@@ -605,8 +673,59 @@ mod tests {
                 PlatformCapabilities::default(),
                 Vec::new(),
                 vec![pointer.clone(), pointer],
+                Vec::new(),
             ),
             Err(PlatformSnapshotError::DuplicatePointer { .. })
         ));
+    }
+
+    #[test]
+    fn snapshot_requires_a_complete_unambiguous_work_area_roster() {
+        let bounds = PhysicalRect::new(-1920.0, -200.0, 1920.0, 1080.0)
+            .expect("test work area must be valid");
+        let scale = ScaleFactor::new(1.0).expect("test scale must be valid");
+        let work_area = ObservedWorkArea::new(WorkAreaToken::new(3), bounds, scale);
+        let mut supported = PlatformCapabilities::default();
+        supported.set_work_area(PlatformCapability::Supported);
+
+        assert_eq!(
+            PlatformSnapshot::new(supported.clone(), Vec::new(), Vec::new(), Vec::new()),
+            Err(PlatformSnapshotError::MissingWorkAreaRoster)
+        );
+        assert_eq!(
+            PlatformSnapshot::new(
+                PlatformCapabilities::default(),
+                Vec::new(),
+                Vec::new(),
+                vec![work_area],
+            ),
+            Err(PlatformSnapshotError::WorkAreaRosterWithoutCapability)
+        );
+        assert!(matches!(
+            PlatformSnapshot::new(
+                supported,
+                Vec::new(),
+                Vec::new(),
+                vec![work_area, work_area],
+            ),
+            Err(PlatformSnapshotError::DuplicateWorkArea { .. })
+        ));
+        let empty = PhysicalRect::new(0.0, 0.0, 0.0, 1080.0)
+            .expect("zero-width geometry remains representable outside work-area rosters");
+        assert_eq!(
+            PlatformSnapshot::new(
+                {
+                    let mut capabilities = PlatformCapabilities::default();
+                    capabilities.set_work_area(PlatformCapability::Supported);
+                    capabilities
+                },
+                Vec::new(),
+                Vec::new(),
+                vec![ObservedWorkArea::new(WorkAreaToken::new(4), empty, scale)],
+            ),
+            Err(PlatformSnapshotError::EmptyWorkArea {
+                token: WorkAreaToken::new(4),
+            })
+        );
     }
 }

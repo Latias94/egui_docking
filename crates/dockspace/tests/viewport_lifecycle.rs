@@ -20,13 +20,13 @@ use dockspace::interaction::{
     PreviewResolutionStatus,
 };
 use dockspace::platform::{
-    ButtonObservation, ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    PointerObservation, PointerWindow, WindowInputState,
+    ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
+    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome};
-use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
+use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken, WorkAreaToken};
 use dockspace::viewport_registry::ViewportLifecycle;
 
 const ROOT_SOURCE: RootId = RootId::new(1);
@@ -38,6 +38,7 @@ const SURFACE_NATIVE: SurfaceId = SurfaceId::new(10);
 const FLOATING_RECOVERY: FloatingPresentationId = FloatingPresentationId::new(10);
 const SOURCE_TOKEN: WindowToken = WindowToken::new(41);
 const HOST_TOKEN: WindowToken = WindowToken::new(42);
+const WORK_AREA: WorkAreaToken = WorkAreaToken::new(51);
 const POINTER: PointerId = PointerId::new(1);
 
 struct Fixture {
@@ -190,9 +191,6 @@ fn observed_window(
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
-        .with_work_area(Authority::Known(Some(physical_rect(
-            -1920.0, -200.0, 3840.0, 1400.0,
-        ))))
         .with_input_state(Authority::Known(input_state))
         .with_close_requested(Authority::Known(close_requested))
 }
@@ -239,6 +237,11 @@ fn platform_snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
         platform_capabilities(),
         windows,
         vec![pointer_observation()],
+        vec![ObservedWorkArea::new(
+            WORK_AREA,
+            physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+            ScaleFactor::new(1.0).expect("test work-area scale factor must be valid"),
+        )],
     )
     .expect("test platform snapshot must be canonical")
 }
@@ -416,17 +419,21 @@ fn start_native_create_with_payload(
     publish_windows(fixture, vec![source_window(false), host_window(false)]);
     let placement = fixture
         .engine
-        .viewport_placement(SURFACE_SOURCE, logical_rect(100.0, 120.0, 640.0, 480.0))
+        .viewport_placement(
+            SURFACE_SOURCE,
+            logical_rect(100.0, 120.0, 640.0, 480.0),
+            WORK_AREA,
+        )
         .expect("current source facts must produce a placement proof");
-    let request = TearOffRequest::Native {
-        proposal: NativeTearOffProposal::new(
+    let request = TearOffRequest::native(
+        NativeTearOffProposal::new(
             SURFACE_NATIVE,
             destination_root,
             placement,
             recovery(destination_root, FLOATING_RECOVERY),
         ),
-        contained_fallback: None,
-    };
+        None,
+    );
     let preview_target = current_route(fixture);
     fixture
         .engine

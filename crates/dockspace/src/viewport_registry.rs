@@ -8,10 +8,10 @@ use crate::coordinates::{CoordinateSnapshot, CoordinateUnavailable, ViewportPlac
 use crate::geometry::LogicalRect;
 use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
-use crate::platform::{ObservedWindow, PlatformSnapshot};
+use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot};
 use crate::viewport::{
     CoordinateGeneration, InventoryGeneration, ViewportBinding, ViewportRole, WindowIncarnation,
-    WindowToken,
+    WindowToken, WorkAreaGeneration,
 };
 
 /// Lifecycle state derived from authoritative inventory, never from callback timing.
@@ -483,6 +483,8 @@ impl ViewportRegistry {
         &self,
         surface: SurfaceId,
         logical_rect: LogicalRect,
+        work_area: ObservedWorkArea,
+        work_area_generation: WorkAreaGeneration,
     ) -> Result<ViewportPlacementProof, CoordinateUnavailable> {
         let coordinates = self
             .records
@@ -492,16 +494,24 @@ impl ViewportRegistry {
                 fact: crate::coordinates::CoordinateFact::ContentBounds,
                 reason: crate::intent::AuthorityUnavailableReason::SurfaceUnavailable,
             })?;
-        coordinates.placement(logical_rect)
+        coordinates.placement(logical_rect, work_area, work_area_generation)
     }
 
     #[must_use]
-    pub(crate) fn proof_is_current(&self, proof: &ViewportPlacementProof) -> bool {
+    pub(crate) fn proof_is_current(
+        &self,
+        proof: &ViewportPlacementProof,
+        work_area_generation: WorkAreaGeneration,
+    ) -> bool {
         self.records
             .get(&proof.binding().surface())
             .is_some_and(|record| {
                 record.binding == proof.binding()
-                    && proof.is_current(record.binding, record.coordinate_generation)
+                    && proof.is_current(
+                        record.binding,
+                        record.coordinate_generation,
+                        work_area_generation,
+                    )
                     && record.is_ready()
             })
     }
@@ -611,9 +621,6 @@ mod tests {
             .with_scale_factor(Authority::Known(
                 ScaleFactor::new(1.0).expect("test scale must be valid"),
             ))
-            .with_work_area(Authority::Known(Some(
-                PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("test work area must be valid"),
-            )))
             .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
             .with_close_requested(Authority::Known(close_requested))
     }
@@ -621,7 +628,7 @@ mod tests {
     fn snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        PlatformSnapshot::new(capabilities, windows, Vec::new())
+        PlatformSnapshot::new(capabilities, windows, Vec::new(), Vec::new())
             .expect("test snapshot must be valid")
     }
 

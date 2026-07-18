@@ -387,6 +387,7 @@ mod tests {
                 window(target_token, 1000.0, 2.0, WindowInputState::ReceivesInput),
             ],
             vec![pointer(PointerWindow::Dock(target_token), 1200.0)],
+            Vec::new(),
         )
         .expect("test facts must be valid");
         registry
@@ -415,6 +416,7 @@ mod tests {
                 window(target_token, 1000.0, 2.0, WindowInputState::ReceivesInput),
             ],
             vec![pointer(PointerWindow::Foreign, 1200.0)],
+            Vec::new(),
         )
         .expect("foreign facts must be valid");
         registry
@@ -453,6 +455,7 @@ mod tests {
             capabilities(),
             vec![window(token, 0.0, 1.0, WindowInputState::ReceivesInput)],
             vec![pointer(PointerWindow::None, 700.0)],
+            Vec::new(),
         )
         .expect("facts must be valid");
         registry
@@ -481,9 +484,13 @@ mod tests {
         let mut routes = ViewportRouteState::default();
         routes.exhaust_generation();
         let before = routes.clone();
-        let snapshot =
-            PlatformSnapshot::new(PlatformCapabilities::default(), Vec::new(), Vec::new())
-                .expect("empty snapshot must be valid");
+        let snapshot = PlatformSnapshot::new(
+            PlatformCapabilities::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty snapshot must be valid");
         assert_eq!(
             routes.publish(
                 &snapshot,
@@ -503,6 +510,7 @@ mod tests {
             PlatformCapabilities::default(),
             Vec::new(),
             vec![pointer(PointerWindow::None, 0.0)],
+            Vec::new(),
         )
         .expect("snapshot must be valid");
         routes
@@ -535,6 +543,7 @@ mod tests {
             capabilities,
             Vec::new(),
             vec![pointer(PointerWindow::None, 0.0)],
+            Vec::new(),
         )
         .expect("snapshot must be valid");
         let mut routes = ViewportRouteState::default();

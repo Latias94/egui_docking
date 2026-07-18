@@ -4,11 +4,11 @@ use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::intent::{Authority, PointerId};
 use dockspace::platform::{
-    ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState,
+    ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+    PointerObservation, PointerWindow, WindowInputState,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::viewport::{ViewportRole, WindowToken};
+use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
 
 const SURFACE_ONE: SurfaceId = SurfaceId::new(1);
 const SURFACE_ONE_AND_HALF: SurfaceId = SurfaceId::new(2);
@@ -17,6 +17,10 @@ const SURFACE_TWO: SurfaceId = SurfaceId::new(3);
 const WINDOW_ONE: WindowToken = WindowToken::new(11);
 const WINDOW_ONE_AND_HALF: WindowToken = WindowToken::new(12);
 const WINDOW_TWO: WindowToken = WindowToken::new(13);
+
+const WORK_AREA_LEFT: WorkAreaToken = WorkAreaToken::new(21);
+const WORK_AREA_CENTER: WorkAreaToken = WorkAreaToken::new(22);
+const WORK_AREA_RIGHT: WorkAreaToken = WorkAreaToken::new(23);
 
 fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
     LogicalRect::new(x, y, width, height).expect("test logical rectangle must be valid")
@@ -54,21 +58,43 @@ fn supported_capabilities() -> PlatformCapabilities {
     capabilities
 }
 
-fn observed_window(
-    token: WindowToken,
-    content_bounds: PhysicalRect,
-    scale: f64,
-    work_area: PhysicalRect,
-) -> ObservedWindow {
+fn observed_window(token: WindowToken, content_bounds: PhysicalRect, scale: f64) -> ObservedWindow {
     ObservedWindow::new(token)
         .with_content_bounds(Authority::Known(content_bounds))
         .with_outer_bounds(Authority::Known(content_bounds))
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(scale).expect("test scale factor must be valid"),
         ))
-        .with_work_area(Authority::Known(Some(work_area)))
         .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
         .with_close_requested(Authority::Known(false))
+}
+
+fn observed_work_area(token: WorkAreaToken, bounds: PhysicalRect, scale: f64) -> ObservedWorkArea {
+    ObservedWorkArea::new(
+        token,
+        bounds,
+        ScaleFactor::new(scale).expect("test work-area scale factor must be valid"),
+    )
+}
+
+fn monitor_roster() -> Vec<ObservedWorkArea> {
+    vec![
+        observed_work_area(
+            WORK_AREA_LEFT,
+            physical_rect(-1920.0, 0.0, 1920.0, 1080.0),
+            1.0,
+        ),
+        observed_work_area(
+            WORK_AREA_CENTER,
+            physical_rect(0.0, 200.0, 1920.0, 1080.0),
+            1.5,
+        ),
+        observed_work_area(
+            WORK_AREA_RIGHT,
+            physical_rect(2560.0, -400.0, 2560.0, 1440.0),
+            2.0,
+        ),
+    ]
 }
 
 fn register_viewports(engine: &mut DockEngine, registrations: &[(SurfaceId, WindowToken)]) {
@@ -86,8 +112,9 @@ fn publish_snapshot(
     engine: &mut DockEngine,
     windows: Vec<ObservedWindow>,
     pointers: Vec<PointerObservation>,
+    work_areas: Vec<ObservedWorkArea>,
 ) {
-    let snapshot = PlatformSnapshot::new(supported_capabilities(), windows, pointers)
+    let snapshot = PlatformSnapshot::new(supported_capabilities(), windows, pointers, work_areas)
         .expect("test platform snapshot must be valid");
     engine
         .enqueue_platform_snapshot(snapshot)
@@ -118,25 +145,21 @@ fn routes_desktop_physical_points_with_each_target_scale_exactly_once() {
         ],
     );
 
-    let work_area = physical_rect(-3000.0, -1000.0, 7000.0, 3000.0);
     let windows = vec![
         observed_window(
             WINDOW_ONE,
             physical_rect(-1920.0, -100.0, 1000.0, 800.0),
             1.0,
-            work_area,
         ),
         observed_window(
             WINDOW_ONE_AND_HALF,
             physical_rect(0.0, 200.0, 1500.0, 1200.0),
             1.5,
-            work_area,
         ),
         observed_window(
             WINDOW_TWO,
             physical_rect(2560.0, -400.0, 2000.0, 1600.0),
             2.0,
-            work_area,
         ),
     ];
     let route_cases = [
@@ -171,7 +194,7 @@ fn routes_desktop_physical_points_with_each_target_scale_exactly_once() {
             .expect("test pointer observation must be valid")
         })
         .collect();
-    publish_snapshot(&mut engine, windows, pointers);
+    publish_snapshot(&mut engine, windows, pointers, monitor_roster());
 
     for (pointer, _, expected_surface, _) in route_cases {
         let proof = engine
@@ -189,35 +212,51 @@ fn routes_desktop_physical_points_with_each_target_scale_exactly_once() {
 }
 
 #[test]
-fn placement_supports_negative_origins_and_clamps_to_the_physical_work_area() {
+fn placement_requires_an_explicit_noncontiguous_target_work_area() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_TWO]), DockPolicy::default())
         .expect("test engine must be valid");
     register_viewports(&mut engine, &[(SURFACE_TWO, WINDOW_TWO)]);
 
-    let work_area = physical_rect(-1920.0, -400.0, 3840.0, 1400.0);
     publish_snapshot(
         &mut engine,
         vec![observed_window(
             WINDOW_TWO,
             physical_rect(-1600.0, -300.0, 2000.0, 1600.0),
             2.0,
-            work_area,
         )],
         Vec::new(),
+        monitor_roster(),
     );
 
-    let proof = engine
-        .viewport_placement(SURFACE_TWO, logical_rect(1800.0, 900.0, 600.0, 400.0))
+    let right = engine
+        .viewport_placement(
+            SURFACE_TWO,
+            logical_rect(1800.0, 900.0, 600.0, 400.0),
+            WORK_AREA_RIGHT,
+        )
         .expect("current coordinate facts must produce a placement proof");
+    let left = engine
+        .viewport_placement(
+            SURFACE_TWO,
+            logical_rect(1800.0, 900.0, 600.0, 400.0),
+            WORK_AREA_LEFT,
+        )
+        .expect("the same request must support an explicit alternate target");
 
     assert_eq!(
-        proof.physical_rect(),
-        physical_rect(720.0, 200.0, 1200.0, 800.0)
+        right.physical_rect(),
+        physical_rect(2560.0, 240.0, 1200.0, 800.0)
     );
     assert_eq!(
-        proof.logical_rect(),
+        left.physical_rect(),
+        physical_rect(-600.0, 680.0, 600.0, 400.0)
+    );
+    assert_eq!(
+        right.logical_rect(),
         logical_rect(1800.0, 900.0, 600.0, 400.0)
     );
+    assert_eq!(right.work_area(), WORK_AREA_RIGHT);
+    assert_eq!(left.work_area(), WORK_AREA_LEFT);
 }
 
 #[test]
@@ -226,25 +265,41 @@ fn identical_inventory_facts_keep_an_existing_placement_proof_current() {
         .expect("test engine must be valid");
     register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
 
-    let work_area = physical_rect(-2000.0, -1000.0, 5000.0, 3000.0);
     let first_window = observed_window(
         WINDOW_ONE_AND_HALF,
         physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
         1.5,
-        work_area,
     );
-    publish_snapshot(&mut engine, vec![first_window.clone()], Vec::new());
+    let roster = monitor_roster();
+    publish_snapshot(
+        &mut engine,
+        vec![first_window.clone()],
+        Vec::new(),
+        roster.clone(),
+    );
     let old_proof = engine
-        .viewport_placement(SURFACE_ONE_AND_HALF, logical_rect(40.0, 20.0, 200.0, 100.0))
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(1000.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
         .expect("first snapshot must produce a placement proof");
     let old_generation = old_proof.coordinate_generation();
 
-    publish_snapshot(&mut engine, vec![first_window], Vec::new());
+    publish_snapshot(&mut engine, vec![first_window], Vec::new(), roster);
     let current_proof = engine
-        .viewport_placement(SURFACE_ONE_AND_HALF, logical_rect(40.0, 20.0, 200.0, 100.0))
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(1000.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
         .expect("latest snapshot must produce a placement proof");
 
     assert_eq!(old_generation, current_proof.coordinate_generation());
+    assert_eq!(
+        old_proof.work_area_generation(),
+        current_proof.work_area_generation()
+    );
     assert_eq!(old_proof.binding(), current_proof.binding());
     assert_eq!(old_proof.physical_rect(), current_proof.physical_rect());
 }
@@ -255,19 +310,22 @@ fn changed_placement_facts_advance_the_coordinate_generation() {
         .expect("test engine must be valid");
     register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
 
-    let work_area = physical_rect(-2000.0, -1000.0, 5000.0, 3000.0);
     publish_snapshot(
         &mut engine,
         vec![observed_window(
             WINDOW_ONE_AND_HALF,
             physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
             1.5,
-            work_area,
         )],
         Vec::new(),
+        monitor_roster(),
     );
     let old_proof = engine
-        .viewport_placement(SURFACE_ONE_AND_HALF, logical_rect(40.0, 20.0, 200.0, 100.0))
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(1000.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
         .expect("first snapshot must produce a placement proof");
 
     publish_snapshot(
@@ -276,12 +334,16 @@ fn changed_placement_facts_advance_the_coordinate_generation() {
             WINDOW_ONE_AND_HALF,
             physical_rect(-900.0, -200.0, 1500.0, 1200.0),
             1.5,
-            work_area,
         )],
         Vec::new(),
+        monitor_roster(),
     );
     let current_proof = engine
-        .viewport_placement(SURFACE_ONE_AND_HALF, logical_rect(40.0, 20.0, 200.0, 100.0))
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(1000.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
         .expect("changed snapshot must produce a placement proof");
 
     assert_ne!(
@@ -289,4 +351,73 @@ fn changed_placement_facts_advance_the_coordinate_generation() {
         current_proof.coordinate_generation()
     );
     assert_ne!(old_proof.physical_rect(), current_proof.physical_rect());
+}
+
+#[test]
+fn changed_work_area_roster_invalidates_only_the_work_area_proof_generation() {
+    let mut engine = DockEngine::new(workspace(&[SURFACE_ONE_AND_HALF]), DockPolicy::default())
+        .expect("test engine must be valid");
+    register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
+    let window = observed_window(
+        WINDOW_ONE_AND_HALF,
+        physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
+        1.5,
+    );
+    publish_snapshot(
+        &mut engine,
+        vec![window.clone()],
+        Vec::new(),
+        monitor_roster(),
+    );
+    let old = engine
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(40.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
+        .expect("first roster must produce a placement proof");
+
+    let mut changed_roster = monitor_roster();
+    changed_roster[1] = observed_work_area(
+        WORK_AREA_CENTER,
+        physical_rect(100.0, 200.0, 1800.0, 1080.0),
+        1.5,
+    );
+    publish_snapshot(&mut engine, vec![window], Vec::new(), changed_roster);
+    let current = engine
+        .viewport_placement(
+            SURFACE_ONE_AND_HALF,
+            logical_rect(40.0, 20.0, 200.0, 100.0),
+            WORK_AREA_CENTER,
+        )
+        .expect("changed roster must produce a new placement proof");
+
+    assert_eq!(old.coordinate_generation(), current.coordinate_generation());
+    assert_ne!(old.work_area_generation(), current.work_area_generation());
+}
+
+#[test]
+fn unknown_work_area_token_fails_closed() {
+    let mut engine = DockEngine::new(workspace(&[SURFACE_ONE]), DockPolicy::default())
+        .expect("test engine must be valid");
+    register_viewports(&mut engine, &[(SURFACE_ONE, WINDOW_ONE)]);
+    publish_snapshot(
+        &mut engine,
+        vec![observed_window(
+            WINDOW_ONE,
+            physical_rect(-1920.0, 0.0, 1000.0, 800.0),
+            1.0,
+        )],
+        Vec::new(),
+        monitor_roster(),
+    );
+
+    assert!(matches!(
+        engine.viewport_placement(
+            SURFACE_ONE,
+            logical_rect(0.0, 0.0, 300.0, 200.0),
+            WorkAreaToken::new(999),
+        ),
+        Err(dockspace::coordinates::CoordinateUnavailable::UnknownWorkArea { .. })
+    ));
 }

@@ -15,10 +15,11 @@ use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::intent::{ContainedTearOffProposal, PointerId};
 use crate::interaction::PreparedNativeTearOff;
 use crate::platform::{
-    PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
+    ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
 };
 use crate::viewport::{
     CapabilityGeneration, RouteGeneration, ViewportBinding, ViewportRole, WindowToken,
+    WorkAreaGeneration, WorkAreaToken,
 };
 use crate::viewport_registry::{
     RegistryEvent, RetiredViewportFacts, ViewportLifecycle, ViewportRecord, ViewportRegistry,
@@ -443,8 +444,10 @@ pub(crate) enum ViewportDestructionResolution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewportFrameTransition {
     capability_generation: CapabilityGeneration,
+    work_area_generation: WorkAreaGeneration,
     route_generation: RouteGeneration,
     capabilities_changed: bool,
+    work_areas_changed: bool,
     registry_events: Vec<RegistryEvent>,
     close_requests: Vec<ViewportCloseRequestId>,
     actions: Vec<ViewportLifecycleAction>,
@@ -457,6 +460,11 @@ impl ViewportFrameTransition {
     }
 
     #[must_use]
+    pub const fn work_area_generation(&self) -> WorkAreaGeneration {
+        self.work_area_generation
+    }
+
+    #[must_use]
     pub const fn route_generation(&self) -> RouteGeneration {
         self.route_generation
     }
@@ -464,6 +472,11 @@ impl ViewportFrameTransition {
     #[must_use]
     pub const fn capabilities_changed(&self) -> bool {
         self.capabilities_changed
+    }
+
+    #[must_use]
+    pub const fn work_areas_changed(&self) -> bool {
+        self.work_areas_changed
     }
 
     #[must_use]
@@ -488,6 +501,8 @@ pub struct ViewportCoordinator {
     workspace_epoch: WorkspaceEpoch,
     capabilities: PlatformCapabilities,
     capability_generation: CapabilityGeneration,
+    work_areas: BTreeMap<WorkAreaToken, ObservedWorkArea>,
+    work_area_generation: WorkAreaGeneration,
     registry: ViewportRegistry,
     routes: ViewportRouteState,
     effects: EffectLedger,
@@ -963,6 +978,7 @@ impl ViewportCoordinator {
         self.recovery_plans.clear();
         self.pending_recoveries.clear();
         self.capabilities = PlatformCapabilities::default();
+        self.work_areas.clear();
         let bound_surfaces: BTreeSet<_> = self
             .registry
             .records()
@@ -1138,6 +1154,20 @@ impl ViewportCoordinator {
         let capabilities_changed = candidate.capabilities != *snapshot.capabilities();
         candidate.capabilities = snapshot.capabilities().clone();
         candidate.capability_generation = capability_generation;
+        let work_areas: BTreeMap<_, _> = snapshot
+            .work_areas()
+            .iter()
+            .copied()
+            .map(|work_area| (work_area.token(), work_area))
+            .collect();
+        let work_areas_changed = candidate.work_areas != work_areas;
+        if work_areas_changed {
+            candidate.work_area_generation = candidate
+                .work_area_generation
+                .checked_next()
+                .ok_or(ViewportCoordinatorError::WorkAreaGenerationExhausted)?;
+            candidate.work_areas = work_areas;
+        }
         let registry = candidate
             .registry
             .apply_snapshot(snapshot)
@@ -1157,8 +1187,10 @@ impl ViewportCoordinator {
         let (actions, close_requests) = candidate.reduce_registry_events(&registry_events)?;
         let transition = ViewportFrameTransition {
             capability_generation,
+            work_area_generation: candidate.work_area_generation,
             route_generation,
             capabilities_changed,
+            work_areas_changed,
             registry_events,
             close_requests,
             actions,
@@ -2078,6 +2110,22 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
+    pub const fn work_area_generation(&self) -> WorkAreaGeneration {
+        self.work_area_generation
+    }
+
+    #[must_use]
+    pub fn work_area(&self, token: WorkAreaToken) -> Option<ObservedWorkArea> {
+        self.work_areas.get(&token).copied()
+    }
+
+    pub fn work_areas(&self) -> impl Iterator<Item = (WorkAreaToken, ObservedWorkArea)> + '_ {
+        self.work_areas
+            .iter()
+            .map(|(token, work_area)| (*token, *work_area))
+    }
+
+    #[must_use]
     pub const fn registry(&self) -> &ViewportRegistry {
         &self.registry
     }
@@ -2161,13 +2209,27 @@ impl ViewportCoordinator {
         &self,
         surface: SurfaceId,
         logical_rect: LogicalRect,
+        work_area: WorkAreaToken,
     ) -> Result<ViewportPlacementProof, CoordinateUnavailable> {
-        self.registry.placement(surface, logical_rect)
+        let work_area_facts = self
+            .work_areas
+            .get(&work_area)
+            .copied()
+            .ok_or(CoordinateUnavailable::UnknownWorkArea { token: work_area })?;
+        self.registry.placement(
+            surface,
+            logical_rect,
+            work_area_facts,
+            self.work_area_generation,
+        )
     }
 
     #[must_use]
     pub(crate) fn placement_is_current(&self, proof: &ViewportPlacementProof) -> bool {
-        self.registry.proof_is_current(proof)
+        self.work_areas.contains_key(&proof.work_area())
+            && self
+                .registry
+                .proof_is_current(proof, self.work_area_generation)
     }
 
     pub(crate) fn begin_drag_routing(
@@ -2393,6 +2455,11 @@ impl ViewportCoordinator {
     }
 
     #[cfg(test)]
+    pub(crate) fn exhaust_work_area_generation(&mut self) {
+        self.work_area_generation = WorkAreaGeneration::new(u64::MAX);
+    }
+
+    #[cfg(test)]
     pub(crate) fn exhaust_close_request_ids(&mut self) {
         self.last_close_request = ViewportCloseRequestId::new(u64::MAX);
     }
@@ -2412,6 +2479,8 @@ const fn retired_effect(status: RetiredViewportStatus) -> Option<EffectId> {
 pub enum ViewportCoordinatorError {
     #[error("platform capability generation is exhausted")]
     CapabilityGenerationExhausted,
+    #[error("platform work-area generation is exhausted")]
+    WorkAreaGenerationExhausted,
     #[error(transparent)]
     Registry(ViewportRegistryError),
     #[error(transparent)]
@@ -2496,9 +2565,6 @@ mod tests {
             .with_scale_factor(Authority::Known(
                 ScaleFactor::new(1.0).expect("test scale must be valid"),
             ))
-            .with_work_area(Authority::Known(Some(
-                PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("test work area must be valid"),
-            )))
             .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
             .with_close_requested(Authority::Known(close_requested))
     }
@@ -2506,7 +2572,7 @@ mod tests {
     fn snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        PlatformSnapshot::new(capabilities, windows, Vec::new())
+        PlatformSnapshot::new(capabilities, windows, Vec::new(), Vec::new())
             .expect("test snapshot must be valid")
     }
 
@@ -2542,13 +2608,44 @@ mod tests {
         let mut coordinator = ViewportCoordinator::default();
         coordinator.exhaust_capability_generation();
         let before = coordinator.clone();
-        let snapshot =
-            PlatformSnapshot::new(PlatformCapabilities::default(), Vec::new(), Vec::new())
-                .expect("empty snapshot must be valid");
+        let snapshot = PlatformSnapshot::new(
+            PlatformCapabilities::default(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("empty snapshot must be valid");
 
         assert_eq!(
             coordinator.publish_snapshot(&snapshot),
             Err(ViewportCoordinatorError::CapabilityGenerationExhausted)
+        );
+        assert_eq!(coordinator, before);
+    }
+
+    #[test]
+    fn work_area_generation_exhaustion_rolls_back_the_complete_snapshot() {
+        let mut coordinator = ViewportCoordinator::default();
+        coordinator.exhaust_work_area_generation();
+        let before = coordinator.clone();
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_work_area(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            capabilities,
+            Vec::new(),
+            Vec::new(),
+            vec![ObservedWorkArea::new(
+                WorkAreaToken::new(1),
+                PhysicalRect::new(-1920.0, 0.0, 1920.0, 1080.0)
+                    .expect("test work area must be valid"),
+                ScaleFactor::new(1.0).expect("test work-area scale must be valid"),
+            )],
+        )
+        .expect("work-area snapshot must be valid");
+
+        assert_eq!(
+            coordinator.publish_snapshot(&snapshot),
+            Err(ViewportCoordinatorError::WorkAreaGenerationExhausted)
         );
         assert_eq!(coordinator, before);
     }
@@ -2566,6 +2663,7 @@ mod tests {
                 vec![
                     observed_window(binding.token(), false).with_focused(Authority::Known(focused)),
                 ],
+                Vec::new(),
                 Vec::new(),
             )
             .expect("focus snapshot must be valid")

@@ -109,9 +109,6 @@ fn observed_window(token: WindowToken, x: f64, input_state: WindowInputState) ->
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
-        .with_work_area(Authority::Known(Some(physical_rect(
-            0.0, 0.0, 1920.0, 1080.0,
-        ))))
         .with_input_state(Authority::Known(input_state))
         .with_close_requested(Authority::Known(false))
 }
@@ -139,6 +136,7 @@ fn snapshot(hovered: Authority<PointerWindow>, source_input: WindowInputState) -
             observed_window(TARGET_TOKEN, 600.0, WindowInputState::ReceivesInput),
         ],
         vec![pointer_observation(hovered)],
+        Vec::new(),
     )
     .expect("test platform snapshot must be canonical")
 }
@@ -420,6 +418,7 @@ fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration
         vec![pointer_observation(Authority::Known(PointerWindow::Dock(
             TARGET_TOKEN,
         )))],
+        Vec::new(),
     )
     .expect("degraded snapshot must remain canonical");
     fixture

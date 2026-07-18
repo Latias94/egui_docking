@@ -291,10 +291,25 @@ pub enum TearOffRequest {
     /// Request a native lifecycle saga, with an independently explicit fallback.
     Native {
         /// Native destination and placement.
-        proposal: NativeTearOffProposal,
+        proposal: Box<NativeTearOffProposal>,
         /// Optional contained proposal used only when policy enables fallback.
         contained_fallback: Option<ContainedTearOffProposal>,
     },
+}
+
+impl TearOffRequest {
+    /// Creates a native tear-off request without inflating every request to the native payload
+    /// size.
+    #[must_use]
+    pub fn native(
+        proposal: NativeTearOffProposal,
+        contained_fallback: Option<ContainedTearOffProposal>,
+    ) -> Self {
+        Self::Native {
+            proposal: Box::new(proposal),
+            contained_fallback,
+        }
+    }
 }
 
 /// Semantic interaction input queued by a renderer callback.

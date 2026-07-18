@@ -55,6 +55,14 @@ monotonic_id!(
     "Generation of acknowledged placement facts for one native-window binding."
 );
 monotonic_id!(
+    WorkAreaToken,
+    "Opaque adapter identity of one explicitly selectable desktop work area."
+);
+monotonic_id!(
+    WorkAreaGeneration,
+    "Generation of the complete canonical desktop work-area roster."
+);
+monotonic_id!(
     RouteGeneration,
     "Generation of a core-resolved authoritative pointer route."
 );
@@ -133,6 +141,8 @@ mod tests {
         assert_eq!(RouteGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(InventoryGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(CoordinateGeneration::new(u64::MAX).checked_next(), None);
+        assert_eq!(WorkAreaToken::new(u64::MAX).checked_next(), None);
+        assert_eq!(WorkAreaGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(CapabilityGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(WindowIncarnation::new(u64::MAX).checked_next(), None);
         assert_eq!(WindowToken::new(u64::MAX).checked_next(), None);

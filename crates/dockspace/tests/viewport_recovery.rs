@@ -11,11 +11,12 @@ use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{Authority, ContainedTearOffProposal};
 use dockspace::platform::{
-    ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
+    ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+    WindowInputState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::transition::{EngineTransition, InputOutcome};
-use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
+use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken, WorkAreaToken};
 
 const ROOT_HOST: RootId = RootId::new(1);
 const ROOT_CHILD: RootId = RootId::new(2);
@@ -24,6 +25,7 @@ const SURFACE_CHILD: SurfaceId = SurfaceId::new(2);
 const RECOVERY_FLOATING: FloatingPresentationId = FloatingPresentationId::new(20);
 const HOST_TOKEN: WindowToken = WindowToken::new(10);
 const CHILD_TOKEN: WindowToken = WindowToken::new(20);
+const WORK_AREA: WorkAreaToken = WorkAreaToken::new(30);
 
 struct Fixture {
     engine: DockEngine,
@@ -90,9 +92,6 @@ fn ready_window(token: WindowToken, x: f64, close_requested: bool) -> ObservedWi
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
-        .with_work_area(Authority::Known(Some(physical_rect(
-            -1920.0, -200.0, 3840.0, 1400.0,
-        ))))
         .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
         .with_close_requested(Authority::Known(close_requested))
 }
@@ -118,8 +117,17 @@ fn partially_observed_replacement_window(binding: ViewportBinding) -> ObservedWi
 }
 
 fn publish_windows(engine: &mut DockEngine, windows: Vec<ObservedWindow>) -> EngineTransition {
-    let snapshot = PlatformSnapshot::new(platform_capabilities(), windows, Vec::new())
-        .expect("test platform snapshot must be canonical");
+    let snapshot = PlatformSnapshot::new(
+        platform_capabilities(),
+        windows,
+        Vec::new(),
+        vec![ObservedWorkArea::new(
+            WORK_AREA,
+            physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+            ScaleFactor::new(1.0).expect("test work-area scale factor must be valid"),
+        )],
+    )
+    .expect("test platform snapshot must be canonical");
     engine
         .enqueue_platform_snapshot(snapshot)
         .expect("platform snapshot sequence must be available");

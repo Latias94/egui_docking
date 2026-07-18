@@ -14,14 +14,14 @@ use dockspace::interaction::{
     WorkspaceDeliveryKind,
 };
 use dockspace::platform::{
-    ButtonObservation, ObservedWindow, PlatformCapabilities, PlatformCapability,
+    ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
     PointerWindow, WindowInputState,
 };
 use dockspace::policy::{ContainedFallback, DockPolicy};
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::InputOutcome;
-use dockspace::viewport::{ViewportRole, WindowToken};
+use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
 
 const ROOT_A: RootId = RootId::new(1);
 const ROOT_B: RootId = RootId::new(2);
@@ -32,6 +32,7 @@ const SURFACE_NEW: SurfaceId = SurfaceId::new(10);
 const FLOATING_NEW: FloatingPresentationId = FloatingPresentationId::new(10);
 const POINTER: PointerId = PointerId::new(1);
 const SOURCE_WINDOW: WindowToken = WindowToken::new(41);
+const WORK_AREA: WorkAreaToken = WorkAreaToken::new(51);
 
 struct Fixture {
     engine: DockEngine,
@@ -66,15 +67,22 @@ fn platform_capabilities(native_lifecycle: PlatformCapability) -> PlatformCapabi
 }
 
 fn platform_snapshot(native_lifecycle: PlatformCapability) -> PlatformSnapshot {
+    platform_snapshot_with_work_area(
+        native_lifecycle,
+        physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+    )
+}
+
+fn platform_snapshot_with_work_area(
+    native_lifecycle: PlatformCapability,
+    work_area: PhysicalRect,
+) -> PlatformSnapshot {
     let source = ObservedWindow::new(SOURCE_WINDOW)
         .with_content_bounds(Authority::Known(physical_rect(0.0, 0.0, 1200.0, 900.0)))
         .with_outer_bounds(Authority::Known(physical_rect(-8.0, -30.0, 1216.0, 938.0)))
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
-        .with_work_area(Authority::Known(Some(physical_rect(
-            -1920.0, -200.0, 3840.0, 1400.0,
-        ))))
         .with_input_state(Authority::Known(WindowInputState::PassThrough))
         .with_close_requested(Authority::Known(false));
     let pointer = PointerObservation::new(
@@ -91,6 +99,11 @@ fn platform_snapshot(native_lifecycle: PlatformCapability) -> PlatformSnapshot {
         platform_capabilities(native_lifecycle),
         vec![source],
         vec![pointer],
+        vec![ObservedWorkArea::new(
+            WORK_AREA,
+            work_area,
+            ScaleFactor::new(1.0).expect("test work-area scale factor must be valid"),
+        )],
     )
     .expect("test platform snapshot must be canonical")
 }
@@ -301,12 +314,12 @@ fn native_request(
 ) -> TearOffRequest {
     let placement = fixture
         .engine
-        .viewport_placement(SURFACE_A, placement)
+        .viewport_placement(SURFACE_A, placement, WORK_AREA)
         .expect("current source viewport facts must produce a placement proof");
-    TearOffRequest::Native {
-        proposal: NativeTearOffProposal::new(surface, root, placement, recovery),
+    TearOffRequest::native(
+        NativeTearOffProposal::new(surface, root, placement, recovery),
         contained_fallback,
-    }
+    )
 }
 
 fn tear_off_target(fixture: &Fixture, request: &TearOffRequest) -> TargetAuthority {
@@ -488,6 +501,53 @@ fn identical_platform_facts_keep_a_native_placement_valid_through_delivery() {
             ..
         }
     ));
+}
+
+#[test]
+fn changed_work_area_facts_cancel_a_native_preview_immediately() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = fixture(policy, &[1, 2]);
+    register_native_source(&mut fixture, PlatformCapability::Supported);
+    publish_scene(&mut fixture);
+    let session = arm_and_begin(&mut fixture);
+    publish_platform(&mut fixture, PlatformCapability::Supported);
+    let request = native_request(
+        &fixture,
+        SURFACE_NEW,
+        ROOT_NEW,
+        logical_rect(100.0, 120.0, 640.0, 480.0),
+        contained_proposal(ROOT_NEW, 10.0),
+        None,
+    );
+    preview_tear_off(&mut fixture, session, request);
+    let before = fixture.engine.workspace().clone();
+
+    fixture
+        .engine
+        .enqueue_platform_snapshot(platform_snapshot_with_work_area(
+            PlatformCapability::Supported,
+            physical_rect(-1800.0, -200.0, 3600.0, 1400.0),
+        ))
+        .expect("changed work-area snapshot must enqueue");
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("changed work-area snapshot must publish");
+
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert!(fixture.engine.scene().is_none());
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert!(transition.interaction_events().iter().any(|event| matches!(
+        event.kind(),
+        dockspace::interaction::InteractionEventKind::Cancelled {
+            reason: InteractionCancelReason::NativePlacementUnavailable,
+            ..
+        }
+    )));
 }
 
 #[test]
