@@ -1,0 +1,24 @@
+[package]
+name = "egui_dockspace"
+description = "Deterministic docking and multi-viewport adapter for egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+native = []
+serde = ["dockspace/serde"]
+
+[dependencies]
+dockspace.workspace = true
+egui.workspace = true
+
+[dev-dependencies]
+eframe = { workspace = true, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+[lints]
+workspace = true
