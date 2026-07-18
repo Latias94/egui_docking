@@ -1,0 +1,966 @@
+//! Explicit drag and resize session state.
+
+use thiserror::Error;
+
+use crate::command::{CommandOutcome, MovePayload, NodeSource, WorkspaceCommand};
+use crate::drop_target::DropTargetId;
+use crate::geometry::{LogicalRect, PhysicalRect};
+use crate::graph::SplitWeight;
+use crate::ids::{InputSequence, SurfaceId, WorkspaceEpoch};
+use crate::intent::{
+    NativeTearOffProposal, PointerButton, PointerId, TargetAuthority, TearOffRequest,
+};
+use crate::scene::SceneStamp;
+use crate::transition::WorkspaceVersion;
+
+macro_rules! interaction_counter {
+    ($name:ident, $description:literal) => {
+        #[doc = $description]
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $name(u64);
+
+        impl $name {
+            /// Creates a counter value from its runtime representation.
+            #[must_use]
+            pub const fn new(value: u64) -> Self {
+                Self(value)
+            }
+
+            /// Returns the runtime representation.
+            #[must_use]
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+
+            pub(crate) const fn checked_next(self) -> Option<Self> {
+                match self.0.checked_add(1) {
+                    Some(value) => Some(Self(value)),
+                    None => None,
+                }
+            }
+        }
+    };
+}
+
+interaction_counter!(DragGeneration, "Monotonic generation of drag sessions.");
+interaction_counter!(
+    ResizeGeneration,
+    "Monotonic generation of splitter-resize sessions."
+);
+interaction_counter!(
+    PreviewSequence,
+    "Monotonic identity for previews published by one engine."
+);
+
+/// Identity of one drag session within a workspace epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DragSessionId {
+    epoch: WorkspaceEpoch,
+    generation: DragGeneration,
+}
+
+impl DragSessionId {
+    /// Creates a typed drag identity.
+    #[must_use]
+    pub const fn new(epoch: WorkspaceEpoch, generation: DragGeneration) -> Self {
+        Self { epoch, generation }
+    }
+
+    /// Returns the workspace epoch in which the drag was armed.
+    #[must_use]
+    pub const fn epoch(self) -> WorkspaceEpoch {
+        self.epoch
+    }
+
+    /// Returns the drag generation.
+    #[must_use]
+    pub const fn generation(self) -> DragGeneration {
+        self.generation
+    }
+}
+
+/// Identity of one resize session within a workspace epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResizeSessionId {
+    epoch: WorkspaceEpoch,
+    generation: ResizeGeneration,
+}
+
+impl ResizeSessionId {
+    /// Creates a typed resize identity.
+    #[must_use]
+    pub const fn new(epoch: WorkspaceEpoch, generation: ResizeGeneration) -> Self {
+        Self { epoch, generation }
+    }
+
+    /// Returns the workspace epoch in which the resize began.
+    #[must_use]
+    pub const fn epoch(self) -> WorkspaceEpoch {
+        self.epoch
+    }
+
+    /// Returns the resize generation.
+    #[must_use]
+    pub const fn generation(self) -> ResizeGeneration {
+        self.generation
+    }
+}
+
+/// Opaque identity of one exact preview publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PreviewToken {
+    session: DragSessionId,
+    scene: SceneStamp,
+    sequence: PreviewSequence,
+}
+
+impl PreviewToken {
+    /// Returns the drag session which owns this preview.
+    #[must_use]
+    pub const fn session(self) -> DragSessionId {
+        self.session
+    }
+
+    /// Returns the sealed scene against which this preview was resolved.
+    #[must_use]
+    pub const fn scene(self) -> SceneStamp {
+        self.scene
+    }
+}
+
+/// Exact renderer-neutral visual which must be painted before delivery.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewVisual {
+    /// Highlight one resolved docking target.
+    Dock {
+        /// Surface containing the target.
+        surface: SurfaceId,
+        /// Structural target identity.
+        target: DropTargetId,
+        /// Exact highlight rectangle.
+        rect: LogicalRect,
+    },
+    /// Show an immediate contained-floating placement.
+    Contained {
+        /// Host logical surface.
+        surface: SurfaceId,
+        /// Exact logical floating rectangle.
+        rect: LogicalRect,
+        /// Whether this is an explicitly enabled native fallback.
+        fallback: bool,
+    },
+    /// Show a future native-surface placement.
+    Native {
+        /// Logical surface identity to be created.
+        surface: SurfaceId,
+        /// Exact desktop-physical placement.
+        placement: PhysicalRect,
+    },
+}
+
+impl PreviewVisual {
+    /// Returns the surface which receives the preview.
+    #[must_use]
+    pub const fn surface(&self) -> SurfaceId {
+        match *self {
+            Self::Dock { surface, .. }
+            | Self::Contained { surface, .. }
+            | Self::Native { surface, .. } => surface,
+        }
+    }
+}
+
+/// Preview published by the core for an adapter to paint exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractionPreview {
+    token: PreviewToken,
+    visual: PreviewVisual,
+}
+
+impl InteractionPreview {
+    /// Returns the opaque preview token.
+    #[must_use]
+    pub const fn token(&self) -> PreviewToken {
+        self.token
+    }
+
+    /// Returns the exact visual to paint.
+    #[must_use]
+    pub const fn visual(&self) -> &PreviewVisual {
+        &self.visual
+    }
+
+    /// Constructs the exact acknowledgement submitted only after this visual was painted.
+    #[must_use]
+    pub fn acknowledgement(&self) -> PaintAcknowledgement {
+        PaintAcknowledgement {
+            token: self.token,
+            visual: self.visual.clone(),
+        }
+    }
+}
+
+/// Exact proof that one published preview was painted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintAcknowledgement {
+    token: PreviewToken,
+    visual: PreviewVisual,
+}
+
+impl PaintAcknowledgement {
+    /// Returns the opaque preview identity.
+    #[must_use]
+    pub const fn token(&self) -> PreviewToken {
+        self.token
+    }
+
+    /// Returns the visual claimed to have been painted.
+    #[must_use]
+    pub const fn visual(&self) -> &PreviewVisual {
+        &self.visual
+    }
+}
+
+/// Stable public summary of the currently active gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionStatus {
+    /// No gesture is active.
+    Idle,
+    /// A source was pressed but the renderer has not begun dragging.
+    Armed { session: DragSessionId },
+    /// An explicit drag is active.
+    Dragging { session: DragSessionId },
+    /// A splitter resize is active.
+    Resizing { session: ResizeSessionId },
+}
+
+/// Why an active gesture was cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InteractionCancelReason {
+    /// The user explicitly pressed Escape.
+    Escape,
+    /// Pointer capture was authoritatively lost.
+    CaptureLost,
+    /// The owning surface lost focus.
+    FocusLost,
+    /// Button state became non-authoritative.
+    UnknownButtonState,
+    /// Hovered-target authority became unavailable.
+    UnknownTargetAuthority,
+    /// Native tear-off capability became non-authoritative.
+    NativeCapabilityUnknown,
+    /// The frozen source no longer exists.
+    SourceVanished,
+    /// A durable workspace command invalidated the session.
+    WorkspaceChanged,
+    /// Application docking policy changed.
+    PolicyChanged,
+    /// A participating surface closed.
+    SurfaceClosed,
+    /// The required sealed scene is unavailable.
+    SceneUnavailable,
+    /// Another mutually exclusive gesture replaced this one.
+    ReplacedByNewGesture,
+    /// A successful workspace restore advanced the epoch.
+    WorkspaceRestored,
+}
+
+/// Why a semantic interaction input did not advance or deliver a gesture.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionRejection {
+    /// No gesture is active.
+    NoActiveGesture,
+    /// This release belongs to the most recently consumed drag generation.
+    DuplicateRelease { session: DragSessionId },
+    /// A non-release input belongs to a drag generation that already settled.
+    SessionConsumed { session: DragSessionId },
+    /// The input names a different live session.
+    SessionMismatch,
+    /// The input names a different pointer than the source press.
+    PointerMismatch,
+    /// The input names a different button than the source press.
+    ButtonMismatch,
+    /// The drag has been armed but not explicitly begun.
+    DragNotBegun,
+    /// The matching button is authoritatively still pressed.
+    ButtonStillPressed,
+    /// No preview was published for the release.
+    PreviewMissing,
+    /// The exact published preview was not acknowledged as painted.
+    PreviewNotPainted,
+    /// The preview's sealed scene is no longer current.
+    StaleScene,
+    /// Release re-resolution selected a different semantic target or command.
+    TargetChanged,
+    /// The proposed workspace command was rejected during final revalidation.
+    CommandRejected(crate::error::CommandError),
+    /// The preview acknowledgement does not match the current publication.
+    PreviewAcknowledgementMismatch,
+    /// Split weights were rejected during candidate validation.
+    ResizeRejected(crate::error::CommandError),
+    /// A resize was released before any validated weight proposal was supplied.
+    ResizeProposalMissing,
+}
+
+/// Public result class of resolving one drag observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewResolutionStatus {
+    /// One exact dock or tear-off preview was published.
+    Resolved,
+    /// Authority proved there is no dock target and no tear-off was requested.
+    KnownNone,
+    /// Geometry was hit, but every candidate was explicitly ineligible.
+    Rejected,
+    /// A required ready surface scene was unavailable.
+    Unavailable,
+}
+
+/// Kind of an exact workspace delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceDeliveryKind {
+    /// Move into a sealed docking target.
+    Dock,
+    /// Create or rehome into a contained floating by explicit request.
+    Contained,
+    /// Use the explicitly enabled contained fallback for an unavailable native request.
+    ContainedFallback,
+}
+
+/// Native tear-off plan produced without moving source content.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreparedNativeTearOff {
+    session: DragSessionId,
+    source_version: WorkspaceVersion,
+    payload: MovePayload,
+    proposal: NativeTearOffProposal,
+}
+
+impl PreparedNativeTearOff {
+    pub(crate) fn new(
+        session: DragSessionId,
+        source_version: WorkspaceVersion,
+        payload: MovePayload,
+        proposal: NativeTearOffProposal,
+    ) -> Self {
+        Self {
+            session,
+            source_version,
+            payload,
+            proposal,
+        }
+    }
+
+    /// Returns the consumed drag generation.
+    #[must_use]
+    pub const fn session(&self) -> DragSessionId {
+        self.session
+    }
+
+    /// Returns the exact workspace version against which the plan was prepared.
+    #[must_use]
+    pub const fn source_version(&self) -> WorkspaceVersion {
+        self.source_version
+    }
+
+    /// Returns the frozen source payload. Ownership remains in the workspace.
+    #[must_use]
+    pub const fn payload(&self) -> &MovePayload {
+        &self.payload
+    }
+
+    /// Returns the explicit native destination and placement.
+    #[must_use]
+    pub const fn proposal(&self) -> NativeTearOffProposal {
+        self.proposal
+    }
+}
+
+/// Successful delivery produced by one consumed release.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionDelivery {
+    /// A checked workspace command committed or produced a valid no-op.
+    Workspace {
+        /// Semantic delivery mode.
+        kind: WorkspaceDeliveryKind,
+        /// Structured U3 command result.
+        outcome: CommandOutcome,
+        /// Whether durable workspace state changed.
+        changed: bool,
+    },
+    /// A native lifecycle plan was prepared; source ownership did not move.
+    NativePrepared(PreparedNativeTearOff),
+}
+
+/// Result of reducing one renderer intent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionOutcome {
+    /// A new drag generation was armed.
+    DragArmed {
+        session: DragSessionId,
+        replaced: Option<InteractionStatus>,
+    },
+    /// An armed drag explicitly began.
+    DragBegan { session: DragSessionId },
+    /// The current target observation produced a new preview state.
+    PreviewUpdated {
+        session: DragSessionId,
+        preview: Option<InteractionPreview>,
+        status: PreviewResolutionStatus,
+    },
+    /// The exact current preview was acknowledged, idempotently if repeated.
+    PreviewAcknowledged {
+        session: DragSessionId,
+        changed: bool,
+    },
+    /// The first authoritative matching release delivered exactly once.
+    DragDelivered {
+        session: DragSessionId,
+        delivery: InteractionDelivery,
+    },
+    /// An active matching gesture was cancelled.
+    Cancelled {
+        status: InteractionStatus,
+        reason: InteractionCancelReason,
+    },
+    /// A resize gesture began and replaced any previous gesture.
+    ResizeBegan {
+        session: ResizeSessionId,
+        replaced: Option<InteractionStatus>,
+    },
+    /// The resize proposal was prevalidated and stored for painting.
+    ResizeUpdated {
+        session: ResizeSessionId,
+        weights: Vec<SplitWeight>,
+    },
+    /// The first authoritative matching resize release committed exactly once.
+    ResizeDelivered {
+        session: ResizeSessionId,
+        outcome: CommandOutcome,
+        changed: bool,
+    },
+    /// A semantic input was consumed without mutating published interaction state.
+    Rejected(InteractionRejection),
+}
+
+/// Committed interaction event generated only after the engine publishes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractionEvent {
+    input: InputSequence,
+    version: WorkspaceVersion,
+    kind: InteractionEventKind,
+}
+
+impl InteractionEvent {
+    pub(crate) const fn new(
+        input: InputSequence,
+        version: WorkspaceVersion,
+        kind: InteractionEventKind,
+    ) -> Self {
+        Self {
+            input,
+            version,
+            kind,
+        }
+    }
+
+    /// Returns the input which caused this published event.
+    #[must_use]
+    pub const fn input(&self) -> InputSequence {
+        self.input
+    }
+
+    /// Returns the engine version published with this event.
+    #[must_use]
+    pub const fn version(&self) -> WorkspaceVersion {
+        self.version
+    }
+
+    /// Returns the semantic event payload.
+    #[must_use]
+    pub const fn kind(&self) -> &InteractionEventKind {
+        &self.kind
+    }
+}
+
+/// Published interaction event payload.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionEventKind {
+    /// One preview publication replaced the previous preview.
+    PreviewPublished { preview: InteractionPreview },
+    /// One gesture was explicitly cancelled or invalidated.
+    Cancelled {
+        status: InteractionStatus,
+        reason: InteractionCancelReason,
+    },
+    /// One exact workspace delivery committed.
+    Delivered {
+        session: DragSessionId,
+        kind: WorkspaceDeliveryKind,
+    },
+    /// One splitter resize committed.
+    ResizeDelivered { session: ResizeSessionId },
+    /// A native lifecycle plan was prepared without moving source content.
+    NativeTearOffPrepared(PreparedNativeTearOff),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PreviewProof {
+    Dock {
+        target: DropTargetId,
+        command: WorkspaceCommand,
+    },
+    Contained {
+        command: WorkspaceCommand,
+        request: TearOffRequest,
+        fallback: bool,
+    },
+    Native {
+        request: TearOffRequest,
+        proposal: NativeTearOffProposal,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PublishedPreview {
+    public: InteractionPreview,
+    proof: PreviewProof,
+    painted: bool,
+}
+
+impl PublishedPreview {
+    pub(crate) const fn public(&self) -> &InteractionPreview {
+        &self.public
+    }
+
+    pub(crate) const fn proof(&self) -> &PreviewProof {
+        &self.proof
+    }
+
+    pub(crate) const fn painted(&self) -> bool {
+        self.painted
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ArmedDrag {
+    pub(crate) session: DragSessionId,
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) payload: MovePayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActiveDrag {
+    pub(crate) session: DragSessionId,
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) payload: MovePayload,
+    pub(crate) target: Option<TargetAuthority>,
+    pub(crate) tear_off: Option<TearOffRequest>,
+    pub(crate) preview: Option<PublishedPreview>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActiveResize {
+    pub(crate) session: ResizeSessionId,
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) split: NodeSource,
+    pub(crate) weights: Option<Vec<SplitWeight>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ActiveGesture {
+    Idle,
+    Armed(Box<ArmedDrag>),
+    Dragging(Box<ActiveDrag>),
+    Resizing(Box<ActiveResize>),
+}
+
+/// Core-owned transient interaction state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractionState {
+    active: ActiveGesture,
+    last_drag_generation: DragGeneration,
+    last_resize_generation: ResizeGeneration,
+    last_preview_sequence: PreviewSequence,
+    last_consumed_drag: Option<DragSessionId>,
+}
+
+impl InteractionState {
+    /// Returns the current public gesture state.
+    #[must_use]
+    pub const fn status(&self) -> InteractionStatus {
+        match &self.active {
+            ActiveGesture::Idle => InteractionStatus::Idle,
+            ActiveGesture::Armed(drag) => InteractionStatus::Armed {
+                session: drag.session,
+            },
+            ActiveGesture::Dragging(drag) => InteractionStatus::Dragging {
+                session: drag.session,
+            },
+            ActiveGesture::Resizing(resize) => InteractionStatus::Resizing {
+                session: resize.session,
+            },
+        }
+    }
+
+    /// Returns the exact preview currently eligible for painting.
+    #[must_use]
+    pub fn preview(&self) -> Option<&InteractionPreview> {
+        match &self.active {
+            ActiveGesture::Dragging(drag) => drag.preview.as_ref().map(PublishedPreview::public),
+            ActiveGesture::Idle | ActiveGesture::Armed(_) | ActiveGesture::Resizing(_) => None,
+        }
+    }
+
+    /// Returns the validated resize override eligible for transient projection.
+    #[must_use]
+    pub fn resize_weights(&self) -> Option<(ResizeSessionId, &NodeSource, &[SplitWeight])> {
+        match &self.active {
+            ActiveGesture::Resizing(resize) => resize
+                .weights
+                .as_deref()
+                .map(|weights| (resize.session, &resize.split, weights)),
+            ActiveGesture::Idle | ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) => None,
+        }
+    }
+
+    pub(crate) fn arm_drag(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        pointer: PointerId,
+        button: PointerButton,
+        payload: MovePayload,
+    ) -> Result<(DragSessionId, Option<InteractionStatus>), InteractionCounterError> {
+        let generation = self
+            .last_drag_generation
+            .checked_next()
+            .ok_or(InteractionCounterError::DragGenerationExhausted)?;
+        self.last_drag_generation = generation;
+        let session = DragSessionId::new(epoch, generation);
+        let replaced = (self.status() != InteractionStatus::Idle).then_some(self.status());
+        self.active = ActiveGesture::Armed(Box::new(ArmedDrag {
+            session,
+            pointer,
+            button,
+            payload,
+        }));
+        Ok((session, replaced))
+    }
+
+    pub(crate) fn begin_drag(
+        &mut self,
+        session: DragSessionId,
+        pointer: PointerId,
+        button: PointerButton,
+    ) -> Result<(), InteractionRejection> {
+        let ActiveGesture::Armed(armed) = &self.active else {
+            return Err(self.session_rejection(session));
+        };
+        if armed.session != session {
+            return Err(InteractionRejection::SessionMismatch);
+        }
+        if armed.pointer != pointer {
+            return Err(InteractionRejection::PointerMismatch);
+        }
+        if armed.button != button {
+            return Err(InteractionRejection::ButtonMismatch);
+        }
+        self.active = ActiveGesture::Dragging(Box::new(ActiveDrag {
+            session: armed.session,
+            pointer: armed.pointer,
+            button: armed.button,
+            payload: armed.payload.clone(),
+            target: None,
+            tear_off: None,
+            preview: None,
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn active_drag(
+        &self,
+        session: DragSessionId,
+    ) -> Result<&ActiveDrag, InteractionRejection> {
+        match &self.active {
+            ActiveGesture::Dragging(drag) if drag.session == session => Ok(drag),
+            ActiveGesture::Armed(armed) if armed.session == session => {
+                Err(InteractionRejection::DragNotBegun)
+            }
+            _ => Err(self.session_rejection(session)),
+        }
+    }
+
+    pub(crate) fn active_drag_mut(
+        &mut self,
+        session: DragSessionId,
+    ) -> Result<&mut ActiveDrag, InteractionRejection> {
+        let rejection = self.session_rejection(session);
+        match &mut self.active {
+            ActiveGesture::Dragging(drag) if drag.session == session => Ok(drag),
+            ActiveGesture::Armed(armed) if armed.session == session => {
+                Err(InteractionRejection::DragNotBegun)
+            }
+            _ => Err(rejection),
+        }
+    }
+
+    pub(crate) fn publish_preview(
+        &mut self,
+        session: DragSessionId,
+        scene: SceneStamp,
+        visual: PreviewVisual,
+        proof: PreviewProof,
+    ) -> Result<(InteractionPreview, bool), InteractionCounterError> {
+        if let Ok(drag) = self.active_drag(session)
+            && let Some(existing) = &drag.preview
+            && existing.public.token.scene == scene
+            && existing.public.visual == visual
+            && existing.proof == proof
+        {
+            return Ok((existing.public.clone(), false));
+        }
+        let sequence = self
+            .last_preview_sequence
+            .checked_next()
+            .ok_or(InteractionCounterError::PreviewSequenceExhausted)?;
+        let preview = InteractionPreview {
+            token: PreviewToken {
+                session,
+                scene,
+                sequence,
+            },
+            visual,
+        };
+        self.last_preview_sequence = sequence;
+        let drag = self
+            .active_drag_mut(session)
+            .map_err(|_| InteractionCounterError::StateInvariant)?;
+        drag.preview = Some(PublishedPreview {
+            public: preview.clone(),
+            proof,
+            painted: false,
+        });
+        Ok((preview, true))
+    }
+
+    pub(crate) fn clear_preview(
+        &mut self,
+        session: DragSessionId,
+    ) -> Result<bool, InteractionRejection> {
+        Ok(self.active_drag_mut(session)?.preview.take().is_some())
+    }
+
+    pub(crate) fn acknowledge_preview(
+        &mut self,
+        acknowledgement: &PaintAcknowledgement,
+    ) -> Result<(DragSessionId, bool), InteractionRejection> {
+        let session = acknowledgement.token.session;
+        let drag = self.active_drag_mut(session)?;
+        let Some(preview) = drag.preview.as_mut() else {
+            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
+        };
+        if preview.public.token != acknowledgement.token
+            || preview.public.visual != acknowledgement.visual
+        {
+            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
+        }
+        let changed = !preview.painted;
+        preview.painted = true;
+        Ok((session, changed))
+    }
+
+    pub(crate) fn set_drag_observation(
+        &mut self,
+        session: DragSessionId,
+        target: TargetAuthority,
+        tear_off: Option<TearOffRequest>,
+    ) -> Result<(), InteractionRejection> {
+        let drag = self.active_drag_mut(session)?;
+        drag.target = Some(target);
+        drag.tear_off = tear_off;
+        Ok(())
+    }
+
+    pub(crate) fn take_drag_for_release(
+        &mut self,
+        session: DragSessionId,
+        pointer: PointerId,
+        button: PointerButton,
+    ) -> Result<ActiveDrag, InteractionRejection> {
+        let drag = self.active_drag(session)?;
+        if drag.pointer != pointer {
+            return Err(InteractionRejection::PointerMismatch);
+        }
+        if drag.button != button {
+            return Err(InteractionRejection::ButtonMismatch);
+        }
+        let ActiveGesture::Dragging(drag) =
+            std::mem::replace(&mut self.active, ActiveGesture::Idle)
+        else {
+            return Err(InteractionRejection::NoActiveGesture);
+        };
+        self.last_consumed_drag = Some(session);
+        Ok(*drag)
+    }
+
+    pub(crate) fn begin_resize(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        pointer: PointerId,
+        button: PointerButton,
+        split: NodeSource,
+    ) -> Result<(ResizeSessionId, Option<InteractionStatus>), InteractionCounterError> {
+        let generation = self
+            .last_resize_generation
+            .checked_next()
+            .ok_or(InteractionCounterError::ResizeGenerationExhausted)?;
+        self.last_resize_generation = generation;
+        let session = ResizeSessionId::new(epoch, generation);
+        let replaced = (self.status() != InteractionStatus::Idle).then_some(self.status());
+        self.active = ActiveGesture::Resizing(Box::new(ActiveResize {
+            session,
+            pointer,
+            button,
+            split,
+            weights: None,
+        }));
+        Ok((session, replaced))
+    }
+
+    pub(crate) fn active_resize(
+        &self,
+        session: ResizeSessionId,
+    ) -> Result<&ActiveResize, InteractionRejection> {
+        match &self.active {
+            ActiveGesture::Resizing(resize) if resize.session == session => Ok(resize),
+            ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
+            ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) | ActiveGesture::Resizing(_) => {
+                Err(InteractionRejection::SessionMismatch)
+            }
+        }
+    }
+
+    pub(crate) fn set_resize_weights(
+        &mut self,
+        session: ResizeSessionId,
+        weights: Vec<SplitWeight>,
+    ) -> Result<(), InteractionRejection> {
+        match &mut self.active {
+            ActiveGesture::Resizing(resize) if resize.session == session => {
+                resize.weights = Some(weights);
+                Ok(())
+            }
+            ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
+            ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) | ActiveGesture::Resizing(_) => {
+                Err(InteractionRejection::SessionMismatch)
+            }
+        }
+    }
+
+    pub(crate) fn take_resize_for_release(
+        &mut self,
+        session: ResizeSessionId,
+        pointer: PointerId,
+        button: PointerButton,
+    ) -> Result<ActiveResize, InteractionRejection> {
+        let resize = self.active_resize(session)?;
+        if resize.pointer != pointer {
+            return Err(InteractionRejection::PointerMismatch);
+        }
+        if resize.button != button {
+            return Err(InteractionRejection::ButtonMismatch);
+        }
+        let ActiveGesture::Resizing(resize) =
+            std::mem::replace(&mut self.active, ActiveGesture::Idle)
+        else {
+            return Err(InteractionRejection::NoActiveGesture);
+        };
+        Ok(*resize)
+    }
+
+    pub(crate) fn cancel_drag(
+        &mut self,
+        session: DragSessionId,
+    ) -> Result<InteractionStatus, InteractionRejection> {
+        match &self.active {
+            ActiveGesture::Armed(armed) if armed.session == session => {}
+            ActiveGesture::Dragging(drag) if drag.session == session => {}
+            _ => return Err(self.session_rejection(session)),
+        }
+        let status = self.status();
+        self.active = ActiveGesture::Idle;
+        Ok(status)
+    }
+
+    pub(crate) fn cancel_resize(
+        &mut self,
+        session: ResizeSessionId,
+    ) -> Result<InteractionStatus, InteractionRejection> {
+        self.active_resize(session)?;
+        let status = self.status();
+        self.active = ActiveGesture::Idle;
+        Ok(status)
+    }
+
+    pub(crate) fn cancel_active(&mut self) -> Option<InteractionStatus> {
+        let status = self.status();
+        if status == InteractionStatus::Idle {
+            None
+        } else {
+            self.active = ActiveGesture::Idle;
+            Some(status)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_drag_generation(&mut self) {
+        self.last_drag_generation = DragGeneration::new(u64::MAX);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exhaust_preview_sequence(&mut self) {
+        self.last_preview_sequence = PreviewSequence::new(u64::MAX);
+    }
+
+    fn session_rejection(&self, session: DragSessionId) -> InteractionRejection {
+        if self.last_consumed_drag == Some(session) {
+            InteractionRejection::SessionConsumed { session }
+        } else if self.status() == InteractionStatus::Idle {
+            InteractionRejection::NoActiveGesture
+        } else {
+            InteractionRejection::SessionMismatch
+        }
+    }
+}
+
+impl Default for InteractionState {
+    fn default() -> Self {
+        Self {
+            active: ActiveGesture::Idle,
+            last_drag_generation: DragGeneration::default(),
+            last_resize_generation: ResizeGeneration::default(),
+            last_preview_sequence: PreviewSequence::default(),
+            last_consumed_drag: None,
+        }
+    }
+}
+
+/// Fatal exhaustion or an impossible internal interaction transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum InteractionCounterError {
+    /// Drag generations cannot advance without wrapping.
+    #[error("drag session generation is exhausted")]
+    DragGenerationExhausted,
+    /// Resize generations cannot advance without wrapping.
+    #[error("resize session generation is exhausted")]
+    ResizeGenerationExhausted,
+    /// Preview identities cannot advance without wrapping.
+    #[error("preview sequence is exhausted")]
+    PreviewSequenceExhausted,
+    /// Internal code attempted to publish a preview outside its live drag.
+    #[error("interaction state invariant failed while publishing a preview")]
+    StateInvariant,
+}

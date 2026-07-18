@@ -4,6 +4,8 @@ use crate::command::CommandOutcome;
 use crate::error::CommandError;
 use crate::event::WorkspaceEvent;
 use crate::ids::{InputSequence, WorkspaceEpoch, WorkspaceRevision};
+use crate::interaction::{InteractionEvent, InteractionOutcome};
+use crate::scene::{SceneBuildError, SceneStamp};
 
 /// Version of all workspace and policy state used to derive semantic input.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -80,6 +82,27 @@ pub enum InputOutcome {
         /// Version after processing this input.
         version: WorkspaceVersion,
     },
+    /// One immutable scene generation was sealed and published.
+    ScenePublished {
+        /// Exact workspace and scene generation stamp.
+        stamp: SceneStamp,
+        /// Number of surfaces with complete acknowledged scene facts.
+        ready_surfaces: usize,
+        /// Number of frozen roster surfaces published as non-interactive bootstrap scenes.
+        bootstrap_surfaces: usize,
+    },
+    /// Malformed scene facts were deterministically rejected and consumed.
+    SceneRejected {
+        /// Typed reason the candidate scene could not be sealed.
+        error: SceneBuildError,
+    },
+    /// One renderer interaction intent was reduced.
+    InteractionProcessed {
+        /// Structured interaction state-machine result.
+        outcome: InteractionOutcome,
+        /// Durable workspace version after processing the intent.
+        version: WorkspaceVersion,
+    },
     /// A maintenance validation completed without mutation.
     WorkspaceValidated {
         /// Version which was validated.
@@ -141,6 +164,8 @@ pub struct EngineTransition {
     after: WorkspaceVersion,
     reduced: Vec<ReducedInput>,
     events: Vec<WorkspaceEvent>,
+    interaction_events: Vec<InteractionEvent>,
+    published_state_changed: bool,
 }
 
 impl EngineTransition {
@@ -149,12 +174,16 @@ impl EngineTransition {
         after: WorkspaceVersion,
         reduced: Vec<ReducedInput>,
         events: Vec<WorkspaceEvent>,
+        interaction_events: Vec<InteractionEvent>,
+        published_state_changed: bool,
     ) -> Self {
         Self {
             before,
             after,
             reduced,
             events,
+            interaction_events,
+            published_state_changed,
         }
     }
 
@@ -182,9 +211,24 @@ impl EngineTransition {
         &self.events
     }
 
+    /// Returns committed transient interaction events.
+    #[must_use]
+    pub fn interaction_events(&self) -> &[InteractionEvent] {
+        &self.interaction_events
+    }
+
     /// Returns whether any durable or policy state changed.
     #[must_use]
     pub fn changed(&self) -> bool {
         self.before != self.after
+    }
+
+    /// Returns whether any published durable, scene, or interaction state changed.
+    ///
+    /// Consuming inputs or advancing the private writer sequence alone does not
+    /// count as a published change.
+    #[must_use]
+    pub const fn published_state_changed(&self) -> bool {
+        self.published_state_changed
     }
 }

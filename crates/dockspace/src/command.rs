@@ -186,7 +186,7 @@ pub struct InvalidDockFraction {
 }
 
 /// Physical side of a target branch receiving an edge insertion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Edge {
     /// Insert before the target on the horizontal axis.
     Left,
