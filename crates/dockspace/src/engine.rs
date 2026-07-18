@@ -1,18 +1,24 @@
 //! Single-writer input queue and atomic headless state reducer.
 
+use std::collections::BTreeSet;
+
 use thiserror::Error;
 
 use crate::command::{
     CommandOutcome, MovePayload, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
 use crate::drop_resolver::{DropResolution, DropResolutionError, resolve_drop};
+use crate::effect::{EffectResult, EffectTransition};
 use crate::error::TransactionError;
 use crate::event::{WorkspaceEvent, WorkspaceEventKind};
+use crate::frame::{
+    NativeCreateSagaId, ViewportCloseDecision, ViewportCloseRequestId, ViewportCoordinator,
+    ViewportCoordinatorError,
+};
 use crate::graph::Workspace;
 use crate::ids::{InputSequence, WorkspaceRevision};
 use crate::intent::{
-    Authority, NativeTearOffCapability, PointerButtonState, RendererIntent, TargetAuthority,
-    TearOffRequest,
+    Authority, PointerButtonState, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use crate::interaction::{
     InteractionCancelReason, InteractionCounterError, InteractionDelivery, InteractionEvent,
@@ -20,6 +26,7 @@ use crate::interaction::{
     InteractionStatus, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus, PreviewVisual,
     WorkspaceDeliveryKind,
 };
+use crate::platform::{PlatformCapability, PlatformSnapshot};
 use crate::policy::{DockPolicy, TearOffPresentation};
 use crate::scene::{
     BuildingScene, SceneBuildError, SceneGeneration, SceneStamp, SealedScene, SurfaceScene,
@@ -29,10 +36,61 @@ use crate::transition::{
     EngineTransition, InputOutcome, InputPriority, ReducedInput, WorkspaceVersion,
 };
 use crate::validation::WorkspaceValidationErrors;
+use crate::viewport::{ViewportRole, WindowToken};
 
 /// Input accepted by the U3 engine boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
+    /// Bind an existing adapter window to a current logical surface.
+    RegisterViewport {
+        /// Workspace version whose surface roster was inspected.
+        expected: WorkspaceVersion,
+        /// Stable logical surface already present in the workspace.
+        surface: crate::ids::SurfaceId,
+        /// Opaque adapter token, never an operating-system handle.
+        token: WindowToken,
+        /// Root or docking-owned child close semantics.
+        role: ViewportRole,
+        /// Whole-root fallback required for docking-owned child windows.
+        recovery: Option<crate::intent::ContainedTearOffProposal>,
+    },
+    /// Publish one complete frame-before-paint platform snapshot.
+    PublishPlatformSnapshot {
+        /// Workspace epoch against which adapter bindings were observed.
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        /// Complete capabilities, inventory, and pointer facts.
+        snapshot: PlatformSnapshot,
+    },
+    /// Report an adapter dispatch result without claiming the effect was observed applied.
+    ReportPlatformEffect {
+        /// Workspace epoch in which the result was received.
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        /// Exact effect identity and non-observational dispatch result.
+        result: EffectResult,
+    },
+    /// Decide one exact edge-triggered native close request.
+    DecideViewportClose {
+        /// Workspace version against which the close plan was captured.
+        expected: WorkspaceVersion,
+        /// Exact close request produced by a platform snapshot transition.
+        request: ViewportCloseRequestId,
+        /// Application veto or frozen accepted plan.
+        decision: ViewportCloseDecision,
+    },
+    /// Explicitly cancel one unresolved native-create saga.
+    CancelNativeCreate {
+        /// Workspace version against which the saga was inspected.
+        expected: WorkspaceVersion,
+        /// Exact create saga to cancel without a timeout heuristic.
+        saga: NativeCreateSagaId,
+    },
+    /// Retry one exact cleanup only after its prior dispatch definitively failed.
+    RetryViewportCleanup {
+        /// Workspace version against which the failed cleanup was inspected.
+        expected: WorkspaceVersion,
+        /// Exact failed cleanup effect; indeterminate effects are never retryable.
+        failed_effect: crate::effect::EffectId,
+    },
     /// Authoritatively replace the complete workspace.
     ReplaceWorkspace(Workspace),
     /// Apply one checked command derived from an exact engine version.
@@ -61,7 +119,7 @@ pub enum EngineInput {
         /// Workspace and policy version from which the intent was derived.
         expected: WorkspaceVersion,
         /// Typed interaction input.
-        intent: RendererIntent,
+        intent: Box<RendererIntent>,
     },
     /// Re-run strict validation without changing state.
     ValidateWorkspace,
@@ -72,7 +130,14 @@ impl EngineInput {
     #[must_use]
     pub const fn priority(&self) -> InputPriority {
         match self {
-            Self::ReplaceWorkspace(_) => InputPriority::LifecycleControl,
+            Self::RegisterViewport { .. }
+            | Self::DecideViewportClose { .. }
+            | Self::CancelNativeCreate { .. }
+            | Self::RetryViewportCleanup { .. }
+            | Self::ReplaceWorkspace(_) => InputPriority::LifecycleControl,
+            Self::PublishPlatformSnapshot { .. } | Self::ReportPlatformEffect { .. } => {
+                InputPriority::PlatformObservation
+            }
             Self::WorkspaceCommand { .. } | Self::ReplacePolicy { .. } => {
                 InputPriority::ApplicationCommand
             }
@@ -86,7 +151,13 @@ impl EngineInput {
             Self::RendererIntent { intent, .. } => intent.reduction_rank(),
             Self::PublishScene { .. } => 1,
             Self::ValidateWorkspace => 2,
-            Self::ReplaceWorkspace(_)
+            Self::RegisterViewport { .. }
+            | Self::PublishPlatformSnapshot { .. }
+            | Self::ReportPlatformEffect { .. }
+            | Self::DecideViewportClose { .. }
+            | Self::CancelNativeCreate { .. }
+            | Self::RetryViewportCleanup { .. }
+            | Self::ReplaceWorkspace(_)
             | Self::WorkspaceCommand { .. }
             | Self::ReplacePolicy { .. } => 0,
         }
@@ -171,6 +242,14 @@ pub enum EngineError {
         /// Fatal resolver failure.
         source: DropResolutionError,
     },
+    /// Platform identity, inventory, route, or effect state could not advance atomically.
+    #[error("viewport input {input} failed: {source}")]
+    Viewport {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Typed coordinator failure.
+        source: ViewportCoordinatorError,
+    },
 }
 
 /// Authoritative renderer-neutral docking engine.
@@ -182,6 +261,7 @@ pub struct DockEngine {
     scene: Option<SealedScene>,
     last_scene_generation: SceneGeneration,
     interaction: InteractionState,
+    viewport: ViewportCoordinator,
     last_input: InputSequence,
     pending: Vec<SequencedInput>,
 }
@@ -211,6 +291,19 @@ struct DragReleaseInput<'a> {
     tear_off: Option<&'a TearOffRequest>,
 }
 
+#[derive(Clone, Copy)]
+struct WorkspaceDeliveryTarget {
+    kind: WorkspaceDeliveryKind,
+    focus_surface: crate::ids::SurfaceId,
+}
+
+#[derive(Default)]
+struct PlatformInteractionDependencies {
+    surfaces: BTreeSet<crate::ids::SurfaceId>,
+    routed: bool,
+    native: bool,
+}
+
 enum CommandApplication {
     Applied {
         outcome: CommandOutcome,
@@ -236,6 +329,7 @@ impl DockEngine {
             scene: None,
             last_scene_generation: SceneGeneration::default(),
             interaction: InteractionState::default(),
+            viewport: ViewportCoordinator::default(),
             last_input: InputSequence::default(),
             pending: Vec::new(),
         })
@@ -269,6 +363,12 @@ impl DockEngine {
     #[must_use]
     pub const fn interaction(&self) -> &InteractionState {
         &self.interaction
+    }
+
+    /// Returns the core-owned platform, binding, route, and effect coordinator.
+    #[must_use]
+    pub const fn viewport(&self) -> &ViewportCoordinator {
+        &self.viewport
     }
 
     /// Returns queued inputs in writer order.
@@ -319,6 +419,119 @@ impl DockEngine {
         self.enqueue(EngineInput::ReplaceWorkspace(workspace))
     }
 
+    /// Queues registration of one existing native adapter window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_viewport_registration(
+        &mut self,
+        surface: crate::ids::SurfaceId,
+        token: WindowToken,
+        role: ViewportRole,
+        recovery: Option<crate::intent::ContainedTearOffProposal>,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::RegisterViewport {
+            expected: self.version,
+            surface,
+            token,
+            role,
+            recovery,
+        })
+    }
+
+    /// Queues one complete frame-before-paint platform fact snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_platform_snapshot(
+        &mut self,
+        snapshot: PlatformSnapshot,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::PublishPlatformSnapshot {
+            expected_epoch: self.version.epoch(),
+            snapshot,
+        })
+    }
+
+    /// Queues one correlated platform effect dispatch result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_platform_effect_result(
+        &mut self,
+        result: EffectResult,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::ReportPlatformEffect {
+            expected_epoch: self.version.epoch(),
+            result,
+        })
+    }
+
+    /// Queues an application decision for one exact native close-request edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_viewport_close_decision(
+        &mut self,
+        request: ViewportCloseRequestId,
+        decision: ViewportCloseDecision,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::DecideViewportClose {
+            expected: self.version,
+            request,
+            decision,
+        })
+    }
+
+    /// Queues an explicit cancellation for one unresolved native-create saga.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_native_create_cancellation(
+        &mut self,
+        saga: NativeCreateSagaId,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::CancelNativeCreate {
+            expected: self.version,
+            saga,
+        })
+    }
+
+    /// Queues one explicit retry for a cleanup whose dispatch definitively failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_viewport_cleanup_retry(
+        &mut self,
+        failed_effect: crate::effect::EffectId,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::RetryViewportCleanup {
+            expected: self.version,
+            failed_effect,
+        })
+    }
+
+    /// Produces a native placement proof from current acknowledged platform facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed coordinate error when the surface is not ready or its
+    /// placement facts are incomplete.
+    pub fn viewport_placement(
+        &self,
+        surface: crate::ids::SurfaceId,
+        rect: crate::geometry::LogicalRect,
+    ) -> Result<crate::coordinates::ViewportPlacementProof, crate::coordinates::CoordinateUnavailable>
+    {
+        self.viewport.placement(surface, rect)
+    }
+
     /// Queues complete scene facts against the currently published state.
     ///
     /// # Errors
@@ -342,7 +555,7 @@ impl DockEngine {
     ) -> Result<InputSequence, EngineError> {
         self.enqueue(EngineInput::RendererIntent {
             expected: self.version,
-            intent,
+            intent: Box::new(intent),
         })
     }
 
@@ -366,6 +579,7 @@ impl DockEngine {
         let before = self.version;
         let before_scene = self.scene.clone();
         let before_interaction = self.interaction.clone();
+        let before_viewport = self.viewport.clone();
         let mut candidate = self.candidate();
         let mut inputs = std::mem::take(&mut candidate.pending);
         inputs.sort_by_key(|input| {
@@ -393,15 +607,18 @@ impl DockEngine {
             reduced.push(ReducedInput::new(input.sequence, priority, outcome));
         }
 
+        let platform_effects = candidate.viewport.take_new_effects();
         let published_state_changed = before != candidate.version
             || before_scene != candidate.scene
-            || before_interaction != candidate.interaction;
+            || before_interaction != candidate.interaction
+            || before_viewport != candidate.viewport;
         let transition = EngineTransition::new(
             before,
             candidate.version,
             reduced,
             events,
             interaction_events,
+            platform_effects,
             published_state_changed,
         );
         *self = candidate;
@@ -417,6 +634,52 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         match &input.input {
+            EngineInput::RegisterViewport {
+                expected,
+                surface,
+                token,
+                role,
+                recovery,
+            } => self.reduce_viewport_registration(
+                input.sequence,
+                *expected,
+                *surface,
+                *token,
+                *role,
+                *recovery,
+            ),
+            EngineInput::PublishPlatformSnapshot {
+                expected_epoch,
+                snapshot,
+            } => self.reduce_platform_snapshot(
+                input.sequence,
+                *expected_epoch,
+                snapshot,
+                application_base,
+                events,
+                interaction_events,
+            ),
+            EngineInput::ReportPlatformEffect {
+                expected_epoch,
+                result,
+            } => Ok(self.reduce_platform_effect(*expected_epoch, *result)),
+            EngineInput::DecideViewportClose {
+                expected,
+                request,
+                decision,
+            } => self.reduce_viewport_close_decision(
+                input.sequence,
+                *expected,
+                *request,
+                decision.clone(),
+            ),
+            EngineInput::CancelNativeCreate { expected, saga } => {
+                self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
+            }
+            EngineInput::RetryViewportCleanup {
+                expected,
+                failed_effect,
+            } => self.reduce_viewport_cleanup_retry(input.sequence, *expected, *failed_effect),
             EngineInput::ReplaceWorkspace(workspace) => self.reduce_workspace_replacement(
                 input.sequence,
                 workspace,
@@ -465,6 +728,326 @@ impl DockEngine {
         }
     }
 
+    fn reduce_viewport_registration(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        surface: crate::ids::SurfaceId,
+        token: WindowToken,
+        role: ViewportRole,
+        recovery: Option<crate::intent::ContainedTearOffProposal>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let Some(presentation) = self.workspace.surface(surface) else {
+            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+        };
+        if role == ViewportRole::Child && recovery.is_none() {
+            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+        }
+        if let Some(recovery) = recovery
+            && (presentation.main_root != recovery.root()
+                || recovery.surface() == surface
+                || self.workspace.surface(recovery.surface()).is_none())
+        {
+            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+        }
+        let binding = self
+            .viewport
+            .register_existing(self.version.epoch(), surface, token, role, recovery)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        Ok(InputOutcome::ViewportRegistered { binding })
+    }
+
+    fn reduce_platform_snapshot(
+        &mut self,
+        input: InputSequence,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        snapshot: &PlatformSnapshot,
+        application_base: &mut WorkspaceVersion,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected_epoch != self.version.epoch() {
+            return Ok(InputOutcome::PlatformSnapshotStale {
+                expected_epoch,
+                current_epoch: self.version.epoch(),
+            });
+        }
+        let previous_native = self.viewport.native_tear_off_capability();
+        let previous_routing = self.viewport.capabilities().cross_surface_routing();
+        let previous_release = self.viewport.capabilities().authoritative_release();
+        let interaction_dependencies = self.platform_interaction_dependencies();
+        let version_before_actions = self.version;
+        let transition = self
+            .viewport
+            .publish_snapshot(snapshot)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        let actions = transition.actions().to_vec();
+        self.reduce_viewport_actions(input, &actions, events)?;
+        *application_base = self.version;
+        if let Some(reason) = self.platform_interaction_cancel_reason(
+            &interaction_dependencies,
+            version_before_actions,
+            &transition,
+            previous_native,
+            previous_routing,
+            previous_release,
+        ) {
+            self.invalidate_transient(input, reason, interaction_events)?;
+        }
+        Ok(InputOutcome::PlatformSnapshotPublished { transition })
+    }
+
+    fn reduce_platform_effect(
+        &mut self,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        result: EffectResult,
+    ) -> InputOutcome {
+        let transition = if expected_epoch == self.version.epoch() {
+            self.viewport.report_effect(expected_epoch, result)
+        } else {
+            EffectTransition::StaleEpoch
+        };
+        InputOutcome::PlatformEffectReported {
+            effect: result.effect(),
+            transition,
+        }
+    }
+
+    fn reduce_viewport_close_decision(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        request: ViewportCloseRequestId,
+        decision: ViewportCloseDecision,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        if let ViewportCloseDecision::Accept(plan) = &decision
+            && let Some(close_request) = self.viewport.viewport_close_request(request)
+        {
+            let surface = close_request.binding().surface();
+            let recovery_matches_surface = self
+                .workspace
+                .surface(surface)
+                .is_some_and(|presentation| presentation.main_root == plan.recovery().root());
+            if !recovery_matches_surface {
+                return Err(EngineError::Viewport {
+                    input,
+                    source: crate::frame::ViewportCoordinatorError::CloseRecoveryRootMismatch {
+                        request,
+                    },
+                });
+            }
+        }
+        let effect = self
+            .viewport
+            .decide_viewport_close(request, decision)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        Ok(InputOutcome::ViewportCloseDecided { request, effect })
+    }
+
+    fn reduce_native_create_cancellation(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        saga: NativeCreateSagaId,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let compensation = self
+            .viewport
+            .cancel_native_create(saga)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        Ok(InputOutcome::NativeCreateCancelled { saga, compensation })
+    }
+
+    fn reduce_viewport_cleanup_retry(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        failed_effect: crate::effect::EffectId,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != self.version {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: self.version,
+            });
+        }
+        let retry = self
+            .viewport
+            .retry_cleanup(failed_effect)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        Ok(InputOutcome::ViewportCleanupRetried {
+            failed_effect,
+            retry,
+        })
+    }
+
+    fn reduce_viewport_actions(
+        &mut self,
+        input: InputSequence,
+        actions: &[crate::frame::ViewportLifecycleAction],
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<(), EngineError> {
+        for action in actions {
+            match action {
+                crate::frame::ViewportLifecycleAction::CreateReady { saga, prepared } => {
+                    match self.apply_interaction_command(input, prepared.command(), events)? {
+                        CommandApplication::Applied { .. } => self
+                            .viewport
+                            .complete_native_create(*saga)
+                            .map_err(|source| EngineError::Viewport { input, source })?,
+                        CommandApplication::Rejected(_) => {
+                            self.viewport
+                                .reject_native_create(*saga)
+                                .map_err(|source| EngineError::Viewport { input, source })?;
+                        }
+                    }
+                }
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
+                    binding,
+                    resolution,
+                } => {
+                    self.reduce_destroyed_surface(input, *binding, resolution, events)?;
+                }
+                crate::frame::ViewportLifecycleAction::RetryRecovery {
+                    destroyed_binding,
+                    recovery,
+                } => {
+                    if self.apply_destroyed_surface_recovery(input, *recovery, events)? {
+                        self.viewport
+                            .complete_pending_recovery(destroyed_binding.surface())
+                            .map_err(|source| EngineError::Viewport { input, source })?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn reduce_destroyed_surface(
+        &mut self,
+        input: InputSequence,
+        binding: crate::viewport::ViewportBinding,
+        resolution: &crate::frame::ViewportDestructionResolution,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<(), EngineError> {
+        let mut resolved = false;
+        let recovery = match resolution {
+            crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
+                Some(plan.recovery())
+            }
+            crate::frame::ViewportDestructionResolution::Recover { recovery } => Some(*recovery),
+            crate::frame::ViewportDestructionResolution::Unplanned => None,
+        };
+        match resolution {
+            crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
+                if let Some(primary) = plan.primary() {
+                    resolved =
+                        self.apply_close_primary(input, binding.surface(), primary, events)?;
+                }
+                if !resolved {
+                    resolved =
+                        self.apply_destroyed_surface_recovery(input, plan.recovery(), events)?;
+                }
+            }
+            crate::frame::ViewportDestructionResolution::Recover { recovery } => {
+                resolved = self.apply_destroyed_surface_recovery(input, *recovery, events)?;
+            }
+            crate::frame::ViewportDestructionResolution::Unplanned => {}
+        }
+        if resolved && self.workspace.surface(binding.surface()).is_none() {
+            self.viewport
+                .complete_destroyed_surface(binding)
+                .map_err(|source| EngineError::Viewport { input, source })?;
+        } else if !resolved && let Some(recovery) = recovery {
+            self.viewport
+                .defer_destroyed_surface_recovery(binding, recovery)
+                .map_err(|source| EngineError::Viewport { input, source })?;
+        }
+        Ok(())
+    }
+
+    fn apply_close_primary(
+        &mut self,
+        input: InputSequence,
+        closing_surface: crate::ids::SurfaceId,
+        command: &WorkspaceCommand,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<bool, EngineError> {
+        let mut candidate = self.workspace.clone();
+        let application =
+            Self::run_command_transaction(input, &mut candidate, &self.policy, command)?;
+        let CommandApplication::Applied { outcome, changed } = application else {
+            return Ok(false);
+        };
+        if candidate.surface(closing_surface).is_some() {
+            return Ok(false);
+        }
+        self.workspace = candidate;
+        if changed {
+            self.advance_revision(input)?;
+            self.scene = None;
+            events.push(WorkspaceEvent::new(
+                input,
+                self.version,
+                WorkspaceEventKind::CommandCommitted(outcome),
+            ));
+        }
+        Ok(true)
+    }
+
+    fn apply_destroyed_surface_recovery(
+        &mut self,
+        input: InputSequence,
+        recovery: crate::intent::ContainedTearOffProposal,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<bool, EngineError> {
+        if !self
+            .viewport
+            .viewport(recovery.surface())
+            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready)
+        {
+            return Ok(false);
+        }
+        let Some(root) = self.workspace.root(recovery.root()) else {
+            return Ok(false);
+        };
+        let Ok(source) = self
+            .workspace
+            .capture_node_source(recovery.root(), root.node)
+        else {
+            return Ok(false);
+        };
+        let command = WorkspaceCommand::RehomeRoot {
+            source,
+            target: RootPresentationTarget::Contained {
+                surface: recovery.surface(),
+                floating: recovery.floating(),
+                rect: recovery.rect(),
+                z_order: recovery.z_order(),
+            },
+        };
+        Ok(matches!(
+            self.apply_interaction_command(input, &command, events)?,
+            CommandApplication::Applied { .. }
+        ))
+    }
+
     fn reduce_workspace_replacement(
         &mut self,
         input: InputSequence,
@@ -481,6 +1064,14 @@ impl DockEngine {
             .epoch()
             .checked_next()
             .ok_or(EngineError::WorkspaceEpochExhausted { input })?;
+        let desired_surfaces = workspace
+            .surfaces()
+            .map(|(surface, _)| surface)
+            .collect::<std::collections::BTreeSet<_>>();
+        let reconciliation = self
+            .viewport
+            .reconcile_workspace_epoch(epoch, &desired_surfaces)
+            .map_err(|source| EngineError::Viewport { input, source })?;
         self.workspace = workspace.clone();
         self.version = WorkspaceVersion::new(epoch, WorkspaceRevision::default());
         *application_base = self.version;
@@ -488,7 +1079,7 @@ impl DockEngine {
             input,
             InteractionCancelReason::WorkspaceRestored,
             interaction_events,
-        );
+        )?;
         events.push(WorkspaceEvent::new(
             input,
             self.version,
@@ -497,6 +1088,7 @@ impl DockEngine {
         Ok(InputOutcome::WorkspaceReplaced {
             before,
             after: self.version,
+            reconciliation,
         })
     }
 
@@ -524,7 +1116,7 @@ impl DockEngine {
                 input,
                 InteractionCancelReason::PolicyChanged,
                 interaction_events,
-            );
+            )?;
             events.push(WorkspaceEvent::new(
                 input,
                 self.version,
@@ -573,7 +1165,10 @@ impl DockEngine {
         input: InputSequence,
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) {
+    ) -> Result<(), EngineError> {
+        self.viewport
+            .end_all_drag_routing()
+            .map_err(|source| EngineError::Viewport { input, source })?;
         self.scene = None;
         if let Some(status) = self.interaction.cancel_active() {
             interaction_events.push(InteractionEvent::new(
@@ -582,6 +1177,127 @@ impl DockEngine {
                 InteractionEventKind::Cancelled { status, reason },
             ));
         }
+        Ok(())
+    }
+
+    fn platform_interaction_dependencies(&self) -> PlatformInteractionDependencies {
+        let mut dependencies = PlatformInteractionDependencies::default();
+        match self.interaction.status() {
+            InteractionStatus::Idle => {}
+            InteractionStatus::Armed { session } => {
+                if let Ok(drag) = self.interaction.armed_drag(session)
+                    && let Some(surface) = self.payload_surface(&drag.payload)
+                {
+                    dependencies.surfaces.insert(surface);
+                }
+            }
+            InteractionStatus::Dragging { session } => {
+                let Ok(drag) = self.interaction.active_drag(session) else {
+                    return dependencies;
+                };
+                if let Some(surface) = self.payload_surface(&drag.payload) {
+                    dependencies.surfaces.insert(surface);
+                }
+                if let Some(target) = &drag.target {
+                    match target {
+                        TargetAuthority::Local(local) => {
+                            dependencies.surfaces.insert(local.observer());
+                            if let Authority::Known(Some(target)) = local.target() {
+                                dependencies.surfaces.insert(target.surface());
+                            }
+                        }
+                        TargetAuthority::Routed(route) => {
+                            dependencies.routed = true;
+                            if let Authority::Known(Some(target)) = route.target() {
+                                dependencies.surfaces.insert(target.surface());
+                            }
+                        }
+                    }
+                } else if self.viewport.drag_source(drag.pointer).is_some() {
+                    dependencies.routed = true;
+                }
+                if let Some(preview) = &drag.preview {
+                    match preview.public().visual() {
+                        PreviewVisual::Dock { surface, .. }
+                        | PreviewVisual::Contained { surface, .. } => {
+                            dependencies.surfaces.insert(*surface);
+                        }
+                        PreviewVisual::Native { .. } => dependencies.native = true,
+                    }
+                } else if matches!(drag.tear_off, Some(TearOffRequest::Native { .. }))
+                    && self.viewport.native_tear_off_capability().is_supported()
+                {
+                    dependencies.native = true;
+                }
+            }
+            InteractionStatus::Resizing { session } => {
+                if let Ok(resize) = self.interaction.active_resize(session)
+                    && let Some(surface) = self.root_surface(resize.split.root())
+                {
+                    dependencies.surfaces.insert(surface);
+                }
+            }
+        }
+        dependencies
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn platform_interaction_cancel_reason(
+        &self,
+        dependencies: &PlatformInteractionDependencies,
+        version_before_actions: WorkspaceVersion,
+        transition: &crate::frame::ViewportFrameTransition,
+        previous_native: PlatformCapability,
+        previous_routing: PlatformCapability,
+        previous_release: PlatformCapability,
+    ) -> Option<InteractionCancelReason> {
+        if self.version != version_before_actions {
+            return Some(InteractionCancelReason::WorkspaceChanged);
+        }
+        for event in transition.registry_events() {
+            let (binding, destroyed) = match event {
+                crate::viewport_registry::RegistryEvent::Destroyed { binding } => (*binding, true),
+                crate::viewport_registry::RegistryEvent::FactsUnavailable { binding } => {
+                    (*binding, false)
+                }
+                crate::viewport_registry::RegistryEvent::Ready { .. }
+                | crate::viewport_registry::RegistryEvent::CloseRequested { .. }
+                | crate::viewport_registry::RegistryEvent::CloseRequestCleared { .. } => continue,
+            };
+            if !dependencies.surfaces.contains(&binding.surface()) {
+                continue;
+            }
+            if destroyed {
+                return Some(InteractionCancelReason::SurfaceClosed);
+            }
+            if dependencies.native {
+                return Some(InteractionCancelReason::NativePlacementUnavailable);
+            }
+            if dependencies.routed {
+                return Some(InteractionCancelReason::UnknownTargetAuthority);
+            }
+        }
+        let current_native = self.viewport.native_tear_off_capability();
+        if dependencies.native && previous_native.is_supported() && !current_native.is_supported() {
+            return Some(match current_native {
+                PlatformCapability::Unknown(_) => InteractionCancelReason::NativeCapabilityUnknown,
+                PlatformCapability::Unsupported(_) => {
+                    InteractionCancelReason::NativeCapabilityUnavailable
+                }
+                PlatformCapability::Supported => return None,
+            });
+        }
+        let current_routing = self.viewport.capabilities().cross_surface_routing();
+        if dependencies.routed && previous_routing.is_supported() && !current_routing.is_supported()
+        {
+            return Some(InteractionCancelReason::UnknownTargetAuthority);
+        }
+        let current_release = self.viewport.capabilities().authoritative_release();
+        if dependencies.routed && previous_release.is_supported() && !current_release.is_supported()
+        {
+            return Some(InteractionCancelReason::UnknownButtonState);
+        }
+        None
     }
 
     fn reduce_scene(
@@ -615,7 +1331,7 @@ impl DockEngine {
                     input,
                     InteractionCancelReason::SceneUnavailable,
                     interaction_events,
-                );
+                )?;
                 return Ok(InputOutcome::SceneRejected { error });
             }
         };
@@ -657,10 +1373,7 @@ impl DockEngine {
                 session,
                 pointer,
                 button,
-            } => match self.interaction.begin_drag(*session, *pointer, *button) {
-                Ok(()) => Ok(InteractionOutcome::DragBegan { session: *session }),
-                Err(error) => Ok(InteractionOutcome::Rejected(error)),
-            },
+            } => self.begin_drag(input, *session, *pointer, *button),
             RendererIntent::UpdateDrag {
                 session,
                 target,
@@ -701,7 +1414,7 @@ impl DockEngine {
                 interaction_events,
             ),
             RendererIntent::CancelDrag { session, reason } => {
-                Ok(self.cancel_drag(input, *session, *reason, interaction_events))
+                self.cancel_drag(input, *session, *reason, interaction_events)
             }
             RendererIntent::BeginResize {
                 pointer,
@@ -749,6 +1462,9 @@ impl DockEngine {
             .arm_drag(self.version.epoch(), pointer, button, payload.clone())
             .map_err(|source| EngineError::Interaction { input, source })?;
         if let Some(status) = replaced {
+            self.viewport
+                .end_all_drag_routing()
+                .map_err(|source| EngineError::Viewport { input, source })?;
             interaction_events.push(InteractionEvent::new(
                 input,
                 self.version,
@@ -759,6 +1475,34 @@ impl DockEngine {
             ));
         }
         Ok(InteractionOutcome::DragArmed { session, replaced })
+    }
+
+    fn begin_drag(
+        &mut self,
+        input: InputSequence,
+        session: crate::interaction::DragSessionId,
+        pointer: crate::intent::PointerId,
+        button: crate::intent::PointerButton,
+    ) -> Result<InteractionOutcome, EngineError> {
+        if let Err(error) = self.interaction.begin_drag(session, pointer, button) {
+            return Ok(InteractionOutcome::Rejected(error));
+        }
+        let payload = self
+            .interaction
+            .active_drag(session)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?
+            .payload
+            .clone();
+        if let Some(surface) = self.payload_surface(&payload) {
+            let _ = self
+                .viewport
+                .begin_drag_routing(pointer, surface)
+                .map_err(|source| EngineError::Viewport { input, source })?;
+        }
+        Ok(InteractionOutcome::DragBegan { session })
     }
 
     fn update_drag(
@@ -775,16 +1519,18 @@ impl DockEngine {
         {
             return Ok(InteractionOutcome::Rejected(error));
         }
-        let payload = self
-            .interaction
-            .active_drag(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?
-            .payload
-            .clone();
-        let decision = self.resolve_preview_decision(input, session, &payload, target, tear_off)?;
+        let (payload, pointer) = {
+            let drag =
+                self.interaction
+                    .active_drag(session)
+                    .map_err(|_| EngineError::Interaction {
+                        input,
+                        source: InteractionCounterError::StateInvariant,
+                    })?;
+            (drag.payload.clone(), drag.pointer)
+        };
+        let decision =
+            self.resolve_preview_decision(input, session, pointer, &payload, target, tear_off)?;
         self.apply_preview_decision(input, session, decision, interaction_events)
     }
 
@@ -794,17 +1540,28 @@ impl DockEngine {
         session: crate::interaction::DragSessionId,
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) -> InteractionOutcome {
+    ) -> Result<InteractionOutcome, EngineError> {
+        let pointer = self
+            .interaction
+            .active_drag(session)
+            .ok()
+            .map(|drag| drag.pointer);
         match self.interaction.cancel_drag(session) {
             Ok(status) => {
+                if let Some(pointer) = pointer {
+                    let _ = self
+                        .viewport
+                        .end_drag_routing(pointer)
+                        .map_err(|source| EngineError::Viewport { input, source })?;
+                }
                 interaction_events.push(InteractionEvent::new(
                     input,
                     self.version,
                     InteractionEventKind::Cancelled { status, reason },
                 ));
-                InteractionOutcome::Cancelled { status, reason }
+                Ok(InteractionOutcome::Cancelled { status, reason })
             }
-            Err(error) => InteractionOutcome::Rejected(error),
+            Err(error) => Ok(InteractionOutcome::Rejected(error)),
         }
     }
 
@@ -826,6 +1583,9 @@ impl DockEngine {
             .begin_resize(self.version.epoch(), pointer, button, split.clone())
             .map_err(|source| EngineError::Interaction { input, source })?;
         if let Some(status) = replaced {
+            self.viewport
+                .end_all_drag_routing()
+                .map_err(|source| EngineError::Viewport { input, source })?;
             interaction_events.push(InteractionEvent::new(
                 input,
                 self.version,
@@ -939,18 +1699,7 @@ impl DockEngine {
                 })
             }
             PreviewDecision::Cancel(reason) => {
-                let status = self.interaction.cancel_drag(session).map_err(|_| {
-                    EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    }
-                })?;
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                Ok(InteractionOutcome::Cancelled { status, reason })
+                self.cancel_drag(input, session, reason, interaction_events)
             }
         }
     }
@@ -959,6 +1708,7 @@ impl DockEngine {
         &self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
+        pointer: crate::intent::PointerId,
         payload: &MovePayload,
         target: &TargetAuthority,
         tear_off: Option<&TearOffRequest>,
@@ -973,6 +1723,10 @@ impl DockEngine {
                 InteractionCancelReason::SceneUnavailable,
             ));
         }
+        let (target, routed) = match self.target_observation(pointer, target) {
+            Ok(target) => target,
+            Err(reason) => return Ok(PreviewDecision::Cancel(reason)),
+        };
         match target {
             Authority::Unknown(_) => Ok(PreviewDecision::Cancel(
                 InteractionCancelReason::UnknownTargetAuthority,
@@ -1024,7 +1778,37 @@ impl DockEngine {
                     )),
                 }
             }
-            Authority::Known(None) => self.resolve_tear_off_decision(input, payload, tear_off),
+            Authority::Known(None) => {
+                self.resolve_tear_off_decision(input, payload, tear_off, routed)
+            }
+        }
+    }
+
+    fn target_observation<'a>(
+        &self,
+        pointer: crate::intent::PointerId,
+        target: &'a TargetAuthority,
+    ) -> Result<(&'a Authority<Option<crate::intent::SurfacePointer>>, bool), InteractionCancelReason>
+    {
+        match target {
+            TargetAuthority::Local(local) => {
+                if self.workspace.surface(local.observer()).is_none()
+                    || matches!(
+                        local.target(),
+                        Authority::Known(Some(target))
+                            if target.surface() != local.observer()
+                    )
+                {
+                    return Err(InteractionCancelReason::UnknownTargetAuthority);
+                }
+                Ok((local.target(), false))
+            }
+            TargetAuthority::Routed(proof) => {
+                if proof.pointer() != pointer || !self.viewport.route_is_current(proof) {
+                    return Err(InteractionCancelReason::UnknownTargetAuthority);
+                }
+                Ok((proof.target(), true))
+            }
         }
     }
 
@@ -1033,6 +1817,7 @@ impl DockEngine {
         input: InputSequence,
         payload: &MovePayload,
         request: Option<&TearOffRequest>,
+        routed: bool,
     ) -> Result<PreviewDecision, EngineError> {
         let Some(request) = request else {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone));
@@ -1043,15 +1828,14 @@ impl DockEngine {
             }
             TearOffRequest::Native {
                 proposal,
-                capability,
                 contained_fallback,
             } => self.resolve_native_tear_off(
                 input,
                 payload,
-                *proposal,
-                *capability,
+                proposal.clone(),
                 *contained_fallback,
                 request,
+                routed,
             ),
         }
     }
@@ -1108,9 +1892,9 @@ impl DockEngine {
         input: InputSequence,
         payload: &MovePayload,
         proposal: crate::intent::NativeTearOffProposal,
-        capability: NativeTearOffCapability,
         contained_fallback: Option<crate::intent::ContainedTearOffProposal>,
         request: &TearOffRequest,
+        routed: bool,
     ) -> Result<PreviewDecision, EngineError> {
         if self
             .policy
@@ -1119,8 +1903,18 @@ impl DockEngine {
         {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
-        match capability {
-            NativeTearOffCapability::Supported => {
+        match self.viewport.native_tear_off_capability() {
+            PlatformCapability::Supported => {
+                if !routed {
+                    return Ok(PreviewDecision::Cancel(
+                        InteractionCancelReason::UnknownTargetAuthority,
+                    ));
+                }
+                if !self.viewport.placement_is_current(proposal.placement()) {
+                    return Ok(PreviewDecision::Cancel(
+                        InteractionCancelReason::NativePlacementUnavailable,
+                    ));
+                }
                 if self.workspace.surface(proposal.surface()).is_some() {
                     return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
                 }
@@ -1139,9 +1933,10 @@ impl DockEngine {
                     CommandApplication::Applied { .. } => Ok(PreviewDecision::Publish {
                         visual: PreviewVisual::Native {
                             surface: proposal.surface(),
-                            placement: proposal.placement(),
+                            placement: proposal.physical_placement(),
                         },
                         proof: Box::new(PreviewProof::Native {
+                            command,
                             request: request.clone(),
                             proposal,
                         }),
@@ -1151,7 +1946,7 @@ impl DockEngine {
                     }
                 }
             }
-            NativeTearOffCapability::Unsupported(_) => {
+            PlatformCapability::Unsupported(_) => {
                 if self.policy.native_unavailable_fallback().is_err() {
                     return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
                 }
@@ -1160,7 +1955,7 @@ impl DockEngine {
                 };
                 self.resolve_contained_tear_off(input, payload, proposal, request, true)
             }
-            NativeTearOffCapability::Unknown(_) => Ok(PreviewDecision::Cancel(
+            PlatformCapability::Unknown(_) => Ok(PreviewDecision::Cancel(
                 InteractionCancelReason::NativeCapabilityUnknown,
             )),
         }
@@ -1178,12 +1973,19 @@ impl DockEngine {
         {
             return Ok(InteractionOutcome::Rejected(error));
         }
-        if let Some(outcome) = self.require_released_button(
-            input,
-            release.session,
-            release.button_state,
-            interaction_events,
-        )? {
+        let target_unknown = match self.target_observation(release.pointer, release.target) {
+            Ok((target, _)) => matches!(target, Authority::Unknown(_)),
+            Err(reason) => {
+                return self.cancel_drag(input, release.session, reason, interaction_events);
+            }
+        };
+        let button_state = match release.target {
+            TargetAuthority::Local(_) => release.button_state.clone(),
+            TargetAuthority::Routed(proof) => proof.button_state(release.button),
+        };
+        if let Some(outcome) =
+            self.require_released_button(input, release.session, &button_state, interaction_events)?
+        {
             return Ok(outcome);
         }
         let drag = match self.interaction.take_drag_for_release(
@@ -1194,7 +1996,11 @@ impl DockEngine {
             Ok(drag) => drag,
             Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
-        if matches!(release.target, Authority::Unknown(_)) {
+        if target_unknown {
+            let _ = self
+                .viewport
+                .end_drag_routing(drag.pointer)
+                .map_err(|source| EngineError::Viewport { input, source })?;
             return Ok(self.cancel_consumed_drag(
                 input,
                 release.session,
@@ -1211,17 +2017,18 @@ impl DockEngine {
         )? {
             ReleaseProofDecision::Deliver(proof) => proof,
             ReleaseProofDecision::Reject(error) => {
+                let _ = self
+                    .viewport
+                    .end_drag_routing(drag.pointer)
+                    .map_err(|source| EngineError::Viewport { input, source })?;
                 return Ok(InteractionOutcome::Rejected(error));
             }
         };
-        self.finish_drag_delivery(
-            input,
-            release.session,
-            drag.payload,
-            *proof,
-            events,
-            interaction_events,
-        )
+        let _ = self
+            .viewport
+            .end_drag_routing(drag.pointer)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        self.finish_drag_delivery(input, release.session, *proof, events, interaction_events)
     }
 
     fn validate_drag_release_binding(
@@ -1259,19 +2066,9 @@ impl DockEngine {
                 InteractionOutcome::Rejected(InteractionRejection::ButtonStillPressed),
             )),
             Authority::Unknown(_) => {
-                let status = self.interaction.cancel_drag(session).map_err(|_| {
-                    EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    }
-                })?;
                 let reason = InteractionCancelReason::UnknownButtonState;
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                Ok(Some(InteractionOutcome::Cancelled { status, reason }))
+                self.cancel_drag(input, session, reason, interaction_events)
+                    .map(Some)
             }
         }
     }
@@ -1322,8 +2119,14 @@ impl DockEngine {
                 InteractionRejection::StaleScene,
             ));
         }
-        let decision =
-            self.resolve_preview_decision(input, session, &drag.payload, target, tear_off)?;
+        let decision = self.resolve_preview_decision(
+            input,
+            session,
+            drag.pointer,
+            &drag.payload,
+            target,
+            tear_off,
+        )?;
         let PreviewDecision::Publish { visual, proof } = decision else {
             return Ok(ReleaseProofDecision::Reject(
                 InteractionRejection::TargetChanged,
@@ -1341,47 +2144,77 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
-        payload: MovePayload,
         proof: PreviewProof,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         match proof {
-            PreviewProof::Dock { command, .. } => self.finish_workspace_delivery(
+            PreviewProof::Dock { target, command } => self.finish_workspace_delivery(
                 input,
                 session,
-                WorkspaceDeliveryKind::Dock,
+                WorkspaceDeliveryTarget {
+                    kind: WorkspaceDeliveryKind::Dock,
+                    focus_surface: target.surface(),
+                },
                 &command,
                 events,
                 interaction_events,
             ),
             PreviewProof::Contained {
-                command, fallback, ..
+                command,
+                request,
+                fallback,
             } => {
                 let kind = if fallback {
                     WorkspaceDeliveryKind::ContainedFallback
                 } else {
                     WorkspaceDeliveryKind::Contained
                 };
+                let focus_surface = match request {
+                    TearOffRequest::Contained(proposal)
+                    | TearOffRequest::Native {
+                        contained_fallback: Some(proposal),
+                        ..
+                    } => proposal.surface(),
+                    TearOffRequest::Native {
+                        contained_fallback: None,
+                        ..
+                    } => {
+                        return Err(EngineError::Interaction {
+                            input,
+                            source: InteractionCounterError::StateInvariant,
+                        });
+                    }
+                };
                 self.finish_workspace_delivery(
                     input,
                     session,
-                    kind,
+                    WorkspaceDeliveryTarget {
+                        kind,
+                        focus_surface,
+                    },
                     &command,
                     events,
                     interaction_events,
                 )
             }
-            PreviewProof::Native { proposal, .. } => {
-                let prepared = PreparedNativeTearOff::new(session, self.version, payload, proposal);
+            PreviewProof::Native {
+                command, proposal, ..
+            } => {
+                let prepared =
+                    PreparedNativeTearOff::new(session, self.version, command, proposal.clone());
+                let request = self
+                    .viewport
+                    .start_native_create(prepared)
+                    .map_err(|source| EngineError::Viewport { input, source })?;
                 interaction_events.push(InteractionEvent::new(
                     input,
                     self.version,
-                    InteractionEventKind::NativeTearOffPrepared(prepared.clone()),
+                    InteractionEventKind::NativeTearOffRequested(request),
                 ));
                 Ok(InteractionOutcome::DragDelivered {
                     session,
-                    delivery: InteractionDelivery::NativePrepared(prepared),
+                    delivery: InteractionDelivery::NativeRequested(request),
                 })
             }
         }
@@ -1391,22 +2224,29 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
-        kind: WorkspaceDeliveryKind,
+        delivery: WorkspaceDeliveryTarget,
         command: &WorkspaceCommand,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         match self.apply_interaction_command(input, command, events)? {
             CommandApplication::Applied { outcome, changed } => {
+                let _ = self
+                    .viewport
+                    .request_focus(delivery.focus_surface)
+                    .map_err(|source| EngineError::Viewport { input, source })?;
                 interaction_events.push(InteractionEvent::new(
                     input,
                     self.version,
-                    InteractionEventKind::Delivered { session, kind },
+                    InteractionEventKind::Delivered {
+                        session,
+                        kind: delivery.kind,
+                    },
                 ));
                 Ok(InteractionOutcome::DragDelivered {
                     session,
                     delivery: InteractionDelivery::Workspace {
-                        kind,
+                        kind: delivery.kind,
                         outcome,
                         changed,
                     },
@@ -1509,7 +2349,7 @@ impl DockEngine {
         let InteractionStatus::Dragging { session } = self.interaction.status() else {
             return Ok(());
         };
-        let (payload, target, tear_off) = {
+        let (pointer, payload, target, tear_off) = {
             let drag =
                 self.interaction
                     .active_drag(session)
@@ -1518,6 +2358,7 @@ impl DockEngine {
                         source: InteractionCounterError::StateInvariant,
                     })?;
             (
+                drag.pointer,
                 drag.payload.clone(),
                 drag.target.clone(),
                 drag.tear_off.clone(),
@@ -1532,8 +2373,14 @@ impl DockEngine {
                 })?;
             return Ok(());
         };
-        let decision =
-            self.resolve_preview_decision(input, session, &payload, &target, tear_off.as_ref())?;
+        let decision = self.resolve_preview_decision(
+            input,
+            session,
+            pointer,
+            &payload,
+            &target,
+            tear_off.as_ref(),
+        )?;
         let _ = self.apply_preview_decision(input, session, decision, interaction_events)?;
         Ok(())
     }
@@ -1659,6 +2506,21 @@ impl DockEngine {
         }
     }
 
+    fn payload_surface(&self, payload: &MovePayload) -> Option<crate::ids::SurfaceId> {
+        let root = match payload {
+            MovePayload::Item(source) => source.root(),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+        };
+        self.root_surface(root)
+    }
+
+    fn root_surface(&self, root: crate::ids::RootId) -> Option<crate::ids::SurfaceId> {
+        match self.workspace.presentation_for_root(root)? {
+            crate::workspace::RootPresentation::Main { surface }
+            | crate::workspace::RootPresentation::Contained { surface, .. } => Some(surface),
+        }
+    }
+
     fn preflight_command(
         &self,
         input: InputSequence,
@@ -1752,7 +2614,7 @@ impl DockEngine {
                 input,
                 InteractionCancelReason::WorkspaceChanged,
                 interaction_events,
-            );
+            )?;
         }
         let outcome = report
             .into_outcomes()
@@ -1781,6 +2643,7 @@ impl DockEngine {
             scene: self.scene.clone(),
             last_scene_generation: self.last_scene_generation,
             interaction: self.interaction.clone(),
+            viewport: self.viewport.clone(),
             last_input: self.last_input,
             pending: self.pending.clone(),
         }
@@ -2007,10 +2870,13 @@ mod tests {
             .engine
             .enqueue_renderer_intent(RendererIntent::UpdateDrag {
                 session,
-                target: Authority::Known(Some(SurfacePointer::new(
+                target: TargetAuthority::local(
                     TARGET_SURFACE,
-                    LogicalPoint::new(50.0, 50.0).expect("test point must be valid"),
-                ))),
+                    Authority::Known(Some(SurfacePointer::new(
+                        TARGET_SURFACE,
+                        LogicalPoint::new(50.0, 50.0).expect("test point must be valid"),
+                    ))),
+                ),
                 tear_off: None,
             })
             .expect("update sequence must be available");

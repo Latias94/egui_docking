@@ -5,12 +5,14 @@
 //! presentation fallback from timing or geometry history.
 
 use crate::command::{MovePayload, NodeSource};
+use crate::coordinates::ViewportPlacementProof;
 use crate::geometry::{LogicalPoint, LogicalRect, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::interaction::{
     DragSessionId, InteractionCancelReason, PaintAcknowledgement, ResizeSessionId,
 };
+use crate::viewport_route::ViewportRouteProof;
 
 /// Authority attached to a provider observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +106,7 @@ impl SurfacePointer {
 
     /// Returns the logical target surface.
     #[must_use]
-    pub const fn surface(self) -> SurfaceId {
+    pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
@@ -115,34 +117,53 @@ impl SurfacePointer {
     }
 }
 
-/// Authoritative hovered-target observation.
+/// Authoritative hovered-target observation and its provenance.
 ///
-/// `Known(None)` means that the provider proved there is no dock target surface
-/// under the pointer. It is intentionally distinct from `Unknown`.
-pub type TargetAuthority = Authority<Option<SurfacePointer>>;
-
-/// Capability required to prepare a native-surface tear-off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeTearOffCapability {
-    /// The provider can execute the required native lifecycle protocol.
-    Supported,
-    /// The provider authoritatively does not support the operation.
-    Unsupported(NativeTearOffUnavailableReason),
-    /// Support cannot be established for the current boundary.
-    Unknown(NativeTearOffUnavailableReason),
+/// Local facts are valid only for one renderer callback surface. Cross-native-window facts must
+/// use an opaque core-produced route proof whose generations are revalidated at delivery.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetAuthority {
+    Local(LocalTargetObservation),
+    Routed(ViewportRouteProof),
 }
 
-/// Why native tear-off cannot currently be prepared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeTearOffUnavailableReason {
-    /// Native child surfaces are unsupported by the backend.
-    BackendUnsupported,
-    /// Authoritative desktop placement is unavailable.
-    PlacementUnavailable,
-    /// Authoritative cross-surface routing is unavailable.
-    RoutingUnavailable,
-    /// The relevant native surface is closing or unavailable.
-    SurfaceUnavailable,
+/// Renderer-local target facts bound to the exact callback surface that observed them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalTargetObservation {
+    observer: SurfaceId,
+    target: Authority<Option<SurfacePointer>>,
+}
+
+impl LocalTargetObservation {
+    #[must_use]
+    pub const fn observer(&self) -> SurfaceId {
+        self.observer
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> &Authority<Option<SurfacePointer>> {
+        &self.target
+    }
+}
+
+impl TargetAuthority {
+    #[must_use]
+    pub const fn local(observer: SurfaceId, target: Authority<Option<SurfacePointer>>) -> Self {
+        Self::Local(LocalTargetObservation { observer, target })
+    }
+
+    #[must_use]
+    pub const fn routed(proof: ViewportRouteProof) -> Self {
+        Self::Routed(proof)
+    }
+
+    #[must_use]
+    pub const fn route_proof(&self) -> Option<&ViewportRouteProof> {
+        match self {
+            Self::Local(_) => None,
+            Self::Routed(proof) => Some(proof),
+        }
+    }
 }
 
 /// Exact proposal for a contained-floating destination.
@@ -182,7 +203,7 @@ impl ContainedTearOffProposal {
 
     /// Returns the root identity used for newly detached content.
     #[must_use]
-    pub const fn root(self) -> RootId {
+    pub const fn root(&self) -> RootId {
         self.root
     }
 
@@ -206,40 +227,59 @@ impl ContainedTearOffProposal {
 }
 
 /// Exact proposal for a future native-surface lifecycle saga.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeTearOffProposal {
     surface: SurfaceId,
     root: RootId,
-    placement: PhysicalRect,
+    placement: ViewportPlacementProof,
+    recovery: ContainedTearOffProposal,
 }
 
 impl NativeTearOffProposal {
     /// Creates an explicit native-surface proposal with authoritative placement.
     #[must_use]
-    pub const fn new(surface: SurfaceId, root: RootId, placement: PhysicalRect) -> Self {
+    pub const fn new(
+        surface: SurfaceId,
+        root: RootId,
+        placement: ViewportPlacementProof,
+        recovery: ContainedTearOffProposal,
+    ) -> Self {
         Self {
             surface,
             root,
             placement,
+            recovery,
         }
     }
 
     /// Returns the logical surface identity to create.
     #[must_use]
-    pub const fn surface(self) -> SurfaceId {
+    pub const fn surface(&self) -> SurfaceId {
         self.surface
     }
 
     /// Returns the root identity used for newly detached content.
     #[must_use]
-    pub const fn root(self) -> RootId {
+    pub const fn root(&self) -> RootId {
         self.root
     }
 
     /// Returns the authoritative desktop-physical placement.
     #[must_use]
-    pub const fn placement(self) -> PhysicalRect {
-        self.placement
+    pub const fn placement(&self) -> &ViewportPlacementProof {
+        &self.placement
+    }
+
+    /// Returns the exact desktop-physical placement carried by the proof.
+    #[must_use]
+    pub fn physical_placement(&self) -> PhysicalRect {
+        self.placement.physical_rect()
+    }
+
+    /// Returns the whole-root contained recovery plan used after destruction.
+    #[must_use]
+    pub const fn recovery(&self) -> ContainedTearOffProposal {
+        self.recovery
     }
 }
 
@@ -252,8 +292,6 @@ pub enum TearOffRequest {
     Native {
         /// Native destination and placement.
         proposal: NativeTearOffProposal,
-        /// Current provider capability.
-        capability: NativeTearOffCapability,
         /// Optional contained proposal used only when policy enables fallback.
         contained_fallback: Option<ContainedTearOffProposal>,
     },

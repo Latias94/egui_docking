@@ -9,7 +9,7 @@ use dockspace::hit_region::HitRegion;
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
     Authority, AuthorityUnavailableReason, PointerButton, PointerButtonState, PointerId,
-    RendererIntent, SurfacePointer,
+    RendererIntent, SurfacePointer, TargetAuthority,
 };
 use dockspace::interaction::{
     DragGeneration, DragSessionId, InteractionCancelReason, InteractionOutcome,
@@ -179,7 +179,10 @@ fn begin_and_hover(fixture: &mut Fixture, session: DragSessionId, x: f64) {
         .engine
         .enqueue_renderer_intent(RendererIntent::UpdateDrag {
             session,
-            target: Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(x, 50.0)))),
+            target: TargetAuthority::local(
+                SURFACE_B,
+                Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(x, 50.0)))),
+            ),
             tear_off: None,
         })
         .expect("update sequence must be available");
@@ -200,6 +203,52 @@ fn release_intent(session: DragSessionId, x: f64) -> RendererIntent {
     )
 }
 
+#[test]
+fn local_target_cannot_claim_a_different_observer_surface() {
+    let mut fixture = fixture();
+    publish_ready_scene(&mut fixture);
+    let session = arm(&mut fixture);
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::BeginDrag {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+        })
+        .expect("begin sequence must be available");
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::UpdateDrag {
+            session,
+            target: TargetAuthority::local(
+                SURFACE_A,
+                Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(50.0, 50.0)))),
+            ),
+            tear_off: None,
+        })
+        .expect("forged local observation must enqueue");
+
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("forged local observation must cancel nonfatally");
+    assert!(matches!(
+        transition.reduced_inputs()[1].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Cancelled {
+                reason: InteractionCancelReason::UnknownTargetAuthority,
+                ..
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert!(fixture.engine.interaction().preview().is_none());
+}
+
 fn release_with(
     session: DragSessionId,
     pointer: PointerId,
@@ -212,7 +261,10 @@ fn release_with(
         pointer,
         button,
         button_state,
-        target: Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(x, 50.0)))),
+        target: TargetAuthority::local(
+            SURFACE_B,
+            Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(x, 50.0)))),
+        ),
         tear_off: None,
     }
 }
@@ -349,7 +401,10 @@ fn unpainted_release_is_consumed_once_without_mutation() {
         .engine
         .enqueue_renderer_intent(RendererIntent::UpdateDrag {
             session,
-            target: Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(50.0, 50.0)))),
+            target: TargetAuthority::local(
+                SURFACE_B,
+                Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(50.0, 50.0)))),
+            ),
             tear_off: None,
         })
         .expect("late update sequence must be available");
@@ -424,7 +479,10 @@ fn stale_preview_acknowledgement_cannot_mark_a_replacement_preview_as_painted() 
         .engine
         .enqueue_renderer_intent(RendererIntent::UpdateDrag {
             session,
-            target: Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(150.0, 50.0)))),
+            target: TargetAuthority::local(
+                SURFACE_B,
+                Authority::Known(Some(SurfacePointer::new(SURFACE_B, point(150.0, 50.0)))),
+            ),
             tear_off: None,
         })
         .expect("replacement preview sequence must be available");
@@ -596,7 +654,10 @@ fn unknown_target_authority_cancels_without_geometry_inference() {
         .engine
         .enqueue_renderer_intent(RendererIntent::UpdateDrag {
             session,
-            target: Authority::Unknown(dockspace::intent::AuthorityUnavailableReason::NotReported),
+            target: TargetAuthority::local(
+                SURFACE_B,
+                Authority::Unknown(dockspace::intent::AuthorityUnavailableReason::NotReported),
+            ),
             tear_off: None,
         })
         .expect("unknown observation sequence must be available");

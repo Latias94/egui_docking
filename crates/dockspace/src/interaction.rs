@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::command::{CommandOutcome, MovePayload, NodeSource, WorkspaceCommand};
 use crate::drop_target::DropTargetId;
+use crate::frame::NativeCreateRequest;
 use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{InputSequence, SurfaceId, WorkspaceEpoch};
@@ -250,6 +251,10 @@ pub enum InteractionCancelReason {
     UnknownTargetAuthority,
     /// Native tear-off capability became non-authoritative.
     NativeCapabilityUnknown,
+    /// Native tear-off capability became authoritatively unavailable.
+    NativeCapabilityUnavailable,
+    /// Native placement proof no longer matches current window facts.
+    NativePlacementUnavailable,
     /// The frozen source no longer exists.
     SourceVanished,
     /// A durable workspace command invalidated the session.
@@ -332,7 +337,7 @@ pub enum WorkspaceDeliveryKind {
 pub struct PreparedNativeTearOff {
     session: DragSessionId,
     source_version: WorkspaceVersion,
-    payload: MovePayload,
+    command: WorkspaceCommand,
     proposal: NativeTearOffProposal,
 }
 
@@ -340,13 +345,13 @@ impl PreparedNativeTearOff {
     pub(crate) fn new(
         session: DragSessionId,
         source_version: WorkspaceVersion,
-        payload: MovePayload,
+        command: WorkspaceCommand,
         proposal: NativeTearOffProposal,
     ) -> Self {
         Self {
             session,
             source_version,
-            payload,
+            command,
             proposal,
         }
     }
@@ -363,16 +368,16 @@ impl PreparedNativeTearOff {
         self.source_version
     }
 
-    /// Returns the frozen source payload. Ownership remains in the workspace.
+    /// Returns the exact preflighted mutation frozen before native creation.
     #[must_use]
-    pub const fn payload(&self) -> &MovePayload {
-        &self.payload
+    pub const fn command(&self) -> &WorkspaceCommand {
+        &self.command
     }
 
     /// Returns the explicit native destination and placement.
     #[must_use]
-    pub const fn proposal(&self) -> NativeTearOffProposal {
-        self.proposal
+    pub const fn proposal(&self) -> &NativeTearOffProposal {
+        &self.proposal
     }
 }
 
@@ -388,8 +393,8 @@ pub enum InteractionDelivery {
         /// Whether durable workspace state changed.
         changed: bool,
     },
-    /// A native lifecycle plan was prepared; source ownership did not move.
-    NativePrepared(PreparedNativeTearOff),
+    /// A native create saga entered the effect ledger; source ownership did not move.
+    NativeRequested(NativeCreateRequest),
 }
 
 /// Result of reducing one renderer intent.
@@ -500,8 +505,8 @@ pub enum InteractionEventKind {
     },
     /// One splitter resize committed.
     ResizeDelivered { session: ResizeSessionId },
-    /// A native lifecycle plan was prepared without moving source content.
-    NativeTearOffPrepared(PreparedNativeTearOff),
+    /// A native create saga entered the effect ledger without moving source content.
+    NativeTearOffRequested(NativeCreateRequest),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -516,6 +521,7 @@ pub(crate) enum PreviewProof {
         fallback: bool,
     },
     Native {
+        command: WorkspaceCommand,
         request: TearOffRequest,
         proposal: NativeTearOffProposal,
     },
@@ -689,6 +695,16 @@ impl InteractionState {
             ActiveGesture::Armed(armed) if armed.session == session => {
                 Err(InteractionRejection::DragNotBegun)
             }
+            _ => Err(self.session_rejection(session)),
+        }
+    }
+
+    pub(crate) fn armed_drag(
+        &self,
+        session: DragSessionId,
+    ) -> Result<&ArmedDrag, InteractionRejection> {
+        match &self.active {
+            ActiveGesture::Armed(armed) if armed.session == session => Ok(armed),
             _ => Err(self.session_rejection(session)),
         }
     }

@@ -8,11 +8,14 @@
 
 pub mod canonical;
 pub mod command;
+pub mod coordinates;
 pub mod drop_resolver;
 pub mod drop_target;
+pub mod effect;
 pub mod engine;
 pub mod error;
 pub mod event;
+pub mod frame;
 pub mod geometry;
 pub mod graph;
 pub mod hit_region;
@@ -23,11 +26,15 @@ pub mod layout;
 mod operation;
 #[cfg(feature = "serde")]
 pub mod persistence;
+pub mod platform;
 pub mod policy;
 pub mod scene;
 pub mod transaction;
 pub mod transition;
 pub mod validation;
+pub mod viewport;
+pub mod viewport_registry;
+pub mod viewport_route;
 mod workspace;
 
 /// Snapshot and conformance fixture schema version implemented by this crate.

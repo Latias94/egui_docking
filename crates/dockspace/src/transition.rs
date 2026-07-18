@@ -1,11 +1,17 @@
 //! Atomic engine transition records returned after successful publication.
 
 use crate::command::CommandOutcome;
+use crate::effect::EffectRequest;
+use crate::effect::{EffectId, EffectTransition};
 use crate::error::CommandError;
 use crate::event::WorkspaceEvent;
+use crate::frame::{
+    NativeCreateSagaId, ViewportCloseRequestId, ViewportFrameTransition, ViewportReconciliation,
+};
 use crate::ids::{InputSequence, WorkspaceEpoch, WorkspaceRevision};
 use crate::interaction::{InteractionEvent, InteractionOutcome};
 use crate::scene::{SceneBuildError, SceneStamp};
+use crate::viewport::ViewportBinding;
 
 /// Version of all workspace and policy state used to derive semantic input.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -52,12 +58,55 @@ pub enum InputPriority {
 /// Result of reducing one sequenced input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputOutcome {
+    /// An existing adapter window was bound to a logical surface.
+    ViewportRegistered {
+        /// Complete core-owned binding identity.
+        binding: ViewportBinding,
+    },
+    /// Viewport registration named no current logical surface.
+    ViewportRegistrationRejected {
+        /// Missing stable logical surface.
+        surface: crate::ids::SurfaceId,
+    },
+    /// One complete platform fact snapshot was atomically published.
+    PlatformSnapshotPublished {
+        /// Structured capability, inventory, and route transition.
+        transition: ViewportFrameTransition,
+    },
+    /// Platform facts from an earlier workspace epoch were consumed without mutation.
+    PlatformSnapshotStale {
+        expected_epoch: WorkspaceEpoch,
+        current_epoch: WorkspaceEpoch,
+    },
+    /// A correlated adapter dispatch result was reduced.
+    PlatformEffectReported {
+        effect: EffectId,
+        transition: EffectTransition,
+    },
+    /// One exact close request was decided without mutating topology.
+    ViewportCloseDecided {
+        request: ViewportCloseRequestId,
+        effect: Option<EffectId>,
+    },
+    /// One unresolved native-create saga was explicitly cancelled.
+    NativeCreateCancelled {
+        saga: NativeCreateSagaId,
+        /// Immediate compensation when the child had already become observable.
+        compensation: Option<EffectId>,
+    },
+    /// One definitively failed cleanup was replaced by a new exact-once effect.
+    ViewportCleanupRetried {
+        failed_effect: EffectId,
+        retry: EffectId,
+    },
     /// The complete workspace was replaced and all older derived state became stale.
     WorkspaceReplaced {
         /// Version before replacement.
         before: WorkspaceVersion,
         /// Version after replacement.
         after: WorkspaceVersion,
+        /// Exact native binding invalidation and cleanup summary.
+        reconciliation: ViewportReconciliation,
     },
     /// One checked command committed or produced a valid no-op.
     CommandProcessed {
@@ -165,6 +214,7 @@ pub struct EngineTransition {
     reduced: Vec<ReducedInput>,
     events: Vec<WorkspaceEvent>,
     interaction_events: Vec<InteractionEvent>,
+    platform_effects: Vec<EffectRequest>,
     published_state_changed: bool,
 }
 
@@ -175,6 +225,7 @@ impl EngineTransition {
         reduced: Vec<ReducedInput>,
         events: Vec<WorkspaceEvent>,
         interaction_events: Vec<InteractionEvent>,
+        platform_effects: Vec<EffectRequest>,
         published_state_changed: bool,
     ) -> Self {
         Self {
@@ -183,6 +234,7 @@ impl EngineTransition {
             reduced,
             events,
             interaction_events,
+            platform_effects,
             published_state_changed,
         }
     }
@@ -215,6 +267,12 @@ impl EngineTransition {
     #[must_use]
     pub fn interaction_events(&self) -> &[InteractionEvent] {
         &self.interaction_events
+    }
+
+    /// Returns exact platform effects emitted once after the candidate committed.
+    #[must_use]
+    pub fn platform_effects(&self) -> &[EffectRequest] {
+        &self.platform_effects
     }
 
     /// Returns whether any durable or policy state changed.
