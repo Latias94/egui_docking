@@ -5,7 +5,7 @@
 //! presentation fallback from timing or geometry history.
 
 use crate::command::{MovePayload, NodeSource};
-use crate::coordinates::ViewportPlacementProof;
+use crate::coordinates::{TearOffPlacementProof, ViewportPlacementProof};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
@@ -422,28 +422,153 @@ impl ContainedTearOffProposal {
     }
 }
 
+/// Durable recovery intent for a native surface.
+///
+/// Unlike [`ContainedTearOffProposal`], this value deliberately carries no scene
+/// generation or clamping proof. The engine re-authorizes it against the current
+/// sealed scene when recovery is actually committed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedRecoveryPlan {
+    root: RootId,
+    floating: FloatingPresentationId,
+    surface: SurfaceId,
+    requested_rect: LogicalRect,
+    minimum_size: LogicalSize,
+    z_order: u64,
+}
+
+impl ContainedRecoveryPlan {
+    /// Creates a durable recovery intent from explicit logical geometry.
+    #[must_use]
+    pub const fn new(
+        root: RootId,
+        floating: FloatingPresentationId,
+        surface: SurfaceId,
+        requested_rect: LogicalRect,
+        minimum_size: LogicalSize,
+        z_order: u64,
+    ) -> Self {
+        Self {
+            root,
+            floating,
+            surface,
+            requested_rect,
+            minimum_size,
+            z_order,
+        }
+    }
+
+    /// Copies the durable fields from a scene-bound proposal.
+    #[must_use]
+    pub const fn from_proposal(proposal: ContainedTearOffProposal) -> Self {
+        let placement = proposal.placement();
+        Self::new(
+            proposal.root(),
+            proposal.floating(),
+            proposal.surface(),
+            placement.requested_rect(),
+            placement.minimum_size(),
+            proposal.z_order(),
+        )
+    }
+
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    #[must_use]
+    pub const fn requested_rect(self) -> LogicalRect {
+        self.requested_rect
+    }
+
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+
+    #[must_use]
+    pub const fn z_order(self) -> u64 {
+        self.z_order
+    }
+
+    /// Returns a copy with a newer authoritative requested rectangle.
+    #[must_use]
+    pub const fn with_requested_rect(self, requested_rect: LogicalRect) -> Self {
+        Self {
+            requested_rect,
+            ..self
+        }
+    }
+}
+
+impl From<ContainedTearOffProposal> for ContainedRecoveryPlan {
+    fn from(proposal: ContainedTearOffProposal) -> Self {
+        Self::from_proposal(proposal)
+    }
+}
+
+/// Exact proposal for a future native-surface lifecycle saga.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NativePlacementProof {
+    Surface(ViewportPlacementProof),
+    TearOff(TearOffPlacementProof),
+}
+
+impl NativePlacementProof {
+    #[must_use]
+    pub const fn physical_rect(self) -> PhysicalRect {
+        match self {
+            Self::Surface(proof) => proof.physical_rect(),
+            Self::TearOff(proof) => proof.physical_rect(),
+        }
+    }
+}
+
+impl From<ViewportPlacementProof> for NativePlacementProof {
+    fn from(proof: ViewportPlacementProof) -> Self {
+        Self::Surface(proof)
+    }
+}
+
+impl From<TearOffPlacementProof> for NativePlacementProof {
+    fn from(proof: TearOffPlacementProof) -> Self {
+        Self::TearOff(proof)
+    }
+}
+
 /// Exact proposal for a future native-surface lifecycle saga.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeTearOffProposal {
     surface: SurfaceId,
     root: RootId,
-    placement: ViewportPlacementProof,
+    placement: NativePlacementProof,
     recovery: ContainedTearOffProposal,
 }
 
 impl NativeTearOffProposal {
     /// Creates an explicit native-surface proposal with authoritative placement.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         surface: SurfaceId,
         root: RootId,
-        placement: ViewportPlacementProof,
+        placement: impl Into<NativePlacementProof>,
         recovery: ContainedTearOffProposal,
     ) -> Self {
         Self {
             surface,
             root,
-            placement,
+            placement: placement.into(),
             recovery,
         }
     }
@@ -462,7 +587,7 @@ impl NativeTearOffProposal {
 
     /// Returns the authoritative desktop-physical placement.
     #[must_use]
-    pub const fn placement(&self) -> &ViewportPlacementProof {
+    pub const fn placement(&self) -> &NativePlacementProof {
         &self.placement
     }
 

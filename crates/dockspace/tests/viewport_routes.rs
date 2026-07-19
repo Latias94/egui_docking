@@ -12,7 +12,7 @@ use dockspace::interaction::{DragSessionId, InteractionOutcome, InteractionStatu
 use dockspace::platform::{
     ButtonObservation, ObservedWindow, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState,
+    PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -112,7 +112,8 @@ fn routing_capabilities() -> PlatformCapabilities {
     capabilities.set_hovered_window(PlatformCapability::Supported);
     capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
     capabilities.set_authoritative_button_state(PlatformCapability::Supported);
-    capabilities.set_pointer_passthrough(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
     capabilities
 }
 
@@ -129,6 +130,7 @@ fn observed_window(token: WindowToken, x: f64, input_state: WindowInputState) ->
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
         .with_input_state(Authority::Known(input_state))
+        .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(false))
 }
 
@@ -424,8 +426,8 @@ fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration
     );
 
     let mut capabilities = routing_capabilities();
-    capabilities.set_pointer_passthrough(PlatformCapability::unsupported(
-        PlatformRequirement::PointerPassthrough,
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::unsupported(
+        PlatformRequirement::PointerHitTestObservation,
         PlatformCapabilityReason::BackendUnsupported,
     ));
     let degraded = PlatformSnapshot::new(

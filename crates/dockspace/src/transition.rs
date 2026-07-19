@@ -88,6 +88,11 @@ pub enum InputOutcome {
         request: ViewportCloseRequestId,
         effect: Option<EffectId>,
     },
+    /// A close decision named recovery geometry which is unavailable in the current scene.
+    ViewportCloseDecisionRejected {
+        request: ViewportCloseRequestId,
+        reason: crate::intent::ContainedPlacementUnavailable,
+    },
     /// One unresolved native-create saga was explicitly cancelled.
     NativeCreateCancelled {
         saga: NativeCreateSagaId,

@@ -725,6 +725,25 @@ impl DockEngine {
         self.viewport.placement(surface, rect, work_area)
     }
 
+    /// Produces a native tear-off placement from the current authoritative
+    /// desktop pointer route and an explicitly selected work area.
+    ///
+    /// The cursor offset, preferred size, and minimum size are logical values
+    /// for the selected work area. They are scaled exactly once and the result
+    /// is clamped without monitor-selection heuristics.
+    pub fn tear_off_placement(
+        &self,
+        pointer: crate::intent::PointerId,
+        request: crate::coordinates::TearOffPlacementRequest,
+    ) -> Result<crate::coordinates::TearOffPlacementProof, ViewportCoordinatorError> {
+        self.viewport.tear_off_placement(pointer, request)
+    }
+
+    #[must_use]
+    pub fn native_placement_is_current(&self, proof: &crate::intent::NativePlacementProof) -> bool {
+        self.viewport.native_placement_is_current(proof)
+    }
+
     /// Produces a deterministic contained placement from current ready surface bounds.
     ///
     /// The returned proof is valid only for the exact sealed scene generation from which it was
@@ -1039,13 +1058,18 @@ impl DockEngine {
         if role == ViewportRole::Child && recovery.is_none() {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
-        if recovery.is_some_and(|recovery| {
-            self.validate_contained_placement(recovery.placement())
-                .is_err()
+        let recovery_plan = recovery.map(crate::intent::ContainedRecoveryPlan::from_proposal);
+        if recovery_plan.is_some_and(|recovery| {
+            self.contained_placement(
+                recovery.surface(),
+                recovery.requested_rect(),
+                recovery.minimum_size(),
+            )
+            .is_err()
         }) {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
-        if let Some(recovery) = recovery
+        if let Some(recovery) = recovery_plan
             && (presentation.main_root != recovery.root()
                 || recovery.surface() == surface
                 || self.workspace.surface(recovery.surface()).is_none())
@@ -1054,7 +1078,7 @@ impl DockEngine {
         }
         let binding = self
             .viewport
-            .register_existing(self.version.epoch(), surface, token, role, recovery)
+            .register_existing(self.version.epoch(), surface, token, role, recovery_plan)
             .map_err(|source| EngineError::Viewport { input, source })?;
         Ok(InputOutcome::ViewportRegistered { binding })
     }
@@ -1128,15 +1152,15 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
-        if let ViewportCloseDecision::Accept(plan) = &decision
-            && self
-                .validate_contained_placement(plan.recovery().placement())
-                .is_err()
-        {
-            return Ok(InputOutcome::StaleRejected {
-                expected: plan.recovery().placement().scene().workspace(),
-                accepted_base: self.version,
-            });
+        if let ViewportCloseDecision::Accept(plan) = &decision {
+            let recovery = plan.recovery();
+            if let Err(reason) = self.contained_placement(
+                recovery.surface(),
+                recovery.requested_rect(),
+                recovery.minimum_size(),
+            ) {
+                return Ok(InputOutcome::ViewportCloseDecisionRejected { request, reason });
+            }
         }
         if let ViewportCloseDecision::Accept(plan) = &decision
             && let Some(close_request) = self.viewport.viewport_close_request(request)
@@ -1213,10 +1237,11 @@ impl DockEngine {
             match action {
                 crate::frame::ViewportLifecycleAction::CreateReady { saga, prepared } => {
                     match self.apply_interaction_command(input, prepared.command(), events)? {
-                        CommandApplication::Applied { .. } => self
-                            .viewport
-                            .complete_native_create(*saga)
-                            .map_err(|source| EngineError::Viewport { input, source })?,
+                        CommandApplication::Applied { .. } => {
+                            self.viewport
+                                .complete_native_create(*saga)
+                                .map_err(|source| EngineError::Viewport { input, source })?;
+                        }
                         CommandApplication::Rejected(_) => {
                             self.viewport
                                 .reject_native_create(*saga)
@@ -1320,7 +1345,7 @@ impl DockEngine {
     fn apply_destroyed_surface_recovery(
         &mut self,
         input: InputSequence,
-        recovery: crate::intent::ContainedTearOffProposal,
+        recovery: crate::intent::ContainedRecoveryPlan,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<bool, EngineError> {
         if !self
@@ -1339,12 +1364,19 @@ impl DockEngine {
         else {
             return Ok(false);
         };
+        let Ok(placement) = self.contained_placement(
+            recovery.surface(),
+            recovery.requested_rect(),
+            recovery.minimum_size(),
+        ) else {
+            return Ok(false);
+        };
         let command = WorkspaceCommand::RehomeRoot {
             source,
             target: RootPresentationTarget::Contained {
                 surface: recovery.surface(),
                 floating: recovery.floating(),
-                rect: recovery.rect(),
+                rect: placement.clamped_rect(),
                 z_order: recovery.z_order(),
             },
         };
@@ -2639,7 +2671,10 @@ impl DockEngine {
                         InteractionCancelReason::UnknownTargetAuthority,
                     ));
                 }
-                if !self.viewport.placement_is_current(proposal.placement()) {
+                if !self
+                    .viewport
+                    .native_placement_is_current(proposal.placement())
+                {
                     return Ok(PreviewDecision::Cancel(
                         InteractionCancelReason::NativePlacementUnavailable,
                     ));
@@ -3167,6 +3202,16 @@ impl DockEngine {
                 })?;
             return Ok(());
         };
+        let tear_off = tear_off.map(|request| {
+            self.refresh_scene_bound_tear_off(&request)
+                .unwrap_or(request)
+        });
+        self.interaction
+            .set_drag_observation(session, target.clone(), tear_off.clone())
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?;
         let decision = self.resolve_preview_decision(
             input,
             session,
@@ -3177,6 +3222,53 @@ impl DockEngine {
         )?;
         let _ = self.apply_preview_decision(input, session, decision, interaction_events)?;
         Ok(())
+    }
+
+    fn refresh_scene_bound_tear_off(&self, request: &TearOffRequest) -> Option<TearOffRequest> {
+        match request {
+            TearOffRequest::Contained(proposal) => self
+                .refresh_contained_proposal(*proposal)
+                .map(TearOffRequest::Contained),
+            TearOffRequest::Native {
+                proposal,
+                contained_fallback,
+            } => {
+                let recovery = self.refresh_contained_proposal(proposal.recovery())?;
+                let contained_fallback = match contained_fallback {
+                    Some(fallback) => Some(self.refresh_contained_proposal(*fallback)?),
+                    None => None,
+                };
+                Some(TearOffRequest::native(
+                    crate::intent::NativeTearOffProposal::new(
+                        proposal.surface(),
+                        proposal.root(),
+                        *proposal.placement(),
+                        recovery,
+                    ),
+                    contained_fallback,
+                ))
+            }
+        }
+    }
+
+    fn refresh_contained_proposal(
+        &self,
+        proposal: crate::intent::ContainedTearOffProposal,
+    ) -> Option<crate::intent::ContainedTearOffProposal> {
+        let prior = proposal.placement();
+        let placement = self
+            .contained_placement(
+                proposal.surface(),
+                prior.requested_rect(),
+                prior.minimum_size(),
+            )
+            .ok()?;
+        Some(crate::intent::ContainedTearOffProposal::new(
+            proposal.root(),
+            proposal.floating(),
+            placement,
+            proposal.z_order(),
+        ))
     }
 
     fn validate_payload(&self, payload: &MovePayload) -> Result<(), crate::error::CommandError> {
@@ -3310,8 +3402,8 @@ impl DockEngine {
 
     fn root_surface(&self, root: crate::ids::RootId) -> Option<crate::ids::SurfaceId> {
         match self.workspace.presentation_for_root(root)? {
-            crate::workspace::RootPresentation::Main { surface }
-            | crate::workspace::RootPresentation::Contained { surface, .. } => Some(surface),
+            crate::RootPresentationOwner::Main { surface }
+            | crate::RootPresentationOwner::Contained { surface, .. } => Some(surface),
         }
     }
 

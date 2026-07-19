@@ -1,11 +1,12 @@
+use dockspace::coordinates::TearOffPlacementRequest;
 use dockspace::engine::DockEngine;
-use dockspace::geometry::{LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerId};
+use dockspace::intent::{Authority, NativePlacementProof, PointerId};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    PointerObservation, PointerWindow, WindowInputState,
+    PointerObservation, PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
@@ -54,7 +55,8 @@ fn supported_capabilities() -> PlatformCapabilities {
     capabilities.set_authoritative_button_state(PlatformCapability::Supported);
     capabilities.set_global_window_placement(PlatformCapability::Supported);
     capabilities.set_work_area(PlatformCapability::Supported);
-    capabilities.set_pointer_passthrough(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
     capabilities
 }
 
@@ -66,6 +68,7 @@ fn observed_window(token: WindowToken, content_bounds: PhysicalRect, scale: f64)
             ScaleFactor::new(scale).expect("test scale factor must be valid"),
         ))
         .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
+        .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(false))
 }
 
@@ -420,4 +423,81 @@ fn unknown_work_area_token_fails_closed() {
         ),
         Err(dockspace::coordinates::CoordinateUnavailable::UnknownWorkArea { .. })
     ));
+}
+
+#[test]
+fn tear_off_placement_uses_the_explicit_release_anchor_and_target_scale() {
+    let mut engine = DockEngine::new(workspace(&[SURFACE_ONE]), DockPolicy::default())
+        .expect("test engine must be valid");
+    register_viewports(&mut engine, &[(SURFACE_ONE, WINDOW_ONE)]);
+    let pointer = PointerId::new(9);
+    publish_snapshot(
+        &mut engine,
+        vec![observed_window(
+            WINDOW_ONE,
+            physical_rect(0.0, 0.0, 1000.0, 800.0),
+            1.0,
+        )],
+        vec![
+            PointerObservation::new(
+                pointer,
+                Authority::Known(PointerWindow::None),
+                Authority::Known(physical_point(100.0, 200.0)),
+                Authority::Known(Vec::new()),
+            )
+            .expect("test pointer observation must be valid"),
+        ],
+        vec![observed_work_area(
+            WORK_AREA_RIGHT,
+            physical_rect(0.0, 0.0, 2000.0, 1600.0),
+            2.0,
+        )],
+    );
+
+    let proof = engine
+        .tear_off_placement(
+            pointer,
+            TearOffPlacementRequest::new(
+                LogicalSize::new(10.0, 20.0).expect("offset must be valid"),
+                LogicalSize::new(300.0, 200.0).expect("preferred size must be valid"),
+                LogicalSize::new(400.0, 250.0).expect("minimum size must be valid"),
+                WORK_AREA_RIGHT,
+            ),
+        )
+        .expect("authoritative route and work area must solve placement");
+    assert_eq!(proof.pointer(), pointer);
+    assert_eq!(
+        proof.physical_rect(),
+        physical_rect(80.0, 160.0, 800.0, 500.0)
+    );
+    assert_eq!(
+        proof.requested_rect(),
+        logical_rect(40.0, 80.0, 400.0, 250.0)
+    );
+    let native_proof = NativePlacementProof::from(proof);
+    assert!(engine.native_placement_is_current(&native_proof));
+
+    publish_snapshot(
+        &mut engine,
+        vec![observed_window(
+            WINDOW_ONE,
+            physical_rect(0.0, 0.0, 1000.0, 800.0),
+            1.0,
+        )],
+        vec![
+            PointerObservation::new(
+                pointer,
+                Authority::Known(PointerWindow::None),
+                Authority::Known(physical_point(101.0, 200.0)),
+                Authority::Known(Vec::new()),
+            )
+            .expect("test pointer observation must be valid"),
+        ],
+        vec![observed_work_area(
+            WORK_AREA_RIGHT,
+            physical_rect(0.0, 0.0, 2000.0, 1600.0),
+            2.0,
+        )],
+    );
+    assert!(!engine.native_placement_is_current(&native_proof));
 }

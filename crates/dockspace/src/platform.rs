@@ -23,7 +23,8 @@ pub enum PlatformRequirement {
     AuthoritativeButtonState,
     GlobalWindowPlacement,
     WorkArea,
-    PointerPassthrough,
+    PointerHitTestObservation,
+    PointerHitTestControl,
     WindowFocus,
     CloseCancellation,
 }
@@ -105,7 +106,8 @@ pub struct PlatformCapabilities {
     authoritative_button_state: PlatformCapability,
     global_window_placement: PlatformCapability,
     work_area: PlatformCapability,
-    pointer_passthrough: PlatformCapability,
+    pointer_hit_test_observation: PlatformCapability,
+    pointer_hit_test_control: PlatformCapability,
     window_focus: PlatformCapability,
     close_cancellation: PlatformCapability,
 }
@@ -155,9 +157,14 @@ impl PlatformCapabilities {
         ),
         (work_area, set_work_area, work_area),
         (
-            pointer_passthrough,
-            set_pointer_passthrough,
-            pointer_passthrough
+            pointer_hit_test_observation,
+            set_pointer_hit_test_observation,
+            pointer_hit_test_observation
+        ),
+        (
+            pointer_hit_test_control,
+            set_pointer_hit_test_control,
+            pointer_hit_test_control
         ),
         (window_focus, set_window_focus, window_focus),
         (
@@ -185,7 +192,7 @@ impl PlatformCapabilities {
             self.authoritative_inventory,
             self.hovered_window,
             self.desktop_pointer_position,
-            self.pointer_passthrough,
+            self.pointer_hit_test_observation,
         ])
     }
 
@@ -206,7 +213,10 @@ impl Default for PlatformCapabilities {
             authoritative_button_state: not_reported(PlatformRequirement::AuthoritativeButtonState),
             global_window_placement: not_reported(PlatformRequirement::GlobalWindowPlacement),
             work_area: not_reported(PlatformRequirement::WorkArea),
-            pointer_passthrough: not_reported(PlatformRequirement::PointerPassthrough),
+            pointer_hit_test_observation: not_reported(
+                PlatformRequirement::PointerHitTestObservation,
+            ),
+            pointer_hit_test_control: not_reported(PlatformRequirement::PointerHitTestControl),
             window_focus: not_reported(PlatformRequirement::WindowFocus),
             close_cancellation: not_reported(PlatformRequirement::CloseCancellation),
         }
@@ -236,6 +246,17 @@ fn combine_required<const N: usize>(capabilities: [PlatformCapability; N]) -> Pl
 pub enum WindowInputState {
     ReceivesInput,
     PassThrough,
+}
+
+/// Independently observed presentation state of one native window.
+///
+/// This fact is deliberately separate from [`WindowInputState`]: a minimized
+/// window may retain its input mode while still being ineligible for pointer
+/// routing, placement, or focus-driven docking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowPresentationState {
+    Visible,
+    Hidden,
     Minimized,
 }
 
@@ -247,6 +268,7 @@ pub struct ObservedWindow {
     outer_bounds: Authority<PhysicalRect>,
     scale_factor: Authority<ScaleFactor>,
     input_state: Authority<WindowInputState>,
+    presentation: Authority<WindowPresentationState>,
     focused: Authority<bool>,
     close_requested: Authority<bool>,
 }
@@ -261,6 +283,7 @@ impl ObservedWindow {
             outer_bounds: unavailable(),
             scale_factor: unavailable(),
             input_state: unavailable(),
+            presentation: unavailable(),
             focused: unavailable(),
             close_requested: unavailable(),
         }
@@ -289,6 +312,11 @@ impl ObservedWindow {
     #[must_use]
     pub const fn input_state(&self) -> &Authority<WindowInputState> {
         &self.input_state
+    }
+
+    #[must_use]
+    pub const fn presentation(&self) -> &Authority<WindowPresentationState> {
+        &self.presentation
     }
 
     #[must_use]
@@ -322,6 +350,12 @@ impl ObservedWindow {
     #[must_use]
     pub fn with_input_state(mut self, value: Authority<WindowInputState>) -> Self {
         self.input_state = value;
+        self
+    }
+
+    #[must_use]
+    pub fn with_presentation(mut self, value: Authority<WindowPresentationState>) -> Self {
+        self.presentation = value;
         self
     }
 

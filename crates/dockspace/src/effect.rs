@@ -40,10 +40,18 @@ impl EffectId {
 /// Exact adapter operation requested by the core.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlatformEffect {
+    /// Create one hidden native window at the exact requested placement.
+    ///
+    /// The adapter must not expose it for input until the core later emits
+    /// [`PlatformEffect::ShowWindow`].
     CreateWindow {
         binding: ViewportBinding,
         placement: PhysicalRect,
         role: ViewportRole,
+    },
+    /// Show a previously created hidden window after topology commit.
+    ShowWindow {
+        binding: ViewportBinding,
     },
     CompensatingClose {
         binding: ViewportBinding,
@@ -81,6 +89,7 @@ impl PlatformEffect {
     pub const fn binding(&self) -> ViewportBinding {
         match self {
             Self::CreateWindow { binding, .. }
+            | Self::ShowWindow { binding }
             | Self::CompensatingClose { binding, .. }
             | Self::CancelRootClose { binding }
             | Self::RetainChild { binding }

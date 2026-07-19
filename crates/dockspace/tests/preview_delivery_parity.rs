@@ -16,7 +16,7 @@ use dockspace::interaction::{
 use dockspace::platform::{
     ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState,
+    PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::{ContainedFallback, DockPolicy};
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -60,7 +60,8 @@ fn platform_capabilities(native_lifecycle: PlatformCapability) -> PlatformCapabi
     capabilities.set_authoritative_button_state(PlatformCapability::Supported);
     capabilities.set_global_window_placement(PlatformCapability::Supported);
     capabilities.set_work_area(PlatformCapability::Supported);
-    capabilities.set_pointer_passthrough(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
     capabilities.set_window_focus(PlatformCapability::Supported);
     capabilities.set_close_cancellation(PlatformCapability::Supported);
     capabilities
@@ -84,6 +85,7 @@ fn platform_snapshot_with_work_area(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
         .with_input_state(Authority::Known(WindowInputState::PassThrough))
+        .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(false));
     let pointer = PointerObservation::new(
         POINTER,
@@ -374,6 +376,57 @@ fn contained_preview_and_delivery_use_the_same_exact_command() {
         .expect("contained presentation must exist");
     assert_eq!(floating.root, ROOT_NEW);
     assert_eq!(floating.surface, SURFACE_B);
+}
+
+#[test]
+fn scene_publication_rebinds_contained_proof_before_republishing_preview() {
+    let mut fixture = fixture(DockPolicy::default(), &[1, 2]);
+    publish_scene(&mut fixture);
+    let session = arm_and_begin(&mut fixture);
+    let request = TearOffRequest::Contained(contained_proposal(&fixture, ROOT_NEW, 10.0));
+    preview_tear_off(&mut fixture, session, request);
+    let prior_scene = fixture
+        .engine
+        .scene()
+        .expect("first scene remains published")
+        .stamp();
+
+    publish_scene(&mut fixture);
+
+    let current_scene = fixture
+        .engine
+        .scene()
+        .expect("replacement scene is published")
+        .stamp();
+    assert_ne!(current_scene, prior_scene);
+    assert!(matches!(
+        fixture.engine.interaction().preview(),
+        Some(preview) if preview.token().scene() == current_scene
+            && matches!(preview.visual(), PreviewVisual::Contained { .. })
+    ));
+    let request = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .and_then(|drag| drag.tear_off().cloned())
+        .expect("core retains the rebound tear-off request");
+    let TearOffRequest::Contained(proposal) = &request else {
+        panic!("fixture uses a contained request");
+    };
+    assert_eq!(proposal.placement().scene(), current_scene);
+
+    let delivery = release_tear_off(&mut fixture, session, request);
+    assert!(matches!(
+        delivery,
+        InteractionOutcome::DragDelivered {
+            delivery: InteractionDelivery::Workspace {
+                kind: WorkspaceDeliveryKind::Contained,
+                changed: true,
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 #[test]

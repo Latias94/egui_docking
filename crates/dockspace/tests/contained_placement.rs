@@ -366,7 +366,7 @@ fn scene_rollover_rejects_old_rect_and_tear_off_proofs_atomically() {
 }
 
 #[test]
-fn viewport_registration_rejects_a_recovery_from_an_old_scene() {
+fn viewport_registration_retains_recovery_intent_without_the_old_scene_proof() {
     let mut fixture = fixture();
     publish_ready_scene(&mut fixture.engine);
     let placement = fixture
@@ -390,13 +390,14 @@ fn viewport_registration_rejects_a_recovery_from_an_old_scene() {
     let transition = fixture
         .engine
         .reduce_pending()
-        .expect("registration rejection must reduce");
+        .expect("registration must reduce");
 
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
-        InputOutcome::ViewportRegistrationRejected { surface } if *surface == SURFACE_B
+        InputOutcome::ViewportRegistered { binding }
+            if binding.surface() == SURFACE_B && binding.token() == WindowToken::new(22)
     ));
-    assert!(fixture.engine.viewport().viewport(SURFACE_B).is_none());
+    assert!(fixture.engine.viewport().viewport(SURFACE_B).is_some());
     assert_eq!(fixture.engine.workspace(), &before);
     assert_eq!(fixture.engine.version(), version);
 }

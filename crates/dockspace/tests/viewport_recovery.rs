@@ -9,10 +9,10 @@ use dockspace::frame::{
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use dockspace::intent::{Authority, ContainedTearOffProposal};
+use dockspace::intent::{Authority, ContainedRecoveryPlan, ContainedTearOffProposal};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    WindowInputState,
+    WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -34,6 +34,8 @@ struct Fixture {
     child_root_node: NodeId,
     initial_items: std::collections::BTreeMap<ItemId, usize>,
     recovery: ContainedTearOffProposal,
+    expected_recovery: ContainedRecoveryPlan,
+    expected_recovered_rect: LogicalRect,
 }
 
 struct PendingFixture {
@@ -83,6 +85,15 @@ fn platform_capabilities() -> PlatformCapabilities {
 }
 
 fn ready_window(token: WindowToken, x: f64, close_requested: bool) -> ObservedWindow {
+    ready_window_with_scale(token, x, close_requested, 1.0)
+}
+
+fn ready_window_with_scale(
+    token: WindowToken,
+    x: f64,
+    close_requested: bool,
+    scale: f64,
+) -> ObservedWindow {
     ObservedWindow::new(token)
         .with_content_bounds(Authority::Known(physical_rect(x, 0.0, 900.0, 700.0)))
         .with_outer_bounds(Authority::Known(physical_rect(
@@ -92,9 +103,10 @@ fn ready_window(token: WindowToken, x: f64, close_requested: bool) -> ObservedWi
             738.0,
         )))
         .with_scale_factor(Authority::Known(
-            ScaleFactor::new(1.0).expect("test scale factor must be valid"),
+            ScaleFactor::new(scale).expect("test scale factor must be valid"),
         ))
         .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
+        .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(close_requested))
 }
 
@@ -176,12 +188,30 @@ fn fixture() -> Fixture {
         .expect("child viewport must be registered")
         .binding();
     publish_windows(&mut engine, vec![host_window(), child_window(false)]);
+    let expected_recovery = ContainedRecoveryPlan::new(
+        ROOT_CHILD,
+        RECOVERY_FLOATING,
+        SURFACE_HOST,
+        logical_rect(1192.0, -30.0, 916.0, 738.0),
+        LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        7,
+    );
+    let expected_recovered_rect = engine
+        .contained_placement(
+            expected_recovery.surface(),
+            expected_recovery.requested_rect(),
+            expected_recovery.minimum_size(),
+        )
+        .expect("latest native geometry must be recoverable in the host scene")
+        .clamped_rect();
     Fixture {
         engine,
         child_binding,
         child_root_node,
         initial_items,
         recovery,
+        expected_recovery,
+        expected_recovered_rect,
     }
 }
 
@@ -273,7 +303,7 @@ fn pending_fixture() -> PendingFixture {
         .recovery_pending(SURFACE_CHILD)
         .expect("destroyed child must retain a queryable recovery");
     assert_eq!(pending.destroyed_binding(), fixture.child_binding);
-    assert_eq!(pending.recovery(), fixture.recovery);
+    assert_eq!(pending.recovery(), fixture.expected_recovery);
     assert_eq!(pending.replacement_binding(), Some(replacement_binding));
     assert_eq!(pending.replacement_effect(), Some(replacement_effect));
     assert_eq!(
@@ -306,7 +336,7 @@ fn assert_whole_root_recovered(fixture: &Fixture) {
         .expect("the complete child root must be recovered as one contained presentation");
     assert_eq!(recovered.root, ROOT_CHILD);
     assert_eq!(recovered.surface, SURFACE_HOST);
-    assert_eq!(recovered.rect, fixture.recovery.rect());
+    assert_eq!(recovered.rect, fixture.expected_recovered_rect);
     assert_eq!(recovered.z_order, fixture.recovery.z_order());
     assert_eq!(
         fixture
@@ -358,6 +388,39 @@ fn destroyed_child_recovers_the_whole_root_when_the_host_is_ready() {
             PlatformEffect::RequestReplacement { .. }
         )),
         0
+    );
+}
+
+#[test]
+fn recovery_uses_the_latest_native_outer_bounds_in_the_current_host_scale() {
+    let mut fixture = fixture();
+    publish_windows(
+        &mut fixture.engine,
+        vec![
+            ready_window_with_scale(HOST_TOKEN, 100.0, false, 2.0),
+            ready_window(CHILD_TOKEN, 300.0, false),
+        ],
+    );
+
+    publish_windows(
+        &mut fixture.engine,
+        vec![ready_window_with_scale(HOST_TOKEN, 100.0, false, 2.0)],
+    );
+
+    let recovered = fixture
+        .engine
+        .workspace()
+        .contained_floating(RECOVERY_FLOATING)
+        .expect("destroyed child must recover into the current host");
+    assert_eq!(recovered.root, ROOT_CHILD);
+    assert_eq!(
+        recovered.rect,
+        logical_rect(96.0, 0.0, 458.0, 369.0),
+        "desktop-physical child geometry must be converted with the host scale exactly once"
+    );
+    assert_eq!(
+        fixture.engine.workspace().item_multiset(),
+        fixture.initial_items
     );
 }
 

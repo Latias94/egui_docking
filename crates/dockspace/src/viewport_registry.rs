@@ -8,6 +8,7 @@ use crate::coordinates::{CoordinateSnapshot, CoordinateUnavailable, ViewportPlac
 use crate::geometry::LogicalRect;
 use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
+use crate::platform::WindowPresentationState;
 use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot};
 use crate::viewport::{
     CoordinateGeneration, InventoryGeneration, ViewportBinding, ViewportRole, WindowIncarnation,
@@ -55,6 +56,15 @@ impl ViewportRecord {
     #[must_use]
     pub const fn is_ready(&self) -> bool {
         matches!(self.lifecycle, ViewportLifecycle::Ready)
+    }
+
+    /// Returns whether the window is eligible for authoritative pointer routing.
+    #[must_use]
+    pub(crate) fn is_routeable(&self) -> bool {
+        self.is_ready()
+            && self.coordinates.is_some_and(|coordinates| {
+                coordinates.presentation() == Some(WindowPresentationState::Visible)
+            })
     }
 
     pub(crate) const fn coordinates(&self) -> Option<CoordinateSnapshot> {
@@ -608,7 +618,9 @@ pub enum ViewportRegistryError {
 mod tests {
     use super::*;
     use crate::geometry::{PhysicalRect, ScaleFactor};
-    use crate::platform::{PlatformCapabilities, PlatformCapability, WindowInputState};
+    use crate::platform::{
+        PlatformCapabilities, PlatformCapability, WindowInputState, WindowPresentationState,
+    };
 
     fn ready_window(token: WindowToken, close_requested: bool) -> ObservedWindow {
         ObservedWindow::new(token)
@@ -622,6 +634,7 @@ mod tests {
                 ScaleFactor::new(1.0).expect("test scale must be valid"),
             ))
             .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
+            .with_presentation(Authority::Known(WindowPresentationState::Visible))
             .with_close_requested(Authority::Known(close_requested))
     }
 

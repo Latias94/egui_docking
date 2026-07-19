@@ -1,4 +1,5 @@
 use dockspace::command::{MovePayload, RootContent, WorkspaceCommand};
+use dockspace::coordinates::TearOffPlacementRequest;
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectIndeterminateReason, EffectPhase,
     EffectRequest, EffectResult, EffectTransition, PlatformEffect,
@@ -21,7 +22,7 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputState,
+    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -168,7 +169,8 @@ fn platform_capabilities() -> PlatformCapabilities {
     capabilities.set_authoritative_button_state(PlatformCapability::Supported);
     capabilities.set_global_window_placement(PlatformCapability::Supported);
     capabilities.set_work_area(PlatformCapability::Supported);
-    capabilities.set_pointer_passthrough(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+    capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
     capabilities.set_window_focus(PlatformCapability::Supported);
     capabilities.set_close_cancellation(PlatformCapability::Supported);
     capabilities
@@ -192,6 +194,7 @@ fn observed_window(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
         .with_input_state(Authority::Known(input_state))
+        .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(close_requested))
 }
 
@@ -426,12 +429,16 @@ fn start_native_create_with_payload(
     publish_windows(fixture, vec![source_window(false), host_window(false)]);
     let placement = fixture
         .engine
-        .viewport_placement(
-            SURFACE_SOURCE,
-            logical_rect(100.0, 120.0, 640.0, 480.0),
-            WORK_AREA,
+        .tear_off_placement(
+            POINTER,
+            TearOffPlacementRequest::new(
+                LogicalSize::new(50.0, 40.0).expect("cursor offset must be valid"),
+                LogicalSize::new(640.0, 480.0).expect("preferred size must be valid"),
+                LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+                WORK_AREA,
+            ),
         )
-        .expect("current source facts must produce a placement proof");
+        .expect("current route facts must produce a placement proof");
     let request = TearOffRequest::native(
         NativeTearOffProposal::new(
             SURFACE_NATIVE,
@@ -543,6 +550,20 @@ fn native_window(request: NativeCreateRequest, close_requested: bool) -> Observe
         close_requested,
         WindowInputState::ReceivesInput,
     )
+}
+
+fn native_window_with_presentation(
+    request: NativeCreateRequest,
+    close_requested: bool,
+    presentation: WindowPresentationState,
+    focused: Option<bool>,
+) -> ObservedWindow {
+    let window =
+        native_window(request, close_requested).with_presentation(Authority::Known(presentation));
+    match focused {
+        Some(focused) => window.with_focused(Authority::Known(focused)),
+        None => window,
+    }
 }
 
 fn close_request_from(transition: &EngineTransition) -> ViewportCloseRequestId {
@@ -673,7 +694,7 @@ fn create_commits_only_after_the_reserved_binding_is_observed_ready() {
         NativeCreateStatus::Requested
     );
 
-    publish_windows(
+    let ready = publish_windows(
         &mut fixture,
         vec![
             source_window(false),
@@ -681,16 +702,25 @@ fn create_commits_only_after_the_reserved_binding_is_observed_ready() {
             native_window(request, false),
         ],
     );
+    effect_of_kind(ready.platform_effects(), |effect| {
+        matches!(
+            effect,
+            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+        )
+    });
 
-    assert_eq!(
+    assert!(matches!(
         fixture
             .engine
             .viewport()
             .native_create_saga(request.saga())
             .expect("committed saga must remain queryable")
             .status(),
-        NativeCreateStatus::Committed
-    );
+        NativeCreateStatus::Committed {
+            show: None,
+            focus: Some(_),
+        }
+    ));
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
     assert!(fixture.engine.workspace().root(ROOT_NATIVE).is_some());
     assert_eq!(
@@ -704,6 +734,157 @@ fn create_commits_only_after_the_reserved_binding_is_observed_ready() {
             .effects()
             .record(request.effect())
             .expect("create effect must remain queryable")
+            .phase(),
+        EffectPhase::ObservedApplied { .. }
+    ));
+}
+
+#[test]
+fn hidden_native_create_commits_topology_before_showing_the_window() {
+    let mut fixture = fixture();
+    prepare_base_platform(&mut fixture, ViewportRole::Child);
+    let request = start_native_create(&mut fixture);
+
+    let hidden = publish_windows(
+        &mut fixture,
+        vec![
+            source_window(false),
+            host_window(false),
+            native_window_with_presentation(
+                request,
+                false,
+                WindowPresentationState::Hidden,
+                Some(false),
+            ),
+        ],
+    );
+    let show = effect_of_kind(hidden.platform_effects(), |effect| {
+        matches!(
+            effect,
+            PlatformEffect::ShowWindow { binding } if *binding == request.binding()
+        )
+    });
+    assert!(!hidden.platform_effects().iter().any(|effect| {
+        matches!(
+            effect.effect(),
+            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+        )
+    }));
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .expect("hidden create saga must remain queryable")
+            .status(),
+        NativeCreateStatus::CommittedAwaitingVisibility { show: actual } if actual == show.id()
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(show.id())
+            .expect("show effect must remain queryable")
+            .phase(),
+        EffectPhase::Requested
+    ));
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
+    assert!(fixture.engine.workspace().root(ROOT_NATIVE).is_some());
+}
+
+#[test]
+fn hidden_native_create_waits_for_visible_and_focused_observations() {
+    let mut fixture = fixture();
+    prepare_base_platform(&mut fixture, ViewportRole::Child);
+    let request = start_native_create(&mut fixture);
+    let _ = publish_windows(
+        &mut fixture,
+        vec![
+            source_window(false),
+            host_window(false),
+            native_window_with_presentation(
+                request,
+                false,
+                WindowPresentationState::Hidden,
+                Some(false),
+            ),
+        ],
+    );
+
+    let visible = publish_windows(
+        &mut fixture,
+        vec![
+            source_window(false),
+            host_window(false),
+            native_window_with_presentation(
+                request,
+                false,
+                WindowPresentationState::Visible,
+                Some(false),
+            ),
+        ],
+    );
+    let focus = effect_of_kind(visible.platform_effects(), |effect| {
+        matches!(
+            effect,
+            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+        )
+    });
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(request.saga())
+            .expect("visible create saga must remain queryable")
+            .status(),
+        NativeCreateStatus::Committed {
+            show: Some(_),
+            focus: Some(actual),
+        } if actual == focus.id()
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(request.effect())
+            .expect("create effect must remain queryable")
+            .phase(),
+        EffectPhase::ObservedApplied { .. }
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(focus.id())
+            .expect("focus effect must remain queryable")
+            .phase(),
+        EffectPhase::Requested
+    ));
+
+    let focused = publish_windows(
+        &mut fixture,
+        vec![
+            source_window(false),
+            host_window(false),
+            native_window_with_presentation(
+                request,
+                false,
+                WindowPresentationState::Visible,
+                Some(true),
+            ),
+        ],
+    );
+    assert!(focused.platform_effects().is_empty());
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(focus.id())
+            .expect("focus effect must remain queryable")
             .phase(),
         EffectPhase::ObservedApplied { .. }
     ));
@@ -1738,7 +1919,7 @@ fn accepted_close_result_is_independent_of_failure_and_destruction_order() {
 }
 
 #[test]
-fn direct_native_destruction_uses_the_committed_whole_root_recovery() {
+fn direct_native_destruction_waits_for_current_scene_before_whole_root_recovery() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
@@ -1754,8 +1935,19 @@ fn direct_native_destruction_uses_the_committed_whole_root_recovery() {
 
     publish_windows(&mut fixture, vec![source_window(false), host_window(false)]);
 
+    assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_NATIVE)
+            .is_some()
+    );
+
+    publish_scene(&mut fixture);
+    publish_windows(&mut fixture, vec![source_window(false), host_window(false)]);
+
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_none());
-    assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
     let recovered = fixture
         .engine
         .workspace()

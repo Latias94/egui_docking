@@ -5,14 +5,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::command::WorkspaceCommand;
-use crate::coordinates::{CoordinateUnavailable, ViewportPlacementProof};
+use crate::coordinates::{
+    CoordinateUnavailable, TearOffPlacementProof, TearOffPlacementRequest,
+    TearOffPlacementUnavailable, ViewportPlacementProof,
+};
 use crate::effect::{
     EffectDispatchResult, EffectId, EffectLedger, EffectLedgerError, EffectPhase, EffectRequest,
     EffectResult, EffectTransition, PlatformEffect,
 };
 use crate::geometry::LogicalRect;
 use crate::ids::{SurfaceId, WorkspaceEpoch};
-use crate::intent::{ContainedTearOffProposal, PointerId};
+use crate::intent::{ContainedRecoveryPlan, NativePlacementProof, PointerId};
 use crate::interaction::PreparedNativeTearOff;
 use crate::platform::{
     ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
@@ -70,10 +73,27 @@ lifecycle_id!(
 pub enum NativeCreateStatus {
     Requested,
     Indeterminate,
-    ReadyUncommitted,
-    Committed,
+    GeometryReadyUncommitted,
+    CommittedAwaitingVisibility {
+        show: EffectId,
+    },
+    Committed {
+        show: Option<EffectId>,
+        focus: Option<EffectId>,
+    },
     Cancelled,
-    Compensating { effect: EffectId },
+    Compensating {
+        effect: EffectId,
+    },
+}
+
+impl NativeCreateStatus {
+    const fn topology_committed(self) -> bool {
+        matches!(
+            self,
+            Self::CommittedAwaitingVisibility { .. } | Self::Committed { .. }
+        )
+    }
 }
 
 /// Queryable native create saga. Source ownership remains unchanged until commit.
@@ -146,15 +166,18 @@ impl NativeCreateSaga {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewportClosePlan {
     primary: Option<WorkspaceCommand>,
-    recovery: Box<ContainedTearOffProposal>,
+    recovery: ContainedRecoveryPlan,
 }
 
 impl ViewportClosePlan {
     #[must_use]
-    pub fn new(primary: Option<WorkspaceCommand>, recovery: ContainedTearOffProposal) -> Self {
+    pub fn new(
+        primary: Option<WorkspaceCommand>,
+        recovery: impl Into<ContainedRecoveryPlan>,
+    ) -> Self {
         Self {
             primary,
-            recovery: Box::new(recovery),
+            recovery: recovery.into(),
         }
     }
 
@@ -164,8 +187,8 @@ impl ViewportClosePlan {
     }
 
     #[must_use]
-    pub fn recovery(&self) -> ContainedTearOffProposal {
-        *self.recovery
+    pub const fn recovery(&self) -> ContainedRecoveryPlan {
+        self.recovery
     }
 }
 
@@ -194,7 +217,7 @@ pub struct ViewportCloseRequest {
     id: ViewportCloseRequestId,
     binding: ViewportBinding,
     role: ViewportRole,
-    recovery: Option<ContainedTearOffProposal>,
+    recovery: Option<ContainedRecoveryPlan>,
     status: ViewportCloseStatus,
     plan: Option<ViewportClosePlan>,
     effect: Option<EffectId>,
@@ -306,7 +329,7 @@ pub enum RecoveryPendingStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryPending {
     destroyed_binding: ViewportBinding,
-    recovery: ContainedTearOffProposal,
+    recovery: ContainedRecoveryPlan,
     replacement_binding: Option<ViewportBinding>,
     replacement_effect: Option<EffectId>,
     status: RecoveryPendingStatus,
@@ -353,7 +376,7 @@ impl RecoveryPending {
     }
 
     #[must_use]
-    pub const fn recovery(&self) -> ContainedTearOffProposal {
+    pub const fn recovery(&self) -> ContainedRecoveryPlan {
         self.recovery
     }
 
@@ -391,7 +414,7 @@ impl ViewportCloseRequest {
 
     /// Returns the recovery captured when the request edge was observed.
     #[must_use]
-    pub const fn recovery(&self) -> Option<ContainedTearOffProposal> {
+    pub const fn recovery(&self) -> Option<ContainedRecoveryPlan> {
         self.recovery
     }
 
@@ -424,7 +447,7 @@ pub(crate) enum ViewportLifecycleAction {
     },
     RetryRecovery {
         destroyed_binding: ViewportBinding,
-        recovery: ContainedTearOffProposal,
+        recovery: ContainedRecoveryPlan,
     },
 }
 
@@ -435,7 +458,7 @@ pub(crate) enum ViewportDestructionResolution {
         plan: ViewportClosePlan,
     },
     Recover {
-        recovery: ContainedTearOffProposal,
+        recovery: ContainedRecoveryPlan,
     },
     Unplanned,
 }
@@ -507,15 +530,23 @@ pub struct ViewportCoordinator {
     routes: ViewportRouteState,
     effects: EffectLedger,
     drag_sources: BTreeMap<PointerId, ViewportBinding>,
+    pointer_hit_test_leases: BTreeMap<ViewportBinding, PointerHitTestLease>,
     last_create_saga: NativeCreateSagaId,
     create_sagas: BTreeMap<NativeCreateSagaId, NativeCreateSaga>,
     last_close_request: ViewportCloseRequestId,
     close_requests: BTreeMap<ViewportCloseRequestId, ViewportCloseRequest>,
     active_close_requests: BTreeMap<ViewportBinding, ViewportCloseRequestId>,
-    recovery_plans: BTreeMap<SurfaceId, ContainedTearOffProposal>,
+    recovery_plans: BTreeMap<SurfaceId, ContainedRecoveryPlan>,
     retired_viewports: BTreeMap<WindowToken, RetiredViewport>,
     pending_recoveries: BTreeMap<SurfaceId, RecoveryPending>,
     restore_replacements: BTreeMap<SurfaceId, RestoreReplacement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PointerHitTestLease {
+    original: WindowInputState,
+    changed_by_us: bool,
+    holders: BTreeSet<PointerId>,
 }
 
 struct RestoreAnalysis {
@@ -523,7 +554,7 @@ struct RestoreAnalysis {
     creation_by_binding: BTreeMap<ViewportBinding, (EffectId, RetiredCleanup)>,
     cleanup_by_binding: BTreeMap<ViewportBinding, EffectId>,
     retained_bindings: BTreeSet<ViewportBinding>,
-    drag_sources: BTreeSet<ViewportBinding>,
+    passthrough_restores: BTreeSet<ViewportBinding>,
     replacement_supported: bool,
 }
 
@@ -543,7 +574,7 @@ impl ViewportCoordinator {
         surface: SurfaceId,
         token: WindowToken,
         role: ViewportRole,
-        recovery: Option<ContainedTearOffProposal>,
+        recovery: Option<ContainedRecoveryPlan>,
     ) -> Result<ViewportBinding, ViewportCoordinatorError> {
         if self.registry.records().next().is_some() && epoch != self.workspace_epoch {
             return Err(ViewportCoordinatorError::WorkspaceEpochMismatch {
@@ -587,6 +618,7 @@ impl ViewportCoordinator {
         candidate.workspace_epoch = new_epoch;
         candidate.routes.clear();
         candidate.drag_sources.clear();
+        candidate.pointer_hit_test_leases.clear();
         candidate.restore_replacements.clear();
         let mut accumulated = RestoreAccumulation::default();
         candidate.reissue_invalidated_retired_cleanup(&mut accumulated.cleanup_effects)?;
@@ -707,7 +739,11 @@ impl ViewportCoordinator {
             creation_by_binding,
             cleanup_by_binding,
             retained_bindings,
-            drag_sources: self.drag_sources.values().copied().collect(),
+            passthrough_restores: self
+                .pointer_hit_test_leases
+                .iter()
+                .filter_map(|(binding, lease)| lease.changed_by_us.then_some(*binding))
+                .collect(),
             replacement_supported: self.capabilities.native_window_lifecycle().is_supported()
                 && self.capabilities.authoritative_inventory().is_supported(),
         }
@@ -724,7 +760,7 @@ impl ViewportCoordinator {
         let binding = record.binding();
         let create_is_committed = creates
             .get(&binding)
-            .is_none_or(|saga| saga.status == NativeCreateStatus::Committed);
+            .is_none_or(|saga| saga.status.topology_committed());
         let destructive_close = closes.get(&binding).is_some_and(|request| {
             request.plan.is_some()
                 && matches!(
@@ -783,7 +819,7 @@ impl ViewportCoordinator {
         rebound: &BTreeMap<ViewportBinding, ViewportBinding>,
         cleanup_effects: &mut Vec<EffectId>,
     ) -> Result<(), ViewportCoordinatorError> {
-        for old_binding in &analysis.drag_sources {
+        for old_binding in &analysis.passthrough_restores {
             let Some(binding) = rebound.get(old_binding).copied() else {
                 continue;
             };
@@ -1037,7 +1073,7 @@ impl ViewportCoordinator {
                     .map_err(ViewportCoordinatorError::Effect)?;
                 (Some(effect), ViewportCloseStatus::Vetoed { effect }, None)
             }
-            ViewportCloseDecision::Accept(plan) => {
+            ViewportCloseDecision::Accept(mut plan) => {
                 if request
                     .recovery
                     .is_some_and(|recovery| recovery.root() != plan.recovery().root())
@@ -1045,6 +1081,11 @@ impl ViewportCoordinator {
                     return Err(ViewportCoordinatorError::CloseRecoveryRootMismatch {
                         request: request_id,
                     });
+                }
+                if let Some(projected) =
+                    candidate.project_recovery_plan(request.binding.surface(), plan.recovery())
+                {
+                    plan.recovery = projected;
                 }
                 let effect_kind = match request.role {
                     ViewportRole::Root => PlatformEffect::RequestRootClose {
@@ -1094,7 +1135,7 @@ impl ViewportCoordinator {
             return Err(ViewportCoordinatorError::NativeCapabilityUnavailable { capability });
         }
         let proposal = prepared.proposal();
-        if !self.placement_is_current(proposal.placement()) {
+        if !self.native_placement_is_current(proposal.placement()) {
             return Err(ViewportCoordinatorError::StalePlacementProof);
         }
         if proposal.recovery().root() != proposal.root() {
@@ -1172,6 +1213,7 @@ impl ViewportCoordinator {
             .registry
             .apply_snapshot(snapshot)
             .map_err(ViewportCoordinatorError::Registry)?;
+        candidate.refresh_recovery_geometry();
         candidate.reconcile_create_inventory(snapshot)?;
         candidate.reconcile_retired_inventory(snapshot)?;
         let route_generation = candidate
@@ -1197,6 +1239,41 @@ impl ViewportCoordinator {
         };
         *self = candidate;
         Ok(transition)
+    }
+
+    /// Reprojects each durable recovery intent from the latest native geometry.
+    ///
+    /// The child rectangle is authoritative desktop-physical data; only the
+    /// designated recovery host's acknowledged origin and scale may convert it
+    /// into host-local logical coordinates. Missing either fact leaves the last
+    /// known intent unchanged.
+    fn refresh_recovery_geometry(&mut self) {
+        let updates: Vec<(SurfaceId, ContainedRecoveryPlan)> = self
+            .recovery_plans
+            .iter()
+            .filter_map(|(child_surface, plan)| {
+                self.project_recovery_plan(*child_surface, *plan)
+                    .map(|plan| (*child_surface, plan))
+            })
+            .collect();
+        for (child_surface, plan) in updates {
+            self.recovery_plans.insert(child_surface, plan);
+        }
+    }
+
+    fn project_recovery_plan(
+        &self,
+        child_surface: SurfaceId,
+        plan: ContainedRecoveryPlan,
+    ) -> Option<ContainedRecoveryPlan> {
+        let child = self.registry.record(child_surface)?.coordinates()?;
+        let host = self.registry.record(plan.surface())?.coordinates()?;
+        let physical = child
+            .outer_bounds()
+            .unwrap_or_else(|| child.content_bounds());
+        host.desktop_rect_to_surface(physical)
+            .ok()
+            .map(|logical| plan.with_requested_rect(logical))
     }
 
     fn reconcile_retired_inventory(
@@ -1388,12 +1465,10 @@ impl ViewportCoordinator {
                 RegistryEvent::FactsUnavailable { .. } => {}
             }
         }
-        let ready_surfaces: BTreeSet<SurfaceId> = events
-            .iter()
-            .filter_map(|event| match event {
-                RegistryEvent::Ready { binding } => Some(binding.surface()),
-                _ => None,
-            })
+        let ready_surfaces: BTreeSet<SurfaceId> = self
+            .registry
+            .records()
+            .filter_map(|(surface, record)| record.is_ready().then_some(surface))
             .collect();
         let mut queued = BTreeSet::new();
         for pending in self.pending_recoveries.values() {
@@ -1551,7 +1626,7 @@ impl ViewportCoordinator {
                 self.create_sagas
                     .get_mut(&saga_id)
                     .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .status = NativeCreateStatus::ReadyUncommitted;
+                    .status = NativeCreateStatus::GeometryReadyUncommitted;
                 actions.push(ViewportLifecycleAction::CreateReady {
                     saga: saga_id,
                     prepared: Box::new(prepared),
@@ -1560,9 +1635,36 @@ impl ViewportCoordinator {
             NativeCreateStatus::Cancelled => {
                 self.request_create_compensation(saga_id)?;
             }
-            NativeCreateStatus::ReadyUncommitted
-            | NativeCreateStatus::Committed
+            NativeCreateStatus::GeometryReadyUncommitted
+            | NativeCreateStatus::CommittedAwaitingVisibility { .. }
+            | NativeCreateStatus::Committed { .. }
             | NativeCreateStatus::Compensating { .. } => {}
+        }
+        if matches!(
+            status,
+            NativeCreateStatus::CommittedAwaitingVisibility { .. }
+        ) && self
+            .registry
+            .record(binding.surface())
+            .is_some_and(|record| record.binding() == binding && record.is_routeable())
+        {
+            let show = match status {
+                NativeCreateStatus::CommittedAwaitingVisibility { show } => show,
+                _ => unreachable!("visibility transition checked above"),
+            };
+            let _ = self.effects.mark_observed_applied(
+                show,
+                binding,
+                self.registry.inventory_generation(),
+            );
+            let focus = self.request_focus(binding.surface())?;
+            self.create_sagas
+                .get_mut(&saga_id)
+                .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
+                .status = NativeCreateStatus::Committed {
+                show: Some(show),
+                focus,
+            };
         }
         Ok(())
     }
@@ -1578,6 +1680,7 @@ impl ViewportCoordinator {
         };
         let input_state = coordinates.input_state();
         let focused = coordinates.focused();
+        let presentation = coordinates.presentation();
         let observed: Vec<EffectId> = self
             .effects
             .records()
@@ -1593,6 +1696,13 @@ impl ViewportCoordinator {
                 }
                 PlatformEffect::RequestFocus { binding: target }
                     if *target == binding && focused == Some(true) =>
+                {
+                    Some(effect)
+                }
+                PlatformEffect::ShowWindow { binding: target }
+                    if *target == binding
+                        && presentation
+                            == Some(crate::platform::WindowPresentationState::Visible) =>
                 {
                     Some(effect)
                 }
@@ -1647,7 +1757,8 @@ impl ViewportCoordinator {
             .get(&saga_id)
             .map_or(NativeCreateStatus::Cancelled, |saga| saga.status);
         match status {
-            NativeCreateStatus::Committed => {
+            NativeCreateStatus::CommittedAwaitingVisibility { .. }
+            | NativeCreateStatus::Committed { .. } => {
                 self.push_direct_destruction(binding, actions);
             }
             NativeCreateStatus::Compensating { effect } => {
@@ -1663,7 +1774,7 @@ impl ViewportCoordinator {
             }
             NativeCreateStatus::Requested
             | NativeCreateStatus::Indeterminate
-            | NativeCreateStatus::ReadyUncommitted
+            | NativeCreateStatus::GeometryReadyUncommitted
             | NativeCreateStatus::Cancelled => {
                 if let Some(saga) = self.create_sagas.get_mut(&saga_id) {
                     saga.status = NativeCreateStatus::Cancelled;
@@ -1809,14 +1920,38 @@ impl ViewportCoordinator {
     ) -> Result<(), ViewportCoordinatorError> {
         let saga = self
             .create_sagas
-            .get_mut(&saga_id)
+            .get(&saga_id)
             .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?;
-        if saga.status != NativeCreateStatus::ReadyUncommitted {
+        if saga.status != NativeCreateStatus::GeometryReadyUncommitted {
             return Err(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id });
         }
-        saga.status = NativeCreateStatus::Committed;
-        self.recovery_plans
-            .insert(saga.binding.surface(), saga.prepared.proposal().recovery());
+        let binding = saga.binding;
+        let surface = binding.surface();
+        let recovery = ContainedRecoveryPlan::from_proposal(saga.prepared.proposal().recovery());
+        let recovery = self
+            .project_recovery_plan(surface, recovery)
+            .unwrap_or(recovery);
+        let routeable = self
+            .registry
+            .record(surface)
+            .is_some_and(|record| record.binding() == binding && record.is_routeable());
+        let (show, focus) = if routeable {
+            (None, self.request_focus(surface)?)
+        } else {
+            let show = self
+                .effects
+                .request(PlatformEffect::ShowWindow { binding })
+                .map_err(ViewportCoordinatorError::Effect)?;
+            (Some(show), None)
+        };
+        self.create_sagas
+            .get_mut(&saga_id)
+            .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
+            .status = match show {
+            Some(show) => NativeCreateStatus::CommittedAwaitingVisibility { show },
+            None => NativeCreateStatus::Committed { show, focus },
+        };
+        self.recovery_plans.insert(surface, recovery);
         Ok(())
     }
 
@@ -1835,12 +1970,12 @@ impl ViewportCoordinator {
             .create_sagas
             .get_mut(&saga_id)
             .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?;
-        if matches!(saga.status, NativeCreateStatus::Committed) {
+        if saga.status.topology_committed() {
             return Err(ViewportCoordinatorError::CreateSagaAlreadyCommitted { saga: saga_id });
         }
         if matches!(
             saga.status,
-            NativeCreateStatus::ReadyUncommitted | NativeCreateStatus::Compensating { .. }
+            NativeCreateStatus::GeometryReadyUncommitted | NativeCreateStatus::Compensating { .. }
         ) {
             return self.request_create_compensation(saga_id).map(Some);
         }
@@ -2232,19 +2367,65 @@ impl ViewportCoordinator {
                 .proof_is_current(proof, self.work_area_generation)
     }
 
+    pub(crate) fn native_placement_is_current(&self, proof: &NativePlacementProof) -> bool {
+        match proof {
+            NativePlacementProof::Surface(proof) => self.placement_is_current(proof),
+            NativePlacementProof::TearOff(proof) => {
+                self.work_area_generation == proof.work_area_generation()
+                    && self.work_areas.contains_key(&proof.work_area())
+                    && proof.route().capability_generation() == self.capability_generation
+                    && proof.route().inventory_generation() == self.registry.inventory_generation()
+                    && proof.route().route_generation() == self.routes.generation()
+            }
+        }
+    }
+
+    pub(crate) fn tear_off_placement(
+        &self,
+        pointer: PointerId,
+        request: TearOffPlacementRequest,
+    ) -> Result<TearOffPlacementProof, ViewportCoordinatorError> {
+        let route = self
+            .routes
+            .proof(pointer)
+            .filter(|proof| self.routes.is_current(proof))
+            .ok_or(ViewportCoordinatorError::StaleRoute { pointer })?;
+        let work_area = self.work_areas.get(&request.work_area()).copied().ok_or(
+            ViewportCoordinatorError::TearOffPlacement(
+                TearOffPlacementUnavailable::UnknownWorkArea(request.work_area()),
+            ),
+        )?;
+        crate::coordinates::solve_tear_off_placement(
+            route,
+            work_area,
+            self.work_area_generation,
+            request,
+        )
+        .map_err(ViewportCoordinatorError::TearOffPlacement)
+    }
+
     pub(crate) fn begin_drag_routing(
         &mut self,
         pointer: PointerId,
         surface: SurfaceId,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
-        if !self.capabilities.pointer_passthrough().is_supported() {
+        if !self
+            .capabilities
+            .pointer_hit_test_observation()
+            .is_supported()
+        {
             return Ok(None);
         }
-        let Some(binding) = self
+        let Some((binding, original)) = self
             .registry
             .record(surface)
-            .filter(|record| record.is_ready())
-            .map(ViewportRecord::binding)
+            .filter(|record| record.is_routeable())
+            .and_then(|record| {
+                record
+                    .coordinates()
+                    .and_then(|coordinates| coordinates.input_state())
+                    .map(|input| (record.binding(), input))
+            })
         else {
             return Ok(None);
         };
@@ -2252,17 +2433,48 @@ impl ViewportCoordinator {
             return Ok(None);
         }
         let mut candidate = self.clone();
-        let effect = candidate
-            .effects
-            .request(PlatformEffect::SetPointerPassthrough {
-                binding,
-                enabled: true,
-            })
-            .map_err(ViewportCoordinatorError::Effect)?;
+        let restored = candidate.end_drag_routing(pointer)?;
+        if let Some(lease) = candidate.pointer_hit_test_leases.get_mut(&binding) {
+            lease.holders.insert(pointer);
+            candidate.drag_sources.insert(pointer, binding);
+            candidate.routes.clear();
+            *self = candidate;
+            return Ok(restored);
+        }
+
+        let (changed_by_us, effect) = match original {
+            WindowInputState::PassThrough => (false, None),
+            WindowInputState::ReceivesInput => {
+                if !candidate
+                    .capabilities
+                    .pointer_hit_test_control()
+                    .is_supported()
+                {
+                    *self = candidate;
+                    return Ok(restored);
+                }
+                let effect = candidate
+                    .effects
+                    .request(PlatformEffect::SetPointerPassthrough {
+                        binding,
+                        enabled: true,
+                    })
+                    .map_err(ViewportCoordinatorError::Effect)?;
+                (true, Some(effect))
+            }
+        };
+        candidate.pointer_hit_test_leases.insert(
+            binding,
+            PointerHitTestLease {
+                original,
+                changed_by_us,
+                holders: BTreeSet::from([pointer]),
+            },
+        );
         candidate.drag_sources.insert(pointer, binding);
         candidate.routes.clear();
         *self = candidate;
-        Ok(Some(effect))
+        Ok(effect.or(restored))
     }
 
     #[must_use]
@@ -2278,17 +2490,33 @@ impl ViewportCoordinator {
             return Ok(None);
         };
         let mut candidate = self.clone();
-        let effect = candidate
-            .effects
-            .request(PlatformEffect::SetPointerPassthrough {
-                binding,
-                enabled: false,
-            })
-            .map_err(ViewportCoordinatorError::Effect)?;
         candidate.drag_sources.remove(&pointer);
+        let Some(lease) = candidate.pointer_hit_test_leases.get_mut(&binding) else {
+            return Err(ViewportCoordinatorError::PointerHitTestLeaseMissing { binding });
+        };
+        lease.holders.remove(&pointer);
+        let last_holder = lease.holders.is_empty();
+        let restore =
+            last_holder && lease.changed_by_us && lease.original == WindowInputState::ReceivesInput;
+        if last_holder {
+            candidate.pointer_hit_test_leases.remove(&binding);
+        }
+        let effect = if restore {
+            Some(
+                candidate
+                    .effects
+                    .request(PlatformEffect::SetPointerPassthrough {
+                        binding,
+                        enabled: false,
+                    })
+                    .map_err(ViewportCoordinatorError::Effect)?,
+            )
+        } else {
+            None
+        };
         candidate.routes.clear();
         *self = candidate;
-        Ok(Some(effect))
+        Ok(effect)
     }
 
     pub(crate) fn end_all_drag_routing(&mut self) -> Result<(), ViewportCoordinatorError> {
@@ -2311,7 +2539,7 @@ impl ViewportCoordinator {
         let Some(binding) = self
             .registry
             .record(surface)
-            .filter(|record| record.is_ready())
+            .filter(|record| record.is_routeable())
             .map(ViewportRecord::binding)
         else {
             return Ok(None);
@@ -2336,7 +2564,7 @@ impl ViewportCoordinator {
     pub(crate) fn defer_destroyed_surface_recovery(
         &mut self,
         binding: ViewportBinding,
-        recovery: ContainedTearOffProposal,
+        recovery: ContainedRecoveryPlan,
     ) -> Result<(), ViewportCoordinatorError> {
         if self.pending_recoveries.contains_key(&binding.surface()) {
             return Ok(());
@@ -2489,6 +2717,12 @@ pub enum ViewportCoordinatorError {
     Effect(EffectLedgerError),
     #[error("drag source binding is stale or not ready: {binding:?}")]
     StaleDragSource { binding: ViewportBinding },
+    #[error("no current route exists for pointer {pointer:?}")]
+    StaleRoute { pointer: PointerId },
+    #[error(transparent)]
+    TearOffPlacement(TearOffPlacementUnavailable),
+    #[error("pointer hit-test lease is missing for drag source {binding:?}")]
+    PointerHitTestLeaseMissing { binding: ViewportBinding },
     #[error("workspace does not contain logical surface {surface:?}")]
     MissingWorkspaceSurface { surface: SurfaceId },
     #[error("docking-owned child surface {surface:?} requires an explicit whole-root recovery")]
@@ -2550,8 +2784,8 @@ mod tests {
     use crate::effect::EffectPhase;
     use crate::geometry::{LogicalSize, PhysicalRect, ScaleFactor};
     use crate::ids::{FloatingPresentationId, RootId};
-    use crate::intent::{Authority, ContainedPlacementProof};
-    use crate::platform::{ObservedWindow, WindowInputState};
+    use crate::intent::{Authority, ContainedPlacementProof, ContainedTearOffProposal};
+    use crate::platform::{ObservedWindow, WindowInputState, WindowPresentationState};
     use crate::scene::{SceneGeneration, SceneStamp};
     use crate::transition::WorkspaceVersion;
 
@@ -2568,6 +2802,7 @@ mod tests {
                 ScaleFactor::new(1.0).expect("test scale must be valid"),
             ))
             .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
+            .with_presentation(Authority::Known(WindowPresentationState::Visible))
             .with_close_requested(Authority::Known(close_requested))
     }
 
@@ -2576,6 +2811,38 @@ mod tests {
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
         PlatformSnapshot::new(capabilities, windows, Vec::new(), Vec::new())
             .expect("test snapshot must be valid")
+    }
+
+    fn routing_coordinator(
+        input: WindowInputState,
+        presentation: WindowPresentationState,
+        control: PlatformCapability,
+    ) -> (ViewportCoordinator, ViewportBinding) {
+        let token = WindowToken::new(41);
+        let surface = SurfaceId::new(42);
+        let mut coordinator = ViewportCoordinator::default();
+        let binding = coordinator
+            .register_existing(
+                WorkspaceEpoch::default(),
+                surface,
+                token,
+                ViewportRole::Root,
+                None,
+            )
+            .expect("test viewport must register");
+        let window = observed_window(token, false)
+            .with_input_state(Authority::Known(input))
+            .with_presentation(Authority::Known(presentation));
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_control(control);
+        let facts = PlatformSnapshot::new(capabilities, vec![window], Vec::new(), Vec::new())
+            .expect("test routing snapshot must be valid");
+        coordinator
+            .publish_snapshot(&facts)
+            .expect("test routing facts must publish");
+        (coordinator, binding)
     }
 
     fn recovery(root: u64) -> ContainedTearOffProposal {
@@ -2613,7 +2880,7 @@ mod tests {
                 SurfaceId::new(surface),
                 WindowToken::new(token),
                 role,
-                (role == ViewportRole::Child).then(|| recovery(surface)),
+                (role == ViewportRole::Child).then(|| recovery(surface).into()),
             )
             .expect("test viewport must register")
     }
@@ -2792,7 +3059,7 @@ mod tests {
         let recovery = recovery(2);
         coordinator
             .recovery_plans
-            .insert(binding.surface(), recovery);
+            .insert(binding.surface(), recovery.into());
         let transition = coordinator
             .publish_snapshot(&snapshot(vec![observed_window(binding.token(), true)]))
             .expect("close edge must publish");
@@ -2856,7 +3123,7 @@ mod tests {
         let recovery = recovery(3);
         coordinator
             .recovery_plans
-            .insert(binding.surface(), recovery);
+            .insert(binding.surface(), recovery.into());
         coordinator
             .publish_snapshot(&snapshot(vec![observed_window(binding.token(), false)]))
             .expect("ready observation must publish");
@@ -2871,8 +3138,152 @@ mod tests {
                 resolution: ViewportDestructionResolution::Recover {
                     recovery: actual_recovery,
                 },
-            }] if *actual == binding && *actual_recovery == recovery
+            }] if *actual == binding && *actual_recovery == recovery.into()
         ));
+    }
+
+    #[test]
+    fn pointer_hit_test_lease_restores_only_after_the_last_holder() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let first = PointerId::new(1);
+        let second = PointerId::new(2);
+
+        assert!(
+            coordinator
+                .begin_drag_routing(first, binding.surface())
+                .expect("first lease must begin")
+                .is_some()
+        );
+        assert_eq!(
+            coordinator
+                .begin_drag_routing(second, binding.surface())
+                .expect("second lease holder must begin"),
+            None
+        );
+        let requested = coordinator.take_new_effects();
+        assert!(matches!(
+            requested.as_slice(),
+            [request]
+                if matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough {
+                        binding: actual,
+                        enabled: true,
+                    } if *actual == binding
+                )
+        ));
+
+        assert_eq!(
+            coordinator
+                .end_drag_routing(first)
+                .expect("first holder must release"),
+            None
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(
+            coordinator
+                .end_drag_routing(second)
+                .expect("last holder must release")
+                .is_some()
+        );
+        let restored = coordinator.take_new_effects();
+        assert!(matches!(
+            restored.as_slice(),
+            [request]
+                if matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough {
+                        binding: actual,
+                        enabled: false,
+                    } if *actual == binding
+                )
+        ));
+    }
+
+    #[test]
+    fn preexisting_passthrough_needs_neither_control_capability_nor_restore() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::PassThrough,
+            WindowPresentationState::Visible,
+            PlatformCapability::unsupported(
+                crate::platform::PlatformRequirement::PointerHitTestControl,
+                crate::platform::PlatformCapabilityReason::BackendUnsupported,
+            ),
+        );
+        let pointer = PointerId::new(1);
+
+        assert_eq!(
+            coordinator
+                .begin_drag_routing(pointer, binding.surface())
+                .expect("existing passthrough must be leased"),
+            None
+        );
+        assert_eq!(coordinator.drag_source(pointer), Some(binding));
+        assert!(coordinator.take_new_effects().is_empty());
+        assert_eq!(
+            coordinator
+                .end_drag_routing(pointer)
+                .expect("existing passthrough lease must end"),
+            None
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+    }
+
+    #[test]
+    fn receiving_source_without_hit_test_control_does_not_acquire_a_lease() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::unsupported(
+                crate::platform::PlatformRequirement::PointerHitTestControl,
+                crate::platform::PlatformCapabilityReason::BackendUnsupported,
+            ),
+        );
+        let pointer = PointerId::new(1);
+
+        assert_eq!(
+            coordinator
+                .begin_drag_routing(pointer, binding.surface())
+                .expect("missing control is a supported no-op"),
+            None
+        );
+        assert_eq!(coordinator.drag_source(pointer), None);
+        assert!(coordinator.take_new_effects().is_empty());
+    }
+
+    #[test]
+    fn hidden_and_minimized_windows_cannot_start_pointer_routing_or_focus() {
+        for presentation in [
+            WindowPresentationState::Hidden,
+            WindowPresentationState::Minimized,
+        ] {
+            let (mut coordinator, binding) = routing_coordinator(
+                WindowInputState::ReceivesInput,
+                presentation,
+                PlatformCapability::Supported,
+            );
+            coordinator
+                .capabilities
+                .set_window_focus(PlatformCapability::Supported);
+
+            assert_eq!(
+                coordinator
+                    .begin_drag_routing(PointerId::new(1), binding.surface())
+                    .expect("non-routeable presentation is a supported no-op"),
+                None
+            );
+            assert_eq!(
+                coordinator
+                    .request_focus(binding.surface())
+                    .expect("non-routeable presentation cannot receive focus"),
+                None
+            );
+            assert!(coordinator.take_new_effects().is_empty());
+        }
     }
 
     #[test]

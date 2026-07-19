@@ -52,8 +52,10 @@ pub enum ViewportRouteUnavailable {
     PointerAuthority(AuthorityUnavailableReason),
     UnknownWindowToken,
     TargetNotReady { surface: SurfaceId },
+    TargetNotRouteable { surface: SurfaceId },
     SourceBindingStale,
     SourcePassthroughNotObserved,
+    SourceNotRouteable,
     Coordinate(CoordinateUnavailable),
 }
 
@@ -62,6 +64,7 @@ pub enum ViewportRouteUnavailable {
 pub struct ViewportRouteProof {
     pointer: PointerId,
     stamp: ViewportRouteStamp,
+    desktop_position: Authority<crate::geometry::PhysicalPoint>,
     target: Authority<Option<SurfacePointer>>,
     target_binding: Option<ViewportBinding>,
     buttons: Authority<Vec<ButtonObservation>>,
@@ -76,6 +79,11 @@ impl ViewportRouteProof {
     #[must_use]
     pub const fn stamp(&self) -> ViewportRouteStamp {
         self.stamp
+    }
+
+    #[must_use]
+    pub const fn desktop_position(&self) -> &Authority<crate::geometry::PhysicalPoint> {
+        &self.desktop_position
     }
 
     #[must_use]
@@ -192,6 +200,7 @@ fn resolve_observation(
     ViewportRouteProof {
         pointer: observation.pointer(),
         stamp,
+        desktop_position: observation.desktop_position().clone(),
         target,
         target_binding,
         buttons,
@@ -225,8 +234,8 @@ fn resolve_target(
             let record = registry
                 .record(binding.surface())
                 .ok_or(ViewportRouteUnavailable::UnknownWindowToken)?;
-            if !record.is_ready() {
-                return Err(ViewportRouteUnavailable::TargetNotReady {
+            if !record.is_routeable() {
+                return Err(ViewportRouteUnavailable::TargetNotRouteable {
                     surface: binding.surface(),
                 });
             }
@@ -264,8 +273,8 @@ fn require_source_passthrough(
         .record(source.surface())
         .filter(|record| record.binding() == source)
         .ok_or(ViewportRouteUnavailable::SourceBindingStale)?;
-    if !record.is_ready() {
-        return Err(ViewportRouteUnavailable::SourcePassthroughNotObserved);
+    if !record.is_routeable() {
+        return Err(ViewportRouteUnavailable::SourceNotRouteable);
     }
     let coordinates = record
         .coordinates()
@@ -295,8 +304,10 @@ const fn authority_reason(reason: &ViewportRouteUnavailable) -> AuthorityUnavail
         }
         ViewportRouteUnavailable::UnknownWindowToken
         | ViewportRouteUnavailable::TargetNotReady { .. }
+        | ViewportRouteUnavailable::TargetNotRouteable { .. }
         | ViewportRouteUnavailable::SourceBindingStale
-        | ViewportRouteUnavailable::SourcePassthroughNotObserved => {
+        | ViewportRouteUnavailable::SourcePassthroughNotObserved
+        | ViewportRouteUnavailable::SourceNotRouteable => {
             AuthorityUnavailableReason::SurfaceUnavailable
         }
     }
@@ -316,6 +327,7 @@ mod tests {
     use crate::ids::{SurfaceId, WorkspaceEpoch};
     use crate::platform::{
         PlatformCapabilities, PlatformCapability, PlatformRequirement, WindowInputState,
+        WindowPresentationState,
     };
     use crate::viewport::{ViewportRole, WindowToken};
 
@@ -325,7 +337,8 @@ mod tests {
         capabilities.set_hovered_window(PlatformCapability::Supported);
         capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
         capabilities.set_authoritative_button_state(PlatformCapability::Supported);
-        capabilities.set_pointer_passthrough(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
         capabilities
     }
 
@@ -343,6 +356,7 @@ mod tests {
                 ScaleFactor::new(scale).expect("test scale must be valid"),
             ))
             .with_input_state(Authority::Known(input))
+            .with_presentation(Authority::Known(WindowPresentationState::Visible))
             .with_close_requested(Authority::Known(false))
     }
 

@@ -3,11 +3,170 @@
 use thiserror::Error;
 
 use crate::geometry::{
-    GeometryError, LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor,
+    GeometryError, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
-use crate::platform::{ObservedWindow, ObservedWorkArea, WindowInputState};
+use crate::platform::{
+    ObservedWindow, ObservedWorkArea, WindowInputState, WindowPresentationState,
+};
 use crate::viewport::{CoordinateGeneration, ViewportBinding, WorkAreaGeneration, WorkAreaToken};
+use crate::viewport_route::{ViewportRouteProof, ViewportRouteStamp};
+
+/// Explicit geometry inputs for one native tear-off placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TearOffPlacementRequest {
+    cursor_offset: LogicalSize,
+    preferred_size: LogicalSize,
+    minimum_size: LogicalSize,
+    work_area: WorkAreaToken,
+}
+
+impl TearOffPlacementRequest {
+    #[must_use]
+    pub const fn new(
+        cursor_offset: LogicalSize,
+        preferred_size: LogicalSize,
+        minimum_size: LogicalSize,
+        work_area: WorkAreaToken,
+    ) -> Self {
+        Self {
+            cursor_offset,
+            preferred_size,
+            minimum_size,
+            work_area,
+        }
+    }
+
+    #[must_use]
+    pub const fn cursor_offset(self) -> LogicalSize {
+        self.cursor_offset
+    }
+
+    #[must_use]
+    pub const fn preferred_size(self) -> LogicalSize {
+        self.preferred_size
+    }
+
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+
+    #[must_use]
+    pub const fn work_area(self) -> WorkAreaToken {
+        self.work_area
+    }
+}
+
+/// Why exact tear-off placement could not be derived from authoritative facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TearOffPlacementUnavailable {
+    #[error("the route proof is not current")]
+    StaleRoute,
+    #[error("the route has no authoritative desktop release position: {0:?}")]
+    ReleasePositionUnavailable(AuthorityUnavailableReason),
+    #[error("work-area token is absent from the current authoritative roster: {0:?}")]
+    UnknownWorkArea(WorkAreaToken),
+    #[error("tear-off placement geometry is not representable")]
+    Geometry,
+}
+
+/// Opaque placement proof bound to one exact route and work-area generation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TearOffPlacementProof {
+    pointer: crate::intent::PointerId,
+    route: ViewportRouteStamp,
+    work_area: WorkAreaToken,
+    work_area_generation: WorkAreaGeneration,
+    requested_rect: LogicalRect,
+    physical_rect: PhysicalRect,
+}
+
+impl TearOffPlacementProof {
+    #[must_use]
+    pub const fn pointer(self) -> crate::intent::PointerId {
+        self.pointer
+    }
+
+    #[must_use]
+    pub const fn route(self) -> ViewportRouteStamp {
+        self.route
+    }
+
+    #[must_use]
+    pub const fn work_area(self) -> WorkAreaToken {
+        self.work_area
+    }
+
+    #[must_use]
+    pub const fn work_area_generation(self) -> WorkAreaGeneration {
+        self.work_area_generation
+    }
+
+    #[must_use]
+    pub const fn requested_rect(self) -> LogicalRect {
+        self.requested_rect
+    }
+
+    #[must_use]
+    pub const fn physical_rect(self) -> PhysicalRect {
+        self.physical_rect
+    }
+}
+
+/// Solves one explicit release anchor into a clamped desktop placement.
+pub(crate) fn solve_tear_off_placement(
+    route: &ViewportRouteProof,
+    work_area: ObservedWorkArea,
+    work_area_generation: WorkAreaGeneration,
+    request: TearOffPlacementRequest,
+) -> Result<TearOffPlacementProof, TearOffPlacementUnavailable> {
+    let release = match route.desktop_position() {
+        Authority::Known(position) => *position,
+        Authority::Unknown(reason) => {
+            return Err(TearOffPlacementUnavailable::ReleasePositionUnavailable(
+                *reason,
+            ));
+        }
+    };
+    let scale = work_area.scale_factor();
+    let width = request
+        .preferred_size
+        .width()
+        .max(request.minimum_size.width());
+    let height = request
+        .preferred_size
+        .height()
+        .max(request.minimum_size.height());
+    let physical_size = scale
+        .logical_size_to_physical(
+            LogicalSize::new(width, height).map_err(|_| TearOffPlacementUnavailable::Geometry)?,
+        )
+        .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    let physical_offset = scale
+        .logical_size_to_physical(request.cursor_offset)
+        .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    let requested_min = PhysicalPoint::new(
+        release.x() - physical_offset.width(),
+        release.y() - physical_offset.height(),
+    )
+    .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    let requested = PhysicalRect::from_min_size(requested_min, physical_size)
+        .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    let physical_rect = clamp_physical_rect(requested, work_area.bounds())
+        .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    let requested_rect = requested
+        .to_target_logical(work_area.bounds().min(), scale)
+        .map_err(|_| TearOffPlacementUnavailable::Geometry)?;
+    Ok(TearOffPlacementProof {
+        pointer: route.pointer(),
+        route: route.stamp(),
+        work_area: work_area.token(),
+        work_area_generation,
+        requested_rect,
+        physical_rect,
+    })
+}
 
 /// A complete coordinate snapshot acknowledged for one exact native-window binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,6 +177,7 @@ pub(crate) struct CoordinateSnapshot {
     outer_bounds: Option<PhysicalRect>,
     scale_factor: ScaleFactor,
     input_state: Option<WindowInputState>,
+    presentation: Option<WindowPresentationState>,
     focused: Option<bool>,
 }
 
@@ -40,6 +200,7 @@ impl CoordinateSnapshot {
             outer_bounds: observation.outer_bounds().known().copied(),
             scale_factor,
             input_state: observation.input_state().known().copied(),
+            presentation: observation.presentation().known().copied(),
             focused: observation.focused().known().copied(),
         })
     }
@@ -54,6 +215,10 @@ impl CoordinateSnapshot {
 
     pub(crate) const fn input_state(self) -> Option<WindowInputState> {
         self.input_state
+    }
+
+    pub(crate) const fn presentation(self) -> Option<WindowPresentationState> {
+        self.presentation
     }
 
     pub(crate) const fn focused(self) -> Option<bool> {
@@ -71,6 +236,7 @@ impl CoordinateSnapshot {
             && self.outer_bounds == other.outer_bounds
             && self.scale_factor == other.scale_factor
             && self.input_state == other.input_state
+            && self.presentation == other.presentation
             && self.focused == other.focused
     }
 
@@ -85,6 +251,13 @@ impl CoordinateSnapshot {
         point: PhysicalPoint,
     ) -> Result<LogicalPoint, GeometryError> {
         point.to_target_logical(self.content_bounds.min(), self.scale_factor)
+    }
+
+    pub(crate) fn desktop_rect_to_surface(
+        self,
+        rect: PhysicalRect,
+    ) -> Result<LogicalRect, GeometryError> {
+        rect.to_target_logical(self.content_bounds.min(), self.scale_factor)
     }
 
     pub(crate) fn placement(
@@ -222,7 +395,7 @@ pub enum CoordinateUnavailable {
 mod tests {
     use super::*;
     use crate::ids::{SurfaceId, WorkspaceEpoch};
-    use crate::platform::{ObservedWindow, ObservedWorkArea};
+    use crate::platform::{ObservedWindow, ObservedWorkArea, WindowPresentationState};
     use crate::viewport::{WindowIncarnation, WindowToken, WorkAreaGeneration, WorkAreaToken};
 
     fn rect(x: f64, y: f64, width: f64, height: f64) -> PhysicalRect {
@@ -261,6 +434,8 @@ mod tests {
                 ScaleFactor::new(scale).expect("test scale must be valid"),
             ))
             .with_input_state(Authority::Known(WindowInputState::ReceivesInput));
+        let observation =
+            observation.with_presentation(Authority::Known(WindowPresentationState::Visible));
         CoordinateSnapshot::from_observation(binding, CoordinateGeneration::new(11), &observation)
             .expect("test observation must be route ready")
     }
