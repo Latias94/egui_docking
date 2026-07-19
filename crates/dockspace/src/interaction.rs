@@ -10,8 +10,9 @@ use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, InputSequence, RootId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{
-    ContainedPlacementProof, ContainedTransformKind, NativeTearOffProposal, PointerButton,
-    PointerId, TargetAuthority, TearOffRequest,
+    Authority, ContainedPlacementProof, ContainedPresentationOffer, ContainedTransformKind,
+    NativeTearOffProposal, PointerButton, PointerId, SurfacePointer, TargetAuthority,
+    TearOffRequest,
 };
 use crate::scene::SceneStamp;
 use crate::transition::WorkspaceVersion;
@@ -397,6 +398,8 @@ pub struct ActiveDragView<'state> {
     button: PointerButton,
     payload: &'state MovePayload,
     target: Option<&'state TargetAuthority>,
+    current_pointer: Option<&'state Authority<SurfacePointer>>,
+    contained_offer: Option<&'state ContainedPresentationOffer>,
     tear_off: Option<&'state TearOffRequest>,
 }
 
@@ -437,6 +440,20 @@ impl<'state> ActiveDragView<'state> {
     #[must_use]
     pub const fn target(self) -> Option<&'state TargetAuthority> {
         self.target
+    }
+
+    /// Returns the independent current pointer observation for the canonical protocol.
+    ///
+    /// Legacy drags and canonical drags without an observation return `None`.
+    #[must_use]
+    pub const fn current_pointer(self) -> Option<&'state Authority<SurfacePointer>> {
+        self.current_pointer
+    }
+
+    /// Returns the first contained-presentation offer frozen for this session.
+    #[must_use]
+    pub const fn contained_offer(self) -> Option<&'state ContainedPresentationOffer> {
+        self.contained_offer
     }
 
     /// Returns the exact tear-off request stored with the last observation.
@@ -597,6 +614,14 @@ pub enum InteractionRejection {
     ButtonMismatch,
     /// The drag has been armed but not explicitly begun.
     DragNotBegun,
+    /// The input uses a different drag observation protocol than the armed session.
+    DragObservationProtocolMismatch,
+    /// Typed contained-title origin facts do not identify the exact complete source root.
+    ContainedDragOriginMismatch,
+    /// A new-presentation offer was supplied for an already contained title drag.
+    ContainedPresentationOfferUnexpected,
+    /// A later observation attempted to replace the session's frozen contained offer.
+    ContainedPresentationOfferChanged,
     /// The matching button is authoritatively still pressed.
     ButtonStillPressed,
     /// No preview was published for the release.
@@ -880,12 +905,19 @@ pub(crate) enum PreviewProof {
         command: WorkspaceCommand,
         request: TearOffRequest,
         fallback: bool,
+        mutation: ContainedMutationKind,
     },
     Native {
         command: WorkspaceCommand,
         request: TearOffRequest,
         proposal: Box<NativeTearOffProposal>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContainedMutationKind {
+    ExistingRectUpdate,
+    PresentationChange,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -915,6 +947,46 @@ pub(crate) struct ArmedDrag {
     pub(crate) pointer: PointerId,
     pub(crate) button: PointerButton,
     pub(crate) payload: MovePayload,
+    pub(crate) complete_root: Option<NodeSource>,
+    pub(crate) partial_detachable: bool,
+    pub(crate) protocol: DragObservationProtocol,
+    pub(crate) origin: FrozenDragOrigin,
+    pub(crate) source_validated_at: WorkspaceVersion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DragObservationProtocol {
+    Legacy,
+    CoreOwned,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FrozenContainedDragOrigin {
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) source_rect: LogicalRect,
+    pub(crate) initial_pointer: LogicalPoint,
+    pub(crate) minimum_size: LogicalSize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FrozenDragOrigin {
+    Workspace,
+    Contained(FrozenContainedDragOrigin),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DragArmStart {
+    pub(crate) epoch: WorkspaceEpoch,
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) payload: MovePayload,
+    pub(crate) complete_root: Option<NodeSource>,
+    pub(crate) partial_detachable: bool,
+    pub(crate) protocol: DragObservationProtocol,
+    pub(crate) origin: FrozenDragOrigin,
+    pub(crate) source_validated_at: WorkspaceVersion,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -923,7 +995,14 @@ pub(crate) struct ActiveDrag {
     pub(crate) pointer: PointerId,
     pub(crate) button: PointerButton,
     pub(crate) payload: MovePayload,
+    pub(crate) complete_root: Option<NodeSource>,
+    pub(crate) partial_detachable: bool,
+    pub(crate) protocol: DragObservationProtocol,
+    pub(crate) origin: FrozenDragOrigin,
+    pub(crate) source_validated_at: WorkspaceVersion,
     pub(crate) target: Option<TargetAuthority>,
+    pub(crate) current_pointer: Option<Authority<SurfacePointer>>,
+    pub(crate) contained_offer: Option<ContainedPresentationOffer>,
     pub(crate) tear_off: Option<TearOffRequest>,
     pub(crate) affordance: Option<DropAffordance>,
     pub(crate) preview: Option<PublishedPreview>,
@@ -1043,6 +1122,8 @@ impl InteractionState {
                 button: drag.button,
                 payload: &drag.payload,
                 target: None,
+                current_pointer: None,
+                contained_offer: None,
                 tear_off: None,
             }),
             ActiveGesture::Dragging(drag) => Some(ActiveDragView {
@@ -1052,6 +1133,8 @@ impl InteractionState {
                 button: drag.button,
                 payload: &drag.payload,
                 target: drag.target.as_ref(),
+                current_pointer: drag.current_pointer.as_ref(),
+                contained_offer: drag.contained_offer.as_ref(),
                 tear_off: drag.tear_off.as_ref(),
             }),
             ActiveGesture::Idle
@@ -1145,23 +1228,25 @@ impl InteractionState {
 
     pub(crate) fn arm_drag(
         &mut self,
-        epoch: WorkspaceEpoch,
-        pointer: PointerId,
-        button: PointerButton,
-        payload: MovePayload,
+        start: DragArmStart,
     ) -> Result<(DragSessionId, Option<InteractionStatus>), InteractionCounterError> {
         let generation = self
             .last_drag_generation
             .checked_next()
             .ok_or(InteractionCounterError::DragGenerationExhausted)?;
         self.last_drag_generation = generation;
-        let session = DragSessionId::new(epoch, generation);
+        let session = DragSessionId::new(start.epoch, generation);
         let replaced = (self.status() != InteractionStatus::Idle).then_some(self.status());
         self.active = ActiveGesture::Armed(Box::new(ArmedDrag {
             session,
-            pointer,
-            button,
-            payload,
+            pointer: start.pointer,
+            button: start.button,
+            payload: start.payload,
+            complete_root: start.complete_root,
+            partial_detachable: start.partial_detachable,
+            protocol: start.protocol,
+            origin: start.origin,
+            source_validated_at: start.source_validated_at,
         }));
         Ok((session, replaced))
     }
@@ -1189,7 +1274,14 @@ impl InteractionState {
             pointer: armed.pointer,
             button: armed.button,
             payload: armed.payload.clone(),
+            complete_root: armed.complete_root.clone(),
+            partial_detachable: armed.partial_detachable,
+            protocol: armed.protocol,
+            origin: armed.origin,
+            source_validated_at: armed.source_validated_at,
             target: None,
+            current_pointer: None,
+            contained_offer: None,
             tear_off: None,
             affordance: None,
             preview: None,
@@ -1315,8 +1407,40 @@ impl InteractionState {
         tear_off: Option<TearOffRequest>,
     ) -> Result<(), InteractionRejection> {
         let drag = self.active_drag_mut(session)?;
+        if drag.protocol != DragObservationProtocol::Legacy {
+            return Err(InteractionRejection::DragObservationProtocolMismatch);
+        }
         drag.target = Some(target);
+        drag.current_pointer = None;
         drag.tear_off = tear_off;
+        Ok(())
+    }
+
+    pub(crate) fn set_core_drag_observation(
+        &mut self,
+        session: DragSessionId,
+        target: TargetAuthority,
+        current_pointer: Authority<SurfacePointer>,
+        contained_offer: Option<ContainedPresentationOffer>,
+    ) -> Result<(), InteractionRejection> {
+        let drag = self.active_drag_mut(session)?;
+        if drag.protocol != DragObservationProtocol::CoreOwned {
+            return Err(InteractionRejection::DragObservationProtocolMismatch);
+        }
+        if matches!(drag.origin, FrozenDragOrigin::Contained(_)) && contained_offer.is_some() {
+            return Err(InteractionRejection::ContainedPresentationOfferUnexpected);
+        }
+        if let (Some(frozen), Some(replacement)) = (drag.contained_offer, contained_offer)
+            && frozen != replacement
+        {
+            return Err(InteractionRejection::ContainedPresentationOfferChanged);
+        }
+        if drag.contained_offer.is_none() {
+            drag.contained_offer = contained_offer;
+        }
+        drag.target = Some(target);
+        drag.current_pointer = Some(current_pointer);
+        drag.tear_off = None;
         Ok(())
     }
 

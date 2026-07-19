@@ -19,15 +19,17 @@ use crate::graph::Workspace;
 use crate::ids::{InputSequence, WorkspaceRevision};
 use crate::intent::{
     Authority, ContainedHorizontalResizeEdge, ContainedPlacementProof,
-    ContainedPlacementUnavailable, ContainedTransformKind, ContainedVerticalResizeEdge,
-    PointerButtonState, RendererIntent, TargetAuthority, TearOffRequest,
+    ContainedPlacementUnavailable, ContainedPresentationOffer, ContainedStackPlacement,
+    ContainedTransformKind, ContainedVerticalResizeEdge, DragOrigin, PointerButtonState,
+    RendererIntent, SurfacePointer, TargetAuthority, TearOffRequest,
 };
 use crate::interaction::{
-    ActiveContainedTransform, ContainedTransformSessionId, ContainedTransformStart,
-    InteractionCancelReason, InteractionCounterError, InteractionDelivery, InteractionEvent,
-    InteractionEventKind, InteractionOutcome, InteractionRejection, InteractionState,
-    InteractionStatus, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus, PreviewVisual,
-    WorkspaceDeliveryKind,
+    ActiveContainedTransform, ContainedMutationKind, ContainedTransformSessionId,
+    ContainedTransformStart, DragArmStart, DragObservationProtocol, FrozenContainedDragOrigin,
+    FrozenDragOrigin, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
+    InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
+    InteractionState, InteractionStatus, PreparedNativeTearOff, PreviewProof,
+    PreviewResolutionStatus, PreviewVisual, WorkspaceDeliveryKind,
 };
 use crate::platform::{PlatformCapability, PlatformSnapshot};
 use crate::policy::{DockPolicy, TearOffPresentation};
@@ -314,6 +316,36 @@ struct DragReleaseInput<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct ObservedDragReleaseInput<'a> {
+    session: crate::interaction::DragSessionId,
+    pointer: crate::intent::PointerId,
+    button: crate::intent::PointerButton,
+    button_state: &'a Authority<PointerButtonState>,
+    target: &'a TargetAuthority,
+    current_pointer: &'a Authority<SurfacePointer>,
+    contained_offer: Option<ContainedPresentationOffer>,
+}
+
+enum CoreContainedCandidate {
+    None,
+    Request(TearOffRequest),
+    Rejected,
+    Cancel(InteractionCancelReason),
+}
+
+struct PreparedDragSource {
+    complete_root: Option<NodeSource>,
+    partial_detachable: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PARTIAL_DETACHABILITY_EVALUATIONS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[derive(Clone, Copy)]
 struct ContainedPlacementInput {
     root: crate::ids::RootId,
     floating: crate::ids::FloatingPresentationId,
@@ -345,6 +377,13 @@ struct ContainedTransformReleaseInput<'a> {
 struct WorkspaceDeliveryTarget {
     kind: WorkspaceDeliveryKind,
     focus_surface: crate::ids::SurfaceId,
+    validation: WorkspaceDeliveryValidation,
+}
+
+#[derive(Clone, Copy)]
+enum WorkspaceDeliveryValidation {
+    Policy,
+    ExistingContainedRect,
 }
 
 #[derive(Default)]
@@ -413,6 +452,25 @@ fn clamp_axis(
         .then_some(())
         .filter(|()| maximum.is_finite() && minimum <= maximum)
         .map(|()| (minimum, maximum))
+}
+
+fn translated_contained_rect(
+    source: crate::geometry::LogicalRect,
+    initial_pointer: crate::geometry::LogicalPoint,
+    current_pointer: crate::geometry::LogicalPoint,
+) -> Result<crate::geometry::LogicalRect, ()> {
+    let delta_x = current_pointer.x() - initial_pointer.x();
+    let delta_y = current_pointer.y() - initial_pointer.y();
+    if !delta_x.is_finite() || !delta_y.is_finite() {
+        return Err(());
+    }
+    crate::geometry::LogicalRect::new(
+        source.x() + delta_x,
+        source.y() + delta_y,
+        source.width(),
+        source.height(),
+    )
+    .map_err(|_| ())
 }
 
 #[derive(Clone, Copy)]
@@ -1580,6 +1638,11 @@ impl DockEngine {
                 {
                     dependencies.surfaces.insert(surface);
                 }
+                if let Ok(drag) = self.interaction.armed_drag(session)
+                    && let FrozenDragOrigin::Contained(origin) = drag.origin
+                {
+                    dependencies.surfaces.insert(origin.surface);
+                }
             }
             InteractionStatus::Dragging { session } => {
                 let Ok(drag) = self.interaction.active_drag(session) else {
@@ -1605,6 +1668,12 @@ impl DockEngine {
                     }
                 } else if self.viewport.drag_source(drag.pointer).is_some() {
                     dependencies.routed = true;
+                }
+                if let Some(Authority::Known(pointer)) = &drag.current_pointer {
+                    dependencies.surfaces.insert(pointer.surface());
+                }
+                if let Some(offer) = drag.contained_offer {
+                    dependencies.surfaces.insert(offer.anchor().surface());
                 }
                 if let Some(preview) = &drag.preview {
                     match preview.public().visual() {
@@ -1763,6 +1832,11 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         match intent {
+            RendererIntent::ArmDragFrom { .. }
+            | RendererIntent::UpdateDragObservation { .. }
+            | RendererIntent::ReleaseDragObservation { .. } => {
+                self.reduce_core_drag_renderer_intent(input, intent, events, interaction_events)
+            }
             RendererIntent::ArmDrag {
                 pointer,
                 button,
@@ -1848,6 +1922,84 @@ impl DockEngine {
             | RendererIntent::CancelContainedTransform { .. } => {
                 self.reduce_contained_renderer_intent(input, intent, events, interaction_events)
             }
+        }
+    }
+
+    fn reduce_core_drag_renderer_intent(
+        &mut self,
+        input: InputSequence,
+        intent: &RendererIntent,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        match intent {
+            RendererIntent::ArmDragFrom {
+                pointer,
+                button,
+                payload,
+                origin,
+            } => self.arm_drag_from(
+                input,
+                *pointer,
+                *button,
+                payload,
+                *origin,
+                interaction_events,
+            ),
+            RendererIntent::UpdateDragObservation {
+                session,
+                target,
+                current_pointer,
+                contained_offer,
+            } => self.update_drag_observation(
+                input,
+                *session,
+                target,
+                current_pointer,
+                *contained_offer,
+                interaction_events,
+            ),
+            RendererIntent::ReleaseDragObservation {
+                session,
+                pointer,
+                button,
+                button_state,
+                target,
+                current_pointer,
+                contained_offer,
+            } => self.release_drag_observation(
+                input,
+                ObservedDragReleaseInput {
+                    session: *session,
+                    pointer: *pointer,
+                    button: *button,
+                    button_state,
+                    target,
+                    current_pointer,
+                    contained_offer: *contained_offer,
+                },
+                events,
+                interaction_events,
+            ),
+            RendererIntent::ArmDrag { .. }
+            | RendererIntent::BeginDrag { .. }
+            | RendererIntent::UpdateDrag { .. }
+            | RendererIntent::AcknowledgePreview(_)
+            | RendererIntent::ReleaseDrag { .. }
+            | RendererIntent::CancelDrag { .. }
+            | RendererIntent::BeginResize { .. }
+            | RendererIntent::UpdateResize { .. }
+            | RendererIntent::ReleaseResize { .. }
+            | RendererIntent::CancelResize { .. }
+            | RendererIntent::ApplyContainedPlacement { .. }
+            | RendererIntent::BeginContainedTransform { .. }
+            | RendererIntent::UpdateContainedTransform { .. }
+            | RendererIntent::AcknowledgeContainedTransformPreview(_)
+            | RendererIntent::ReleaseContainedTransform { .. }
+            | RendererIntent::CancelContainedTransform { .. } => Err(EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            }),
         }
     }
 
@@ -1940,11 +2092,14 @@ impl DockEngine {
             RendererIntent::CancelContainedTransform { session, reason } => {
                 Ok(self.cancel_contained_transform(input, *session, *reason, interaction_events))
             }
-            RendererIntent::ArmDrag { .. }
+            RendererIntent::ArmDragFrom { .. }
+            | RendererIntent::ArmDrag { .. }
             | RendererIntent::BeginDrag { .. }
             | RendererIntent::UpdateDrag { .. }
+            | RendererIntent::UpdateDragObservation { .. }
             | RendererIntent::AcknowledgePreview(_)
             | RendererIntent::ReleaseDrag { .. }
+            | RendererIntent::ReleaseDragObservation { .. }
             | RendererIntent::CancelDrag { .. }
             | RendererIntent::BeginResize { .. }
             | RendererIntent::UpdateResize { .. }
@@ -2259,14 +2414,76 @@ impl DockEngine {
         payload: &MovePayload,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.validate_payload(payload) {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(error),
-            ));
-        }
+        let prepared = match self.prepare_drag_source(payload) {
+            Ok(prepared) => prepared,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        self.arm_validated_drag(
+            input,
+            pointer,
+            button,
+            payload,
+            prepared,
+            DragObservationProtocol::Legacy,
+            FrozenDragOrigin::Workspace,
+            interaction_events,
+        )
+    }
+
+    fn arm_drag_from(
+        &mut self,
+        input: InputSequence,
+        pointer: crate::intent::PointerId,
+        button: crate::intent::PointerButton,
+        payload: &MovePayload,
+        origin: DragOrigin,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let prepared = match self.prepare_drag_source(payload) {
+            Ok(prepared) => prepared,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        let origin = match self.freeze_drag_origin(origin, prepared.complete_root.as_ref()) {
+            Ok(origin) => origin,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        self.arm_validated_drag(
+            input,
+            pointer,
+            button,
+            payload,
+            prepared,
+            DragObservationProtocol::CoreOwned,
+            origin,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn arm_validated_drag(
+        &mut self,
+        input: InputSequence,
+        pointer: crate::intent::PointerId,
+        button: crate::intent::PointerButton,
+        payload: &MovePayload,
+        prepared: PreparedDragSource,
+        protocol: DragObservationProtocol,
+        origin: FrozenDragOrigin,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
         let (session, replaced) = self
             .interaction
-            .arm_drag(self.version.epoch(), pointer, button, payload.clone())
+            .arm_drag(DragArmStart {
+                epoch: self.version.epoch(),
+                pointer,
+                button,
+                payload: payload.clone(),
+                complete_root: prepared.complete_root,
+                partial_detachable: prepared.partial_detachable,
+                protocol,
+                origin,
+                source_validated_at: self.version,
+            })
             .map_err(|source| EngineError::Interaction { input, source })?;
         if let Some(status) = replaced {
             self.viewport
@@ -2282,6 +2499,66 @@ impl DockEngine {
             ));
         }
         Ok(InteractionOutcome::DragArmed { session, replaced })
+    }
+
+    fn prepare_drag_source(
+        &self,
+        payload: &MovePayload,
+    ) -> Result<PreparedDragSource, InteractionRejection> {
+        self.validate_payload(payload)
+            .map_err(InteractionRejection::CommandRejected)?;
+        let complete_root = self
+            .complete_root_source(payload)
+            .map_err(InteractionRejection::CommandRejected)?;
+        let partial_detachable =
+            complete_root.is_some() || self.partial_payload_is_detachable(payload);
+        Ok(PreparedDragSource {
+            complete_root,
+            partial_detachable,
+        })
+    }
+
+    fn freeze_drag_origin(
+        &self,
+        origin: DragOrigin,
+        complete_root: Option<&NodeSource>,
+    ) -> Result<FrozenDragOrigin, InteractionRejection> {
+        let DragOrigin::Contained(origin) = origin else {
+            return Ok(FrozenDragOrigin::Workspace);
+        };
+        let Some(source) = complete_root else {
+            return Err(InteractionRejection::ContainedDragOriginMismatch);
+        };
+        let surface = origin.initial_pointer().surface();
+        if source.root() != origin.root()
+            || self.workspace.presentation_for_root(origin.root())
+                != Some(crate::RootPresentationOwner::Contained {
+                    surface,
+                    floating: origin.floating(),
+                })
+        {
+            return Err(InteractionRejection::ContainedDragOriginMismatch);
+        }
+        let Some(record) = self.workspace.contained_floating(origin.floating()) else {
+            return Err(InteractionRejection::ContainedDragOriginMismatch);
+        };
+        if record.root != origin.root() || record.surface != surface {
+            return Err(InteractionRejection::ContainedDragOriginMismatch);
+        }
+        let placement = self
+            .contained_placement(surface, record.rect, origin.minimum_size())
+            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
+        if placement.clamped_rect() != record.rect {
+            return Err(InteractionRejection::ContainedDragOriginMismatch);
+        }
+        Ok(FrozenDragOrigin::Contained(FrozenContainedDragOrigin {
+            surface,
+            root: origin.root(),
+            floating: origin.floating(),
+            source_rect: record.rect,
+            initial_pointer: origin.initial_pointer().position(),
+            minimum_size: origin.minimum_size(),
+        }))
     }
 
     fn begin_drag(
@@ -2339,6 +2616,457 @@ impl DockEngine {
         let evaluation =
             self.resolve_preview_evaluation(input, session, pointer, &payload, target, tear_off)?;
         self.apply_preview_evaluation(input, session, evaluation, interaction_events)
+    }
+
+    fn update_drag_observation(
+        &mut self,
+        input: InputSequence,
+        session: crate::interaction::DragSessionId,
+        target: &TargetAuthority,
+        current_pointer: &Authority<SurfacePointer>,
+        contained_offer: Option<ContainedPresentationOffer>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        if let Err(error) = self.interaction.set_core_drag_observation(
+            session,
+            target.clone(),
+            current_pointer.clone(),
+            contained_offer,
+        ) {
+            return Ok(InteractionOutcome::Rejected(error));
+        }
+        if !self.core_drag_source_is_current(session, input)? {
+            return self.cancel_drag(
+                input,
+                session,
+                InteractionCancelReason::SourceVanished,
+                interaction_events,
+            );
+        }
+        let drag = self
+            .interaction
+            .active_drag(session)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?;
+        let evaluation =
+            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
+        self.apply_preview_evaluation(input, session, evaluation, interaction_events)
+    }
+
+    fn core_drag_source_is_current(
+        &mut self,
+        session: crate::interaction::DragSessionId,
+        input: InputSequence,
+    ) -> Result<bool, EngineError> {
+        let (payload, complete_root, origin) = {
+            let drag =
+                self.interaction
+                    .active_drag(session)
+                    .map_err(|_| EngineError::Interaction {
+                        input,
+                        source: InteractionCounterError::StateInvariant,
+                    })?;
+            if drag.source_validated_at == self.version {
+                return Ok(true);
+            }
+            (
+                drag.payload.clone(),
+                drag.complete_root.clone(),
+                drag.origin,
+            )
+        };
+        let Ok(prepared) = self.prepare_drag_source(&payload) else {
+            return Ok(false);
+        };
+        let valid =
+            prepared.complete_root == complete_root && self.frozen_drag_origin_is_current(origin);
+        if valid {
+            let drag = self.interaction.active_drag_mut(session).map_err(|_| {
+                EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                }
+            })?;
+            drag.source_validated_at = self.version;
+            drag.partial_detachable = prepared.partial_detachable;
+        }
+        Ok(valid)
+    }
+
+    fn frozen_drag_origin_is_current(&self, origin: FrozenDragOrigin) -> bool {
+        let FrozenDragOrigin::Contained(origin) = origin else {
+            return true;
+        };
+        self.workspace.presentation_for_root(origin.root)
+            == Some(crate::RootPresentationOwner::Contained {
+                surface: origin.surface,
+                floating: origin.floating,
+            })
+            && self
+                .workspace
+                .contained_floating(origin.floating)
+                .is_some_and(|record| {
+                    record.root == origin.root
+                        && record.surface == origin.surface
+                        && record.rect == origin.source_rect
+                })
+    }
+
+    fn resolve_core_preview_evaluation(
+        &self,
+        input: InputSequence,
+        drag: &crate::interaction::ActiveDrag,
+        target: &TargetAuthority,
+        current_pointer: &Authority<SurfacePointer>,
+    ) -> Result<PreviewEvaluation, EngineError> {
+        let (target, current_pointer, local) =
+            match self.normalize_core_drag_observation(drag.pointer, target, current_pointer) {
+                Ok(observation) => observation,
+                Err(reason) => {
+                    return Ok(PreviewEvaluation::without_affordance(
+                        PreviewDecision::Cancel(reason),
+                    ));
+                }
+            };
+        let mut evaluation = self.resolve_preview_evaluation(
+            input,
+            drag.session,
+            drag.pointer,
+            &drag.payload,
+            &target,
+            None,
+        )?;
+        if !local
+            || !matches!(
+                evaluation.decision,
+                PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
+            )
+        {
+            return Ok(evaluation);
+        }
+        evaluation.decision = match self.core_contained_candidate(drag, current_pointer) {
+            CoreContainedCandidate::None => evaluation.decision,
+            CoreContainedCandidate::Request(request) => {
+                let TearOffRequest::Contained(proposal) = &request else {
+                    return Err(EngineError::Interaction {
+                        input,
+                        source: InteractionCounterError::StateInvariant,
+                    });
+                };
+                let command = self.contained_presentation_command(
+                    &drag.payload,
+                    *proposal,
+                    drag.complete_root.clone(),
+                );
+                if let Some(mutation) = self.valid_core_contained_command(drag, *proposal, &command)
+                {
+                    Self::contained_preview_decision(*proposal, &request, false, command, mutation)
+                } else {
+                    PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
+                }
+            }
+            CoreContainedCandidate::Rejected => {
+                PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
+            }
+            CoreContainedCandidate::Cancel(reason) => PreviewDecision::Cancel(reason),
+        };
+        Ok(evaluation)
+    }
+
+    fn valid_core_contained_command(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+        proposal: crate::intent::ContainedTearOffProposal,
+        command: &WorkspaceCommand,
+    ) -> Option<ContainedMutationKind> {
+        if self
+            .validate_contained_placement(proposal.placement())
+            .is_err()
+        {
+            return None;
+        }
+        match command {
+            WorkspaceCommand::UpdateContainedRect {
+                surface,
+                root,
+                floating,
+                expected_rect,
+                rect,
+            } => {
+                let FrozenDragOrigin::Contained(origin) = drag.origin else {
+                    return None;
+                };
+                let source_matches = drag.complete_root.as_ref().is_some_and(|source| {
+                    source.root() == origin.root
+                        && match &drag.payload {
+                            MovePayload::Item(item) => {
+                                item.root() == source.root() && item.tabs() == source.node()
+                            }
+                            MovePayload::Tabs(payload) | MovePayload::Subtree(payload) => {
+                                payload == source
+                            }
+                        }
+                });
+                let owner_matches = self.workspace.presentation_for_root(origin.root)
+                    == Some(crate::RootPresentationOwner::Contained {
+                        surface: origin.surface,
+                        floating: origin.floating,
+                    });
+                let record_matches = self
+                    .workspace
+                    .contained_floating(origin.floating)
+                    .is_some_and(|record| {
+                        record.root == origin.root
+                            && record.surface == origin.surface
+                            && record.rect == origin.source_rect
+                            && record.z_order == proposal.z_order()
+                    });
+                (drag.source_validated_at == self.version
+                    && source_matches
+                    && owner_matches
+                    && record_matches
+                    && proposal.surface() == origin.surface
+                    && proposal.root() == origin.root
+                    && proposal.floating() == origin.floating
+                    && *surface == origin.surface
+                    && *root == origin.root
+                    && *floating == origin.floating
+                    && *expected_rect == origin.source_rect
+                    && *rect == proposal.rect())
+                .then_some(ContainedMutationKind::ExistingRectUpdate)
+            }
+            WorkspaceCommand::CreateContainedRoot {
+                surface,
+                root,
+                floating,
+                content: RootContent::Move(payload),
+                ..
+            } => (self
+                .policy
+                .check_tear_off(TearOffPresentation::Contained)
+                .is_ok()
+                && drag.complete_root.is_none()
+                && payload == &drag.payload
+                && *surface == proposal.surface()
+                && *root == proposal.root()
+                && *floating == proposal.floating()
+                && self.workspace.surface(*surface).is_some()
+                && self.workspace.root(*root).is_none()
+                && self.workspace.contained_floating(*floating).is_none()
+                && drag.partial_detachable)
+                .then_some(ContainedMutationKind::PresentationChange),
+            WorkspaceCommand::RehomeRoot { source, target } => (self
+                .policy
+                .check_tear_off(TearOffPresentation::Contained)
+                .is_ok()
+                && drag.complete_root.as_ref() == Some(source)
+                && self.core_contained_rehome_is_valid(source, *target, proposal))
+            .then_some(ContainedMutationKind::PresentationChange),
+            WorkspaceCommand::CreateContainedRoot { .. }
+            | WorkspaceCommand::Select { .. }
+            | WorkspaceCommand::Reorder { .. }
+            | WorkspaceCommand::Open { .. }
+            | WorkspaceCommand::Close { .. }
+            | WorkspaceCommand::CloseRoot { .. }
+            | WorkspaceCommand::Move { .. }
+            | WorkspaceCommand::ResizeSplit { .. }
+            | WorkspaceCommand::CreateSurfaceRoot { .. }
+            | WorkspaceCommand::RaiseContained { .. }
+            | WorkspaceCommand::RemoveEmptyRoot { .. } => None,
+        }
+    }
+
+    fn partial_payload_is_detachable(&self, payload: &MovePayload) -> bool {
+        #[cfg(test)]
+        PARTIAL_DETACHABILITY_EVALUATIONS.with(|evaluations| {
+            evaluations.set(evaluations.get().saturating_add(1));
+        });
+        let (MovePayload::Tabs(source) | MovePayload::Subtree(source)) = payload else {
+            return true;
+        };
+        let Some(root) = self.workspace.root(source.root()) else {
+            return false;
+        };
+        root.central
+            .is_none_or(|central| !self.workspace.subtree_contains(source.node(), central))
+    }
+
+    fn core_contained_rehome_is_valid(
+        &self,
+        source: &NodeSource,
+        target: RootPresentationTarget,
+        proposal: crate::intent::ContainedTearOffProposal,
+    ) -> bool {
+        let RootPresentationTarget::Contained {
+            surface,
+            floating,
+            rect,
+            z_order,
+        } = target
+        else {
+            return false;
+        };
+        if source.root() != proposal.root()
+            || surface != proposal.surface()
+            || floating != proposal.floating()
+            || rect != proposal.rect()
+            || z_order != proposal.z_order()
+            || self.workspace.surface(surface).is_none()
+        {
+            return false;
+        }
+        match self.workspace.presentation_for_root(source.root()) {
+            Some(crate::RootPresentationOwner::Main {
+                surface: source_surface,
+            }) => {
+                source_surface != surface
+                    && self
+                        .workspace
+                        .surface(source_surface)
+                        .is_some_and(|presentation| presentation.contained.is_empty())
+                    && self.workspace.contained_floating(floating).is_none()
+            }
+            Some(crate::RootPresentationOwner::Contained {
+                surface: source_surface,
+                floating: source_floating,
+            }) => {
+                source_floating == floating
+                    && (source_surface != surface
+                        || self
+                            .workspace
+                            .contained_floating(floating)
+                            .is_some_and(|record| record.rect == rect && record.z_order == z_order))
+            }
+            None => false,
+        }
+    }
+
+    fn normalize_core_drag_observation(
+        &self,
+        pointer: crate::intent::PointerId,
+        target: &TargetAuthority,
+        current_pointer: &Authority<SurfacePointer>,
+    ) -> Result<(TargetAuthority, SurfacePointer, bool), InteractionCancelReason> {
+        let Authority::Known(current_pointer) = current_pointer else {
+            return Err(InteractionCancelReason::UnknownTargetAuthority);
+        };
+        if self.workspace.surface(current_pointer.surface()).is_none() {
+            return Err(InteractionCancelReason::UnknownTargetAuthority);
+        }
+        let (observed_target, routed) = self.target_observation(pointer, target)?;
+        match observed_target {
+            Authority::Unknown(_) => Err(InteractionCancelReason::UnknownTargetAuthority),
+            Authority::Known(Some(observed)) if observed != current_pointer => {
+                Err(InteractionCancelReason::UnknownTargetAuthority)
+            }
+            Authority::Known(Some(_) | None) => match target {
+                TargetAuthority::Local(local) if current_pointer.surface() == local.observer() => {
+                    Ok((target.clone(), *current_pointer, true))
+                }
+                TargetAuthority::Routed(_) if routed => {
+                    Ok((target.clone(), *current_pointer, false))
+                }
+                TargetAuthority::Local(_) | TargetAuthority::Routed(_) => {
+                    Err(InteractionCancelReason::UnknownTargetAuthority)
+                }
+            },
+        }
+    }
+
+    fn core_contained_candidate(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+        current_pointer: SurfacePointer,
+    ) -> CoreContainedCandidate {
+        let (root, floating, source_rect, initial_pointer, minimum_size, z_order) =
+            match drag.origin {
+                FrozenDragOrigin::Contained(origin) => {
+                    if current_pointer.surface() != origin.surface {
+                        return CoreContainedCandidate::None;
+                    }
+                    let Some(record) = self.workspace.contained_floating(origin.floating) else {
+                        return CoreContainedCandidate::Rejected;
+                    };
+                    if record.root != origin.root
+                        || record.surface != origin.surface
+                        || record.rect != origin.source_rect
+                    {
+                        return CoreContainedCandidate::Rejected;
+                    }
+                    (
+                        origin.root,
+                        origin.floating,
+                        origin.source_rect,
+                        origin.initial_pointer,
+                        origin.minimum_size,
+                        record.z_order,
+                    )
+                }
+                FrozenDragOrigin::Workspace => {
+                    let Some(offer) = drag.contained_offer else {
+                        return CoreContainedCandidate::None;
+                    };
+                    if current_pointer.surface() != offer.anchor().surface() {
+                        return CoreContainedCandidate::None;
+                    }
+                    let z_order = match offer.stacking() {
+                        ContainedStackPlacement::Front => {
+                            let Some(z_order) =
+                                self.next_contained_front_z_order(current_pointer.surface())
+                            else {
+                                return CoreContainedCandidate::Rejected;
+                            };
+                            z_order
+                        }
+                    };
+                    (
+                        offer.root(),
+                        offer.floating(),
+                        offer.requested_rect(),
+                        offer.anchor().position(),
+                        offer.minimum_size(),
+                        z_order,
+                    )
+                }
+            };
+        let Ok(requested_rect) =
+            translated_contained_rect(source_rect, initial_pointer, current_pointer.position())
+        else {
+            return CoreContainedCandidate::Rejected;
+        };
+        let placement =
+            match self.contained_placement(current_pointer.surface(), requested_rect, minimum_size)
+            {
+                Ok(placement) => placement,
+                Err(
+                    ContainedPlacementUnavailable::UnrepresentableGeometry { .. }
+                    | ContainedPlacementUnavailable::ProofMismatch { .. },
+                ) => {
+                    return CoreContainedCandidate::Rejected;
+                }
+                Err(
+                    ContainedPlacementUnavailable::SceneUnavailable
+                    | ContainedPlacementUnavailable::StaleScene { .. }
+                    | ContainedPlacementUnavailable::MissingSurface { .. }
+                    | ContainedPlacementUnavailable::BootstrapSurface { .. },
+                ) => {
+                    return CoreContainedCandidate::Cancel(
+                        InteractionCancelReason::SceneUnavailable,
+                    );
+                }
+            };
+        CoreContainedCandidate::Request(TearOffRequest::Contained(
+            crate::intent::ContainedTearOffProposal::new(root, floating, placement, z_order),
+        ))
+    }
+
+    fn next_contained_front_z_order(&self, surface: crate::ids::SurfaceId) -> Option<u64> {
+        match self.workspace.contained_frontmost(surface).ok()? {
+            Some(frontmost) => frontmost.z_order().checked_add(1),
+            None => Some(1),
+        }
     }
 
     fn cancel_drag(
@@ -2675,10 +3403,38 @@ impl DockEngine {
     ) -> Result<PreviewDecision, EngineError> {
         // Lifecycle commands can advance the revision without cancelling an
         // unrelated gesture, so the frozen source must be checked every frame.
-        if self.validate_payload(payload).is_err()
-            || self
-                .validate_contained_placement(proposal.placement())
-                .is_err()
+        if self.validate_payload(payload).is_err() {
+            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
+        }
+        let complete_root =
+            self.complete_root_source(payload)
+                .map_err(|_| EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                })?;
+        self.resolve_validated_contained_tear_off(
+            input,
+            payload,
+            proposal,
+            request,
+            fallback,
+            complete_root,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_validated_contained_tear_off(
+        &self,
+        input: InputSequence,
+        payload: &MovePayload,
+        proposal: crate::intent::ContainedTearOffProposal,
+        request: &TearOffRequest,
+        fallback: bool,
+        complete_root: Option<NodeSource>,
+    ) -> Result<PreviewDecision, EngineError> {
+        if self
+            .validate_contained_placement(proposal.placement())
+            .is_err()
             || self
                 .policy
                 .check_tear_off(TearOffPresentation::Contained)
@@ -2689,15 +3445,13 @@ impl DockEngine {
         if let Some(command) = self.same_contained_move_command_for_valid_payload(payload, proposal)
         {
             return Ok(Self::contained_preview_decision(
-                proposal, request, fallback, command,
+                proposal,
+                request,
+                fallback,
+                command,
+                ContainedMutationKind::PresentationChange,
             ));
         }
-        let complete_root =
-            self.complete_root_source(payload)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
         if complete_root
             .as_ref()
             .is_some_and(|source| source.root() != proposal.root())
@@ -2707,7 +3461,11 @@ impl DockEngine {
         let command = self.contained_presentation_command(payload, proposal, complete_root);
         match self.preflight_command(input, &command)? {
             CommandApplication::Applied { .. } => Ok(Self::contained_preview_decision(
-                proposal, request, fallback, command,
+                proposal,
+                request,
+                fallback,
+                command,
+                ContainedMutationKind::PresentationChange,
             )),
             CommandApplication::Rejected(_) => {
                 Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
@@ -2720,6 +3478,7 @@ impl DockEngine {
         request: &TearOffRequest,
         fallback: bool,
         command: WorkspaceCommand,
+        mutation: ContainedMutationKind,
     ) -> PreviewDecision {
         PreviewDecision::Publish {
             visual: PreviewVisual::Contained {
@@ -2731,6 +3490,7 @@ impl DockEngine {
                 command,
                 request: request.clone(),
                 fallback,
+                mutation,
             }),
         }
     }
@@ -2823,9 +3583,12 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) =
-            self.validate_drag_release_binding(release.session, release.pointer, release.button)
-        {
+        if let Err(error) = self.validate_drag_release_binding(
+            release.session,
+            release.pointer,
+            release.button,
+            DragObservationProtocol::Legacy,
+        ) {
             return Ok(InteractionOutcome::Rejected(error));
         }
         let target_unknown = match self.target_observation(release.pointer, release.target) {
@@ -2886,11 +3649,89 @@ impl DockEngine {
         self.finish_drag_delivery(input, release.session, *proof, events, interaction_events)
     }
 
+    fn release_drag_observation(
+        &mut self,
+        input: InputSequence,
+        release: ObservedDragReleaseInput<'_>,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        if let Err(error) = self.validate_drag_release_binding(
+            release.session,
+            release.pointer,
+            release.button,
+            DragObservationProtocol::CoreOwned,
+        ) {
+            return Ok(InteractionOutcome::Rejected(error));
+        }
+        if let Err(error) = self.interaction.set_core_drag_observation(
+            release.session,
+            release.target.clone(),
+            release.current_pointer.clone(),
+            release.contained_offer,
+        ) {
+            return Ok(InteractionOutcome::Rejected(error));
+        }
+        if !self.core_drag_source_is_current(release.session, input)? {
+            return self.cancel_drag(
+                input,
+                release.session,
+                InteractionCancelReason::SourceVanished,
+                interaction_events,
+            );
+        }
+        if let Err(reason) = self.normalize_core_drag_observation(
+            release.pointer,
+            release.target,
+            release.current_pointer,
+        ) {
+            return self.cancel_drag(input, release.session, reason, interaction_events);
+        }
+        let button_state = match release.target {
+            TargetAuthority::Local(_) => release.button_state.clone(),
+            TargetAuthority::Routed(proof) => proof.button_state(release.button),
+        };
+        if let Some(outcome) =
+            self.require_released_button(input, release.session, &button_state, interaction_events)?
+        {
+            return Ok(outcome);
+        }
+        let drag = match self.interaction.take_drag_for_release(
+            release.session,
+            release.pointer,
+            release.button,
+        ) {
+            Ok(drag) => drag,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        let proof = match self.resolve_core_release_proof(
+            input,
+            &drag,
+            release.target,
+            release.current_pointer,
+        )? {
+            ReleaseProofDecision::Deliver(proof) => proof,
+            ReleaseProofDecision::Reject(error) => {
+                let _ = self
+                    .viewport
+                    .end_drag_routing(drag.pointer)
+                    .map_err(|source| EngineError::Viewport { input, source })?;
+                return Ok(InteractionOutcome::Rejected(error));
+            }
+        };
+        let _ = self
+            .viewport
+            .end_drag_routing(drag.pointer)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        self.finish_drag_delivery(input, release.session, *proof, events, interaction_events)
+    }
+
     fn validate_drag_release_binding(
         &self,
         session: crate::interaction::DragSessionId,
         pointer: crate::intent::PointerId,
         button: crate::intent::PointerButton,
+        expected_protocol: DragObservationProtocol,
     ) -> Result<(), InteractionRejection> {
         let drag = self.interaction.active_drag(session).map_err(|error| {
             if matches!(error, InteractionRejection::SessionConsumed { .. }) {
@@ -2904,6 +3745,9 @@ impl DockEngine {
         }
         if drag.button != button {
             return Err(InteractionRejection::ButtonMismatch);
+        }
+        if drag.protocol != expected_protocol {
+            return Err(InteractionRejection::DragObservationProtocolMismatch);
         }
         Ok(())
     }
@@ -2995,6 +3839,50 @@ impl DockEngine {
         Ok(ReleaseProofDecision::Deliver(proof))
     }
 
+    fn resolve_core_release_proof(
+        &self,
+        input: InputSequence,
+        drag: &crate::interaction::ActiveDrag,
+        target: &TargetAuthority,
+        current_pointer: &Authority<SurfacePointer>,
+    ) -> Result<ReleaseProofDecision, EngineError> {
+        let Some(preview) = drag.preview.as_ref() else {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::PreviewMissing,
+            ));
+        };
+        if !preview.painted() {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::PreviewNotPainted,
+            ));
+        }
+        let Some(scene) = self.scene.as_ref() else {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::StaleScene,
+            ));
+        };
+        if scene.stamp() != preview.public().token().scene()
+            || scene.stamp().workspace() != self.version
+        {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::StaleScene,
+            ));
+        }
+        let evaluation =
+            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
+        let PreviewDecision::Publish { visual, proof } = evaluation.decision else {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::TargetChanged,
+            ));
+        };
+        if preview.public().visual() != &visual || preview.proof() != proof.as_ref() {
+            return Ok(ReleaseProofDecision::Reject(
+                InteractionRejection::TargetChanged,
+            ));
+        }
+        Ok(ReleaseProofDecision::Deliver(proof))
+    }
+
     fn finish_drag_delivery(
         &mut self,
         input: InputSequence,
@@ -3010,6 +3898,7 @@ impl DockEngine {
                 WorkspaceDeliveryTarget {
                     kind: WorkspaceDeliveryKind::Dock,
                     focus_surface: target.surface(),
+                    validation: WorkspaceDeliveryValidation::Policy,
                 },
                 &command,
                 events,
@@ -3019,6 +3908,7 @@ impl DockEngine {
                 command,
                 request,
                 fallback,
+                mutation,
             } => {
                 let kind = if fallback {
                     WorkspaceDeliveryKind::ContainedFallback
@@ -3047,6 +3937,14 @@ impl DockEngine {
                     WorkspaceDeliveryTarget {
                         kind,
                         focus_surface,
+                        validation: match mutation {
+                            ContainedMutationKind::ExistingRectUpdate => {
+                                WorkspaceDeliveryValidation::ExistingContainedRect
+                            }
+                            ContainedMutationKind::PresentationChange => {
+                                WorkspaceDeliveryValidation::Policy
+                            }
+                        },
                     },
                     &command,
                     events,
@@ -3084,7 +3982,15 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        match self.apply_interaction_command(input, command, events)? {
+        let application = match delivery.validation {
+            WorkspaceDeliveryValidation::Policy => {
+                self.apply_interaction_command(input, command, events)?
+            }
+            WorkspaceDeliveryValidation::ExistingContainedRect => {
+                self.apply_existing_contained_rect_update(input, command, events)?
+            }
+        };
+        match application {
             CommandApplication::Applied { outcome, changed } => {
                 let _ = self
                     .viewport
@@ -3269,6 +4175,17 @@ impl DockEngine {
         let InteractionStatus::Dragging { session } = self.interaction.status() else {
             return Ok(());
         };
+        let protocol = self
+            .interaction
+            .active_drag(session)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?
+            .protocol;
+        if protocol == DragObservationProtocol::CoreOwned {
+            return self.refresh_core_drag_preview(input, session, interaction_events);
+        }
         let (pointer, payload, target, tear_off) = {
             let drag =
                 self.interaction
@@ -3317,6 +4234,51 @@ impl DockEngine {
             &target,
             tear_off.as_ref(),
         )?;
+        let _ = self.apply_preview_evaluation(input, session, evaluation, interaction_events)?;
+        Ok(())
+    }
+
+    fn refresh_core_drag_preview(
+        &mut self,
+        input: InputSequence,
+        session: crate::interaction::DragSessionId,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<(), EngineError> {
+        if !self.core_drag_source_is_current(session, input)? {
+            let _ = self.cancel_drag(
+                input,
+                session,
+                InteractionCancelReason::SourceVanished,
+                interaction_events,
+            )?;
+            return Ok(());
+        }
+        let drag = self
+            .interaction
+            .active_drag(session)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?;
+        let (Some(target), Some(current_pointer)) =
+            (drag.target.as_ref(), drag.current_pointer.as_ref())
+        else {
+            self.interaction
+                .clear_preview(session)
+                .map_err(|_| EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                })?;
+            self.interaction
+                .set_drop_affordance(session, None)
+                .map_err(|_| EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                })?;
+            return Ok(());
+        };
+        let evaluation =
+            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
         let _ = self.apply_preview_evaluation(input, session, evaluation, interaction_events)?;
         Ok(())
     }
@@ -3639,6 +4601,34 @@ impl DockEngine {
     ) -> Result<CommandApplication, EngineError> {
         let application =
             Self::run_command_transaction(input, &mut self.workspace, &self.policy, command)?;
+        self.record_interaction_command_application(input, application, events)
+    }
+
+    fn apply_existing_contained_rect_update(
+        &mut self,
+        input: InputSequence,
+        command: &WorkspaceCommand,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<CommandApplication, EngineError> {
+        if !matches!(command, WorkspaceCommand::UpdateContainedRect { .. }) {
+            return Err(EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            });
+        }
+        let mut policy = self.policy.clone();
+        policy.set_allow_contained_floating(true);
+        let application =
+            Self::run_command_transaction(input, &mut self.workspace, &policy, command)?;
+        self.record_interaction_command_application(input, application, events)
+    }
+
+    fn record_interaction_command_application(
+        &mut self,
+        input: InputSequence,
+        application: CommandApplication,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<CommandApplication, EngineError> {
         if let CommandApplication::Applied { outcome, changed } = &application
             && *changed
         {
@@ -3764,11 +4754,12 @@ mod tests {
     use crate::command::DockTarget;
     use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual};
     use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-    use crate::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
+    use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation};
     use crate::hit_region::HitRegion;
     use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
     use crate::intent::{
-        ContainedTearOffProposal, PointerButton, PointerId, RendererIntent, SurfacePointer,
+        ContainedTearOffProposal, DragOrigin, PointerButton, PointerId, RendererIntent,
+        SurfacePointer,
     };
     use crate::interaction::{DragSessionId, InteractionOutcome, InteractionStatus};
     use crate::scene::{NodeSceneId, ReadySurfaceScene, SceneLayerKey, SemanticRect};
@@ -3805,6 +4796,102 @@ mod tests {
             source_tabs,
             target_tabs,
         }
+    }
+
+    #[test]
+    fn core_drag_reuses_partial_detachability_until_workspace_version_changes() {
+        let mut builder = Workspace::builder();
+        let central = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let movable = builder.insert_node(Node::tabs([ItemId::new(2)]));
+        let root_node = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [central, movable]).expect("split must be valid"),
+        );
+        builder.set_root(
+            SOURCE_ROOT,
+            RootRecord::new(root_node).with_central(central),
+        );
+        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
+        let workspace = builder.build().expect("cache workspace must be valid");
+        let mut engine =
+            DockEngine::new(workspace, DockPolicy::default()).expect("cache engine must be valid");
+        let payload = MovePayload::Subtree(
+            engine
+                .workspace()
+                .capture_node_source(SOURCE_ROOT, movable)
+                .expect("partial source must be current"),
+        );
+        PARTIAL_DETACHABILITY_EVALUATIONS.with(|evaluations| evaluations.set(0));
+
+        engine
+            .enqueue_renderer_intent(RendererIntent::ArmDragFrom {
+                pointer: TEST_POINTER,
+                button: PointerButton::Primary,
+                payload,
+                origin: DragOrigin::Workspace,
+            })
+            .expect("arm sequence must be available");
+        let armed = engine.reduce_pending().expect("arm must reduce");
+        let session = match armed.reduced_inputs()[0].outcome() {
+            InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::DragArmed { session, .. },
+                ..
+            } => *session,
+            outcome => panic!("unexpected arm outcome: {outcome:?}"),
+        };
+        engine
+            .enqueue_renderer_intent(RendererIntent::BeginDrag {
+                session,
+                pointer: TEST_POINTER,
+                button: PointerButton::Primary,
+            })
+            .expect("begin sequence must be available");
+        engine.reduce_pending().expect("begin must reduce");
+        assert_eq!(
+            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
+            1
+        );
+
+        assert!(
+            engine
+                .core_drag_source_is_current(session, InputSequence::new(100))
+                .expect("same-version source check must succeed")
+        );
+        assert!(
+            engine
+                .core_drag_source_is_current(session, InputSequence::new(101))
+                .expect("second same-version source check must succeed")
+        );
+        assert_eq!(
+            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
+            1
+        );
+
+        engine.version = WorkspaceVersion::new(
+            engine.version.epoch(),
+            engine
+                .version
+                .revision()
+                .checked_next()
+                .expect("test revision must advance"),
+        );
+        assert!(
+            engine
+                .core_drag_source_is_current(session, InputSequence::new(102))
+                .expect("new-version source check must succeed")
+        );
+        assert_eq!(
+            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
+            2
+        );
+        assert!(
+            engine
+                .core_drag_source_is_current(session, InputSequence::new(103))
+                .expect("cached new-version source check must succeed")
+        );
+        assert_eq!(
+            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
+            2
+        );
     }
 
     #[test]

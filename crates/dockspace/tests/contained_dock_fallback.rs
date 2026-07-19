@@ -1,4 +1,4 @@
-use dockspace::command::{CommandOutcome, DockTarget, MovePayload};
+use dockspace::command::{CommandOutcome, DockFraction, DockTarget, Edge, MovePayload};
 use dockspace::drop_target::{
     DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual, SceneLayerKey,
 };
@@ -8,13 +8,14 @@ use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation,
 use dockspace::hit_region::HitRegion;
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
-    Authority, AuthorityUnavailableReason, ContainedTearOffProposal, PointerButton,
-    PointerButtonState, PointerId, RendererIntent, SurfacePointer, TargetAuthority, TearOffRequest,
+    Authority, AuthorityUnavailableReason, ContainedDragOrigin, ContainedPresentationOffer,
+    ContainedTearOffProposal, DragOrigin, PointerButton, PointerButtonState, PointerId,
+    RendererIntent, SurfacePointer, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
-    DragSessionId, InteractionCancelReason, InteractionDelivery, InteractionOutcome,
-    InteractionRejection, InteractionStatus, PreviewResolutionStatus, PreviewVisual,
-    WorkspaceDeliveryKind,
+    ActiveDragView, DragSessionId, InteractionCancelReason, InteractionDelivery,
+    InteractionOutcome, InteractionRejection, InteractionStatus, PreviewResolutionStatus,
+    PreviewVisual, WorkspaceDeliveryKind,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -767,4 +768,657 @@ fn rejected_exact_candidate_clears_the_old_fallback_proof_before_release() {
         }
     ));
     assert_eq!(fixture.engine.workspace(), &before);
+}
+
+fn no_target(surface: SurfaceId) -> TargetAuthority {
+    TargetAuthority::local(surface, Authority::Known(None))
+}
+
+fn core_pointer(position: LogicalPoint) -> Authority<SurfacePointer> {
+    Authority::Known(SurfacePointer::new(SURFACE, position))
+}
+
+fn arm_and_begin_core(
+    fixture: &mut Fixture,
+    payload: MovePayload,
+    origin: DragOrigin,
+) -> DragSessionId {
+    let armed = process(
+        fixture,
+        RendererIntent::ArmDragFrom {
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            payload,
+            origin,
+        },
+    );
+    let InteractionOutcome::DragArmed { session, .. } = armed else {
+        panic!("unexpected canonical arm outcome: {armed:?}");
+    };
+    let begun = process(
+        fixture,
+        RendererIntent::BeginDrag {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+        },
+    );
+    assert!(matches!(begun, InteractionOutcome::DragBegan { .. }));
+    session
+}
+
+fn update_core_drag(
+    fixture: &mut Fixture,
+    session: DragSessionId,
+    target: TargetAuthority,
+    current_pointer: Authority<SurfacePointer>,
+    contained_offer: Option<ContainedPresentationOffer>,
+) -> InteractionOutcome {
+    process(
+        fixture,
+        RendererIntent::UpdateDragObservation {
+            session,
+            target,
+            current_pointer,
+            contained_offer,
+        },
+    )
+}
+
+fn acknowledge_and_release_core(
+    fixture: &mut Fixture,
+    session: DragSessionId,
+    target: TargetAuthority,
+    current_pointer: Authority<SurfacePointer>,
+    contained_offer: Option<ContainedPresentationOffer>,
+) -> InteractionOutcome {
+    let acknowledgement = fixture
+        .engine
+        .interaction()
+        .preview()
+        .expect("a canonical preview must exist before release")
+        .acknowledgement();
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::ReleaseDragObservation {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            button_state: Authority::Known(PointerButtonState::Released),
+            target,
+            current_pointer,
+            contained_offer,
+        })
+        .expect("canonical release sequence must be available");
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::AcknowledgePreview(acknowledgement))
+        .expect("canonical acknowledgement sequence must be available");
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("canonical acknowledgement and release must reduce");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::PreviewAcknowledged { .. },
+            ..
+        }
+    ));
+    match transition.reduced_inputs()[1].outcome() {
+        InputOutcome::InteractionProcessed { outcome, .. } => outcome.clone(),
+        outcome => panic!("unexpected canonical release outcome: {outcome:?}"),
+    }
+}
+
+fn partial_item_payload(fixture: &Fixture) -> MovePayload {
+    MovePayload::Item(
+        fixture
+            .engine
+            .workspace()
+            .capture_item_source(FLOATING_ROOT, fixture.floating_tabs, ItemId::new(3))
+            .expect("partial item source must be current"),
+    )
+}
+
+#[test]
+fn core_owned_contained_title_move_uses_frozen_pointer_delta() {
+    let mut fixture = fixture(DockPolicy::default());
+    publish_scene(&mut fixture, false);
+    let payload = MovePayload::Subtree(
+        fixture
+            .engine
+            .workspace()
+            .capture_node_source(FLOATING_ROOT, fixture.floating_tabs)
+            .expect("contained root source must be current"),
+    );
+    let initial_pointer = point(340.0, 230.0);
+    let current_pointer = point(390.0, 280.0);
+    let session = arm_and_begin_core(
+        &mut fixture,
+        payload,
+        DragOrigin::Contained(ContainedDragOrigin::new(
+            FLOATING_ROOT,
+            FLOATING,
+            SurfacePointer::new(SURFACE, initial_pointer),
+            size(120.0, 90.0),
+        )),
+    );
+
+    let preview = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(current_pointer),
+        None,
+    );
+    let expected = rect(350.0, 250.0, 240.0, 180.0);
+    assert!(matches!(
+        preview,
+        InteractionOutcome::PreviewUpdated {
+            preview: Some(ref preview),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        } if matches!(preview.visual(), PreviewVisual::Contained { rect, fallback: false, .. }
+            if *rect == expected)
+    ));
+
+    let delivery = acknowledge_and_release_core(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(current_pointer),
+        None,
+    );
+    assert!(matches!(
+        delivery,
+        InteractionOutcome::DragDelivered {
+            delivery: InteractionDelivery::Workspace {
+                outcome: CommandOutcome::ContainedRectUpdated {
+                    floating: FLOATING,
+                    changed: true,
+                },
+                ..
+            },
+            ..
+        }
+    ));
+    let stored = fixture
+        .engine
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the same contained presentation must remain");
+    assert_eq!(stored.rect, expected);
+    assert_eq!(stored.z_order, FLOATING_Z_ORDER);
+}
+
+#[test]
+fn core_owned_out_in_out_reuses_one_contained_reservation() {
+    const NEW_ROOT: RootId = RootId::new(90);
+    const NEW_FLOATING: FloatingPresentationId = FloatingPresentationId::new(90);
+
+    let mut fixture = fixture_with_floating_items(DockPolicy::default(), &[3, 4]);
+    publish_scene(&mut fixture, false);
+    let payload = partial_item_payload(&fixture);
+    let session = arm_and_begin_core(&mut fixture, payload, DragOrigin::Workspace);
+    let anchor = point(500.0, 350.0);
+    let offer = ContainedPresentationOffer::front(
+        NEW_ROOT,
+        NEW_FLOATING,
+        SurfacePointer::new(SURFACE, anchor),
+        rect(400.0, 300.0, 180.0, 120.0),
+        size(120.0, 90.0),
+    );
+
+    let first_out = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(anchor),
+        Some(offer),
+    );
+    assert!(matches!(
+        first_out,
+        InteractionOutcome::PreviewUpdated {
+            preview: Some(ref preview),
+            ..
+        } if matches!(preview.visual(), PreviewVisual::Contained { rect, .. }
+            if *rect == offer.requested_rect())
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .interaction()
+            .active_drag_view()
+            .and_then(ActiveDragView::contained_offer),
+        Some(&offer)
+    );
+
+    let exact_pointer = point(40.0, 40.0);
+    let inside = update_core_drag(
+        &mut fixture,
+        session,
+        target_at(SURFACE, exact_pointer),
+        core_pointer(exact_pointer),
+        None,
+    );
+    assert!(matches!(
+        inside,
+        InteractionOutcome::PreviewUpdated {
+            preview: Some(ref preview),
+            ..
+        } if matches!(preview.visual(), PreviewVisual::Dock { .. })
+    ));
+
+    let final_pointer = point(550.0, 400.0);
+    let expected = rect(450.0, 350.0, 180.0, 120.0);
+    let second_out = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(final_pointer),
+        None,
+    );
+    assert!(matches!(
+        second_out,
+        InteractionOutcome::PreviewUpdated {
+            preview: Some(ref preview),
+            ..
+        } if matches!(preview.visual(), PreviewVisual::Contained { rect, .. }
+            if *rect == expected)
+    ));
+
+    let delivery = acknowledge_and_release_core(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(final_pointer),
+        None,
+    );
+    assert!(matches!(
+        delivery,
+        InteractionOutcome::DragDelivered {
+            delivery: InteractionDelivery::Workspace {
+                kind: WorkspaceDeliveryKind::Contained,
+                changed: true,
+                ..
+            },
+            ..
+        }
+    ));
+    let stored = fixture
+        .engine
+        .workspace()
+        .contained_floating(NEW_FLOATING)
+        .expect("the frozen contained identity must be delivered");
+    assert_eq!(stored.root, NEW_ROOT);
+    assert_eq!(stored.rect, expected);
+    assert_eq!(stored.z_order, FLOATING_Z_ORDER + 1);
+}
+
+#[test]
+fn core_owned_contained_offer_cannot_be_replaced() {
+    let mut fixture = fixture_with_floating_items(DockPolicy::default(), &[3, 4]);
+    publish_scene(&mut fixture, false);
+    let payload = partial_item_payload(&fixture);
+    let session = arm_and_begin_core(&mut fixture, payload, DragOrigin::Workspace);
+    let pointer = point(500.0, 350.0);
+    let frozen = ContainedPresentationOffer::front(
+        RootId::new(90),
+        FloatingPresentationId::new(90),
+        SurfacePointer::new(SURFACE, pointer),
+        rect(400.0, 300.0, 180.0, 120.0),
+        size(120.0, 90.0),
+    );
+    let replacement = ContainedPresentationOffer::front(
+        RootId::new(91),
+        FloatingPresentationId::new(91),
+        SurfacePointer::new(SURFACE, pointer),
+        rect(420.0, 300.0, 180.0, 120.0),
+        size(120.0, 90.0),
+    );
+    let first = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(pointer),
+        Some(frozen),
+    );
+    assert!(matches!(first, InteractionOutcome::PreviewUpdated { .. }));
+
+    let rejected = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(pointer),
+        Some(replacement),
+    );
+    assert_eq!(
+        rejected,
+        InteractionOutcome::Rejected(InteractionRejection::ContainedPresentationOfferChanged)
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .interaction()
+            .active_drag_view()
+            .and_then(ActiveDragView::contained_offer),
+        Some(&frozen)
+    );
+}
+
+fn publish_edge_scene(fixture: &mut Fixture) {
+    let mut ready = ReadySurfaceScene::new(SURFACE, rect(0.0, 0.0, 800.0, 600.0));
+    for (edge, region) in [
+        (Edge::Right, rect(120.0, 20.0, 60.0, 60.0)),
+        (Edge::Bottom, rect(220.0, 20.0, 60.0, 60.0)),
+    ] {
+        let target = fixture
+            .engine
+            .workspace()
+            .capture_edge_target(
+                MAIN_ROOT,
+                fixture.main_tabs,
+                edge,
+                DockFraction::new(0.35).expect("edge fraction must be valid"),
+            )
+            .expect("edge target must be current");
+        ready.push_drop_target(DropTargetRecord::new(
+            DropTargetId::OuterEdge {
+                surface: SURFACE,
+                root: MAIN_ROOT,
+                node: fixture.main_tabs,
+                edge,
+            },
+            DockTarget::Edge(target),
+            DropTargetAvailability::Available,
+            HitRegion::new(region),
+            SceneLayerKey::new(1),
+            DropVisual::new(region),
+        ));
+    }
+    let mut scene =
+        BuildingScene::new([SURFACE, BOOTSTRAP_SURFACE]).expect("edge scene roster must be unique");
+    scene
+        .insert_ready(ready)
+        .expect("edge surface facts must be valid");
+    scene
+        .insert_ready(ReadySurfaceScene::new(
+            BOOTSTRAP_SURFACE,
+            rect(0.0, 0.0, 400.0, 300.0),
+        ))
+        .expect("secondary surface facts must be valid");
+    fixture
+        .engine
+        .enqueue_scene(scene)
+        .expect("edge scene sequence must be available");
+    fixture
+        .engine
+        .reduce_pending()
+        .expect("edge scene must publish");
+}
+
+#[test]
+fn core_owned_horizontal_and_vertical_exact_targets_win_over_contained_offer() {
+    for (edge, position) in [
+        (Edge::Right, point(140.0, 40.0)),
+        (Edge::Bottom, point(240.0, 40.0)),
+    ] {
+        let mut fixture = fixture_with_floating_items(DockPolicy::default(), &[3, 4]);
+        publish_edge_scene(&mut fixture);
+        let payload = partial_item_payload(&fixture);
+        let session = arm_and_begin_core(&mut fixture, payload, DragOrigin::Workspace);
+        let offer = ContainedPresentationOffer::front(
+            RootId::new(90),
+            FloatingPresentationId::new(90),
+            SurfacePointer::new(SURFACE, position),
+            rect(400.0, 300.0, 180.0, 120.0),
+            size(120.0, 90.0),
+        );
+
+        let outcome = update_core_drag(
+            &mut fixture,
+            session,
+            target_at(SURFACE, position),
+            core_pointer(position),
+            Some(offer),
+        );
+        assert!(matches!(
+            outcome,
+            InteractionOutcome::PreviewUpdated {
+                preview: Some(ref preview),
+                ..
+            } if matches!(preview.visual(), PreviewVisual::Dock {
+                target: DropTargetId::OuterEdge { edge: actual, .. },
+                ..
+            } if *actual == edge)
+        ));
+        assert!(fixture.engine.workspace().root(offer.root()).is_none());
+        assert!(
+            fixture
+                .engine
+                .workspace()
+                .contained_floating(offer.floating())
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn core_owned_arm_rejects_a_stale_source_before_creating_a_session() {
+    let original = fixture(DockPolicy::default());
+    let stale_payload = MovePayload::Item(
+        original
+            .engine
+            .workspace()
+            .capture_item_source(FLOATING_ROOT, original.floating_tabs, ItemId::new(3))
+            .expect("original source must be current"),
+    );
+    let mut changed = fixture_with_floating_items(DockPolicy::default(), &[3, 4]);
+
+    let outcome = process(
+        &mut changed,
+        RendererIntent::ArmDragFrom {
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            payload: stale_payload,
+            origin: DragOrigin::Workspace,
+        },
+    );
+
+    assert!(matches!(
+        outcome,
+        InteractionOutcome::Rejected(InteractionRejection::CommandRejected(_))
+    ));
+    assert_eq!(
+        changed.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+}
+
+#[test]
+fn core_owned_pointer_observation_must_match_the_exact_target_point() {
+    let mut fixture = fixture_with_floating_items(DockPolicy::default(), &[3, 4]);
+    publish_scene(&mut fixture, false);
+    let payload = partial_item_payload(&fixture);
+    let session = arm_and_begin_core(&mut fixture, payload, DragOrigin::Workspace);
+    let target_position = point(40.0, 40.0);
+
+    let outcome = update_core_drag(
+        &mut fixture,
+        session,
+        target_at(SURFACE, target_position),
+        core_pointer(point(41.0, 40.0)),
+        None,
+    );
+
+    assert!(matches!(
+        outcome,
+        InteractionOutcome::Cancelled {
+            reason: InteractionCancelReason::UnknownTargetAuthority,
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+}
+
+#[test]
+fn core_owned_drag_rejects_legacy_release_without_consuming_or_observing_it() {
+    let mut fixture = fixture(DockPolicy::default());
+    publish_scene(&mut fixture, false);
+    let payload = MovePayload::Subtree(
+        fixture
+            .engine
+            .workspace()
+            .capture_node_source(FLOATING_ROOT, fixture.floating_tabs)
+            .expect("contained source must be current"),
+    );
+    let session = arm_and_begin_core(&mut fixture, payload, DragOrigin::Workspace);
+    let before = fixture.engine.workspace().clone();
+
+    let outcome = process(
+        &mut fixture,
+        RendererIntent::ReleaseDrag {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            button_state: Authority::Known(PointerButtonState::Released),
+            target: no_target(SURFACE),
+            tear_off: None,
+        },
+    );
+
+    assert_eq!(
+        outcome,
+        InteractionOutcome::Rejected(InteractionRejection::DragObservationProtocolMismatch)
+    );
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Dragging { session }
+    );
+    let drag = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("protocol mismatch must not consume the drag");
+    assert!(drag.target().is_none());
+    assert!(drag.current_pointer().is_none());
+    assert!(drag.contained_offer().is_none());
+    assert_eq!(fixture.engine.workspace(), &before);
+}
+
+#[test]
+fn legacy_drag_rejects_core_release_without_consuming_or_observing_it() {
+    let mut fixture = fixture(DockPolicy::default());
+    publish_scene(&mut fixture, false);
+    let session = arm_and_begin(&mut fixture);
+    let before = fixture.engine.workspace().clone();
+
+    let outcome = process(
+        &mut fixture,
+        RendererIntent::ReleaseDragObservation {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            button_state: Authority::Known(PointerButtonState::Released),
+            target: no_target(SURFACE),
+            current_pointer: core_pointer(point(200.0, 150.0)),
+            contained_offer: None,
+        },
+    );
+
+    assert_eq!(
+        outcome,
+        InteractionOutcome::Rejected(InteractionRejection::DragObservationProtocolMismatch)
+    );
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Dragging { session }
+    );
+    let drag = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("protocol mismatch must not consume the drag");
+    assert!(drag.target().is_none());
+    assert!(drag.current_pointer().is_none());
+    assert!(drag.contained_offer().is_none());
+    assert_eq!(fixture.engine.workspace(), &before);
+}
+
+#[test]
+fn core_owned_existing_contained_move_survives_disabled_creation_policy() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_contained_floating(false);
+    let mut fixture = fixture(policy);
+    publish_scene(&mut fixture, false);
+    let payload = MovePayload::Subtree(
+        fixture
+            .engine
+            .workspace()
+            .capture_node_source(FLOATING_ROOT, fixture.floating_tabs)
+            .expect("contained source must be current"),
+    );
+    let initial_pointer = point(340.0, 230.0);
+    let current_pointer = point(390.0, 280.0);
+    let session = arm_and_begin_core(
+        &mut fixture,
+        payload,
+        DragOrigin::Contained(ContainedDragOrigin::new(
+            FLOATING_ROOT,
+            FLOATING,
+            SurfacePointer::new(SURFACE, initial_pointer),
+            size(120.0, 90.0),
+        )),
+    );
+
+    let preview = update_core_drag(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(current_pointer),
+        None,
+    );
+    let expected = rect(350.0, 250.0, 240.0, 180.0);
+    assert!(matches!(
+        preview,
+        InteractionOutcome::PreviewUpdated {
+            preview: Some(ref preview),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        } if matches!(preview.visual(), PreviewVisual::Contained { rect, fallback: false, .. }
+            if *rect == expected)
+    ));
+
+    let delivery = acknowledge_and_release_core(
+        &mut fixture,
+        session,
+        no_target(SURFACE),
+        core_pointer(current_pointer),
+        None,
+    );
+    assert!(matches!(
+        delivery,
+        InteractionOutcome::DragDelivered {
+            delivery: InteractionDelivery::Workspace {
+                outcome: CommandOutcome::ContainedRectUpdated {
+                    floating: FLOATING,
+                    changed: true,
+                },
+                ..
+            },
+            ..
+        }
+    ));
+    let floating = fixture
+        .engine
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the existing contained presentation must remain");
+    assert_eq!(floating.rect, expected);
+    assert_eq!(floating.z_order, FLOATING_Z_ORDER);
+    assert!(!fixture.engine.policy().allows_contained_floating());
 }

@@ -200,6 +200,152 @@ impl SurfacePointer {
     }
 }
 
+/// Renderer-observed origin of one whole contained-presentation title drag.
+///
+/// The adapter supplies only stable identity, the absolute press location, and
+/// its measured minimum size. The core validates that the payload is the exact
+/// complete root owned by this presentation and freezes the durable source
+/// rectangle itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedDragOrigin {
+    root: RootId,
+    floating: FloatingPresentationId,
+    initial_pointer: SurfacePointer,
+    minimum_size: LogicalSize,
+}
+
+impl ContainedDragOrigin {
+    /// Creates explicit contained-presentation origin facts.
+    #[must_use]
+    pub const fn new(
+        root: RootId,
+        floating: FloatingPresentationId,
+        initial_pointer: SurfacePointer,
+        minimum_size: LogicalSize,
+    ) -> Self {
+        Self {
+            root,
+            floating,
+            initial_pointer,
+            minimum_size,
+        }
+    }
+
+    /// Returns the complete source root claimed by the title interaction.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns the contained presentation claimed by the title interaction.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the authoritative press location in the host surface.
+    #[must_use]
+    pub const fn initial_pointer(self) -> SurfacePointer {
+        self.initial_pointer
+    }
+
+    /// Returns the renderer-measured minimum size frozen for the drag.
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+}
+
+/// Typed source semantics for the canonical core-owned drag protocol.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum DragOrigin {
+    /// A tab, tabs stack, subtree, or main-surface root without contained move semantics.
+    #[default]
+    Workspace,
+    /// The title of one existing contained presentation.
+    Contained(ContainedDragOrigin),
+}
+
+/// Core-owned stacking request for a newly created contained presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainedStackPlacement {
+    /// Place the new presentation in front of every current peer on its surface.
+    Front,
+}
+
+/// One application-owned identity and geometry offer for a new contained presentation.
+///
+/// The first offer is frozen for the drag session. Later observations may omit
+/// it and reuse the reservation, but cannot replace its identities or geometry.
+/// The anchor binds the requested rectangle to one absolute pointer observation,
+/// allowing the core to translate it from later pointer positions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedPresentationOffer {
+    root: RootId,
+    floating: FloatingPresentationId,
+    anchor: SurfacePointer,
+    requested_rect: LogicalRect,
+    minimum_size: LogicalSize,
+    stacking: ContainedStackPlacement,
+}
+
+impl ContainedPresentationOffer {
+    /// Offers stable identities and initial geometry with core-owned front placement.
+    #[must_use]
+    pub const fn front(
+        root: RootId,
+        floating: FloatingPresentationId,
+        anchor: SurfacePointer,
+        requested_rect: LogicalRect,
+        minimum_size: LogicalSize,
+    ) -> Self {
+        Self {
+            root,
+            floating,
+            anchor,
+            requested_rect,
+            minimum_size,
+            stacking: ContainedStackPlacement::Front,
+        }
+    }
+
+    /// Returns the stable root identity reserved by the application.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns the stable contained-presentation identity reserved by the application.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the pointer location associated with the initial requested rectangle.
+    #[must_use]
+    pub const fn anchor(self) -> SurfacePointer {
+        self.anchor
+    }
+
+    /// Returns the initial requested rectangle before deterministic clamping.
+    #[must_use]
+    pub const fn requested_rect(self) -> LogicalRect {
+        self.requested_rect
+    }
+
+    /// Returns the minimum contained size frozen with this offer.
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+
+    /// Returns the core-owned stacking semantic for this offer.
+    #[must_use]
+    pub const fn stacking(self) -> ContainedStackPlacement {
+        self.stacking
+    }
+}
+
 /// Authoritative hovered-target observation and its provenance.
 ///
 /// Local facts are valid only for one renderer callback surface. Cross-native-window facts must
@@ -642,6 +788,17 @@ impl TearOffRequest {
 /// Semantic interaction input queued by a renderer callback.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RendererIntent {
+    /// Arm the canonical core-owned drag protocol from typed source semantics.
+    ArmDragFrom {
+        /// Pointer which pressed the source.
+        pointer: PointerId,
+        /// Button which pressed the source.
+        button: PointerButton,
+        /// Frozen workspace payload.
+        payload: MovePayload,
+        /// Explicit source presentation semantics validated by the core.
+        origin: DragOrigin,
+    },
     /// Arm a drag without inferring a movement threshold.
     ArmDrag {
         /// Pointer which pressed the source.
@@ -670,6 +827,17 @@ pub enum RendererIntent {
         /// alternative used only when exact surface resolution is known none.
         tear_off: Option<TearOffRequest>,
     },
+    /// Replace one canonical drag's independent pointer and target observations.
+    UpdateDragObservation {
+        /// Active drag generation.
+        session: DragSessionId,
+        /// Authoritative target-surface observation, independent from pointer position.
+        target: TargetAuthority,
+        /// Current absolute pointer position or an explicit lack of authority.
+        current_pointer: Authority<SurfacePointer>,
+        /// Optional first offer for a newly contained presentation.
+        contained_offer: Option<ContainedPresentationOffer>,
+    },
     /// Confirm that the exact published preview was painted.
     AcknowledgePreview(PaintAcknowledgement),
     /// Attempt one authoritative matching release.
@@ -686,6 +854,23 @@ pub enum RendererIntent {
         target: TargetAuthority,
         /// Exact non-docking request which participated in the painted preview.
         tear_off: Option<TearOffRequest>,
+    },
+    /// Attempt canonical release using an independent current pointer observation.
+    ReleaseDragObservation {
+        /// Active drag generation.
+        session: DragSessionId,
+        /// Matching pointer.
+        pointer: PointerId,
+        /// Matching button.
+        button: PointerButton,
+        /// Authoritative state of that exact button.
+        button_state: Authority<PointerButtonState>,
+        /// Authoritative release target, independent from pointer position.
+        target: TargetAuthority,
+        /// Current absolute pointer position or an explicit lack of authority.
+        current_pointer: Authority<SurfacePointer>,
+        /// Optional first offer, or an exact repeat of the session's frozen offer.
+        contained_offer: Option<ContainedPresentationOffer>,
     },
     /// Cancel an active drag for an explicit reason.
     CancelDrag {
