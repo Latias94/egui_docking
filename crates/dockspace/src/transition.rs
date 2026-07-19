@@ -6,7 +6,8 @@ use crate::effect::{EffectId, EffectTransition};
 use crate::error::CommandError;
 use crate::event::WorkspaceEvent;
 use crate::frame::{
-    NativeCreateSagaId, ViewportCloseRequestId, ViewportFrameTransition, ViewportReconciliation,
+    NativeCreateSagaId, ViewportCloseDecisionRejection, ViewportCloseRequestId,
+    ViewportFrameTransition, ViewportReconciliation,
 };
 use crate::ids::{InputSequence, WorkspaceEpoch, WorkspaceRevision};
 use crate::interaction::{InteractionEvent, InteractionOutcome};
@@ -86,12 +87,13 @@ pub enum InputOutcome {
     /// One exact close request was decided without mutating topology.
     ViewportCloseDecided {
         request: ViewportCloseRequestId,
-        effect: Option<EffectId>,
+        effect: EffectId,
     },
-    /// A close decision named recovery geometry which is unavailable in the current scene.
+    /// An accepted close was rejected and the window was explicitly held.
     ViewportCloseDecisionRejected {
         request: ViewportCloseRequestId,
-        reason: crate::intent::ContainedPlacementUnavailable,
+        reason: ViewportCloseDecisionRejection,
+        hold_effect: EffectId,
     },
     /// One unresolved native-create saga was explicitly cancelled.
     NativeCreateCancelled {

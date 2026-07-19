@@ -15,7 +15,9 @@ use crate::effect::{
 };
 use crate::geometry::LogicalRect;
 use crate::ids::{SurfaceId, WorkspaceEpoch};
-use crate::intent::{ContainedRecoveryPlan, NativePlacementProof, PointerId};
+use crate::intent::{
+    ContainedPlacementUnavailable, ContainedRecoveryPlan, NativePlacementProof, PointerId,
+};
 use crate::interaction::PreparedNativeTearOff;
 use crate::platform::{
     ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
@@ -197,6 +199,17 @@ impl ViewportClosePlan {
 pub enum ViewportCloseDecision {
     Veto,
     Accept(ViewportClosePlan),
+}
+
+/// Why an accepted close was rejected and converted into an explicit hold.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewportCloseDecisionRejection {
+    /// Complete native-window absence cannot prove destruction.
+    DestructionAuthorityUnavailable { capability: PlatformCapability },
+    /// The recovery placement is no longer authorized by the current scene.
+    RecoveryPlacementUnavailable(ContainedPlacementUnavailable),
+    /// The accepted recovery root differs from the closing surface's main root.
+    RecoveryRootMismatch,
 }
 
 /// Queryable phase of one viewport close saga.
@@ -1040,7 +1053,7 @@ impl ViewportCoordinator {
         &mut self,
         request_id: ViewportCloseRequestId,
         decision: ViewportCloseDecision,
-    ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
+    ) -> Result<EffectId, ViewportCoordinatorError> {
         let mut candidate = self.clone();
         let request = candidate.close_requests.get(&request_id).cloned().ok_or(
             ViewportCoordinatorError::MissingCloseRequest {
@@ -1055,6 +1068,14 @@ impl ViewportCoordinator {
                 request: request_id,
                 status: request.status,
             });
+        }
+        if matches!(decision, ViewportCloseDecision::Accept(_)) {
+            let capability = candidate.capabilities.authoritative_inventory();
+            if !capability.is_supported() {
+                return Err(
+                    ViewportCoordinatorError::CloseDestructionAuthorityUnavailable { capability },
+                );
+            }
         }
 
         let (effect, status, plan) = match decision {
@@ -1071,7 +1092,7 @@ impl ViewportCoordinator {
                     .effects
                     .request(effect_kind)
                     .map_err(ViewportCoordinatorError::Effect)?;
-                (Some(effect), ViewportCloseStatus::Vetoed { effect }, None)
+                (effect, ViewportCloseStatus::Vetoed { effect }, None)
             }
             ViewportCloseDecision::Accept(mut plan) => {
                 if request
@@ -1095,19 +1116,19 @@ impl ViewportCoordinator {
                         binding: request.binding,
                     },
                 };
-                let effect = Some(
-                    candidate
-                        .effects
-                        .request(effect_kind)
-                        .map_err(ViewportCoordinatorError::Effect)?,
-                );
+                let effect = candidate
+                    .effects
+                    .request(effect_kind)
+                    .map_err(ViewportCoordinatorError::Effect)?;
                 candidate
                     .registry
                     .mark_awaiting_destroyed(request.binding)
                     .map_err(ViewportCoordinatorError::Registry)?;
                 (
                     effect,
-                    ViewportCloseStatus::AwaitingDestroyed { effect },
+                    ViewportCloseStatus::AwaitingDestroyed {
+                        effect: Some(effect),
+                    },
                     Some(plan),
                 )
             }
@@ -1118,7 +1139,7 @@ impl ViewportCoordinator {
                 request: request_id,
             },
         )?;
-        close_request.effect = effect;
+        close_request.effect = Some(effect);
         close_request.status = status;
         close_request.plan = plan;
         *self = candidate;
@@ -2782,6 +2803,8 @@ pub enum ViewportCoordinatorError {
     },
     #[error("viewport close request {request:?} changed its recovery root")]
     CloseRecoveryRootMismatch { request: ViewportCloseRequestId },
+    #[error("viewport close destruction authority is unavailable: {capability:?}")]
+    CloseDestructionAuthorityUnavailable { capability: PlatformCapability },
 }
 
 #[cfg(test)]
@@ -3015,8 +3038,7 @@ mod tests {
 
             let effect = coordinator
                 .decide_viewport_close(*request, ViewportCloseDecision::Veto)
-                .expect("veto must enter the effect ledger")
-                .expect("veto must have an effect");
+                .expect("veto must enter the effect ledger");
             let emitted = coordinator.take_new_effects();
             assert_eq!(emitted.len(), 1);
             assert_eq!(emitted[0].id(), effect);
@@ -3073,8 +3095,7 @@ mod tests {
         let plan = ViewportClosePlan::new(None, recovery);
         let effect = coordinator
             .decide_viewport_close(request, ViewportCloseDecision::Accept(plan.clone()))
-            .expect("accept must enter the release effect")
-            .expect("child accept must have a release effect");
+            .expect("accept must enter the release effect");
         let emitted = coordinator.take_new_effects();
         assert!(matches!(
             emitted.as_slice(),

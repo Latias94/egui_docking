@@ -7,14 +7,15 @@ use dockspace::effect::{
 use dockspace::engine::{DockEngine, EngineError, EngineInput};
 use dockspace::frame::{
     NativeCreateRequest, NativeCreateStatus, RestoreReplacementStatus, RetiredViewportStatus,
-    ViewportCloseDecision, ViewportClosePlan, ViewportCloseRequestId, ViewportCloseStatus,
+    ViewportCloseDecision, ViewportCloseDecisionRejection, ViewportClosePlan,
+    ViewportCloseRequestId, ViewportCloseStatus,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
-    Authority, ContainedTearOffProposal, NativeTearOffProposal, PointerButton, PointerButtonState,
-    PointerId, RendererIntent, TargetAuthority, TearOffRequest,
+    Authority, ContainedPlacementUnavailable, ContainedTearOffProposal, NativeTearOffProposal,
+    PointerButton, PointerButtonState, PointerId, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
     DragSessionId, InteractionDelivery, InteractionOutcome, InteractionStatus,
@@ -22,7 +23,8 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputState, WindowPresentationState,
+    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
+    PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
@@ -1547,6 +1549,155 @@ fn root_and_child_close_veto_emit_role_specific_effects_without_mutating_workspa
 }
 
 #[test]
+fn close_accept_without_authoritative_inventory_is_rejected_and_held() {
+    for role in [ViewportRole::Root, ViewportRole::Child] {
+        let mut fixture = fixture();
+        prepare_base_platform(&mut fixture, role);
+        let before = fixture.engine.workspace().clone();
+        let mut capabilities = platform_capabilities();
+        let unavailable = PlatformCapability::unknown(
+            PlatformRequirement::AuthoritativeInventory,
+            PlatformCapabilityReason::NotReported,
+        );
+        capabilities.set_authoritative_inventory(unavailable);
+        let snapshot = PlatformSnapshot::new(
+            capabilities,
+            vec![source_window(false), host_window(true)],
+            vec![pointer_observation()],
+            vec![ObservedWorkArea::new(
+                WORK_AREA,
+                physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+                ScaleFactor::new(1.0).expect("test work-area scale factor must be valid"),
+            )],
+        )
+        .expect("degraded snapshot must remain canonical");
+        fixture
+            .engine
+            .enqueue_platform_snapshot(snapshot)
+            .expect("degraded close snapshot must enqueue");
+        let close = fixture
+            .engine
+            .reduce_pending()
+            .expect("degraded close snapshot must reduce");
+        let request = close_request_from(&close);
+        let plan = ViewportClosePlan::new(
+            None,
+            close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(91)),
+        );
+
+        fixture
+            .engine
+            .enqueue_viewport_close_decision(request, ViewportCloseDecision::Accept(plan))
+            .expect("close decision must enqueue");
+        let rejected = fixture
+            .engine
+            .reduce_pending()
+            .expect("unsupported accept must fail closed without aborting the boundary");
+        let InputOutcome::ViewportCloseDecisionRejected {
+            request: actual_request,
+            reason: ViewportCloseDecisionRejection::DestructionAuthorityUnavailable { capability },
+            hold_effect,
+        } = rejected.reduced_inputs()[0].outcome()
+        else {
+            panic!("accept must publish a structured hold: {rejected:?}");
+        };
+        assert_eq!(*actual_request, request);
+        assert_eq!(*capability, unavailable);
+        assert!(rejected.platform_effects().iter().any(|effect| {
+            effect.id() == *hold_effect
+                && match effect.effect() {
+                    PlatformEffect::CancelRootClose { .. } => role == ViewportRole::Root,
+                    PlatformEffect::RetainChild { .. } => role == ViewportRole::Child,
+                    _ => false,
+                }
+        }));
+        assert_eq!(fixture.engine.workspace(), &before);
+        assert!(matches!(
+            fixture
+                .engine
+                .viewport()
+                .viewport_close_request(request)
+                .expect("rejected close remains queryable")
+                .status(),
+            ViewportCloseStatus::Vetoed { effect } if effect == *hold_effect
+        ));
+        assert_ne!(
+            fixture
+                .engine
+                .viewport()
+                .viewport(SURFACE_HOST)
+                .expect("held viewport remains registered")
+                .lifecycle(),
+            ViewportLifecycle::AwaitingDestroyed
+        );
+    }
+}
+
+#[test]
+fn close_accept_with_unavailable_recovery_placement_is_rejected_and_held() {
+    let mut fixture = fixture();
+    prepare_base_platform(&mut fixture, ViewportRole::Child);
+    let before = fixture.engine.workspace().clone();
+    let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
+    let request = close_request_from(&requested);
+    let plan = ViewportClosePlan::new(
+        None,
+        close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(93)),
+    );
+    let mut scene = BuildingScene::new([SURFACE_SOURCE, SURFACE_HOST])
+        .expect("test surface roster must be unique");
+    scene
+        .insert_ready(ReadySurfaceScene::new(
+            SURFACE_HOST,
+            logical_rect(900.0, 0.0, 900.0, 700.0),
+        ))
+        .expect("host surface scene must be complete");
+    fixture
+        .engine
+        .enqueue_scene(scene)
+        .expect("bootstrap recovery scene must enqueue");
+    fixture
+        .engine
+        .reduce_pending()
+        .expect("bootstrap recovery scene must publish");
+
+    fixture
+        .engine
+        .enqueue_viewport_close_decision(request, ViewportCloseDecision::Accept(plan))
+        .expect("close decision must enqueue");
+    let rejected = fixture
+        .engine
+        .reduce_pending()
+        .expect("unavailable recovery placement must fail closed");
+    let InputOutcome::ViewportCloseDecisionRejected {
+        request: actual_request,
+        reason:
+            ViewportCloseDecisionRejection::RecoveryPlacementUnavailable(
+                ContainedPlacementUnavailable::BootstrapSurface { surface },
+            ),
+        hold_effect,
+    } = rejected.reduced_inputs()[0].outcome()
+    else {
+        panic!("unavailable recovery placement must publish a structured hold: {rejected:?}");
+    };
+    assert_eq!(*actual_request, request);
+    assert_eq!(*surface, SURFACE_SOURCE);
+    assert!(rejected.platform_effects().iter().any(|effect| {
+        effect.id() == *hold_effect && matches!(effect.effect(), PlatformEffect::RetainChild { .. })
+    }));
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .viewport_close_request(request)
+            .expect("rejected close remains queryable")
+            .status(),
+        ViewportCloseStatus::Vetoed { effect } if effect == *hold_effect
+    ));
+}
+
+#[test]
 fn root_and_child_close_accept_commit_recovery_only_after_authoritative_destruction() {
     for (index, role) in [ViewportRole::Root, ViewportRole::Child]
         .into_iter()
@@ -1734,28 +1885,31 @@ fn close_accept_rejects_a_recovery_root_from_another_surface() {
         )
         .expect("invalid close decision must enqueue");
 
-    let error = fixture
+    let rejected = fixture
         .engine
         .reduce_pending()
-        .expect_err("a recovery root from another surface must be rejected atomically");
+        .expect("a mismatched recovery root must fail closed");
+    let InputOutcome::ViewportCloseDecisionRejected {
+        request: actual_request,
+        reason: ViewportCloseDecisionRejection::RecoveryRootMismatch,
+        hold_effect,
+    } = rejected.reduced_inputs()[0].outcome()
+    else {
+        panic!("mismatched recovery root must publish a structured hold: {rejected:?}");
+    };
+    assert_eq!(*actual_request, request);
+    assert!(rejected.platform_effects().iter().any(|effect| {
+        effect.id() == *hold_effect && matches!(effect.effect(), PlatformEffect::RetainChild { .. })
+    }));
     assert!(matches!(
-        error,
-        EngineError::Viewport {
-            source: dockspace::frame::ViewportCoordinatorError::CloseRecoveryRootMismatch {
-                request: actual,
-            },
-            ..
-        } if actual == request
-    ));
-    assert_eq!(
         fixture
             .engine
             .viewport()
             .viewport_close_request(request)
-            .expect("close request must remain undecided")
+            .expect("rejected close remains queryable")
             .status(),
-        ViewportCloseStatus::AwaitingDecision
-    );
+        ViewportCloseStatus::Vetoed { effect } if effect == *hold_effect
+    ));
     assert!(fixture.engine.workspace().surface(SURFACE_HOST).is_some());
 }
 

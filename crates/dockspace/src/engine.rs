@@ -12,8 +12,8 @@ use crate::effect::{EffectResult, EffectTransition};
 use crate::error::TransactionError;
 use crate::event::{WorkspaceEvent, WorkspaceEventKind};
 use crate::frame::{
-    NativeCreateSagaId, ViewportCloseDecision, ViewportCloseRequestId, ViewportCoordinator,
-    ViewportCoordinatorError,
+    NativeCreateSagaId, ViewportCloseDecision, ViewportCloseDecisionRejection,
+    ViewportCloseRequestId, ViewportCoordinator, ViewportCoordinatorError,
 };
 use crate::graph::Workspace;
 use crate::ids::{InputSequence, WorkspaceRevision};
@@ -1158,13 +1158,25 @@ impl DockEngine {
             });
         }
         if let ViewportCloseDecision::Accept(plan) = &decision {
+            let capability = self.viewport.capabilities().authoritative_inventory();
+            if !capability.is_supported() {
+                return self.reject_viewport_close_decision(
+                    input,
+                    request,
+                    ViewportCloseDecisionRejection::DestructionAuthorityUnavailable { capability },
+                );
+            }
             let recovery = plan.recovery();
             if let Err(reason) = self.contained_placement(
                 recovery.surface(),
                 recovery.requested_rect(),
                 recovery.minimum_size(),
             ) {
-                return Ok(InputOutcome::ViewportCloseDecisionRejected { request, reason });
+                return self.reject_viewport_close_decision(
+                    input,
+                    request,
+                    ViewportCloseDecisionRejection::RecoveryPlacementUnavailable(reason),
+                );
             }
         }
         if let ViewportCloseDecision::Accept(plan) = &decision
@@ -1176,12 +1188,11 @@ impl DockEngine {
                 .surface(surface)
                 .is_some_and(|presentation| presentation.main_root == plan.recovery().root());
             if !recovery_matches_surface {
-                return Err(EngineError::Viewport {
+                return self.reject_viewport_close_decision(
                     input,
-                    source: crate::frame::ViewportCoordinatorError::CloseRecoveryRootMismatch {
-                        request,
-                    },
-                });
+                    request,
+                    ViewportCloseDecisionRejection::RecoveryRootMismatch,
+                );
             }
         }
         let effect = self
@@ -1189,6 +1200,23 @@ impl DockEngine {
             .decide_viewport_close(request, decision)
             .map_err(|source| EngineError::Viewport { input, source })?;
         Ok(InputOutcome::ViewportCloseDecided { request, effect })
+    }
+
+    fn reject_viewport_close_decision(
+        &mut self,
+        input: InputSequence,
+        request: ViewportCloseRequestId,
+        reason: ViewportCloseDecisionRejection,
+    ) -> Result<InputOutcome, EngineError> {
+        let hold_effect = self
+            .viewport
+            .decide_viewport_close(request, ViewportCloseDecision::Veto)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        Ok(InputOutcome::ViewportCloseDecisionRejected {
+            request,
+            reason,
+            hold_effect,
+        })
     }
 
     fn reduce_native_create_cancellation(
