@@ -10,7 +10,7 @@ use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresent
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::TearOffRequest;
 use dockspace::interaction::{
-    InteractionDelivery, InteractionOutcome, InteractionStatus, PreviewVisual,
+    DragSessionId, InteractionDelivery, InteractionOutcome, InteractionStatus, PreviewVisual,
     WorkspaceDeliveryKind,
 };
 use dockspace::scene::SurfaceScene;
@@ -212,10 +212,8 @@ fn reachable_nodes(workspace: &Workspace, root: NodeId) -> BTreeSet<NodeId> {
     reachable
 }
 
-fn exercise_complete_split_root_redock(edge: Edge) {
-    let context = Context::default();
-    let original = workspace();
-    let source_root = original
+fn split_root_nodes(workspace: &Workspace) -> (NodeId, NodeId, NodeId) {
+    let source_root = workspace
         .root(FLOATING_ROOT)
         .expect("fixture floating root exists")
         .node;
@@ -223,34 +221,33 @@ fn exercise_complete_split_root_redock(edge: Edge) {
         axis: Axis::Horizontal,
         children: source_children,
         ..
-    }) = original.node(source_root)
+    }) = workspace.node(source_root)
     else {
         panic!("fixture floating root is a horizontal split");
     };
     let source_left = source_children[0];
     let source_right = source_children[1];
-    let original_items = original.item_multiset();
-    let mut dockspace = Dockspace::builder(("complete-subtree-redock", edge), original.clone())
-        .build()
-        .expect("fixture facade builds");
-    let mut panes = TestPanes;
-    warm(&context, &mut dockspace, &mut panes);
-    let source = floating_title_point(&dockspace);
-    let (target_id, target) = exact_main_edge(&dockspace, edge);
+    (source_root, source_left, source_right)
+}
 
+fn drag_split_root_to_exact_edge(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    original: &Workspace,
+    source_root: NodeId,
+    target_id: DropTargetId,
+    target: Pos2,
+) -> DragSessionId {
+    let source = floating_title_point(dockspace);
     let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
+        context,
+        dockspace,
+        panes,
         vec![Event::PointerMoved(source), pointer_button(source, true)],
     );
     for _ in 0..4 {
-        let _ = run_frame(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            vec![Event::PointerMoved(target)],
-        );
+        let _ = run_frame(context, dockspace, panes, vec![Event::PointerMoved(target)]);
     }
     let active = dockspace
         .engine()
@@ -272,20 +269,30 @@ fn exercise_complete_split_root_redock(edge: Edge) {
         PreviewVisual::Dock { target, .. } if *target == target_id
     ));
     let preview_session = preview.token().session();
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.engine().workspace(), original);
+    preview_session
+}
 
+fn release_and_deliver_exact_edge(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    original: &Workspace,
+    target: Pos2,
+    preview_session: DragSessionId,
+) {
     let release = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
+        context,
+        dockspace,
+        panes,
         vec![Event::PointerMoved(target), pointer_button(target, false)],
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.engine().workspace(), original);
     assert!(
         !interaction_outcomes(&release)
             .any(|outcome| matches!(outcome, InteractionOutcome::DragDelivered { .. }))
     );
-    let delivery = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let delivery = run_frame(context, dockspace, panes, Vec::new());
     let protocol = interaction_outcomes(&delivery)
         .filter(|outcome| {
             matches!(
@@ -309,14 +316,22 @@ fn exercise_complete_split_root_redock(edge: Edge) {
             },
         ] if *acknowledged == preview_session && *delivered == preview_session
     ));
+}
 
+fn assert_redocked_split_root(
+    dockspace: &Dockspace,
+    original: &Workspace,
+    edge: Edge,
+    source_left: NodeId,
+    source_right: NodeId,
+) {
     let workspace = dockspace.engine().workspace();
     assert!(workspace.contained_floating(FLOATING).is_none());
     assert!(workspace.root(FLOATING_ROOT).is_none());
     let surface = workspace.surface(SURFACE).expect("surface remains present");
     assert_eq!(surface.main_root, MAIN_ROOT);
     assert!(surface.contained.is_empty());
-    assert_eq!(workspace.item_multiset(), original_items);
+    assert_eq!(workspace.item_multiset(), original.item_multiset());
     assert!(matches!(
         workspace.node(source_left),
         Some(Node::Tabs { items, selected })
@@ -357,6 +372,37 @@ fn exercise_complete_split_root_redock(edge: Edge) {
         dockspace.engine().interaction().status(),
         InteractionStatus::Idle
     );
+}
+
+fn exercise_complete_split_root_redock(edge: Edge) {
+    let context = Context::default();
+    let original = workspace();
+    let (source_root, source_left, source_right) = split_root_nodes(&original);
+    let mut dockspace = Dockspace::builder(("complete-subtree-redock", edge), original.clone())
+        .build()
+        .expect("fixture facade builds");
+    let mut panes = TestPanes;
+    warm(&context, &mut dockspace, &mut panes);
+    let (target_id, target) = exact_main_edge(&dockspace, edge);
+
+    let preview_session = drag_split_root_to_exact_edge(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        &original,
+        source_root,
+        target_id,
+        target,
+    );
+    release_and_deliver_exact_edge(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        &original,
+        target,
+        preview_session,
+    );
+    assert_redocked_split_root(&dockspace, &original, edge, source_left, source_right);
 }
 
 #[test]
