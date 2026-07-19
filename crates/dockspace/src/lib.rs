@@ -33,6 +33,8 @@ pub mod transaction;
 pub mod transition;
 pub mod validation;
 pub mod viewport;
+#[cfg(feature = "serde")]
+pub mod viewport_persistence;
 pub mod viewport_registry;
 pub mod viewport_route;
 mod workspace;
