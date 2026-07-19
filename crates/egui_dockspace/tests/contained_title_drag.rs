@@ -81,7 +81,8 @@ impl Fixture {
             Node::equal_split(Axis::Horizontal, [main_left, main_right])
                 .expect("main fixture split is valid"),
         );
-        let floating_tabs = builder.insert_node(Node::tabs([FLOAT_A, FLOAT_B]));
+        let floating_tabs =
+            builder.insert_node(Node::tabs_with_selection([FLOAT_A, FLOAT_B], Some(FLOAT_B)));
         builder.set_root(MAIN_ROOT, RootRecord::new(main_split));
         builder.set_root(FLOATING_ROOT, RootRecord::new(floating_tabs));
         builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
@@ -203,6 +204,31 @@ impl Fixture {
             .target(slot)
             .expect("requested main inner guide exists");
         let hit = target.target().region().rect();
+        (
+            target.id(),
+            logical_pos(
+                (hit.min().x() + hit.max().x()) * 0.5,
+                (hit.min().y() + hit.max().y()) * 0.5,
+            ),
+        )
+    }
+
+    fn exact_main_left_tab_gap(&self, index: usize) -> (DropTargetId, Pos2) {
+        let target = self
+            .ready_scene()
+            .drop_targets()
+            .iter()
+            .find(|target| {
+                target.id()
+                    == (DropTargetId::TabGap {
+                        surface: SURFACE,
+                        root: MAIN_ROOT,
+                        tabs: self.main_left,
+                        index,
+                    })
+            })
+            .expect("requested main-left tab gap exists");
+        let hit = target.region().rect();
         (
             target.id(),
             logical_pos(
@@ -524,6 +550,45 @@ fn exercise_exact_dock(slot: DropGuideSlot) {
     assert_exact_dock_topology(&fixture, slot);
 }
 
+fn exercise_exact_tab_gap_dock(index: usize) {
+    let mut fixture = Fixture::new("contained-title-tab-gap", DockPolicy::default());
+    fixture.warm();
+    let original = fixture.dockspace.engine().workspace().clone();
+    let (target_id, target) = fixture.exact_main_left_tab_gap(index);
+    fixture.drag_to_preview(target);
+
+    assert!(matches!(
+        fixture
+            .dockspace
+            .engine()
+            .interaction()
+            .preview()
+            .expect("exact tab gap publishes a preview")
+            .visual(),
+        PreviewVisual::Dock { target, .. } if *target == target_id
+    ));
+    let release = fixture.release_frame(target);
+    assert!(!contains_delivery(&release, WorkspaceDeliveryKind::Dock));
+    assert_eq!(fixture.dockspace.engine().workspace(), &original);
+    let delivery = fixture.run_frame(Vec::new());
+    assert!(contains_acknowledgement(&delivery));
+    assert!(contains_delivery(&delivery, WorkspaceDeliveryKind::Dock));
+
+    let workspace = fixture.dockspace.engine().workspace();
+    assert!(workspace.contained_floating(FLOATING).is_none());
+    assert!(workspace.root(FLOATING_ROOT).is_none());
+    assert_eq!(workspace.item_multiset(), item_multiset());
+    assert!(matches!(
+        workspace.node(fixture.main_left),
+        Some(Node::Tabs { items, selected })
+            if items == &[FLOAT_A, FLOAT_B, MAIN_LEFT] && *selected == Some(FLOAT_B)
+    ));
+    assert_eq!(
+        fixture.dockspace.engine().interaction().status(),
+        InteractionStatus::Idle
+    );
+}
+
 fn assert_exact_dock_topology(fixture: &Fixture, slot: DropGuideSlot) {
     let workspace = fixture.dockspace.engine().workspace();
     let main = workspace
@@ -537,15 +602,43 @@ fn assert_exact_dock_topology(fixture: &Fixture, slot: DropGuideSlot) {
     else {
         panic!("main root remains a horizontal split");
     };
-    assert_eq!(children.len(), 2);
-    assert_eq!(children[1], fixture.main_right);
     match slot {
-        DropGuideSlot::Center => assert!(matches!(
-            workspace.node(children[0]),
-            Some(Node::Tabs { items, selected })
-                if items == &[MAIN_LEFT, FLOAT_A, FLOAT_B] && *selected == Some(FLOAT_A)
-        )),
+        DropGuideSlot::Center => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[1], fixture.main_right);
+            assert!(matches!(
+                workspace.node(children[0]),
+                Some(Node::Tabs { items, selected })
+                    if items == &[MAIN_LEFT, FLOAT_A, FLOAT_B] && *selected == Some(FLOAT_B)
+            ));
+        }
+        DropGuideSlot::Edge(edge @ (Edge::Left | Edge::Right)) => {
+            assert_eq!(children.len(), 3);
+            let items = children
+                .iter()
+                .map(|node| match workspace.node(*node) {
+                    Some(Node::Tabs { items, selected }) => (items.as_slice(), *selected),
+                    node => panic!("horizontal child must be tabs, got {node:?}"),
+                })
+                .collect::<Vec<_>>();
+            let expected = match edge {
+                Edge::Left => vec![
+                    (&[FLOAT_A, FLOAT_B][..], Some(FLOAT_B)),
+                    (&[MAIN_LEFT][..], Some(MAIN_LEFT)),
+                    (&[MAIN_RIGHT][..], Some(MAIN_RIGHT)),
+                ],
+                Edge::Right => vec![
+                    (&[MAIN_LEFT][..], Some(MAIN_LEFT)),
+                    (&[FLOAT_A, FLOAT_B][..], Some(FLOAT_B)),
+                    (&[MAIN_RIGHT][..], Some(MAIN_RIGHT)),
+                ],
+                Edge::Top | Edge::Bottom => unreachable!("matched horizontal edges only"),
+            };
+            assert_eq!(items, expected);
+        }
         DropGuideSlot::Edge(edge @ (Edge::Top | Edge::Bottom)) => {
+            assert_eq!(children.len(), 2);
+            assert_eq!(children[1], fixture.main_right);
             let Some(Node::Split {
                 axis: Axis::Vertical,
                 children,
@@ -557,19 +650,22 @@ fn assert_exact_dock_topology(fixture: &Fixture, slot: DropGuideSlot) {
             let items = children
                 .iter()
                 .map(|node| match workspace.node(*node) {
-                    Some(Node::Tabs { items, .. }) => items.as_slice(),
+                    Some(Node::Tabs { items, selected }) => (items.as_slice(), *selected),
                     node => panic!("vertical child must be tabs, got {node:?}"),
                 })
                 .collect::<Vec<_>>();
             let expected = match edge {
-                Edge::Top => vec![&[FLOAT_A, FLOAT_B][..], &[MAIN_LEFT][..]],
-                Edge::Bottom => vec![&[MAIN_LEFT][..], &[FLOAT_A, FLOAT_B][..]],
+                Edge::Top => vec![
+                    (&[FLOAT_A, FLOAT_B][..], Some(FLOAT_B)),
+                    (&[MAIN_LEFT][..], Some(MAIN_LEFT)),
+                ],
+                Edge::Bottom => vec![
+                    (&[MAIN_LEFT][..], Some(MAIN_LEFT)),
+                    (&[FLOAT_A, FLOAT_B][..], Some(FLOAT_B)),
+                ],
                 Edge::Left | Edge::Right => unreachable!("test uses vertical slots"),
             };
             assert_eq!(items, expected);
-        }
-        DropGuideSlot::Edge(Edge::Left | Edge::Right) => {
-            unreachable!("test uses center and vertical slots")
         }
     }
 }
@@ -577,6 +673,21 @@ fn assert_exact_dock_topology(fixture: &Fixture, slot: DropGuideSlot) {
 #[test]
 fn exact_center_docks_instead_of_moving() {
     exercise_exact_dock(DropGuideSlot::Center);
+}
+
+#[test]
+fn complete_tabs_root_docks_at_an_exact_tab_gap() {
+    exercise_exact_tab_gap_dock(0);
+}
+
+#[test]
+fn exact_left_docks_instead_of_moving() {
+    exercise_exact_dock(DropGuideSlot::Edge(Edge::Left));
+}
+
+#[test]
+fn exact_right_docks_instead_of_moving() {
+    exercise_exact_dock(DropGuideSlot::Edge(Edge::Right));
 }
 
 #[test]
