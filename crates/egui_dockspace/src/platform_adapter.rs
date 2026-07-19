@@ -5,14 +5,19 @@
 //! only a later authoritative observation may establish that fact in the core.
 
 use dockspace::effect::{EffectRequest, EffectResult};
+use dockspace::intent::AuthorityUnavailableReason;
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformSnapshot,
     PlatformSnapshotError, PointerObservation,
 };
+use dockspace::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, unknown_focus_observation,
+};
 
 /// One complete provider observation without capability claims.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlatformObservations {
+    focus: FocusObservationEnvelope,
     windows: Vec<ObservedWindow>,
     pointers: Vec<PointerObservation>,
     work_areas: Vec<ObservedWorkArea>,
@@ -20,11 +25,13 @@ pub(crate) struct PlatformObservations {
 
 impl PlatformObservations {
     pub(crate) fn new(
+        focus: FocusObservationEnvelope,
         windows: Vec<ObservedWindow>,
         pointers: Vec<PointerObservation>,
         work_areas: Vec<ObservedWorkArea>,
     ) -> Self {
         Self {
+            focus,
             windows,
             pointers,
             work_areas,
@@ -35,16 +42,38 @@ impl PlatformObservations {
         self,
         capabilities: PlatformCapabilities,
     ) -> Result<PlatformSnapshot, PlatformSnapshotError> {
-        PlatformSnapshot::new(capabilities, self.windows, self.pointers, self.work_areas)
+        PlatformSnapshot::new(
+            capabilities,
+            self.focus,
+            self.windows,
+            self.pointers,
+            self.work_areas,
+        )
+    }
+}
+
+impl Default for PlatformObservations {
+    fn default() -> Self {
+        Self::new(
+            unknown_focus_observation(
+                FocusObservationGeneration::new(0),
+                AuthorityUnavailableReason::NotReported,
+            ),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 }
 
 /// One atomic provider sample accepted as a single core snapshot candidate.
 ///
 /// Capabilities remain semantically distinct from observations, but a provider
-/// cannot update either half between calls. Generation identities begin when
-/// `ViewportCoordinator` accepts the resulting [`PlatformSnapshot`]; keeping an
-/// unrelated provider generation here would create an uncorrelated protocol.
+/// cannot update either half between calls. Core inventory generations begin
+/// when `ViewportCoordinator` accepts the resulting [`PlatformSnapshot`]. In
+/// contrast, each [`dockspace::platform::WindowInputObservation`] carries a
+/// provider-owned capture generation because effect attribution must be ordered
+/// before core receipt.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ProviderSample {
     capabilities: PlatformCapabilities,
@@ -74,9 +103,22 @@ impl ProviderSample {
 /// `dockspace`.
 pub(crate) trait NativePlatformProvider {
     /// Atomically samples capabilities and complete pre-frame observations.
+    ///
+    /// Pointer-input observations must use a monotonic generation per native
+    /// window, and global focus observations must use one provider-global
+    /// monotonic generation. Unavailable state or acknowledgement remains
+    /// inside its generated envelope so it advances the provider watermark
+    /// instead of becoming an unsequenced gap. Providers also preserve
+    /// same-property effect ordering across binding incarnation changes. A
+    /// dispatch return alone is never an acknowledgement.
     fn sample(&mut self) -> ProviderSample;
 
     /// Submits one core-owned effect request to the backend.
+    ///
+    /// Pointer-input effects carrying `after` are one causal property lane.
+    /// The successor must not overtake its predecessor, including when the
+    /// predecessor acknowledgement is lost or belongs to the previous binding
+    /// incarnation of the same native token.
     ///
     /// Successful submission produces no result because it does not prove that
     /// the requested platform state was applied. A provider queues only a
@@ -140,7 +182,7 @@ mod tests {
     use dockspace::engine::DockEngine;
     use dockspace::frame::{
         NativeCreateRequest, NativeCreateStatus, ViewportCloseDecision, ViewportClosePlan,
-        ViewportCloseStatus,
+        ViewportCloseStatus, ViewportMergeBackPlan,
     };
     use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
     use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -155,14 +197,18 @@ mod tests {
         InteractionStatus, PreviewResolutionStatus,
     };
     use dockspace::platform::{
-        ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
-        PlatformCapability, PlatformCapabilityReason, PlatformRequirement, PointerObservation,
-        PointerWindow, WindowInputState, WindowPresentationState,
+        ButtonObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
+        PlatformCapabilities, PlatformCapability, PlatformCapabilityReason, PlatformRequirement,
+        PointerObservation, PointerWindow, WindowInputObservation, WindowInputState,
+        WindowPresentationState,
     };
     use dockspace::policy::DockPolicy;
     use dockspace::scene::{BuildingScene, ReadySurfaceScene};
     use dockspace::transition::{EngineTransition, InputOutcome};
-    use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
+    use dockspace::viewport::{
+        InputObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+    };
+    use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
     use super::{
         NativePlatformAdapter, NativePlatformProvider, PlatformObservations, ProviderSample,
@@ -181,7 +227,34 @@ mod tests {
     const SOURCE_ITEM: ItemId = ItemId::new(1);
     const TARGET_RECOVERY: FloatingPresentationId = FloatingPresentationId::new(20);
     const NATIVE_RECOVERY: FloatingPresentationId = FloatingPresentationId::new(30);
-    const CLOSE_RECOVERY: FloatingPresentationId = FloatingPresentationId::new(40);
+
+    impl PlatformObservations {
+        fn with_source_input_observation(
+            mut self,
+            binding: ViewportBinding,
+            generation: InputObservationGeneration,
+            acknowledgement: InputEffectAcknowledgement,
+        ) -> Self {
+            for window in &mut self.windows {
+                if window.token() != binding.token() {
+                    continue;
+                }
+                let Authority::Known(state) = window.input_state() else {
+                    continue;
+                };
+                let state = *state;
+                *window = window
+                    .clone()
+                    .with_input_observation(WindowInputObservation::new(
+                        binding,
+                        generation,
+                        Authority::Known(state),
+                        acknowledgement,
+                    ));
+            }
+            self
+        }
+    }
 
     #[derive(Debug, Clone, Copy)]
     enum ConformanceDispatchOutcome {
@@ -380,6 +453,31 @@ mod tests {
             transition
         }
 
+        fn publish_ready_scene(&mut self) -> EngineTransition {
+            let mut scene = BuildingScene::new([SOURCE_SURFACE, TARGET_SURFACE])
+                .expect("surface roster must be unique");
+            for surface in [SOURCE_SURFACE, TARGET_SURFACE] {
+                scene
+                    .insert_ready(ReadySurfaceScene::new(
+                        surface,
+                        logical_rect(0.0, 0.0, 600.0, 400.0),
+                    ))
+                    .expect("current surface facts must be unique");
+            }
+            self.engine
+                .enqueue_scene(scene)
+                .expect("current scene must enqueue");
+            let transition = self
+                .engine
+                .reduce_pending()
+                .expect("current scene must publish");
+            assert!(matches!(
+                transition.reduced_inputs()[0].outcome(),
+                InputOutcome::ScenePublished { .. }
+            ));
+            transition
+        }
+
         fn dispatch(&mut self, transition: &EngineTransition) {
             self.adapter.dispatch_effects(transition.platform_effects());
         }
@@ -440,6 +538,14 @@ mod tests {
                     .clone(),
             )
         }
+
+        fn source_binding(&self) -> ViewportBinding {
+            self.engine
+                .viewport()
+                .viewport(SOURCE_SURFACE)
+                .expect("source viewport must remain registered")
+                .binding()
+        }
     }
 
     fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -457,7 +563,17 @@ mod tests {
     where
         F: ProviderConformanceFactory,
     {
-        ProviderHarness::new(F::create(capabilities, observations))
+        let mut harness =
+            ProviderHarness::new(F::create(capabilities, PlatformObservations::default()));
+        let source_binding = harness.source_binding();
+        harness.adapter.provider_mut().set_observations(
+            observations.with_source_input_observation(
+                source_binding,
+                InputObservationGeneration::new(1),
+                InputEffectAcknowledgement::known(None),
+            ),
+        );
+        harness
     }
 
     fn contained_recovery(
@@ -476,6 +592,23 @@ mod tests {
         ContainedTearOffProposal::new(root, floating, placement, 9)
     }
 
+    fn merge_back_close_plan(engine: &DockEngine) -> ViewportClosePlan {
+        let source = engine
+            .workspace()
+            .surface(SOURCE_SURFACE)
+            .expect("merge-back source host must exist");
+        let tabs = engine
+            .workspace()
+            .root(source.main_root)
+            .expect("merge-back host root must exist")
+            .node;
+        let target = engine
+            .workspace()
+            .capture_tab_target(source.main_root, tabs)
+            .expect("merge-back host must expose current tabs");
+        ViewportClosePlan::merge_back(ViewportMergeBackPlan::new(SOURCE_SURFACE, target))
+    }
+
     fn routing_capabilities() -> PlatformCapabilities {
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -492,7 +625,8 @@ mod tests {
         capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
         capabilities.set_global_window_placement(PlatformCapability::Supported);
         capabilities.set_work_area(PlatformCapability::Supported);
-        capabilities.set_window_focus(PlatformCapability::Supported);
+        capabilities.set_global_focus_observation(PlatformCapability::Supported);
+        capabilities.set_window_activation_control(PlatformCapability::Supported);
         capabilities.set_close_cancellation(PlatformCapability::Supported);
         capabilities
     }
@@ -516,7 +650,6 @@ mod tests {
             ))
             .with_input_state(Authority::Known(input))
             .with_presentation(Authority::Known(WindowPresentationState::Visible))
-            .with_focused(Authority::Known(false))
             .with_close_requested(Authority::Known(close_requested))
     }
 
@@ -539,8 +672,13 @@ mod tests {
         source_input: WindowInputState,
         hovered: Authority<PointerWindow>,
         button: PointerButtonState,
+        focus_generation: u64,
     ) -> PlatformObservations {
         PlatformObservations::new(
+            unknown_focus_observation(
+                FocusObservationGeneration::new(focus_generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
             vec![
                 observed_window(SOURCE_TOKEN, 0.0, source_input, false),
                 observed_window(TARGET_TOKEN, 600.0, WindowInputState::ReceivesInput, false),
@@ -550,12 +688,55 @@ mod tests {
         )
     }
 
+    fn observations_with_input(
+        binding: ViewportBinding,
+        source_input: WindowInputState,
+        generation: InputObservationGeneration,
+        acknowledgement: InputEffectAcknowledgement,
+        hovered: Authority<PointerWindow>,
+        button: PointerButtonState,
+        focus_generation: u64,
+    ) -> PlatformObservations {
+        observations(source_input, hovered, button, focus_generation).with_source_input_observation(
+            binding,
+            generation,
+            acknowledgement,
+        )
+    }
+
+    fn publish_routed_source_input_observation<P>(
+        harness: &mut ProviderHarness<P>,
+        source_input: WindowInputState,
+        generation: InputObservationGeneration,
+        acknowledgement: InputEffectAcknowledgement,
+        focus_generation: u64,
+    ) -> EngineTransition
+    where
+        P: ProviderConformanceDriver,
+    {
+        let source_binding = harness.source_binding();
+        harness
+            .adapter
+            .provider_mut()
+            .set_observations(observations_with_input(
+                source_binding,
+                source_input,
+                generation,
+                acknowledgement,
+                Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
+                PointerButtonState::Pressed,
+                focus_generation,
+            ));
+        harness.publish_sample()
+    }
+
     fn lifecycle_observations(
         source_input: WindowInputState,
         hovered: PointerWindow,
         button: PointerButtonState,
         target_close_requested: bool,
         extra: Option<ObservedWindow>,
+        focus_generation: u64,
     ) -> PlatformObservations {
         let mut windows = vec![
             observed_window(SOURCE_TOKEN, 0.0, source_input, false),
@@ -568,14 +749,22 @@ mod tests {
         ];
         windows.extend(extra);
         PlatformObservations::new(
+            unknown_focus_observation(
+                FocusObservationGeneration::new(focus_generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
             windows,
             vec![pointer_observation(Authority::Known(hovered), button)],
             vec![work_area_observation()],
         )
     }
 
-    fn source_only_lifecycle_observations() -> PlatformObservations {
+    fn source_only_lifecycle_observations(focus_generation: u64) -> PlatformObservations {
         PlatformObservations::new(
+            unknown_focus_observation(
+                FocusObservationGeneration::new(focus_generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
             vec![observed_window(
                 SOURCE_TOKEN,
                 0.0,
@@ -610,6 +799,7 @@ mod tests {
                 WindowInputState::ReceivesInput,
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Pressed,
+                1,
             ),
         );
         harness.publish_sample();
@@ -784,11 +974,23 @@ mod tests {
                 WindowInputState::ReceivesInput,
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Pressed,
+                1,
             ),
         );
         harness.publish_sample();
 
         let (_, transition) = harness.begin_drag();
+        let enable = transition
+            .platform_effects()
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+                )
+            })
+            .expect("drag must request source pass-through")
+            .id();
         harness.dispatch(&transition);
         assert!(
             harness
@@ -814,13 +1016,18 @@ mod tests {
             &Authority::Unknown(AuthorityUnavailableReason::SurfaceUnavailable)
         );
 
+        let source_binding = harness.source_binding();
         harness
             .adapter
             .provider_mut()
-            .set_observations(observations(
+            .set_observations(observations_with_input(
+                source_binding,
                 WindowInputState::PassThrough,
+                InputObservationGeneration::new(2),
+                InputEffectAcknowledgement::known(Some(enable)),
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Pressed,
+                2,
             ));
         harness.publish_sample();
         let observed = harness
@@ -843,6 +1050,7 @@ mod tests {
                 WindowInputState::PassThrough,
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Released,
+                1,
             ),
         );
         harness.publish_sample();
@@ -940,6 +1148,7 @@ mod tests {
                 WindowInputState::ReceivesInput,
                 Authority::Known(PointerWindow::None),
                 PointerButtonState::Released,
+                1,
             ),
         );
         let current_epoch = harness.engine.version().epoch();
@@ -989,45 +1198,170 @@ mod tests {
         ));
     }
 
+    #[allow(clippy::too_many_lines)]
     fn run_out_of_order_results_case<F>()
     where
         F: ProviderConformanceFactory,
     {
-        let mut reversed = conformance_harness::<F>(
+        let mut cancelled = conformance_harness::<F>(
             routing_capabilities(),
             observations(
                 WindowInputState::ReceivesInput,
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Pressed,
+                1,
             ),
         );
-        reversed.publish_sample();
-        let (session, enable) = reversed.begin_drag();
-        reversed
-            .adapter
-            .provider_mut()
-            .queue_dispatch_outcome(ConformanceDispatchOutcome::Result(
-                EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
-            ));
-        reversed.dispatch(&enable);
-        reversed
+        cancelled.publish_sample();
+        let (session, enable_transition) = cancelled.begin_drag();
+        let enable = enable_transition
+            .platform_effects()
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+                )
+            })
+            .expect("drag must request source pass-through")
+            .id();
+        cancelled
             .engine
             .enqueue_renderer_intent(RendererIntent::CancelDrag {
                 session,
                 reason: InteractionCancelReason::Escape,
             })
             .expect("drag cancellation must enqueue");
-        let disable = reversed
+        let cancellation = cancelled
             .engine
             .reduce_pending()
             .expect("drag cancellation must reduce");
+        let restore = cancellation
+            .platform_effects()
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough {
+                        enabled: false,
+                        after: Some(predecessor),
+                        ..
+                    } if *predecessor == enable
+                )
+            })
+            .expect("cancellation must queue restoration behind the pending enable")
+            .id();
+        let source_binding = cancelled.source_binding();
+        cancelled
+            .adapter
+            .provider_mut()
+            .set_observations(observations_with_input(
+                source_binding,
+                WindowInputState::PassThrough,
+                InputObservationGeneration::new(2),
+                InputEffectAcknowledgement::known(Some(enable)),
+                Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
+                PointerButtonState::Pressed,
+                2,
+            ));
+        let late_enable = cancelled.publish_sample();
+        assert!(
+            !late_enable
+                .platform_effects()
+                .iter()
+                .any(|request| matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: false, .. }
+                ))
+        );
+        assert!(matches!(
+            cancelled
+                .engine
+                .viewport()
+                .effects()
+                .record(restore)
+                .expect("queued restore must remain durable")
+                .phase(),
+            EffectPhase::Requested
+        ));
+
+        let mut reversed = conformance_harness::<F>(
+            lifecycle_capabilities(),
+            lifecycle_observations(
+                WindowInputState::ReceivesInput,
+                PointerWindow::None,
+                PointerButtonState::Released,
+                false,
+                None,
+                1,
+            ),
+        );
+        reversed.publish_sample();
+        reversed.publish_ready_scene();
+        let (_, enable_transition) = reversed.begin_drag();
+        let enable = enable_transition
+            .platform_effects()
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+                )
+            })
+            .expect("drag must request source pass-through")
+            .clone();
+        reversed
+            .adapter
+            .provider_mut()
+            .set_observations(lifecycle_observations(
+                WindowInputState::ReceivesInput,
+                PointerWindow::None,
+                PointerButtonState::Released,
+                true,
+                None,
+                2,
+            ));
+        let close_edge = reversed.publish_sample();
+        let close_request = close_edge
+            .reduced_inputs()
+            .iter()
+            .find_map(|input| match input.outcome() {
+                InputOutcome::PlatformSnapshotPublished { transition, .. } => {
+                    transition.close_requests().first().copied()
+                }
+                _ => None,
+            })
+            .expect("close observation must create one exact request");
+        let plan = merge_back_close_plan(&reversed.engine);
+        reversed
+            .engine
+            .enqueue_viewport_close_decision(close_request, ViewportCloseDecision::Accept(plan))
+            .expect("close acceptance must enqueue");
+        let release_transition = reversed
+            .engine
+            .reduce_pending()
+            .expect("close acceptance must reduce");
+        let release = release_transition
+            .platform_effects()
+            .iter()
+            .find(|request| matches!(request.effect(), PlatformEffect::ReleaseChild { .. }))
+            .expect("accepted child close must request roster release")
+            .clone();
+
+        reversed
+            .adapter
+            .provider_mut()
+            .queue_dispatch_outcome(ConformanceDispatchOutcome::Result(
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            ));
+        reversed.dispatch(&enable_transition);
         reversed
             .adapter
             .provider_mut()
             .queue_dispatch_outcome(ConformanceDispatchOutcome::Result(
                 EffectDispatchResult::Unsupported(EffectUnsupportedReason::CapabilityRevoked),
             ));
-        reversed.dispatch(&disable);
+        reversed.dispatch(&release_transition);
         let mut results = reversed.adapter.take_effect_results();
         assert_eq!(results.len(), 2);
         results.reverse();
@@ -1039,6 +1373,26 @@ mod tests {
                 ..
             }
         )));
+        assert!(matches!(
+            reversed
+                .engine
+                .viewport()
+                .effects()
+                .record(enable.id())
+                .expect("enable result must remain correlated")
+                .phase(),
+            EffectPhase::DispatchFailed(DispatchFailureReason::WindowUnavailable)
+        ));
+        assert!(matches!(
+            reversed
+                .engine
+                .viewport()
+                .effects()
+                .record(release.id())
+                .expect("release result must remain correlated")
+                .phase(),
+            EffectPhase::Unsupported(EffectUnsupportedReason::CapabilityRevoked)
+        ));
     }
 
     fn run_capability_revocation_case<F>()
@@ -1051,20 +1405,30 @@ mod tests {
                 WindowInputState::ReceivesInput,
                 Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
                 PointerButtonState::Pressed,
+                1,
             ),
         );
         harness.publish_sample();
-        let (session, enable) = harness.begin_drag();
-        harness.dispatch(&enable);
-        harness
-            .adapter
-            .provider_mut()
-            .set_observations(observations(
-                WindowInputState::PassThrough,
-                Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
-                PointerButtonState::Pressed,
-            ));
-        harness.publish_sample();
+        let (session, enable_transition) = harness.begin_drag();
+        let enable = enable_transition
+            .platform_effects()
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+                )
+            })
+            .expect("drag must request source pass-through")
+            .id();
+        harness.dispatch(&enable_transition);
+        publish_routed_source_input_observation(
+            &mut harness,
+            WindowInputState::PassThrough,
+            InputObservationGeneration::new(2),
+            InputEffectAcknowledgement::known(Some(enable)),
+            2,
+        );
         assert_eq!(
             harness.engine.interaction().status(),
             InteractionStatus::Dragging { session }
@@ -1109,15 +1473,13 @@ mod tests {
             EffectPhase::Requested
         );
 
-        harness
-            .adapter
-            .provider_mut()
-            .set_observations(observations(
-                WindowInputState::ReceivesInput,
-                Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
-                PointerButtonState::Pressed,
-            ));
-        let restored = harness.publish_sample();
+        let restored = publish_routed_source_input_observation(
+            &mut harness,
+            WindowInputState::ReceivesInput,
+            InputObservationGeneration::new(3),
+            InputEffectAcknowledgement::known(Some(disable.id())),
+            3,
+        );
         assert!(restored.platform_effects().is_empty());
         assert!(matches!(
             harness
@@ -1143,6 +1505,7 @@ mod tests {
                 PointerButtonState::Released,
                 false,
                 None,
+                1,
             ),
         );
         harness.publish_sample();
@@ -1184,6 +1547,7 @@ mod tests {
                     WindowInputState::ReceivesInput,
                     false,
                 )),
+                2,
             ));
         harness.publish_sample();
         assert!(harness.engine.workspace().surface(NATIVE_SURFACE).is_some());
@@ -1204,7 +1568,7 @@ mod tests {
         ));
     }
 
-    fn run_child_close_recovery_case<F>()
+    fn run_child_close_merge_back_case<F>()
     where
         F: ProviderConformanceFactory,
     {
@@ -1216,9 +1580,11 @@ mod tests {
                 PointerButtonState::Released,
                 false,
                 None,
+                1,
             ),
         );
         harness.publish_sample();
+        harness.publish_ready_scene();
         harness
             .adapter
             .provider_mut()
@@ -1228,26 +1594,23 @@ mod tests {
                 PointerButtonState::Released,
                 true,
                 None,
+                2,
             ));
         let close_edge = harness.publish_sample();
         let close_request = close_edge
             .reduced_inputs()
             .iter()
             .find_map(|input| match input.outcome() {
-                InputOutcome::PlatformSnapshotPublished { transition } => {
+                InputOutcome::PlatformSnapshotPublished { transition, .. } => {
                     transition.close_requests().first().copied()
                 }
                 _ => None,
             })
             .expect("close observation must create one exact request");
-        let recovery =
-            contained_recovery(&harness.engine, TARGET_ROOT, CLOSE_RECOVERY, SOURCE_SURFACE);
+        let plan = merge_back_close_plan(&harness.engine);
         harness
             .engine
-            .enqueue_viewport_close_decision(
-                close_request,
-                ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
-            )
+            .enqueue_viewport_close_decision(close_request, ViewportCloseDecision::Accept(plan))
             .expect("close acceptance must enqueue");
         let decision = harness
             .engine
@@ -1274,16 +1637,13 @@ mod tests {
         harness
             .adapter
             .provider_mut()
-            .set_observations(source_only_lifecycle_observations());
+            .set_observations(source_only_lifecycle_observations(3));
         harness.publish_sample();
         assert!(harness.engine.workspace().surface(TARGET_SURFACE).is_none());
-        let recovered = harness
-            .engine
-            .workspace()
-            .contained_floating(CLOSE_RECOVERY)
-            .expect("destroyed child root must recover as contained floating");
-        assert_eq!(recovered.root, TARGET_ROOT);
-        assert_eq!(recovered.surface, SOURCE_SURFACE);
+        assert!(matches!(
+            harness.engine.workspace().node(harness.source_tabs),
+            Some(Node::Tabs { items, .. }) if items.contains(&ItemId::new(2))
+        ));
         assert!(matches!(
             harness
                 .engine
@@ -1353,7 +1713,7 @@ mod tests {
 
                 #[test]
                 fn child_close_recovers_the_destroyed_root_as_contained() {
-                    run_child_close_recovery_case::<$factory>();
+                    run_child_close_merge_back_case::<$factory>();
                 }
             }
         };

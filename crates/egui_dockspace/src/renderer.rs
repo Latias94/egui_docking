@@ -24,7 +24,7 @@ use crate::drop_guides;
 use crate::floating;
 use crate::hit::contains_half_open;
 use crate::pane::PaneView;
-use crate::projection::{RootPlan, SurfacePlan};
+use crate::projection::{RootPlan, SurfacePlan, TabStripKey};
 use crate::splits;
 use crate::style::DockStyle;
 use crate::tabs;
@@ -194,6 +194,12 @@ pub(crate) fn paint_surface(
         && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     let accept_events = interactions_current && !escape_pressed;
     let focused_floating = pointer_focused_floating(ui, plan, accept_events);
+    let tab_scroll_owner = if accept_events {
+        ui.input(|input| input.pointer.hover_pos())
+            .and_then(|pointer| plan.tab_scroll_owner_at(pointer))
+    } else {
+        None
+    };
 
     ui.painter()
         .rect_filled(plan.bounds, 0.0, style.workspace_fill);
@@ -210,6 +216,7 @@ pub(crate) fn paint_surface(
             interaction,
             interaction.active_contained_transform_view(),
             focused_floating,
+            tab_scroll_owner,
             accept_events,
             &mut output,
         );
@@ -264,6 +271,7 @@ fn paint_root(
     interaction: &InteractionState,
     active_contained_transform: Option<ActiveContainedTransformView<'_>>,
     focused_floating: Option<FloatingPresentationId>,
+    tab_scroll_owner: Option<TabStripKey>,
     interactions_current: bool,
     output: &mut RenderOutput,
 ) {
@@ -288,6 +296,7 @@ fn paint_root(
             style,
             interaction.status(),
             interaction.active_drag_view(),
+            tab_scroll_owner,
             interactions_current,
             output,
         );

@@ -68,6 +68,18 @@ pub enum DockspaceUnavailableReason {
     SurfaceBoundsUnavailable,
     /// The requested logical surface is not owned by the current workspace.
     SurfaceAbsent,
+    /// The surface has no exact current native binding eligible to report focus.
+    PaneFocusBindingUnavailable,
+    /// Global platform facts do not prove that this exact native binding is focused.
+    PaneFocusWindowNotFocused,
+    /// The application did not expose a stable focus target for this pane.
+    PaneFocusTargetMissing { item: ItemId },
+    /// The application could not authoritatively report this pane's focus state.
+    PaneFocusStateUnknown { item: ItemId },
+    /// More than one pane on the same surface claimed focus.
+    ConflictingPaneFocus,
+    /// The adapter exhausted its monotonic pane-focus observation identity domain.
+    PaneFocusObservationGenerationExhausted,
 }
 
 /// Published engine boundaries and renderer diagnostics from one `show` call.
@@ -80,6 +92,7 @@ pub struct DockspaceResponse {
     pub(crate) interactions_current: bool,
     pub(crate) surface_status: DockspaceSurfaceStatus,
     pub(crate) contained_capability: DockspaceCapability,
+    pub(crate) pane_focus_capability: DockspaceCapability,
 }
 
 impl DockspaceResponse {
@@ -110,9 +123,9 @@ impl DockspaceResponse {
     /// Returns whether egui's prior-pass hit geometry exactly matched this projection.
     ///
     /// A false result is an observation-only pass: docking geometry input is
-    /// rejected, [`PaneView::ui`](crate::PaneView::ui) is not called, and the
-    /// adapter requests an egui discard. The host may decline that request when
-    /// its configured pass budget is exhausted.
+    /// rejected, pane content remains painted through disabled child UIs, and
+    /// the adapter requests an egui discard. The host may decline that request
+    /// when its configured pass budget is exhausted.
     #[must_use]
     pub const fn interactions_current(&self) -> bool {
         self.interactions_current
@@ -128,5 +141,11 @@ impl DockspaceResponse {
     #[must_use]
     pub const fn contained_capability(&self) -> DockspaceCapability {
         self.contained_capability
+    }
+
+    /// Returns whether this surface can publish exact pane-focus observations.
+    #[must_use]
+    pub const fn pane_focus_capability(&self) -> DockspaceCapability {
+        self.pane_focus_capability
     }
 }

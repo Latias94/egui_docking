@@ -1,6 +1,6 @@
 //! Deterministic projection shared by egui painting and core scene publication.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload};
@@ -13,7 +13,7 @@ use dockspace::error::CommandError;
 use dockspace::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Node, Workspace};
 use dockspace::hit_region::HitRegion;
-use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::layout::{
     LayoutError, LayoutMetrics, LayoutMetricsError, SplitWeightOverride,
     project_root_with_overrides,
@@ -21,7 +21,7 @@ use dockspace::layout::{
 use dockspace::scene::{
     NodeSceneId, ReadySurfaceScene, SemanticRect, SplitterSceneId, TabBarSceneId, TabSceneId,
 };
-use egui::{FontSelection, Galley, Rect, TextStyle, TextWrapMode, Ui, Vec2, pos2, vec2};
+use egui::{FontSelection, Galley, Id, Rect, TextStyle, TextWrapMode, Ui, Vec2, pos2, vec2};
 use thiserror::Error;
 
 use crate::pane::PaneView;
@@ -36,6 +36,7 @@ pub(crate) struct SurfacePlan {
     pub(crate) fingerprint: ProjectionFingerprint,
     pub(crate) missing_items: Vec<ItemId>,
     pub(crate) contained_placements: Vec<ContainedPlacementRequest>,
+    tab_scroll_layers: Vec<TabScrollLayer>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -82,26 +83,309 @@ pub(crate) enum FloatingResizeDirection {
 
 #[derive(Clone)]
 pub(crate) struct TabsPlan {
+    pub(crate) key: TabStripKey,
     pub(crate) root: RootId,
     pub(crate) node: NodeId,
     pub(crate) node_rect: Rect,
     pub(crate) tab_bar_rect: Rect,
     pub(crate) group_drag_rect: Rect,
+    pub(crate) tab_viewport_rect: Rect,
+    pub(crate) overflow_rect: Option<Rect>,
+    pub(crate) scroll_back_rect: Option<Rect>,
+    pub(crate) scroll_forward_rect: Option<Rect>,
+    pub(crate) scroll_offset: f32,
+    pub(crate) max_scroll_offset: f32,
     pub(crate) content_rect: Rect,
     pub(crate) selected: Option<ItemId>,
+    pub(crate) reveal_identity: TabRevealIdentity,
+    pub(crate) pending_keyboard_focus: Option<ItemId>,
     pub(crate) tabs: Vec<TabPlan>,
+    overflow_menu_measurements: Vec<OverflowMenuItemMeasurement>,
+    pub(crate) overflow_menu_open: bool,
+    pub(crate) overflow_menu_geometry: Option<OverflowMenuGeometry>,
+    layout_identity: Arc<TabStripLayoutIdentity>,
 }
 
 #[derive(Clone)]
 pub(crate) struct TabPlan {
     pub(crate) item: ItemId,
+    /// Unclipped position in the scrollable strip coordinate space.
     pub(crate) rect: Rect,
+    pub(crate) visible_rect: Option<Rect>,
     pub(crate) text_rect: Rect,
     pub(crate) close_rect: Option<Rect>,
+    pub(crate) drag_rect: Option<Rect>,
     pub(crate) title: String,
     pub(crate) galley: Arc<Galley>,
     pub(crate) selected: bool,
     pub(crate) missing: bool,
+    pub(crate) closeable: bool,
+    pub(crate) overflow_menu_size: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TabStripKey {
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) node: NodeId,
+}
+
+/// Adapter-owned identities whose tab chrome must survive presentation scrolling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TabRevealIdentity {
+    selected: Option<ItemId>,
+    keyboard_focused: Option<ItemId>,
+    active_dragged: Option<ItemId>,
+}
+
+impl TabRevealIdentity {
+    pub(crate) const fn new(
+        selected: Option<ItemId>,
+        keyboard_focused: Option<ItemId>,
+        active_dragged: Option<ItemId>,
+    ) -> Self {
+        Self {
+            selected,
+            keyboard_focused,
+            active_dragged,
+        }
+    }
+
+    fn with_selected(self, selected: Option<ItemId>) -> Self {
+        Self { selected, ..self }
+    }
+
+    fn with_keyboard_focused(self, keyboard_focused: Option<ItemId>) -> Self {
+        Self {
+            keyboard_focused,
+            ..self
+        }
+    }
+
+    fn prioritized_items(self) -> impl Iterator<Item = ItemId> {
+        [self.active_dragged, self.keyboard_focused, self.selected]
+            .into_iter()
+            .flatten()
+    }
+
+    fn primary(self) -> Option<ItemId> {
+        self.prioritized_items().next()
+    }
+
+    fn introduces_item_since(self, previous: Self) -> bool {
+        self.selected
+            .is_some_and(|item| previous.selected != Some(item))
+            || self
+                .keyboard_focused
+                .is_some_and(|item| previous.keyboard_focused != Some(item))
+            || self
+                .active_dragged
+                .is_some_and(|item| previous.active_dragged != Some(item))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TabStripLayoutIdentity {
+    workspace_epoch: WorkspaceEpoch,
+    style: TabStripStyleIdentity,
+    overflow_menu_style: OverflowMenuStyleIdentity,
+    tabs: Vec<TabStripEntryIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabStripStyleIdentity {
+    bar_height: u32,
+    horizontal_padding: u32,
+    min_width: u32,
+    max_width: u32,
+    close_size: u32,
+}
+
+impl From<&DockStyle> for TabStripStyleIdentity {
+    fn from(style: &DockStyle) -> Self {
+        Self {
+            bar_height: style.tab_bar_height.to_bits(),
+            horizontal_padding: style.tab_horizontal_padding.to_bits(),
+            min_width: style.tab_min_width.to_bits(),
+            max_width: style.tab_max_width.to_bits(),
+            close_size: style.tab_close_size.to_bits(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct OverflowMenuStyleIdentity {
+    local_interact_width: u32,
+    local_interact_height: u32,
+    local_default_area_width: u32,
+    local_default_area_height: u32,
+    popup_item_spacing_x: u32,
+    popup_item_spacing_y: u32,
+    popup_menu_margin: [i8; 4],
+    popup_default_area_width: u32,
+    popup_default_area_height: u32,
+    popup_window_stroke_width: u32,
+    popup_scroll_floating: bool,
+    popup_scroll_bar_width: u32,
+    popup_scroll_bar_inner_margin: u32,
+    popup_scroll_bar_outer_margin: u32,
+    popup_scroll_floating_allocated_width: u32,
+    popup_content_min_x: u32,
+    popup_content_min_y: u32,
+    popup_content_max_x: u32,
+    popup_content_max_y: u32,
+}
+
+impl From<&Ui> for OverflowMenuStyleIdentity {
+    fn from(ui: &Ui) -> Self {
+        let local_spacing = ui.spacing();
+        let popup_style = ui.ctx().global_style();
+        let popup_spacing = &popup_style.spacing;
+        let popup_scroll = popup_spacing.scroll;
+        let popup_content_rect = ui.ctx().content_rect();
+        Self {
+            local_interact_width: local_spacing.interact_size.x.to_bits(),
+            local_interact_height: local_spacing.interact_size.y.to_bits(),
+            local_default_area_width: local_spacing.default_area_size.x.to_bits(),
+            local_default_area_height: local_spacing.default_area_size.y.to_bits(),
+            popup_item_spacing_x: popup_spacing.item_spacing.x.to_bits(),
+            popup_item_spacing_y: popup_spacing.item_spacing.y.to_bits(),
+            popup_menu_margin: [
+                popup_spacing.menu_margin.left,
+                popup_spacing.menu_margin.right,
+                popup_spacing.menu_margin.top,
+                popup_spacing.menu_margin.bottom,
+            ],
+            popup_default_area_width: popup_spacing.default_area_size.x.to_bits(),
+            popup_default_area_height: popup_spacing.default_area_size.y.to_bits(),
+            popup_window_stroke_width: popup_style.visuals.window_stroke.width.to_bits(),
+            popup_scroll_floating: popup_scroll.floating,
+            popup_scroll_bar_width: popup_scroll.bar_width.to_bits(),
+            popup_scroll_bar_inner_margin: popup_scroll.bar_inner_margin.to_bits(),
+            popup_scroll_bar_outer_margin: popup_scroll.bar_outer_margin.to_bits(),
+            popup_scroll_floating_allocated_width: popup_scroll.floating_allocated_width.to_bits(),
+            popup_content_min_x: popup_content_rect.min.x.to_bits(),
+            popup_content_min_y: popup_content_rect.min.y.to_bits(),
+            popup_content_max_x: popup_content_rect.max.x.to_bits(),
+            popup_content_max_y: popup_content_rect.max.y.to_bits(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabStripEntryIdentity {
+    item: ItemId,
+    width: u32,
+    closeable: bool,
+    overflow_menu_width: u32,
+    overflow_menu_height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OverflowMenuItemMeasurement {
+    item: ItemId,
+    index: usize,
+    desired_size: Vec2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OverflowMenuItemGeometry {
+    pub(crate) item: ItemId,
+    pub(crate) index: usize,
+    pub(crate) actual_rect: Rect,
+    pub(crate) hit_rect: Option<Rect>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OverflowMenuGeometry {
+    pub(crate) popup_rect: Rect,
+    pub(crate) viewport_rect: Rect,
+    pub(crate) items: Vec<OverflowMenuItemGeometry>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StoredOverflowMenuGeometry {
+    measurements: Vec<OverflowMenuItemMeasurement>,
+    geometry: OverflowMenuGeometry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverflowMenuToggle {
+    frame: u64,
+    opened: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TabStripState {
+    scroll_offset: f32,
+    requested_reveal_identity: TabRevealIdentity,
+    applied_reveal_identity: TabRevealIdentity,
+    pending_keyboard_focus: Option<ItemId>,
+    viewport_width: f32,
+    layout_identity: Option<Arc<TabStripLayoutIdentity>>,
+    overflow_menu_open: bool,
+    overflow_menu_geometry: Option<StoredOverflowMenuGeometry>,
+    overflow_menu_toggle: Option<OverflowMenuToggle>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TabStripStateMap {
+    entries: BTreeMap<TabStripKey, TabStripState>,
+}
+
+impl TabStripStateMap {
+    pub(crate) fn retain_live<'a>(&mut self, plans: impl IntoIterator<Item = &'a SurfacePlan>) {
+        let live = plans
+            .into_iter()
+            .flat_map(|plan| &plan.roots)
+            .flat_map(|root| &root.tabs)
+            .map(|tabs| tabs.key)
+            .collect::<BTreeSet<_>>();
+        self.retain_keys(&live);
+    }
+
+    fn retain_keys(&mut self, live: &BTreeSet<TabStripKey>) {
+        self.entries.retain(|key, _| live.contains(key));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TabStripLayout {
+    viewport_rect: Rect,
+    overflow_rect: Option<Rect>,
+    scroll_back_rect: Option<Rect>,
+    scroll_forward_rect: Option<Rect>,
+    scroll_offset: f32,
+    max_scroll_offset: f32,
+    tab_rects: Vec<Rect>,
+    visible_rects: Vec<Option<Rect>>,
+    state: TabStripState,
+}
+
+#[derive(Clone, Debug)]
+struct TabScrollLayer {
+    occlusion_rect: Rect,
+    strips: Vec<(TabStripKey, Rect)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TabChromeGeometry {
+    text: Rect,
+    close: Option<Rect>,
+    drag: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TabScrollRange {
+    min: f32,
+    max: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TabGapGeometry {
+    index: usize,
+    region: Rect,
+    visual: Rect,
 }
 
 #[derive(Clone)]
@@ -122,6 +406,7 @@ pub(crate) struct ProjectionFingerprint {
     surface: SurfaceId,
     bounds: Rect,
     regions: Vec<ProjectionRegion>,
+    tab_reveals: Vec<(TabStripKey, TabRevealIdentity)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -142,6 +427,48 @@ enum ProjectionRegionId {
     TabGroup {
         root: RootId,
         tabs: NodeId,
+    },
+    TabViewport {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabScrollBack {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabScrollForward {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabOverflow {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabOverflowPopup {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabOverflowViewport {
+        root: RootId,
+        tabs: NodeId,
+    },
+    TabOverflowItem {
+        root: RootId,
+        tabs: NodeId,
+        item: ItemId,
+        index: usize,
+    },
+    TabOverflowItemActual {
+        root: RootId,
+        tabs: NodeId,
+        item: ItemId,
+        index: usize,
+    },
+    TabOverflowItemMeasurement {
+        root: RootId,
+        tabs: NodeId,
+        item: ItemId,
+        index: usize,
     },
     Tab {
         root: RootId,
@@ -164,6 +491,25 @@ enum ProjectionRegionId {
         floating: FloatingPresentationId,
         direction: FloatingResizeDirection,
     },
+}
+
+impl SurfacePlan {
+    pub(crate) fn tab_scroll_owner_at(&self, pointer: egui::Pos2) -> Option<TabStripKey> {
+        tab_scroll_owner_at(&self.tab_scroll_layers, pointer)
+    }
+}
+
+fn tab_scroll_owner_at(layers: &[TabScrollLayer], pointer: egui::Pos2) -> Option<TabStripKey> {
+    for layer in layers.iter().rev() {
+        if crate::hit::contains_half_open(layer.occlusion_rect, pointer) {
+            return layer
+                .strips
+                .iter()
+                .find(|(_, rect)| crate::hit::contains_half_open(*rect, pointer))
+                .map(|(key, _)| *key);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Error)]
@@ -205,12 +551,15 @@ pub enum ProjectionError {
     SplitChildCountUnrepresentable { count: usize },
 }
 
+#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::too_many_lines,
     reason = "surface orchestration keeps the ready scene and paint plan on one geometry path"
 )]
 pub(crate) fn build_surface_plan(
     ui: &Ui,
+    workspace_epoch: WorkspaceEpoch,
+    tab_strip_states: &mut TabStripStateMap,
     workspace: &Workspace,
     surface: SurfaceId,
     bounds: Rect,
@@ -240,6 +589,8 @@ pub(crate) fn build_surface_plan(
         .unwrap_or_default();
     roots.push(build_root_plan(
         ui,
+        workspace_epoch,
+        tab_strip_states,
         workspace,
         surface,
         presentation.main_root,
@@ -308,6 +659,8 @@ pub(crate) fn build_surface_plan(
         };
         let mut root_plan = build_root_plan(
             ui,
+            workspace_epoch,
+            tab_strip_states,
             workspace,
             surface,
             floating.root,
@@ -355,6 +708,40 @@ pub(crate) fn build_surface_plan(
         roots.push(root_plan);
     }
 
+    let mut tab_scroll_layers = roots
+        .iter()
+        .map(|root| TabScrollLayer {
+            occlusion_rect: root
+                .floating
+                .as_ref()
+                .map_or(root.bounds, |floating| floating.outer_rect),
+            strips: root
+                .tabs
+                .iter()
+                .filter(|tabs| tabs.overflow_rect.is_some())
+                .map(|tabs| (tabs.key, tabs.tab_viewport_rect))
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    tab_scroll_layers.extend(
+        roots
+            .iter()
+            .flat_map(|root| &root.tabs)
+            .filter(|tabs| tabs.overflow_menu_open)
+            .map(|tabs| TabScrollLayer {
+                occlusion_rect: tabs
+                    .overflow_menu_geometry
+                    .as_ref()
+                    .map_or(bounds, |geometry| geometry.popup_rect),
+                strips: Vec::new(),
+            }),
+    );
+    let tab_reveals = roots
+        .iter()
+        .flat_map(|root| &root.tabs)
+        .map(|tabs| (tabs.key, tabs.reveal_identity))
+        .collect();
+
     Ok(SurfacePlan {
         surface,
         bounds,
@@ -364,9 +751,11 @@ pub(crate) fn build_surface_plan(
             surface,
             bounds,
             regions: fingerprint_regions,
+            tab_reveals,
         },
         missing_items,
         contained_placements,
+        tab_scroll_layers,
     })
 }
 
@@ -382,7 +771,7 @@ fn complete_floating_plan(root: &RootPlan, floating: &mut FloatingPlan, style: &
             .tabs
             .iter()
             .flat_map(|tabs| &tabs.tabs)
-            .all(|tab| tab.close_rect.is_some());
+            .all(|tab| tab.closeable);
     let inner_title = floating.title_rect.shrink2(vec2(
         style
             .floating_resize_extent
@@ -482,6 +871,8 @@ pub(crate) fn floating_resize_zones(
 )]
 fn build_root_plan(
     ui: &Ui,
+    workspace_epoch: WorkspaceEpoch,
+    tab_strip_states: &mut TabStripStateMap,
     workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,
@@ -540,6 +931,8 @@ fn build_root_plan(
             Node::Tabs { items, selected } => {
                 tabs.push(build_tabs_plan(
                     ui,
+                    workspace_epoch,
+                    tab_strip_states,
                     workspace,
                     surface,
                     root,
@@ -830,6 +1223,8 @@ fn collect_leaf_constraints(
 )]
 fn build_tabs_plan(
     ui: &Ui,
+    workspace_epoch: WorkspaceEpoch,
+    tab_strip_states: &mut TabStripStateMap,
     workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,
@@ -890,90 +1285,236 @@ fn build_tabs_plan(
         };
         let desired = (galley.size().x + 2.0 * style.tab_horizontal_padding + close_extent)
             .clamp(style.tab_min_width, style.tab_max_width);
-        measured.push((*item, title, galley, missing, closeable, desired));
+        let overflow_menu_size = vec2(
+            (galley.size().x + 2.0 * style.tab_horizontal_padding)
+                .clamp(style.tab_min_width, style.tab_max_width),
+            ui.spacing()
+                .interact_size
+                .y
+                .max(galley.size().y + style.tab_horizontal_padding),
+        );
+        measured.push((
+            *item,
+            title,
+            galley,
+            missing,
+            closeable,
+            desired,
+            overflow_menu_size,
+        ));
     }
     let widths = allocate_tab_widths(
         measured.iter().map(|entry| entry.5),
         tab_bar_rect.width() - group_drag_rect.width(),
         style.tab_min_width,
     );
+    let selected_index = selected.and_then(|selected| {
+        measured
+            .iter()
+            .position(|(item, ..)| *item == selected)
+            .map(|index| (index, selected))
+    });
+    let key = TabStripKey {
+        surface,
+        root,
+        node,
+    };
+    let layout_identity = Arc::new(TabStripLayoutIdentity {
+        workspace_epoch,
+        style: style.into(),
+        overflow_menu_style: ui.into(),
+        tabs: measured
+            .iter()
+            .zip(&widths)
+            .map(
+                |((item, _, _, _, closeable, _, overflow_menu_size), width)| {
+                    TabStripEntryIdentity {
+                        item: *item,
+                        width: width.to_bits(),
+                        closeable: *closeable,
+                        overflow_menu_width: overflow_menu_size.x.to_bits(),
+                        overflow_menu_height: overflow_menu_size.y.to_bits(),
+                    }
+                },
+            )
+            .collect(),
+    });
+    let stored_state = tab_strip_states
+        .entries
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
+    let layout = layout_tab_strip(
+        tab_bar_rect,
+        group_drag_rect,
+        &widths,
+        selected_index,
+        &stored_state,
+        layout_identity.clone(),
+        style,
+    );
     let mut tabs = Vec::with_capacity(measured.len());
-    let mut cursor = group_drag_rect.max.x;
-    for ((item, title, galley, missing, closeable, _), width) in measured.into_iter().zip(widths) {
-        let rect = Rect::from_min_max(
-            pos2(cursor, tab_bar_rect.min.y),
-            pos2((cursor + width).min(tab_bar_rect.max.x), tab_bar_rect.max.y),
-        );
-        cursor = rect.max.x;
-        let close_rect = closeable
-            .then(|| {
-                let size = style.tab_close_size.min(rect.height()).min(rect.width());
-                let padding = style
-                    .tab_horizontal_padding
-                    .min((rect.width() - size).max(0.0));
-                intersect_rect(
-                    Rect::from_center_size(
-                        pos2(rect.max.x - padding - size * 0.5, rect.center().y),
-                        Vec2::splat(size),
-                    ),
-                    rect,
-                )
-            })
-            .filter(Rect::is_positive);
-        let left_padding = style.tab_horizontal_padding.min(rect.width());
-        let text_left = (rect.min.x + left_padding).min(rect.max.x);
-        let text_right = close_rect
-            .map_or(rect.max.x - left_padding, |close| {
-                close.min.x - left_padding
-            })
-            .clamp(text_left, rect.max.x);
-        let text_rect =
-            Rect::from_min_max(pos2(text_left, rect.min.y), pos2(text_right, rect.max.y));
-        ready.push_tab(SemanticRect::new(
-            TabSceneId {
-                root,
-                tabs: node,
-                item,
-            },
-            to_logical_rect(rect)?,
-            layer,
-        ));
-        fingerprint_regions.push(ProjectionRegion {
-            id: ProjectionRegionId::Tab {
-                root,
-                tabs: node,
-                item,
-            },
-            rect,
-            layer,
-        });
-        if let Some(close_rect) = close_rect {
-            fingerprint_regions.push(ProjectionRegion {
-                id: ProjectionRegionId::TabClose {
+    let mut overflow_menu_measurements = Vec::new();
+    for (
+        index,
+        (
+            ((item, title, galley, missing, closeable, _, overflow_menu_size), rect),
+            mut visible_rect,
+        ),
+    ) in measured
+        .into_iter()
+        .zip(layout.tab_rects.iter().copied())
+        .zip(layout.visible_rects.iter().copied())
+        .enumerate()
+    {
+        let chrome =
+            visible_rect.and_then(|visible| tab_chrome_geometry(rect, visible, closeable, style));
+        if chrome.is_none() {
+            visible_rect = None;
+        }
+        let text_rect = chrome.map_or(Rect::NOTHING, |chrome| chrome.text);
+        let close_rect = chrome.and_then(|chrome| chrome.close);
+        let drag_rect = chrome.map(|chrome| chrome.drag);
+        if let Some(visible_rect) = visible_rect {
+            ready.push_tab(SemanticRect::new(
+                TabSceneId {
                     root,
                     tabs: node,
                     item,
                 },
-                rect: close_rect,
+                to_logical_rect(visible_rect)?,
+                layer,
+            ));
+            fingerprint_regions.push(ProjectionRegion {
+                id: ProjectionRegionId::Tab {
+                    root,
+                    tabs: node,
+                    item,
+                },
+                rect: visible_rect,
+                layer,
+            });
+            if let Some(close_rect) = close_rect {
+                fingerprint_regions.push(ProjectionRegion {
+                    id: ProjectionRegionId::TabClose {
+                        root,
+                        tabs: node,
+                        item,
+                    },
+                    rect: close_rect,
+                    layer,
+                });
+            }
+        }
+        if visible_rect != Some(rect) && layout.overflow_rect.is_some() {
+            overflow_menu_measurements.push(OverflowMenuItemMeasurement {
+                item,
+                index,
+                desired_size: overflow_menu_size,
+            });
+            fingerprint_regions.push(ProjectionRegion {
+                id: ProjectionRegionId::TabOverflowItemMeasurement {
+                    root,
+                    tabs: node,
+                    item,
+                    index,
+                },
+                rect: Rect::from_min_size(pos2(0.0, 0.0), overflow_menu_size),
                 layer,
             });
         }
         tabs.push(TabPlan {
             item,
             rect,
+            visible_rect,
             text_rect,
             close_rect,
+            drag_rect,
             title,
             galley,
             selected: selected == Some(item),
             missing,
+            closeable,
+            overflow_menu_size,
         });
     }
+
+    let overflow_menu_geometry = layout
+        .state
+        .overflow_menu_geometry
+        .as_ref()
+        .filter(|geometry| geometry.measurements == overflow_menu_measurements)
+        .map(|geometry| geometry.geometry.clone());
+    if let Some(geometry) = &overflow_menu_geometry {
+        let popup_layer = SceneLayerKey::new(u64::MAX);
+        fingerprint_regions.push(ProjectionRegion {
+            id: ProjectionRegionId::TabOverflowPopup { root, tabs: node },
+            rect: geometry.popup_rect,
+            layer: popup_layer,
+        });
+        fingerprint_regions.push(ProjectionRegion {
+            id: ProjectionRegionId::TabOverflowViewport { root, tabs: node },
+            rect: geometry.viewport_rect,
+            layer: popup_layer,
+        });
+        for item in &geometry.items {
+            fingerprint_regions.push(ProjectionRegion {
+                id: ProjectionRegionId::TabOverflowItemActual {
+                    root,
+                    tabs: node,
+                    item: item.item,
+                    index: item.index,
+                },
+                rect: item.actual_rect,
+                layer: popup_layer,
+            });
+            if let Some(hit_rect) = item.hit_rect {
+                fingerprint_regions.push(ProjectionRegion {
+                    id: ProjectionRegionId::TabOverflowItem {
+                        root,
+                        tabs: node,
+                        item: item.item,
+                        index: item.index,
+                    },
+                    rect: hit_rect,
+                    layer: popup_layer,
+                });
+            }
+        }
+    }
+    tab_strip_states.entries.insert(key, layout.state.clone());
 
     if group_drag_rect.is_positive() {
         fingerprint_regions.push(ProjectionRegion {
             id: ProjectionRegionId::TabGroup { root, tabs: node },
             rect: group_drag_rect,
+            layer,
+        });
+    }
+
+    fingerprint_regions.push(ProjectionRegion {
+        id: ProjectionRegionId::TabViewport { root, tabs: node },
+        rect: layout.viewport_rect,
+        layer,
+    });
+    if let Some(rect) = layout.scroll_back_rect {
+        fingerprint_regions.push(ProjectionRegion {
+            id: ProjectionRegionId::TabScrollBack { root, tabs: node },
+            rect,
+            layer,
+        });
+    }
+    if let Some(rect) = layout.scroll_forward_rect {
+        fingerprint_regions.push(ProjectionRegion {
+            id: ProjectionRegionId::TabScrollForward { root, tabs: node },
+            rect,
+            layer,
+        });
+    }
+    if let Some(rect) = layout.overflow_rect {
+        fingerprint_regions.push(ProjectionRegion {
+            id: ProjectionRegionId::TabOverflow { root, tabs: node },
+            rect,
             layer,
         });
     }
@@ -996,7 +1537,7 @@ fn build_tabs_plan(
         surface,
         root,
         node,
-        tab_bar_rect,
+        layout.viewport_rect,
         &tabs,
         layer,
         style,
@@ -1017,14 +1558,27 @@ fn build_tabs_plan(
     )?;
 
     Ok(TabsPlan {
+        key,
         root,
         node,
         node_rect,
         tab_bar_rect,
         group_drag_rect,
+        tab_viewport_rect: layout.viewport_rect,
+        overflow_rect: layout.overflow_rect,
+        scroll_back_rect: layout.scroll_back_rect,
+        scroll_forward_rect: layout.scroll_forward_rect,
+        scroll_offset: layout.scroll_offset,
+        max_scroll_offset: layout.max_scroll_offset,
         content_rect,
         selected,
+        reveal_identity: layout.state.applied_reveal_identity,
+        pending_keyboard_focus: layout.state.pending_keyboard_focus,
         tabs,
+        overflow_menu_measurements,
+        overflow_menu_open: layout.state.overflow_menu_open,
+        overflow_menu_geometry,
+        layout_identity,
     })
 }
 
@@ -1044,7 +1598,7 @@ fn allocate_tab_widths(
     let available = available.max(0.0);
     let count = desired.len() as f32;
     if configured_minimum * count >= available {
-        return vec![available / count; desired.len()];
+        return vec![configured_minimum; desired.len()];
     }
     let desired_total = desired.iter().sum::<f32>();
     if desired_total <= available {
@@ -1059,6 +1613,566 @@ fn allocate_tab_widths(
         .into_iter()
         .map(|width| width - excess * ((width - configured_minimum) / shrinkable))
         .collect()
+}
+
+fn tab_strip_state_id(instance_id: Id) -> Id {
+    instance_id.with("tab-strip-states")
+}
+
+pub(crate) fn load_tab_strip_states(ui: &Ui, instance_id: Id) -> TabStripStateMap {
+    ui.ctx()
+        .data_mut(|data| data.get_temp(tab_strip_state_id(instance_id)))
+        .unwrap_or_default()
+}
+
+pub(crate) fn store_tab_strip_states(ui: &Ui, instance_id: Id, states: TabStripStateMap) {
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(tab_strip_state_id(instance_id), states);
+    });
+}
+
+pub(crate) fn set_tab_strip_scroll(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    requested_offset: f32,
+) -> bool {
+    let requested_offset = if requested_offset.is_finite() {
+        requested_offset.clamp(0.0, plan.max_scroll_offset)
+    } else {
+        plan.scroll_offset
+    };
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return false;
+        };
+        if state.layout_identity.as_ref() != Some(&plan.layout_identity)
+            || (requested_offset - state.scroll_offset).abs() <= f32::EPSILON
+        {
+            return false;
+        }
+        state.scroll_offset = requested_offset;
+        true
+    })
+}
+
+pub(crate) fn set_tab_strip_scroll_preserving_reveals(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    style: &DockStyle,
+    reveal_identity: TabRevealIdentity,
+    requested_offset: f32,
+) -> bool {
+    let requested_offset = if requested_offset.is_finite() {
+        requested_offset.clamp(0.0, plan.max_scroll_offset)
+    } else {
+        plan.scroll_offset
+    };
+    let protected_offset = resolve_reveal_scroll_range(reveal_identity, |item| {
+        let tab = plan.tabs.iter().find(|tab| tab.item == item)?;
+        let content_rect =
+            tab_content_rect(tab.rect, plan.tab_viewport_rect.min.x, plan.scroll_offset);
+        tab_scroll_range(
+            content_rect,
+            tab.closeable,
+            plan.tab_viewport_rect.width(),
+            style,
+        )
+        .and_then(|range| range.bounded(0.0, plan.max_scroll_offset))
+    })
+    .map_or(requested_offset, |range| {
+        requested_offset.clamp(range.min, range.max)
+    });
+    set_tab_strip_scroll(ui, instance_id, plan, protected_offset)
+}
+
+fn tab_content_rect(tab_rect: Rect, viewport_min_x: f32, scroll_offset: f32) -> Rect {
+    tab_rect.translate(vec2(scroll_offset - viewport_min_x, 0.0))
+}
+
+pub(crate) fn sync_tab_reveal_identity(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    reveal_identity: TabRevealIdentity,
+) -> bool {
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return false;
+        };
+        let reveal_identity = reveal_identity.with_keyboard_focused(
+            state
+                .pending_keyboard_focus
+                .or(reveal_identity.keyboard_focused),
+        );
+        if state.layout_identity.as_ref() != Some(&plan.layout_identity)
+            || state.requested_reveal_identity == reveal_identity
+        {
+            return false;
+        }
+        state.requested_reveal_identity = reveal_identity;
+        true
+    })
+}
+
+pub(crate) fn request_tab_keyboard_focus(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    item: ItemId,
+) -> bool {
+    if !plan.tabs.iter().any(|tab| tab.item == item) {
+        return false;
+    }
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return false;
+        };
+        if state.layout_identity.as_ref() != Some(&plan.layout_identity)
+            || state.pending_keyboard_focus == Some(item)
+        {
+            return false;
+        }
+        state.pending_keyboard_focus = Some(item);
+        state.requested_reveal_identity = state
+            .requested_reveal_identity
+            .with_keyboard_focused(Some(item));
+        true
+    })
+}
+
+pub(crate) fn complete_tab_keyboard_focus(ui: &Ui, instance_id: Id, plan: &TabsPlan, item: ItemId) {
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return;
+        };
+        if state.layout_identity.as_ref() == Some(&plan.layout_identity)
+            && state.pending_keyboard_focus == Some(item)
+        {
+            state.pending_keyboard_focus = None;
+        }
+    });
+}
+
+pub(crate) fn set_overflow_menu_geometry(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    expanded: bool,
+    geometry: Option<OverflowMenuGeometry>,
+) -> bool {
+    let geometry = expanded.then_some(geometry).flatten().and_then(|geometry| {
+        let viewport = intersect_rect(geometry.viewport_rect, geometry.popup_rect);
+        let complete = geometry.popup_rect.is_positive()
+            && geometry.viewport_rect.is_positive()
+            && viewport == geometry.viewport_rect
+            && geometry.items.len() == plan.overflow_menu_measurements.len()
+            && geometry
+                .items
+                .iter()
+                .zip(&plan.overflow_menu_measurements)
+                .all(|(item, measurement)| {
+                    let clipped = intersect_rect(item.actual_rect, geometry.viewport_rect);
+                    let expected_hit = clipped.is_positive().then_some(clipped);
+                    item.item == measurement.item
+                        && item.index == measurement.index
+                        && item.actual_rect.is_positive()
+                        && item.hit_rect == expected_hit
+                });
+        complete.then(|| StoredOverflowMenuGeometry {
+            measurements: plan.overflow_menu_measurements.clone(),
+            geometry,
+        })
+    });
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return false;
+        };
+        if state.layout_identity.as_ref() != Some(&plan.layout_identity)
+            || (state.overflow_menu_open == expanded && state.overflow_menu_geometry == geometry)
+        {
+            return false;
+        }
+        state.overflow_menu_open = expanded;
+        state.overflow_menu_geometry = geometry;
+        true
+    })
+}
+
+pub(crate) fn consume_overflow_menu_toggle(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    frame: u64,
+    opened: bool,
+) -> bool {
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        let Some(state) = states.entries.get_mut(&plan.key) else {
+            return false;
+        };
+        if state.layout_identity.as_ref() != Some(&plan.layout_identity)
+            || state
+                .overflow_menu_toggle
+                .is_some_and(|toggle| toggle.frame == frame)
+        {
+            return false;
+        }
+        state.overflow_menu_toggle = Some(OverflowMenuToggle { frame, opened });
+        state.overflow_menu_open = opened;
+        if !opened {
+            state.overflow_menu_geometry = None;
+        }
+        true
+    })
+}
+
+pub(crate) fn overflow_menu_opened_in_frame(
+    ui: &Ui,
+    instance_id: Id,
+    plan: &TabsPlan,
+    frame: u64,
+) -> bool {
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        states.entries.get(&plan.key).is_some_and(|state| {
+            state
+                .overflow_menu_toggle
+                .is_some_and(|toggle| toggle.frame == frame && toggle.opened)
+        })
+    })
+}
+
+pub(crate) fn overflow_menu_requested_open(ui: &Ui, instance_id: Id, plan: &TabsPlan) -> bool {
+    ui.ctx().data_mut(|data| {
+        let states: &mut TabStripStateMap =
+            data.get_temp_mut_or_default(tab_strip_state_id(instance_id));
+        states.entries.get(&plan.key).is_some_and(|state| {
+            state.layout_identity.as_ref() == Some(&plan.layout_identity)
+                && state.overflow_menu_open
+        })
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one deterministic layout pass keeps reveal constraints and hit geometry synchronized"
+)]
+fn layout_tab_strip(
+    tab_bar_rect: Rect,
+    group_drag_rect: Rect,
+    widths: &[f32],
+    selected: Option<(usize, ItemId)>,
+    stored_state: &TabStripState,
+    layout_identity: Arc<TabStripLayoutIdentity>,
+    style: &DockStyle,
+) -> TabStripLayout {
+    let strip_min_x = group_drag_rect
+        .max
+        .x
+        .clamp(tab_bar_rect.min.x, tab_bar_rect.max.x);
+    let available_rect =
+        Rect::from_min_max(pos2(strip_min_x, tab_bar_rect.min.y), tab_bar_rect.max);
+    let content_width = widths.iter().sum::<f32>();
+    let overflowed = content_width > available_rect.width();
+    let overflow_rect = overflowed.then(|| {
+        let width = tab_bar_rect.height().min(available_rect.width());
+        Rect::from_min_max(
+            pos2(available_rect.max.x - width, available_rect.min.y),
+            available_rect.max,
+        )
+    });
+    let viewport_rect = Rect::from_min_max(
+        available_rect.min,
+        pos2(
+            overflow_rect.map_or(available_rect.max.x, |rect| rect.min.x),
+            available_rect.max.y,
+        ),
+    );
+    let viewport_width = viewport_rect.width();
+    let max_scroll_offset = (content_width - viewport_width).max(0.0);
+    let layout_changed = stored_state.layout_identity.as_ref() != Some(&layout_identity);
+    let mut scroll_offset = if !layout_changed && stored_state.scroll_offset.is_finite() {
+        stored_state.scroll_offset.clamp(0.0, max_scroll_offset)
+    } else {
+        0.0
+    };
+    let selected_item = selected.map(|(_, item)| item);
+    let pending_keyboard_focus = stored_state
+        .pending_keyboard_focus
+        .filter(|item| layout_identity.tabs.iter().any(|entry| entry.item == *item));
+    let reveal_identity = stored_state
+        .requested_reveal_identity
+        .with_selected(selected_item)
+        .with_keyboard_focused(
+            pending_keyboard_focus.or(stored_state.requested_reveal_identity.keyboard_focused),
+        );
+    let reveal_changed = reveal_identity != stored_state.applied_reveal_identity;
+    let reveal_introduced = reveal_identity
+        .introduces_item_since(stored_state.applied_reveal_identity)
+        || reveal_identity.primary() != stored_state.applied_reveal_identity.primary();
+    let viewport_changed = (stored_state.viewport_width - viewport_width).abs() > f32::EPSILON;
+    if overflowed
+        && viewport_width > 0.0
+        && (layout_changed || reveal_introduced || viewport_changed)
+        && let Some(primary) = reveal_identity.primary()
+        && let Some((index, _)) = layout_identity
+            .tabs
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.item == primary)
+    {
+        let start = widths[..index].iter().sum::<f32>();
+        let end = start + widths[index];
+        if widths[index] > viewport_width || start < scroll_offset {
+            scroll_offset = start;
+        } else if end > scroll_offset + viewport_width {
+            scroll_offset = end - viewport_width;
+        }
+    }
+    if layout_changed || reveal_changed || viewport_changed {
+        let range = resolve_reveal_scroll_range(reveal_identity, |item| {
+            let (index, entry) = layout_identity
+                .tabs
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| entry.item == item)?;
+            let start = widths[..index].iter().sum::<f32>();
+            tab_scroll_range(
+                Rect::from_min_size(pos2(start, 0.0), vec2(widths[index], tab_bar_rect.height())),
+                entry.closeable,
+                viewport_width,
+                style,
+            )
+            .and_then(|range| range.bounded(0.0, max_scroll_offset))
+        });
+        if let Some(range) = range {
+            scroll_offset = scroll_offset.clamp(range.min, range.max);
+        }
+        scroll_offset = scroll_offset.clamp(0.0, max_scroll_offset);
+    }
+
+    let (scroll_back_rect, scroll_forward_rect) = overflowed
+        .then(|| tab_scroll_edge_rects(viewport_rect, tab_bar_rect.height()))
+        .map_or((None, None), |(back, forward)| {
+            (
+                back.is_positive().then_some(back),
+                forward.is_positive().then_some(forward),
+            )
+        });
+
+    let mut cursor = viewport_rect.min.x - scroll_offset;
+    let mut tab_rects = Vec::with_capacity(widths.len());
+    let mut visible_rects = Vec::with_capacity(widths.len());
+    for width in widths {
+        let rect = Rect::from_min_max(
+            pos2(cursor, tab_bar_rect.min.y),
+            pos2(cursor + *width, tab_bar_rect.max.y),
+        );
+        cursor = rect.max.x;
+        let visible = intersect_rect(rect, viewport_rect);
+        let minimum_visible_width = style
+            .tab_close_size
+            .min(style.tab_min_width)
+            .min(rect.width());
+        tab_rects.push(rect);
+        visible_rects.push(
+            (visible.is_positive() && visible.width() >= minimum_visible_width).then_some(visible),
+        );
+    }
+
+    let state = TabStripState {
+        scroll_offset,
+        requested_reveal_identity: reveal_identity,
+        applied_reveal_identity: reveal_identity,
+        pending_keyboard_focus,
+        viewport_width,
+        layout_identity: Some(layout_identity),
+        overflow_menu_open: overflowed && stored_state.overflow_menu_open,
+        overflow_menu_geometry: if layout_changed || !overflowed {
+            None
+        } else {
+            stored_state.overflow_menu_geometry.clone()
+        },
+        overflow_menu_toggle: stored_state.overflow_menu_toggle,
+    };
+    TabStripLayout {
+        viewport_rect,
+        overflow_rect,
+        scroll_back_rect,
+        scroll_forward_rect,
+        scroll_offset,
+        max_scroll_offset,
+        tab_rects,
+        visible_rects,
+        state,
+    }
+}
+
+fn tab_scroll_edge_rects(viewport: Rect, configured_extent: f32) -> (Rect, Rect) {
+    let middle = viewport.center().x;
+    let back_max = (viewport.min.x + configured_extent).min(middle);
+    let forward_min = (viewport.max.x - configured_extent).max(middle);
+    (
+        Rect::from_min_max(viewport.min, pos2(back_max, viewport.max.y)),
+        Rect::from_min_max(pos2(forward_min, viewport.min.y), viewport.max),
+    )
+}
+
+impl TabScrollRange {
+    fn bounded(self, minimum: f32, maximum: f32) -> Option<Self> {
+        let bounded = Self {
+            min: self.min.max(minimum),
+            max: self.max.min(maximum),
+        };
+        (bounded.min <= bounded.max).then_some(bounded)
+    }
+
+    fn intersect(self, other: Self) -> Option<Self> {
+        Self {
+            min: self.min.max(other.min),
+            max: self.max.min(other.max),
+        }
+        .bounded(f32::NEG_INFINITY, f32::INFINITY)
+    }
+}
+
+fn resolve_reveal_scroll_range(
+    identity: TabRevealIdentity,
+    mut range_for: impl FnMut(ItemId) -> Option<TabScrollRange>,
+) -> Option<TabScrollRange> {
+    let mut seen = [None; 3];
+    let mut seen_len = 0;
+    let mut intersection: Option<TabScrollRange> = None;
+    for item in identity.prioritized_items() {
+        if seen[..seen_len].contains(&Some(item)) {
+            continue;
+        }
+        seen[seen_len] = Some(item);
+        seen_len += 1;
+        let Some(range) = range_for(item) else {
+            continue;
+        };
+        let next = match intersection {
+            None => Some(range),
+            Some(current) => current.intersect(range),
+        };
+        let Some(next) = next else {
+            return intersection;
+        };
+        intersection = Some(next);
+    }
+    intersection
+}
+
+fn tab_scroll_range(
+    content_rect: Rect,
+    closeable: bool,
+    viewport_width: f32,
+    style: &DockStyle,
+) -> Option<TabScrollRange> {
+    if !content_rect.is_positive() || !viewport_width.is_finite() || viewport_width <= 0.0 {
+        return None;
+    }
+    if closeable {
+        let close = ideal_tab_close_rect(content_rect, style)?;
+        let minimum_drag_width = tab_operable_drag_width(content_rect, style);
+        return TabScrollRange {
+            min: close.max.x - viewport_width,
+            max: close.min.x - minimum_drag_width,
+        }
+        .bounded(f32::NEG_INFINITY, f32::INFINITY);
+    }
+    let guard = style
+        .tab_close_size
+        .min(style.tab_min_width)
+        .min(content_rect.width())
+        .min(viewport_width);
+    TabScrollRange {
+        min: content_rect.min.x + guard - viewport_width,
+        max: content_rect.max.x - guard,
+    }
+    .bounded(f32::NEG_INFINITY, f32::INFINITY)
+}
+
+fn tab_operable_drag_width(full_rect: Rect, style: &DockStyle) -> f32 {
+    style
+        .tab_close_size
+        .min(style.tab_min_width)
+        .min(full_rect.width())
+}
+
+fn ideal_tab_close_rect(full_rect: Rect, style: &DockStyle) -> Option<Rect> {
+    let size = style
+        .tab_close_size
+        .min(full_rect.height())
+        .min(full_rect.width());
+    if !size.is_finite() || size <= 0.0 {
+        return None;
+    }
+    let padding = style
+        .tab_horizontal_padding
+        .min((full_rect.width() - size).max(0.0));
+    Some(Rect::from_center_size(
+        pos2(full_rect.max.x - padding - size * 0.5, full_rect.center().y),
+        Vec2::splat(size),
+    ))
+}
+
+fn tab_chrome_geometry(
+    full_rect: Rect,
+    visible_rect: Rect,
+    closeable: bool,
+    style: &DockStyle,
+) -> Option<TabChromeGeometry> {
+    if !visible_rect.is_positive() {
+        return None;
+    }
+    let ideal_close = closeable
+        .then(|| ideal_tab_close_rect(full_rect, style))
+        .flatten()
+        .filter(|close| visible_rect.contains_rect(*close));
+    if closeable && ideal_close.is_none() {
+        return None;
+    }
+    let drag_rect = ideal_close.map_or(visible_rect, |close| {
+        Rect::from_min_max(visible_rect.min, pos2(close.min.x, visible_rect.max.y))
+    });
+    if !drag_rect.is_positive() || drag_rect.width() < tab_operable_drag_width(full_rect, style) {
+        return None;
+    }
+    let left_padding = style.tab_horizontal_padding.min(full_rect.width());
+    let text_left = (full_rect.min.x + left_padding).min(full_rect.max.x);
+    let text_right = ideal_close
+        .map_or(full_rect.max.x - left_padding, |close| {
+            close.min.x - left_padding
+        })
+        .clamp(text_left, full_rect.max.x);
+    let text_rect = intersect_rect(
+        Rect::from_min_max(
+            pos2(text_left, full_rect.min.y),
+            pos2(text_right, full_rect.max.y),
+        ),
+        visible_rect,
+    );
+    Some(TabChromeGeometry {
+        text: text_rect,
+        close: ideal_close,
+        drag: drag_rect,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1320,10 +2434,35 @@ fn push_tab_gap_targets(
         return Ok(());
     }
     let target = workspace.capture_tab_target(root, node)?;
-    let centers = tabs
-        .iter()
-        .map(|tab| tab.rect.center().x)
-        .collect::<Vec<_>>();
+    let tab_rects = tabs.iter().map(|tab| tab.rect).collect::<Vec<_>>();
+    for geometry in tab_gap_geometries(bar, &tab_rects, style.splitter_thickness) {
+        ready.push_drop_target(DropTargetRecord::new(
+            DropTargetId::TabGap {
+                surface,
+                root,
+                tabs: node,
+                index: geometry.index,
+            },
+            DockTarget::TabGap {
+                target: target.clone(),
+                index: geometry.index,
+            },
+            DropTargetAvailability::Available,
+            HitRegion::new(to_logical_rect(geometry.region)?),
+            layer,
+            DropVisual::new(to_logical_rect(geometry.visual)?),
+        ));
+    }
+    Ok(())
+}
+
+fn tab_gap_geometries(
+    bar: Rect,
+    tabs: &[Rect],
+    configured_marker_width: f32,
+) -> Vec<TabGapGeometry> {
+    let centers = tabs.iter().map(|tab| tab.center().x).collect::<Vec<_>>();
+    let mut geometries = Vec::with_capacity(tabs.len() + 1);
     for index in 0..=tabs.len() {
         let left = if index == 0 {
             bar.min.x
@@ -1335,13 +2474,19 @@ fn push_tab_gap_targets(
         } else {
             centers[index]
         };
-        let region = Rect::from_min_max(pos2(left, bar.min.y), pos2(right, bar.max.y));
+        let region_left = left.max(bar.min.x);
+        let region_right = right.min(bar.max.x);
+        if region_right <= region_left {
+            continue;
+        }
+        let region =
+            Rect::from_min_max(pos2(region_left, bar.min.y), pos2(region_right, bar.max.y));
         let marker_x = if index == tabs.len() {
             bar.max.x
         } else {
-            tabs[index].rect.min.x
+            tabs[index].min.x
         };
-        let marker_width = style.splitter_thickness.min(bar.width());
+        let marker_width = configured_marker_width.min(bar.width());
         let marker_min = (marker_x - marker_width * 0.5)
             .clamp(bar.min.x, (bar.max.x - marker_width).max(bar.min.x));
         let visual = Rect::from_min_size(
@@ -1349,25 +2494,14 @@ fn push_tab_gap_targets(
             vec2(marker_width, bar.height()),
         );
         if region.is_positive() && visual.is_positive() {
-            ready.push_drop_target(DropTargetRecord::new(
-                DropTargetId::TabGap {
-                    surface,
-                    root,
-                    tabs: node,
-                    index,
-                },
-                DockTarget::TabGap {
-                    target: target.clone(),
-                    index,
-                },
-                DropTargetAvailability::Available,
-                HitRegion::new(to_logical_rect(region)?),
-                layer,
-                DropVisual::new(to_logical_rect(visual)?),
-            ));
+            geometries.push(TabGapGeometry {
+                index,
+                region,
+                visual,
+            });
         }
     }
-    Ok(())
+    geometries
 }
 
 fn edge_visual(rect: Rect, edge: Edge, fraction: DockFraction) -> Rect {
@@ -1491,6 +2625,39 @@ mod tests {
     const ROOT: RootId = RootId::new(10);
     const ITEM_A: ItemId = ItemId::new(100);
     const ITEM_B: ItemId = ItemId::new(101);
+    const ITEM_C: ItemId = ItemId::new(102);
+
+    fn tab_layout_identity(
+        epoch: u64,
+        entries: impl IntoIterator<Item = (ItemId, f32, bool)>,
+    ) -> Arc<TabStripLayoutIdentity> {
+        Arc::new(TabStripLayoutIdentity {
+            workspace_epoch: WorkspaceEpoch::new(epoch),
+            style: (&DockStyle::default()).into(),
+            overflow_menu_style: OverflowMenuStyleIdentity::default(),
+            tabs: entries
+                .into_iter()
+                .map(|(item, width, closeable)| TabStripEntryIdentity {
+                    item,
+                    width: width.to_bits(),
+                    closeable,
+                    overflow_menu_width: width.to_bits(),
+                    overflow_menu_height: 28.0_f32.to_bits(),
+                })
+                .collect(),
+        })
+    }
+
+    fn three_tab_identity(epoch: u64) -> Arc<TabStripLayoutIdentity> {
+        tab_layout_identity(
+            epoch,
+            [
+                (ITEM_A, 72.0, true),
+                (ITEM_B, 72.0, true),
+                (ITEM_C, 72.0, true),
+            ],
+        )
+    }
 
     fn single_workspace() -> (Workspace, NodeId) {
         let mut builder = Workspace::builder();
@@ -1619,8 +2786,379 @@ mod tests {
 
         assert_eq!(
             allocate_tab_widths([100.0, 100.0], 100.0, 72.0),
-            [50.0, 50.0]
+            [72.0, 72.0]
         );
+    }
+
+    #[test]
+    fn overflowing_strip_keeps_intrinsic_widths_and_reserves_a_fixed_control() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(180.0, 28.0));
+        let grip = Rect::from_min_size(bar.min, vec2(28.0, 28.0));
+        let layout = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((0, ITEM_A)),
+            &TabStripState::default(),
+            three_tab_identity(0),
+            &DockStyle::default(),
+        );
+
+        assert_eq!(
+            layout.overflow_rect,
+            Some(Rect::from_min_max(pos2(152.0, 0.0), pos2(180.0, 28.0)))
+        );
+        assert_eq!(
+            layout.viewport_rect,
+            Rect::from_min_max(pos2(28.0, 0.0), pos2(152.0, 28.0))
+        );
+        assert_eq!(
+            layout.tab_rects.iter().map(Rect::width).collect::<Vec<_>>(),
+            [72.0, 72.0, 72.0]
+        );
+        assert!(
+            layout
+                .visible_rects
+                .iter()
+                .flatten()
+                .all(|rect| layout.viewport_rect.contains_rect(*rect))
+        );
+        assert!(layout.visible_rects[2].is_none());
+    }
+
+    #[test]
+    fn changed_selection_is_revealed_without_destabilizing_scroll_state() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(180.0, 28.0));
+        let grip = Rect::from_min_size(bar.min, vec2(28.0, 28.0));
+        let first = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((0, ITEM_A)),
+            &TabStripState::default(),
+            three_tab_identity(0),
+            &DockStyle::default(),
+        );
+        let selected_last = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &first.state,
+            three_tab_identity(0),
+            &DockStyle::default(),
+        );
+
+        assert!((selected_last.scroll_offset - selected_last.max_scroll_offset).abs() < 0.001);
+        assert_eq!(
+            selected_last.visible_rects[2],
+            Some(selected_last.tab_rects[2])
+        );
+
+        let stable = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &selected_last.state,
+            three_tab_identity(0),
+            &DockStyle::default(),
+        );
+        assert!((stable.scroll_offset - selected_last.scroll_offset).abs() < 0.001);
+        assert_eq!(stable.state, selected_last.state);
+    }
+
+    #[test]
+    fn layout_identity_changes_reveal_selection_while_stable_identity_keeps_manual_scroll() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(180.0, 28.0));
+        let grip = Rect::from_min_size(bar.min, vec2(28.0, 28.0));
+        let identity = three_tab_identity(0);
+        let manually_scrolled = TabStripState {
+            scroll_offset: 36.0,
+            requested_reveal_identity: TabRevealIdentity::new(Some(ITEM_C), None, None),
+            applied_reveal_identity: TabRevealIdentity::new(Some(ITEM_C), None, None),
+            pending_keyboard_focus: None,
+            viewport_width: 124.0,
+            layout_identity: Some(identity.clone()),
+            overflow_menu_open: false,
+            overflow_menu_geometry: None,
+            overflow_menu_toggle: None,
+        };
+        let stable = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &manually_scrolled,
+            identity,
+            &DockStyle::default(),
+        );
+        assert!((stable.scroll_offset - 36.0).abs() < 0.001);
+
+        let reordered = tab_layout_identity(
+            0,
+            [
+                (ITEM_C, 72.0, true),
+                (ITEM_A, 72.0, true),
+                (ITEM_B, 72.0, true),
+            ],
+        );
+        let reordered_layout = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((0, ITEM_C)),
+            &manually_scrolled,
+            reordered,
+            &DockStyle::default(),
+        );
+        assert!(reordered_layout.scroll_offset.abs() < 0.001);
+        assert_eq!(
+            reordered_layout.visible_rects[0],
+            Some(reordered_layout.tab_rects[0])
+        );
+
+        let replacement_layout = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &manually_scrolled,
+            three_tab_identity(1),
+            &DockStyle::default(),
+        );
+        assert_eq!(
+            replacement_layout.visible_rects[2],
+            Some(replacement_layout.tab_rects[2])
+        );
+
+        let mut changed_style = DockStyle::default();
+        changed_style.tab_horizontal_padding += 1.0;
+        let style_identity = Arc::new(TabStripLayoutIdentity {
+            workspace_epoch: WorkspaceEpoch::new(0),
+            style: (&changed_style).into(),
+            overflow_menu_style: OverflowMenuStyleIdentity::default(),
+            tabs: three_tab_identity(0).tabs.clone(),
+        });
+        let style_layout = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &manually_scrolled,
+            style_identity,
+            &changed_style,
+        );
+        assert_eq!(
+            style_layout.visible_rects[2],
+            Some(style_layout.tab_rects[2])
+        );
+    }
+
+    #[test]
+    fn tab_strip_state_map_prunes_dead_surface_root_node_keys() {
+        let (_, _, first_node, second_node) = split_workspace();
+        let first = TabStripKey {
+            surface: SURFACE,
+            root: ROOT,
+            node: first_node,
+        };
+        let second = TabStripKey {
+            surface: SurfaceId::new(2),
+            root: RootId::new(11),
+            node: second_node,
+        };
+        let mut states = TabStripStateMap {
+            entries: BTreeMap::from([
+                (first, TabStripState::default()),
+                (second, TabStripState::default()),
+            ]),
+        };
+
+        states.retain_keys(&BTreeSet::from([first]));
+
+        assert_eq!(states.entries.keys().copied().collect::<Vec<_>>(), [first]);
+    }
+
+    #[test]
+    fn frontmost_floating_layer_owns_scroll_and_its_outer_rect_blocks_background() {
+        let (_, _, background_node, foreground_node) = split_workspace();
+        let background = TabStripKey {
+            surface: SURFACE,
+            root: ROOT,
+            node: background_node,
+        };
+        let foreground = TabStripKey {
+            surface: SURFACE,
+            root: RootId::new(11),
+            node: foreground_node,
+        };
+        let layers = [
+            TabScrollLayer {
+                occlusion_rect: Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 200.0)),
+                strips: vec![(
+                    background,
+                    Rect::from_min_max(pos2(0.0, 40.0), pos2(180.0, 68.0)),
+                )],
+            },
+            TabScrollLayer {
+                occlusion_rect: Rect::from_min_max(pos2(20.0, 20.0), pos2(220.0, 180.0)),
+                strips: vec![(
+                    foreground,
+                    Rect::from_min_max(pos2(20.0, 40.0), pos2(180.0, 68.0)),
+                )],
+            },
+        ];
+
+        assert_eq!(
+            tab_scroll_owner_at(&layers, pos2(80.0, 50.0)),
+            Some(foreground)
+        );
+        assert_eq!(tab_scroll_owner_at(&layers, pos2(200.0, 50.0)), None);
+        assert_eq!(
+            tab_scroll_owner_at(&layers, pos2(10.0, 50.0)),
+            Some(background)
+        );
+    }
+
+    #[test]
+    fn closeable_partial_tab_without_complete_close_and_drag_hits_is_hidden() {
+        let style = DockStyle::default();
+        let full = Rect::from_min_size(pos2(28.0, 0.0), vec2(style.tab_min_width, 28.0));
+        let minimum_drag_width = tab_operable_drag_width(full, &style);
+        let chrome = tab_chrome_geometry(full, full, true, &style)
+            .expect("a fully visible closeable tab has complete chrome");
+
+        assert!(chrome.drag.width() >= minimum_drag_width);
+        assert!(chrome.close.is_some_and(|rect| rect.is_positive()));
+        assert!(
+            !chrome
+                .drag
+                .intersect(chrome.close.expect("close exists"))
+                .is_positive()
+        );
+
+        let close = ideal_tab_close_rect(full, &style).expect("close geometry is valid");
+        let boundary =
+            Rect::from_min_max(pos2(close.min.x - minimum_drag_width, full.min.y), full.max);
+        let boundary_chrome = tab_chrome_geometry(full, boundary, true, &style)
+            .expect("the explicit minimum drag width remains operable");
+        assert!((boundary_chrome.drag.width() - minimum_drag_width).abs() <= f32::EPSILON);
+
+        let narrower = Rect::from_min_max(boundary.min + vec2(1.0, 0.0), boundary.max);
+        assert!(tab_chrome_geometry(full, narrower, true, &style).is_none());
+
+        let reveal = tab_scroll_range(full, true, 124.0, &style)
+            .expect("a normal closeable tab has a reveal range");
+        assert!((reveal.max - (close.min.x - minimum_drag_width)).abs() <= f32::EPSILON);
+
+        let clipped = Rect::from_min_max(pos2(28.0, 0.0), pos2(48.0, 28.0));
+        let clipped_chrome = tab_chrome_geometry(full, clipped, true, &style);
+        assert!(clipped_chrome.is_none());
+    }
+
+    #[test]
+    fn reveal_scroll_range_protects_all_feasible_identities_and_has_stable_conflict_priority() {
+        let style = DockStyle::default();
+        let viewport_width = 124.0;
+        let max_scroll_offset = 92.0;
+        let range_for = |item| {
+            let index = [ITEM_A, ITEM_B, ITEM_C]
+                .iter()
+                .position(|candidate| *candidate == item)?;
+            tab_scroll_range(
+                Rect::from_min_size(pos2([0.0, 72.0, 144.0][index], 0.0), vec2(72.0, 28.0)),
+                true,
+                viewport_width,
+                &style,
+            )
+            .and_then(|range| range.bounded(0.0, max_scroll_offset))
+        };
+
+        let feasible = resolve_reveal_scroll_range(
+            TabRevealIdentity::new(Some(ITEM_A), Some(ITEM_B), None),
+            range_for,
+        )
+        .expect("adjacent selected and focused tabs have a shared range");
+        assert!(feasible.min > 0.0);
+        assert!(feasible.max < max_scroll_offset);
+
+        let conflict = resolve_reveal_scroll_range(
+            TabRevealIdentity::new(Some(ITEM_A), Some(ITEM_B), Some(ITEM_C)),
+            range_for,
+        )
+        .expect("higher-priority identities remain protected after a conflict");
+        let active = range_for(ITEM_C).expect("active item has a range");
+        let focused = range_for(ITEM_B).expect("focused item has a range");
+        assert_eq!(conflict, active.intersect(focused).expect("ranges overlap"));
+    }
+
+    #[test]
+    fn reveal_conflict_retains_last_feasible_priority_intersection() {
+        let resolved = resolve_reveal_scroll_range(
+            TabRevealIdentity::new(Some(ITEM_A), Some(ITEM_B), Some(ITEM_C)),
+            |item| match item {
+                ITEM_A => Some(TabScrollRange {
+                    min: 0.0,
+                    max: 30.0,
+                }),
+                ITEM_B => Some(TabScrollRange {
+                    min: 40.0,
+                    max: 100.0,
+                }),
+                ITEM_C => Some(TabScrollRange {
+                    min: 20.0,
+                    max: 80.0,
+                }),
+                _ => None,
+            },
+        );
+
+        assert_eq!(
+            resolved,
+            Some(TabScrollRange {
+                min: 40.0,
+                max: 80.0,
+            })
+        );
+    }
+
+    #[test]
+    fn reveal_range_normalizes_nonzero_viewport_origin_to_strip_local_content() {
+        let viewport_min_x = 28.0;
+        let current_scroll = 36.0;
+        let content = Rect::from_min_size(pos2(72.0, 0.0), vec2(72.0, 28.0));
+        let screen = content.translate(vec2(viewport_min_x - current_scroll, 0.0));
+
+        assert_eq!(
+            tab_content_rect(screen, viewport_min_x, current_scroll),
+            content
+        );
+    }
+
+    #[test]
+    fn scrolled_tab_gaps_keep_original_indices_and_never_escape_the_viewport() {
+        let bar = Rect::from_min_size(pos2(0.0, 0.0), vec2(180.0, 28.0));
+        let grip = Rect::from_min_size(bar.min, vec2(28.0, 28.0));
+        let layout = layout_tab_strip(
+            bar,
+            grip,
+            &[72.0, 72.0, 72.0],
+            Some((2, ITEM_C)),
+            &TabStripState::default(),
+            three_tab_identity(0),
+            &DockStyle::default(),
+        );
+        let gaps = tab_gap_geometries(layout.viewport_rect, &layout.tab_rects, 1.0);
+
+        assert_eq!(
+            gaps.iter().map(|gap| gap.index).collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert!(gaps.iter().all(|gap| {
+            layout.viewport_rect.contains_rect(gap.region)
+                && layout.viewport_rect.contains_rect(gap.visual)
+        }));
     }
 
     #[test]

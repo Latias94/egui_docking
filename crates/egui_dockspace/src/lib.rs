@@ -31,7 +31,7 @@ pub use ::dockspace;
 pub use builder::DockspaceBuilder;
 pub use error::DockspaceError;
 pub use facade::Dockspace;
-pub use pane::{PaneCloseResponse, PaneView};
+pub use pane::{PaneCloseResponse, PaneFocusState, PaneView};
 #[cfg(feature = "serde")]
 pub use persistence::DockspacePersistenceError;
 pub use presentation::{ContainedPresentationIds, PresentationIdSource, TearOffMode};

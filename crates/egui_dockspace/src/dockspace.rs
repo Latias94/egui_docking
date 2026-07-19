@@ -1,17 +1,18 @@
 //! Authoritative egui facade over [`dockspace::engine::DockEngine`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt::Debug, hash::Hash};
 
 use dockspace::RootPresentationOwner;
 use dockspace::command::{MovePayload, NodeSource, WorkspaceCommand};
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::error::{CommandError, ReferenceRole};
+use dockspace::frame::PanelFocus;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, Workspace};
 use dockspace::ids::{FloatingPresentationId, InputSequence, ItemId, RootId, SurfaceId};
 use dockspace::intent::{
-    ContainedTearOffProposal, RendererIntent, TargetAuthority, TearOffRequest,
+    Authority, ContainedTearOffProposal, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
     ContainedTransformSessionId, DragSessionId, InteractionCancelReason, InteractionStatus,
@@ -20,15 +21,20 @@ use dockspace::interaction::{
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene, SceneStamp, SealedScene, SurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
+use dockspace::viewport::ViewportBinding;
+use dockspace::viewport_focus::{
+    GlobalFocusedWindow, PaneFocusIntent, PaneFocusIntentId, PaneFocusObservation,
+    PaneFocusObservationGeneration,
+};
 use egui::{Id, Rect, Ui, ViewportId};
 
 use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
-use crate::pane::{PaneCloseResponse, PaneView};
+use crate::pane::{PaneCloseResponse, PaneFocusState, PaneView};
 use crate::presentation::{PresentationIdSource, TearOffMode};
 use crate::projection::{
     ProjectionError, ProjectionFingerprint, SurfacePlan, build_surface_plan,
-    floating_minimum_for_payload,
+    floating_minimum_for_payload, load_tab_strip_states, store_tab_strip_states,
 };
 use crate::renderer::{ContainedMoveCandidate, RenderAction, RenderOutput, paint_surface};
 use crate::response::{
@@ -106,6 +112,94 @@ struct PaintOutput {
     missing_panes: Vec<ItemId>,
     interactions_current: bool,
     surface_status: DockspaceSurfaceStatus,
+    pane_focus_capability: DockspaceCapability,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EnqueuedPaneFocus {
+    binding: ViewportBinding,
+    focus: PanelFocus,
+    acknowledges: Option<PaneFocusIntentId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PaneFocusRequestFence {
+    intent: PaneFocusIntentId,
+    frame: FrameKey,
+}
+
+#[derive(Default)]
+struct PaneFocusAdapterState {
+    pending_intent: Option<PaneFocusIntent>,
+    observation_generations: BTreeMap<SurfaceId, PaneFocusObservationGeneration>,
+    last_enqueued: BTreeMap<SurfaceId, EnqueuedPaneFocus>,
+    request_fence: Option<PaneFocusRequestFence>,
+}
+
+impl PaneFocusAdapterState {
+    fn accept_transition(&mut self, transition: &EngineTransition) {
+        for change in transition.focus_delta().surface_focus() {
+            let surface = change.surface();
+            let observation = change
+                .state()
+                .after()
+                .as_ref()
+                .and_then(|state| state.observation());
+            if let Some(observation) = observation {
+                self.observation_generations
+                    .entry(surface)
+                    .and_modify(|current| *current = (*current).max(observation.generation()))
+                    .or_insert(observation.generation());
+                self.last_enqueued.insert(
+                    surface,
+                    EnqueuedPaneFocus {
+                        binding: observation.binding(),
+                        focus: observation.focus(),
+                        acknowledges: observation.acknowledges(),
+                    },
+                );
+            } else if change.state().after().is_none() {
+                self.last_enqueued.remove(&surface);
+            }
+        }
+
+        let Some(change) = transition.focus_delta().pane_intent() else {
+            return;
+        };
+        let next = change.after().as_ref().copied();
+        if self.pending_intent != next {
+            self.request_fence = None;
+        }
+        self.pending_intent = next;
+    }
+
+    fn next_observation_generation(
+        &self,
+        surface: SurfaceId,
+        baseline: Option<PaneFocusObservationGeneration>,
+    ) -> Option<PaneFocusObservationGeneration> {
+        self.observation_generations
+            .get(&surface)
+            .copied()
+            .into_iter()
+            .chain(baseline)
+            .max()
+            .unwrap_or_default()
+            .checked_next()
+    }
+
+    fn record_enqueued(&mut self, observation: PaneFocusObservation) {
+        self.observation_generations
+            .insert(observation.binding().surface(), observation.generation());
+        self.last_enqueued.insert(
+            observation.binding().surface(),
+            EnqueuedPaneFocus {
+                binding: observation.binding(),
+                focus: observation.focus(),
+                acknowledges: observation.acknowledges(),
+            },
+        );
+    }
 }
 
 /// Stateful egui adapter whose [`DockEngine`] is the sole docking authority.
@@ -123,6 +217,7 @@ pub struct Dockspace {
     published_projection: Option<PublishedProjection>,
     last_contained_unavailable: Option<DockspaceUnavailableReason>,
     contained_allocation: Option<ContainedAllocation>,
+    pane_focus: PaneFocusAdapterState,
 }
 
 impl Dockspace {
@@ -153,6 +248,7 @@ impl Dockspace {
             published_projection: None,
             last_contained_unavailable: None,
             contained_allocation: None,
+            pane_focus: PaneFocusAdapterState::default(),
         })
     }
 
@@ -292,6 +388,7 @@ impl Dockspace {
             interactions_current: painted.interactions_current,
             surface_status: painted.surface_status,
             contained_capability: self.contained_capability(surface),
+            pane_focus_capability: painted.pane_focus_capability,
         })
     }
 
@@ -373,10 +470,10 @@ impl Dockspace {
         ui: &mut Ui,
         panes: &mut dyn PaneView,
     ) -> Result<PaintOutput, DockspaceError> {
-        let (plan, style) = self
+        let (plan, style, frame_key) = self
             .frames
             .get(&surface)
-            .map(|frame| (frame.plan.clone(), frame.style.clone()))
+            .map(|frame| (frame.plan.clone(), frame.style.clone(), frame.key))
             .ok_or(DockspaceError::FrameStateUnavailable)?;
         let Some(plan) = plan else {
             self.previous_projections.remove(&surface);
@@ -384,8 +481,13 @@ impl Dockspace {
                 missing_panes: Vec::new(),
                 interactions_current: false,
                 surface_status: DockspaceSurfaceStatus::Absent,
+                pane_focus_capability: DockspaceCapability::Unavailable(
+                    DockspaceUnavailableReason::SurfaceAbsent,
+                ),
             });
         };
+        let pane_focus_preparation =
+            self.prepare_pane_focus_request(surface, frame_key, ui.ctx(), &plan, panes);
         let interactions_current = self
             .previous_projections
             .get(&surface)
@@ -408,6 +510,12 @@ impl Dockspace {
         self.record_render_output(surface, output)?;
         self.previous_projections
             .insert(surface, plan.fingerprint.clone());
+        let pane_focus_capability = match pane_focus_preparation {
+            Ok(()) => {
+                self.publish_pane_focus_after_paint(surface, frame_key, ui.ctx(), &plan, panes)?
+            }
+            Err(reason) => DockspaceCapability::Unavailable(reason),
+        };
         if !interactions_current
             || self
                 .frames
@@ -420,7 +528,154 @@ impl Dockspace {
             missing_panes: plan.missing_items,
             interactions_current,
             surface_status: DockspaceSurfaceStatus::Ready,
+            pane_focus_capability,
         })
+    }
+
+    fn prepare_pane_focus_request(
+        &mut self,
+        surface: SurfaceId,
+        frame: FrameKey,
+        context: &egui::Context,
+        plan: &SurfacePlan,
+        panes: &dyn PaneView,
+    ) -> Result<(), DockspaceUnavailableReason> {
+        let Some(intent) = self
+            .pane_focus
+            .pending_intent
+            .filter(|intent| intent.target().surface() == surface)
+        else {
+            return Ok(());
+        };
+        if self.engine.viewport_focus_binding(surface) != Some(intent.target()) {
+            return Err(DockspaceUnavailableReason::PaneFocusBindingUnavailable);
+        }
+        if !self.binding_has_authoritative_global_focus(intent.target()) {
+            return Err(DockspaceUnavailableReason::PaneFocusWindowNotFocused);
+        }
+        if self
+            .pane_focus
+            .request_fence
+            .is_some_and(|fence| fence.intent == intent.id())
+        {
+            return Ok(());
+        }
+
+        let request_issued = match intent.focus() {
+            PanelFocus::Item(item) => {
+                let target = panes
+                    .focus_target(item)
+                    .ok_or(DockspaceUnavailableReason::PaneFocusTargetMissing { item })?;
+                context.memory_mut(|memory| memory.request_focus(target));
+                true
+            }
+            PanelFocus::None => {
+                let targets = surface_plan_items(plan)
+                    .into_iter()
+                    .map(|item| {
+                        panes
+                            .focus_target(item)
+                            .ok_or(DockspaceUnavailableReason::PaneFocusTargetMissing { item })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let request_issued = !targets.is_empty();
+                if request_issued {
+                    context.memory_mut(|memory| {
+                        for target in targets {
+                            memory.surrender_focus(target);
+                        }
+                    });
+                }
+                request_issued
+            }
+        };
+        if request_issued {
+            self.pane_focus.request_fence = Some(PaneFocusRequestFence {
+                intent: intent.id(),
+                frame,
+            });
+        }
+        Ok(())
+    }
+
+    fn publish_pane_focus_after_paint(
+        &mut self,
+        surface: SurfaceId,
+        frame: FrameKey,
+        context: &egui::Context,
+        plan: &SurfacePlan,
+        panes: &dyn PaneView,
+    ) -> Result<DockspaceCapability, DockspaceError> {
+        let Some(binding) = self.engine.viewport_focus_binding(surface) else {
+            return Ok(DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PaneFocusBindingUnavailable,
+            ));
+        };
+        if !self.binding_has_authoritative_global_focus(binding) {
+            return Ok(DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PaneFocusWindowNotFocused,
+            ));
+        }
+        let focus = match observe_surface_pane_focus(plan, panes, context) {
+            Ok(focus) => focus,
+            Err(reason) => return Ok(DockspaceCapability::Unavailable(reason)),
+        };
+        let intent = self
+            .pane_focus
+            .pending_intent
+            .filter(|intent| intent.target().surface() == surface);
+        if intent.is_some_and(|intent| intent.target() != binding) {
+            return Ok(DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PaneFocusBindingUnavailable,
+            ));
+        }
+        if intent.is_some_and(|intent| {
+            self.pane_focus
+                .request_fence
+                .is_some_and(|fence| fence.intent == intent.id() && fence.frame == frame)
+        }) {
+            return Ok(DockspaceCapability::Supported);
+        }
+
+        let acknowledges = intent
+            .filter(|intent| intent.focus() == focus)
+            .map(PaneFocusIntent::id);
+        let candidate = EnqueuedPaneFocus {
+            binding,
+            focus,
+            acknowledges,
+        };
+        if self.pane_focus.last_enqueued.get(&surface) == Some(&candidate) {
+            return Ok(DockspaceCapability::Supported);
+        }
+        let baseline = intent.and_then(PaneFocusIntent::pane_observation_baseline);
+        let Some(generation) = self
+            .pane_focus
+            .next_observation_generation(surface, baseline)
+        else {
+            return Ok(DockspaceCapability::Unavailable(
+                DockspaceUnavailableReason::PaneFocusObservationGenerationExhausted,
+            ));
+        };
+        let mut observation = PaneFocusObservation::new(generation, binding, focus);
+        if let Some(intent) = acknowledges {
+            observation = observation.acknowledging(intent);
+        }
+        self.engine.enqueue_pane_focus_observation(observation)?;
+        self.pane_focus.record_enqueued(observation);
+        Ok(DockspaceCapability::Supported)
+    }
+
+    fn binding_has_authoritative_global_focus(&self, binding: ViewportBinding) -> bool {
+        self.engine
+            .viewport_focus()
+            .focus_observation()
+            .is_some_and(|observation| {
+                matches!(
+                    observation.focused(),
+                    Authority::Known(GlobalFocusedWindow::Dock(focused)) if *focused == binding
+                )
+            })
     }
 
     fn current_render_authority(
@@ -564,7 +819,9 @@ impl Dockspace {
         transitions: &mut Vec<EngineTransition>,
     ) -> Result<(), DockspaceError> {
         if !self.engine.pending_inputs().is_empty() {
-            transitions.push(self.engine.reduce_pending()?);
+            let transition = self.engine.reduce_pending()?;
+            self.pane_focus.accept_transition(&transition);
+            transitions.push(transition);
         }
         Ok(())
     }
@@ -681,7 +938,7 @@ impl Dockspace {
             | RenderAction::UpdateContainedTransform { .. }
             | RenderAction::ReleaseContainedTransform { .. }
             | RenderAction::AcknowledgeContainedTransformPreview(_)) => {
-                contained_transform_intent(action)
+                contained_transform_intent(&action)
             }
             RenderAction::Select(_)
             | RenderAction::CloseRequested(_)
@@ -925,7 +1182,10 @@ impl Dockspace {
         ui: &Ui,
         panes: &dyn PaneView,
     ) -> Result<BTreeMap<SurfaceId, SurfacePlan>, DockspaceError> {
-        self.engine
+        let mut tab_strip_states = load_tab_strip_states(ui, self.id);
+        let workspace_epoch = self.engine.version().epoch();
+        let plans = self
+            .engine
             .workspace()
             .surfaces()
             .filter_map(|(surface, _)| {
@@ -935,10 +1195,20 @@ impl Dockspace {
                     .map(|bounds| (surface, bounds))
             })
             .map(|(surface, bounds)| {
-                self.project_surface(surface, bounds, ui, panes)
-                    .map(|plan| (surface, plan))
+                self.project_surface(
+                    surface,
+                    bounds,
+                    ui,
+                    panes,
+                    workspace_epoch,
+                    &mut tab_strip_states,
+                )
+                .map(|plan| (surface, plan))
             })
-            .collect()
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        tab_strip_states.retain_live(plans.values());
+        store_tab_strip_states(ui, self.id, tab_strip_states);
+        Ok(plans)
     }
 
     fn project_surface(
@@ -947,6 +1217,8 @@ impl Dockspace {
         bounds: Rect,
         ui: &Ui,
         panes: &dyn PaneView,
+        workspace_epoch: dockspace::ids::WorkspaceEpoch,
+        tab_strip_states: &mut crate::projection::TabStripStateMap,
     ) -> Result<SurfacePlan, DockspaceError> {
         let resize = self
             .engine
@@ -955,6 +1227,8 @@ impl Dockspace {
             .map(|(_, split, weights)| (split, weights));
         build_surface_plan(
             ui,
+            workspace_epoch,
+            tab_strip_states,
             self.engine.workspace(),
             surface,
             bounds,
@@ -998,6 +1272,7 @@ impl Dockspace {
         }
         self.engine.enqueue_scene(scene)?;
         let transition = self.engine.reduce_pending()?;
+        self.pane_focus.accept_transition(&transition);
         if let Some(error) = transition.reduced_inputs().iter().find_map(|input| {
             if let InputOutcome::SceneRejected { error } = input.outcome() {
                 Some(error.clone())
@@ -1301,6 +1576,40 @@ impl Dockspace {
     }
 }
 
+fn surface_plan_items(plan: &SurfacePlan) -> BTreeSet<ItemId> {
+    plan.roots
+        .iter()
+        .flat_map(|root| &root.tabs)
+        .flat_map(|tabs| &tabs.tabs)
+        .map(|tab| tab.item)
+        .collect()
+}
+
+fn observe_surface_pane_focus(
+    plan: &SurfacePlan,
+    panes: &dyn PaneView,
+    context: &egui::Context,
+) -> Result<PanelFocus, DockspaceUnavailableReason> {
+    let mut focused = None;
+    for item in surface_plan_items(plan) {
+        if panes.focus_target(item).is_none() {
+            return Err(DockspaceUnavailableReason::PaneFocusTargetMissing { item });
+        }
+        match panes.focus_state(item, context) {
+            PaneFocusState::Unknown => {
+                return Err(DockspaceUnavailableReason::PaneFocusStateUnknown { item });
+            }
+            PaneFocusState::Focused => {
+                if focused.replace(item).is_some() {
+                    return Err(DockspaceUnavailableReason::ConflictingPaneFocus);
+                }
+            }
+            PaneFocusState::Unfocused => {}
+        }
+    }
+    Ok(focused.map_or(PanelFocus::None, PanelFocus::Item))
+}
+
 fn push_unique(errors: &mut Vec<CommandError>, error: CommandError) {
     if !errors.contains(&error) {
         errors.push(error);
@@ -1336,7 +1645,7 @@ fn resize_intent(action: RenderAction) -> Option<RendererIntent> {
     }
 }
 
-fn contained_transform_intent(action: RenderAction) -> Option<RendererIntent> {
+fn contained_transform_intent(action: &RenderAction) -> Option<RendererIntent> {
     match action {
         RenderAction::BeginContainedTransform {
             surface,
@@ -1348,21 +1657,21 @@ fn contained_transform_intent(action: RenderAction) -> Option<RendererIntent> {
             kind,
             minimum_size,
         } => Some(RendererIntent::BeginContainedTransform {
-            surface,
-            root,
-            floating,
-            pointer,
-            button,
-            initial_pointer,
-            kind,
-            minimum_size,
+            surface: *surface,
+            root: *root,
+            floating: *floating,
+            pointer: *pointer,
+            button: *button,
+            initial_pointer: *initial_pointer,
+            kind: *kind,
+            minimum_size: *minimum_size,
         }),
         RenderAction::UpdateContainedTransform {
             session,
             current_pointer,
         } => Some(RendererIntent::UpdateContainedTransform {
-            session,
-            current_pointer,
+            session: *session,
+            current_pointer: *current_pointer,
         }),
         RenderAction::ReleaseContainedTransform {
             session,
@@ -1370,13 +1679,13 @@ fn contained_transform_intent(action: RenderAction) -> Option<RendererIntent> {
             button,
             button_state,
         } => Some(RendererIntent::ReleaseContainedTransform {
-            session,
-            pointer,
-            button,
-            button_state,
+            session: *session,
+            pointer: *pointer,
+            button: *button,
+            button_state: *button_state,
         }),
         RenderAction::AcknowledgeContainedTransformPreview(acknowledgement) => Some(
-            RendererIntent::AcknowledgeContainedTransformPreview(acknowledgement),
+            RendererIntent::AcknowledgeContainedTransformPreview(*acknowledgement),
         ),
         _ => None,
     }
@@ -1601,5 +1910,219 @@ fn complete_root_id(workspace: &Workspace, payload: &MovePayload) -> Option<Root
         MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
             (source.node() == record.node).then_some(root)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dockspace::graph::{RootRecord, SurfacePresentation};
+    use dockspace::platform::{
+        ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+        WindowPresentationState,
+    };
+    use dockspace::viewport::{ViewportRole, WindowToken};
+    use dockspace::viewport_focus::{FocusObservationEnvelope, FocusObservationGeneration};
+    use egui::{Pos2, RawInput, TextEdit, WidgetText, vec2};
+
+    const FOCUS_SURFACE: SurfaceId = SurfaceId::new(1);
+    const FOCUS_ROOT: RootId = RootId::new(1);
+    const FIRST_ITEM: ItemId = ItemId::new(1);
+    const HIDDEN_ITEM: ItemId = ItemId::new(2);
+
+    struct FocusPanes {
+        provide_targets: bool,
+        values: BTreeMap<ItemId, String>,
+    }
+
+    impl FocusPanes {
+        fn new(provide_targets: bool) -> Self {
+            Self {
+                provide_targets,
+                values: BTreeMap::from([(FIRST_ITEM, String::new()), (HIDDEN_ITEM, String::new())]),
+            }
+        }
+
+        fn target(item: ItemId) -> Id {
+            Id::new(("pane-focus-test", item))
+        }
+    }
+
+    impl PaneView for FocusPanes {
+        fn title(&self, item: ItemId) -> Option<WidgetText> {
+            self.values
+                .contains_key(&item)
+                .then(|| item.get().to_string().into())
+        }
+
+        fn ui(&mut self, item: ItemId, ui: &mut Ui) {
+            let value = self.values.get_mut(&item).expect("test pane must exist");
+            TextEdit::singleline(value).id(Self::target(item)).show(ui);
+        }
+
+        fn focus_target(&self, item: ItemId) -> Option<Id> {
+            self.provide_targets.then(|| Self::target(item))
+        }
+    }
+
+    fn focus_workspace() -> Workspace {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([FIRST_ITEM, HIDDEN_ITEM]));
+        builder.set_root(FOCUS_ROOT, RootRecord::new(tabs));
+        builder.set_surface(FOCUS_SURFACE, SurfacePresentation::new(FOCUS_ROOT));
+        builder.build().expect("focus workspace must be valid")
+    }
+
+    fn focus_dockspace() -> (Dockspace, ViewportBinding) {
+        let mut dockspace = Dockspace::builder("pane-focus-test", focus_workspace())
+            .build()
+            .expect("dockspace must build");
+        let token = WindowToken::new(1);
+        dockspace
+            .engine
+            .enqueue_viewport_registration(FOCUS_SURFACE, token, ViewportRole::Root, None)
+            .expect("viewport registration must enqueue");
+        let registered = dockspace
+            .engine
+            .reduce_pending()
+            .expect("viewport registration must reduce");
+        dockspace.pane_focus.accept_transition(&registered);
+        let InputOutcome::ViewportRegistered { binding } = registered.reduced_inputs()[0].outcome()
+        else {
+            panic!("viewport registration must publish a binding");
+        };
+        let binding = *binding;
+
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_global_focus_observation(PlatformCapability::Supported);
+        capabilities.set_window_activation_control(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            capabilities,
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(1),
+                Authority::Known(GlobalFocusedWindow::Dock(binding)),
+                Authority::Known(None),
+            ),
+            vec![
+                ObservedWindow::new(token)
+                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("focus snapshot must be canonical");
+        dockspace
+            .engine
+            .enqueue_platform_snapshot(snapshot)
+            .expect("focus snapshot must enqueue");
+        let focused = dockspace
+            .engine
+            .reduce_pending()
+            .expect("focus snapshot must reduce");
+        dockspace.pane_focus.accept_transition(&focused);
+        (dockspace, binding)
+    }
+
+    fn paint_focus_frame(
+        context: &egui::Context,
+        dockspace: &mut Dockspace,
+        panes: &mut dyn PaneView,
+    ) -> Vec<DockspaceCapability> {
+        let mut capabilities = Vec::new();
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0))),
+            ..RawInput::default()
+        };
+        let _ = context.run_ui(input, |ui| {
+            let response = dockspace
+                .show(FOCUS_SURFACE, ui, panes)
+                .expect("focus frame must paint");
+            capabilities.push(response.pane_focus_capability());
+        });
+        capabilities
+    }
+
+    #[test]
+    fn request_frame_never_acknowledges_selection_or_requested_focus() {
+        let (mut dockspace, binding) = focus_dockspace();
+        let mut panes = FocusPanes::new(true);
+        dockspace
+            .engine
+            .enqueue_viewport_activation(binding, PanelFocus::Item(HIDDEN_ITEM))
+            .expect("hidden pane activation must enqueue");
+        let context = egui::Context::default();
+
+        let first = paint_focus_frame(&context, &mut dockspace, &mut panes);
+        assert!(
+            first
+                .iter()
+                .all(|capability| *capability == DockspaceCapability::Supported)
+        );
+        assert!(
+            dockspace
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_some()
+        );
+        assert!(dockspace.engine.pending_inputs().is_empty());
+
+        let second = paint_focus_frame(&context, &mut dockspace, &mut panes);
+        assert!(
+            second
+                .iter()
+                .all(|capability| *capability == DockspaceCapability::Supported)
+        );
+        assert!(
+            dockspace
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_some()
+        );
+        assert_eq!(dockspace.engine.pending_inputs().len(), 1);
+
+        let third = paint_focus_frame(&context, &mut dockspace, &mut panes);
+        assert!(
+            third
+                .iter()
+                .all(|capability| *capability == DockspaceCapability::Supported)
+        );
+        assert!(
+            dockspace
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn missing_focus_target_keeps_the_core_intent_pending() {
+        let (mut dockspace, binding) = focus_dockspace();
+        let mut panes = FocusPanes::new(false);
+        dockspace
+            .engine
+            .enqueue_viewport_activation(binding, PanelFocus::Item(HIDDEN_ITEM))
+            .expect("hidden pane activation must enqueue");
+        let context = egui::Context::default();
+
+        let first = paint_focus_frame(&context, &mut dockspace, &mut panes);
+        assert!(first.iter().all(|capability| {
+            *capability
+                == DockspaceCapability::Unavailable(
+                    DockspaceUnavailableReason::PaneFocusTargetMissing { item: HIDDEN_ITEM },
+                )
+        }));
+        let _ = paint_focus_frame(&context, &mut dockspace, &mut panes);
+        assert!(
+            dockspace
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_some()
+        );
+        assert!(dockspace.engine.pending_inputs().is_empty());
     }
 }

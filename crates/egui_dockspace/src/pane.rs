@@ -1,7 +1,18 @@
 //! Application-owned pane rendering contract.
 
 use dockspace::ids::ItemId;
-use egui::{Ui, Vec2, WidgetText};
+use egui::{Context, Id, Ui, Vec2, WidgetText};
+
+/// Exact adapter observation of one application's pane focus target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneFocusState {
+    /// The application cannot currently prove whether this pane owns focus.
+    Unknown,
+    /// The pane's registered focus target currently owns focus.
+    Focused,
+    /// The application authoritatively reports that this pane does not own focus.
+    Unfocused,
+}
 
 /// The application's decision for a requested pane close.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,12 +37,39 @@ pub trait PaneView {
 
     /// Renders the application content associated with `item`.
     ///
-    /// The adapter does not call this method during an observation-only pass
-    /// whose prior egui hit graph no longer matches the current projection.
-    /// This fail-closed boundary prevents stale pointer or accessibility input
-    /// from reaching application widgets. A later current pass renders the
-    /// pane normally.
+    /// The adapter calls this method on every painted pass so pane content stays
+    /// visually continuous while the projection changes. When the prior egui
+    /// hit graph no longer matches the current projection, `ui` is disabled:
+    /// normal widgets still render but cannot accept pointer or accessibility
+    /// activation until a current pass publishes the authoritative hit graph.
     fn ui(&mut self, item: ItemId, ui: &mut Ui);
+
+    /// Returns the stable egui focus identity registered by `item`'s pane UI.
+    ///
+    /// The adapter uses this identity only to request or surrender focus. Merely
+    /// selecting the item's tab, rendering the pane, or issuing a request never
+    /// acknowledges a core pane-focus intent.
+    fn focus_target(&self, _item: ItemId) -> Option<Id> {
+        None
+    }
+
+    /// Reports the pane's actual focus state after its UI has rendered.
+    ///
+    /// The default observes the exact [`Self::focus_target`] in egui memory.
+    /// Implementors with a composite focus scope may override this method, but
+    /// must return [`PaneFocusState::Unknown`] whenever that scope cannot be
+    /// observed authoritatively.
+    fn focus_state(&self, item: ItemId, context: &Context) -> PaneFocusState {
+        let Some(target) = self.focus_target(item) else {
+            return PaneFocusState::Unknown;
+        };
+        if context.input(|input| input.focused) && context.memory(|memory| memory.has_focus(target))
+        {
+            PaneFocusState::Focused
+        } else {
+            PaneFocusState::Unfocused
+        }
+    }
 
     /// Returns whether the pane exposes a close action.
     fn closeable(&self, _item: ItemId) -> bool {
@@ -113,5 +151,17 @@ mod tests {
         };
 
         assert_eq!(panes.minimum_size(ItemId::new(8)), Vec2::ZERO);
+    }
+
+    #[test]
+    fn missing_focus_provider_stays_unknown() {
+        let panes = TestPanes {
+            locked: ItemId::new(7),
+        };
+
+        assert_eq!(
+            panes.focus_state(ItemId::new(8), &Context::default()),
+            PaneFocusState::Unknown
+        );
     }
 }
