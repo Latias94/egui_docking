@@ -365,7 +365,7 @@ mod tests {
             let snapshot = self
                 .adapter
                 .snapshot()
-                .expect("fake provider sample must be canonical");
+                .expect("provider sample must be canonical");
             self.engine
                 .enqueue_platform_snapshot(snapshot)
                 .expect("platform snapshot must enqueue");
@@ -1093,6 +1093,7 @@ mod tests {
             .expect("capability revocation must request source input restoration")
             .clone();
         harness.dispatch(&cancelled);
+        assert!(harness.adapter.provider().dispatched().contains(&disable));
         assert!(harness.adapter.take_effect_results().is_empty());
 
         let still_passthrough = harness.publish_sample();
