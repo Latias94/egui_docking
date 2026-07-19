@@ -197,12 +197,13 @@ The replacement does not mean deleting the Open GPUI product layer. Its `DockSur
 
 ### Immediate Execution Order - 2026-07-19
 
-1. Finish and independently re-review the current P0 routing/lifecycle work: causal pass-through enable/restore ordering, fail-closed source binding, and atomic recovery of `main_root + contained roots`. Resolve current tab-overflow review findings without mixing them into the lifecycle commit.
-2. Fearlessly replace the dual drag and per-surface next-callback action paths with the U4/U9 global session, exact outside-native offer, revisioned surface exchange, and explicit callback-return reducer tick. Add ownership-aware source vacancy in the same topology transition.
-3. Close projection and policy correctness: core-generated manifests, per-surface dependency vectors, unique geometric winner before validation, exact event-receiver provenance, stale-content rendering, rich pure policy decisions, affected-surface cleanup, and activation/panel-focus causality.
-4. Make the behavior contract executable through the in-memory second UI adapter and egui. Only after parity, deepen the sealed presentation/layer authority, item/surface facade, selected/focused/dragged overflow reveal, and renderer-local motion integration.
-5. Implement the real upstream and enhanced egui native providers, rebuild the fork patch only for the typed missing snapshot/acknowledgement seam, and pass the Open GPUI native workflow matrix.
-6. Bound structural cost, seal public exports, complete Open GPUI facade migration evidence, documentation, distribution audits, final Codex review, and cleanup. Motion polish cannot move ahead of lifecycle, route, interaction, and projection correctness gates.
+1. Finish and independently re-review the current P0 routing/lifecycle work: causal pass-through enable/restore ordering, fail-closed source binding, and atomic close/recovery of `main_root + contained roots`. Resolve current tab-overflow review findings without mixing them into the lifecycle commit.
+2. Complete the other U5 lifecycle lane before interaction migration: every successful cross-surface delivery derives an ownership-aware `SurfaceRosterDelta`, retires or unbinds the vacated source in the same transition, and clears binding-scoped state. Add the global viewport-activation and typed `PanelFocus::{Item, None}` coordinator with close-recovery supersession traces.
+3. Fearlessly replace the dual drag and per-surface next-callback action paths with the U4/U9 global session, exact outside-native offer, revisioned surface exchange, and explicit callback-return reducer tick. The new delivery path must consume the completed vacancy/retirement coordinator rather than owning a second cleanup protocol.
+4. Close projection and policy correctness: core-generated manifests, per-surface dependency vectors, unique geometric winner before validation, exact event-receiver provenance, stale-content rendering, rich pure policy decisions, and affected-surface cleanup.
+5. Make the behavior contract executable through the in-memory second UI adapter and egui. Only after parity, deepen the sealed presentation/layer authority, item/surface facade, selected/focused/dragged overflow reveal, and renderer-local motion integration.
+6. Implement the real upstream and enhanced egui native providers, rebuild the fork patch only for the typed missing snapshot/acknowledgement seam, and pass the Open GPUI native workflow matrix.
+7. Bound structural cost, seal public exports, complete Open GPUI facade migration evidence, documentation, distribution audits, final Codex review, and cleanup. Motion polish cannot move ahead of lifecycle, route, interaction, and projection correctness gates.
 
 ### Context and Research
 
