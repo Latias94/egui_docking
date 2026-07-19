@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
 use dockspace::geometry::{Constraints, LogicalRect, LogicalSize};
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::graph::{Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::layout::{
     AxisConstraint, AxisConstraintError, LayoutError, LayoutMetrics, LayoutMetricsError,
-    project_root, solve_axis,
+    SplitWeightOverride, project_root, project_root_with_overrides, solve_axis,
 };
 
 fn constraints(values: &[(f64, f64)]) -> Vec<AxisConstraint> {
@@ -274,6 +274,38 @@ fn three_leaf_workspace() -> (Workspace, RootId, [NodeId; 3], NodeId) {
     )
 }
 
+fn nested_split_workspace(
+    inner_weights: [f32; 2],
+) -> (Workspace, RootId, [NodeId; 3], NodeId, NodeId) {
+    let mut builder = Workspace::builder();
+    let left = builder.insert_node(Node::tabs([ItemId::new(40)]));
+    let right = builder.insert_node(Node::tabs([ItemId::new(41)]));
+    let bottom = builder.insert_node(Node::tabs([ItemId::new(42)]));
+    let inner = builder.insert_node(
+        Node::split(Axis::Horizontal, [left, right], inner_weights).expect("valid inner split"),
+    );
+    let outer = builder.insert_node(
+        Node::equal_split(Axis::Vertical, [inner, bottom]).expect("valid outer split"),
+    );
+    let root = RootId::new(40);
+    builder.set_root(root, RootRecord::new(outer));
+    builder.set_surface(SurfaceId::new(40), SurfacePresentation::new(root));
+    (
+        builder.build().expect("valid nested workspace"),
+        root,
+        [left, right, bottom],
+        inner,
+        outer,
+    )
+}
+
+fn leaf_constraints(leaves: impl IntoIterator<Item = NodeId>) -> BTreeMap<NodeId, Constraints> {
+    leaves
+        .into_iter()
+        .map(|leaf| (leaf, unconstrained_leaf()))
+        .collect()
+}
+
 #[test]
 fn projects_workspace_nodes_and_splitter_rectangles() {
     let (workspace, root, leaves, split) = three_leaf_workspace();
@@ -310,6 +342,180 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     assert_projection_close(assigned_width, 1_000.0);
     assert_projection_close(projection.splits[&split].overflow, 0.0);
     assert_projection_close(projection.splits[&split].unallocated, 0.0);
+}
+
+#[test]
+fn exact_split_override_changes_only_transient_projection() {
+    let (workspace, root, leaves, inner, outer) = nested_split_workspace([0.5, 0.5]);
+    let source = workspace
+        .capture_node_source(root, inner)
+        .expect("inner split source must be current");
+    let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
+    let before = workspace.clone();
+
+    let projection = project_root_with_overrides(
+        &workspace,
+        root,
+        LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
+        &leaf_constraints(leaves),
+        layout_metrics(0.0),
+        &[SplitWeightOverride::new(&source, &weights)],
+    )
+    .expect("current override must project");
+
+    assert_projection_close(projection.node_rects[&leaves[0]].width(), 100.0);
+    assert_projection_close(projection.node_rects[&leaves[1]].width(), 300.0);
+    assert_projection_close(projection.node_rects[&leaves[2]].height(), 200.0);
+    assert_projection_close(projection.node_rects[&inner].height(), 200.0);
+    assert_projection_close(projection.splits[&outer].overflow, 0.0);
+    assert_eq!(
+        workspace, before,
+        "transient projection must not mutate state"
+    );
+    assert!(matches!(
+        workspace.node(inner),
+        Some(Node::Split { weights, .. })
+            if weights == &SplitWeight::normalize([0.5, 0.5]).expect("durable weights")
+    ));
+}
+
+#[test]
+fn stale_split_override_fingerprint_fails_closed() {
+    let (captured_workspace, root, _, captured_inner, _) = nested_split_workspace([0.5, 0.5]);
+    let source = captured_workspace
+        .capture_node_source(root, captured_inner)
+        .expect("captured source must be current in its workspace");
+    let (current_workspace, current_root, leaves, current_inner, _) =
+        nested_split_workspace([0.4, 0.6]);
+    assert_eq!(root, current_root);
+    assert_eq!(captured_inner, current_inner);
+    let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
+
+    assert!(matches!(
+        project_root_with_overrides(
+            &current_workspace,
+            current_root,
+            LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
+            &leaf_constraints(leaves),
+            layout_metrics(0.0),
+            &[SplitWeightOverride::new(&source, &weights)],
+        ),
+        Err(LayoutError::InvalidSplitWeightOverrideSource { .. })
+    ));
+}
+
+#[test]
+fn split_override_must_belong_to_the_projected_root() {
+    let mut builder = Workspace::builder();
+    let first_left = builder.insert_node(Node::tabs([ItemId::new(50)]));
+    let first_right = builder.insert_node(Node::tabs([ItemId::new(51)]));
+    let first_split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [first_left, first_right]).expect("valid first split"),
+    );
+    let second_left = builder.insert_node(Node::tabs([ItemId::new(52)]));
+    let second_right = builder.insert_node(Node::tabs([ItemId::new(53)]));
+    let second_split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [second_left, second_right])
+            .expect("valid second split"),
+    );
+    let first_root = RootId::new(50);
+    let second_root = RootId::new(51);
+    builder.set_root(first_root, RootRecord::new(first_split));
+    builder.set_root(second_root, RootRecord::new(second_split));
+    builder.set_surface(SurfaceId::new(50), SurfacePresentation::new(first_root));
+    builder.set_surface(SurfaceId::new(51), SurfacePresentation::new(second_root));
+    let workspace = builder.build().expect("valid multi-root workspace");
+    let source = workspace
+        .capture_node_source(second_root, second_split)
+        .expect("second source must be current");
+    let weights = SplitWeight::normalize([0.25, 0.75]).expect("override must be normalized");
+
+    assert!(matches!(
+        project_root_with_overrides(
+            &workspace,
+            first_root,
+            LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds"),
+            &leaf_constraints([first_left, first_right]),
+            layout_metrics(0.0),
+            &[SplitWeightOverride::new(&source, &weights)],
+        ),
+        Err(LayoutError::SplitWeightOverrideRootMismatch {
+            projected_root,
+            override_root,
+        }) if projected_root == first_root && override_root == second_root
+    ));
+}
+
+#[test]
+fn split_override_rejects_wrong_length_unnormalized_and_duplicate_weights() {
+    let (workspace, root, leaves, inner, _) = nested_split_workspace([0.5, 0.5]);
+    let source = workspace
+        .capture_node_source(root, inner)
+        .expect("inner source must be current");
+    let constraints = leaf_constraints(leaves);
+    let bounds = LogicalRect::new(0.0, 0.0, 400.0, 400.0).expect("valid bounds");
+    let wrong_length = SplitWeight::normalize([0.2, 0.3, 0.5]).expect("weights must be normalized");
+    assert!(matches!(
+        project_root_with_overrides(
+            &workspace,
+            root,
+            bounds,
+            &constraints,
+            layout_metrics(0.0),
+            &[SplitWeightOverride::new(&source, &wrong_length)],
+        ),
+        Err(LayoutError::SplitWeightOverrideLengthMismatch {
+            node,
+            children: 2,
+            weights: 3,
+        }) if node == inner
+    ));
+
+    let unnormalized = [
+        SplitWeight::new(0.8).expect("positive weight"),
+        SplitWeight::new(0.8).expect("positive weight"),
+    ];
+    assert!(matches!(
+        project_root_with_overrides(
+            &workspace,
+            root,
+            bounds,
+            &constraints,
+            layout_metrics(0.0),
+            &[SplitWeightOverride::new(&source, &unnormalized)],
+        ),
+        Err(LayoutError::SplitWeightOverrideNotNormalized { node, .. }) if node == inner
+    ));
+
+    let valid = SplitWeight::normalize([0.25, 0.75]).expect("weights must be normalized");
+    let duplicate = SplitWeightOverride::new(&source, &valid);
+    assert!(matches!(
+        project_root_with_overrides(
+            &workspace,
+            root,
+            bounds,
+            &constraints,
+            layout_metrics(0.0),
+            &[duplicate, duplicate],
+        ),
+        Err(LayoutError::DuplicateSplitWeightOverride { node }) if node == inner
+    ));
+
+    let leaf_source = workspace
+        .capture_node_source(root, leaves[0])
+        .expect("leaf source must be current");
+    let one_weight = SplitWeight::normalize([1.0]).expect("one weight is normalized");
+    assert!(matches!(
+        project_root_with_overrides(
+            &workspace,
+            root,
+            bounds,
+            &constraints,
+            layout_metrics(0.0),
+            &[SplitWeightOverride::new(&leaf_source, &one_weight)],
+        ),
+        Err(LayoutError::SplitWeightOverrideNodeNotSplit { node }) if node == leaves[0]
+    ));
 }
 
 #[test]

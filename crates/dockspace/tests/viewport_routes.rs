@@ -1,7 +1,7 @@
 use dockspace::command::MovePayload;
 use dockspace::effect::PlatformEffect;
 use dockspace::engine::DockEngine;
-use dockspace::geometry::{LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
@@ -53,6 +53,26 @@ fn fixture() -> Fixture {
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("test engine must be valid");
 
+    let mut scene = BuildingScene::new([SURFACE_SOURCE, SURFACE_TARGET])
+        .expect("surface roster must be unique");
+    for surface in [SURFACE_SOURCE, SURFACE_TARGET] {
+        scene
+            .insert_ready(ReadySurfaceScene::new(
+                surface,
+                logical_rect(0.0, 0.0, 600.0, 400.0),
+            ))
+            .expect("initial surface facts must be unique");
+    }
+    engine.enqueue_scene(scene).expect("scene must enqueue");
+    engine.reduce_pending().expect("scene must publish");
+    let recovery_placement = engine
+        .contained_placement(
+            SURFACE_SOURCE,
+            logical_rect(20.0, 20.0, 400.0, 300.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready source scene must authorize recovery placement");
+
     engine
         .enqueue_viewport_registration(SURFACE_SOURCE, SOURCE_TOKEN, ViewportRole::Root, None)
         .expect("source registration must enqueue");
@@ -62,10 +82,9 @@ fn fixture() -> Fixture {
             TARGET_TOKEN,
             ViewportRole::Child,
             Some(ContainedTearOffProposal::new(
-                SURFACE_SOURCE,
                 ROOT_TARGET,
                 FloatingPresentationId::new(20),
-                logical_rect(20.0, 20.0, 400.0, 300.0),
+                recovery_placement,
                 1,
             )),
         )

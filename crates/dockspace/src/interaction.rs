@@ -5,11 +5,12 @@ use thiserror::Error;
 use crate::command::{CommandOutcome, MovePayload, NodeSource, WorkspaceCommand};
 use crate::drop_target::DropTargetId;
 use crate::frame::NativeCreateRequest;
-use crate::geometry::{LogicalRect, PhysicalRect};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::SplitWeight;
-use crate::ids::{InputSequence, SurfaceId, WorkspaceEpoch};
+use crate::ids::{FloatingPresentationId, InputSequence, RootId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{
-    NativeTearOffProposal, PointerButton, PointerId, TargetAuthority, TearOffRequest,
+    ContainedPlacementProof, ContainedTransformKind, NativeTearOffProposal, PointerButton,
+    PointerId, TargetAuthority, TearOffRequest,
 };
 use crate::scene::SceneStamp;
 use crate::transition::WorkspaceVersion;
@@ -48,6 +49,10 @@ interaction_counter!(DragGeneration, "Monotonic generation of drag sessions.");
 interaction_counter!(
     ResizeGeneration,
     "Monotonic generation of splitter-resize sessions."
+);
+interaction_counter!(
+    ContainedTransformGeneration,
+    "Monotonic generation of contained transform sessions."
 );
 interaction_counter!(
     PreviewSequence,
@@ -104,6 +109,33 @@ impl ResizeSessionId {
     /// Returns the resize generation.
     #[must_use]
     pub const fn generation(self) -> ResizeGeneration {
+        self.generation
+    }
+}
+
+/// Identity of one contained transform session within a workspace epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContainedTransformSessionId {
+    epoch: WorkspaceEpoch,
+    generation: ContainedTransformGeneration,
+}
+
+impl ContainedTransformSessionId {
+    /// Creates a typed contained transform identity.
+    #[must_use]
+    pub const fn new(epoch: WorkspaceEpoch, generation: ContainedTransformGeneration) -> Self {
+        Self { epoch, generation }
+    }
+
+    /// Returns the workspace epoch in which the transform began.
+    #[must_use]
+    pub const fn epoch(self) -> WorkspaceEpoch {
+        self.epoch
+    }
+
+    /// Returns the contained transform generation.
+    #[must_use]
+    pub const fn generation(self) -> ContainedTransformGeneration {
         self.generation
     }
 }
@@ -223,6 +255,109 @@ impl PaintAcknowledgement {
     }
 }
 
+/// Opaque identity of one exact contained transform preview publication.
+///
+/// This token is intentionally distinct from [`PreviewToken`], so a docking
+/// preview acknowledgement cannot satisfy a contained transform release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ContainedTransformPreviewToken {
+    session: ContainedTransformSessionId,
+    scene: SceneStamp,
+    sequence: PreviewSequence,
+}
+
+impl ContainedTransformPreviewToken {
+    /// Returns the transform session which owns this preview.
+    #[must_use]
+    pub const fn session(self) -> ContainedTransformSessionId {
+        self.session
+    }
+
+    /// Returns the sealed scene against which this preview was resolved.
+    #[must_use]
+    pub const fn scene(self) -> SceneStamp {
+        self.scene
+    }
+}
+
+/// Exact contained rectangle which must be painted before transform delivery.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedTransformPreview {
+    token: ContainedTransformPreviewToken,
+    surface: SurfaceId,
+    root: RootId,
+    floating: FloatingPresentationId,
+    rect: LogicalRect,
+}
+
+impl ContainedTransformPreview {
+    /// Returns the opaque preview token.
+    #[must_use]
+    pub const fn token(self) -> ContainedTransformPreviewToken {
+        self.token
+    }
+
+    /// Returns the ready host surface.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the contained root.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns the contained presentation identity.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the exact rectangle which must be painted.
+    #[must_use]
+    pub const fn rect(self) -> LogicalRect {
+        self.rect
+    }
+
+    /// Constructs the exact acknowledgement submitted only after this rectangle was painted.
+    #[must_use]
+    pub const fn acknowledgement(self) -> ContainedTransformPaintAcknowledgement {
+        ContainedTransformPaintAcknowledgement {
+            token: self.token,
+            surface: self.surface,
+            root: self.root,
+            floating: self.floating,
+            rect: self.rect,
+        }
+    }
+}
+
+/// Exact proof that one contained transform preview was painted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedTransformPaintAcknowledgement {
+    token: ContainedTransformPreviewToken,
+    surface: SurfaceId,
+    root: RootId,
+    floating: FloatingPresentationId,
+    rect: LogicalRect,
+}
+
+impl ContainedTransformPaintAcknowledgement {
+    /// Returns the opaque preview identity.
+    #[must_use]
+    pub const fn token(self) -> ContainedTransformPreviewToken {
+        self.token
+    }
+
+    /// Returns the exact rectangle claimed to have been painted.
+    #[must_use]
+    pub const fn rect(self) -> LogicalRect {
+        self.rect
+    }
+}
+
 /// Stable public summary of the currently active gesture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractionStatus {
@@ -234,6 +369,177 @@ pub enum InteractionStatus {
     Dragging { session: DragSessionId },
     /// A splitter resize is active.
     Resizing { session: ResizeSessionId },
+    /// A contained floating is being moved or resized.
+    ContainedTransforming {
+        session: ContainedTransformSessionId,
+    },
+}
+
+/// Phase of the renderer-visible drag state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DragPhase {
+    /// The source button is down, but the renderer has not crossed its drag threshold.
+    Armed,
+    /// The renderer explicitly began the drag.
+    Dragging,
+}
+
+/// Read-only view of the exact drag currently owned by the state machine.
+///
+/// The view borrows its payload and has no public constructor, so adapters can
+/// observe an active drag without forging or mutating core interaction state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveDragView<'state> {
+    phase: DragPhase,
+    session: DragSessionId,
+    pointer: PointerId,
+    button: PointerButton,
+    payload: &'state MovePayload,
+    target: Option<&'state TargetAuthority>,
+    tear_off: Option<&'state TearOffRequest>,
+}
+
+impl<'state> ActiveDragView<'state> {
+    /// Returns whether the drag is armed or actively dragging.
+    #[must_use]
+    pub const fn phase(self) -> DragPhase {
+        self.phase
+    }
+
+    /// Returns the exact drag generation.
+    #[must_use]
+    pub const fn session(self) -> DragSessionId {
+        self.session
+    }
+
+    /// Returns the pointer which owns the drag.
+    #[must_use]
+    pub const fn pointer(self) -> PointerId {
+        self.pointer
+    }
+
+    /// Returns the pointer button which armed the drag.
+    #[must_use]
+    pub const fn button(self) -> PointerButton {
+        self.button
+    }
+
+    /// Returns the frozen payload captured when the drag was armed.
+    #[must_use]
+    pub const fn payload(self) -> &'state MovePayload {
+        self.payload
+    }
+
+    /// Returns the last authoritative target observation for an active drag.
+    ///
+    /// Armed drags and active drags without an observation return `None`.
+    #[must_use]
+    pub const fn target(self) -> Option<&'state TargetAuthority> {
+        self.target
+    }
+
+    /// Returns the exact tear-off request stored with the last observation.
+    ///
+    /// Adapters can reuse this request across updates and release without
+    /// maintaining a second session-to-proposal cache.
+    #[must_use]
+    pub const fn tear_off(self) -> Option<&'state TearOffRequest> {
+        self.tear_off
+    }
+}
+
+/// Read-only view of the exact contained transform owned by the core.
+///
+/// Adapters can render and route the gesture from this view without keeping a
+/// second copy of the frozen rectangle, pointer origin, or current preview.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveContainedTransformView<'state> {
+    session: ContainedTransformSessionId,
+    pointer: PointerId,
+    button: PointerButton,
+    surface: SurfaceId,
+    root: RootId,
+    floating: FloatingPresentationId,
+    source_rect: LogicalRect,
+    initial_pointer: LogicalPoint,
+    current_pointer: LogicalPoint,
+    kind: ContainedTransformKind,
+    minimum_size: LogicalSize,
+    preview: Option<&'state ContainedTransformPreview>,
+}
+
+impl<'state> ActiveContainedTransformView<'state> {
+    /// Returns the exact transform generation.
+    #[must_use]
+    pub const fn session(self) -> ContainedTransformSessionId {
+        self.session
+    }
+
+    /// Returns the pointer which owns the transform.
+    #[must_use]
+    pub const fn pointer(self) -> PointerId {
+        self.pointer
+    }
+
+    /// Returns the pointer button which began the transform.
+    #[must_use]
+    pub const fn button(self) -> PointerButton {
+        self.button
+    }
+
+    /// Returns the frozen host surface.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the frozen contained root.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns the frozen contained presentation identity.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the exact durable rectangle captured at begin.
+    #[must_use]
+    pub const fn source_rect(self) -> LogicalRect {
+        self.source_rect
+    }
+
+    /// Returns the absolute pointer location captured at begin.
+    #[must_use]
+    pub const fn initial_pointer(self) -> LogicalPoint {
+        self.initial_pointer
+    }
+
+    /// Returns the latest absolute pointer location reduced by the core.
+    #[must_use]
+    pub const fn current_pointer(self) -> LogicalPoint {
+        self.current_pointer
+    }
+
+    /// Returns the exact move or resize operation.
+    #[must_use]
+    pub const fn kind(self) -> ContainedTransformKind {
+        self.kind
+    }
+
+    /// Returns the frozen minimum contained size.
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+
+    /// Returns the exact current preview eligible for painting.
+    #[must_use]
+    pub const fn preview(self) -> Option<&'state ContainedTransformPreview> {
+        self.preview
+    }
 }
 
 /// Why an active gesture was cancelled.
@@ -241,6 +547,8 @@ pub enum InteractionStatus {
 pub enum InteractionCancelReason {
     /// The user explicitly pressed Escape.
     Escape,
+    /// The source button was released before the renderer began dragging.
+    ReleasedBeforeDrag,
     /// Pointer capture was authoritatively lost.
     CaptureLost,
     /// The owning surface lost focus.
@@ -306,6 +614,24 @@ pub enum InteractionRejection {
     ResizeRejected(crate::error::CommandError),
     /// A resize was released before any validated weight proposal was supplied.
     ResizeProposalMissing,
+    /// This release belongs to the most recently consumed contained transform.
+    DuplicateContainedTransformRelease {
+        session: ContainedTransformSessionId,
+    },
+    /// A non-release input belongs to a contained transform that already settled.
+    ContainedTransformSessionConsumed {
+        session: ContainedTransformSessionId,
+    },
+    /// The durable rectangle is outside current bounds or violates the requested minimum.
+    ContainedTransformInitialRectUnavailable,
+    /// Absolute pointer arithmetic could not produce finite transform geometry.
+    ContainedTransformGeometryUnavailable,
+    /// The current scene cannot authorize the contained transform placement.
+    ContainedPlacementUnavailable(crate::intent::ContainedPlacementUnavailable),
+    /// The acknowledgement does not match the exact current contained transform preview.
+    ContainedTransformPreviewAcknowledgementMismatch,
+    /// Release re-resolution no longer matches the exact painted transform proof.
+    ContainedTransformChanged,
 }
 
 /// Public result class of resolving one drag observation.
@@ -444,6 +770,34 @@ pub enum InteractionOutcome {
         outcome: CommandOutcome,
         changed: bool,
     },
+    /// One scene-proof-bearing programmatic contained placement committed.
+    ContainedPlacementApplied {
+        /// Checked workspace command result.
+        outcome: CommandOutcome,
+        /// Whether durable workspace state changed.
+        changed: bool,
+    },
+    /// A contained transform began and replaced any previous gesture.
+    ContainedTransformBegan {
+        session: ContainedTransformSessionId,
+        replaced: Option<InteractionStatus>,
+    },
+    /// The core published an exact contained transform rectangle.
+    ContainedTransformPreviewUpdated {
+        session: ContainedTransformSessionId,
+        preview: ContainedTransformPreview,
+    },
+    /// The exact current contained transform preview was acknowledged.
+    ContainedTransformPreviewAcknowledged {
+        session: ContainedTransformSessionId,
+        changed: bool,
+    },
+    /// The first authoritative matching transform release committed exactly once.
+    ContainedTransformDelivered {
+        session: ContainedTransformSessionId,
+        outcome: CommandOutcome,
+        changed: bool,
+    },
     /// A semantic input was consumed without mutating published interaction state.
     Rejected(InteractionRejection),
 }
@@ -505,6 +859,12 @@ pub enum InteractionEventKind {
     },
     /// One splitter resize committed.
     ResizeDelivered { session: ResizeSessionId },
+    /// One contained transform preview publication replaced the previous one.
+    ContainedTransformPreviewPublished { preview: ContainedTransformPreview },
+    /// One contained transform committed its exact painted rectangle.
+    ContainedTransformDelivered {
+        session: ContainedTransformSessionId,
+    },
     /// A native create saga entered the effect ledger without moving source content.
     NativeTearOffRequested(NativeCreateRequest),
 }
@@ -523,7 +883,7 @@ pub(crate) enum PreviewProof {
     Native {
         command: WorkspaceCommand,
         request: TearOffRequest,
-        proposal: NativeTearOffProposal,
+        proposal: Box<NativeTearOffProposal>,
     },
 }
 
@@ -577,11 +937,62 @@ pub(crate) struct ActiveResize {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PublishedContainedTransformPreview {
+    public: ContainedTransformPreview,
+    placement: ContainedPlacementProof,
+    painted: bool,
+}
+
+impl PublishedContainedTransformPreview {
+    pub(crate) const fn public(&self) -> &ContainedTransformPreview {
+        &self.public
+    }
+
+    pub(crate) const fn placement(&self) -> ContainedPlacementProof {
+        self.placement
+    }
+
+    pub(crate) const fn painted(&self) -> bool {
+        self.painted
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActiveContainedTransform {
+    pub(crate) session: ContainedTransformSessionId,
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) source_rect: LogicalRect,
+    pub(crate) initial_pointer: LogicalPoint,
+    pub(crate) current_pointer: LogicalPoint,
+    pub(crate) kind: ContainedTransformKind,
+    pub(crate) minimum_size: LogicalSize,
+    pub(crate) preview: Option<PublishedContainedTransformPreview>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ContainedTransformStart {
+    pub(crate) pointer: PointerId,
+    pub(crate) button: PointerButton,
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) source_rect: LogicalRect,
+    pub(crate) initial_pointer: LogicalPoint,
+    pub(crate) kind: ContainedTransformKind,
+    pub(crate) minimum_size: LogicalSize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum ActiveGesture {
     Idle,
     Armed(Box<ArmedDrag>),
     Dragging(Box<ActiveDrag>),
     Resizing(Box<ActiveResize>),
+    ContainedTransforming(Box<ActiveContainedTransform>),
 }
 
 /// Core-owned transient interaction state.
@@ -590,8 +1001,10 @@ pub struct InteractionState {
     active: ActiveGesture,
     last_drag_generation: DragGeneration,
     last_resize_generation: ResizeGeneration,
+    last_contained_transform_generation: ContainedTransformGeneration,
     last_preview_sequence: PreviewSequence,
     last_consumed_drag: Option<DragSessionId>,
+    last_consumed_contained_transform: Option<ContainedTransformSessionId>,
 }
 
 impl InteractionState {
@@ -609,6 +1022,79 @@ impl InteractionState {
             ActiveGesture::Resizing(resize) => InteractionStatus::Resizing {
                 session: resize.session,
             },
+            ActiveGesture::ContainedTransforming(transform) => {
+                InteractionStatus::ContainedTransforming {
+                    session: transform.session,
+                }
+            }
+        }
+    }
+
+    /// Returns a read-only view of the current armed or active drag.
+    #[must_use]
+    pub const fn active_drag_view(&self) -> Option<ActiveDragView<'_>> {
+        match &self.active {
+            ActiveGesture::Armed(drag) => Some(ActiveDragView {
+                phase: DragPhase::Armed,
+                session: drag.session,
+                pointer: drag.pointer,
+                button: drag.button,
+                payload: &drag.payload,
+                target: None,
+                tear_off: None,
+            }),
+            ActiveGesture::Dragging(drag) => Some(ActiveDragView {
+                phase: DragPhase::Dragging,
+                session: drag.session,
+                pointer: drag.pointer,
+                button: drag.button,
+                payload: &drag.payload,
+                target: drag.target.as_ref(),
+                tear_off: drag.tear_off.as_ref(),
+            }),
+            ActiveGesture::Idle
+            | ActiveGesture::Resizing(_)
+            | ActiveGesture::ContainedTransforming(_) => None,
+        }
+    }
+
+    /// Returns a read-only view of the core-owned contained transform.
+    #[must_use]
+    pub fn active_contained_transform_view(&self) -> Option<ActiveContainedTransformView<'_>> {
+        match &self.active {
+            ActiveGesture::ContainedTransforming(transform) => Some(ActiveContainedTransformView {
+                session: transform.session,
+                pointer: transform.pointer,
+                button: transform.button,
+                surface: transform.surface,
+                root: transform.root,
+                floating: transform.floating,
+                source_rect: transform.source_rect,
+                initial_pointer: transform.initial_pointer,
+                current_pointer: transform.current_pointer,
+                kind: transform.kind,
+                minimum_size: transform.minimum_size,
+                preview: transform.preview.as_ref().map(|preview| &preview.public),
+            }),
+            ActiveGesture::Idle
+            | ActiveGesture::Armed(_)
+            | ActiveGesture::Dragging(_)
+            | ActiveGesture::Resizing(_) => None,
+        }
+    }
+
+    /// Returns the exact contained transform preview eligible for painting.
+    #[must_use]
+    pub fn contained_transform_preview(&self) -> Option<&ContainedTransformPreview> {
+        match &self.active {
+            ActiveGesture::ContainedTransforming(transform) => transform
+                .preview
+                .as_ref()
+                .map(PublishedContainedTransformPreview::public),
+            ActiveGesture::Idle
+            | ActiveGesture::Armed(_)
+            | ActiveGesture::Dragging(_)
+            | ActiveGesture::Resizing(_) => None,
         }
     }
 
@@ -617,7 +1103,10 @@ impl InteractionState {
     pub fn preview(&self) -> Option<&InteractionPreview> {
         match &self.active {
             ActiveGesture::Dragging(drag) => drag.preview.as_ref().map(PublishedPreview::public),
-            ActiveGesture::Idle | ActiveGesture::Armed(_) | ActiveGesture::Resizing(_) => None,
+            ActiveGesture::Idle
+            | ActiveGesture::Armed(_)
+            | ActiveGesture::Resizing(_)
+            | ActiveGesture::ContainedTransforming(_) => None,
         }
     }
 
@@ -629,7 +1118,10 @@ impl InteractionState {
                 .weights
                 .as_deref()
                 .map(|weights| (resize.session, &resize.split, weights)),
-            ActiveGesture::Idle | ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) => None,
+            ActiveGesture::Idle
+            | ActiveGesture::Armed(_)
+            | ActiveGesture::Dragging(_)
+            | ActiveGesture::ContainedTransforming(_) => None,
         }
     }
 
@@ -853,9 +1345,10 @@ impl InteractionState {
         match &self.active {
             ActiveGesture::Resizing(resize) if resize.session == session => Ok(resize),
             ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
-            ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) | ActiveGesture::Resizing(_) => {
-                Err(InteractionRejection::SessionMismatch)
-            }
+            ActiveGesture::Armed(_)
+            | ActiveGesture::Dragging(_)
+            | ActiveGesture::Resizing(_)
+            | ActiveGesture::ContainedTransforming(_) => Err(InteractionRejection::SessionMismatch),
         }
     }
 
@@ -870,9 +1363,10 @@ impl InteractionState {
                 Ok(())
             }
             ActiveGesture::Idle => Err(InteractionRejection::NoActiveGesture),
-            ActiveGesture::Armed(_) | ActiveGesture::Dragging(_) | ActiveGesture::Resizing(_) => {
-                Err(InteractionRejection::SessionMismatch)
-            }
+            ActiveGesture::Armed(_)
+            | ActiveGesture::Dragging(_)
+            | ActiveGesture::Resizing(_)
+            | ActiveGesture::ContainedTransforming(_) => Err(InteractionRejection::SessionMismatch),
         }
     }
 
@@ -897,6 +1391,154 @@ impl InteractionState {
         Ok(*resize)
     }
 
+    pub(crate) fn begin_contained_transform(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        start: ContainedTransformStart,
+    ) -> Result<(ContainedTransformSessionId, Option<InteractionStatus>), InteractionCounterError>
+    {
+        let generation = self
+            .last_contained_transform_generation
+            .checked_next()
+            .ok_or(InteractionCounterError::ContainedTransformGenerationExhausted)?;
+        self.last_contained_transform_generation = generation;
+        let session = ContainedTransformSessionId::new(epoch, generation);
+        let replaced = (self.status() != InteractionStatus::Idle).then_some(self.status());
+        self.active = ActiveGesture::ContainedTransforming(Box::new(ActiveContainedTransform {
+            session,
+            pointer: start.pointer,
+            button: start.button,
+            surface: start.surface,
+            root: start.root,
+            floating: start.floating,
+            source_rect: start.source_rect,
+            initial_pointer: start.initial_pointer,
+            current_pointer: start.initial_pointer,
+            kind: start.kind,
+            minimum_size: start.minimum_size,
+            preview: None,
+        }));
+        Ok((session, replaced))
+    }
+
+    pub(crate) fn active_contained_transform(
+        &self,
+        session: ContainedTransformSessionId,
+    ) -> Result<&ActiveContainedTransform, InteractionRejection> {
+        match &self.active {
+            ActiveGesture::ContainedTransforming(transform) if transform.session == session => {
+                Ok(transform)
+            }
+            _ => Err(self.contained_transform_session_rejection(session)),
+        }
+    }
+
+    pub(crate) fn active_contained_transform_mut(
+        &mut self,
+        session: ContainedTransformSessionId,
+    ) -> Result<&mut ActiveContainedTransform, InteractionRejection> {
+        let rejection = self.contained_transform_session_rejection(session);
+        match &mut self.active {
+            ActiveGesture::ContainedTransforming(transform) if transform.session == session => {
+                Ok(transform)
+            }
+            _ => Err(rejection),
+        }
+    }
+
+    pub(crate) fn set_contained_transform_pointer(
+        &mut self,
+        session: ContainedTransformSessionId,
+        current_pointer: LogicalPoint,
+    ) -> Result<(), InteractionRejection> {
+        self.active_contained_transform_mut(session)?
+            .current_pointer = current_pointer;
+        Ok(())
+    }
+
+    pub(crate) fn publish_contained_transform_preview(
+        &mut self,
+        session: ContainedTransformSessionId,
+        scene: SceneStamp,
+        placement: ContainedPlacementProof,
+    ) -> Result<(ContainedTransformPreview, bool), InteractionCounterError> {
+        if let Ok(transform) = self.active_contained_transform(session)
+            && let Some(existing) = &transform.preview
+            && existing.public.token.scene == scene
+            && existing.public.rect == placement.clamped_rect()
+            && existing.placement == placement
+        {
+            return Ok((existing.public, false));
+        }
+        let sequence = self
+            .last_preview_sequence
+            .checked_next()
+            .ok_or(InteractionCounterError::PreviewSequenceExhausted)?;
+        let transform = self
+            .active_contained_transform(session)
+            .map_err(|_| InteractionCounterError::StateInvariant)?;
+        let preview = ContainedTransformPreview {
+            token: ContainedTransformPreviewToken {
+                session,
+                scene,
+                sequence,
+            },
+            surface: transform.surface,
+            root: transform.root,
+            floating: transform.floating,
+            rect: placement.clamped_rect(),
+        };
+        self.last_preview_sequence = sequence;
+        let transform = self
+            .active_contained_transform_mut(session)
+            .map_err(|_| InteractionCounterError::StateInvariant)?;
+        transform.preview = Some(PublishedContainedTransformPreview {
+            public: preview,
+            placement,
+            painted: false,
+        });
+        Ok((preview, true))
+    }
+
+    pub(crate) fn acknowledge_contained_transform_preview(
+        &mut self,
+        acknowledgement: ContainedTransformPaintAcknowledgement,
+    ) -> Result<(ContainedTransformSessionId, bool), InteractionRejection> {
+        let session = acknowledgement.token.session;
+        let transform = self.active_contained_transform_mut(session)?;
+        let Some(preview) = transform.preview.as_mut() else {
+            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
+        };
+        if preview.public.acknowledgement() != acknowledgement {
+            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
+        }
+        let changed = !preview.painted;
+        preview.painted = true;
+        Ok((session, changed))
+    }
+
+    pub(crate) fn take_contained_transform_for_release(
+        &mut self,
+        session: ContainedTransformSessionId,
+        pointer: PointerId,
+        button: PointerButton,
+    ) -> Result<ActiveContainedTransform, InteractionRejection> {
+        let transform = self.active_contained_transform(session)?;
+        if transform.pointer != pointer {
+            return Err(InteractionRejection::PointerMismatch);
+        }
+        if transform.button != button {
+            return Err(InteractionRejection::ButtonMismatch);
+        }
+        let ActiveGesture::ContainedTransforming(transform) =
+            std::mem::replace(&mut self.active, ActiveGesture::Idle)
+        else {
+            return Err(InteractionRejection::NoActiveGesture);
+        };
+        self.last_consumed_contained_transform = Some(session);
+        Ok(*transform)
+    }
+
     pub(crate) fn cancel_drag(
         &mut self,
         session: DragSessionId,
@@ -916,6 +1558,16 @@ impl InteractionState {
         session: ResizeSessionId,
     ) -> Result<InteractionStatus, InteractionRejection> {
         self.active_resize(session)?;
+        let status = self.status();
+        self.active = ActiveGesture::Idle;
+        Ok(status)
+    }
+
+    pub(crate) fn cancel_contained_transform(
+        &mut self,
+        session: ContainedTransformSessionId,
+    ) -> Result<InteractionStatus, InteractionRejection> {
+        self.active_contained_transform(session)?;
         let status = self.status();
         self.active = ActiveGesture::Idle;
         Ok(status)
@@ -950,6 +1602,19 @@ impl InteractionState {
             InteractionRejection::SessionMismatch
         }
     }
+
+    fn contained_transform_session_rejection(
+        &self,
+        session: ContainedTransformSessionId,
+    ) -> InteractionRejection {
+        if self.last_consumed_contained_transform == Some(session) {
+            InteractionRejection::ContainedTransformSessionConsumed { session }
+        } else if self.status() == InteractionStatus::Idle {
+            InteractionRejection::NoActiveGesture
+        } else {
+            InteractionRejection::SessionMismatch
+        }
+    }
 }
 
 impl Default for InteractionState {
@@ -958,8 +1623,10 @@ impl Default for InteractionState {
             active: ActiveGesture::Idle,
             last_drag_generation: DragGeneration::default(),
             last_resize_generation: ResizeGeneration::default(),
+            last_contained_transform_generation: ContainedTransformGeneration::default(),
             last_preview_sequence: PreviewSequence::default(),
             last_consumed_drag: None,
+            last_consumed_contained_transform: None,
         }
     }
 }
@@ -973,6 +1640,9 @@ pub enum InteractionCounterError {
     /// Resize generations cannot advance without wrapping.
     #[error("resize session generation is exhausted")]
     ResizeGenerationExhausted,
+    /// Contained transform generations cannot advance without wrapping.
+    #[error("contained transform session generation is exhausted")]
+    ContainedTransformGenerationExhausted,
     /// Preview identities cannot advance without wrapping.
     #[error("preview sequence is exhausted")]
     PreviewSequenceExhausted,

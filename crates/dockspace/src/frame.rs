@@ -146,16 +146,16 @@ impl NativeCreateSaga {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewportClosePlan {
     primary: Option<WorkspaceCommand>,
-    recovery: ContainedTearOffProposal,
+    recovery: Box<ContainedTearOffProposal>,
 }
 
 impl ViewportClosePlan {
     #[must_use]
-    pub const fn new(
-        primary: Option<WorkspaceCommand>,
-        recovery: ContainedTearOffProposal,
-    ) -> Self {
-        Self { primary, recovery }
+    pub fn new(primary: Option<WorkspaceCommand>, recovery: ContainedTearOffProposal) -> Self {
+        Self {
+            primary,
+            recovery: Box::new(recovery),
+        }
     }
 
     #[must_use]
@@ -164,8 +164,8 @@ impl ViewportClosePlan {
     }
 
     #[must_use]
-    pub const fn recovery(&self) -> ContainedTearOffProposal {
-        self.recovery
+    pub fn recovery(&self) -> ContainedTearOffProposal {
+        *self.recovery
     }
 }
 
@@ -416,7 +416,7 @@ impl ViewportCloseRequest {
 pub(crate) enum ViewportLifecycleAction {
     CreateReady {
         saga: NativeCreateSagaId,
-        prepared: PreparedNativeTearOff,
+        prepared: Box<PreparedNativeTearOff>,
     },
     SurfaceDestroyed {
         binding: ViewportBinding,
@@ -1554,7 +1554,7 @@ impl ViewportCoordinator {
                     .status = NativeCreateStatus::ReadyUncommitted;
                 actions.push(ViewportLifecycleAction::CreateReady {
                     saga: saga_id,
-                    prepared,
+                    prepared: Box::new(prepared),
                 });
             }
             NativeCreateStatus::Cancelled => {
@@ -2548,10 +2548,12 @@ pub enum ViewportCoordinatorError {
 mod tests {
     use super::*;
     use crate::effect::EffectPhase;
-    use crate::geometry::{PhysicalRect, ScaleFactor};
+    use crate::geometry::{LogicalSize, PhysicalRect, ScaleFactor};
     use crate::ids::{FloatingPresentationId, RootId};
-    use crate::intent::Authority;
+    use crate::intent::{Authority, ContainedPlacementProof};
     use crate::platform::{ObservedWindow, WindowInputState};
+    use crate::scene::{SceneGeneration, SceneStamp};
+    use crate::transition::WorkspaceVersion;
 
     fn observed_window(token: WindowToken, close_requested: bool) -> ObservedWindow {
         ObservedWindow::new(token)
@@ -2577,11 +2579,24 @@ mod tests {
     }
 
     fn recovery(root: u64) -> ContainedTearOffProposal {
+        let surface = SurfaceId::new(99);
+        let requested =
+            LogicalRect::new(30.0, 40.0, 300.0, 200.0).expect("test recovery bounds must be valid");
+        let bounds =
+            LogicalRect::new(0.0, 0.0, 1_000.0, 800.0).expect("test surface bounds must be valid");
+        let minimum = LogicalSize::new(0.0, 0.0).expect("test minimum size must be valid");
+        let placement = ContainedPlacementProof::new(
+            SceneStamp::new(WorkspaceVersion::default(), SceneGeneration::new(1)),
+            surface,
+            requested,
+            minimum,
+            bounds,
+            requested,
+        );
         ContainedTearOffProposal::new(
-            SurfaceId::new(99),
             RootId::new(root),
             FloatingPresentationId::new(root),
-            LogicalRect::new(30.0, 40.0, 300.0, 200.0).expect("test recovery bounds must be valid"),
+            placement,
             7,
         )
     }

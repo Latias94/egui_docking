@@ -1,20 +1,23 @@
+use std::collections::BTreeMap;
+
 use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload};
 use dockspace::drop_target::{
     DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual, SceneLayerKey,
 };
 use dockspace::engine::{DockEngine, EngineInput};
-use dockspace::geometry::{LogicalPoint, LogicalRect};
+use dockspace::geometry::{Constraints, LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace};
 use dockspace::hit_region::HitRegion;
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
-    Authority, AuthorityUnavailableReason, PointerButton, PointerButtonState, PointerId,
-    RendererIntent, SurfacePointer, TargetAuthority,
+    Authority, AuthorityUnavailableReason, ContainedTearOffProposal, PointerButton,
+    PointerButtonState, PointerId, RendererIntent, SurfacePointer, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
-    DragGeneration, DragSessionId, InteractionCancelReason, InteractionOutcome,
+    DragGeneration, DragPhase, DragSessionId, InteractionCancelReason, InteractionOutcome,
     InteractionRejection, InteractionStatus,
 };
+use dockspace::layout::{LayoutMetrics, SplitWeightOverride, project_root_with_overrides};
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{
     BuildingScene, NodeSceneId, ReadySurfaceScene, SceneBuildError, SemanticRect,
@@ -201,6 +204,165 @@ fn release_intent(session: DragSessionId, x: f64) -> RendererIntent {
         Authority::Known(PointerButtonState::Released),
         x,
     )
+}
+
+#[test]
+fn active_drag_view_exposes_the_frozen_payload_and_explicit_phase() {
+    let mut fixture = fixture();
+    publish_ready_scene(&mut fixture);
+    let expected_payload = source_payload(&fixture);
+
+    assert!(fixture.engine.interaction().active_drag_view().is_none());
+    let session = arm(&mut fixture);
+    let armed = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("armed drag must be visible");
+    assert_eq!(armed.phase(), DragPhase::Armed);
+    assert_eq!(armed.session(), session);
+    assert_eq!(armed.pointer(), POINTER);
+    assert_eq!(armed.button(), PointerButton::Primary);
+    assert_eq!(armed.payload(), &expected_payload);
+    assert!(armed.target().is_none());
+    assert!(armed.tear_off().is_none());
+
+    begin_and_hover(&mut fixture, session, 50.0);
+    let dragging = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("active drag must remain visible");
+    assert_eq!(dragging.phase(), DragPhase::Dragging);
+    assert_eq!(dragging.session(), session);
+    assert_eq!(dragging.pointer(), POINTER);
+    assert_eq!(dragging.button(), PointerButton::Primary);
+    assert_eq!(dragging.payload(), &expected_payload);
+    assert!(dragging.target().is_some());
+    assert!(dragging.tear_off().is_none());
+}
+
+#[test]
+fn active_drag_view_reuses_the_core_owned_contained_request() {
+    let mut fixture = fixture();
+    publish_ready_scene(&mut fixture);
+    let session = arm(&mut fixture);
+    let target = TargetAuthority::local(SURFACE_A, Authority::Known(None));
+    let placement = fixture
+        .engine
+        .contained_placement(
+            SURFACE_A,
+            rect(20.0, 30.0, 180.0, 120.0),
+            LogicalSize::new(80.0, 60.0).expect("minimum size must be valid"),
+        )
+        .expect("ready source surface must authorize placement");
+    let request = TearOffRequest::Contained(ContainedTearOffProposal::new(
+        RootId::new(90),
+        FloatingPresentationId::new(90),
+        placement,
+        1,
+    ));
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::BeginDrag {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+        })
+        .expect("begin sequence must be available");
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::UpdateDrag {
+            session,
+            target: target.clone(),
+            tear_off: Some(request.clone()),
+        })
+        .expect("first contained observation must enqueue");
+    fixture
+        .engine
+        .reduce_pending()
+        .expect("first contained observation must reduce");
+
+    let view = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("dragging view must exist");
+    assert_eq!(view.phase(), DragPhase::Dragging);
+    assert_eq!(view.target(), Some(&target));
+    assert_eq!(view.tear_off(), Some(&request));
+    let reused_request = view
+        .tear_off()
+        .cloned()
+        .expect("core-owned request must be reusable");
+
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::UpdateDrag {
+            session,
+            target: target.clone(),
+            tear_off: Some(reused_request),
+        })
+        .expect("reused contained observation must enqueue");
+    fixture
+        .engine
+        .reduce_pending()
+        .expect("reused contained observation must reduce");
+    let current = fixture
+        .engine
+        .interaction()
+        .active_drag_view()
+        .expect("dragging view must remain available");
+    assert_eq!(current.target(), Some(&target));
+    assert_eq!(current.tear_off(), Some(&request));
+}
+
+#[test]
+fn matching_release_before_drag_cancels_the_armed_session_without_mutation() {
+    let mut fixture = fixture();
+    publish_ready_scene(&mut fixture);
+    let before = fixture.engine.workspace().clone();
+    let version = fixture.engine.version();
+    let session = arm(&mut fixture);
+
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::CancelDrag {
+            session,
+            reason: InteractionCancelReason::ReleasedBeforeDrag,
+        })
+        .expect("pre-drag release must enqueue");
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("pre-drag release must cancel nonfatally");
+
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Cancelled {
+                status: InteractionStatus::Armed { session: cancelled },
+                reason: InteractionCancelReason::ReleasedBeforeDrag,
+            },
+            ..
+        } if *cancelled == session
+    ));
+    assert!(matches!(
+        transition.interaction_events()[0].kind(),
+        dockspace::interaction::InteractionEventKind::Cancelled {
+            status: InteractionStatus::Armed { session: cancelled },
+            reason: InteractionCancelReason::ReleasedBeforeDrag,
+        } if *cancelled == session
+    ));
+    assert!(!transition.changed());
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), version);
+    assert_eq!(
+        fixture.engine.interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert!(fixture.engine.interaction().active_drag_view().is_none());
+    assert!(fixture.engine.interaction().preview().is_none());
 }
 
 #[test]
@@ -951,6 +1113,83 @@ fn resize_cancel_discards_the_validated_transient_override() {
     engine.reduce_pending().expect("resize cancel must reduce");
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert_eq!(engine.workspace(), &before);
+}
+
+#[test]
+fn validated_resize_weights_project_without_mutating_durable_workspace() {
+    let (mut engine, split) = resize_fixture();
+    let source = engine
+        .workspace()
+        .capture_node_source(ROOT_A, split)
+        .expect("split source must be current");
+    engine
+        .enqueue_renderer_intent(RendererIntent::BeginResize {
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            split: source,
+        })
+        .expect("begin resize sequence must be available");
+    let begin = engine.reduce_pending().expect("begin resize must reduce");
+    let session = match begin.reduced_inputs()[0].outcome() {
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::ResizeBegan { session, .. },
+            ..
+        } => *session,
+        outcome => panic!("unexpected resize outcome: {outcome:?}"),
+    };
+    let weights = SplitWeight::normalize([0.25, 0.75]).expect("weights must be valid");
+    engine
+        .enqueue_renderer_intent(RendererIntent::UpdateResize { session, weights })
+        .expect("resize update sequence must be available");
+    engine.reduce_pending().expect("resize update must reduce");
+
+    let children = match engine.workspace().node(split) {
+        Some(Node::Split {
+            children, weights, ..
+        }) => {
+            assert_eq!(
+                weights,
+                &SplitWeight::normalize([0.5, 0.5]).expect("durable weights")
+            );
+            children.clone()
+        }
+        node => panic!("expected split node, got {node:?}"),
+    };
+    let constraints = children
+        .iter()
+        .copied()
+        .map(|child| {
+            (
+                child,
+                Constraints::new(
+                    LogicalSize::new(0.0, 0.0).expect("valid minimum"),
+                    LogicalSize::new(1_000.0, 1_000.0).expect("valid maximum"),
+                )
+                .expect("valid constraints"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let (_, source, weights) = engine
+        .interaction()
+        .resize_weights()
+        .expect("validated resize override must be visible");
+    let projection = project_root_with_overrides(
+        engine.workspace(),
+        ROOT_A,
+        rect(0.0, 0.0, 400.0, 200.0),
+        &constraints,
+        LayoutMetrics::new(0.0).expect("valid metrics"),
+        &[SplitWeightOverride::new(source, weights)],
+    )
+    .expect("validated interaction override must project");
+
+    assert!((projection.node_rects[&children[0]].width() - 100.0).abs() <= 1.0e-9);
+    assert!((projection.node_rects[&children[1]].width() - 300.0).abs() <= 1.0e-9);
+    assert!(matches!(
+        engine.workspace().node(split),
+        Some(Node::Split { weights, .. })
+            if weights == &SplitWeight::normalize([0.5, 0.5]).expect("durable weights")
+    ));
 }
 
 #[test]

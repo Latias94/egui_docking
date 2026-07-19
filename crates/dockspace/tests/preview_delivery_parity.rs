@@ -1,7 +1,7 @@
 use dockspace::command::MovePayload;
 use dockspace::effect::{EffectPhase, EffectRequest, PlatformEffect};
 use dockspace::engine::DockEngine;
-use dockspace::geometry::{LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
@@ -294,14 +294,16 @@ fn release_tear_off_with_effects(
     (outcome, transition.platform_effects().to_vec())
 }
 
-fn contained_proposal(root: RootId, x: f64) -> ContainedTearOffProposal {
-    ContainedTearOffProposal::new(
-        SURFACE_B,
-        root,
-        FLOATING_NEW,
-        logical_rect(x, 20.0, 240.0, 180.0),
-        7,
-    )
+fn contained_proposal(fixture: &Fixture, root: RootId, x: f64) -> ContainedTearOffProposal {
+    let placement = fixture
+        .engine
+        .contained_placement(
+            SURFACE_B,
+            logical_rect(x, 20.0, 240.0, 180.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready target scene must authorize contained placement");
+    ContainedTearOffProposal::new(root, FLOATING_NEW, placement, 7)
 }
 
 fn native_request(
@@ -341,7 +343,7 @@ fn contained_preview_and_delivery_use_the_same_exact_command() {
     let mut fixture = fixture(DockPolicy::default(), &[1, 2]);
     publish_scene(&mut fixture);
     let session = arm_and_begin(&mut fixture);
-    let request = TearOffRequest::Contained(contained_proposal(ROOT_NEW, 10.0));
+    let request = TearOffRequest::Contained(contained_proposal(&fixture, ROOT_NEW, 10.0));
 
     let preview = preview_tear_off(&mut fixture, session, request.clone());
     assert!(matches!(
@@ -388,7 +390,7 @@ fn native_release_requests_a_create_saga_without_moving_content() {
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(100.0, 120.0, 640.0, 480.0),
-        contained_proposal(ROOT_NEW, 10.0),
+        contained_proposal(&fixture, ROOT_NEW, 10.0),
         None,
     );
     let before = fixture.engine.workspace().clone();
@@ -479,7 +481,7 @@ fn identical_platform_facts_keep_a_native_placement_valid_through_delivery() {
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(100.0, 120.0, 640.0, 480.0),
-        contained_proposal(ROOT_NEW, 10.0),
+        contained_proposal(&fixture, ROOT_NEW, 10.0),
         None,
     );
 
@@ -517,7 +519,7 @@ fn changed_work_area_facts_cancel_a_native_preview_immediately() {
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(100.0, 120.0, 640.0, 480.0),
-        contained_proposal(ROOT_NEW, 10.0),
+        contained_proposal(&fixture, ROOT_NEW, 10.0),
         None,
     );
     preview_tear_off(&mut fixture, session, request);
@@ -564,7 +566,7 @@ fn native_tear_off_rejects_an_existing_surface_even_for_a_complete_root() {
         SURFACE_A,
         ROOT_A,
         logical_rect(100.0, 120.0, 640.0, 480.0),
-        contained_proposal(ROOT_A, 10.0),
+        contained_proposal(&fixture, ROOT_A, 10.0),
         None,
     );
 
@@ -595,8 +597,8 @@ fn native_unavailable_uses_contained_only_when_fallback_is_explicitly_enabled() 
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(10.0, 10.0, 500.0, 400.0),
-        contained_proposal(ROOT_NEW, 10.0),
-        Some(contained_proposal(ROOT_NEW, 10.0)),
+        contained_proposal(&disabled, ROOT_NEW, 10.0),
+        Some(contained_proposal(&disabled, ROOT_NEW, 10.0)),
     );
     let outcome = preview_tear_off(&mut disabled, disabled_session, disabled_request);
     assert!(matches!(
@@ -621,8 +623,8 @@ fn native_unavailable_uses_contained_only_when_fallback_is_explicitly_enabled() 
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(10.0, 10.0, 500.0, 400.0),
-        contained_proposal(ROOT_NEW, 10.0),
-        Some(contained_proposal(ROOT_NEW, 10.0)),
+        contained_proposal(&enabled, ROOT_NEW, 10.0),
+        Some(contained_proposal(&enabled, ROOT_NEW, 10.0)),
     );
     let preview = preview_tear_off(&mut enabled, enabled_session, enabled_request.clone());
     assert!(matches!(
@@ -661,8 +663,8 @@ fn unknown_native_capability_cancels_instead_of_falling_back() {
         SURFACE_NEW,
         ROOT_NEW,
         logical_rect(10.0, 10.0, 500.0, 400.0),
-        contained_proposal(ROOT_NEW, 10.0),
-        Some(contained_proposal(ROOT_NEW, 10.0)),
+        contained_proposal(&fixture, ROOT_NEW, 10.0),
+        Some(contained_proposal(&fixture, ROOT_NEW, 10.0)),
     );
 
     let outcome = preview_tear_off(&mut fixture, session, request);
@@ -684,8 +686,8 @@ fn release_rejects_a_changed_tear_off_placement_even_after_ack() {
     let mut fixture = fixture(DockPolicy::default(), &[1, 2]);
     publish_scene(&mut fixture);
     let session = arm_and_begin(&mut fixture);
-    let painted = TearOffRequest::Contained(contained_proposal(ROOT_NEW, 10.0));
-    let changed = TearOffRequest::Contained(contained_proposal(ROOT_NEW, 30.0));
+    let painted = TearOffRequest::Contained(contained_proposal(&fixture, ROOT_NEW, 10.0));
+    let changed = TearOffRequest::Contained(contained_proposal(&fixture, ROOT_NEW, 30.0));
     preview_tear_off(&mut fixture, session, painted);
     let before = fixture.engine.workspace().clone();
 
@@ -702,11 +704,8 @@ fn complete_root_tear_off_preserves_root_identity_and_rejects_replacement_identi
     let mut mismatch = fixture(DockPolicy::default(), &[1]);
     publish_scene(&mut mismatch);
     let mismatch_session = arm_and_begin(&mut mismatch);
-    let outcome = preview_tear_off(
-        &mut mismatch,
-        mismatch_session,
-        TearOffRequest::Contained(contained_proposal(ROOT_NEW, 10.0)),
-    );
+    let mismatch_request = TearOffRequest::Contained(contained_proposal(&mismatch, ROOT_NEW, 10.0));
+    let outcome = preview_tear_off(&mut mismatch, mismatch_session, mismatch_request);
     assert!(matches!(
         outcome,
         InteractionOutcome::PreviewUpdated {
@@ -719,7 +718,7 @@ fn complete_root_tear_off_preserves_root_identity_and_rejects_replacement_identi
     let mut preserved = fixture(DockPolicy::default(), &[1]);
     publish_scene(&mut preserved);
     let session = arm_and_begin(&mut preserved);
-    let request = TearOffRequest::Contained(contained_proposal(ROOT_A, 10.0));
+    let request = TearOffRequest::Contained(contained_proposal(&preserved, ROOT_A, 10.0));
     preview_tear_off(&mut preserved, session, request.clone());
     let delivery = release_tear_off(&mut preserved, session, request);
     assert!(matches!(delivery, InteractionOutcome::DragDelivered { .. }));

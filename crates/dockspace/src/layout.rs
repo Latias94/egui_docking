@@ -4,8 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
+use crate::command::NodeSource;
+use crate::error::{CommandError, ReferenceRole};
 use crate::geometry::{Constraints, GeometryError, LogicalRect, LogicalSize};
-use crate::graph::{Axis, Node, Workspace};
+use crate::graph::{Axis, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight, Workspace};
 use crate::ids::{NodeId, RootId};
 
 /// Minimum and maximum extent accepted by one child on a split axis.
@@ -150,6 +152,37 @@ pub struct LayoutProjection {
     pub splits: BTreeMap<NodeId, SplitProjection>,
 }
 
+/// Transient split weights applied to one exact frozen split source.
+///
+/// Construction does not inspect a workspace. [`project_root_with_overrides`]
+/// validates the source fingerprint and complete weight collection against the
+/// workspace being projected before using the override.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplitWeightOverride<'state> {
+    source: &'state NodeSource,
+    weights: &'state [SplitWeight],
+}
+
+impl<'state> SplitWeightOverride<'state> {
+    /// Creates an override which will be validated during projection.
+    #[must_use]
+    pub const fn new(source: &'state NodeSource, weights: &'state [SplitWeight]) -> Self {
+        Self { source, weights }
+    }
+
+    /// Returns the frozen split source.
+    #[must_use]
+    pub const fn source(self) -> &'state NodeSource {
+        self.source
+    }
+
+    /// Returns the proposed transient weights.
+    #[must_use]
+    pub const fn weights(self) -> &'state [SplitWeight] {
+        self.weights
+    }
+}
+
 /// Failure to solve an axis or project a workspace root.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LayoutError {
@@ -226,6 +259,49 @@ pub enum LayoutError {
     /// A root's declared central leaf is outside that root's subtree.
     #[error("root {root} central node {central:?} is not reachable from its root node")]
     CentralNodeNotReachable { root: RootId, central: NodeId },
+    /// A split-weight override belongs to a different root than the projection.
+    #[error(
+        "split-weight override for root {override_root} cannot be used while projecting root {projected_root}"
+    )]
+    SplitWeightOverrideRootMismatch {
+        /// Root currently being projected.
+        projected_root: RootId,
+        /// Root captured by the override source.
+        override_root: RootId,
+    },
+    /// A split-weight override source is no longer exact for this workspace.
+    #[error("split-weight override source is invalid: {source}")]
+    InvalidSplitWeightOverrideSource {
+        /// Frozen-reference validation failure.
+        #[source]
+        source: CommandError,
+    },
+    /// More than one transient override names the same split.
+    #[error("split node {node:?} has more than one transient weight override")]
+    DuplicateSplitWeightOverride { node: NodeId },
+    /// A transient weight override names a tabs leaf rather than a split.
+    #[error("transient weight override node {node:?} is not a split")]
+    SplitWeightOverrideNodeNotSplit { node: NodeId },
+    /// Transient weights do not match the target split's child count.
+    #[error(
+        "split node {node:?} has {children} children but its transient override has {weights} weights"
+    )]
+    SplitWeightOverrideLengthMismatch {
+        /// Target split.
+        node: NodeId,
+        /// Durable child count.
+        children: usize,
+        /// Override weight count.
+        weights: usize,
+    },
+    /// Transient split weights are individually valid but not normalized.
+    #[error("split node {node:?} transient weights are not normalized; sum is {sum}")]
+    SplitWeightOverrideNotNormalized {
+        /// Target split.
+        node: NodeId,
+        /// Accumulated override weight.
+        sum: f64,
+    },
     /// Validated geometry could not be constructed for the projection.
     #[error(transparent)]
     Geometry(#[from] GeometryError),
@@ -358,9 +434,33 @@ pub fn project_root(
     leaf_constraints: &BTreeMap<NodeId, Constraints>,
     metrics: LayoutMetrics,
 ) -> Result<LayoutProjection, LayoutError> {
+    project_root_with_overrides(workspace, root, bounds, leaf_constraints, metrics, &[])
+}
+
+/// Projects a root while applying explicit, validated transient split weights.
+///
+/// Each override must name a current split in `root` through a complete
+/// [`NodeSource`] fingerprint. Overrides affect only this projection and never
+/// mutate durable [`Workspace`] state. Splits without an override keep their
+/// durable weights.
+///
+/// # Errors
+///
+/// Returns the same errors as [`project_root`], plus an error when an override
+/// belongs to another root, is stale, duplicated, names a non-split node, has
+/// the wrong cardinality, or is not normalized.
+pub fn project_root_with_overrides(
+    workspace: &Workspace,
+    root: RootId,
+    bounds: LogicalRect,
+    leaf_constraints: &BTreeMap<NodeId, Constraints>,
+    metrics: LayoutMetrics,
+    weight_overrides: &[SplitWeightOverride<'_>],
+) -> Result<LayoutProjection, LayoutError> {
     let root_record = workspace
         .root(root)
         .ok_or(LayoutError::MissingRoot { root })?;
+    let weight_overrides = validate_split_weight_overrides(workspace, root, weight_overrides)?;
     let mut measurements = BTreeMap::new();
     let mut visiting = BTreeSet::new();
     let root_measurement = measure_subtree(
@@ -388,9 +488,70 @@ pub fn project_root(
         bounds,
         metrics,
         &measurements,
+        &weight_overrides,
         &mut projection,
     )?;
     Ok(projection)
+}
+
+fn validate_split_weight_overrides(
+    workspace: &Workspace,
+    root: RootId,
+    overrides: &[SplitWeightOverride<'_>],
+) -> Result<BTreeMap<NodeId, Vec<f64>>, LayoutError> {
+    let mut validated = BTreeMap::new();
+
+    for weight_override in overrides {
+        let source = weight_override.source;
+        if source.root() != root {
+            return Err(LayoutError::SplitWeightOverrideRootMismatch {
+                projected_root: root,
+                override_root: source.root(),
+            });
+        }
+        workspace
+            .verify_reference(
+                source.root(),
+                source.node(),
+                source.fingerprint(),
+                ReferenceRole::Source,
+            )
+            .map_err(|source| LayoutError::InvalidSplitWeightOverrideSource { source })?;
+
+        if validated.contains_key(&source.node()) {
+            return Err(LayoutError::DuplicateSplitWeightOverride {
+                node: source.node(),
+            });
+        }
+        let Some(Node::Split { children, .. }) = workspace.node(source.node()) else {
+            return Err(LayoutError::SplitWeightOverrideNodeNotSplit {
+                node: source.node(),
+            });
+        };
+        if children.len() != weight_override.weights.len() {
+            return Err(LayoutError::SplitWeightOverrideLengthMismatch {
+                node: source.node(),
+                children: children.len(),
+                weights: weight_override.weights.len(),
+            });
+        }
+
+        let weights = weight_override
+            .weights
+            .iter()
+            .map(|weight| f64::from(weight.get()))
+            .collect::<Vec<_>>();
+        let sum = weights.iter().sum::<f64>();
+        if !sum.is_finite() || (sum - 1.0).abs() > NORMALIZED_WEIGHT_TOLERANCE {
+            return Err(LayoutError::SplitWeightOverrideNotNormalized {
+                node: source.node(),
+                sum,
+            });
+        }
+        validated.insert(source.node(), weights);
+    }
+
+    Ok(validated)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -601,6 +762,7 @@ fn project_subtree(
     bounds: LogicalRect,
     metrics: LayoutMetrics,
     measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
+    weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
 ) -> Result<(), LayoutError> {
     let mut stack = vec![ProjectionFrame::Enter { node_id, bounds }];
@@ -617,6 +779,7 @@ fn project_subtree(
                     current_bounds,
                     metrics,
                     measurements,
+                    weight_overrides,
                     projection,
                 )? {
                     stack.push(ProjectionFrame::ContinueSplit(state));
@@ -637,6 +800,7 @@ fn prepare_split_projection<'workspace>(
     bounds: LogicalRect,
     metrics: LayoutMetrics,
     measurements: &BTreeMap<NodeId, SubtreeMeasurement>,
+    weight_overrides: &BTreeMap<NodeId, Vec<f64>>,
     projection: &mut LayoutProjection,
 ) -> Result<Option<SplitProjectionState<'workspace>>, LayoutError> {
     projection.node_rects.insert(node_id, bounds);
@@ -681,10 +845,12 @@ fn prepare_split_projection<'workspace>(
             },
         })
         .collect::<Vec<_>>();
-    let axis_weights = weights
-        .iter()
-        .map(|weight| f64::from(weight.get()))
-        .collect::<Vec<_>>();
+    let axis_weights = weight_overrides.get(&node_id).cloned().unwrap_or_else(|| {
+        weights
+            .iter()
+            .map(|weight| f64::from(weight.get()))
+            .collect()
+    });
     let central_index = child_measurements
         .iter()
         .position(|child| child.contains_central);

@@ -308,6 +308,13 @@ pub enum WorkspaceCommand {
     /// item preserves the current selection. This order rule is normative and
     /// never depends on focus history or renderer state.
     Close { source: ItemSource },
+    /// Close every application item in one complete, non-empty root.
+    ///
+    /// The source must name the root node itself. Its fingerprint freezes the
+    /// complete topology and presentation owner, so this command never closes
+    /// content that changed after capture. Empty roots remain the responsibility
+    /// of [`WorkspaceCommand::RemoveEmptyRoot`].
+    CloseRoot { source: NodeSource },
     /// Move an item, tabs stack, or complete subtree into existing topology.
     Move {
         payload: MovePayload,
@@ -342,6 +349,11 @@ pub enum WorkspaceCommand {
         target: RootPresentationTarget,
     },
     /// Replace a contained rectangle only when its exact previous value still matches.
+    ///
+    /// This command is intended for application or offline mutation. Renderer
+    /// adapters must use either the scene-proof-bearing
+    /// [`crate::intent::RendererIntent::ApplyContainedPlacement`] one-shot path
+    /// or the contained transform session protocol instead.
     UpdateContainedRect {
         surface: SurfaceId,
         root: RootId,
@@ -386,6 +398,8 @@ pub enum CommandOutcome {
     Opened { item: ItemId, root: RootId },
     /// One item was closed.
     Closed { item: ItemId, root: RootId },
+    /// One complete root, all of its items, and its presentation were closed.
+    RootClosed { root: RootId, items: Vec<ItemId> },
     /// Existing items were moved without changing ownership.
     Moved {
         items: Vec<ItemId>,

@@ -6,7 +6,7 @@ use dockspace::engine::DockEngine;
 use dockspace::frame::{
     RecoveryPendingStatus, ViewportCloseDecision, ViewportClosePlan, ViewportCloseRequestId,
 };
-use dockspace::geometry::{LogicalRect, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{Authority, ContainedTearOffProposal};
@@ -15,6 +15,7 @@ use dockspace::platform::{
     WindowInputState,
 };
 use dockspace::policy::DockPolicy;
+use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken, WorkAreaToken};
 
@@ -32,6 +33,7 @@ struct Fixture {
     child_binding: ViewportBinding,
     child_root_node: NodeId,
     initial_items: std::collections::BTreeMap<ItemId, usize>,
+    recovery: ContainedTearOffProposal,
 }
 
 struct PendingFixture {
@@ -141,6 +143,19 @@ fn fixture() -> Fixture {
     let initial_items = workspace.item_multiset();
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("test engine must be valid");
+    let mut scene = BuildingScene::new([SURFACE_HOST, SURFACE_CHILD])
+        .expect("test surface roster must be unique");
+    for surface in [SURFACE_HOST, SURFACE_CHILD] {
+        scene
+            .insert_ready(ReadySurfaceScene::new(
+                surface,
+                logical_rect(0.0, 0.0, 900.0, 700.0),
+            ))
+            .expect("initial surface facts must be unique");
+    }
+    engine.enqueue_scene(scene).expect("scene must enqueue");
+    engine.reduce_pending().expect("scene must publish");
+    let recovery = recovery(&engine);
     engine
         .enqueue_viewport_registration(SURFACE_HOST, HOST_TOKEN, ViewportRole::Root, None)
         .expect("host registration must enqueue");
@@ -149,7 +164,7 @@ fn fixture() -> Fixture {
             SURFACE_CHILD,
             CHILD_TOKEN,
             ViewportRole::Child,
-            Some(recovery()),
+            Some(recovery),
         )
         .expect("child registration must enqueue");
     engine
@@ -166,17 +181,19 @@ fn fixture() -> Fixture {
         child_binding,
         child_root_node,
         initial_items,
+        recovery,
     }
 }
 
-fn recovery() -> ContainedTearOffProposal {
-    ContainedTearOffProposal::new(
-        SURFACE_HOST,
-        ROOT_CHILD,
-        RECOVERY_FLOATING,
-        logical_rect(40.0, 50.0, 480.0, 360.0),
-        7,
-    )
+fn recovery(engine: &DockEngine) -> ContainedTearOffProposal {
+    let placement = engine
+        .contained_placement(
+            SURFACE_HOST,
+            logical_rect(40.0, 50.0, 480.0, 360.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready host scene must authorize recovery placement");
+    ContainedTearOffProposal::new(ROOT_CHILD, RECOVERY_FLOATING, placement, 7)
 }
 
 fn close_request_from(transition: &EngineTransition) -> ViewportCloseRequestId {
@@ -199,7 +216,7 @@ fn accept_child_close(fixture: &mut Fixture) {
         .engine
         .enqueue_viewport_close_decision(
             request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery())),
+            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, fixture.recovery)),
         )
         .expect("close decision must enqueue");
     let decided = fixture
@@ -256,7 +273,7 @@ fn pending_fixture() -> PendingFixture {
         .recovery_pending(SURFACE_CHILD)
         .expect("destroyed child must retain a queryable recovery");
     assert_eq!(pending.destroyed_binding(), fixture.child_binding);
-    assert_eq!(pending.recovery(), recovery());
+    assert_eq!(pending.recovery(), fixture.recovery);
     assert_eq!(pending.replacement_binding(), Some(replacement_binding));
     assert_eq!(pending.replacement_effect(), Some(replacement_effect));
     assert_eq!(
@@ -289,8 +306,8 @@ fn assert_whole_root_recovered(fixture: &Fixture) {
         .expect("the complete child root must be recovered as one contained presentation");
     assert_eq!(recovered.root, ROOT_CHILD);
     assert_eq!(recovered.surface, SURFACE_HOST);
-    assert_eq!(recovered.rect, recovery().rect());
-    assert_eq!(recovered.z_order, recovery().z_order());
+    assert_eq!(recovered.rect, fixture.recovery.rect());
+    assert_eq!(recovered.z_order, fixture.recovery.z_order());
     assert_eq!(
         fixture
             .engine

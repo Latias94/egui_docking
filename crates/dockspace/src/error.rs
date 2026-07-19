@@ -136,6 +136,9 @@ pub enum CommandError {
     /// Removing an explicitly empty root found application-owned items.
     #[error("root {root} still owns {items} item(s)")]
     RootNotEmpty { root: RootId, items: usize },
+    /// Closing a complete root found no application-owned item.
+    #[error("root {root} is empty; use RemoveEmptyRoot")]
+    RootEmpty { root: RootId },
     /// A root-level command was given an inner node instead of the root node.
     #[error("node {node:?} is not the topology root node of root {root}")]
     NodeIsNotRoot { root: RootId, node: NodeId },
@@ -217,6 +220,7 @@ impl CommandError {
             | Self::SurfaceHasContainedRoots { .. }
             | Self::ContainedHostWouldBeRemoved { .. }
             | Self::RootNotEmpty { .. }
+            | Self::RootEmpty { .. }
             | Self::NodeIsNotRoot { .. }
             | Self::WholeRootRequiresRehome { .. }
             | Self::FloatingIdentityWouldChange { .. }

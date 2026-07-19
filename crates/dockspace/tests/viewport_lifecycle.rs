@@ -8,7 +8,7 @@ use dockspace::frame::{
     NativeCreateRequest, NativeCreateStatus, RestoreReplacementStatus, RetiredViewportStatus,
     ViewportCloseDecision, ViewportClosePlan, ViewportCloseRequestId, ViewportCloseStatus,
 };
-use dockspace::geometry::{LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
@@ -266,18 +266,15 @@ fn register_base_viewports(
     fixture: &mut Fixture,
     host_role: ViewportRole,
 ) -> (ViewportBinding, ViewportBinding) {
+    publish_scene(fixture);
+    let host_recovery = close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(70));
     fixture
         .engine
         .enqueue_viewport_registration(SURFACE_SOURCE, SOURCE_TOKEN, ViewportRole::Root, None)
         .expect("source viewport registration must enqueue");
     fixture
         .engine
-        .enqueue_viewport_registration(
-            SURFACE_HOST,
-            HOST_TOKEN,
-            host_role,
-            Some(close_recovery(ROOT_HOST, FloatingPresentationId::new(70))),
-        )
+        .enqueue_viewport_registration(SURFACE_HOST, HOST_TOKEN, host_role, Some(host_recovery))
         .expect("host viewport registration must enqueue");
     let transition = fixture
         .engine
@@ -367,24 +364,34 @@ fn arm_and_begin_with_payload(fixture: &mut Fixture, payload: MovePayload) -> Dr
     session
 }
 
-fn recovery(root: RootId, floating: FloatingPresentationId) -> ContainedTearOffProposal {
-    ContainedTearOffProposal::new(
-        SURFACE_HOST,
-        root,
-        floating,
-        logical_rect(40.0, 50.0, 480.0, 360.0),
-        7,
-    )
+fn recovery(
+    engine: &DockEngine,
+    root: RootId,
+    floating: FloatingPresentationId,
+) -> ContainedTearOffProposal {
+    let placement = engine
+        .contained_placement(
+            SURFACE_HOST,
+            logical_rect(40.0, 50.0, 480.0, 360.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready host scene must authorize recovery placement");
+    ContainedTearOffProposal::new(root, floating, placement, 7)
 }
 
-fn close_recovery(root: RootId, floating: FloatingPresentationId) -> ContainedTearOffProposal {
-    ContainedTearOffProposal::new(
-        SURFACE_SOURCE,
-        root,
-        floating,
-        logical_rect(30.0, 40.0, 420.0, 320.0),
-        9,
-    )
+fn close_recovery(
+    engine: &DockEngine,
+    root: RootId,
+    floating: FloatingPresentationId,
+) -> ContainedTearOffProposal {
+    let placement = engine
+        .contained_placement(
+            SURFACE_SOURCE,
+            logical_rect(30.0, 40.0, 420.0, 320.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready source scene must authorize recovery placement");
+    ContainedTearOffProposal::new(root, floating, placement, 9)
 }
 
 fn current_route(fixture: &Fixture) -> TargetAuthority {
@@ -430,7 +437,7 @@ fn start_native_create_with_payload(
             SURFACE_NATIVE,
             destination_root,
             placement,
-            recovery(destination_root, FLOATING_RECOVERY),
+            recovery(&fixture.engine, destination_root, FLOATING_RECOVERY),
         ),
         None,
     );
@@ -755,11 +762,18 @@ fn unrelated_viewport_fact_loss_does_not_cancel_a_local_contained_drag() {
             .expect("source item must be current"),
     );
     let session = arm_and_begin_with_payload(&mut fixture, payload);
+    let placement = fixture
+        .engine
+        .contained_placement(
+            SURFACE_SOURCE,
+            logical_rect(40.0, 50.0, 480.0, 360.0),
+            LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+        )
+        .expect("ready source scene must authorize contained placement");
     let request = TearOffRequest::Contained(ContainedTearOffProposal::new(
-        SURFACE_SOURCE,
         ROOT_NATIVE,
         FloatingPresentationId::new(71),
-        logical_rect(40.0, 50.0, 480.0, 360.0),
+        placement,
         7,
     ));
     fixture
@@ -1363,7 +1377,8 @@ fn root_and_child_close_accept_commit_recovery_only_after_authoritative_destruct
         let close = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
         let request = close_request_from(&close);
         let floating = FloatingPresentationId::new(80 + index as u64);
-        let plan = ViewportClosePlan::new(None, close_recovery(ROOT_HOST, floating));
+        let plan =
+            ViewportClosePlan::new(None, close_recovery(&fixture.engine, ROOT_HOST, floating));
 
         let decided = decide_close(
             &mut fixture,
@@ -1450,12 +1465,13 @@ fn partial_close_primary_is_discarded_before_whole_root_recovery() {
         .capture_item_source(ROOT_HOST, host_node, ItemId::new(3))
         .expect("partial close source must be current");
     let floating = FloatingPresentationId::new(90);
+    let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
     decide_close(
         &mut fixture,
         request,
         ViewportCloseDecision::Accept(ViewportClosePlan::new(
             Some(WorkspaceCommand::Close { source: partial }),
-            close_recovery(ROOT_HOST, floating),
+            recovery,
         )),
     );
 
@@ -1488,12 +1504,13 @@ fn unrelated_close_primary_is_discarded_before_whole_root_recovery() {
         .capture_item_source(ROOT_SOURCE, fixture.source_tabs, ItemId::new(2))
         .expect("unrelated source selection must be current");
     let floating = FloatingPresentationId::new(91);
+    let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
     decide_close(
         &mut fixture,
         request,
         ViewportCloseDecision::Accept(ViewportClosePlan::new(
             Some(WorkspaceCommand::Select { source: unrelated }),
-            close_recovery(ROOT_HOST, floating),
+            recovery,
         )),
     );
 
@@ -1523,14 +1540,16 @@ fn close_accept_rejects_a_recovery_root_from_another_surface() {
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
     let request = close_request_from(&requested);
+    let recovery = close_recovery(
+        &fixture.engine,
+        ROOT_SOURCE,
+        FloatingPresentationId::new(92),
+    );
     fixture
         .engine
         .enqueue_viewport_close_decision(
             request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(
-                None,
-                close_recovery(ROOT_SOURCE, FloatingPresentationId::new(92)),
-            )),
+            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
         )
         .expect("invalid close decision must enqueue");
 
@@ -1568,7 +1587,7 @@ fn accepted_close_dispatch_failure_keeps_the_root_and_allows_an_explicit_retry()
     let request = close_request_from(&requested);
     let plan = ViewportClosePlan::new(
         None,
-        close_recovery(ROOT_HOST, FloatingPresentationId::new(31)),
+        close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(31)),
     );
     let first = decide_close(
         &mut fixture,
@@ -1638,13 +1657,11 @@ fn accepted_close_result_is_independent_of_failure_and_destruction_order() {
         prepare_base_platform(fixture, ViewportRole::Child);
         let requested = publish_windows(fixture, vec![source_window(false), host_window(true)]);
         let request = close_request_from(&requested);
+        let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
         let decided = decide_close(
             fixture,
             request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(
-                None,
-                close_recovery(ROOT_HOST, floating),
-            )),
+            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
         );
         let effect = effect_of_kind(decided.platform_effects(), |effect| {
             matches!(effect, PlatformEffect::ReleaseChild { .. })
@@ -1814,13 +1831,11 @@ fn a_ready_restore_replacement_is_rebound_instead_of_recreated_on_the_next_resto
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let close = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
     let close_request = close_request_from(&close);
+    let recovery = close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(30));
     decide_close(
         &mut fixture,
         close_request,
-        ViewportCloseDecision::Accept(ViewportClosePlan::new(
-            None,
-            close_recovery(ROOT_HOST, FloatingPresentationId::new(30)),
-        )),
+        ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
     );
 
     let workspace = fixture.engine.workspace().clone();

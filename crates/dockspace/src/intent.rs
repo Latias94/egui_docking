@@ -6,12 +6,14 @@
 
 use crate::command::{MovePayload, NodeSource};
 use crate::coordinates::ViewportPlacementProof;
-use crate::geometry::{LogicalPoint, LogicalRect, PhysicalRect};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
 use crate::interaction::{
-    DragSessionId, InteractionCancelReason, PaintAcknowledgement, ResizeSessionId,
+    ContainedTransformPaintAcknowledgement, ContainedTransformSessionId, DragSessionId,
+    InteractionCancelReason, PaintAcknowledgement, ResizeSessionId,
 };
+use crate::scene::SceneStamp;
 use crate::viewport_route::ViewportRouteProof;
 
 /// Authority attached to a provider observation.
@@ -90,6 +92,87 @@ pub enum PointerButtonState {
     Released,
 }
 
+/// Horizontal edge moved by an explicit contained resize gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainedHorizontalResizeEdge {
+    /// Move the left edge while holding the right edge fixed.
+    Left,
+    /// Move the right edge while holding the left edge fixed.
+    Right,
+}
+
+/// Vertical edge moved by an explicit contained resize gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainedVerticalResizeEdge {
+    /// Move the top edge while holding the bottom edge fixed.
+    Top,
+    /// Move the bottom edge while holding the top edge fixed.
+    Bottom,
+}
+
+/// Non-empty explicit edge set for one contained resize gesture.
+///
+/// The private representation and constructors make an empty set and two
+/// opposing edges on the same axis unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContainedResizeEdges {
+    horizontal: Option<ContainedHorizontalResizeEdge>,
+    vertical: Option<ContainedVerticalResizeEdge>,
+}
+
+impl ContainedResizeEdges {
+    /// Creates a horizontal edge resize.
+    #[must_use]
+    pub const fn horizontal(edge: ContainedHorizontalResizeEdge) -> Self {
+        Self {
+            horizontal: Some(edge),
+            vertical: None,
+        }
+    }
+
+    /// Creates a vertical edge resize.
+    #[must_use]
+    pub const fn vertical(edge: ContainedVerticalResizeEdge) -> Self {
+        Self {
+            horizontal: None,
+            vertical: Some(edge),
+        }
+    }
+
+    /// Creates a corner resize with one explicit edge on each axis.
+    #[must_use]
+    pub const fn corner(
+        horizontal: ContainedHorizontalResizeEdge,
+        vertical: ContainedVerticalResizeEdge,
+    ) -> Self {
+        Self {
+            horizontal: Some(horizontal),
+            vertical: Some(vertical),
+        }
+    }
+
+    /// Returns the moving horizontal edge, when this gesture changes width.
+    #[must_use]
+    pub const fn horizontal_edge(self) -> Option<ContainedHorizontalResizeEdge> {
+        self.horizontal
+    }
+
+    /// Returns the moving vertical edge, when this gesture changes height.
+    #[must_use]
+    pub const fn vertical_edge(self) -> Option<ContainedVerticalResizeEdge> {
+        self.vertical
+    }
+}
+
+/// Exact geometry operation owned by one contained transform session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainedTransformKind {
+    /// Translate the frozen rectangle without changing its size.
+    Move,
+    /// Move only the explicit edges while preserving the opposite anchors.
+    Resize(ContainedResizeEdges),
+}
+
 /// A point already converted into one logical surface's coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfacePointer {
@@ -166,13 +249,122 @@ impl TargetAuthority {
     }
 }
 
+/// Why the core cannot authorize one contained-floating placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ContainedPlacementUnavailable {
+    /// No sealed scene is currently published.
+    #[error("no sealed scene is available for contained placement")]
+    SceneUnavailable,
+    /// The published scene no longer matches the proof's exact generation.
+    #[error("contained placement scene {expected:?} is stale; current scene is {current:?}")]
+    StaleScene {
+        /// Scene generation which authorized the placement.
+        expected: SceneStamp,
+        /// Currently published scene, when one exists.
+        current: Option<SceneStamp>,
+    },
+    /// The surface is absent from the sealed scene roster.
+    #[error("surface {surface} is absent from the sealed scene")]
+    MissingSurface {
+        /// Requested logical surface.
+        surface: SurfaceId,
+    },
+    /// The surface exists but has not published authoritative bounds.
+    #[error("surface {surface} is still in bootstrap scene state")]
+    BootstrapSurface {
+        /// Requested logical surface.
+        surface: SurfaceId,
+    },
+    /// Finite corners produced an unrepresentable width, height, or clamp result.
+    #[error("surface {surface} cannot represent the requested contained placement")]
+    UnrepresentableGeometry {
+        /// Surface whose bounds or requested geometry cannot be clamped safely.
+        surface: SurfaceId,
+    },
+    /// A supposedly core-produced proof does not reproduce under its bound scene facts.
+    #[error("contained placement proof for surface {surface} does not reproduce")]
+    ProofMismatch {
+        /// Surface named by the invalid proof.
+        surface: SurfaceId,
+    },
+}
+
+/// Opaque authorization for one deterministic contained-floating placement.
+///
+/// Adapters cannot construct this type. The proof binds both the requested geometry and the
+/// exact clamped geometry to one ready surface in one sealed scene generation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainedPlacementProof {
+    scene: SceneStamp,
+    surface: SurfaceId,
+    requested_rect: LogicalRect,
+    minimum_size: LogicalSize,
+    surface_bounds: LogicalRect,
+    clamped_rect: LogicalRect,
+}
+
+impl ContainedPlacementProof {
+    pub(crate) const fn new(
+        scene: SceneStamp,
+        surface: SurfaceId,
+        requested_rect: LogicalRect,
+        minimum_size: LogicalSize,
+        surface_bounds: LogicalRect,
+        clamped_rect: LogicalRect,
+    ) -> Self {
+        Self {
+            scene,
+            surface,
+            requested_rect,
+            minimum_size,
+            surface_bounds,
+            clamped_rect,
+        }
+    }
+
+    /// Returns the exact sealed scene generation which authorized this placement.
+    #[must_use]
+    pub const fn scene(self) -> SceneStamp {
+        self.scene
+    }
+
+    /// Returns the host logical surface.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the adapter's requested logical rectangle before deterministic clamping.
+    #[must_use]
+    pub const fn requested_rect(self) -> LogicalRect {
+        self.requested_rect
+    }
+
+    /// Returns the explicit minimum size used by deterministic clamping.
+    #[must_use]
+    pub const fn minimum_size(self) -> LogicalSize {
+        self.minimum_size
+    }
+
+    /// Returns the ready surface bounds which authorized the clamp.
+    #[must_use]
+    pub const fn surface_bounds(self) -> LogicalRect {
+        self.surface_bounds
+    }
+
+    /// Returns the exact contained rectangle authorized by the core.
+    #[must_use]
+    pub const fn clamped_rect(self) -> LogicalRect {
+        self.clamped_rect
+    }
+}
+
 /// Exact proposal for a contained-floating destination.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContainedTearOffProposal {
-    surface: SurfaceId,
     root: RootId,
     floating: FloatingPresentationId,
-    rect: LogicalRect,
+    placement: ContainedPlacementProof,
     z_order: u64,
 }
 
@@ -180,17 +372,15 @@ impl ContainedTearOffProposal {
     /// Creates an explicit contained-floating proposal.
     #[must_use]
     pub const fn new(
-        surface: SurfaceId,
         root: RootId,
         floating: FloatingPresentationId,
-        rect: LogicalRect,
+        placement: ContainedPlacementProof,
         z_order: u64,
     ) -> Self {
         Self {
-            surface,
             root,
             floating,
-            rect,
+            placement,
             z_order,
         }
     }
@@ -198,7 +388,7 @@ impl ContainedTearOffProposal {
     /// Returns the host logical surface.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
-        self.surface
+        self.placement.surface()
     }
 
     /// Returns the root identity used for newly detached content.
@@ -216,7 +406,13 @@ impl ContainedTearOffProposal {
     /// Returns the acknowledged logical placement.
     #[must_use]
     pub const fn rect(self) -> LogicalRect {
-        self.rect
+        self.placement.clamped_rect()
+    }
+
+    /// Returns the core-produced placement authorization.
+    #[must_use]
+    pub const fn placement(self) -> ContainedPlacementProof {
+        self.placement
     }
 
     /// Returns the explicit contained stacking order.
@@ -400,6 +596,67 @@ pub enum RendererIntent {
         /// Explicit cancellation cause.
         reason: InteractionCancelReason,
     },
+    /// Apply one exact programmatic placement using a current core proof.
+    ///
+    /// This one-shot path is intended for scene-bound reconciliation and
+    /// keyboard or programmatic movement. Continuous pointer gestures use the
+    /// contained transform session protocol below.
+    ApplyContainedPlacement {
+        /// Root presented by the contained floating.
+        root: RootId,
+        /// Exact contained presentation identity.
+        floating: FloatingPresentationId,
+        /// Exact previous rectangle captured from the workspace.
+        expected_rect: LogicalRect,
+        /// Current scene-bound placement authorization.
+        placement: ContainedPlacementProof,
+    },
+    /// Begin a mutually exclusive core-owned contained move or resize.
+    BeginContainedTransform {
+        /// Ready surface which owns the contained floating.
+        surface: SurfaceId,
+        /// Root presented by the contained floating.
+        root: RootId,
+        /// Exact contained presentation identity.
+        floating: FloatingPresentationId,
+        /// Pointer which pressed the move or resize affordance.
+        pointer: PointerId,
+        /// Button which owns the gesture.
+        button: PointerButton,
+        /// Absolute pointer location in the host surface's logical coordinates.
+        initial_pointer: LogicalPoint,
+        /// Explicit move or edge-resize operation.
+        kind: ContainedTransformKind,
+        /// Minimum contained size enforced by the core.
+        minimum_size: LogicalSize,
+    },
+    /// Recompute one contained transform from the frozen rectangle and absolute pointer.
+    UpdateContainedTransform {
+        /// Active transform generation.
+        session: ContainedTransformSessionId,
+        /// Current absolute pointer location in the frozen host surface.
+        current_pointer: LogicalPoint,
+    },
+    /// Confirm that the exact contained transform preview was painted.
+    AcknowledgeContainedTransformPreview(ContainedTransformPaintAcknowledgement),
+    /// Commit the exact painted transform preview on authoritative release.
+    ReleaseContainedTransform {
+        /// Active transform generation.
+        session: ContainedTransformSessionId,
+        /// Matching pointer.
+        pointer: PointerId,
+        /// Matching button.
+        button: PointerButton,
+        /// Authoritative state of that exact button.
+        button_state: Authority<PointerButtonState>,
+    },
+    /// Cancel an active contained transform for an explicit reason.
+    CancelContainedTransform {
+        /// Transform generation being cancelled.
+        session: ContainedTransformSessionId,
+        /// Explicit cancellation cause.
+        reason: InteractionCancelReason,
+    },
 }
 
 impl RendererIntent {
@@ -411,7 +668,7 @@ impl RendererIntent {
     #[must_use]
     pub(crate) const fn reduction_rank(&self) -> u8 {
         match self {
-            Self::AcknowledgePreview(_) => 0,
+            Self::AcknowledgePreview(_) | Self::AcknowledgeContainedTransformPreview(_) => 0,
             _ => 1,
         }
     }

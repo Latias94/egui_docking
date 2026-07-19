@@ -5,10 +5,12 @@ use dockspace::command::{
     WorkspaceCommand,
 };
 use dockspace::error::{CommandError, ReferenceRole, TransactionError};
+use dockspace::geometry::LogicalRect;
 use dockspace::graph::{
-    Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace, WorkspaceBuilder,
+    Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
+    WorkspaceBuilder,
 };
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::{DockPolicy, PolicyRejection};
 use dockspace::transaction::WorkspaceTransaction;
 
@@ -16,6 +18,7 @@ const ROOT_A: RootId = RootId::new(1);
 const ROOT_B: RootId = RootId::new(2);
 const SURFACE_A: SurfaceId = SurfaceId::new(1);
 const SURFACE_B: SurfaceId = SurfaceId::new(2);
+const FLOATING_B: FloatingPresentationId = FloatingPresentationId::new(2);
 
 fn item(value: u64) -> ItemId {
     ItemId::new(value)
@@ -612,4 +615,240 @@ fn remove_empty_root_removes_its_complete_presentation() {
     )
     .expect("empty root removal succeeds");
     assert_eq!(workspace, Workspace::new());
+}
+
+#[test]
+fn close_root_removes_main_surface_and_complete_topology() {
+    let mut builder = WorkspaceBuilder::new();
+    let first = builder.insert_node(Node::tabs([item(1), item(2)]));
+    let second = builder.insert_node(Node::tabs([item(3)]));
+    let split = builder
+        .insert_node(Node::equal_split(Axis::Horizontal, [first, second]).expect("split is valid"));
+    let survivor = builder.insert_node(Node::tabs([item(4), item(5)]));
+    builder.set_root(ROOT_A, RootRecord::new(split));
+    builder.set_root(ROOT_B, RootRecord::new(survivor));
+    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_B, SurfacePresentation::new(ROOT_B));
+    let mut workspace = builder.build().expect("workspace is valid");
+    let source = workspace
+        .capture_node_source(ROOT_A, split)
+        .expect("main root source exists");
+
+    let report = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
+        .apply(&mut workspace, &DockPolicy::default())
+        .expect("main root closes");
+
+    assert_eq!(
+        report.outcomes(),
+        [dockspace::command::CommandOutcome::RootClosed {
+            root: ROOT_A,
+            items: vec![item(1), item(2), item(3)],
+        }]
+    );
+    assert!(workspace.root(ROOT_A).is_none());
+    assert!(workspace.surface(SURFACE_A).is_none());
+    assert!(workspace.node(first).is_none());
+    assert!(workspace.node(second).is_none());
+    assert!(workspace.node(split).is_none());
+    assert_eq!(workspace.root(ROOT_B), Some(&RootRecord::new(survivor)));
+    assert_eq!(
+        workspace.item_multiset(),
+        BTreeMap::from([(item(4), 1), (item(5), 1)])
+    );
+    workspace.validate().expect("remaining workspace is valid");
+}
+
+#[test]
+fn close_root_removes_only_the_contained_presentation() {
+    let mut builder = WorkspaceBuilder::new();
+    let main = builder.insert_node(Node::tabs([item(1)]));
+    let contained = builder.insert_node(Node::tabs([item(4), item(5)]));
+    builder.set_root(ROOT_A, RootRecord::new(main));
+    builder.set_root(ROOT_B, RootRecord::new(contained));
+    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_contained_floating(ContainedFloating::new(
+        FLOATING_B,
+        ROOT_B,
+        SURFACE_A,
+        LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
+        7,
+    ));
+    builder
+        .attach_contained(SURFACE_A, FLOATING_B)
+        .expect("surface exists");
+    let mut workspace = builder.build().expect("workspace is valid");
+    let source = workspace
+        .capture_node_source(ROOT_B, contained)
+        .expect("contained root source exists");
+
+    let report = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
+        .apply(&mut workspace, &DockPolicy::default())
+        .expect("contained root closes");
+
+    assert_eq!(
+        report.outcomes(),
+        [dockspace::command::CommandOutcome::RootClosed {
+            root: ROOT_B,
+            items: vec![item(4), item(5)],
+        }]
+    );
+    assert!(workspace.root(ROOT_B).is_none());
+    assert!(workspace.node(contained).is_none());
+    assert!(workspace.contained_floating(FLOATING_B).is_none());
+    assert_eq!(
+        workspace.surface(SURFACE_A),
+        Some(&SurfacePresentation::new(ROOT_A))
+    );
+    assert_eq!(workspace.item_multiset(), BTreeMap::from([(item(1), 1)]));
+    workspace.validate().expect("remaining workspace is valid");
+}
+
+#[test]
+fn close_root_rejects_a_main_surface_that_still_hosts_contained_roots() {
+    let mut builder = WorkspaceBuilder::new();
+    let main = builder.insert_node(Node::tabs([item(1)]));
+    let contained = builder.insert_node(Node::tabs([item(2)]));
+    builder.set_root(ROOT_A, RootRecord::new(main));
+    builder.set_root(ROOT_B, RootRecord::new(contained));
+    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_contained_floating(ContainedFloating::new(
+        FLOATING_B,
+        ROOT_B,
+        SURFACE_A,
+        LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
+        7,
+    ));
+    builder
+        .attach_contained(SURFACE_A, FLOATING_B)
+        .expect("surface exists");
+    let mut workspace = builder.build().expect("workspace is valid");
+    let source = workspace
+        .capture_node_source(ROOT_A, main)
+        .expect("main root source exists");
+    let before = workspace.clone();
+
+    let error = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
+        .apply(&mut workspace, &DockPolicy::default())
+        .expect_err("closing the host main root must be rejected");
+
+    assert!(matches!(
+        error,
+        TransactionError::Command {
+            source: CommandError::SurfaceHasContainedRoots { surface: SURFACE_A },
+            ..
+        }
+    ));
+    assert_eq!(workspace, before);
+}
+
+#[test]
+fn close_root_rejects_stale_and_non_root_sources_atomically() {
+    let mut builder = WorkspaceBuilder::new();
+    let first = builder.insert_node(Node::tabs([item(1), item(2)]));
+    let second = builder.insert_node(Node::tabs([item(3)]));
+    let split = builder
+        .insert_node(Node::equal_split(Axis::Horizontal, [first, second]).expect("split is valid"));
+    builder.set_root(ROOT_A, RootRecord::new(split));
+    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    let mut workspace = builder.build().expect("workspace is valid");
+    let stale_root = workspace
+        .capture_node_source(ROOT_A, split)
+        .expect("root source exists");
+    let reorder = workspace
+        .capture_item_source(ROOT_A, first, item(1))
+        .expect("item source exists");
+    apply(
+        &mut workspace,
+        &DockPolicy::default(),
+        WorkspaceCommand::Reorder {
+            source: reorder,
+            insertion_index: 2,
+        },
+    )
+    .expect("reorder succeeds");
+    let before_stale_close = workspace.clone();
+
+    let stale_error =
+        WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source: stale_root }])
+            .apply(&mut workspace, &DockPolicy::default())
+            .expect_err("stale root source must fail");
+    assert!(matches!(
+        stale_error,
+        TransactionError::Command {
+            source: CommandError::StaleNode { .. },
+            ..
+        }
+    ));
+    assert_eq!(workspace, before_stale_close);
+
+    let inner = workspace
+        .capture_node_source(ROOT_A, first)
+        .expect("inner source exists");
+    let inner_error =
+        WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source: inner }])
+            .apply(&mut workspace, &DockPolicy::default())
+            .expect_err("inner node cannot close a root");
+    assert!(matches!(
+        inner_error,
+        TransactionError::Command {
+            source: CommandError::NodeIsNotRoot {
+                root: ROOT_A,
+                node,
+            },
+            ..
+        } if node == first
+    ));
+    assert_eq!(workspace, before_stale_close);
+}
+
+#[test]
+fn close_root_rejects_empty_roots_and_batches_roll_back_later_failures() {
+    let mut empty_builder = WorkspaceBuilder::new();
+    let empty = empty_builder.insert_node(Node::tabs([]));
+    empty_builder.set_root(ROOT_A, RootRecord::new(empty).with_central(empty));
+    empty_builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    let mut empty_workspace = empty_builder.build().expect("empty central root is valid");
+    let empty_source = empty_workspace
+        .capture_node_source(ROOT_A, empty)
+        .expect("empty root source exists");
+    let empty_before = empty_workspace.clone();
+    let empty_error = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot {
+        source: empty_source,
+    }])
+    .apply(&mut empty_workspace, &DockPolicy::default())
+    .expect_err("CloseRoot does not replace RemoveEmptyRoot");
+    assert!(matches!(
+        empty_error,
+        TransactionError::Command {
+            source: CommandError::RootEmpty { root: ROOT_A },
+            ..
+        }
+    ));
+    assert_eq!(empty_workspace, empty_before);
+
+    let (mut workspace, closing_node, failing_node) = two_roots();
+    let close_a = workspace
+        .capture_node_source(ROOT_A, closing_node)
+        .expect("first root source exists");
+    let nonempty_b = workspace
+        .capture_node_source(ROOT_B, failing_node)
+        .expect("second root source exists");
+    let before_batch = workspace.clone();
+    let batch_error = WorkspaceTransaction::from_commands([
+        WorkspaceCommand::CloseRoot { source: close_a },
+        WorkspaceCommand::RemoveEmptyRoot { source: nonempty_b },
+    ])
+    .apply(&mut workspace, &DockPolicy::default())
+    .expect_err("a later command failure rolls back the root close");
+    assert!(matches!(
+        batch_error,
+        TransactionError::Command {
+            index: 1,
+            source: CommandError::RootNotEmpty {
+                root: ROOT_B,
+                items: 2,
+            },
+        }
+    ));
+    assert_eq!(workspace, before_batch);
 }

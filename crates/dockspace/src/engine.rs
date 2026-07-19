@@ -18,9 +18,12 @@ use crate::frame::{
 use crate::graph::Workspace;
 use crate::ids::{InputSequence, WorkspaceRevision};
 use crate::intent::{
-    Authority, PointerButtonState, RendererIntent, TargetAuthority, TearOffRequest,
+    Authority, ContainedHorizontalResizeEdge, ContainedPlacementProof,
+    ContainedPlacementUnavailable, ContainedTransformKind, ContainedVerticalResizeEdge,
+    PointerButtonState, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use crate::interaction::{
+    ActiveContainedTransform, ContainedTransformSessionId, ContainedTransformStart,
     InteractionCancelReason, InteractionCounterError, InteractionDelivery, InteractionEvent,
     InteractionEventKind, InteractionOutcome, InteractionRejection, InteractionState,
     InteractionStatus, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus, PreviewVisual,
@@ -292,6 +295,34 @@ struct DragReleaseInput<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct ContainedPlacementInput {
+    root: crate::ids::RootId,
+    floating: crate::ids::FloatingPresentationId,
+    expected_rect: crate::geometry::LogicalRect,
+    placement: ContainedPlacementProof,
+}
+
+#[derive(Clone, Copy)]
+struct ContainedTransformBeginInput {
+    surface: crate::ids::SurfaceId,
+    root: crate::ids::RootId,
+    floating: crate::ids::FloatingPresentationId,
+    pointer: crate::intent::PointerId,
+    button: crate::intent::PointerButton,
+    initial_pointer: crate::geometry::LogicalPoint,
+    kind: ContainedTransformKind,
+    minimum_size: crate::geometry::LogicalSize,
+}
+
+#[derive(Clone, Copy)]
+struct ContainedTransformReleaseInput<'a> {
+    session: ContainedTransformSessionId,
+    pointer: crate::intent::PointerId,
+    button: crate::intent::PointerButton,
+    button_state: &'a Authority<PointerButtonState>,
+}
+
+#[derive(Clone, Copy)]
 struct WorkspaceDeliveryTarget {
     kind: WorkspaceDeliveryKind,
     focus_surface: crate::ids::SurfaceId,
@@ -310,6 +341,167 @@ enum CommandApplication {
         changed: bool,
     },
     Rejected(crate::error::CommandError),
+}
+
+fn clamp_contained_rect(
+    surface: crate::ids::SurfaceId,
+    bounds: crate::geometry::LogicalRect,
+    requested: crate::geometry::LogicalRect,
+    minimum: crate::geometry::LogicalSize,
+) -> Result<crate::geometry::LogicalRect, ContainedPlacementUnavailable> {
+    let bounds_width = bounds.width();
+    let bounds_height = bounds.height();
+    let requested_width = requested.width();
+    let requested_height = requested.height();
+    if !bounds_width.is_finite()
+        || !bounds_height.is_finite()
+        || !requested_width.is_finite()
+        || !requested_height.is_finite()
+    {
+        return Err(ContainedPlacementUnavailable::UnrepresentableGeometry { surface });
+    }
+
+    let width = requested_width.max(minimum.width()).min(bounds_width);
+    let height = requested_height.max(minimum.height()).min(bounds_height);
+    let (min_x, max_x) = clamp_axis(bounds.x(), bounds.max().x(), requested.x(), width)
+        .ok_or(ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
+    let (min_y, max_y) = clamp_axis(bounds.y(), bounds.max().y(), requested.y(), height)
+        .ok_or(ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
+    let min = crate::geometry::LogicalPoint::new(min_x, min_y)
+        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
+    let max = crate::geometry::LogicalPoint::new(max_x, max_y)
+        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
+    crate::geometry::LogicalRect::from_min_max(min, max)
+        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })
+}
+
+fn clamp_axis(
+    bounds_min: f64,
+    bounds_max: f64,
+    requested_min: f64,
+    extent: f64,
+) -> Option<(f64, f64)> {
+    let latest_min = bounds_max - extent;
+    let (minimum, maximum) = if requested_min <= bounds_min {
+        (bounds_min, bounds_min + extent)
+    } else if requested_min >= latest_min {
+        (latest_min, bounds_max)
+    } else {
+        (requested_min, requested_min + extent)
+    };
+    minimum
+        .is_finite()
+        .then_some(())
+        .filter(|()| maximum.is_finite() && minimum <= maximum)
+        .map(|()| (minimum, maximum))
+}
+
+#[derive(Clone, Copy)]
+enum TransformAxisEdge {
+    Minimum,
+    Maximum,
+}
+
+fn contained_transform_requested_rect(
+    transform: &ActiveContainedTransform,
+    current_pointer: crate::geometry::LogicalPoint,
+    bounds: crate::geometry::LogicalRect,
+) -> Result<crate::geometry::LogicalRect, ()> {
+    let delta_x = current_pointer.x() - transform.initial_pointer.x();
+    let delta_y = current_pointer.y() - transform.initial_pointer.y();
+    if !delta_x.is_finite() || !delta_y.is_finite() {
+        return Err(());
+    }
+    match transform.kind {
+        ContainedTransformKind::Move => crate::geometry::LogicalRect::new(
+            transform.source_rect.x() + delta_x,
+            transform.source_rect.y() + delta_y,
+            transform.source_rect.width(),
+            transform.source_rect.height(),
+        )
+        .map_err(|_| ()),
+        ContainedTransformKind::Resize(edges) => {
+            let horizontal = match edges.horizontal_edge() {
+                Some(ContainedHorizontalResizeEdge::Left) => Some(TransformAxisEdge::Minimum),
+                Some(ContainedHorizontalResizeEdge::Right) => Some(TransformAxisEdge::Maximum),
+                None => None,
+            };
+            let vertical = match edges.vertical_edge() {
+                Some(ContainedVerticalResizeEdge::Top) => Some(TransformAxisEdge::Minimum),
+                Some(ContainedVerticalResizeEdge::Bottom) => Some(TransformAxisEdge::Maximum),
+                None => None,
+            };
+            let (min_x, max_x) = contained_resize_axis(
+                transform.source_rect.x(),
+                transform.source_rect.max().x(),
+                bounds.x(),
+                bounds.max().x(),
+                transform.minimum_size.width(),
+                delta_x,
+                horizontal,
+            )
+            .ok_or(())?;
+            let (min_y, max_y) = contained_resize_axis(
+                transform.source_rect.y(),
+                transform.source_rect.max().y(),
+                bounds.y(),
+                bounds.max().y(),
+                transform.minimum_size.height(),
+                delta_y,
+                vertical,
+            )
+            .ok_or(())?;
+            let min = crate::geometry::LogicalPoint::new(min_x, min_y).map_err(|_| ())?;
+            let max = crate::geometry::LogicalPoint::new(max_x, max_y).map_err(|_| ())?;
+            crate::geometry::LogicalRect::from_min_max(min, max).map_err(|_| ())
+        }
+    }
+}
+
+fn contained_resize_axis(
+    source_min: f64,
+    source_max: f64,
+    bounds_min: f64,
+    bounds_max: f64,
+    minimum_extent: f64,
+    delta: f64,
+    moving_edge: Option<TransformAxisEdge>,
+) -> Option<(f64, f64)> {
+    if !source_min.is_finite()
+        || !source_max.is_finite()
+        || !bounds_min.is_finite()
+        || !bounds_max.is_finite()
+        || !minimum_extent.is_finite()
+        || !delta.is_finite()
+    {
+        return None;
+    }
+    match moving_edge {
+        None => (source_min >= bounds_min && source_max <= bounds_max)
+            .then_some((source_min, source_max)),
+        Some(TransformAxisEdge::Minimum) => {
+            let latest_min = source_max - minimum_extent;
+            if source_max > bounds_max || bounds_min > latest_min {
+                return None;
+            }
+            let requested = source_min + delta;
+            requested
+                .is_finite()
+                .then(|| requested.clamp(bounds_min, latest_min))
+                .map(|minimum| (minimum, source_max))
+        }
+        Some(TransformAxisEdge::Maximum) => {
+            let earliest_max = source_min + minimum_extent;
+            if source_min < bounds_min || earliest_max > bounds_max {
+                return None;
+            }
+            let requested = source_max + delta;
+            requested
+                .is_finite()
+                .then(|| requested.clamp(earliest_max, bounds_max))
+                .map(|maximum| (source_min, maximum))
+        }
+    }
 }
 
 impl DockEngine {
@@ -533,6 +725,103 @@ impl DockEngine {
         self.viewport.placement(surface, rect, work_area)
     }
 
+    /// Produces a deterministic contained placement from current ready surface bounds.
+    ///
+    /// The returned proof is valid only for the exact sealed scene generation from which it was
+    /// derived. The requested size is first expanded to `minimum_size`, capped by the surface
+    /// bounds, and then translated into those bounds without any history-based heuristic.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ContainedPlacementUnavailable`] when no current ready scene exists or finite
+    /// corners cannot represent a finite clamp.
+    pub fn contained_placement(
+        &self,
+        surface: crate::ids::SurfaceId,
+        requested_rect: crate::geometry::LogicalRect,
+        minimum_size: crate::geometry::LogicalSize,
+    ) -> Result<ContainedPlacementProof, ContainedPlacementUnavailable> {
+        let (stamp, bounds) = self.current_ready_surface_bounds(surface)?;
+        let clamped_rect = clamp_contained_rect(surface, bounds, requested_rect, minimum_size)?;
+        Ok(ContainedPlacementProof::new(
+            stamp,
+            surface,
+            requested_rect,
+            minimum_size,
+            bounds,
+            clamped_rect,
+        ))
+    }
+
+    fn current_ready_surface_bounds(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Result<(SceneStamp, crate::geometry::LogicalRect), ContainedPlacementUnavailable> {
+        let scene = self
+            .scene
+            .as_ref()
+            .ok_or(ContainedPlacementUnavailable::SceneUnavailable)?;
+        if scene.stamp().workspace() != self.version {
+            return Err(ContainedPlacementUnavailable::SceneUnavailable);
+        }
+        let bounds = match scene.surface(surface) {
+            Some(SurfaceScene::Ready(ready)) => ready.bounds(),
+            Some(SurfaceScene::Bootstrap(_)) => {
+                return Err(ContainedPlacementUnavailable::BootstrapSurface { surface });
+            }
+            None => return Err(ContainedPlacementUnavailable::MissingSurface { surface }),
+        };
+        Ok((scene.stamp(), bounds))
+    }
+
+    fn validate_contained_placement(
+        &self,
+        proof: ContainedPlacementProof,
+    ) -> Result<(), ContainedPlacementUnavailable> {
+        let Some(scene) = self.scene.as_ref() else {
+            return Err(ContainedPlacementUnavailable::StaleScene {
+                expected: proof.scene(),
+                current: None,
+            });
+        };
+        if scene.stamp() != proof.scene() || scene.stamp().workspace() != self.version {
+            return Err(ContainedPlacementUnavailable::StaleScene {
+                expected: proof.scene(),
+                current: Some(scene.stamp()),
+            });
+        }
+        let ready = match scene.surface(proof.surface()) {
+            Some(SurfaceScene::Ready(ready)) => ready,
+            Some(SurfaceScene::Bootstrap(_)) => {
+                return Err(ContainedPlacementUnavailable::BootstrapSurface {
+                    surface: proof.surface(),
+                });
+            }
+            None => {
+                return Err(ContainedPlacementUnavailable::MissingSurface {
+                    surface: proof.surface(),
+                });
+            }
+        };
+        if ready.bounds() != proof.surface_bounds() {
+            return Err(ContainedPlacementUnavailable::ProofMismatch {
+                surface: proof.surface(),
+            });
+        }
+        let reproduced = clamp_contained_rect(
+            proof.surface(),
+            ready.bounds(),
+            proof.requested_rect(),
+            proof.minimum_size(),
+        )?;
+        if reproduced != proof.clamped_rect() {
+            return Err(ContainedPlacementUnavailable::ProofMismatch {
+                surface: proof.surface(),
+            });
+        }
+        Ok(())
+    }
+
     /// Queues complete scene facts against the currently published state.
     ///
     /// # Errors
@@ -750,6 +1039,12 @@ impl DockEngine {
         if role == ViewportRole::Child && recovery.is_none() {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
+        if recovery.is_some_and(|recovery| {
+            self.validate_contained_placement(recovery.placement())
+                .is_err()
+        }) {
+            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+        }
         if let Some(recovery) = recovery
             && (presentation.main_root != recovery.root()
                 || recovery.surface() == surface
@@ -830,6 +1125,16 @@ impl DockEngine {
         if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
+                accepted_base: self.version,
+            });
+        }
+        if let ViewportCloseDecision::Accept(plan) = &decision
+            && self
+                .validate_contained_placement(plan.recovery().placement())
+                .is_err()
+        {
+            return Ok(InputOutcome::StaleRejected {
+                expected: plan.recovery().placement().scene().workspace(),
                 accepted_base: self.version,
             });
         }
@@ -1238,6 +1543,11 @@ impl DockEngine {
                     dependencies.surfaces.insert(surface);
                 }
             }
+            InteractionStatus::ContainedTransforming { session } => {
+                if let Ok(transform) = self.interaction.active_contained_transform(session) {
+                    dependencies.surfaces.insert(transform.surface);
+                }
+            }
         }
         dependencies
     }
@@ -1353,6 +1663,7 @@ impl DockEngine {
         self.last_scene_generation = generation;
         *scene_published = true;
         self.refresh_drag_preview(input, interaction_events)?;
+        self.refresh_contained_transform_preview(input, interaction_events)?;
         Ok(InputOutcome::ScenePublished {
             stamp,
             ready_surfaces,
@@ -1445,6 +1756,414 @@ impl DockEngine {
             RendererIntent::CancelResize { session, reason } => {
                 Ok(self.cancel_resize(input, *session, *reason, interaction_events))
             }
+            RendererIntent::ApplyContainedPlacement { .. }
+            | RendererIntent::BeginContainedTransform { .. }
+            | RendererIntent::UpdateContainedTransform { .. }
+            | RendererIntent::AcknowledgeContainedTransformPreview(_)
+            | RendererIntent::ReleaseContainedTransform { .. }
+            | RendererIntent::CancelContainedTransform { .. } => {
+                self.reduce_contained_renderer_intent(input, intent, events, interaction_events)
+            }
+        }
+    }
+
+    fn reduce_contained_renderer_intent(
+        &mut self,
+        input: InputSequence,
+        intent: &RendererIntent,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        match intent {
+            RendererIntent::ApplyContainedPlacement {
+                root,
+                floating,
+                expected_rect,
+                placement,
+            } => self.apply_contained_placement(
+                input,
+                ContainedPlacementInput {
+                    root: *root,
+                    floating: *floating,
+                    expected_rect: *expected_rect,
+                    placement: *placement,
+                },
+                events,
+                interaction_events,
+            ),
+            RendererIntent::BeginContainedTransform {
+                surface,
+                root,
+                floating,
+                pointer,
+                button,
+                initial_pointer,
+                kind,
+                minimum_size,
+            } => self.begin_contained_transform(
+                input,
+                ContainedTransformBeginInput {
+                    surface: *surface,
+                    root: *root,
+                    floating: *floating,
+                    pointer: *pointer,
+                    button: *button,
+                    initial_pointer: *initial_pointer,
+                    kind: *kind,
+                    minimum_size: *minimum_size,
+                },
+                interaction_events,
+            ),
+            RendererIntent::UpdateContainedTransform {
+                session,
+                current_pointer,
+            } => self.update_contained_transform(
+                input,
+                *session,
+                *current_pointer,
+                interaction_events,
+            ),
+            RendererIntent::AcknowledgeContainedTransformPreview(acknowledgement) => {
+                match self
+                    .interaction
+                    .acknowledge_contained_transform_preview(*acknowledgement)
+                {
+                    Ok((session, changed)) => {
+                        Ok(InteractionOutcome::ContainedTransformPreviewAcknowledged {
+                            session,
+                            changed,
+                        })
+                    }
+                    Err(error) => Ok(InteractionOutcome::Rejected(error)),
+                }
+            }
+            RendererIntent::ReleaseContainedTransform {
+                session,
+                pointer,
+                button,
+                button_state,
+            } => self.release_contained_transform(
+                input,
+                ContainedTransformReleaseInput {
+                    session: *session,
+                    pointer: *pointer,
+                    button: *button,
+                    button_state,
+                },
+                events,
+                interaction_events,
+            ),
+            RendererIntent::CancelContainedTransform { session, reason } => {
+                Ok(self.cancel_contained_transform(input, *session, *reason, interaction_events))
+            }
+            RendererIntent::ArmDrag { .. }
+            | RendererIntent::BeginDrag { .. }
+            | RendererIntent::UpdateDrag { .. }
+            | RendererIntent::AcknowledgePreview(_)
+            | RendererIntent::ReleaseDrag { .. }
+            | RendererIntent::CancelDrag { .. }
+            | RendererIntent::BeginResize { .. }
+            | RendererIntent::UpdateResize { .. }
+            | RendererIntent::ReleaseResize { .. }
+            | RendererIntent::CancelResize { .. } => {
+                unreachable!("non-contained renderer intent reached the contained intent reducer")
+            }
+        }
+    }
+
+    fn apply_contained_placement(
+        &mut self,
+        input: InputSequence,
+        update: ContainedPlacementInput,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let command = match self.checked_contained_placement_command(update) {
+            Ok(command) => command,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        match self.apply_interaction_command(input, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                if changed {
+                    self.invalidate_transient(
+                        input,
+                        InteractionCancelReason::WorkspaceChanged,
+                        interaction_events,
+                    )?;
+                }
+                Ok(InteractionOutcome::ContainedPlacementApplied { outcome, changed })
+            }
+            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CommandRejected(error),
+            )),
+        }
+    }
+
+    fn checked_contained_placement_command(
+        &self,
+        update: ContainedPlacementInput,
+    ) -> Result<WorkspaceCommand, InteractionRejection> {
+        self.validate_contained_placement(update.placement)
+            .map_err(|error| match error {
+                ContainedPlacementUnavailable::StaleScene { .. }
+                | ContainedPlacementUnavailable::SceneUnavailable => {
+                    InteractionRejection::StaleScene
+                }
+                other => InteractionRejection::ContainedPlacementUnavailable(other),
+            })?;
+        Ok(WorkspaceCommand::UpdateContainedRect {
+            surface: update.placement.surface(),
+            root: update.root,
+            floating: update.floating,
+            expected_rect: update.expected_rect,
+            rect: update.placement.clamped_rect(),
+        })
+    }
+
+    fn begin_contained_transform(
+        &mut self,
+        input: InputSequence,
+        begin: ContainedTransformBeginInput,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let Some(record) = self.workspace.contained_floating(begin.floating).copied() else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CommandRejected(
+                    crate::error::CommandError::MissingFloating {
+                        floating: begin.floating,
+                    },
+                ),
+            ));
+        };
+        let validation = WorkspaceCommand::UpdateContainedRect {
+            surface: begin.surface,
+            root: begin.root,
+            floating: begin.floating,
+            expected_rect: record.rect,
+            rect: record.rect,
+        };
+        if let CommandApplication::Rejected(error) = self.preflight_command(input, &validation)? {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CommandRejected(error),
+            ));
+        }
+        let placement =
+            match self.contained_placement(begin.surface, record.rect, begin.minimum_size) {
+                Ok(placement) => placement,
+                Err(error) => {
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::ContainedPlacementUnavailable(error),
+                    ));
+                }
+            };
+        if placement.clamped_rect() != record.rect {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::ContainedTransformInitialRectUnavailable,
+            ));
+        }
+        let (session, replaced) = self
+            .interaction
+            .begin_contained_transform(
+                self.version.epoch(),
+                ContainedTransformStart {
+                    pointer: begin.pointer,
+                    button: begin.button,
+                    surface: begin.surface,
+                    root: begin.root,
+                    floating: begin.floating,
+                    source_rect: record.rect,
+                    initial_pointer: begin.initial_pointer,
+                    kind: begin.kind,
+                    minimum_size: begin.minimum_size,
+                },
+            )
+            .map_err(|source| EngineError::Interaction { input, source })?;
+        if let Some(status) = replaced {
+            self.viewport
+                .end_all_drag_routing()
+                .map_err(|source| EngineError::Viewport { input, source })?;
+            interaction_events.push(InteractionEvent::new(
+                input,
+                self.version,
+                InteractionEventKind::Cancelled {
+                    status,
+                    reason: InteractionCancelReason::ReplacedByNewGesture,
+                },
+            ));
+        }
+        Ok(InteractionOutcome::ContainedTransformBegan { session, replaced })
+    }
+
+    fn update_contained_transform(
+        &mut self,
+        input: InputSequence,
+        session: ContainedTransformSessionId,
+        current_pointer: crate::geometry::LogicalPoint,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let transform = match self.interaction.active_contained_transform(session) {
+            Ok(transform) => transform.clone(),
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        let placement =
+            match self.resolve_contained_transform_placement(&transform, current_pointer) {
+                Ok(placement) => placement,
+                Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+            };
+        self.interaction
+            .set_contained_transform_pointer(session, current_pointer)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?;
+        let (preview, changed) = self
+            .interaction
+            .publish_contained_transform_preview(session, placement.scene(), placement)
+            .map_err(|source| EngineError::Interaction { input, source })?;
+        if changed {
+            interaction_events.push(InteractionEvent::new(
+                input,
+                self.version,
+                InteractionEventKind::ContainedTransformPreviewPublished { preview },
+            ));
+        }
+        Ok(InteractionOutcome::ContainedTransformPreviewUpdated { session, preview })
+    }
+
+    fn release_contained_transform(
+        &mut self,
+        input: InputSequence,
+        release: ContainedTransformReleaseInput<'_>,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        if let Err(error) = self.validate_contained_transform_release_binding(
+            release.session,
+            release.pointer,
+            release.button,
+        ) {
+            return Ok(InteractionOutcome::Rejected(error));
+        }
+        match release.button_state {
+            Authority::Known(PointerButtonState::Pressed) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::ButtonStillPressed,
+                ));
+            }
+            Authority::Unknown(_) => {
+                return Ok(self.cancel_contained_transform(
+                    input,
+                    release.session,
+                    InteractionCancelReason::UnknownButtonState,
+                    interaction_events,
+                ));
+            }
+            Authority::Known(PointerButtonState::Released) => {}
+        }
+        let transform = match self.interaction.take_contained_transform_for_release(
+            release.session,
+            release.pointer,
+            release.button,
+        ) {
+            Ok(transform) => transform,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        let Some(preview) = transform.preview.as_ref() else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::PreviewMissing,
+            ));
+        };
+        if !preview.painted() {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::PreviewNotPainted,
+            ));
+        }
+        let placement = match self
+            .resolve_contained_transform_placement(&transform, transform.current_pointer)
+        {
+            Ok(placement) => placement,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        if preview.placement() != placement || preview.public().rect() != placement.clamped_rect() {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::ContainedTransformChanged,
+            ));
+        }
+        let command = match self.checked_contained_placement_command(ContainedPlacementInput {
+            root: transform.root,
+            floating: transform.floating,
+            expected_rect: transform.source_rect,
+            placement,
+        }) {
+            Ok(command) => command,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        match self.apply_interaction_command(input, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::ContainedTransformDelivered {
+                        session: release.session,
+                    },
+                ));
+                Ok(InteractionOutcome::ContainedTransformDelivered {
+                    session: release.session,
+                    outcome,
+                    changed,
+                })
+            }
+            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
+                InteractionRejection::CommandRejected(error),
+            )),
+        }
+    }
+
+    fn validate_contained_transform_release_binding(
+        &self,
+        session: ContainedTransformSessionId,
+        pointer: crate::intent::PointerId,
+        button: crate::intent::PointerButton,
+    ) -> Result<(), InteractionRejection> {
+        let transform = self
+            .interaction
+            .active_contained_transform(session)
+            .map_err(|error| {
+                if matches!(
+                    error,
+                    InteractionRejection::ContainedTransformSessionConsumed { .. }
+                ) {
+                    InteractionRejection::DuplicateContainedTransformRelease { session }
+                } else {
+                    error
+                }
+            })?;
+        if transform.pointer != pointer {
+            return Err(InteractionRejection::PointerMismatch);
+        }
+        if transform.button != button {
+            return Err(InteractionRejection::ButtonMismatch);
+        }
+        Ok(())
+    }
+
+    fn cancel_contained_transform(
+        &mut self,
+        input: InputSequence,
+        session: ContainedTransformSessionId,
+        reason: InteractionCancelReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> InteractionOutcome {
+        match self.interaction.cancel_contained_transform(session) {
+            Ok(status) => {
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::Cancelled { status, reason },
+                ));
+                InteractionOutcome::Cancelled { status, reason }
+            }
+            Err(error) => InteractionOutcome::Rejected(error),
         }
     }
 
@@ -1853,9 +2572,12 @@ impl DockEngine {
         fallback: bool,
     ) -> Result<PreviewDecision, EngineError> {
         if self
-            .policy
-            .check_tear_off(TearOffPresentation::Contained)
+            .validate_contained_placement(proposal.placement())
             .is_err()
+            || self
+                .policy
+                .check_tear_off(TearOffPresentation::Contained)
+                .is_err()
             || !self.tear_off_root_identity_matches(input, payload, proposal.root())?
         {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
@@ -1901,9 +2623,12 @@ impl DockEngine {
         routed: bool,
     ) -> Result<PreviewDecision, EngineError> {
         if self
-            .policy
-            .check_tear_off(TearOffPresentation::Native)
+            .validate_contained_placement(proposal.recovery().placement())
             .is_err()
+            || self
+                .policy
+                .check_tear_off(TearOffPresentation::Native)
+                .is_err()
         {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
@@ -1942,7 +2667,7 @@ impl DockEngine {
                         proof: Box::new(PreviewProof::Native {
                             command,
                             request: request.clone(),
-                            proposal,
+                            proposal: Box::new(proposal),
                         }),
                     }),
                     CommandApplication::Rejected(_) => {
@@ -2206,7 +2931,7 @@ impl DockEngine {
                 command, proposal, ..
             } => {
                 let prepared =
-                    PreparedNativeTearOff::new(session, self.version, command, proposal.clone());
+                    PreparedNativeTearOff::new(session, self.version, command, *proposal);
                 let request = self
                     .viewport
                     .start_native_create(prepared)
@@ -2343,6 +3068,71 @@ impl DockEngine {
                 InteractionRejection::ResizeRejected(error),
             )),
         }
+    }
+
+    fn resolve_contained_transform_placement(
+        &self,
+        transform: &ActiveContainedTransform,
+        current_pointer: crate::geometry::LogicalPoint,
+    ) -> Result<ContainedPlacementProof, InteractionRejection> {
+        let (_, bounds) = self
+            .current_ready_surface_bounds(transform.surface)
+            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
+        let requested = contained_transform_requested_rect(transform, current_pointer, bounds)
+            .map_err(|()| InteractionRejection::ContainedTransformGeometryUnavailable)?;
+        let placement = self
+            .contained_placement(transform.surface, requested, transform.minimum_size)
+            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
+        if matches!(transform.kind, ContainedTransformKind::Resize(_))
+            && placement.clamped_rect() != requested
+        {
+            return Err(InteractionRejection::ContainedTransformGeometryUnavailable);
+        }
+        Ok(placement)
+    }
+
+    fn refresh_contained_transform_preview(
+        &mut self,
+        input: InputSequence,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<(), EngineError> {
+        let InteractionStatus::ContainedTransforming { session } = self.interaction.status() else {
+            return Ok(());
+        };
+        let transform = self
+            .interaction
+            .active_contained_transform(session)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?
+            .clone();
+        if transform.preview.is_none() {
+            return Ok(());
+        }
+        let Ok(placement) =
+            self.resolve_contained_transform_placement(&transform, transform.current_pointer)
+        else {
+            let _ = self.cancel_contained_transform(
+                input,
+                session,
+                InteractionCancelReason::SceneUnavailable,
+                interaction_events,
+            );
+            return Ok(());
+        };
+        let (preview, changed) = self
+            .interaction
+            .publish_contained_transform_preview(session, placement.scene(), placement)
+            .map_err(|source| EngineError::Interaction { input, source })?;
+        if changed {
+            interaction_events.push(InteractionEvent::new(
+                input,
+                self.version,
+                InteractionEventKind::ContainedTransformPreviewPublished { preview },
+            ));
+        }
+        Ok(())
     }
 
     fn refresh_drag_preview(

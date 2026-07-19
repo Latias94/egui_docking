@@ -17,11 +17,12 @@ use crate::policy::{DockPolicy, TearOffPresentation};
 use crate::transaction::PreparedTransaction;
 use crate::workspace::RootPresentation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemDelta {
     None,
     Open(ItemId),
     Close(ItemId),
+    CloseMany(Vec<ItemId>),
 }
 
 struct AppliedCommand {
@@ -135,6 +136,16 @@ fn apply_item_delta(
                 stage: "reconcile uniquely closed item",
             }),
         },
+        ItemDelta::CloseMany(closed) => {
+            for item in closed {
+                if items.remove(&item) != Some(1) {
+                    return Err(CommandError::Invariant {
+                        stage: "reconcile items closed with root",
+                    });
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -151,6 +162,7 @@ fn apply_command(
         } => reorder(workspace, policy, source, *insertion_index),
         WorkspaceCommand::Open { item, target } => open(workspace, policy, *item, target),
         WorkspaceCommand::Close { source } => close(workspace, source),
+        WorkspaceCommand::CloseRoot { source } => close_root(workspace, source),
         WorkspaceCommand::Move { payload, target } => {
             move_payload(workspace, policy, payload, target)
         }
@@ -702,19 +714,7 @@ fn remove_empty_root(
     workspace: &mut Workspace,
     source: &NodeSource,
 ) -> Result<AppliedCommand, CommandError> {
-    validate_node_source(workspace, source)?;
-    let root = source.root();
-    let root_node = workspace
-        .roots
-        .get(&root)
-        .ok_or(CommandError::MissingRoot { root })?
-        .node;
-    if root_node != source.node() {
-        return Err(CommandError::NodeIsNotRoot {
-            root,
-            node: source.node(),
-        });
-    }
+    let (root, root_node) = validate_root_source(workspace, source)?;
     let item_count = workspace.collect_items_in_subtree(root_node).len();
     if item_count != 0 {
         return Err(CommandError::RootNotEmpty {
@@ -726,6 +726,27 @@ fn remove_empty_root(
     Ok(AppliedCommand {
         outcome: CommandOutcome::EmptyRootRemoved { root },
         delta: ItemDelta::None,
+    })
+}
+
+fn close_root(
+    workspace: &mut Workspace,
+    source: &NodeSource,
+) -> Result<AppliedCommand, CommandError> {
+    let (root, root_node) = validate_root_source(workspace, source)?;
+    let items = workspace.collect_items_in_subtree(root_node);
+    if items.is_empty() {
+        return Err(CommandError::RootEmpty { root });
+    }
+
+    let record = remove_root_and_presentation(workspace, root)?;
+    remove_subtree_nodes(workspace, record.node)?;
+    Ok(AppliedCommand {
+        outcome: CommandOutcome::RootClosed {
+            root,
+            items: items.clone(),
+        },
+        delta: ItemDelta::CloseMany(items),
     })
 }
 
@@ -759,6 +780,26 @@ fn validate_node_source(workspace: &Workspace, source: &NodeSource) -> Result<()
         source.fingerprint(),
         ReferenceRole::Source,
     )
+}
+
+fn validate_root_source(
+    workspace: &Workspace,
+    source: &NodeSource,
+) -> Result<(RootId, NodeId), CommandError> {
+    validate_node_source(workspace, source)?;
+    let root = source.root();
+    let root_node = workspace
+        .roots
+        .get(&root)
+        .ok_or(CommandError::MissingRoot { root })?
+        .node;
+    if root_node != source.node() {
+        return Err(CommandError::NodeIsNotRoot {
+            root,
+            node: source.node(),
+        });
+    }
+    Ok((root, root_node))
 }
 
 fn validate_move_payload(workspace: &Workspace, payload: &MovePayload) -> Result<(), CommandError> {
@@ -1452,6 +1493,23 @@ fn remove_root_and_presentation(
         .roots
         .remove(&root)
         .ok_or(CommandError::MissingRoot { root })
+}
+
+fn remove_subtree_nodes(workspace: &mut Workspace, root: NodeId) -> Result<(), CommandError> {
+    let mut stack = vec![root];
+    while let Some(node_id) = stack.pop() {
+        let node = workspace
+            .nodes
+            .remove(node_id)
+            .ok_or(CommandError::MissingNode {
+                role: ReferenceRole::Source,
+                node: node_id,
+            })?;
+        if let Node::Split { children, .. } = node {
+            stack.extend(children.into_iter().rev());
+        }
+    }
+    Ok(())
 }
 
 fn detach_root_presentation(
