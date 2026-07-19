@@ -32,10 +32,18 @@ proptest! {
         prop_assert_eq!(&first, &second);
         prop_assert!(first.overflow.is_finite() && first.overflow >= 0.0);
         prop_assert!(first.unallocated.is_finite() && first.unallocated >= 0.0);
-        for (size, constraint) in first.sizes.iter().zip(&constraints) {
+        for (index, (size, constraint)) in first.sizes.iter().zip(&constraints).enumerate() {
             prop_assert!(size.is_finite());
-            prop_assert!(*size >= constraint.min());
-            prop_assert!(*size <= constraint.max());
+            prop_assert!(
+                *size >= constraint.min(),
+                "child {index} size {size:?} is below minimum {:?}",
+                constraint.min()
+            );
+            prop_assert!(
+                *size <= constraint.max(),
+                "child {index} size {size:?} exceeds maximum {:?}",
+                constraint.max()
+            );
         }
 
         let assigned = first.sizes.iter().sum::<f64>();

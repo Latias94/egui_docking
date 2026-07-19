@@ -93,6 +93,28 @@ fn clamped_children_redistribute_space_by_weight() {
 }
 
 #[test]
+fn central_saturation_stays_exactly_within_bounds() {
+    let constraints = constraints(&[
+        (181.761_843_612_338_17, 300.0),
+        (45.303_568_194_594_91, 200.0),
+    ]);
+    let extent = 227.065_411_806_933_08;
+
+    let result = solve_axis(extent, &[0.5, 0.0], &constraints, Some(1))
+        .expect("central saturation must solve");
+
+    assert_eq!(result.sizes[1].to_bits(), constraints[1].min().to_bits());
+    for (size, constraint) in result.sizes.iter().zip(&constraints) {
+        assert!(*size >= constraint.min());
+        assert!(*size <= constraint.max());
+    }
+    assert_close(
+        result.sizes.iter().sum(),
+        extent + result.overflow - result.unallocated,
+    );
+}
+
+#[test]
 fn minimum_conflict_is_reported_without_shrinking_children() {
     let result = solve_axis(
         200.0,

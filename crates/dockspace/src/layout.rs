@@ -1069,7 +1069,7 @@ fn grow_to_extent(
 ) {
     if let Some(central) = central_index {
         let amount = remainder.min((constraints[central].max - sizes[central]).max(0.0));
-        sizes[central] += amount;
+        apply_bounded_delta(&mut sizes[central], amount, true, constraints[central]);
         remainder -= amount;
     }
     redistribute(sizes, remainder, weights, constraints, true, central_index);
@@ -1084,7 +1084,7 @@ fn shrink_to_extent(
 ) {
     if let Some(central) = central_index {
         let amount = excess.min((sizes[central] - constraints[central].min).max(0.0));
-        sizes[central] -= amount;
+        apply_bounded_delta(&mut sizes[central], amount, false, constraints[central]);
         excess -= amount;
     }
     redistribute(sizes, excess, weights, constraints, false, central_index);
@@ -1115,7 +1115,7 @@ fn redistribute(
         for &index in &eligible {
             let share = before * (weights[index] / weight_total);
             let delta = share.min(capacity(sizes[index], constraints[index], grow));
-            apply_delta(&mut sizes[index], delta, grow);
+            apply_bounded_delta(&mut sizes[index], delta, grow, constraints[index]);
             amount -= delta;
         }
         if before - amount <= tolerance {
@@ -1132,7 +1132,7 @@ fn redistribute(
             continue;
         }
         let delta = amount.min(capacity(sizes[index], constraints[index], grow));
-        apply_delta(&mut sizes[index], delta, grow);
+        apply_bounded_delta(&mut sizes[index], delta, grow, constraints[index]);
         amount -= delta;
     }
 }
@@ -1145,11 +1145,11 @@ fn capacity(size: f64, constraint: AxisConstraint, grow: bool) -> f64 {
     }
 }
 
-fn apply_delta(size: &mut f64, delta: f64, grow: bool) {
+fn apply_bounded_delta(size: &mut f64, delta: f64, grow: bool, constraint: AxisConstraint) {
     if grow {
-        *size += delta;
+        *size = (*size + delta).min(constraint.max);
     } else {
-        *size -= delta;
+        *size = (*size - delta).max(constraint.min);
     }
 }
 
