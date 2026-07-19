@@ -7,11 +7,12 @@ use thiserror::Error;
 
 use crate::command::{DockTarget, NodeFingerprint};
 use crate::drop_target::{
-    DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetRecord, DropTargetUnavailable,
+    DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetRecord,
+    DropTargetUnavailable,
 };
 use crate::geometry::LogicalRect;
 use crate::graph::{Node, Workspace};
-use crate::ids::{ItemId, NodeId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::policy::DockPolicy;
 use crate::transition::WorkspaceVersion;
 
@@ -174,6 +175,7 @@ pub struct ReadySurfaceScene {
     tab_bars: Vec<SemanticRect<TabBarSceneId>>,
     tabs: Vec<SemanticRect<TabSceneId>>,
     splitters: Vec<SemanticRect<SplitterSceneId>>,
+    drop_occlusions: Vec<DropOcclusionRecord>,
     drop_targets: Vec<DropTargetRecord>,
 }
 
@@ -188,6 +190,7 @@ impl ReadySurfaceScene {
             tab_bars: Vec::new(),
             tabs: Vec::new(),
             splitters: Vec::new(),
+            drop_occlusions: Vec::new(),
             drop_targets: Vec::new(),
         }
     }
@@ -224,6 +227,11 @@ impl ReadySurfaceScene {
         self.splitters.push(region);
     }
 
+    /// Adds one exact contained-floating occlusion before scene submission.
+    pub fn push_drop_occlusion(&mut self, occlusion: DropOcclusionRecord) {
+        self.drop_occlusions.push(occlusion);
+    }
+
     /// Adds one structural drop target before this fact is submitted to a scene.
     pub fn push_drop_target(&mut self, target: DropTargetRecord) {
         self.drop_targets.push(target);
@@ -251,6 +259,12 @@ impl ReadySurfaceScene {
     #[must_use]
     pub fn splitters(&self) -> &[SemanticRect<SplitterSceneId>] {
         &self.splitters
+    }
+
+    /// Returns contained-floating occlusions in stable identity order after sealing.
+    #[must_use]
+    pub fn drop_occlusions(&self) -> &[DropOcclusionRecord] {
+        &self.drop_occlusions
     }
 
     /// Returns drop targets in canonical structural-identity order after sealing.
@@ -362,6 +376,15 @@ impl BuildingScene {
             let state = match ready {
                 Some(mut ready) => {
                     validate_ready_semantics(&ready, workspace, &workspace_index)?;
+                    for occlusion in &ready.drop_occlusions {
+                        let floating = occlusion.floating();
+                        if !workspace_index.contained_belongs_to_surface(surface, floating) {
+                            return Err(SceneBuildError::InvalidDropOcclusion {
+                                surface,
+                                floating,
+                            });
+                        }
+                    }
                     for target in &ready.drop_targets {
                         validate_drop_visual(&ready, target)?;
                         if target.id().surface() != surface
@@ -401,6 +424,7 @@ impl BuildingScene {
         let mut tab_bar_ids = HashSet::new();
         let mut tab_ids = HashSet::new();
         let mut splitter_ids = HashSet::new();
+        let mut occlusion_ids = HashSet::new();
         let mut target_ids = HashSet::new();
 
         for ready in self.surfaces.values().flatten().chain([incoming]) {
@@ -422,6 +446,13 @@ impl BuildingScene {
             for region in &ready.splitters {
                 if !splitter_ids.insert(region.id) {
                     return Err(SceneBuildError::DuplicateSplitter { id: region.id });
+                }
+            }
+            for occlusion in &ready.drop_occlusions {
+                if !occlusion_ids.insert(occlusion.floating()) {
+                    return Err(SceneBuildError::DuplicateDropOcclusion {
+                        floating: occlusion.floating(),
+                    });
                 }
             }
             for target in &ready.drop_targets {
@@ -501,6 +532,9 @@ fn canonicalize_ready(
     ready.tab_bars.sort_unstable_by_key(|region| *region.id());
     ready.tabs.sort_unstable_by_key(|region| *region.id());
     ready.splitters.sort_unstable_by_key(|region| *region.id());
+    ready
+        .drop_occlusions
+        .sort_unstable_by_key(|occlusion| occlusion.floating());
     ready
         .drop_targets
         .sort_unstable_by_key(DropTargetRecord::id);
@@ -615,16 +649,20 @@ struct IndexedRoot {
 
 struct SceneWorkspaceIndex {
     roots: HashMap<RootId, IndexedRoot>,
+    contained_surfaces: HashMap<FloatingPresentationId, SurfaceId>,
 }
 
 impl SceneWorkspaceIndex {
     fn new(workspace: &Workspace) -> Self {
         let mut root_surfaces = HashMap::with_capacity(workspace.roots().count());
+        let mut contained_surfaces =
+            HashMap::with_capacity(workspace.contained_floatings().count());
         for (surface, presentation) in workspace.surfaces() {
             root_surfaces.insert(presentation.main_root, surface);
             for floating in &presentation.contained {
                 if let Some(record) = workspace.contained_floating(*floating) {
                     root_surfaces.insert(record.root, surface);
+                    contained_surfaces.insert(*floating, surface);
                 }
             }
         }
@@ -658,7 +696,10 @@ impl SceneWorkspaceIndex {
                 },
             );
         }
-        Self { roots }
+        Self {
+            roots,
+            contained_surfaces,
+        }
     }
 
     fn root_belongs_to_surface(&self, surface: SurfaceId, root: RootId) -> bool {
@@ -686,6 +727,14 @@ impl SceneWorkspaceIndex {
 
     fn root_node(&self, root: RootId) -> Option<NodeId> {
         self.roots.get(&root).map(|record| record.root_node)
+    }
+
+    fn contained_belongs_to_surface(
+        &self,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    ) -> bool {
+        self.contained_surfaces.get(&floating).copied() == Some(surface)
     }
 }
 
@@ -763,6 +812,12 @@ pub enum SceneBuildError {
         /// Repeated identity.
         id: SplitterSceneId,
     },
+    /// A contained-floating occlusion identity was repeated.
+    #[error("scene contains duplicate drop occlusion for contained floating {floating}")]
+    DuplicateDropOcclusion {
+        /// Repeated contained-floating identity.
+        floating: FloatingPresentationId,
+    },
     /// A structural drop-target identity was repeated.
     #[error("scene contains duplicate drop target {id:?}")]
     DuplicateDropTarget {
@@ -824,6 +879,14 @@ pub enum SceneBuildError {
         surface: SurfaceId,
         /// Invalid semantic identity.
         id: SplitterSceneId,
+    },
+    /// A drop occlusion named a missing floating or one owned by another surface.
+    #[error("drop occlusion for contained floating {floating} is invalid on surface {surface}")]
+    InvalidDropOcclusion {
+        /// Surface receiving the invalid fact.
+        surface: SurfaceId,
+        /// Missing or differently-owned contained-floating identity.
+        floating: FloatingPresentationId,
     },
 }
 

@@ -611,27 +611,28 @@ fn central_leaf_semantics_propagate_through_ancestor_splits() {
 }
 
 #[test]
-fn projection_rejects_bounds_that_cannot_contain_splitters() {
+fn projection_uniformly_compresses_splitters_to_fit_collapsed_bounds() {
     let (workspace, root, leaves, split) = three_leaf_workspace();
     let leaf_constraints = leaves
         .into_iter()
         .map(|leaf| (leaf, unconstrained_leaf()))
         .collect::<BTreeMap<_, _>>();
 
-    assert!(matches!(
-        project_root(
-            &workspace,
-            root,
-            LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("valid bounds"),
-            &leaf_constraints,
-            layout_metrics(60.0),
-        ),
-        Err(LayoutError::InsufficientExtentForSplitters {
-            node,
-            required: 120.0,
-            available: 100.0,
-        }) if node == split
-    ));
+    let projection = project_root(
+        &workspace,
+        root,
+        LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("valid bounds"),
+        &leaf_constraints,
+        layout_metrics(60.0),
+    )
+    .expect("collapsed renderer bounds still have a deterministic projection");
+
+    let split = projection.splits.get(&split).expect("split is projected");
+    assert_eq!(split.splitter_rects.len(), 2);
+    assert_projection_close(split.splitter_rects[0].width(), 50.0);
+    assert_projection_close(split.splitter_rects[1].width(), 50.0);
+    assert_projection_close(split.splitter_rects[0].x(), 0.0);
+    assert_projection_close(split.splitter_rects[1].x(), 50.0);
 }
 
 #[test]

@@ -3,14 +3,16 @@ use dockspace::drop_resolver::{
     DropRejectionReason, DropResolution, DropSurfaceUnavailable, resolve_drop,
 };
 use dockspace::drop_target::{
-    DropTargetAvailability, DropTargetId, DropTargetRecord, DropTargetUnavailable, DropVisual,
-    SceneLayerKey,
+    DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetRecord,
+    DropTargetUnavailable, DropVisual, SceneLayerKey,
 };
 use dockspace::engine::DockEngine;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder};
+use dockspace::graph::{
+    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder,
+};
 use dockspace::hit_region::HitRegion;
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
+use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::interaction::{DragGeneration, DragSessionId};
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{
@@ -22,8 +24,10 @@ use dockspace::transition::InputOutcome;
 
 const SOURCE_ROOT: RootId = RootId::new(1);
 const TARGET_ROOT: RootId = RootId::new(2);
+const FLOATING_ROOT: RootId = RootId::new(3);
 const SOURCE_SURFACE: SurfaceId = SurfaceId::new(1);
 const TARGET_SURFACE: SurfaceId = SurfaceId::new(2);
+const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 
 #[derive(Debug)]
 struct Fixture {
@@ -33,6 +37,7 @@ struct Fixture {
     target_root_node: NodeId,
     target_tabs_a: NodeId,
     target_tabs_b: NodeId,
+    floating_tabs: NodeId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,11 +76,23 @@ fn fixture() -> Fixture {
         Node::equal_split(Axis::Horizontal, [target_tabs_a, target_tabs_b])
             .expect("valid target root"),
     );
+    let floating_tabs = builder.insert_node(Node::tabs([ItemId::new(20)]));
 
     builder.set_root(SOURCE_ROOT, RootRecord::new(source_root_node));
     builder.set_root(TARGET_ROOT, RootRecord::new(target_root_node));
+    builder.set_root(FLOATING_ROOT, RootRecord::new(floating_tabs));
     builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
     builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
+    builder.set_contained_floating(ContainedFloating::new(
+        FLOATING,
+        FLOATING_ROOT,
+        TARGET_SURFACE,
+        rect(20.0, 20.0, 60.0, 60.0),
+        1,
+    ));
+    builder
+        .attach_contained(TARGET_SURFACE, FLOATING)
+        .expect("target surface exists");
 
     Fixture {
         workspace: builder.build().expect("fixture workspace is valid"),
@@ -84,6 +101,7 @@ fn fixture() -> Fixture {
         target_root_node,
         target_tabs_a,
         target_tabs_b,
+        floating_tabs,
     }
 }
 
@@ -228,6 +246,56 @@ fn center_record(
     )
 }
 
+fn floating_outer_edge_record(
+    fixture: &Fixture,
+    region: LogicalRect,
+    layer: u64,
+) -> DropTargetRecord {
+    let fraction = DockFraction::new(0.35).expect("valid fraction");
+    DropTargetRecord::new(
+        DropTargetId::OuterEdge {
+            surface: TARGET_SURFACE,
+            root: FLOATING_ROOT,
+            node: fixture.floating_tabs,
+            edge: Edge::Right,
+        },
+        DockTarget::Edge(
+            fixture
+                .workspace
+                .capture_edge_target(FLOATING_ROOT, fixture.floating_tabs, Edge::Right, fraction)
+                .expect("floating edge target is valid"),
+        ),
+        DropTargetAvailability::Available,
+        HitRegion::new(region),
+        SceneLayerKey::new(layer),
+        DropVisual::new(region),
+    )
+}
+
+fn floating_center_record(fixture: &Fixture, region: LogicalRect, layer: u64) -> DropTargetRecord {
+    DropTargetRecord::new(
+        DropTargetId::Center {
+            surface: TARGET_SURFACE,
+            root: FLOATING_ROOT,
+            tabs: fixture.floating_tabs,
+        },
+        DockTarget::Center(
+            fixture
+                .workspace
+                .capture_tab_target(FLOATING_ROOT, fixture.floating_tabs)
+                .expect("floating center target is valid"),
+        ),
+        DropTargetAvailability::Available,
+        HitRegion::new(region),
+        SceneLayerKey::new(layer),
+        DropVisual::new(region),
+    )
+}
+
+fn floating_occlusion(region: LogicalRect, layer: u64) -> DropOcclusionRecord {
+    DropOcclusionRecord::new(FLOATING, HitRegion::new(region), SceneLayerKey::new(layer))
+}
+
 fn seal_scene(
     fixture: &Fixture,
     policy: &DockPolicy,
@@ -236,6 +304,26 @@ fn seal_scene(
     let mut ready = ReadySurfaceScene::new(TARGET_SURFACE, rect(0.0, 0.0, 100.0, 100.0));
     for record in records {
         ready.push_drop_target(record);
+    }
+    let mut building = BuildingScene::new([TARGET_SURFACE]).expect("valid roster");
+    building
+        .insert_ready(ready)
+        .expect("ready facts are unique");
+    publish_building(fixture, policy, building).expect("scene facts are valid")
+}
+
+fn seal_scene_with_occlusions(
+    fixture: &Fixture,
+    policy: &DockPolicy,
+    records: impl IntoIterator<Item = DropTargetRecord>,
+    occlusions: impl IntoIterator<Item = DropOcclusionRecord>,
+) -> dockspace::scene::SealedScene {
+    let mut ready = ReadySurfaceScene::new(TARGET_SURFACE, rect(0.0, 0.0, 100.0, 100.0));
+    for record in records {
+        ready.push_drop_target(record);
+    }
+    for occlusion in occlusions {
+        ready.push_drop_occlusion(occlusion);
     }
     let mut building = BuildingScene::new([TARGET_SURFACE]).expect("valid roster");
     building
@@ -460,6 +548,134 @@ fn overlap_uses_frontmost_layer_then_lowest_structural_id() {
     assert!(matches!(
         resolved,
         DropResolution::Resolved(resolved) if resolved.target_id() == expected
+    ));
+}
+
+#[test]
+fn contained_chrome_occludes_lower_layer_drop_targets() {
+    let fixture = fixture();
+    let policy = DockPolicy::default();
+    let background = target_record(
+        &fixture,
+        TargetSpec::TabGap,
+        DropTargetAvailability::Available,
+        rect(0.0, 0.0, 100.0, 100.0),
+        1,
+    );
+    let scene = seal_scene_with_occlusions(
+        &fixture,
+        &policy,
+        [background],
+        [floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2)],
+    );
+
+    assert!(matches!(
+        resolve(
+            &scene,
+            &fixture,
+            &policy,
+            payload(&fixture, PayloadSpec::Item),
+            point(25.0, 25.0),
+        ),
+        DropResolution::KnownNone(_)
+    ));
+}
+
+#[test]
+fn front_contained_layer_wins_before_back_target_class_priority() {
+    let fixture = fixture();
+    let policy = DockPolicy::default();
+    let overlap = rect(30.0, 40.0, 40.0, 30.0);
+    let background = target_record(
+        &fixture,
+        TargetSpec::TabGap,
+        DropTargetAvailability::Available,
+        overlap,
+        1,
+    );
+    let foreground = floating_outer_edge_record(&fixture, overlap, 2);
+    let foreground_id = foreground.id();
+    let scene = seal_scene_with_occlusions(
+        &fixture,
+        &policy,
+        [background, foreground],
+        [floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2)],
+    );
+
+    assert!(matches!(
+        resolve(
+            &scene,
+            &fixture,
+            &policy,
+            payload(&fixture, PayloadSpec::Item),
+            point(50.0, 50.0),
+        ),
+        DropResolution::Resolved(resolved) if resolved.target_id() == foreground_id
+    ));
+}
+
+#[test]
+fn rejected_front_candidate_never_falls_through_its_occlusion() {
+    let fixture = fixture();
+    let policy = DockPolicy::default();
+    let overlap = rect(30.0, 40.0, 40.0, 30.0);
+    let background = target_record(
+        &fixture,
+        TargetSpec::OuterEdge,
+        DropTargetAvailability::Available,
+        overlap,
+        1,
+    );
+    let foreground = floating_center_record(&fixture, overlap, 2);
+    let foreground_id = foreground.id();
+    let scene = seal_scene_with_occlusions(
+        &fixture,
+        &policy,
+        [background, foreground],
+        [floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2)],
+    );
+
+    let DropResolution::Rejected(rejected) = resolve(
+        &scene,
+        &fixture,
+        &policy,
+        payload(&fixture, PayloadSpec::Subtree),
+        point(50.0, 50.0),
+    ) else {
+        panic!("the visible center target must reject a subtree without exposing the back layer");
+    };
+    assert_eq!(rejected.candidates().len(), 1);
+    assert_eq!(rejected.candidates()[0].target_id(), foreground_id);
+}
+
+#[test]
+fn targets_remain_resolvable_outside_contained_occlusion() {
+    let fixture = fixture();
+    let policy = DockPolicy::default();
+    let background = target_record(
+        &fixture,
+        TargetSpec::Center,
+        DropTargetAvailability::Available,
+        rect(0.0, 0.0, 100.0, 100.0),
+        1,
+    );
+    let background_id = background.id();
+    let scene = seal_scene_with_occlusions(
+        &fixture,
+        &policy,
+        [background],
+        [floating_occlusion(rect(20.0, 20.0, 60.0, 60.0), 2)],
+    );
+
+    assert!(matches!(
+        resolve(
+            &scene,
+            &fixture,
+            &policy,
+            payload(&fixture, PayloadSpec::Item),
+            point(10.0, 10.0),
+        ),
+        DropResolution::Resolved(resolved) if resolved.target_id() == background_id
     ));
 }
 
@@ -897,6 +1113,16 @@ fn malformed_semantic_facts_and_target_id_mismatches_fail_seal() {
         matches!(error, SceneBuildError::InvalidSplitterSemantic { .. })
     });
 
+    let mut invalid_occlusion = ReadySurfaceScene::new(TARGET_SURFACE, bounds);
+    invalid_occlusion.push_drop_occlusion(DropOcclusionRecord::new(
+        FloatingPresentationId::new(999),
+        HitRegion::new(bounds),
+        SceneLayerKey::new(1),
+    ));
+    assert_scene_error(&fixture, &policy, invalid_occlusion, |error| {
+        matches!(error, SceneBuildError::InvalidDropOcclusion { .. })
+    });
+
     let edge = target_record(
         &fixture,
         TargetSpec::InnerEdge,
@@ -1006,6 +1232,15 @@ fn duplicate_ready_and_semantic_ids_are_rejected_before_seal() {
     assert!(matches!(
         building.insert_ready(ready),
         Err(SceneBuildError::DuplicateNode { id }) if id == duplicate_id
+    ));
+
+    let mut duplicate_occlusion = ReadySurfaceScene::new(TARGET_SURFACE, bounds);
+    let occlusion = floating_occlusion(bounds, 1);
+    duplicate_occlusion.push_drop_occlusion(occlusion);
+    duplicate_occlusion.push_drop_occlusion(occlusion);
+    assert!(matches!(
+        building.insert_ready(duplicate_occlusion),
+        Err(SceneBuildError::DuplicateDropOcclusion { floating }) if floating == FLOATING
     ));
 
     let ready = ReadySurfaceScene::new(TARGET_SURFACE, bounds);

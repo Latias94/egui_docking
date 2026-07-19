@@ -19,7 +19,10 @@ use thiserror::Error;
 /// Resolves one authoritative surface-local point against an immutable scene.
 ///
 /// Every geometric candidate is checked against explicit availability, current
-/// policy, and a complete U3 candidate transaction. Resolution order is exactly
+/// policy, and a complete U3 candidate transaction. Visible candidates are
+/// first restricted by the frontmost explicit occlusion
+/// at the point: targets below that layer cannot participate or become fallback
+/// candidates. Remaining resolution order is exactly
 /// `TabGap > Center > InnerEdge > OuterEdge`, then larger explicit layer, then
 /// the lowest structural target identity. Geometry area, scene insertion order,
 /// focus, time, and pointer delta never participate.
@@ -61,10 +64,19 @@ pub fn resolve_drop(
         )));
     }
 
+    let occluding_layer = surface_scene
+        .drop_occlusions()
+        .iter()
+        .filter(|occlusion| occlusion.region().contains(point))
+        .map(|occlusion| occlusion.layer())
+        .max();
     let mut hits: Vec<&DropTargetRecord> = surface_scene
         .drop_targets()
         .iter()
-        .filter(|target| target.region().contains(point))
+        .filter(|target| {
+            target.region().contains(point)
+                && occluding_layer.is_none_or(|layer| target.layer() >= layer)
+        })
         .collect();
     if hits.is_empty() {
         return Ok(DropResolution::KnownNone(KnownDropAbsence::new(

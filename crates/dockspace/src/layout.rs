@@ -107,7 +107,11 @@ impl LayoutMetrics {
         Ok(Self { splitter_thickness })
     }
 
-    /// Returns the extent reserved for every boundary between split children.
+    /// Returns the preferred extent reserved for every boundary between split children.
+    ///
+    /// Projection uses this exact thickness whenever it fits. If splitters alone
+    /// exceed a split's available extent, they are compressed uniformly so the
+    /// projection remains total for temporarily collapsed renderer surfaces.
     pub fn splitter_thickness(self) -> f64 {
         self.splitter_thickness
     }
@@ -243,18 +247,6 @@ pub enum LayoutError {
         splitter_count: usize,
         /// Configured thickness of each splitter.
         thickness: f64,
-    },
-    /// Splitters alone require more extent than their containing split provides.
-    #[error(
-        "split node {node:?} requires {required} extent for splitters but only {available} is available"
-    )]
-    InsufficientExtentForSplitters {
-        /// Split whose bounds cannot contain its splitters.
-        node: NodeId,
-        /// Total extent required by the configured splitters.
-        required: f64,
-        /// Extent available on the split axis.
-        available: f64,
     },
     /// A root's declared central leaf is outside that root's subtree.
     #[error("root {root} central node {central:?} is not reachable from its root node")]
@@ -420,7 +412,9 @@ pub fn solve_axis(
 /// `leaf_constraints` must contain an entry for every reachable tabs node.
 /// Split subtree constraints are composed deterministically from those leaves;
 /// callers do not provide duplicate constraints for internal nodes. `metrics`
-/// explicitly reserves the same splitter thickness in measurement and projection.
+/// explicitly includes the preferred splitter thickness in measurement. Projection
+/// reserves that thickness when possible and otherwise applies the documented
+/// uniform compression rule from [`LayoutMetrics::splitter_thickness`].
 ///
 /// # Errors
 ///
@@ -858,14 +852,8 @@ fn prepare_split_projection<'workspace>(
         Axis::Horizontal => bounds.width(),
         Axis::Vertical => bounds.height(),
     };
-    let splitter_extent = total_splitter_extent(node_id, children.len(), metrics)?;
-    if splitter_extent > extent {
-        return Err(LayoutError::InsufficientExtentForSplitters {
-            node: node_id,
-            required: splitter_extent,
-            available: extent,
-        });
-    }
+    let (splitter_extent, splitter_thickness) =
+        projected_splitter_geometry(node_id, children.len(), extent, metrics)?;
     let solved = solve_axis(
         extent - splitter_extent,
         &axis_weights,
@@ -888,8 +876,29 @@ fn prepare_split_projection<'workspace>(
         splitter_rects: Vec::with_capacity(children.len().saturating_sub(1)),
         overflow: solved.overflow,
         unallocated: solved.unallocated,
-        splitter_thickness: metrics.splitter_thickness(),
+        splitter_thickness,
     }))
+}
+
+fn projected_splitter_geometry(
+    node: NodeId,
+    child_count: usize,
+    available: f64,
+    metrics: LayoutMetrics,
+) -> Result<(f64, f64), LayoutError> {
+    let configured_extent = total_splitter_extent(node, child_count, metrics)?;
+    if configured_extent <= available {
+        return Ok((configured_extent, metrics.splitter_thickness()));
+    }
+
+    let splitter_count = child_count.saturating_sub(1);
+    debug_assert!(splitter_count > 0);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "an in-memory child count is exactly representable throughout any feasible workspace"
+    )]
+    let splitter_count = splitter_count as f64;
+    Ok((available, available / splitter_count))
 }
 
 fn advance_split_projection<'workspace>(

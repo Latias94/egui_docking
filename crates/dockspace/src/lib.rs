@@ -37,5 +37,7 @@ pub mod viewport_registry;
 pub mod viewport_route;
 mod workspace;
 
+pub use workspace::RootPresentationOwner;
+
 /// Snapshot and conformance fixture schema version implemented by this crate.
 pub const CONTRACT_VERSION: u32 = 1;

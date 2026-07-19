@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use crate::command::{DockTarget, Edge};
 use crate::geometry::LogicalRect;
 use crate::hit_region::HitRegion;
-use crate::ids::{NodeId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, NodeId, RootId, SurfaceId};
 
 /// Stable front-to-back layer key supplied explicitly by a renderer adapter.
 ///
@@ -26,6 +26,53 @@ impl SceneLayerKey {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+/// Exact scene region in which one contained floating blocks lower layers.
+///
+/// Adapters publish the complete painted outer rectangle, including title bar
+/// and border chrome. A target on the same layer remains eligible so the
+/// floating's own content can receive drops; targets on lower layers are not
+/// candidates anywhere inside this region.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropOcclusionRecord {
+    floating: FloatingPresentationId,
+    region: HitRegion,
+    layer: SceneLayerKey,
+}
+
+impl DropOcclusionRecord {
+    /// Creates one exact contained-floating occlusion fact.
+    #[must_use]
+    pub const fn new(
+        floating: FloatingPresentationId,
+        region: HitRegion,
+        layer: SceneLayerKey,
+    ) -> Self {
+        Self {
+            floating,
+            region,
+            layer,
+        }
+    }
+
+    /// Returns the stable contained-floating identity.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the exact blocking region.
+    #[must_use]
+    pub const fn region(self) -> HitRegion {
+        self.region
+    }
+
+    /// Returns the front-to-back layer occupied by the floating.
+    #[must_use]
+    pub const fn layer(self) -> SceneLayerKey {
+        self.layer
     }
 }
 

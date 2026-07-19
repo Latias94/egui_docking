@@ -17,13 +17,23 @@ pub(crate) struct ParentLink {
     pub(crate) index: usize,
 }
 
+/// Current presentation which exclusively owns a logical docking root.
+///
+/// A root keeps its identity when it moves between these presentation
+/// carriers. Adapters can use this fact to preserve presentation identities
+/// without inspecting workspace storage or guessing from geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RootPresentation {
+pub enum RootPresentationOwner {
+    /// The root is the main content of a logical surface.
     Main {
+        /// Surface which directly owns the root.
         surface: SurfaceId,
     },
+    /// The root is presented by a contained floating on a logical surface.
     Contained {
+        /// Surface which hosts the contained presentation.
         surface: SurfaceId,
+        /// Stable contained presentation identity.
         floating: FloatingPresentationId,
     },
 }
@@ -184,8 +194,10 @@ impl Workspace {
             .get(&root)
             .ok_or(CommandError::MissingRoot { root })?;
         let presentation = match self.presentation_for_root(root) {
-            Some(RootPresentation::Main { surface }) => FingerprintPresentation::Main { surface },
-            Some(RootPresentation::Contained { surface, floating }) => {
+            Some(RootPresentationOwner::Main { surface }) => {
+                FingerprintPresentation::Main { surface }
+            }
+            Some(RootPresentationOwner::Contained { surface, floating }) => {
                 FingerprintPresentation::Contained { surface, floating }
             }
             None => {
@@ -312,10 +324,15 @@ impl Workspace {
         items
     }
 
-    pub(crate) fn presentation_for_root(&self, root: RootId) -> Option<RootPresentation> {
+    /// Returns the current presentation owner of `root`.
+    ///
+    /// Valid workspaces have exactly one owner for every root. `None` means the
+    /// root is absent or the workspace has not passed validation.
+    #[must_use]
+    pub fn presentation_for_root(&self, root: RootId) -> Option<RootPresentationOwner> {
         for (surface_id, surface) in &self.surfaces {
             if surface.main_root == root {
-                return Some(RootPresentation::Main {
+                return Some(RootPresentationOwner::Main {
                     surface: *surface_id,
                 });
             }
@@ -325,7 +342,7 @@ impl Workspace {
                     .get(floating_id)
                     .is_some_and(|floating| floating.root == root)
                 {
-                    return Some(RootPresentation::Contained {
+                    return Some(RootPresentationOwner::Contained {
                         surface: *surface_id,
                         floating: *floating_id,
                     });

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::RootPresentationOwner;
 use crate::canonical::canonicalize_workspace;
 use crate::command::{
     CommandOutcome, DockTarget, Edge, EdgeTarget, ItemSource, MovePayload, NodeSource, RootContent,
@@ -15,7 +16,6 @@ use crate::graph::{
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::policy::{DockPolicy, TearOffPresentation};
 use crate::transaction::PreparedTransaction;
-use crate::workspace::RootPresentation;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemDelta {
@@ -528,7 +528,7 @@ fn rehome_root(
     match target {
         RootPresentationTarget::Surface { surface } => {
             policy.check_tear_off(TearOffPresentation::Native)?;
-            if current == (RootPresentation::Main { surface }) {
+            if current == (RootPresentationOwner::Main { surface }) {
                 return Ok(rehome_outcome(root, surface, None, false));
             }
             if workspace.surfaces.contains_key(&surface) {
@@ -550,7 +550,7 @@ fn rehome_root(
             if !workspace.surfaces.contains_key(&surface) {
                 return Err(CommandError::MissingSurface { surface });
             }
-            if let RootPresentation::Contained {
+            if let RootPresentationOwner::Contained {
                 surface: current_surface,
                 floating: current_floating,
             } = current
@@ -575,7 +575,7 @@ fn rehome_root(
             } else if workspace.contained_floatings.contains_key(&floating) {
                 return Err(CommandError::FloatingIdCollision { floating });
             }
-            if current == (RootPresentation::Main { surface }) {
+            if current == (RootPresentationOwner::Main { surface }) {
                 return Err(CommandError::ContainedHostWouldBeRemoved { surface, root });
             }
 
@@ -933,7 +933,8 @@ fn ensure_contained_host_survives_move(
         return Ok(());
     };
     let source_root = payload_root(payload);
-    if workspace.presentation_for_root(source_root) != Some(RootPresentation::Main { surface }) {
+    if workspace.presentation_for_root(source_root) != Some(RootPresentationOwner::Main { surface })
+    {
         return Ok(());
     }
     let record = workspace
@@ -1461,7 +1462,7 @@ fn ensure_root_presentation_removable(
     root: RootId,
 ) -> Result<(), CommandError> {
     match workspace.presentation_for_root(root) {
-        Some(RootPresentation::Main { surface }) => {
+        Some(RootPresentationOwner::Main { surface }) => {
             let presentation = workspace
                 .surfaces
                 .get(&surface)
@@ -1472,7 +1473,7 @@ fn ensure_root_presentation_removable(
                 Err(CommandError::SurfaceHasContainedRoots { surface })
             }
         }
-        Some(RootPresentation::Contained { .. }) => Ok(()),
+        Some(RootPresentationOwner::Contained { .. }) => Ok(()),
         None => Err(CommandError::Invariant {
             stage: "remove root presentation owner",
         }),
@@ -1515,11 +1516,11 @@ fn remove_subtree_nodes(workspace: &mut Workspace, root: NodeId) -> Result<(), C
 fn detach_root_presentation(
     workspace: &mut Workspace,
     root: RootId,
-    presentation: RootPresentation,
+    presentation: RootPresentationOwner,
 ) -> Result<(), CommandError> {
     ensure_root_presentation_removable(workspace, root)?;
     match presentation {
-        RootPresentation::Main { surface } => {
+        RootPresentationOwner::Main { surface } => {
             if workspace
                 .surfaces
                 .get(&surface)
@@ -1535,7 +1536,7 @@ fn detach_root_presentation(
                 .remove(&surface)
                 .ok_or(CommandError::MissingSurface { surface })?;
         }
-        RootPresentation::Contained { surface, floating } => {
+        RootPresentationOwner::Contained { surface, floating } => {
             let record = workspace
                 .contained_floatings
                 .remove(&floating)
