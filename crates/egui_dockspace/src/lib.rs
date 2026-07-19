@@ -15,6 +15,12 @@ mod floating;
 mod hit;
 #[cfg(feature = "serde")]
 mod persistence;
+#[cfg(feature = "native")]
+#[allow(
+    dead_code,
+    reason = "the crate-private provider boundary is consumed by the next U7 native runtime unit"
+)]
+mod platform_adapter;
 mod projection;
 mod renderer;
 mod response;
