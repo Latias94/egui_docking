@@ -7,6 +7,7 @@ pub mod presentation;
 pub mod style;
 
 mod builder;
+mod drop_guides;
 mod error;
 #[path = "dockspace.rs"]
 mod facade;

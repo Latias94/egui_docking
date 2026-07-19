@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use dockspace::drop_target::DropTargetId;
+use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::interaction::InteractionStatus;
@@ -123,14 +123,20 @@ fn main_center_target_point(dockspace: &Dockspace) -> Pos2 {
         panic!("surface scene is ready");
     };
     let rect = ready
-        .drop_targets()
+        .drop_guide_clusters()
         .iter()
-        .find_map(|target| match target.id() {
-            DropTargetId::Center { root, .. } if root == MAIN_ROOT => Some(target.region().rect()),
-            _ => None,
+        .find(|cluster| {
+            cluster.id().root == MAIN_ROOT && matches!(cluster.id().scope, DropGuideScope::Inner(_))
         })
-        .expect("main center target is published");
-    Pos2::new((rect.min().x() + 1.0) as f32, (rect.min().y() + 1.0) as f32)
+        .and_then(|cluster| cluster.target(DropGuideSlot::Center))
+        .expect("main center guide is published")
+        .target()
+        .region()
+        .rect();
+    Pos2::new(
+        ((rect.min().x() + rect.max().x()) * 0.5) as f32,
+        ((rect.min().y() + rect.max().y()) * 0.5) as f32,
+    )
 }
 
 fn drag_to(

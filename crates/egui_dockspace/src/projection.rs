@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload};
+use dockspace::drop_guide::{DropGuideClusterRecord, DropGuideEdgeSet, DropGuideTargetRecord};
 use dockspace::drop_target::{
     DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual,
     SceneLayerKey,
@@ -564,7 +565,6 @@ fn build_root_plan(
                     root,
                     *node,
                     rect,
-                    root_bounds,
                     root_record.node,
                     items,
                     *selected,
@@ -662,7 +662,7 @@ fn build_root_plan(
         }
     }
 
-    push_outer_targets(
+    push_outer_guide(
         workspace,
         surface,
         root,
@@ -855,7 +855,6 @@ fn build_tabs_plan(
     root: RootId,
     node: NodeId,
     node_rect: Rect,
-    root_bounds: Rect,
     root_node: NodeId,
     items: &[ItemId],
     selected: Option<ItemId>,
@@ -1023,14 +1022,13 @@ fn build_tabs_plan(
         style,
         ready,
     )?;
-    push_leaf_targets(
+    push_leaf_guide(
         workspace,
         surface,
         root,
         node,
         node_rect,
         content_rect,
-        root_bounds,
         root_node,
         layer,
         style,
@@ -1083,91 +1081,118 @@ fn allocate_tab_widths(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct GuideButtonGeometry {
+    draw: Rect,
+    hit: Rect,
+}
+
+#[derive(Clone, Copy)]
+struct GuideEdgeGeometry {
+    left: GuideButtonGeometry,
+    right: GuideButtonGeometry,
+    top: GuideButtonGeometry,
+    bottom: GuideButtonGeometry,
+}
+
+impl GuideEdgeGeometry {
+    const fn get(self, edge: Edge) -> GuideButtonGeometry {
+        match edge {
+            Edge::Left => self.left,
+            Edge::Right => self.right,
+            Edge::Top => self.top,
+            Edge::Bottom => self.bottom,
+        }
+    }
+
+    const fn buttons(self) -> [GuideButtonGeometry; 4] {
+        [self.left, self.right, self.top, self.bottom]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InnerGuideGeometry {
+    center: GuideButtonGeometry,
+    edges: GuideEdgeGeometry,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn push_leaf_targets(
+fn push_leaf_guide(
     workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,
     node: NodeId,
     node_rect: Rect,
     content_rect: Rect,
-    root_bounds: Rect,
     root_node: NodeId,
     layer: SceneLayerKey,
     style: &DockStyle,
     fraction: DockFraction,
     ready: &mut ReadySurfaceScene,
 ) -> Result<(), ProjectionError> {
-    if !content_rect.is_positive() {
+    let Some(geometry) = inner_guide_geometry(content_rect, style) else {
+        return Ok(());
+    };
+    if !rect_contains(node_rect, content_rect) {
         return Ok(());
     }
-    let left_boundary = same_edge(node_rect.min.x, root_bounds.min.x);
-    let right_boundary = same_edge(node_rect.max.x, root_bounds.max.x);
-    let top_boundary = same_edge(node_rect.min.y, root_bounds.min.y);
-    let bottom_boundary = same_edge(node_rect.max.y, root_bounds.max.y);
-    let inner = style
-        .inner_drop_extent
-        .min(content_rect.width() * 0.25)
-        .min(content_rect.height() * 0.25);
-    let outer = style
-        .outer_drop_extent
-        .min(content_rect.width() * 0.25)
-        .min(content_rect.height() * 0.25);
-    let center_rect = Rect::from_min_max(
-        pos2(
-            content_rect.min.x + if left_boundary { outer } else { inner },
-            content_rect.min.y + if top_boundary { outer } else { inner },
-        ),
-        pos2(
-            content_rect.max.x - if right_boundary { outer } else { inner },
-            content_rect.max.y - if bottom_boundary { outer } else { inner },
-        ),
-    );
-    if center_rect.is_positive() {
-        let target = workspace.capture_tab_target(root, node)?;
-        ready.push_drop_target(DropTargetRecord::new(
-            DropTargetId::Center {
+
+    let center = guide_target_record(
+        DropTargetId::Center {
+            surface,
+            root,
+            tabs: node,
+        },
+        DockTarget::Center(workspace.capture_tab_target(root, node)?),
+        geometry.center,
+        content_rect,
+        layer,
+    )?;
+    let single_tabs_root = node == root_node;
+    let edge_record = |edge: Edge| -> Result<DropGuideTargetRecord, ProjectionError> {
+        let id = if single_tabs_root {
+            DropTargetId::OuterEdge {
                 surface,
                 root,
-                tabs: node,
-            },
-            DockTarget::Center(target),
-            DropTargetAvailability::Available,
-            HitRegion::new(to_logical_rect(center_rect)?),
-            layer,
-            DropVisual::new(to_logical_rect(content_rect)?),
-        ));
-    }
-
-    if node != root_node {
-        for (edge, region) in inner_edge_regions(
-            content_rect,
-            inner,
-            [left_boundary, right_boundary, top_boundary, bottom_boundary],
-        ) {
-            if region.is_positive() {
-                let target = workspace.capture_edge_target(root, node, edge, fraction)?;
-                ready.push_drop_target(DropTargetRecord::new(
-                    DropTargetId::InnerEdge {
-                        surface,
-                        root,
-                        node,
-                        edge,
-                    },
-                    DockTarget::Edge(target),
-                    DropTargetAvailability::Available,
-                    HitRegion::new(to_logical_rect(region)?),
-                    layer,
-                    DropVisual::new(to_logical_rect(edge_visual(content_rect, edge, fraction))?),
-                ));
+                node,
+                edge,
             }
-        }
-    }
+        } else {
+            DropTargetId::InnerEdge {
+                surface,
+                root,
+                node,
+                edge,
+            }
+        };
+        guide_target_record(
+            id,
+            DockTarget::Edge(workspace.capture_edge_target(root, node, edge, fraction)?),
+            geometry.edges.get(edge),
+            edge_visual(node_rect, edge, fraction),
+            layer,
+        )
+    };
+    let edges = DropGuideEdgeSet::new(
+        edge_record(Edge::Left)?,
+        edge_record(Edge::Right)?,
+        edge_record(Edge::Top)?,
+        edge_record(Edge::Bottom)?,
+    );
+    ready.push_drop_guide_cluster(DropGuideClusterRecord::inner(
+        surface,
+        root,
+        node,
+        HitRegion::new(to_logical_rect(node_rect)?),
+        layer,
+        center,
+        edges,
+    ));
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn push_outer_targets(
+fn push_outer_guide(
     workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,
@@ -1178,32 +1203,125 @@ fn push_outer_targets(
     fraction: DockFraction,
     ready: &mut ReadySurfaceScene,
 ) -> Result<(), ProjectionError> {
-    if !bounds.is_positive() {
+    if matches!(workspace.node(root_node), Some(Node::Tabs { .. })) {
         return Ok(());
     }
-    let extent = style
-        .outer_drop_extent
-        .min(bounds.width() * 0.25)
-        .min(bounds.height() * 0.25);
-    for (edge, region) in edge_regions(bounds, extent) {
-        if region.is_positive() {
-            let target = workspace.capture_edge_target(root, root_node, edge, fraction)?;
-            ready.push_drop_target(DropTargetRecord::new(
-                DropTargetId::OuterEdge {
-                    surface,
-                    root,
-                    node: root_node,
-                    edge,
-                },
-                DockTarget::Edge(target),
-                DropTargetAvailability::Available,
-                HitRegion::new(to_logical_rect(region)?),
-                layer,
-                DropVisual::new(to_logical_rect(edge_visual(bounds, edge, fraction))?),
-            ));
-        }
-    }
+    let Some(edges_geometry) = outer_guide_geometry(bounds, style) else {
+        return Ok(());
+    };
+    let edge_record = |edge: Edge| -> Result<DropGuideTargetRecord, ProjectionError> {
+        guide_target_record(
+            DropTargetId::OuterEdge {
+                surface,
+                root,
+                node: root_node,
+                edge,
+            },
+            DockTarget::Edge(workspace.capture_edge_target(root, root_node, edge, fraction)?),
+            edges_geometry.get(edge),
+            edge_visual(bounds, edge, fraction),
+            layer,
+        )
+    };
+    let edges = DropGuideEdgeSet::new(
+        edge_record(Edge::Left)?,
+        edge_record(Edge::Right)?,
+        edge_record(Edge::Top)?,
+        edge_record(Edge::Bottom)?,
+    );
+    ready.push_drop_guide_cluster(DropGuideClusterRecord::outer(
+        surface,
+        root,
+        HitRegion::new(to_logical_rect(bounds)?),
+        layer,
+        edges,
+    ));
     Ok(())
+}
+
+fn guide_target_record(
+    id: DropTargetId,
+    target: DockTarget,
+    geometry: GuideButtonGeometry,
+    preview: Rect,
+    layer: SceneLayerKey,
+) -> Result<DropGuideTargetRecord, ProjectionError> {
+    Ok(DropGuideTargetRecord::new(
+        DropTargetRecord::new(
+            id,
+            target,
+            DropTargetAvailability::Available,
+            HitRegion::new(to_logical_rect(geometry.hit)?),
+            layer,
+            DropVisual::new(to_logical_rect(preview)?),
+        ),
+        to_logical_rect(geometry.draw)?,
+    ))
+}
+
+fn inner_guide_geometry(content: Rect, style: &DockStyle) -> Option<InnerGuideGeometry> {
+    if !content.is_positive() {
+        return None;
+    }
+    let center = content.center();
+    let offset = style.drop_guide_extent + style.drop_guide_gap;
+    let center_button = guide_button(center, style);
+    let edges = GuideEdgeGeometry {
+        left: guide_button(center - vec2(offset, 0.0), style),
+        right: guide_button(center + vec2(offset, 0.0), style),
+        top: guide_button(center - vec2(0.0, offset), style),
+        bottom: guide_button(center + vec2(0.0, offset), style),
+    };
+    let [left, right, top, bottom] = edges.buttons();
+    let buttons = [center_button, left, right, top, bottom];
+    guide_buttons_fit(content, &buttons).then_some(InnerGuideGeometry {
+        center: center_button,
+        edges,
+    })
+}
+
+fn outer_guide_geometry(bounds: Rect, style: &DockStyle) -> Option<GuideEdgeGeometry> {
+    if !bounds.is_positive() {
+        return None;
+    }
+    let center = bounds.center();
+    let inset = style.drop_guide_outer_inset;
+    let edges = GuideEdgeGeometry {
+        left: guide_button(pos2(bounds.min.x + inset, center.y), style),
+        right: guide_button(pos2(bounds.max.x - inset, center.y), style),
+        top: guide_button(pos2(center.x, bounds.min.y + inset), style),
+        bottom: guide_button(pos2(center.x, bounds.max.y - inset), style),
+    };
+    guide_buttons_fit(bounds, &edges.buttons()).then_some(edges)
+}
+
+fn guide_button(center: egui::Pos2, style: &DockStyle) -> GuideButtonGeometry {
+    let draw = Rect::from_center_size(center, Vec2::splat(style.drop_guide_extent));
+    GuideButtonGeometry {
+        draw,
+        hit: draw.expand(style.drop_guide_hit_padding),
+    }
+}
+
+fn guide_buttons_fit(bounds: Rect, buttons: &[GuideButtonGeometry]) -> bool {
+    bounds.is_positive()
+        && buttons.iter().all(|button| {
+            button.draw.is_positive()
+                && button.hit.is_positive()
+                && rect_contains(bounds, button.hit)
+        })
+        && buttons.iter().enumerate().all(|(index, button)| {
+            buttons[index + 1..]
+                .iter()
+                .all(|other| !button.hit.intersect(other.hit).is_positive())
+        })
+}
+
+fn rect_contains(outer: Rect, inner: Rect) -> bool {
+    inner.min.x >= outer.min.x
+        && inner.min.y >= outer.min.y
+        && inner.max.x <= outer.max.x
+        && inner.max.y <= outer.max.y
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1270,42 +1388,6 @@ fn push_tab_gap_targets(
         }
     }
     Ok(())
-}
-
-fn edge_regions(rect: Rect, extent: f32) -> [(Edge, Rect); 4] {
-    let extent = extent.max(0.0);
-    [
-        (
-            Edge::Left,
-            Rect::from_min_max(rect.min, pos2(rect.min.x + extent, rect.max.y)),
-        ),
-        (
-            Edge::Right,
-            Rect::from_min_max(pos2(rect.max.x - extent, rect.min.y), rect.max),
-        ),
-        (
-            Edge::Top,
-            Rect::from_min_max(
-                pos2(rect.min.x + extent, rect.min.y),
-                pos2(rect.max.x - extent, rect.min.y + extent),
-            ),
-        ),
-        (
-            Edge::Bottom,
-            Rect::from_min_max(
-                pos2(rect.min.x + extent, rect.max.y - extent),
-                pos2(rect.max.x - extent, rect.max.y),
-            ),
-        ),
-    ]
-}
-
-fn inner_edge_regions(rect: Rect, extent: f32, boundary: [bool; 4]) -> Vec<(Edge, Rect)> {
-    edge_regions(rect, extent)
-        .into_iter()
-        .zip(boundary)
-        .filter_map(|((edge, rect), omit)| (!omit).then_some((edge, rect)))
-        .collect()
 }
 
 fn edge_visual(rect: Rect, edge: Edge, fraction: DockFraction) -> Rect {
@@ -1378,10 +1460,6 @@ fn splitter_hit_rects(rects: &[Rect], horizontal: bool, extent: f32, bounds: Rec
         .collect()
 }
 
-fn same_edge(left: f32, right: f32) -> bool {
-    left.to_bits() == right.to_bits()
-}
-
 fn intersect_rect(rect: Rect, bounds: Rect) -> Rect {
     let min = rect.min.max(bounds.min).min(bounds.max);
     let max = rect.max.min(bounds.max).max(min);
@@ -1426,6 +1504,127 @@ fn to_egui_coordinate(component: &'static str, value: f64) -> Result<f32, Projec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
+    use dockspace::graph::{RootRecord, SurfacePresentation};
+
+    const SURFACE: SurfaceId = SurfaceId::new(1);
+    const ROOT: RootId = RootId::new(10);
+    const ITEM_A: ItemId = ItemId::new(100);
+    const ITEM_B: ItemId = ItemId::new(101);
+
+    fn single_workspace() -> (Workspace, NodeId) {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ITEM_A]));
+        builder.set_root(ROOT, RootRecord::new(tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+        (builder.build().expect("single-tabs fixture is valid"), tabs)
+    }
+
+    fn split_workspace() -> (Workspace, NodeId, NodeId, NodeId) {
+        let mut builder = Workspace::builder();
+        let left = builder.insert_node(Node::tabs([ITEM_A]));
+        let right = builder.insert_node(Node::tabs([ITEM_B]));
+        let split = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [left, right]).expect("two children form a split"),
+        );
+        builder.set_root(ROOT, RootRecord::new(split));
+        builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+        (
+            builder.build().expect("split fixture is valid"),
+            split,
+            left,
+            right,
+        )
+    }
+
+    fn publish_leaf(
+        workspace: &Workspace,
+        ready: &mut ReadySurfaceScene,
+        node: NodeId,
+        root_node: NodeId,
+        node_rect: Rect,
+    ) {
+        let content = Rect::from_min_max(
+            pos2(
+                node_rect.min.x,
+                node_rect.min.y + DockStyle::default().tab_bar_height,
+            ),
+            node_rect.max,
+        );
+        push_leaf_guide(
+            workspace,
+            SURFACE,
+            ROOT,
+            node,
+            node_rect,
+            content,
+            root_node,
+            SceneLayerKey::new(1),
+            &DockStyle::default(),
+            DockFraction::new(0.5).expect("fixture fraction is valid"),
+            ready,
+        )
+        .expect("leaf guide projects");
+    }
+
+    fn assert_edge_targets(
+        cluster: &DropGuideClusterRecord,
+        node: NodeId,
+        preview_bounds: Rect,
+        outer: bool,
+    ) {
+        let fraction = DockFraction::new(0.5).expect("fixture fraction is valid");
+        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+            let record = cluster
+                .target(DropGuideSlot::Edge(edge))
+                .expect("complete guide contains every edge");
+            let expected_id = if outer {
+                DropTargetId::OuterEdge {
+                    surface: SURFACE,
+                    root: ROOT,
+                    node,
+                    edge,
+                }
+            } else {
+                DropTargetId::InnerEdge {
+                    surface: SURFACE,
+                    root: ROOT,
+                    node,
+                    edge,
+                }
+            };
+            assert_eq!(record.id(), expected_id);
+            let DockTarget::Edge(target) = record.target().target() else {
+                panic!("edge slot must own an edge command target");
+            };
+            assert_eq!(target.node(), node);
+            assert_eq!(target.edge(), edge);
+            assert_eq!(target.fraction(), fraction);
+            assert_eq!(
+                record.target().visual().rect(),
+                to_logical_rect(edge_visual(preview_bounds, edge, fraction))
+                    .expect("fixture preview is finite")
+            );
+        }
+    }
+
+    fn assert_button_geometry(
+        record: &DropGuideTargetRecord,
+        expected_center: egui::Pos2,
+        style: &DockStyle,
+    ) {
+        let expected_draw =
+            Rect::from_center_size(expected_center, Vec2::splat(style.drop_guide_extent));
+        assert_eq!(
+            from_logical_rect(record.draw()).expect("fixture draw is representable"),
+            expected_draw
+        );
+        assert_eq!(
+            from_logical_rect(record.target().region().rect())
+                .expect("fixture hit region is representable"),
+            expected_draw.expand(style.drop_guide_hit_padding)
+        );
+    }
 
     #[test]
     fn tab_widths_fill_available_space_without_layout_shift() {
@@ -1445,11 +1644,188 @@ mod tests {
     }
 
     #[test]
-    fn edge_regions_partition_corners_deterministically() {
-        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 80.0));
-        let regions = edge_regions(rect, 20.0);
-        assert!(regions[0].1.contains(pos2(5.0, 5.0)));
-        assert!(!regions[2].1.contains(pos2(5.0, 5.0)));
-        assert!(regions[2].1.contains(pos2(50.0, 5.0)));
+    fn single_tabs_root_publishes_one_complete_inner_cluster_without_outer_duplicate() {
+        let (workspace, tabs) = single_workspace();
+        let bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(320.0, 240.0));
+        let mut ready = ReadySurfaceScene::new(
+            SURFACE,
+            to_logical_rect(bounds).expect("fixture bounds are finite"),
+        );
+
+        publish_leaf(&workspace, &mut ready, tabs, tabs, bounds);
+        push_outer_guide(
+            &workspace,
+            SURFACE,
+            ROOT,
+            tabs,
+            bounds,
+            SceneLayerKey::new(1),
+            &DockStyle::default(),
+            DockFraction::new(0.5).expect("fixture fraction is valid"),
+            &mut ready,
+        )
+        .expect("single root projection succeeds");
+
+        assert!(ready.drop_targets().is_empty());
+        let [cluster] = ready.drop_guide_clusters() else {
+            panic!("single-tabs root must publish exactly one guide cluster");
+        };
+        assert_eq!(cluster.id().scope, DropGuideScope::Inner(tabs));
+        assert_eq!(cluster.targets().count(), 5);
+        assert!(cluster.target(DropGuideSlot::Center).is_some());
+        assert_edge_targets(cluster, tabs, bounds, true);
+
+        let style = DockStyle::default();
+        let content = Rect::from_min_max(
+            pos2(bounds.min.x, bounds.min.y + style.tab_bar_height),
+            bounds.max,
+        );
+        let center = content.center();
+        let offset = style.drop_guide_extent + style.drop_guide_gap;
+        for (slot, expected_center) in [
+            (DropGuideSlot::Center, center),
+            (DropGuideSlot::Edge(Edge::Left), center - vec2(offset, 0.0)),
+            (DropGuideSlot::Edge(Edge::Right), center + vec2(offset, 0.0)),
+            (DropGuideSlot::Edge(Edge::Top), center - vec2(0.0, offset)),
+            (
+                DropGuideSlot::Edge(Edge::Bottom),
+                center + vec2(0.0, offset),
+            ),
+        ] {
+            assert_button_geometry(
+                cluster.target(slot).expect("inner slot exists"),
+                expected_center,
+                &style,
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_touching_nested_leaves_keep_all_five_inner_directions() {
+        let (workspace, split, left, right) = split_workspace();
+        let root_bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 240.0));
+        let left_bounds = Rect::from_min_max(root_bounds.min, pos2(200.0, root_bounds.max.y));
+        let right_bounds = Rect::from_min_max(pos2(200.0, root_bounds.min.y), root_bounds.max);
+        let mut ready = ReadySurfaceScene::new(
+            SURFACE,
+            to_logical_rect(root_bounds).expect("fixture bounds are finite"),
+        );
+
+        publish_leaf(&workspace, &mut ready, left, split, left_bounds);
+        publish_leaf(&workspace, &mut ready, right, split, right_bounds);
+
+        for (node, bounds) in [(left, left_bounds), (right, right_bounds)] {
+            let cluster = ready
+                .drop_guide_clusters()
+                .iter()
+                .find(|cluster| cluster.id().scope == DropGuideScope::Inner(node))
+                .expect("every tabs leaf publishes an inner guide");
+            assert_eq!(cluster.targets().count(), 5);
+            assert!(cluster.target(DropGuideSlot::Center).is_some());
+            assert_edge_targets(cluster, node, bounds, false);
+        }
+    }
+
+    #[test]
+    fn nested_root_publishes_one_complete_four_direction_outer_cluster() {
+        let (workspace, split, _, _) = split_workspace();
+        let bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 240.0));
+        let mut ready = ReadySurfaceScene::new(
+            SURFACE,
+            to_logical_rect(bounds).expect("fixture bounds are finite"),
+        );
+
+        push_outer_guide(
+            &workspace,
+            SURFACE,
+            ROOT,
+            split,
+            bounds,
+            SceneLayerKey::new(1),
+            &DockStyle::default(),
+            DockFraction::new(0.5).expect("fixture fraction is valid"),
+            &mut ready,
+        )
+        .expect("outer guide projects");
+
+        let [cluster] = ready.drop_guide_clusters() else {
+            panic!("split root must publish exactly one outer guide cluster");
+        };
+        assert_eq!(cluster.id().scope, DropGuideScope::Outer);
+        assert_eq!(cluster.targets().count(), 4);
+        assert!(cluster.target(DropGuideSlot::Center).is_none());
+        assert_edge_targets(cluster, split, bounds, true);
+
+        let style = DockStyle::default();
+        for (edge, center) in [
+            (
+                Edge::Left,
+                pos2(
+                    bounds.min.x + style.drop_guide_outer_inset,
+                    bounds.center().y,
+                ),
+            ),
+            (
+                Edge::Right,
+                pos2(
+                    bounds.max.x - style.drop_guide_outer_inset,
+                    bounds.center().y,
+                ),
+            ),
+            (
+                Edge::Top,
+                pos2(
+                    bounds.center().x,
+                    bounds.min.y + style.drop_guide_outer_inset,
+                ),
+            ),
+            (
+                Edge::Bottom,
+                pos2(
+                    bounds.center().x,
+                    bounds.max.y - style.drop_guide_outer_inset,
+                ),
+            ),
+        ] {
+            assert_button_geometry(
+                cluster
+                    .target(DropGuideSlot::Edge(edge))
+                    .expect("outer slot exists"),
+                center,
+                &style,
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_guide_geometry_is_omitted_atomically_when_it_cannot_fit() {
+        let (single, tabs) = single_workspace();
+        let tiny = Rect::from_min_size(pos2(0.0, 0.0), vec2(50.0, 50.0));
+        let mut ready = ReadySurfaceScene::new(
+            SURFACE,
+            to_logical_rect(tiny).expect("fixture bounds are finite"),
+        );
+        publish_leaf(&single, &mut ready, tabs, tabs, tiny);
+        assert!(ready.drop_guide_clusters().is_empty());
+
+        let (split_graph, split, _, _) = split_workspace();
+        let outer_bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(90.0, 90.0));
+        let mut outer_ready = ReadySurfaceScene::new(
+            SURFACE,
+            to_logical_rect(outer_bounds).expect("fixture bounds are finite"),
+        );
+        push_outer_guide(
+            &split_graph,
+            SURFACE,
+            ROOT,
+            split,
+            outer_bounds,
+            SceneLayerKey::new(1),
+            &DockStyle::default(),
+            DockFraction::new(0.5).expect("fixture fraction is valid"),
+            &mut outer_ready,
+        )
+        .expect("insufficient outer geometry is a deterministic omission");
+        assert!(outer_ready.drop_guide_clusters().is_empty());
     }
 }

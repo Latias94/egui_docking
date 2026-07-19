@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::command::{
     CommandOutcome, MovePayload, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
-use crate::drop_resolver::{DropResolution, DropResolutionError, resolve_drop};
+use crate::drop_resolver::{DropAffordance, DropResolution, DropResolutionError, query_drop};
 use crate::effect::{EffectResult, EffectTransition};
 use crate::error::TransactionError;
 use crate::event::{WorkspaceEvent, WorkspaceEventKind};
@@ -277,6 +277,25 @@ enum PreviewDecision {
     },
     Clear(PreviewResolutionStatus),
     Cancel(InteractionCancelReason),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreviewEvaluation {
+    decision: PreviewDecision,
+    affordance: Option<DropAffordance>,
+}
+
+impl PreviewEvaluation {
+    const fn new(decision: PreviewDecision, affordance: Option<DropAffordance>) -> Self {
+        Self {
+            decision,
+            affordance,
+        }
+    }
+
+    const fn without_affordance(decision: PreviewDecision) -> Self {
+        Self::new(decision, None)
+    }
 }
 
 enum ReleaseProofDecision {
@@ -2317,9 +2336,9 @@ impl DockEngine {
                     })?;
             (drag.payload.clone(), drag.pointer)
         };
-        let decision =
-            self.resolve_preview_decision(input, session, pointer, &payload, target, tear_off)?;
-        self.apply_preview_decision(input, session, decision, interaction_events)
+        let evaluation =
+            self.resolve_preview_evaluation(input, session, pointer, &payload, target, tear_off)?;
+        self.apply_preview_evaluation(input, session, evaluation, interaction_events)
     }
 
     fn cancel_drag(
@@ -2439,14 +2458,20 @@ impl DockEngine {
         }
     }
 
-    fn apply_preview_decision(
+    fn apply_preview_evaluation(
         &mut self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
-        decision: PreviewDecision,
+        evaluation: PreviewEvaluation,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        match decision {
+        self.interaction
+            .set_drop_affordance(session, evaluation.affordance)
+            .map_err(|_| EngineError::Interaction {
+                input,
+                source: InteractionCounterError::StateInvariant,
+            })?;
+        match evaluation.decision {
             PreviewDecision::Publish { visual, proof } => {
                 let stamp = self.scene.as_ref().map(SealedScene::stamp).ok_or(
                     EngineError::Interaction {
@@ -2492,7 +2517,7 @@ impl DockEngine {
         }
     }
 
-    fn resolve_preview_decision(
+    fn resolve_preview_evaluation(
         &self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
@@ -2500,27 +2525,31 @@ impl DockEngine {
         payload: &MovePayload,
         target: &TargetAuthority,
         tear_off: Option<&TearOffRequest>,
-    ) -> Result<PreviewDecision, EngineError> {
+    ) -> Result<PreviewEvaluation, EngineError> {
         let Some(scene) = self.scene.as_ref() else {
-            return Ok(PreviewDecision::Cancel(
-                InteractionCancelReason::SceneUnavailable,
+            return Ok(PreviewEvaluation::without_affordance(
+                PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable),
             ));
         };
         if scene.stamp().workspace() != self.version {
-            return Ok(PreviewDecision::Cancel(
-                InteractionCancelReason::SceneUnavailable,
+            return Ok(PreviewEvaluation::without_affordance(
+                PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable),
             ));
         }
         let (target, routed) = match self.target_observation(pointer, target) {
             Ok(target) => target,
-            Err(reason) => return Ok(PreviewDecision::Cancel(reason)),
+            Err(reason) => {
+                return Ok(PreviewEvaluation::without_affordance(
+                    PreviewDecision::Cancel(reason),
+                ));
+            }
         };
         match target {
-            Authority::Unknown(_) => Ok(PreviewDecision::Cancel(
-                InteractionCancelReason::UnknownTargetAuthority,
+            Authority::Unknown(_) => Ok(PreviewEvaluation::without_affordance(
+                PreviewDecision::Cancel(InteractionCancelReason::UnknownTargetAuthority),
             )),
             Authority::Known(Some(pointer)) => {
-                match resolve_drop(
+                let query = query_drop(
                     scene,
                     &self.workspace,
                     &self.policy,
@@ -2529,8 +2558,9 @@ impl DockEngine {
                     pointer.surface(),
                     pointer.position(),
                 )
-                .map_err(|source| EngineError::DropResolution { input, source })?
-                {
+                .map_err(|source| EngineError::DropResolution { input, source })?;
+                let (resolution, affordance) = query.into_parts();
+                let decision = match resolution {
                     DropResolution::Resolved(resolved) => {
                         if resolved.scene_stamp() != scene.stamp()
                             || resolved.session() != session
@@ -2547,28 +2577,29 @@ impl DockEngine {
                             target,
                             rect: resolved.visual().rect(),
                         };
-                        Ok(PreviewDecision::Publish {
+                        PreviewDecision::Publish {
                             visual,
                             proof: Box::new(PreviewProof::Dock {
                                 target,
                                 command: resolved.into_command(),
                             }),
-                        })
+                        }
                     }
                     DropResolution::KnownNone(_) => {
-                        Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone))
+                        PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
                     }
                     DropResolution::Rejected(_) => {
-                        Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
+                        PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
                     }
-                    DropResolution::Unavailable(_) => Ok(PreviewDecision::Cancel(
-                        InteractionCancelReason::SceneUnavailable,
-                    )),
-                }
+                    DropResolution::Unavailable(_) => {
+                        PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable)
+                    }
+                };
+                Ok(PreviewEvaluation::new(decision, affordance))
             }
-            Authority::Known(None) => {
-                self.resolve_tear_off_decision(input, payload, tear_off, routed)
-            }
+            Authority::Known(None) => self
+                .resolve_tear_off_decision(input, payload, tear_off, routed)
+                .map(PreviewEvaluation::without_affordance),
         }
     }
 
@@ -2916,7 +2947,7 @@ impl DockEngine {
                 InteractionRejection::StaleScene,
             ));
         }
-        let decision = self.resolve_preview_decision(
+        let evaluation = self.resolve_preview_evaluation(
             input,
             session,
             drag.pointer,
@@ -2924,7 +2955,7 @@ impl DockEngine {
             target,
             tear_off,
         )?;
-        let PreviewDecision::Publish { visual, proof } = decision else {
+        let PreviewDecision::Publish { visual, proof } = evaluation.decision else {
             return Ok(ReleaseProofDecision::Reject(
                 InteractionRejection::TargetChanged,
             ));
@@ -3233,6 +3264,12 @@ impl DockEngine {
                     input,
                     source: InteractionCounterError::StateInvariant,
                 })?;
+            self.interaction
+                .set_drop_affordance(session, None)
+                .map_err(|_| EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                })?;
             return Ok(());
         };
         let tear_off = tear_off.map(|request| {
@@ -3245,7 +3282,7 @@ impl DockEngine {
                 input,
                 source: InteractionCounterError::StateInvariant,
             })?;
-        let decision = self.resolve_preview_decision(
+        let evaluation = self.resolve_preview_evaluation(
             input,
             session,
             pointer,
@@ -3253,7 +3290,7 @@ impl DockEngine {
             &target,
             tear_off.as_ref(),
         )?;
-        let _ = self.apply_preview_decision(input, session, decision, interaction_events)?;
+        let _ = self.apply_preview_evaluation(input, session, evaluation, interaction_events)?;
         Ok(())
     }
 

@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use crate::command::{CommandOutcome, MovePayload, NodeSource, WorkspaceCommand};
+use crate::drop_resolver::DropAffordance;
 use crate::drop_target::DropTargetId;
 use crate::frame::NativeCreateRequest;
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
@@ -924,6 +925,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) payload: MovePayload,
     pub(crate) target: Option<TargetAuthority>,
     pub(crate) tear_off: Option<TearOffRequest>,
+    pub(crate) affordance: Option<DropAffordance>,
     pub(crate) preview: Option<PublishedPreview>,
 }
 
@@ -1110,6 +1112,22 @@ impl InteractionState {
         }
     }
 
+    /// Returns the complete docking-guide affordance for the active drag.
+    ///
+    /// Affordance is independent from [`Self::preview`]: it remains available
+    /// while a guide cluster is visible but no exact deliverable button is hit.
+    /// It never acts as paint acknowledgement or delivery proof.
+    #[must_use]
+    pub fn drop_affordance(&self) -> Option<&DropAffordance> {
+        match &self.active {
+            ActiveGesture::Dragging(drag) => drag.affordance.as_ref(),
+            ActiveGesture::Idle
+            | ActiveGesture::Armed(_)
+            | ActiveGesture::Resizing(_)
+            | ActiveGesture::ContainedTransforming(_) => None,
+        }
+    }
+
     /// Returns the validated resize override eligible for transient projection.
     #[must_use]
     pub fn resize_weights(&self) -> Option<(ResizeSessionId, &NodeSource, &[SplitWeight])> {
@@ -1173,6 +1191,7 @@ impl InteractionState {
             payload: armed.payload.clone(),
             target: None,
             tear_off: None,
+            affordance: None,
             preview: None,
         }));
         Ok(())
@@ -1259,6 +1278,15 @@ impl InteractionState {
         session: DragSessionId,
     ) -> Result<bool, InteractionRejection> {
         Ok(self.active_drag_mut(session)?.preview.take().is_some())
+    }
+
+    pub(crate) fn set_drop_affordance(
+        &mut self,
+        session: DragSessionId,
+        affordance: Option<DropAffordance>,
+    ) -> Result<(), InteractionRejection> {
+        self.active_drag_mut(session)?.affordance = affordance;
+        Ok(())
     }
 
     pub(crate) fn acknowledge_preview(

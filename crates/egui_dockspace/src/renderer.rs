@@ -20,6 +20,7 @@ use egui::{
     Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 
+use crate::drop_guides;
 use crate::floating;
 use crate::hit::contains_half_open;
 use crate::pane::PaneView;
@@ -199,6 +200,12 @@ pub(crate) fn paint_surface(
         style,
         interactions_current,
         &mut output,
+    );
+    drop_guides::paint(
+        &ui.painter_at(plan.bounds),
+        plan.surface,
+        interaction.drop_affordance(),
+        style,
     );
     paint_contained_transform_preview(
         ui,

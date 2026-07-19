@@ -6,6 +6,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
 use crate::command::{DockTarget, NodeFingerprint};
+use crate::drop_guide::{
+    DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
+    DropGuideTargetRecord,
+};
 use crate::drop_target::{
     DropOcclusionRecord, DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetRecord,
     DropTargetUnavailable,
@@ -176,6 +180,7 @@ pub struct ReadySurfaceScene {
     tabs: Vec<SemanticRect<TabSceneId>>,
     splitters: Vec<SemanticRect<SplitterSceneId>>,
     drop_occlusions: Vec<DropOcclusionRecord>,
+    drop_guide_clusters: Vec<DropGuideClusterRecord>,
     drop_targets: Vec<DropTargetRecord>,
 }
 
@@ -191,6 +196,7 @@ impl ReadySurfaceScene {
             tabs: Vec::new(),
             splitters: Vec::new(),
             drop_occlusions: Vec::new(),
+            drop_guide_clusters: Vec::new(),
             drop_targets: Vec::new(),
         }
     }
@@ -232,6 +238,11 @@ impl ReadySurfaceScene {
         self.drop_occlusions.push(occlusion);
     }
 
+    /// Adds one complete docking-guide cluster before scene submission.
+    pub fn push_drop_guide_cluster(&mut self, cluster: DropGuideClusterRecord) {
+        self.drop_guide_clusters.push(cluster);
+    }
+
     /// Adds one structural drop target before this fact is submitted to a scene.
     pub fn push_drop_target(&mut self, target: DropTargetRecord) {
         self.drop_targets.push(target);
@@ -265,6 +276,12 @@ impl ReadySurfaceScene {
     #[must_use]
     pub fn drop_occlusions(&self) -> &[DropOcclusionRecord] {
         &self.drop_occlusions
+    }
+
+    /// Returns docking-guide clusters in canonical structural order after sealing.
+    #[must_use]
+    pub fn drop_guide_clusters(&self) -> &[DropGuideClusterRecord] {
+        &self.drop_guide_clusters
     }
 
     /// Returns drop targets in canonical structural-identity order after sealing.
@@ -386,22 +403,10 @@ impl BuildingScene {
                         }
                     }
                     for target in &ready.drop_targets {
-                        validate_drop_visual(&ready, target)?;
-                        if target.id().surface() != surface
-                            || !target.semantics_match()
-                            || (target_reference_is_current(workspace, &workspace_index, target)
-                                && !target_structure_is_valid(
-                                    workspace,
-                                    &workspace_index,
-                                    surface,
-                                    target,
-                                ))
-                        {
-                            return Err(SceneBuildError::TargetSemanticMismatch {
-                                surface,
-                                target: target.id(),
-                            });
-                        }
+                        validate_drop_target(&ready, target, workspace, &workspace_index)?;
+                    }
+                    for cluster in &ready.drop_guide_clusters {
+                        validate_drop_guide_cluster(&ready, cluster, workspace, &workspace_index)?;
                     }
                     canonicalize_ready(&mut ready, workspace, &workspace_index, policy);
                     SurfaceScene::Ready(ready)
@@ -425,6 +430,7 @@ impl BuildingScene {
         let mut tab_ids = HashSet::new();
         let mut splitter_ids = HashSet::new();
         let mut occlusion_ids = HashSet::new();
+        let mut guide_cluster_ids = HashSet::new();
         let mut target_ids = HashSet::new();
 
         for ready in self.surfaces.values().flatten().chain([incoming]) {
@@ -458,6 +464,18 @@ impl BuildingScene {
             for target in &ready.drop_targets {
                 if !target_ids.insert(target.id()) {
                     return Err(SceneBuildError::DuplicateDropTarget { id: target.id() });
+                }
+            }
+            for cluster in &ready.drop_guide_clusters {
+                if !guide_cluster_ids.insert(cluster.id()) {
+                    return Err(SceneBuildError::DuplicateDropGuideCluster { id: cluster.id() });
+                }
+                for (_, guide_target) in cluster.targets() {
+                    if !target_ids.insert(guide_target.id()) {
+                        return Err(SceneBuildError::DuplicateDropTarget {
+                            id: guide_target.id(),
+                        });
+                    }
                 }
             }
         }
@@ -536,31 +554,319 @@ fn canonicalize_ready(
         .drop_occlusions
         .sort_unstable_by_key(|occlusion| occlusion.floating());
     ready
+        .drop_guide_clusters
+        .sort_unstable_by_key(DropGuideClusterRecord::id);
+    ready
         .drop_targets
         .sort_unstable_by_key(DropTargetRecord::id);
 
+    let surface = ready.surface;
     for target in &mut ready.drop_targets {
-        if !target.availability().is_available() {
-            continue;
+        canonicalize_drop_target(target, workspace, workspace_index, surface, policy);
+    }
+    for cluster in &mut ready.drop_guide_clusters {
+        cluster.for_each_target_mut(|_, guide_target| {
+            canonicalize_drop_target(
+                guide_target.target_mut(),
+                workspace,
+                workspace_index,
+                surface,
+                policy,
+            );
+        });
+    }
+}
+
+fn canonicalize_drop_target(
+    target: &mut DropTargetRecord,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+    surface: SurfaceId,
+    policy: &DockPolicy,
+) {
+    if !target.availability().is_available() {
+        return;
+    }
+    if !target_reference_is_current(workspace, workspace_index, target)
+        || !target_structure_is_valid(workspace, workspace_index, surface, target)
+    {
+        target.set_availability(DropTargetAvailability::Unavailable(
+            DropTargetUnavailable::Stale,
+        ));
+        return;
+    }
+    let allowed = match target.id().kind() {
+        DropTargetKind::TabGap | DropTargetKind::Center => policy.allows_tab_merge(),
+        DropTargetKind::InnerEdge | DropTargetKind::OuterEdge => policy.allows_edge_split(),
+    };
+    if !allowed {
+        target.set_availability(DropTargetAvailability::Unavailable(
+            DropTargetUnavailable::PolicyDisabled,
+        ));
+    }
+}
+
+fn validate_drop_guide_cluster(
+    ready: &ReadySurfaceScene,
+    cluster: &DropGuideClusterRecord,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> Result<(), SceneBuildError> {
+    let cluster_id = cluster.id();
+    validate_drop_guide_cluster_identity(ready, cluster_id, workspace, workspace_index)?;
+    let activation = validate_drop_guide_activation(ready, cluster)?;
+    for (slot, guide_target) in cluster.targets() {
+        validate_drop_guide_target(
+            ready,
+            cluster,
+            activation,
+            slot,
+            guide_target,
+            workspace,
+            workspace_index,
+        )?;
+    }
+    validate_drop_guide_hit_separation(ready.surface, cluster)
+}
+
+fn validate_drop_guide_cluster_identity(
+    ready: &ReadySurfaceScene,
+    cluster: DropGuideClusterId,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> Result<(), SceneBuildError> {
+    let scope_is_valid = match cluster.scope {
+        DropGuideScope::Inner(node) => {
+            workspace_index.semantic_node_exists(ready.surface, cluster.root, node)
+                && matches!(workspace.node(node), Some(Node::Tabs { .. }))
         }
-        if !target_reference_is_current(workspace, workspace_index, target)
-            || !target_structure_is_valid(workspace, workspace_index, ready.surface, target)
-        {
-            target.set_availability(DropTargetAvailability::Unavailable(
-                DropTargetUnavailable::Stale,
-            ));
-            continue;
+        DropGuideScope::Outer => {
+            workspace_index.root_belongs_to_surface(ready.surface, cluster.root)
+                && workspace_index
+                    .root_node(cluster.root)
+                    .and_then(|node| workspace.node(node))
+                    .is_some_and(|node| matches!(node, Node::Split { .. }))
         }
-        let allowed = match target.id().kind() {
-            DropTargetKind::TabGap | DropTargetKind::Center => policy.allows_tab_merge(),
-            DropTargetKind::InnerEdge | DropTargetKind::OuterEdge => policy.allows_edge_split(),
-        };
-        if !allowed {
-            target.set_availability(DropTargetAvailability::Unavailable(
-                DropTargetUnavailable::PolicyDisabled,
-            ));
+    };
+    if cluster.surface != ready.surface || !scope_is_valid {
+        return Err(SceneBuildError::InvalidDropGuideCluster {
+            surface: ready.surface,
+            cluster,
+        });
+    }
+    Ok(())
+}
+
+fn validate_drop_guide_activation(
+    ready: &ReadySurfaceScene,
+    cluster: &DropGuideClusterRecord,
+) -> Result<LogicalRect, SceneBuildError> {
+    let cluster_id = cluster.id();
+    let activation = cluster.activation().rect();
+    if !rect_has_area(activation) {
+        return Err(SceneBuildError::EmptyDropGuideActivation {
+            surface: ready.surface,
+            cluster: cluster_id,
+        });
+    }
+    if !rect_contains(ready.bounds, activation) {
+        return Err(SceneBuildError::DropGuideActivationOutsideSurface {
+            surface: ready.surface,
+            cluster: cluster_id,
+        });
+    }
+    Ok(activation)
+}
+
+fn validate_drop_guide_target(
+    ready: &ReadySurfaceScene,
+    cluster: &DropGuideClusterRecord,
+    activation: LogicalRect,
+    slot: DropGuideSlot,
+    guide_target: &DropGuideTargetRecord,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> Result<(), SceneBuildError> {
+    let cluster_id = cluster.id();
+    let target = guide_target.target();
+    if !drop_guide_slot_matches(cluster_id, slot, target.id(), workspace, workspace_index) {
+        return Err(SceneBuildError::DropGuideTargetSlotMismatch {
+            cluster: cluster_id,
+            slot,
+            target: target.id(),
+        });
+    }
+    if target.layer() != cluster.layer() {
+        return Err(SceneBuildError::DropGuideTargetLayerMismatch {
+            cluster: cluster_id,
+            target: target.id(),
+            cluster_layer: cluster.layer(),
+            target_layer: target.layer(),
+        });
+    }
+
+    let hit = target.region().rect();
+    if !rect_has_area(hit) {
+        return Err(SceneBuildError::EmptyDropGuideHitRegion {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+    if !rect_contains(ready.bounds, hit) {
+        return Err(SceneBuildError::DropGuideHitRegionOutsideSurface {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+    if !rect_contains(activation, hit) {
+        return Err(SceneBuildError::DropGuideHitRegionOutsideActivation {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+
+    let draw = guide_target.draw();
+    if !rect_has_area(draw) {
+        return Err(SceneBuildError::EmptyDropGuideDraw {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+    if !rect_contains(hit, draw) {
+        return Err(SceneBuildError::DropGuideDrawOutsideHitRegion {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+
+    validate_drop_target(ready, target, workspace, workspace_index)?;
+    let preview = target.visual().rect();
+    if !rect_contains(activation, preview) {
+        return Err(SceneBuildError::DropGuidePreviewOutsideActivation {
+            surface: ready.surface,
+            cluster: cluster_id,
+            target: target.id(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_drop_guide_hit_separation(
+    surface: SurfaceId,
+    cluster: &DropGuideClusterRecord,
+) -> Result<(), SceneBuildError> {
+    for (index, (first_slot, first)) in cluster.targets().enumerate() {
+        for (second_slot, second) in cluster.targets().skip(index + 1) {
+            if rects_overlap_with_area(
+                first.target().region().rect(),
+                second.target().region().rect(),
+            ) {
+                return Err(SceneBuildError::OverlappingDropGuideHitRegions {
+                    surface,
+                    cluster: cluster.id(),
+                    first: first_slot,
+                    second: second_slot,
+                });
+            }
         }
     }
+    Ok(())
+}
+
+fn drop_guide_slot_matches(
+    cluster: DropGuideClusterId,
+    slot: DropGuideSlot,
+    target: DropTargetId,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> bool {
+    match (cluster.scope, slot) {
+        (DropGuideScope::Inner(node), DropGuideSlot::Center) => {
+            target
+                == (DropTargetId::Center {
+                    surface: cluster.surface,
+                    root: cluster.root,
+                    tabs: node,
+                })
+        }
+        (DropGuideScope::Inner(node), DropGuideSlot::Edge(edge)) => {
+            let root_is_single_tabs = workspace_index.root_node(cluster.root) == Some(node)
+                && matches!(workspace.node(node), Some(Node::Tabs { .. }));
+            let expected = if root_is_single_tabs {
+                DropTargetId::OuterEdge {
+                    surface: cluster.surface,
+                    root: cluster.root,
+                    node,
+                    edge,
+                }
+            } else {
+                DropTargetId::InnerEdge {
+                    surface: cluster.surface,
+                    root: cluster.root,
+                    node,
+                    edge,
+                }
+            };
+            target == expected
+        }
+        (DropGuideScope::Outer, DropGuideSlot::Center) => false,
+        (DropGuideScope::Outer, DropGuideSlot::Edge(edge)) => {
+            workspace_index.root_node(cluster.root).is_some_and(|node| {
+                target
+                    == (DropTargetId::OuterEdge {
+                        surface: cluster.surface,
+                        root: cluster.root,
+                        node,
+                        edge,
+                    })
+            })
+        }
+    }
+}
+
+fn validate_drop_target(
+    ready: &ReadySurfaceScene,
+    target: &DropTargetRecord,
+    workspace: &Workspace,
+    workspace_index: &SceneWorkspaceIndex,
+) -> Result<(), SceneBuildError> {
+    validate_drop_visual(ready, target)?;
+    if target.id().surface() != ready.surface
+        || !target.semantics_match()
+        || (target_reference_is_current(workspace, workspace_index, target)
+            && !target_structure_is_valid(workspace, workspace_index, ready.surface, target))
+    {
+        return Err(SceneBuildError::TargetSemanticMismatch {
+            surface: ready.surface,
+            target: target.id(),
+        });
+    }
+    Ok(())
+}
+
+fn rect_has_area(rect: LogicalRect) -> bool {
+    rect.width() > 0.0 && rect.height() > 0.0
+}
+
+fn rect_contains(outer: LogicalRect, inner: LogicalRect) -> bool {
+    let outer_min = outer.min();
+    let outer_max = outer.max();
+    let inner_min = inner.min();
+    let inner_max = inner.max();
+    inner_min.x() >= outer_min.x()
+        && inner_min.y() >= outer_min.y()
+        && inner_max.x() <= outer_max.x()
+        && inner_max.y() <= outer_max.y()
+}
+
+fn rects_overlap_with_area(left: LogicalRect, right: LogicalRect) -> bool {
+    left.min().x().max(right.min().x()) < left.max().x().min(right.max().x())
+        && left.min().y().max(right.min().y()) < left.max().y().min(right.max().y())
 }
 
 fn target_reference_is_current(
@@ -823,6 +1129,150 @@ pub enum SceneBuildError {
     DuplicateDropTarget {
         /// Repeated identity.
         id: DropTargetId,
+    },
+    /// A structural docking-guide cluster identity was repeated.
+    #[error("scene contains duplicate docking-guide cluster {id:?}")]
+    DuplicateDropGuideCluster {
+        /// Repeated identity.
+        id: DropGuideClusterId,
+    },
+    /// A guide cluster named an invalid inner tabs or outer split-root scope.
+    #[error("docking-guide cluster {cluster:?} is invalid on surface {surface}")]
+    InvalidDropGuideCluster {
+        /// Surface receiving the invalid fact.
+        surface: SurfaceId,
+        /// Invalid cluster identity.
+        cluster: DropGuideClusterId,
+    },
+    /// A guide slot contained a target with the wrong structural identity.
+    #[error(
+        "docking-guide slot {slot:?} in cluster {cluster:?} contains mismatched target {target:?}"
+    )]
+    DropGuideTargetSlotMismatch {
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Slot whose target identity was invalid.
+        slot: DropGuideSlot,
+        /// Invalid target identity.
+        target: DropTargetId,
+    },
+    /// A guide target was assigned to a different layer than its cluster.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} uses layer {target_layer:?} instead of {cluster_layer:?}"
+    )]
+    DropGuideTargetLayerMismatch {
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with the mismatched layer.
+        target: DropTargetId,
+        /// Authoritative cluster layer.
+        cluster_layer: SceneLayerKey,
+        /// Mismatched target layer.
+        target_layer: SceneLayerKey,
+    },
+    /// A guide cluster activation region has no hittable logical area.
+    #[error(
+        "docking-guide cluster {cluster:?} on surface {surface} has an empty activation region"
+    )]
+    EmptyDropGuideActivation {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Cluster with empty activation geometry.
+        cluster: DropGuideClusterId,
+    },
+    /// A guide cluster activation region extends outside its owning surface.
+    #[error("docking-guide cluster {cluster:?} activation lies outside surface {surface} bounds")]
+    DropGuideActivationOutsideSurface {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Cluster with out-of-bounds activation geometry.
+        cluster: DropGuideClusterId,
+    },
+    /// A guide target hit region has no hittable logical area.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} on surface {surface} has an empty hit region"
+    )]
+    EmptyDropGuideHitRegion {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with empty hit geometry.
+        target: DropTargetId,
+    },
+    /// A guide target hit region extends outside its owning surface.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} lies outside surface {surface} bounds"
+    )]
+    DropGuideHitRegionOutsideSurface {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with out-of-bounds hit geometry.
+        target: DropTargetId,
+    },
+    /// A guide target hit region extends outside its cluster activation region.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} on surface {surface} hits outside cluster activation"
+    )]
+    DropGuideHitRegionOutsideActivation {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with hit geometry outside activation.
+        target: DropTargetId,
+    },
+    /// A guide target draw rectangle has no paintable logical area.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} on surface {surface} has an empty draw rectangle"
+    )]
+    EmptyDropGuideDraw {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with empty draw geometry.
+        target: DropTargetId,
+    },
+    /// A guide target draw rectangle extends outside its exact hit region.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} on surface {surface} draws outside its hit region"
+    )]
+    DropGuideDrawOutsideHitRegion {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with invalid draw geometry.
+        target: DropTargetId,
+    },
+    /// A guide target body preview extends outside its cluster activation region.
+    #[error(
+        "docking-guide target {target:?} in cluster {cluster:?} on surface {surface} previews outside cluster activation"
+    )]
+    DropGuidePreviewOutsideActivation {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Target with preview geometry outside activation.
+        target: DropTargetId,
+    },
+    /// Two targets in one cluster have positively overlapping hit regions.
+    #[error(
+        "docking-guide slots {first:?} and {second:?} in cluster {cluster:?} on surface {surface} overlap"
+    )]
+    OverlappingDropGuideHitRegions {
+        /// Owning logical surface.
+        surface: SurfaceId,
+        /// Owning guide cluster.
+        cluster: DropGuideClusterId,
+        /// Earlier canonical slot in the overlapping pair.
+        first: DropGuideSlot,
+        /// Later canonical slot in the overlapping pair.
+        second: DropGuideSlot,
     },
     /// A target ID disagreed with its surface or exact topology target.
     #[error("drop target {target:?} on surface {surface} has mismatched structural semantics")]

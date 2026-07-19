@@ -26,10 +26,14 @@ pub struct DockStyle {
     pub splitter_hit_extent: f32,
     /// Logical point step used by keyboard splitter adjustment.
     pub splitter_keyboard_step: f32,
-    /// Depth of an edge drop zone inside a leaf.
-    pub inner_drop_extent: f32,
-    /// Depth of an edge drop zone inside a root.
-    pub outer_drop_extent: f32,
+    /// Width and height of one explicit docking guide button.
+    pub drop_guide_extent: f32,
+    /// Visible gap between adjacent buttons in an inner five-way guide.
+    pub drop_guide_gap: f32,
+    /// Extra exact hit extent around each visible guide button.
+    pub drop_guide_hit_padding: f32,
+    /// Distance from a root edge to the center of its outer guide button.
+    pub drop_guide_outer_inset: f32,
     /// Fraction assigned to a newly docked child.
     pub dock_fraction: f32,
     /// Height of contained-floating title bars.
@@ -66,6 +70,14 @@ pub struct DockStyle {
     pub drop_fill: Color32,
     /// Border color of the resolved drop target.
     pub drop_border_color: Color32,
+    /// Fill of an available passive docking guide.
+    pub drop_guide_fill: Color32,
+    /// Fill of the exact active docking guide.
+    pub drop_guide_active_fill: Color32,
+    /// Border and directional cue color of a passive docking guide.
+    pub drop_guide_border_color: Color32,
+    /// Border and directional cue color of the exact active docking guide.
+    pub drop_guide_active_border_color: Color32,
     /// Fill of contained-floating pane content.
     pub floating_fill: Color32,
     /// Fill of an inactive contained-floating title bar.
@@ -99,8 +111,8 @@ impl DockStyle {
             ("splitter_thickness", self.splitter_thickness),
             ("splitter_hit_extent", self.splitter_hit_extent),
             ("splitter_keyboard_step", self.splitter_keyboard_step),
-            ("inner_drop_extent", self.inner_drop_extent),
-            ("outer_drop_extent", self.outer_drop_extent),
+            ("drop_guide_extent", self.drop_guide_extent),
+            ("drop_guide_outer_inset", self.drop_guide_outer_inset),
             ("floating_title_height", self.floating_title_height),
             ("floating_resize_extent", self.floating_resize_extent),
         ] {
@@ -109,6 +121,8 @@ impl DockStyle {
 
         for (field, value) in [
             ("tab_horizontal_padding", self.tab_horizontal_padding),
+            ("drop_guide_gap", self.drop_guide_gap),
+            ("drop_guide_hit_padding", self.drop_guide_hit_padding),
             ("floating_border_width", self.floating_border_width),
             ("ghost_offset.x", self.ghost_offset.x),
             ("ghost_offset.y", self.ghost_offset.y),
@@ -154,6 +168,19 @@ impl DockStyle {
                 visible_extent: "floating_border_width",
             });
         }
+        if self.drop_guide_gap < 2.0 * self.drop_guide_hit_padding {
+            return Err(DockStyleError::GuideHitRegionsOverlap);
+        }
+        let guide_hit_half = self.drop_guide_extent * 0.5 + self.drop_guide_hit_padding;
+        if self.drop_guide_outer_inset < guide_hit_half {
+            return Err(DockStyleError::GuideOuterInsetTooSmall);
+        }
+        let guide_span = 3.0 * self.drop_guide_extent
+            + 2.0 * self.drop_guide_gap
+            + 2.0 * self.drop_guide_hit_padding;
+        if guide_span > self.minimum_pane_size.x || guide_span > self.minimum_pane_size.y {
+            return Err(DockStyleError::GuideClusterExceedsMinimumPane);
+        }
 
         Ok(())
     }
@@ -170,8 +197,10 @@ impl Default for DockStyle {
             splitter_thickness: 1.0,
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
-            inner_drop_extent: 48.0,
-            outer_drop_extent: 32.0,
+            drop_guide_extent: 16.0,
+            drop_guide_gap: 4.0,
+            drop_guide_hit_padding: 2.0,
+            drop_guide_outer_inset: 40.0,
             dock_fraction: 0.5,
             floating_title_height: 28.0,
             floating_border_width: 1.0,
@@ -190,6 +219,10 @@ impl Default for DockStyle {
             splitter_hover_color: Color32::from_rgb(89, 157, 165),
             drop_fill: Color32::from_rgba_unmultiplied(49, 142, 154, 72),
             drop_border_color: Color32::from_rgb(76, 174, 184),
+            drop_guide_fill: Color32::from_rgb(52, 57, 62),
+            drop_guide_active_fill: Color32::from_rgb(49, 142, 154),
+            drop_guide_border_color: Color32::from_rgb(111, 119, 127),
+            drop_guide_active_border_color: Color32::from_rgb(190, 235, 239),
             floating_fill: Color32::from_rgb(29, 32, 36),
             floating_title_fill: Color32::from_rgb(47, 51, 57),
             floating_title_active_fill: Color32::from_rgb(83, 70, 119),
@@ -226,6 +259,12 @@ pub enum DockStyleError {
     },
     /// The initial docking fraction is not strictly between zero and one.
     DockFractionOutOfRange,
+    /// Expanded guide hit rectangles would overlap.
+    GuideHitRegionsOverlap,
+    /// An outer guide button and its hit padding would cross the root boundary.
+    GuideOuterInsetTooSmall,
+    /// The complete five-way guide cannot fit inside the configured minimum pane.
+    GuideClusterExceedsMinimumPane,
 }
 
 impl fmt::Display for DockStyleError {
@@ -250,6 +289,13 @@ impl fmt::Display for DockStyleError {
             Self::DockFractionOutOfRange => {
                 formatter.write_str("`dock_fraction` must be strictly between zero and one")
             }
+            Self::GuideHitRegionsOverlap => formatter
+                .write_str("`drop_guide_gap` must be at least twice `drop_guide_hit_padding`"),
+            Self::GuideOuterInsetTooSmall => formatter.write_str(
+                "`drop_guide_outer_inset` must contain half a guide plus its hit padding",
+            ),
+            Self::GuideClusterExceedsMinimumPane => formatter
+                .write_str("the complete docking guide must fit inside `minimum_pane_size`"),
         }
     }
 }
@@ -314,11 +360,11 @@ mod tests {
         );
 
         style.tab_horizontal_padding = 0.0;
-        style.inner_drop_extent = 0.0;
+        style.drop_guide_extent = 0.0;
         assert_eq!(
             style.validate(),
             Err(DockStyleError::NotPositive {
-                field: "inner_drop_extent"
+                field: "drop_guide_extent"
             })
         );
     }
@@ -352,6 +398,27 @@ mod tests {
         assert_eq!(
             style.validate(),
             Err(DockStyleError::DockFractionOutOfRange)
+        );
+
+        style.dock_fraction = 0.5;
+        style.drop_guide_gap = 3.0;
+        assert_eq!(
+            style.validate(),
+            Err(DockStyleError::GuideHitRegionsOverlap)
+        );
+
+        style.drop_guide_gap = 4.0;
+        style.drop_guide_outer_inset = 9.0;
+        assert_eq!(
+            style.validate(),
+            Err(DockStyleError::GuideOuterInsetTooSmall)
+        );
+
+        style.drop_guide_outer_inset = 40.0;
+        style.drop_guide_extent = 18.0;
+        assert_eq!(
+            style.validate(),
+            Err(DockStyleError::GuideClusterExceedsMinimumPane)
         );
     }
 

@@ -1,3 +1,4 @@
+use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
@@ -154,6 +155,41 @@ fn tab_point(dockspace: &Dockspace, item: ItemId) -> Pos2 {
         .rect();
     Pos2::new(
         (rect.min().x() + 8.0) as f32,
+        ((rect.min().y() + rect.max().y()) * 0.5) as f32,
+    )
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "finite scene coordinates intentionally become egui f32 input coordinates"
+)]
+fn inner_guide_point(dockspace: &Dockspace, item: ItemId, slot: DropGuideSlot) -> Pos2 {
+    let SurfaceScene::Ready(ready) = dockspace
+        .engine()
+        .scene()
+        .and_then(|scene| scene.surface(SURFACE))
+        .expect("surface scene exists")
+    else {
+        panic!("surface scene is ready");
+    };
+    let tabs = ready
+        .tabs()
+        .iter()
+        .find(|tab| tab.id().item == item)
+        .expect("requested tab is painted")
+        .id()
+        .tabs;
+    let rect = ready
+        .drop_guide_clusters()
+        .iter()
+        .find(|cluster| cluster.id().scope == DropGuideScope::Inner(tabs))
+        .and_then(|cluster| cluster.target(slot))
+        .expect("requested inner guide is published")
+        .target()
+        .region()
+        .rect();
+    Pos2::new(
+        ((rect.min().x() + rect.max().x()) * 0.5) as f32,
         ((rect.min().y() + rect.max().y()) * 0.5) as f32,
     )
 }
@@ -538,7 +574,7 @@ fn multipass_escape_suppresses_release_and_preview_acknowledgement_for_the_same_
     let mut panes = TestPanes;
     warm(&context, &mut dockspace, &mut panes);
     let source = tab_point(&dockspace, ITEM_A);
-    let moved = tab_point(&dockspace, ITEM_B) + vec2(0.0, 60.0);
+    let moved = inner_guide_point(&dockspace, ITEM_B, DropGuideSlot::Center);
 
     run_frame(
         &context,

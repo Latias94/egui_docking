@@ -9,6 +9,7 @@
 pub mod canonical;
 pub mod command;
 pub mod coordinates;
+pub mod drop_guide;
 pub mod drop_resolver;
 pub mod drop_target;
 pub mod effect;
