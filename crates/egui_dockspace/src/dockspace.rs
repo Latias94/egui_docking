@@ -1,5 +1,6 @@
 //! Authoritative egui facade over [`dockspace::engine::DockEngine`].
 
+use std::collections::BTreeMap;
 use std::{fmt::Debug, hash::Hash};
 
 use dockspace::RootPresentationOwner;
@@ -17,7 +18,7 @@ use dockspace::interaction::{
     ResizeSessionId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::scene::{BuildingScene, SceneStamp, SealedScene, SurfaceScene};
+use dockspace::scene::{BuildingScene, ReadySurfaceScene, SceneStamp, SealedScene, SurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 use egui::{Id, Rect, Ui, ViewportId};
 
@@ -75,6 +76,12 @@ struct FrameState {
     capture_errors: Vec<CommandError>,
 }
 
+struct PublishedProjection {
+    workspace: WorkspaceVersion,
+    scene: SceneStamp,
+    ready: BTreeMap<SurfaceId, ReadySurfaceScene>,
+}
+
 #[derive(Default)]
 struct BoundaryOutput {
     transitions: Vec<EngineTransition>,
@@ -95,8 +102,12 @@ pub struct Dockspace {
     pub(crate) style: DockStyle,
     tear_off_mode: TearOffMode,
     pub(crate) presentation_ids: Option<Box<dyn PresentationIdSource>>,
-    frame: Option<FrameState>,
-    previous_projection: Option<ProjectionFingerprint>,
+    frames: BTreeMap<SurfaceId, FrameState>,
+    viewport_frames: BTreeMap<ViewportId, (u64, SurfaceId)>,
+    surface_bounds: BTreeMap<SurfaceId, Rect>,
+    surface_plans: BTreeMap<SurfaceId, SurfacePlan>,
+    previous_projections: BTreeMap<SurfaceId, ProjectionFingerprint>,
+    published_projection: Option<PublishedProjection>,
     last_contained_unavailable: Option<DockspaceUnavailableReason>,
     contained_allocation_attempt: Option<DragSessionId>,
 }
@@ -121,8 +132,12 @@ impl Dockspace {
             style,
             tear_off_mode,
             presentation_ids,
-            frame: None,
-            previous_projection: None,
+            frames: BTreeMap::new(),
+            viewport_frames: BTreeMap::new(),
+            surface_bounds: BTreeMap::new(),
+            surface_plans: BTreeMap::new(),
+            previous_projections: BTreeMap::new(),
+            published_projection: None,
             last_contained_unavailable: None,
             contained_allocation_attempt: None,
         })
@@ -228,9 +243,10 @@ impl Dockspace {
             bounds: ui.available_rect_before_wrap(),
             pass: ui.ctx().current_pass_index(),
         };
+        self.validate_viewport_surface(request)?;
         let is_new_frame = self
-            .frame
-            .as_ref()
+            .frames
+            .get(&surface)
             .is_none_or(|frame| frame.key != request.key);
         let mut boundary = BoundaryOutput::default();
 
@@ -245,12 +261,12 @@ impl Dockspace {
             )?;
         }
 
-        let painted = self.paint_frame(ui, panes)?;
+        let painted = self.paint_frame(surface, ui, panes)?;
         ui.advance_cursor_after_rect(request.bounds);
 
         let frame = self
-            .frame
-            .as_ref()
+            .frames
+            .get(&surface)
             .ok_or(DockspaceError::FrameStateUnavailable)?;
         boundary
             .capture_errors
@@ -273,7 +289,7 @@ impl Dockspace {
         panes: &mut dyn PaneView,
         output: &mut BoundaryOutput,
     ) -> Result<(), DockspaceError> {
-        let previous = self.frame.take();
+        let previous = self.frames.remove(&request.surface);
         self.reduce_if_pending(&mut output.transitions)?;
         if let Some(previous) = previous.filter(|frame| !frame.actions.is_empty()) {
             let authority = previous
@@ -308,47 +324,49 @@ impl Dockspace {
 
         let style = self.style.clone();
         let plan = if self.engine.workspace().surface(request.surface).is_some() {
-            Some(self.prepare_surface(
-                request.surface,
-                request.bounds,
-                ui,
-                panes,
-                &mut output.transitions,
-            )?)
+            self.surface_bounds.insert(request.surface, request.bounds);
+            self.prepare_surfaces(ui, panes, &mut output.transitions)?;
+            self.surface_plans.get(&request.surface).cloned()
         } else {
-            self.previous_projection = None;
+            self.surface_bounds.remove(&request.surface);
+            self.surface_plans.remove(&request.surface);
+            self.previous_projections.remove(&request.surface);
             None
         };
         let authority = plan
             .as_ref()
             .map(|_| self.current_render_authority(request.surface))
             .transpose()?;
-        self.frame = Some(FrameState {
-            key: request.key,
-            surface: request.surface,
-            bounds: request.bounds,
-            pass: request.pass,
-            plan,
-            authority,
-            style,
-            actions: Vec::new(),
-            capture_errors: Vec::new(),
-        });
+        self.frames.insert(
+            request.surface,
+            FrameState {
+                key: request.key,
+                surface: request.surface,
+                bounds: request.bounds,
+                pass: request.pass,
+                plan,
+                authority,
+                style,
+                actions: Vec::new(),
+                capture_errors: Vec::new(),
+            },
+        );
         Ok(())
     }
 
     fn paint_frame(
         &mut self,
+        surface: SurfaceId,
         ui: &mut Ui,
         panes: &mut dyn PaneView,
     ) -> Result<PaintOutput, DockspaceError> {
         let (plan, style) = self
-            .frame
-            .as_ref()
+            .frames
+            .get(&surface)
             .map(|frame| (frame.plan.clone(), frame.style.clone()))
             .ok_or(DockspaceError::FrameStateUnavailable)?;
         let Some(plan) = plan else {
-            self.previous_projection = None;
+            self.previous_projections.remove(&surface);
             return Ok(PaintOutput {
                 missing_panes: Vec::new(),
                 interactions_current: false,
@@ -356,8 +374,8 @@ impl Dockspace {
             });
         };
         let interactions_current = self
-            .previous_projection
-            .as_ref()
+            .previous_projections
+            .get(&surface)
             .is_some_and(|previous| previous == &plan.fingerprint);
         if !interactions_current {
             // Geometry-changing actions require a fresh egui pass before the
@@ -374,12 +392,13 @@ impl Dockspace {
             self.engine.interaction(),
             interactions_current,
         );
-        self.record_render_output(output)?;
-        self.previous_projection = Some(plan.fingerprint.clone());
+        self.record_render_output(surface, output)?;
+        self.previous_projections
+            .insert(surface, plan.fingerprint.clone());
         if !interactions_current
             || self
-                .frame
-                .as_ref()
+                .frames
+                .get(&surface)
                 .is_some_and(|frame| !frame.actions.is_empty())
         {
             ui.ctx().request_repaint();
@@ -427,6 +446,21 @@ impl Dockspace {
         })
     }
 
+    fn validate_viewport_surface(&mut self, request: FrameRequest) -> Result<(), DockspaceError> {
+        if let Some((frame, expected)) = self.viewport_frames.get(&request.key.viewport)
+            && *frame == request.key.frame
+            && *expected != request.surface
+        {
+            return Err(DockspaceError::SurfaceChangedWithinFrame {
+                expected: *expected,
+                actual: request.surface,
+            });
+        }
+        self.viewport_frames
+            .insert(request.key.viewport, (request.key.frame, request.surface));
+        Ok(())
+    }
+
     fn cancel_stale_interaction(
         &mut self,
         reason: InteractionCancelReason,
@@ -459,8 +493,8 @@ impl Dockspace {
         pass: usize,
     ) -> Result<(), DockspaceError> {
         let frame = self
-            .frame
-            .as_mut()
+            .frames
+            .get_mut(&surface)
             .ok_or(DockspaceError::FrameStateUnavailable)?;
         if frame.surface != surface {
             return Err(DockspaceError::SurfaceChangedWithinFrame {
@@ -484,10 +518,14 @@ impl Dockspace {
         Ok(())
     }
 
-    fn record_render_output(&mut self, output: RenderOutput) -> Result<(), DockspaceError> {
+    fn record_render_output(
+        &mut self,
+        surface: SurfaceId,
+        output: RenderOutput,
+    ) -> Result<(), DockspaceError> {
         let frame = self
-            .frame
-            .as_mut()
+            .frames
+            .get_mut(&surface)
             .ok_or(DockspaceError::FrameStateUnavailable)?;
         for action in output.actions {
             if let Some(existing) = frame
@@ -802,26 +840,45 @@ impl Dockspace {
         }
     }
 
-    fn prepare_surface(
+    fn prepare_surfaces(
         &mut self,
-        surface: SurfaceId,
-        bounds: Rect,
         ui: &Ui,
         panes: &dyn PaneView,
         transitions: &mut Vec<EngineTransition>,
-    ) -> Result<SurfacePlan, DockspaceError> {
-        let mut plan = self.project_surface(surface, bounds, ui, panes)?;
-        self.publish_surface_scene(&plan, transitions)?;
+    ) -> Result<(), DockspaceError> {
+        self.surface_bounds
+            .retain(|surface, _| self.engine.workspace().surface(*surface).is_some());
+        let correction_limit = self.engine.workspace().contained_floatings().count();
+        for correction_index in 0..=correction_limit {
+            let plans = self.project_known_surfaces(ui, panes)?;
+            self.publish_surface_scene(&plans, transitions)?;
 
-        let correction_limit = plan.contained_placements.len();
-        for _ in 0..correction_limit {
-            let Some(request) = plan.contained_placements.iter().copied().find(|request| {
-                self.engine
-                    .contained_placement(surface, request.expected_rect, request.minimum_size)
-                    .is_ok_and(|placement| placement.clamped_rect() != request.expected_rect)
-            }) else {
-                break;
+            let correction = plans.iter().find_map(|(surface, plan)| {
+                plan.contained_placements
+                    .iter()
+                    .copied()
+                    .find(|request| {
+                        self.engine
+                            .contained_placement(
+                                *surface,
+                                request.expected_rect,
+                                request.minimum_size,
+                            )
+                            .is_ok_and(|placement| {
+                                placement.clamped_rect() != request.expected_rect
+                            })
+                    })
+                    .map(|request| (*surface, request))
+            });
+            let Some((surface, request)) = correction else {
+                self.surface_plans = plans;
+                return Ok(());
             };
+            if correction_index == correction_limit {
+                return Err(DockspaceError::ContainedPlacementRejected {
+                    floating: request.floating,
+                });
+            }
             let Ok(placement) = self.engine.contained_placement(
                 surface,
                 request.expected_rect,
@@ -829,7 +886,8 @@ impl Dockspace {
             ) else {
                 self.last_contained_unavailable =
                     Some(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
-                break;
+                self.surface_plans = plans;
+                return Ok(());
             };
             self.engine
                 .enqueue_renderer_intent(RendererIntent::ApplyContainedPlacement {
@@ -839,20 +897,29 @@ impl Dockspace {
                     placement,
                 })?;
             self.reduce_if_pending(transitions)?;
-            plan = self.project_surface(surface, bounds, ui, panes)?;
-            self.publish_surface_scene(&plan, transitions)?;
         }
+        unreachable!("the bounded correction loop always returns")
+    }
 
-        if let Some(request) = plan.contained_placements.iter().find(|request| {
-            self.engine
-                .contained_placement(surface, request.expected_rect, request.minimum_size)
-                .is_ok_and(|placement| placement.clamped_rect() != request.expected_rect)
-        }) {
-            return Err(DockspaceError::ContainedPlacementRejected {
-                floating: request.floating,
-            });
-        }
-        Ok(plan)
+    fn project_known_surfaces(
+        &self,
+        ui: &Ui,
+        panes: &dyn PaneView,
+    ) -> Result<BTreeMap<SurfaceId, SurfacePlan>, DockspaceError> {
+        self.engine
+            .workspace()
+            .surfaces()
+            .filter_map(|(surface, _)| {
+                self.surface_bounds
+                    .get(&surface)
+                    .copied()
+                    .map(|bounds| (surface, bounds))
+            })
+            .map(|(surface, bounds)| {
+                self.project_surface(surface, bounds, ui, panes)
+                    .map(|plan| (surface, plan))
+            })
+            .collect()
     }
 
     fn project_surface(
@@ -881,9 +948,25 @@ impl Dockspace {
 
     fn publish_surface_scene(
         &mut self,
-        plan: &SurfacePlan,
+        plans: &BTreeMap<SurfaceId, SurfacePlan>,
         transitions: &mut Vec<EngineTransition>,
     ) -> Result<(), DockspaceError> {
+        let ready = plans
+            .iter()
+            .map(|(surface, plan)| (*surface, plan.ready.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let reusable = self.published_projection.as_ref().is_some_and(|published| {
+            published.workspace == self.engine.version()
+                && published.ready == ready
+                && self
+                    .engine
+                    .scene()
+                    .is_some_and(|scene| scene.stamp() == published.scene)
+        });
+        if reusable {
+            return Ok(());
+        }
+
         let roster = self
             .engine
             .workspace()
@@ -891,7 +974,9 @@ impl Dockspace {
             .map(|(surface, _)| surface)
             .collect::<Vec<_>>();
         let mut scene = BuildingScene::new(roster)?;
-        scene.insert_ready(plan.ready.clone())?;
+        for plan in plans.values() {
+            scene.insert_ready(plan.ready.clone())?;
+        }
         self.engine.enqueue_scene(scene)?;
         let transition = self.engine.reduce_pending()?;
         if let Some(error) = transition.reduced_inputs().iter().find_map(|input| {
@@ -904,16 +989,20 @@ impl Dockspace {
             return Err(DockspaceError::SceneRejected(error));
         }
         transitions.push(transition);
-        if !matches!(
-            self.engine
-                .scene()
-                .and_then(|scene| scene.surface(plan.surface)),
-            Some(SurfaceScene::Ready(_))
-        ) {
-            return Err(DockspaceError::ReadySceneUnavailable {
-                surface: plan.surface,
-            });
+        let published = self
+            .engine
+            .scene()
+            .ok_or(DockspaceError::FrameStateUnavailable)?;
+        for surface in plans.keys() {
+            if !matches!(published.surface(*surface), Some(SurfaceScene::Ready(_))) {
+                return Err(DockspaceError::ReadySceneUnavailable { surface: *surface });
+            }
         }
+        self.published_projection = Some(PublishedProjection {
+            workspace: self.engine.version(),
+            scene: published.stamp(),
+            ready,
+        });
         Ok(())
     }
 
@@ -975,45 +1064,14 @@ impl Dockspace {
             Some(proposal) => proposal.z_order(),
             None => self.next_contained_z_order(local.observer())?,
         };
-        let (root, floating) =
-            if let Some((root, RootPresentationOwner::Contained { floating, .. })) = complete_owner
-            {
-                (root, floating)
-            } else if let Some(proposal) = existing {
-                (proposal.root(), proposal.floating())
-            } else {
-                if self.contained_allocation_attempt == Some(session) {
-                    return Ok(None);
-                }
-                self.contained_allocation_attempt = Some(session);
-                let Some(source) = self.presentation_ids.as_mut() else {
-                    self.last_contained_unavailable =
-                        Some(DockspaceUnavailableReason::PresentationIdSourceMissing);
-                    return Ok(None);
-                };
-                let Some(ids) = source.next_contained() else {
-                    self.last_contained_unavailable =
-                        Some(DockspaceUnavailableReason::PresentationIdsExhausted);
-                    return Ok(None);
-                };
-                let root = complete_root.unwrap_or(ids.root);
-                if complete_root.is_none() && self.engine.workspace().root(root).is_some() {
-                    self.last_contained_unavailable =
-                        Some(DockspaceUnavailableReason::PresentationIdentityCollision);
-                    return Ok(None);
-                }
-                if self
-                    .engine
-                    .workspace()
-                    .contained_floating(ids.floating)
-                    .is_some()
-                {
-                    self.last_contained_unavailable =
-                        Some(DockspaceUnavailableReason::PresentationIdentityCollision);
-                    return Ok(None);
-                }
-                (root, ids.floating)
-            };
+        let Some((root, floating)) = self.contained_presentation_for_update(
+            session,
+            complete_root,
+            complete_owner,
+            existing,
+        ) else {
+            return Ok(None);
+        };
 
         let minimum =
             floating_minimum_for_payload(self.engine.workspace(), &payload, panes, &self.style)?;
@@ -1036,6 +1094,49 @@ impl Dockspace {
         Ok(Some(TearOffRequest::Contained(
             ContainedTearOffProposal::new(root, floating, placement, z_order),
         )))
+    }
+
+    fn contained_presentation_for_update(
+        &mut self,
+        session: DragSessionId,
+        complete_root: Option<RootId>,
+        complete_owner: Option<(RootId, RootPresentationOwner)>,
+        existing: Option<ContainedTearOffProposal>,
+    ) -> Option<(RootId, dockspace::ids::FloatingPresentationId)> {
+        if let Some((root, RootPresentationOwner::Contained { floating, .. })) = complete_owner {
+            return Some((root, floating));
+        }
+        if let Some(proposal) = existing {
+            return Some((proposal.root(), proposal.floating()));
+        }
+        if self.contained_allocation_attempt == Some(session) {
+            return None;
+        }
+        self.contained_allocation_attempt = Some(session);
+        let Some(source) = self.presentation_ids.as_mut() else {
+            self.last_contained_unavailable =
+                Some(DockspaceUnavailableReason::PresentationIdSourceMissing);
+            return None;
+        };
+        let Some(ids) = source.next_contained() else {
+            self.last_contained_unavailable =
+                Some(DockspaceUnavailableReason::PresentationIdsExhausted);
+            return None;
+        };
+        let root = complete_root.unwrap_or(ids.root);
+        let root_collision =
+            complete_root.is_none() && self.engine.workspace().root(root).is_some();
+        let floating_collision = self
+            .engine
+            .workspace()
+            .contained_floating(ids.floating)
+            .is_some();
+        if root_collision || floating_collision {
+            self.last_contained_unavailable =
+                Some(DockspaceUnavailableReason::PresentationIdentityCollision);
+            return None;
+        }
+        Some((root, ids.floating))
     }
 
     fn next_contained_z_order(&self, surface: SurfaceId) -> Result<u64, DockspaceError> {

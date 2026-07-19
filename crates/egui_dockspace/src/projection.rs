@@ -202,6 +202,8 @@ pub enum ProjectionError {
         width: f32,
         height: f32,
     },
+    #[error("split child count {count} cannot be represented exactly by the egui adapter")]
+    SplitChildCountUnrepresentable { count: usize },
 }
 
 #[allow(
@@ -772,8 +774,13 @@ fn node_layout_minimum(
                         }
                     }
                 }
-                let splitters =
-                    f64::from(style.splitter_thickness) * children.len().saturating_sub(1) as f64;
+                let splitter_count = children.len().saturating_sub(1);
+                let splitter_count = u32::try_from(splitter_count).map_err(|_| {
+                    ProjectionError::SplitChildCountUnrepresentable {
+                        count: children.len(),
+                    }
+                })?;
+                let splitters = f64::from(style.splitter_thickness) * f64::from(splitter_count);
                 match axis {
                     Axis::Horizontal => width += splitters,
                     Axis::Vertical => height += splitters,

@@ -504,25 +504,25 @@ fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
     let b_ui_before = panes.ui_calls(ITEM_B);
     let b_pointer_before = panes.pointer_down_ui_calls(ITEM_B);
     let press = Pos2::new(300.0, 200.0);
-    let stale = run_frame(
+    let stale_frame = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(press), pointer_button(press, true)],
     );
-    assert_eq!(stale.len(), 1, "the one-pass budget must fail closed");
-    assert!(!stale[0].interactions_current);
+    assert_eq!(stale_frame.len(), 1, "the one-pass budget must fail closed");
+    assert!(!stale_frame[0].interactions_current);
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before);
     assert_eq!(panes.pointer_down_ui_calls(ITEM_B), b_pointer_before);
 
-    let stable = run_frame(
+    let recovered_frame = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![pointer_button(press, false)],
     );
     assert!(
-        stable
+        recovered_frame
             .last()
             .expect("stable frame paints")
             .interactions_current

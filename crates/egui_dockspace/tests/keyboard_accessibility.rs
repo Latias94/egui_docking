@@ -519,8 +519,8 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             .build()
             .expect("fixture facade must build");
         let mut panes = TestPanes;
-        let stable = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
-        context.memory_mut(|memory| memory.request_focus(stable.tab_ids[1]));
+        let warmed = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
+        context.memory_mut(|memory| memory.request_focus(warmed.tab_ids[1]));
         let focused = run_frame(
             &context,
             &mut dockspace,
@@ -551,7 +551,7 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             }
         };
 
-        let stale = run_frame(
+        let stale_frame = run_frame(
             &context,
             &mut dockspace,
             &mut panes,
@@ -560,8 +560,8 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             None,
             events,
         );
-        assert!(!stale.interactions_current);
-        assert_eq!(stale.selected, Some(ITEM_A));
+        assert!(!stale_frame.interactions_current);
+        assert_eq!(stale_frame.selected, Some(ITEM_A));
 
         let committed = run_frame(
             &context,
