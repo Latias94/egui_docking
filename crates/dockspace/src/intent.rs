@@ -17,7 +17,7 @@ use crate::scene::SceneStamp;
 use crate::viewport_route::ViewportRouteProof;
 
 /// Authority attached to a provider observation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Authority<T> {
     /// The provider authoritatively observed this value.
     Known(T),
@@ -656,6 +656,20 @@ impl ContainedRecoveryPlan {
             ..self
         }
     }
+
+    /// Returns whether two plans identify the same replacement-registration contract.
+    ///
+    /// The core may reproject `requested_rect` from newer authoritative native
+    /// geometry while a surface is awaiting replacement. All other durable
+    /// fields must still match before the replacement may adopt that pending
+    /// recovery.
+    pub(crate) fn matches_registration(self, candidate: Self) -> bool {
+        self.root == candidate.root
+            && self.floating == candidate.floating
+            && self.surface == candidate.surface
+            && self.minimum_size == candidate.minimum_size
+            && self.z_order == candidate.z_order
+    }
 }
 
 impl From<ContainedTearOffProposal> for ContainedRecoveryPlan {
@@ -987,6 +1001,75 @@ impl RendererIntent {
         match self {
             Self::AcknowledgePreview(_) | Self::AcknowledgeContainedTransformPreview(_) => 0,
             _ => 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_registration_ignores_only_reprojected_rect() {
+        let original = ContainedRecoveryPlan::new(
+            RootId::new(1),
+            FloatingPresentationId::new(2),
+            SurfaceId::new(3),
+            LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("original rect must be valid"),
+            LogicalSize::new(80.0, 60.0).expect("minimum size must be valid"),
+            4,
+        );
+        let reprojected = original.with_requested_rect(
+            LogicalRect::new(40.0, 50.0, 320.0, 240.0).expect("reprojected rect must be valid"),
+        );
+
+        assert!(original.matches_registration(reprojected));
+
+        let mismatches = [
+            ContainedRecoveryPlan::new(
+                RootId::new(9),
+                original.floating(),
+                original.surface(),
+                original.requested_rect(),
+                original.minimum_size(),
+                original.z_order(),
+            ),
+            ContainedRecoveryPlan::new(
+                original.root(),
+                FloatingPresentationId::new(9),
+                original.surface(),
+                original.requested_rect(),
+                original.minimum_size(),
+                original.z_order(),
+            ),
+            ContainedRecoveryPlan::new(
+                original.root(),
+                original.floating(),
+                SurfaceId::new(9),
+                original.requested_rect(),
+                original.minimum_size(),
+                original.z_order(),
+            ),
+            ContainedRecoveryPlan::new(
+                original.root(),
+                original.floating(),
+                original.surface(),
+                original.requested_rect(),
+                LogicalSize::new(81.0, 60.0).expect("different minimum size must be valid"),
+                original.z_order(),
+            ),
+            ContainedRecoveryPlan::new(
+                original.root(),
+                original.floating(),
+                original.surface(),
+                original.requested_rect(),
+                original.minimum_size(),
+                5,
+            ),
+        ];
+
+        for mismatch in mismatches {
+            assert!(!original.matches_registration(mismatch));
         }
     }
 }

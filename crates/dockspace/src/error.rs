@@ -102,6 +102,9 @@ pub enum CommandError {
     /// A logical surface identity is absent.
     #[error("surface {surface} does not exist")]
     MissingSurface { surface: SurfaceId },
+    /// A native lifecycle decision froze the exact presentation roster.
+    #[error("surface {surface} presentation roster is frozen by native lifecycle recovery")]
+    SurfaceLifecycleFrozen { surface: SurfaceId },
     /// A contained presentation identity is absent.
     #[error("floating presentation {floating} does not exist")]
     MissingFloating { floating: FloatingPresentationId },
@@ -214,6 +217,7 @@ impl CommandError {
             | Self::SurfaceIdCollision { .. }
             | Self::FloatingIdCollision { .. }
             | Self::MissingSurface { .. }
+            | Self::SurfaceLifecycleFrozen { .. }
             | Self::MissingFloating { .. }
             | Self::FloatingPresentationMismatch { .. }
             | Self::StaleContainedRect { .. }

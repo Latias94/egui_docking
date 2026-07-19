@@ -1,21 +1,23 @@
 //! Single-writer input queue and atomic headless state reducer.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
 use crate::command::{
     CommandOutcome, MovePayload, NodeSource, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
+use crate::coordinates::CoordinateSnapshot;
 use crate::drop_resolver::{DropAffordance, DropResolution, DropResolutionError, query_drop};
 use crate::effect::{EffectResult, EffectTransition};
 use crate::error::TransactionError;
 use crate::event::{WorkspaceEvent, WorkspaceEventKind};
 use crate::frame::{
-    NativeCreateSagaId, ViewportCloseDecision, ViewportCloseDecisionRejection,
-    ViewportCloseRequestId, ViewportCoordinator, ViewportCoordinatorError,
+    NativeCreateSagaId, PanelFocus, ViewportCloseDecision, ViewportCloseDecisionRejection,
+    ViewportClosePlan, ViewportCloseRequestId, ViewportCloseStatus, ViewportCoordinator,
+    ViewportCoordinatorError,
 };
-use crate::graph::Workspace;
+use crate::graph::{ContainedStackKey, Node, Workspace};
 use crate::ids::{InputSequence, WorkspaceRevision};
 use crate::intent::{
     Authority, ContainedHorizontalResizeEdge, ContainedPlacementProof,
@@ -36,12 +38,24 @@ use crate::policy::{DockPolicy, TearOffPresentation};
 use crate::scene::{
     BuildingScene, SceneBuildError, SceneGeneration, SceneStamp, SealedScene, SurfaceScene,
 };
+use crate::surface_recovery::{
+    ContainedRootPlacement, PendingSurfaceRecoveryDisposition, SurfaceForestPlacement,
+    SurfaceRecoveryState, SurfaceRecoveryTargetFacts, SurfaceRosterCaptureError,
+    SurfaceRosterDisposition, SurfaceRosterPlacement,
+};
 use crate::transaction::WorkspaceTransaction;
 use crate::transition::{
-    EngineTransition, InputOutcome, InputPriority, ReducedInput, WorkspaceVersion,
+    EngineTransition, EngineTransitionParts, InputOutcome, InputPriority, ReducedInput,
+    WorkspaceVersion,
 };
 use crate::validation::WorkspaceValidationErrors;
 use crate::viewport::{ViewportRole, WindowToken};
+use crate::viewport_focus::{
+    ActivationStart, ActivationStartOutcome, FocusDelta, FocusObservationTransition,
+    ObservedPlatformFocusEffect, PaneFocusIntent, PaneFocusIntentGeneration, PaneFocusObservation,
+    PaneFocusRevealRejection, PanelFocusRecord, PlatformFocusEvidence, PlatformFocusRestoreGate,
+    ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
+};
 
 /// Input accepted by the U3 engine boundary.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +87,20 @@ pub enum EngineInput {
         /// Exact effect identity and non-observational dispatch result.
         result: EffectResult,
     },
+    /// Request explicit activation of one exact current docking viewport.
+    ActivateViewport {
+        /// Workspace version whose binding and pane were inspected.
+        expected: WorkspaceVersion,
+        /// Exact-incarnation activation with explicit item-or-none pane focus.
+        request: ViewportActivationRequest,
+    },
+    /// Publish one adapter-observed pane-focus fact.
+    PublishPaneFocusObservation {
+        /// Workspace epoch in which the exact binding was observed.
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        /// Provider-owned pane focus observation and optional intent acknowledgement.
+        observation: PaneFocusObservation,
+    },
     /// Decide one exact edge-triggered native close request.
     DecideViewportClose {
         /// Workspace version against which the close plan was captured.
@@ -89,11 +117,16 @@ pub enum EngineInput {
         /// Exact create saga to cancel without a timeout heuristic.
         saga: NativeCreateSagaId,
     },
-    /// Retry one exact cleanup only after its prior dispatch definitively failed.
+    /// Explicitly retry one exact failed cleanup under its phase-specific protocol.
+    ///
+    /// A definitively failed destructive cleanup is retried only under its original
+    /// cleanup-specific guards. `ObservationDispatchFailed` and `ObservationUnsupported` may
+    /// retry only an observation-only `ContinueCleanup` which keeps the same destructive
+    /// predecessor; they never redispatch that predecessor.
     RetryViewportCleanup {
         /// Workspace version against which the failed cleanup was inspected.
         expected: WorkspaceVersion,
-        /// Exact failed cleanup effect; indeterminate effects are never retryable.
+        /// Exact failed cleanup effect; indeterminate and all other phases are not retryable.
         failed_effect: crate::effect::EffectId,
     },
     /// Authoritatively replace the complete workspace.
@@ -143,9 +176,10 @@ impl EngineInput {
             Self::PublishPlatformSnapshot { .. } | Self::ReportPlatformEffect { .. } => {
                 InputPriority::PlatformObservation
             }
-            Self::WorkspaceCommand { .. } | Self::ReplacePolicy { .. } => {
-                InputPriority::ApplicationCommand
-            }
+            Self::PublishPaneFocusObservation { .. } => InputPriority::PlatformObservation,
+            Self::ActivateViewport { .. }
+            | Self::WorkspaceCommand { .. }
+            | Self::ReplacePolicy { .. } => InputPriority::ApplicationCommand,
             Self::RendererIntent { .. } => InputPriority::RendererIntent,
             Self::PublishScene { .. } | Self::ValidateWorkspace => InputPriority::Maintenance,
         }
@@ -159,6 +193,8 @@ impl EngineInput {
             Self::RegisterViewport { .. }
             | Self::PublishPlatformSnapshot { .. }
             | Self::ReportPlatformEffect { .. }
+            | Self::ActivateViewport { .. }
+            | Self::PublishPaneFocusObservation { .. }
             | Self::DecideViewportClose { .. }
             | Self::CancelNativeCreate { .. }
             | Self::RetryViewportCleanup { .. }
@@ -174,6 +210,7 @@ impl EngineInput {
 pub struct SequencedInput {
     sequence: InputSequence,
     input: EngineInput,
+    scene_coordinate_proofs: BTreeMap<crate::ids::SurfaceId, CoordinateSnapshot>,
 }
 
 impl SequencedInput {
@@ -255,6 +292,38 @@ pub enum EngineError {
         /// Typed coordinator failure.
         source: ViewportCoordinatorError,
     },
+    /// Viewport activation or pane-focus identity could not advance atomically.
+    #[error("viewport focus input {input} failed: {source}")]
+    ViewportFocus {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Typed activation and pane-focus coordinator failure.
+        source: ViewportFocusError,
+    },
+    /// A lifecycle edge could not freeze the complete logical surface roster.
+    #[error("surface roster input {input} failed: {source}")]
+    SurfaceRoster {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Exact roster capture failure.
+        source: SurfaceRosterCaptureError,
+    },
+    /// An accepted close reached destruction without its edge-frozen roster.
+    #[error("surface {surface} destroyed at input {input} without a frozen close roster")]
+    MissingSurfaceRoster {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Destroyed logical surface.
+        surface: crate::ids::SurfaceId,
+    },
+    /// Two lifecycle paths attempted to retain different rosters for one surface.
+    #[error("surface {surface} has conflicting pending recovery rosters at input {input}")]
+    ConflictingSurfaceRecovery {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Logical surface whose recovery ownership conflicted.
+        surface: crate::ids::SurfaceId,
+    },
 }
 
 /// Authoritative renderer-neutral docking engine.
@@ -264,11 +333,110 @@ pub struct DockEngine {
     policy: DockPolicy,
     version: WorkspaceVersion,
     scene: Option<SealedScene>,
+    scene_coordinate_authority: BTreeMap<crate::ids::SurfaceId, SurfaceSceneCoordinateAuthority>,
     last_scene_generation: SceneGeneration,
     interaction: InteractionState,
     viewport: ViewportCoordinator,
+    viewport_focus: ViewportFocusCoordinator,
+    last_focus_reducer_generation: PaneFocusIntentGeneration,
+    surface_recovery: SurfaceRecoveryState,
     last_input: InputSequence,
     pending: Vec<SequencedInput>,
+}
+
+#[derive(Debug, Clone)]
+struct SurfaceRecoveryBatchContext {
+    active_rosters: BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
+    targets: BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryTargetFacts>,
+}
+
+#[derive(Clone, Copy)]
+struct SurfaceRecoveryTargetContext<'a> {
+    action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
+    target_facts: Option<&'a SurfaceRecoveryTargetFacts>,
+}
+
+impl<'a> SurfaceRecoveryTargetContext<'a> {
+    const fn new(
+        action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
+        target_facts: Option<&'a SurfaceRecoveryTargetFacts>,
+    ) -> Self {
+        Self {
+            action_barrier,
+            target_facts,
+        }
+    }
+}
+
+struct DestroyedSurfaceContext<'a> {
+    roster: Option<&'a SurfaceRosterDisposition>,
+    action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
+    recovery_targets: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryTargetFacts>,
+    events: &'a mut Vec<WorkspaceEvent>,
+}
+
+struct PlatformSnapshotReductionContext<'a> {
+    application_base: &'a mut WorkspaceVersion,
+    events: &'a mut Vec<WorkspaceEvent>,
+    interaction_events: &'a mut Vec<InteractionEvent>,
+}
+
+#[derive(Clone, Copy)]
+struct MergeBackIntent<'a> {
+    request: ViewportCloseRequestId,
+    plan: &'a crate::frame::ViewportMergeBackPlan,
+    dependency: crate::surface_recovery::SurfaceRecoveryTargetDependency,
+    focus: PanelFocus,
+}
+
+struct MergeBackApplicationContext<'facts, 'output> {
+    target: SurfaceRecoveryTargetContext<'facts>,
+    activations: &'output mut Vec<ActivationStart>,
+    events: &'output mut Vec<WorkspaceEvent>,
+}
+
+#[derive(Clone, Copy)]
+struct CandidatePaneSelection {
+    surface: crate::ids::SurfaceId,
+    item: crate::ids::ItemId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PaneRevealDisposition {
+    Pending,
+    AppliedInCandidate,
+}
+
+enum MergeBackFreeze {
+    Frozen {
+        roster: Box<SurfaceRosterDisposition>,
+        dependency: crate::surface_recovery::SurfaceRecoveryTargetDependency,
+        focus: PanelFocus,
+    },
+    Rejected(ViewportCloseDecisionRejection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SurfaceSceneCoordinateAuthority {
+    scene: SceneStamp,
+    coordinates: CoordinateSnapshot,
+}
+
+impl SurfaceSceneCoordinateAuthority {
+    const fn new(scene: SceneStamp, coordinates: CoordinateSnapshot) -> Self {
+        Self { scene, coordinates }
+    }
+
+    fn coordinates_match(captured: CoordinateSnapshot, current: CoordinateSnapshot) -> bool {
+        captured.binding() == current.binding()
+            && captured.coordinate_generation() == current.coordinate_generation()
+            && captured.content_bounds() == current.content_bounds()
+            && captured.scale_factor() == current.scale_factor()
+    }
+
+    fn matches(self, scene: SceneStamp, current: CoordinateSnapshot) -> bool {
+        self.scene == scene && Self::coordinates_match(self.coordinates, current)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,6 +546,15 @@ struct WorkspaceDeliveryTarget {
     kind: WorkspaceDeliveryKind,
     focus_surface: crate::ids::SurfaceId,
     validation: WorkspaceDeliveryValidation,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceDeliveryInput<'a> {
+    input: InputSequence,
+    session: crate::interaction::DragSessionId,
+    target: WorkspaceDeliveryTarget,
+    pane_focus: PanelFocus,
+    command: &'a WorkspaceCommand,
 }
 
 #[derive(Clone, Copy)]
@@ -596,9 +773,13 @@ impl DockEngine {
             policy,
             version: WorkspaceVersion::default(),
             scene: None,
+            scene_coordinate_authority: BTreeMap::new(),
             last_scene_generation: SceneGeneration::default(),
             interaction: InteractionState::default(),
             viewport: ViewportCoordinator::default(),
+            viewport_focus: ViewportFocusCoordinator::default(),
+            last_focus_reducer_generation: PaneFocusIntentGeneration::default(),
+            surface_recovery: SurfaceRecoveryState::default(),
             last_input: InputSequence::default(),
             pending: Vec::new(),
         })
@@ -640,6 +821,34 @@ impl DockEngine {
         &self.viewport
     }
 
+    /// Returns adapter-neutral native activation and pane-focus state.
+    #[must_use]
+    pub const fn viewport_focus(&self) -> &ViewportFocusCoordinator {
+        &self.viewport_focus
+    }
+
+    /// Returns the exact current native binding eligible to publish pane-focus facts.
+    #[must_use]
+    pub fn viewport_focus_binding(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Option<crate::viewport::ViewportBinding> {
+        self.viewport
+            .registry()
+            .record(surface)
+            .filter(|record| record.is_focusable())
+            .map(crate::viewport_registry::ViewportRecord::binding)
+    }
+
+    /// Returns the complete roster retained for one unresolved destroyed surface.
+    #[must_use]
+    pub fn pending_surface_recovery(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Option<&SurfaceRosterDisposition> {
+        self.surface_recovery.pending(surface)
+    }
+
     /// Returns queued inputs in writer order.
     #[must_use]
     pub fn pending_inputs(&self) -> &[SequencedInput] {
@@ -656,8 +865,25 @@ impl DockEngine {
             .last_input
             .checked_next()
             .ok_or(EngineError::InputSequenceExhausted)?;
+        let scene_coordinate_proofs = if matches!(&input, EngineInput::PublishScene { .. }) {
+            self.viewport
+                .registry()
+                .records()
+                .filter_map(|(surface, record)| {
+                    record
+                        .coordinates()
+                        .map(|coordinates| (surface, coordinates))
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         self.last_input = sequence;
-        self.pending.push(SequencedInput { sequence, input });
+        self.pending.push(SequencedInput {
+            sequence,
+            input,
+            scene_coordinate_proofs,
+        });
         Ok(sequence)
     }
 
@@ -739,6 +965,37 @@ impl DockEngine {
         })
     }
 
+    /// Queues explicit native activation and item-or-none pane focus for one exact binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_viewport_activation(
+        &mut self,
+        target: crate::viewport::ViewportBinding,
+        focus: PanelFocus,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::ActivateViewport {
+            expected: self.version,
+            request: ViewportActivationRequest::explicit(target, focus),
+        })
+    }
+
+    /// Queues one exact adapter-observed pane-focus fact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
+    pub fn enqueue_pane_focus_observation(
+        &mut self,
+        observation: PaneFocusObservation,
+    ) -> Result<InputSequence, EngineError> {
+        self.enqueue(EngineInput::PublishPaneFocusObservation {
+            expected_epoch: self.version.epoch(),
+            observation,
+        })
+    }
+
     /// Queues an application decision for one exact native close-request edge.
     ///
     /// # Errors
@@ -771,7 +1028,13 @@ impl DockEngine {
         })
     }
 
-    /// Queues one explicit retry for a cleanup whose dispatch definitively failed.
+    /// Queues one explicit phase-qualified cleanup retry.
+    ///
+    /// A destructive cleanup is eligible only after a definitive dispatch failure and retains
+    /// its existing cleanup-specific retry rules. An observation-only cleanup is eligible after
+    /// `ObservationDispatchFailed` or `ObservationUnsupported`; its retry is another
+    /// `ContinueCleanup` with the same original destructive predecessor and never re-executes
+    /// that predecessor. Indeterminate and terminal effects are not retryable.
     ///
     /// # Errors
     ///
@@ -971,6 +1234,7 @@ impl DockEngine {
         let before_scene = self.scene.clone();
         let before_interaction = self.interaction.clone();
         let before_viewport = self.viewport.clone();
+        let before_viewport_focus = self.viewport_focus.clone();
         let mut candidate = self.candidate();
         let mut inputs = std::mem::take(&mut candidate.pending);
         inputs.sort_by_key(|input| {
@@ -999,23 +1263,76 @@ impl DockEngine {
         }
 
         let platform_effects = candidate.viewport.take_new_effects();
+        let observed_focus_effects = Self::observed_focus_effects(&reduced);
+        let focus_delta = FocusDelta::between(
+            &before_viewport_focus,
+            &candidate.viewport_focus,
+            before_viewport.effects(),
+            candidate.viewport.effects(),
+            &observed_focus_effects,
+        );
         let published_state_changed = before != candidate.version
             || before_scene != candidate.scene
             || before_interaction != candidate.interaction
-            || before_viewport != candidate.viewport;
-        let transition = EngineTransition::new(
+            || before_viewport != candidate.viewport
+            || !focus_delta.is_empty();
+        let transition = EngineTransition::new(EngineTransitionParts {
             before,
-            candidate.version,
+            after: candidate.version,
             reduced,
             events,
             interaction_events,
             platform_effects,
+            focus_delta,
             published_state_changed,
-        );
+        });
         *self = candidate;
         Ok(transition)
     }
 
+    fn observed_focus_effects(reduced: &[ReducedInput]) -> Vec<ObservedPlatformFocusEffect> {
+        reduced
+            .iter()
+            .flat_map(|input| {
+                let observed = match input.outcome() {
+                    InputOutcome::PlatformSnapshotPublished {
+                        focus: FocusObservationTransition::Applied(applied),
+                        ..
+                    } => [
+                        applied.observed_effect(),
+                        applied.acknowledged_effect_settlement(),
+                    ],
+                    InputOutcome::ViewportRegistered { .. }
+                    | InputOutcome::ViewportRegistrationRejected { .. }
+                    | InputOutcome::PlatformSnapshotPublished { .. }
+                    | InputOutcome::PlatformSnapshotStale { .. }
+                    | InputOutcome::PlatformEffectReported { .. }
+                    | InputOutcome::ViewportActivationRequested { .. }
+                    | InputOutcome::ViewportActivationRejected { .. }
+                    | InputOutcome::PaneFocusObservationPublished { .. }
+                    | InputOutcome::PaneFocusObservationStale { .. }
+                    | InputOutcome::ViewportCloseDecided { .. }
+                    | InputOutcome::ViewportCloseDecisionRejected { .. }
+                    | InputOutcome::NativeCreateCancelled { .. }
+                    | InputOutcome::ViewportCleanupRetried { .. }
+                    | InputOutcome::WorkspaceReplaced { .. }
+                    | InputOutcome::CommandProcessed { .. }
+                    | InputOutcome::CommandRejected { .. }
+                    | InputOutcome::PolicyReplaced { .. }
+                    | InputOutcome::ScenePublished { .. }
+                    | InputOutcome::SceneRejected { .. }
+                    | InputOutcome::InteractionProcessed { .. }
+                    | InputOutcome::WorkspaceValidated { .. }
+                    | InputOutcome::StaleRejected { .. } => [None, None],
+                };
+                observed.into_iter().flatten()
+            })
+            .collect()
+    }
+
+    // This is the sole sorted-input dispatch table; keeping every input variant visible here
+    // makes reducer ordering auditable and prevents hidden secondary dispatch.
+    #[allow(clippy::too_many_lines)]
     fn reduce_one(
         &mut self,
         input: &SequencedInput,
@@ -1024,6 +1341,13 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
+        let focus_generation = self.last_focus_reducer_generation.checked_next().ok_or(
+            EngineError::ViewportFocus {
+                input: input.sequence,
+                source: ViewportFocusError::ReducerGenerationExhausted,
+            },
+        )?;
+        self.last_focus_reducer_generation = focus_generation;
         match &input.input {
             EngineInput::RegisterViewport {
                 expected,
@@ -1046,14 +1370,29 @@ impl DockEngine {
                 input.sequence,
                 *expected_epoch,
                 snapshot,
-                application_base,
-                events,
-                interaction_events,
+                focus_generation,
+                PlatformSnapshotReductionContext {
+                    application_base,
+                    events,
+                    interaction_events,
+                },
             ),
             EngineInput::ReportPlatformEffect {
                 expected_epoch,
                 result,
-            } => Ok(self.reduce_platform_effect(*expected_epoch, *result)),
+            } => self.reduce_platform_effect(input.sequence, *expected_epoch, *result),
+            EngineInput::ActivateViewport { expected, request } => self.reduce_viewport_activation(
+                input.sequence,
+                *expected,
+                *request,
+                focus_generation,
+                *application_base,
+                events,
+            ),
+            EngineInput::PublishPaneFocusObservation {
+                expected_epoch,
+                observation,
+            } => Ok(self.reduce_pane_focus_observation(*expected_epoch, *observation)),
             EngineInput::DecideViewportClose {
                 expected,
                 request,
@@ -1098,6 +1437,7 @@ impl DockEngine {
                 input.sequence,
                 *expected,
                 scene,
+                &input.scene_coordinate_proofs,
                 scene_published,
                 interaction_events,
             ),
@@ -1141,14 +1481,26 @@ impl DockEngine {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
         let recovery_plan = recovery.map(crate::intent::ContainedRecoveryPlan::from_proposal);
-        if recovery_plan.is_some_and(|recovery| {
-            self.contained_placement(
-                recovery.surface(),
-                recovery.requested_rect(),
-                recovery.minimum_size(),
-            )
-            .is_err()
-        }) {
+        let exact_pending_adoption =
+            self.viewport
+                .recovery_pending(surface)
+                .is_some_and(|pending| {
+                    pending.replacement_binding().is_none()
+                        && pending.role() == role
+                        && recovery_plan.is_some_and(|candidate| {
+                            pending.recovery().matches_registration(candidate)
+                        })
+                });
+        if !exact_pending_adoption
+            && recovery_plan.is_some_and(|recovery| {
+                self.contained_placement(
+                    recovery.surface(),
+                    recovery.requested_rect(),
+                    recovery.minimum_size(),
+                )
+                .is_err()
+            })
+        {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
         if let Some(recovery) = recovery_plan
@@ -1158,10 +1510,19 @@ impl DockEngine {
         {
             return Ok(InputOutcome::ViewportRegistrationRejected { surface });
         }
-        let binding = self
-            .viewport
-            .register_existing(self.version.epoch(), surface, token, role, recovery_plan)
-            .map_err(|source| EngineError::Viewport { input, source })?;
+        let binding = match self.viewport.register_existing(
+            self.version.epoch(),
+            surface,
+            token,
+            role,
+            recovery_plan,
+        ) {
+            Ok(binding) => binding,
+            Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { .. }) => {
+                return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+            }
+            Err(source) => return Err(EngineError::Viewport { input, source }),
+        };
         Ok(InputOutcome::ViewportRegistered { binding })
     }
 
@@ -1170,10 +1531,14 @@ impl DockEngine {
         input: InputSequence,
         expected_epoch: crate::ids::WorkspaceEpoch,
         snapshot: &PlatformSnapshot,
-        application_base: &mut WorkspaceVersion,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
+        focus_generation: PaneFocusIntentGeneration,
+        context: PlatformSnapshotReductionContext<'_>,
     ) -> Result<InputOutcome, EngineError> {
+        let PlatformSnapshotReductionContext {
+            application_base,
+            events,
+            interaction_events,
+        } = context;
         if expected_epoch != self.version.epoch() {
             return Ok(InputOutcome::PlatformSnapshotStale {
                 expected_epoch,
@@ -1189,8 +1554,52 @@ impl DockEngine {
             .viewport
             .publish_snapshot(snapshot)
             .map_err(|source| EngineError::Viewport { input, source })?;
+        for event in transition.registry_events() {
+            if let crate::viewport_registry::RegistryEvent::Destroyed { binding } = event {
+                let _ = self.viewport_focus.observe_destroyed_binding(*binding);
+            }
+        }
+        self.reconcile_viewport_focus_authority();
+        let focus = self.reduce_global_focus_observation(
+            input,
+            snapshot.focus(),
+            focus_generation,
+            Self::platform_focus_restore_gate(snapshot),
+            events,
+        )?;
+        self.freeze_close_focus_edges(transition.close_requests());
+        self.invalidate_changed_surface_scene_authority();
         let actions = transition.actions().to_vec();
-        self.reduce_viewport_actions(input, &actions, events)?;
+        let recovery_batch = self.freeze_surface_recovery_batch(input, &actions)?;
+        let mut activations = Vec::new();
+        self.reduce_viewport_actions(
+            input,
+            focus_generation,
+            &actions,
+            &recovery_batch,
+            &mut activations,
+            events,
+        )?;
+        let viewport = &self.viewport;
+        self.surface_recovery.retain_accepted_closes(|request| {
+            viewport
+                .viewport_close_request(request)
+                .is_some_and(|request| {
+                    matches!(
+                        request.status(),
+                        ViewportCloseStatus::AwaitingDestroyed { .. }
+                            | ViewportCloseStatus::EffectFailed { .. }
+                            | ViewportCloseStatus::Indeterminate { .. }
+                    )
+                })
+        });
+        self.surface_recovery.retain_close_focus(|request| {
+            viewport
+                .viewport_close_request(request)
+                .is_some_and(|request| !matches!(request.status(), ViewportCloseStatus::Cleared))
+        });
+        self.surface_recovery
+            .retain_pending(|surface| viewport.recovery_pending(surface).is_some());
         *application_base = self.version;
         if let Some(reason) = self.platform_interaction_cancel_reason(
             &interaction_dependencies,
@@ -1202,23 +1611,427 @@ impl DockEngine {
         ) {
             self.invalidate_transient(input, reason, interaction_events)?;
         }
-        Ok(InputOutcome::PlatformSnapshotPublished { transition })
+        Ok(InputOutcome::PlatformSnapshotPublished {
+            transition,
+            focus,
+            activations,
+        })
+    }
+
+    fn freeze_close_focus_edges(&mut self, requests: &[ViewportCloseRequestId]) {
+        for request in requests {
+            let Some(surface) = self
+                .viewport
+                .viewport_close_request(*request)
+                .map(|request| request.binding().surface())
+            else {
+                continue;
+            };
+            let focus = match self.viewport_focus.panel_focus(surface) {
+                PanelFocusRecord::Item(item) if self.surface_items(surface).contains(&item) => {
+                    PanelFocus::Item(item)
+                }
+                PanelFocusRecord::NoHistory
+                | PanelFocusRecord::Item(_)
+                | PanelFocusRecord::None => PanelFocus::None,
+            };
+            self.surface_recovery.freeze_close_focus(*request, focus);
+        }
+    }
+
+    fn reduce_global_focus_observation(
+        &mut self,
+        input: InputSequence,
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+        focus_generation: PaneFocusIntentGeneration,
+        restore_gate: PlatformFocusRestoreGate,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<FocusObservationTransition, EngineError> {
+        let (bindings, items) = self.focus_validation_snapshot();
+        let mut transition = self
+            .viewport_focus
+            .publish_platform_focus_observation(
+                observation,
+                focus_generation,
+                restore_gate,
+                |binding| bindings.contains(&binding),
+                |surface, item| {
+                    items
+                        .get(&surface)
+                        .is_some_and(|surface_items| surface_items.contains(&item))
+                },
+            )
+            .map_err(|source| EngineError::ViewportFocus { input, source })?;
+        if let FocusObservationTransition::Applied(applied) = &mut transition
+            && let Some(intent) = applied.pane_intent()
+            && let Some(reason) = self.reveal_pane_focus_intent(input, intent, events)?
+        {
+            applied.reject_pane_reveal(intent, reason);
+        }
+        if let FocusObservationTransition::Applied(applied) = &mut transition {
+            if let Some(observed) = applied.observed_effect()
+                && !self.settle_observed_focus_effect(observed)
+            {
+                applied.discard_observed_effect(observed.effect());
+            }
+            if let Some(observed) = self.settle_acknowledged_focus_effect(observation) {
+                applied.record_acknowledged_effect_settlement(observed);
+            }
+        }
+        Ok(transition)
+    }
+
+    fn settle_acknowledged_focus_effect(
+        &mut self,
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+    ) -> Option<ObservedPlatformFocusEffect> {
+        let Authority::Known(Some(effect)) = *observation.acknowledged_effect() else {
+            return None;
+        };
+        let binding = self.focus_effect_binding(effect)?;
+        let observed = ObservedPlatformFocusEffect::new(
+            effect,
+            binding,
+            observation.generation(),
+            PlatformFocusEvidence::ExactEffectAcknowledgement,
+        );
+        self.settle_observed_focus_effect(observed)
+            .then_some(observed)
+    }
+
+    fn settle_observed_focus_effect(&mut self, observed: ObservedPlatformFocusEffect) -> bool {
+        let Some(binding) = self.focus_effect_binding(observed.effect()) else {
+            return false;
+        };
+        if binding != observed.binding()
+            || self
+                .viewport
+                .viewport(binding.surface())
+                .filter(|record| record.is_focusable())
+                .map(crate::viewport_registry::ViewportRecord::binding)
+                != Some(binding)
+        {
+            return false;
+        }
+        self.viewport
+            .observe_focus_effect(observed.effect(), binding)
+            == EffectTransition::Applied
+    }
+
+    fn focus_effect_binding(
+        &self,
+        effect: crate::effect::EffectId,
+    ) -> Option<crate::viewport::ViewportBinding> {
+        let record = self.viewport.effects().record(effect)?;
+        match record.request().effect() {
+            crate::effect::PlatformEffect::RequestFocus { binding, .. } => Some(*binding),
+            _ => None,
+        }
+    }
+
+    fn platform_focus_restore_gate(snapshot: &PlatformSnapshot) -> PlatformFocusRestoreGate {
+        let authoritative_mouse_down = snapshot
+            .capabilities()
+            .authoritative_button_state()
+            .is_supported()
+            && snapshot.pointers().iter().any(|pointer| {
+                matches!(
+                    pointer.button_states(),
+                    Authority::Known(states)
+                        if states
+                            .iter()
+                            .any(|state| state.state() == PointerButtonState::Pressed)
+                )
+            });
+        if authoritative_mouse_down {
+            PlatformFocusRestoreGate::AuthoritativeMouseDown
+        } else {
+            PlatformFocusRestoreGate::NoAuthoritativeMouseDown
+        }
+    }
+
+    fn reduce_viewport_activation(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        request: ViewportActivationRequest,
+        focus_generation: PaneFocusIntentGeneration,
+        application_base: WorkspaceVersion,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+        if request.cause() != crate::viewport_focus::ViewportActivationCause::Explicit {
+            return Ok(InputOutcome::ViewportActivationRejected { request });
+        }
+        let activation =
+            self.start_viewport_activation(input, request, focus_generation, events)?;
+        Ok(InputOutcome::ViewportActivationRequested { activation })
+    }
+
+    fn start_viewport_activation(
+        &mut self,
+        input: InputSequence,
+        request: ViewportActivationRequest,
+        focus_generation: PaneFocusIntentGeneration,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<ActivationStart, EngineError> {
+        self.start_viewport_activation_with_reveal(
+            input,
+            request,
+            focus_generation,
+            PaneRevealDisposition::Pending,
+            events,
+        )
+    }
+
+    fn start_viewport_activation_with_reveal(
+        &mut self,
+        input: InputSequence,
+        request: ViewportActivationRequest,
+        focus_generation: PaneFocusIntentGeneration,
+        reveal: PaneRevealDisposition,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<ActivationStart, EngineError> {
+        let (bindings, items) = self.focus_validation_snapshot();
+        let control_supported = self
+            .viewport
+            .capabilities()
+            .window_activation_control()
+            .is_supported();
+        let mut activation = self
+            .viewport_focus
+            .request_activation(
+                request,
+                focus_generation,
+                control_supported,
+                |binding| bindings.contains(&binding),
+                |surface, item| {
+                    items
+                        .get(&surface)
+                        .is_some_and(|surface_items| surface_items.contains(&item))
+                },
+            )
+            .map_err(|source| EngineError::ViewportFocus { input, source })?;
+        if let ActivationStartOutcome::RequestPlatformFocus { target } = activation.outcome() {
+            let effect = self
+                .viewport
+                .request_focus_binding(target)
+                .map_err(|source| EngineError::Viewport { input, source })?;
+            if self
+                .viewport_focus
+                .attach_platform_focus_effect(activation.generation(), effect)
+                != crate::viewport_focus::FocusEffectAttachment::Applied
+            {
+                return Err(EngineError::ViewportFocus {
+                    input,
+                    source: ViewportFocusError::EffectAttachmentInvariant,
+                });
+            }
+        }
+        if reveal == PaneRevealDisposition::Pending
+            && let ActivationStartOutcome::PaneFocusReady { intent } = activation.outcome()
+            && let Some(reason) = self.reveal_pane_focus_intent(input, intent, events)?
+        {
+            activation = activation.reject_pane_reveal(intent, reason);
+        }
+        Ok(activation)
+    }
+
+    fn reveal_pane_focus_intent(
+        &mut self,
+        input: InputSequence,
+        intent: PaneFocusIntent,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Option<PaneFocusRevealRejection>, EngineError> {
+        let PanelFocus::Item(item) = intent.focus() else {
+            return Ok(None);
+        };
+        let Some(source) =
+            Self::capture_surface_item_source(&self.workspace, intent.target().surface(), item)
+        else {
+            return self.reject_pane_focus_reveal(
+                input,
+                intent,
+                PaneFocusRevealRejection::ItemUnavailable { item },
+            );
+        };
+        let application =
+            self.apply_interaction_command(input, &WorkspaceCommand::Select { source }, events)?;
+        match application {
+            CommandApplication::Applied { .. } => Ok(None),
+            CommandApplication::Rejected(error) => {
+                let reason = match error {
+                    crate::error::CommandError::SurfaceLifecycleFrozen { surface } => {
+                        PaneFocusRevealRejection::SurfaceLifecycleFrozen { surface }
+                    }
+                    crate::error::CommandError::Policy(_) => {
+                        PaneFocusRevealRejection::PolicyRejected
+                    }
+                    crate::error::CommandError::MissingRoot { .. }
+                    | crate::error::CommandError::MissingNode { .. }
+                    | crate::error::CommandError::NodeOutsideRoot { .. }
+                    | crate::error::CommandError::StaleNode { .. }
+                    | crate::error::CommandError::NodeIsNotTabs { .. }
+                    | crate::error::CommandError::ItemNotInTabs { .. } => {
+                        PaneFocusRevealRejection::ItemUnavailable { item }
+                    }
+                    _ => PaneFocusRevealRejection::WorkspaceRejected,
+                };
+                self.reject_pane_focus_reveal(input, intent, reason)
+            }
+        }
+    }
+
+    fn reject_pane_focus_reveal(
+        &mut self,
+        input: InputSequence,
+        intent: PaneFocusIntent,
+        reason: PaneFocusRevealRejection,
+    ) -> Result<Option<PaneFocusRevealRejection>, EngineError> {
+        if !self.viewport_focus.reject_pane_reveal(intent.id()) {
+            return Err(EngineError::ViewportFocus {
+                input,
+                source: ViewportFocusError::PaneRevealInvariant,
+            });
+        }
+        Ok(Some(reason))
+    }
+
+    fn capture_surface_item_source(
+        workspace: &Workspace,
+        surface: crate::ids::SurfaceId,
+        item: crate::ids::ItemId,
+    ) -> Option<crate::command::ItemSource> {
+        let presentation = workspace.surface(surface)?;
+        let mut roots = Vec::with_capacity(presentation.contained.len().saturating_add(1));
+        roots.push(presentation.main_root);
+        roots.extend(presentation.contained.iter().filter_map(|floating| {
+            workspace
+                .contained_floating(*floating)
+                .map(|record| record.root)
+        }));
+        for root in roots {
+            for (tabs, node) in workspace.nodes() {
+                if !matches!(node, Node::Tabs { items, .. } if items.contains(&item)) {
+                    continue;
+                }
+                if let Ok(source) = workspace.capture_item_source(root, tabs, item) {
+                    return Some(source);
+                }
+            }
+        }
+        None
+    }
+
+    fn reduce_pane_focus_observation(
+        &mut self,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        observation: PaneFocusObservation,
+    ) -> InputOutcome {
+        if expected_epoch != self.version.epoch() {
+            return InputOutcome::PaneFocusObservationStale {
+                expected_epoch,
+                current_epoch: self.version.epoch(),
+            };
+        }
+        let (bindings, items) = self.focus_validation_snapshot();
+        let transition = self.viewport_focus.publish_pane_focus_observation(
+            observation,
+            |binding| bindings.contains(&binding),
+            |surface, item| {
+                items
+                    .get(&surface)
+                    .is_some_and(|surface_items| surface_items.contains(&item))
+            },
+        );
+        InputOutcome::PaneFocusObservationPublished { transition }
+    }
+
+    fn focus_validation_snapshot(
+        &self,
+    ) -> (
+        BTreeSet<crate::viewport::ViewportBinding>,
+        BTreeMap<crate::ids::SurfaceId, BTreeSet<crate::ids::ItemId>>,
+    ) {
+        let bindings = self
+            .viewport
+            .registry()
+            .records()
+            .filter_map(|(_, record)| record.is_focusable().then_some(record.binding()))
+            .collect();
+        let items = self
+            .workspace
+            .surfaces()
+            .map(|(surface, _)| (surface, self.surface_items(surface)))
+            .collect();
+        (bindings, items)
+    }
+
+    fn reconcile_viewport_focus_authority(&mut self) {
+        let (bindings, items) = self.focus_validation_snapshot();
+        let _ = self.viewport_focus.reconcile_authority(
+            |surface| items.contains_key(&surface),
+            |binding| bindings.contains(&binding),
+            |surface, item| {
+                items
+                    .get(&surface)
+                    .is_some_and(|surface_items| surface_items.contains(&item))
+            },
+        );
+    }
+
+    fn surface_items(&self, surface: crate::ids::SurfaceId) -> BTreeSet<crate::ids::ItemId> {
+        let Some(presentation) = self.workspace.surface(surface) else {
+            return BTreeSet::new();
+        };
+        std::iter::once(presentation.main_root)
+            .chain(presentation.contained.iter().filter_map(|floating| {
+                self.workspace
+                    .contained_floating(*floating)
+                    .map(|floating| floating.root)
+            }))
+            .filter_map(|root| self.workspace.root(root).map(|record| record.node))
+            .flat_map(|node| self.workspace.collect_items_in_subtree(node))
+            .collect()
     }
 
     fn reduce_platform_effect(
         &mut self,
+        input: InputSequence,
         expected_epoch: crate::ids::WorkspaceEpoch,
         result: EffectResult,
-    ) -> InputOutcome {
+    ) -> Result<InputOutcome, EngineError> {
+        let is_focus_effect =
+            self.viewport
+                .effects()
+                .record(result.effect())
+                .is_some_and(|record| {
+                    matches!(
+                        record.request().effect(),
+                        crate::effect::PlatformEffect::RequestFocus { .. }
+                    )
+                });
         let transition = if expected_epoch == self.version.epoch() {
-            self.viewport.report_effect(expected_epoch, result)
+            self.viewport
+                .report_effect(expected_epoch, result)
+                .map_err(|source| EngineError::Viewport { input, source })?
         } else {
             EffectTransition::StaleEpoch
         };
-        InputOutcome::PlatformEffectReported {
+        let focus = (transition == EffectTransition::Applied && is_focus_effect).then(|| {
+            self.viewport_focus
+                .report_platform_focus_effect(result.effect(), result.result())
+        });
+        Ok(InputOutcome::PlatformEffectReported {
             effect: result.effect(),
             transition,
-        }
+            focus,
+        })
     }
 
     fn reduce_viewport_close_decision(
@@ -1234,6 +2047,7 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
+        let mut accepted_merge = None;
         if let ViewportCloseDecision::Accept(plan) = &decision {
             let capability = self.viewport.capabilities().authoritative_inventory();
             if !capability.is_supported() {
@@ -1243,40 +2057,132 @@ impl DockEngine {
                     ViewportCloseDecisionRejection::DestructionAuthorityUnavailable { capability },
                 );
             }
-            let recovery = plan.recovery();
-            if let Err(reason) = self.contained_placement(
-                recovery.surface(),
-                recovery.requested_rect(),
-                recovery.minimum_size(),
-            ) {
-                return self.reject_viewport_close_decision(
+            if let (ViewportClosePlan::MergeBack(merge), Some(close_request)) =
+                (plan, self.viewport.viewport_close_request(request))
+            {
+                let focus = self
+                    .surface_recovery
+                    .close_focus(request)
+                    .unwrap_or(PanelFocus::None);
+                match self.freeze_accepted_merge_back(
                     input,
-                    request,
-                    ViewportCloseDecisionRejection::RecoveryPlacementUnavailable(reason),
-                );
-            }
-        }
-        if let ViewportCloseDecision::Accept(plan) = &decision
-            && let Some(close_request) = self.viewport.viewport_close_request(request)
-        {
-            let surface = close_request.binding().surface();
-            let recovery_matches_surface = self
-                .workspace
-                .surface(surface)
-                .is_some_and(|presentation| presentation.main_root == plan.recovery().root());
-            if !recovery_matches_surface {
-                return self.reject_viewport_close_decision(
-                    input,
-                    request,
-                    ViewportCloseDecisionRejection::RecoveryRootMismatch,
-                );
+                    close_request.binding().surface(),
+                    close_request.recovery(),
+                    merge,
+                    focus,
+                )? {
+                    MergeBackFreeze::Frozen {
+                        roster,
+                        dependency,
+                        focus,
+                    } => {
+                        accepted_merge = Some((*roster, dependency, focus));
+                    }
+                    MergeBackFreeze::Rejected(reason) => {
+                        return self.reject_viewport_close_decision(input, request, reason);
+                    }
+                }
             }
         }
         let effect = self
             .viewport
             .decide_viewport_close(request, decision)
             .map_err(|source| EngineError::Viewport { input, source })?;
+        if let Some((roster, dependency, focus)) = accepted_merge {
+            self.surface_recovery
+                .freeze_accepted_close(request, roster, dependency, focus);
+            self.surface_recovery.remove_close_focus(request);
+        } else {
+            self.surface_recovery.remove_accepted_close(request);
+            self.surface_recovery.remove_close_focus(request);
+            let _ = self.viewport_focus.clear_close_request(request);
+        }
         Ok(InputOutcome::ViewportCloseDecided { request, effect })
+    }
+
+    fn freeze_accepted_merge_back(
+        &self,
+        input: InputSequence,
+        source_surface: crate::ids::SurfaceId,
+        source_recovery: Option<crate::intent::ContainedRecoveryPlan>,
+        plan: &crate::frame::ViewportMergeBackPlan,
+        focus: PanelFocus,
+    ) -> Result<MergeBackFreeze, EngineError> {
+        let target_surface = plan.target_surface();
+        let target_is_closing = self
+            .viewport
+            .viewport(target_surface)
+            .is_some_and(|record| {
+                matches!(
+                    record.lifecycle(),
+                    crate::viewport_registry::ViewportLifecycle::CloseRequested
+                        | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
+                )
+            });
+        if target_surface == source_surface || target_is_closing {
+            return Ok(MergeBackFreeze::Rejected(
+                ViewportCloseDecisionRejection::MergeBackTargetsClosingSurface {
+                    surface: target_surface,
+                },
+            ));
+        }
+        if let Some(recovery) = source_recovery
+            && recovery.surface() != target_surface
+        {
+            return Ok(MergeBackFreeze::Rejected(
+                ViewportCloseDecisionRejection::MergeBackRecoveryTargetMismatch {
+                    expected: recovery.surface(),
+                    actual: target_surface,
+                },
+            ));
+        }
+        let roster = self
+            .capture_surface_roster(source_surface)
+            .map_err(|source| EngineError::SurfaceRoster { input, source })?;
+        let focus = match focus {
+            PanelFocus::Item(item) if roster.contains_item(&self.workspace, item) => {
+                PanelFocus::Item(item)
+            }
+            PanelFocus::Item(_) | PanelFocus::None => PanelFocus::None,
+        };
+        if !roster.contained().is_empty() && roster.source_coordinates().is_none() {
+            return Ok(MergeBackFreeze::Rejected(
+                ViewportCloseDecisionRejection::SourceGeometryUnavailable,
+            ));
+        }
+        let main_root = roster.main_root();
+        let source_main = self
+            .workspace
+            .root(main_root)
+            .and_then(|root| self.workspace.node(root.node));
+        if !matches!(source_main, Some(Node::Tabs { .. })) {
+            return Ok(MergeBackFreeze::Rejected(
+                ViewportCloseDecisionRejection::MergeBackSourceNotTabs { root: main_root },
+            ));
+        }
+        let target_is_current = self.workspace.presentation_for_root(plan.target().root())
+            == Some(crate::RootPresentationOwner::Main {
+                surface: target_surface,
+            })
+            && self
+                .workspace
+                .capture_tab_target(plan.target().root(), plan.target().tabs())
+                .is_ok_and(|target| &target == plan.target());
+        let Some(target_facts) = target_is_current
+            .then(|| self.freeze_surface_recovery_target(target_surface))
+            .flatten()
+        else {
+            return Ok(MergeBackFreeze::Rejected(
+                ViewportCloseDecisionRejection::MergeBackTargetUnavailable {
+                    surface: target_surface,
+                },
+            ));
+        };
+        Ok(MergeBackFreeze::Frozen {
+            roster: Box::new(roster),
+            dependency: target_facts.dependency(),
+            focus,
+        })
     }
 
     fn reject_viewport_close_decision(
@@ -1287,8 +2193,11 @@ impl DockEngine {
     ) -> Result<InputOutcome, EngineError> {
         let hold_effect = self
             .viewport
-            .decide_viewport_close(request, ViewportCloseDecision::Veto)
+            .decide_viewport_close(request, ViewportCloseDecision::Prevent)
             .map_err(|source| EngineError::Viewport { input, source })?;
+        self.surface_recovery.remove_accepted_close(request);
+        self.surface_recovery.remove_close_focus(request);
+        let _ = self.viewport_focus.clear_close_request(request);
         Ok(InputOutcome::ViewportCloseDecisionRejected {
             request,
             reason,
@@ -1337,42 +2246,154 @@ impl DockEngine {
         })
     }
 
+    // Lifecycle actions share one batch-frozen roster/scene barrier and must remain visibly
+    // ordered in a single reduction loop.
+    #[allow(clippy::too_many_lines)]
     fn reduce_viewport_actions(
         &mut self,
         input: InputSequence,
+        focus_generation: PaneFocusIntentGeneration,
         actions: &[crate::frame::ViewportLifecycleAction],
+        recovery_batch: &SurfaceRecoveryBatchContext,
+        activations: &mut Vec<ActivationStart>,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<(), EngineError> {
+        let mut active_barrier = recovery_batch.active_rosters.clone();
         for action in actions {
             match action {
-                crate::frame::ViewportLifecycleAction::CreateReady { saga, prepared } => {
-                    match self.apply_interaction_command(input, prepared.command(), events)? {
-                        CommandApplication::Applied { .. } => {
-                            self.viewport
-                                .complete_native_create(*saga)
-                                .map_err(|source| EngineError::Viewport { input, source })?;
-                        }
-                        CommandApplication::Rejected(_) => {
-                            self.viewport
-                                .reject_native_create(*saga)
-                                .map_err(|source| EngineError::Viewport { input, source })?;
+                crate::frame::ViewportLifecycleAction::CreateReady { saga, prepared } => match self
+                    .apply_interaction_command_with_barrier(
+                        input,
+                        prepared.command(),
+                        Some(&active_barrier),
+                        events,
+                    )? {
+                    CommandApplication::Applied { .. } => {
+                        self.viewport
+                            .complete_native_create(*saga)
+                            .map_err(|source| EngineError::Viewport { input, source })?;
+                        if let Some(binding) = self
+                            .viewport
+                            .native_create_saga(*saga)
+                            .filter(|saga| {
+                                matches!(
+                                    saga.status(),
+                                    crate::frame::NativeCreateStatus::Committed { .. }
+                                )
+                            })
+                            .map(crate::frame::NativeCreateSaga::binding)
+                        {
+                            activations.push(self.start_viewport_activation(
+                                input,
+                                ViewportActivationRequest::tear_off_committed(
+                                    binding,
+                                    prepared.focus(),
+                                ),
+                                focus_generation,
+                                events,
+                            )?);
                         }
                     }
+                    CommandApplication::Rejected(_) => {
+                        self.viewport
+                            .reject_native_create(*saga)
+                            .map_err(|source| EngineError::Viewport { input, source })?;
+                    }
+                },
+                crate::frame::ViewportLifecycleAction::CreateVisible { saga, binding } => {
+                    let focus = self
+                        .viewport
+                        .native_create_saga(*saga)
+                        .ok_or(EngineError::Viewport {
+                            input,
+                            source: ViewportCoordinatorError::MissingCreateSaga { saga: *saga },
+                        })?
+                        .prepared()
+                        .focus();
+                    activations.push(self.start_viewport_activation(
+                        input,
+                        ViewportActivationRequest::tear_off_committed(*binding, focus),
+                        focus_generation,
+                        events,
+                    )?);
                 }
                 crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
                     binding,
                     resolution,
                 } => {
-                    self.reduce_destroyed_surface(input, *binding, resolution, events)?;
+                    let mut context = DestroyedSurfaceContext {
+                        roster: active_barrier.get(&binding.surface()),
+                        action_barrier: &active_barrier,
+                        recovery_targets: &recovery_batch.targets,
+                        events,
+                    };
+                    self.reduce_destroyed_surface(
+                        input,
+                        focus_generation,
+                        *binding,
+                        resolution,
+                        activations,
+                        &mut context,
+                    )?;
+                    active_barrier.remove(&binding.surface());
                 }
                 crate::frame::ViewportLifecycleAction::RetryRecovery {
                     destroyed_binding,
                     recovery,
                 } => {
-                    if self.apply_destroyed_surface_recovery(input, *recovery, events)? {
+                    let surface = destroyed_binding.surface();
+                    let roster = self
+                        .surface_recovery
+                        .pending(surface)
+                        .cloned()
+                        .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+                    let disposition = self
+                        .surface_recovery
+                        .pending_disposition(surface)
+                        .cloned()
+                        .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+                    let resolved = match &disposition {
+                        PendingSurfaceRecoveryDisposition::Contained => self
+                            .apply_destroyed_surface_recovery(
+                                input,
+                                &roster,
+                                *recovery,
+                                SurfaceRecoveryTargetContext::new(
+                                    &active_barrier,
+                                    recovery_batch.targets.get(&recovery.surface()),
+                                ),
+                                events,
+                            )?,
+                        PendingSurfaceRecoveryDisposition::MergeBack {
+                            request,
+                            plan,
+                            dependency,
+                            focus,
+                        } => self.apply_merge_back(
+                            input,
+                            focus_generation,
+                            &roster,
+                            MergeBackIntent {
+                                request: *request,
+                                plan,
+                                dependency: *dependency,
+                                focus: *focus,
+                            },
+                            MergeBackApplicationContext {
+                                target: SurfaceRecoveryTargetContext::new(
+                                    &active_barrier,
+                                    recovery_batch.targets.get(&plan.target_surface()),
+                                ),
+                                activations,
+                                events,
+                            },
+                        )?,
+                    };
+                    if resolved {
                         self.viewport
-                            .complete_pending_recovery(destroyed_binding.surface())
+                            .complete_pending_recovery(surface)
                             .map_err(|source| EngineError::Viewport { input, source })?;
+                        self.surface_recovery.complete_pending(surface);
                     }
                 }
             }
@@ -1380,120 +2401,609 @@ impl DockEngine {
         Ok(())
     }
 
+    fn freeze_surface_recovery_batch(
+        &self,
+        input: InputSequence,
+        actions: &[crate::frame::ViewportLifecycleAction],
+    ) -> Result<SurfaceRecoveryBatchContext, EngineError> {
+        let active_rosters = self.freeze_destroyed_surface_rosters(input, actions)?;
+        let mut targets = BTreeMap::new();
+        for action in actions {
+            let target_surface = match action {
+                crate::frame::ViewportLifecycleAction::CreateReady { .. }
+                | crate::frame::ViewportLifecycleAction::CreateVisible { .. } => None,
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { resolution, .. } => {
+                    match resolution {
+                        crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
+                            match plan {
+                                ViewportClosePlan::RetainLayout => None,
+                                ViewportClosePlan::MergeBack(plan) => Some(plan.target_surface()),
+                            }
+                        }
+                        crate::frame::ViewportDestructionResolution::Recover { recovery } => {
+                            Some(recovery.surface())
+                        }
+                        crate::frame::ViewportDestructionResolution::Unplanned => None,
+                    }
+                }
+                crate::frame::ViewportLifecycleAction::RetryRecovery {
+                    destroyed_binding,
+                    recovery,
+                } => match self
+                    .surface_recovery
+                    .pending_disposition(destroyed_binding.surface())
+                {
+                    Some(PendingSurfaceRecoveryDisposition::Contained) => Some(recovery.surface()),
+                    Some(PendingSurfaceRecoveryDisposition::MergeBack { plan, .. }) => {
+                        Some(plan.target_surface())
+                    }
+                    None => None,
+                },
+            };
+            let Some(target_surface) = target_surface else {
+                continue;
+            };
+            if targets.contains_key(&target_surface) {
+                continue;
+            }
+            if let Some(facts) = self.freeze_surface_recovery_target(target_surface) {
+                targets.insert(target_surface, facts);
+            }
+        }
+        Ok(SurfaceRecoveryBatchContext {
+            active_rosters,
+            targets,
+        })
+    }
+
+    fn freeze_surface_recovery_target(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Option<SurfaceRecoveryTargetFacts> {
+        let coordinates = self
+            .viewport
+            .viewport(surface)
+            .filter(|record| record.is_ready())?
+            .coordinates()?;
+        let (scene, bounds) = self.current_ready_surface_bounds(surface).ok()?;
+        if !self
+            .scene_coordinate_authority
+            .get(&surface)
+            .is_some_and(|authority| authority.matches(scene, coordinates))
+        {
+            return None;
+        }
+        Some(SurfaceRecoveryTargetFacts::new(
+            surface,
+            scene,
+            coordinates,
+            bounds,
+        ))
+    }
+
+    fn invalidate_changed_surface_scene_authority(&mut self) {
+        let viewport = &self.viewport;
+        self.scene_coordinate_authority
+            .retain(|surface, authority| {
+                viewport
+                    .viewport(*surface)
+                    .and_then(crate::viewport_registry::ViewportRecord::coordinates)
+                    .is_some_and(|current| {
+                        SurfaceSceneCoordinateAuthority::coordinates_match(
+                            authority.coordinates,
+                            current,
+                        )
+                    })
+            });
+    }
+
+    fn freeze_destroyed_surface_rosters(
+        &self,
+        input: InputSequence,
+        actions: &[crate::frame::ViewportLifecycleAction],
+    ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>, EngineError> {
+        let mut rosters = BTreeMap::new();
+        for action in actions {
+            let crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
+                binding,
+                resolution,
+            } = action
+            else {
+                continue;
+            };
+            let surface = binding.surface();
+            if self.workspace.surface(surface).is_none() {
+                continue;
+            }
+            let roster = match resolution {
+                crate::frame::ViewportDestructionResolution::Accepted {
+                    request,
+                    plan: ViewportClosePlan::MergeBack(_),
+                    ..
+                } => self
+                    .surface_recovery
+                    .accepted_close(*request)
+                    .map(|accepted| accepted.roster().clone())
+                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?,
+                crate::frame::ViewportDestructionResolution::Accepted {
+                    plan: ViewportClosePlan::RetainLayout,
+                    ..
+                }
+                | crate::frame::ViewportDestructionResolution::Unplanned => continue,
+                crate::frame::ViewportDestructionResolution::Recover { .. } => self
+                    .capture_surface_roster(surface)
+                    .map_err(|source| EngineError::SurfaceRoster { input, source })?,
+            };
+            rosters.insert(surface, roster);
+        }
+        Ok(rosters)
+    }
+
+    fn capture_surface_roster(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Result<SurfaceRosterDisposition, SurfaceRosterCaptureError> {
+        let source_coordinates = self
+            .viewport
+            .viewport(surface)
+            .and_then(crate::viewport_registry::ViewportRecord::coordinates);
+        SurfaceRosterDisposition::capture(&self.workspace, surface, source_coordinates)
+    }
+
+    // Destruction, merge-back, and deferred recovery form one atomic state transition; splitting
+    // the branches would obscure which paths may complete or retain the logical surface.
+    #[allow(clippy::too_many_lines)]
     fn reduce_destroyed_surface(
         &mut self,
         input: InputSequence,
+        focus_generation: PaneFocusIntentGeneration,
         binding: crate::viewport::ViewportBinding,
         resolution: &crate::frame::ViewportDestructionResolution,
-        events: &mut Vec<WorkspaceEvent>,
+        activations: &mut Vec<ActivationStart>,
+        context: &mut DestroyedSurfaceContext<'_>,
     ) -> Result<(), EngineError> {
-        let mut resolved = false;
-        let recovery = match resolution {
-            crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
-                Some(plan.recovery())
+        let surface = binding.surface();
+        if self.workspace.surface(surface).is_none() {
+            self.complete_destroyed_surface(input, binding)?;
+            if let crate::frame::ViewportDestructionResolution::Accepted { request, .. } =
+                resolution
+            {
+                self.surface_recovery.remove_accepted_close(*request);
             }
-            crate::frame::ViewportDestructionResolution::Recover { recovery } => Some(*recovery),
-            crate::frame::ViewportDestructionResolution::Unplanned => None,
-        };
-        match resolution {
-            crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
-                if let Some(primary) = plan.primary() {
-                    resolved =
-                        self.apply_close_primary(input, binding.surface(), primary, events)?;
-                }
-                if !resolved {
-                    resolved =
-                        self.apply_destroyed_surface_recovery(input, plan.recovery(), events)?;
-                }
-            }
-            crate::frame::ViewportDestructionResolution::Recover { recovery } => {
-                resolved = self.apply_destroyed_surface_recovery(input, *recovery, events)?;
-            }
-            crate::frame::ViewportDestructionResolution::Unplanned => {}
+            self.surface_recovery.complete_pending(surface);
+            return Ok(());
         }
-        if resolved && self.workspace.surface(binding.surface()).is_none() {
-            self.viewport
-                .complete_destroyed_surface(binding)
-                .map_err(|source| EngineError::Viewport { input, source })?;
-        } else if !resolved && let Some(recovery) = recovery {
+
+        if matches!(
+            resolution,
+            crate::frame::ViewportDestructionResolution::Unplanned
+        ) {
+            self.complete_destroyed_surface(input, binding)?;
+            return Ok(());
+        }
+
+        if let crate::frame::ViewportDestructionResolution::Accepted {
+            request,
+            plan: ViewportClosePlan::RetainLayout,
+            ..
+        } = resolution
+        {
+            self.complete_destroyed_surface(input, binding)?;
+            self.surface_recovery.remove_accepted_close(*request);
+            return Ok(());
+        }
+
+        let roster = context
+            .roster
+            .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+        let (resolved, pending) = match resolution {
+            crate::frame::ViewportDestructionResolution::Accepted {
+                request,
+                plan: ViewportClosePlan::MergeBack(plan),
+                recovery,
+            } => {
+                let dependency = self
+                    .surface_recovery
+                    .accepted_close(*request)
+                    .map(crate::surface_recovery::AcceptedSurfaceMergeBack::dependency)
+                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+                let focus = self
+                    .surface_recovery
+                    .accepted_close(*request)
+                    .map(crate::surface_recovery::AcceptedSurfaceMergeBack::focus)
+                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
+                let resolved = self.apply_merge_back(
+                    input,
+                    focus_generation,
+                    roster,
+                    MergeBackIntent {
+                        request: *request,
+                        plan,
+                        dependency,
+                        focus,
+                    },
+                    MergeBackApplicationContext {
+                        target: SurfaceRecoveryTargetContext::new(
+                            context.action_barrier,
+                            context.recovery_targets.get(&plan.target_surface()),
+                        ),
+                        activations,
+                        events: context.events,
+                    },
+                )?;
+                let pending = recovery.map(|recovery| {
+                    (
+                        recovery,
+                        PendingSurfaceRecoveryDisposition::MergeBack {
+                            request: *request,
+                            plan: plan.clone(),
+                            dependency,
+                            focus,
+                        },
+                    )
+                });
+                (resolved, pending)
+            }
+            crate::frame::ViewportDestructionResolution::Recover { recovery } => (
+                self.apply_destroyed_surface_recovery(
+                    input,
+                    roster,
+                    *recovery,
+                    SurfaceRecoveryTargetContext::new(
+                        context.action_barrier,
+                        context.recovery_targets.get(&recovery.surface()),
+                    ),
+                    context.events,
+                )?,
+                Some((*recovery, PendingSurfaceRecoveryDisposition::Contained)),
+            ),
+            crate::frame::ViewportDestructionResolution::Accepted {
+                plan: ViewportClosePlan::RetainLayout,
+                ..
+            }
+            | crate::frame::ViewportDestructionResolution::Unplanned => unreachable!(),
+        };
+        if resolved && self.workspace.surface(surface).is_none() {
+            self.complete_destroyed_surface(input, binding)?;
+            self.surface_recovery.complete_pending(surface);
+        } else if !resolved && let Some((recovery, disposition)) = pending {
             self.viewport
                 .defer_destroyed_surface_recovery(binding, recovery)
                 .map_err(|source| EngineError::Viewport { input, source })?;
+            if !self.surface_recovery.defer(roster.clone(), disposition) {
+                return Err(EngineError::ConflictingSurfaceRecovery { input, surface });
+            }
+        } else if !resolved {
+            self.complete_destroyed_surface(input, binding)?;
+        }
+        if let crate::frame::ViewportDestructionResolution::Accepted { request, .. } = resolution {
+            self.surface_recovery.remove_accepted_close(*request);
         }
         Ok(())
     }
 
-    fn apply_close_primary(
+    fn complete_destroyed_surface(
         &mut self,
         input: InputSequence,
-        closing_surface: crate::ids::SurfaceId,
-        command: &WorkspaceCommand,
-        events: &mut Vec<WorkspaceEvent>,
+        binding: crate::viewport::ViewportBinding,
+    ) -> Result<(), EngineError> {
+        self.viewport
+            .complete_destroyed_surface(binding)
+            .map_err(|source| EngineError::Viewport { input, source })?;
+        let _ = self.viewport_focus.clear_binding(binding);
+        if self.workspace.surface(binding.surface()).is_none() {
+            let _ = self.viewport_focus.clear_surface(binding.surface());
+        }
+        Ok(())
+    }
+
+    fn apply_merge_back(
+        &mut self,
+        input: InputSequence,
+        focus_generation: PaneFocusIntentGeneration,
+        roster: &SurfaceRosterDisposition,
+        intent: MergeBackIntent<'_>,
+        context: MergeBackApplicationContext<'_, '_>,
     ) -> Result<bool, EngineError> {
-        let mut candidate = self.workspace.clone();
-        let application =
-            Self::run_command_transaction(input, &mut candidate, &self.policy, command)?;
-        let CommandApplication::Applied { outcome, changed } = application else {
+        let MergeBackApplicationContext {
+            target,
+            activations,
+            events,
+        } = context;
+        let Some(target_facts) = target.target_facts else {
             return Ok(false);
         };
-        if candidate.surface(closing_surface).is_some() {
+        if !target_facts.satisfies(intent.dependency) {
             return Ok(false);
         }
-        self.workspace = candidate;
-        if changed {
-            self.advance_revision(input)?;
-            self.scene = None;
-            events.push(WorkspaceEvent::new(
+        let Some(placement) = self.surface_forest_placement(roster, intent.plan, target_facts)
+        else {
+            return Ok(false);
+        };
+        let Some(transaction) =
+            roster.compile_merge_back_transaction(&self.workspace, &placement, intent.plan)
+        else {
+            return Ok(false);
+        };
+        let target_binding = target_facts.coordinates().binding();
+        let target_is_focused =
+            self.viewport_focus
+                .focus_observation()
+                .is_some_and(|observation| {
+                    matches!(
+                        observation.focused(),
+                        Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(focused))
+                            if *focused == target_binding
+                    )
+                });
+        let selection = match (target_is_focused, intent.focus) {
+            (true, PanelFocus::Item(item)) => Some(CandidatePaneSelection {
+                surface: intent.plan.target_surface(),
+                item,
+            }),
+            (true, PanelFocus::None) | (false, _) => None,
+        };
+        let applied = self.apply_surface_roster_transaction(
+            input,
+            roster,
+            &transaction,
+            selection,
+            target.action_barrier,
+            events,
+        )?;
+        if applied {
+            let reveal = selection.map_or(PaneRevealDisposition::Pending, |_| {
+                PaneRevealDisposition::AppliedInCandidate
+            });
+            let activation = self.start_viewport_activation_with_reveal(
                 input,
-                self.version,
-                WorkspaceEventKind::CommandCommitted(outcome),
-            ));
+                ViewportActivationRequest::close_recovery(
+                    target_binding,
+                    intent.focus,
+                    intent.request,
+                ),
+                focus_generation,
+                reveal,
+                events,
+            )?;
+            activations.push(activation);
         }
-        Ok(true)
+        Ok(applied)
     }
 
     fn apply_destroyed_surface_recovery(
         &mut self,
         input: InputSequence,
+        roster: &SurfaceRosterDisposition,
         recovery: crate::intent::ContainedRecoveryPlan,
+        context: SurfaceRecoveryTargetContext<'_>,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<bool, EngineError> {
-        if !self
-            .viewport
-            .viewport(recovery.surface())
-            .is_some_and(crate::viewport_registry::ViewportRecord::is_ready)
-        {
-            return Ok(false);
-        }
-        let Some(root) = self.workspace.root(recovery.root()) else {
+        let Some(target_facts) = context.target_facts else {
             return Ok(false);
         };
-        let Ok(source) = self
-            .workspace
-            .capture_node_source(recovery.root(), root.node)
+        let Some(placement) = self.surface_roster_placement(roster, recovery, target_facts) else {
+            return Ok(false);
+        };
+        let target = RootPresentationTarget::Contained {
+            surface: placement.target_surface(),
+            floating: recovery.floating(),
+            rect: placement.main_rect(),
+            z_order: placement.main_z_order(),
+        };
+        let Some(transaction) =
+            roster.compile_recovery_transaction(&self.workspace, &placement, target)
         else {
             return Ok(false);
         };
-        let Ok(placement) = self.contained_placement(
+        self.apply_surface_roster_transaction(
+            input,
+            roster,
+            &transaction,
+            None,
+            context.action_barrier,
+            events,
+        )
+    }
+
+    fn surface_roster_placement(
+        &self,
+        roster: &SurfaceRosterDisposition,
+        recovery: crate::intent::ContainedRecoveryPlan,
+        target_facts: &SurfaceRecoveryTargetFacts,
+    ) -> Option<SurfaceRosterPlacement> {
+        if roster.main_root() != recovery.root() {
+            return None;
+        }
+        let target_coordinates = target_facts.coordinates();
+        let source_coordinates = roster.source_coordinates()?;
+        let target_bounds = target_facts.scene_bounds();
+        let main_desktop = source_coordinates
+            .outer_bounds()
+            .unwrap_or_else(|| source_coordinates.content_bounds());
+        let main_requested = target_coordinates
+            .desktop_rect_to_surface(main_desktop)
+            .ok()?;
+        let main_rect = clamp_contained_rect(
             recovery.surface(),
-            recovery.requested_rect(),
+            target_bounds,
+            main_requested,
             recovery.minimum_size(),
-        ) else {
-            return Ok(false);
+        )
+        .ok()?;
+        let target_presentation = self.workspace.surface(recovery.surface())?;
+        let existing_maximum = target_presentation
+            .contained
+            .iter()
+            .filter_map(|floating| self.workspace.contained_floating(*floating))
+            .map(|floating| floating.z_order)
+            .max();
+        let main_z_order = match existing_maximum {
+            Some(existing) => recovery.z_order().max(existing.checked_add(1)?),
+            None => recovery.z_order(),
         };
-        let command = WorkspaceCommand::RehomeRoot {
-            source,
-            target: RootPresentationTarget::Contained {
-                surface: recovery.surface(),
-                floating: recovery.floating(),
-                rect: placement.clamped_rect(),
-                z_order: recovery.z_order(),
-            },
+        let first_sibling_z = if roster.contained().is_empty() {
+            main_z_order
+        } else {
+            main_z_order.checked_add(1)?
         };
-        Ok(matches!(
-            self.apply_interaction_command(input, &command, events)?,
-            CommandApplication::Applied { .. }
+        let contained = Self::contained_roster_placements(
+            roster,
+            recovery.surface(),
+            target_facts,
+            first_sibling_z,
+        )?;
+        Some(SurfaceRosterPlacement::new(
+            recovery.surface(),
+            main_rect,
+            main_z_order,
+            contained,
         ))
+    }
+
+    fn surface_forest_placement(
+        &self,
+        roster: &SurfaceRosterDisposition,
+        plan: &crate::frame::ViewportMergeBackPlan,
+        target_facts: &SurfaceRecoveryTargetFacts,
+    ) -> Option<SurfaceForestPlacement> {
+        let target = self.workspace.surface(plan.target_surface())?;
+        let first_z_order = match target
+            .contained
+            .iter()
+            .filter_map(|floating| self.workspace.contained_floating(*floating))
+            .map(|floating| floating.z_order)
+            .max()
+        {
+            Some(maximum) => maximum.checked_add(1)?,
+            None => 0,
+        };
+        let contained = Self::contained_roster_placements(
+            roster,
+            plan.target_surface(),
+            target_facts,
+            first_z_order,
+        )?;
+        Some(SurfaceForestPlacement::new(
+            plan.target_surface(),
+            contained,
+        ))
+    }
+
+    fn contained_roster_placements(
+        roster: &SurfaceRosterDisposition,
+        target_surface: crate::ids::SurfaceId,
+        target_facts: &SurfaceRecoveryTargetFacts,
+        first_z_order: u64,
+    ) -> Option<Vec<ContainedRootPlacement>> {
+        if roster.contained().is_empty() {
+            return Some(Vec::new());
+        }
+        let source_coordinates = roster.source_coordinates()?;
+        let target_coordinates = target_facts.coordinates();
+        let target_bounds = target_facts.scene_bounds();
+        let last_offset = u64::try_from(roster.contained().len().checked_sub(1)?).ok()?;
+        first_z_order.checked_add(last_offset)?;
+
+        let mut stack_order: Vec<_> = (0..roster.contained().len()).collect();
+        stack_order.sort_by_key(|index| {
+            let sibling = &roster.contained()[*index];
+            ContainedStackKey::new(sibling.z_order(), sibling.floating())
+        });
+        let mut remapped_z = vec![0; roster.contained().len()];
+        for (offset, index) in stack_order.into_iter().enumerate() {
+            remapped_z[index] = first_z_order.checked_add(u64::try_from(offset).ok()?)?;
+        }
+
+        let minimum = crate::geometry::LogicalSize::new(0.0, 0.0).ok()?;
+        roster
+            .contained()
+            .iter()
+            .enumerate()
+            .map(|(index, sibling)| {
+                let desktop = source_coordinates
+                    .surface_rect_to_desktop(sibling.rect())
+                    .ok()?;
+                let target_local = target_coordinates.desktop_rect_to_surface(desktop).ok()?;
+                let rect =
+                    clamp_contained_rect(target_surface, target_bounds, target_local, minimum)
+                        .ok()?;
+                Some(ContainedRootPlacement::new(
+                    sibling.floating(),
+                    sibling.root(),
+                    rect,
+                    remapped_z[index],
+                ))
+            })
+            .collect()
+    }
+
+    fn apply_surface_roster_transaction(
+        &mut self,
+        input: InputSequence,
+        roster: &SurfaceRosterDisposition,
+        transaction: &WorkspaceTransaction,
+        selection: Option<CandidatePaneSelection>,
+        action_barrier: &BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<bool, EngineError> {
+        let mut candidate = self.workspace.clone();
+        let report = match transaction.apply(&mut candidate, &self.policy) {
+            Ok(report) => report,
+            Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                return Ok(false);
+            }
+            Err(source) => return Err(EngineError::Command { input, source }),
+        };
+        let mut changed = report.changed();
+        let mut outcomes = report.into_outcomes();
+        if let Some(selection) = selection {
+            let Some(source) =
+                Self::capture_surface_item_source(&candidate, selection.surface, selection.item)
+            else {
+                return Ok(false);
+            };
+            let selection_report =
+                match WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
+                    .apply(&mut candidate, &self.policy)
+                {
+                    Ok(report) => report,
+                    Err(TransactionError::Command { source, .. })
+                        if source.is_expected_rejection() =>
+                    {
+                        return Ok(false);
+                    }
+                    Err(source) => return Err(EngineError::Command { input, source }),
+                };
+            changed |= selection_report.changed();
+            outcomes.extend(selection_report.into_outcomes());
+        }
+        if candidate.surface(roster.surface()).is_some()
+            || self
+                .first_workspace_publication_mismatch(
+                    &candidate,
+                    Some(action_barrier),
+                    Some(roster.surface()),
+                )
+                .is_some()
+        {
+            return Ok(false);
+        }
+
+        self.workspace = candidate;
+        self.reconcile_viewport_focus_authority();
+        if changed {
+            self.advance_revision(input)?;
+            self.invalidate_scene();
+            events.extend(outcomes.into_iter().map(|outcome| {
+                WorkspaceEvent::new(
+                    input,
+                    self.version,
+                    WorkspaceEventKind::CommandCommitted(outcome),
+                )
+            }));
+        }
+        Ok(true)
     }
 
     fn reduce_workspace_replacement(
@@ -1521,6 +3031,8 @@ impl DockEngine {
             .reconcile_workspace_epoch(epoch, &desired_surfaces)
             .map_err(|source| EngineError::Viewport { input, source })?;
         self.workspace = workspace.clone();
+        self.surface_recovery.clear();
+        self.viewport_focus.reconcile_workspace_replacement();
         self.version = WorkspaceVersion::new(epoch, WorkspaceRevision::default());
         *application_base = self.version;
         self.invalidate_transient(
@@ -1617,7 +3129,7 @@ impl DockEngine {
         self.viewport
             .end_all_drag_routing()
             .map_err(|source| EngineError::Viewport { input, source })?;
-        self.scene = None;
+        self.invalidate_scene();
         if let Some(status) = self.interaction.cancel_active() {
             interaction_events.push(InteractionEvent::new(
                 input,
@@ -1772,6 +3284,7 @@ impl DockEngine {
         input: InputSequence,
         expected: WorkspaceVersion,
         building: &BuildingScene,
+        coordinate_proofs: &BTreeMap<crate::ids::SurfaceId, CoordinateSnapshot>,
         scene_published: &mut bool,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
@@ -1812,6 +3325,25 @@ impl DockEngine {
                         SurfaceScene::Bootstrap(_) => (ready, bootstrap + 1),
                     },
                 );
+        self.scene_coordinate_authority = sealed
+            .surfaces()
+            .filter_map(|(surface, state)| {
+                matches!(state, SurfaceScene::Ready(_))
+                    .then(|| {
+                        let captured = coordinate_proofs.get(surface).copied()?;
+                        let current = self
+                            .viewport
+                            .viewport(*surface)
+                            .and_then(crate::viewport_registry::ViewportRecord::coordinates)?;
+                        SurfaceSceneCoordinateAuthority::coordinates_match(captured, current)
+                            .then_some((
+                                *surface,
+                                SurfaceSceneCoordinateAuthority::new(stamp, captured),
+                            ))
+                    })
+                    .flatten()
+            })
+            .collect();
         self.scene = Some(sealed);
         self.last_scene_generation = generation;
         *scene_published = true;
@@ -1907,7 +3439,7 @@ impl DockEngine {
                 *session,
                 *pointer,
                 *button,
-                button_state,
+                *button_state,
                 events,
                 interaction_events,
             ),
@@ -2630,7 +4162,7 @@ impl DockEngine {
         if let Err(error) = self.interaction.set_core_drag_observation(
             session,
             target.clone(),
-            current_pointer.clone(),
+            *current_pointer,
             contained_offer,
         ) {
             return Ok(InteractionOutcome::Rejected(error));
@@ -3598,11 +5130,11 @@ impl DockEngine {
             }
         };
         let button_state = match release.target {
-            TargetAuthority::Local(_) => release.button_state.clone(),
+            TargetAuthority::Local(_) => *release.button_state,
             TargetAuthority::Routed(proof) => proof.button_state(release.button),
         };
         if let Some(outcome) =
-            self.require_released_button(input, release.session, &button_state, interaction_events)?
+            self.require_released_button(input, release.session, button_state, interaction_events)?
         {
             return Ok(outcome);
         }
@@ -3642,11 +5174,19 @@ impl DockEngine {
                 return Ok(InteractionOutcome::Rejected(error));
             }
         };
+        let pane_focus = self.freeze_payload_focus(&drag.payload);
         let _ = self
             .viewport
             .end_drag_routing(drag.pointer)
             .map_err(|source| EngineError::Viewport { input, source })?;
-        self.finish_drag_delivery(input, release.session, *proof, events, interaction_events)
+        self.finish_drag_delivery(
+            input,
+            release.session,
+            pane_focus,
+            *proof,
+            events,
+            interaction_events,
+        )
     }
 
     fn release_drag_observation(
@@ -3667,7 +5207,7 @@ impl DockEngine {
         if let Err(error) = self.interaction.set_core_drag_observation(
             release.session,
             release.target.clone(),
-            release.current_pointer.clone(),
+            *release.current_pointer,
             release.contained_offer,
         ) {
             return Ok(InteractionOutcome::Rejected(error));
@@ -3688,11 +5228,11 @@ impl DockEngine {
             return self.cancel_drag(input, release.session, reason, interaction_events);
         }
         let button_state = match release.target {
-            TargetAuthority::Local(_) => release.button_state.clone(),
+            TargetAuthority::Local(_) => *release.button_state,
             TargetAuthority::Routed(proof) => proof.button_state(release.button),
         };
         if let Some(outcome) =
-            self.require_released_button(input, release.session, &button_state, interaction_events)?
+            self.require_released_button(input, release.session, button_state, interaction_events)?
         {
             return Ok(outcome);
         }
@@ -3719,11 +5259,19 @@ impl DockEngine {
                 return Ok(InteractionOutcome::Rejected(error));
             }
         };
+        let pane_focus = self.freeze_payload_focus(&drag.payload);
         let _ = self
             .viewport
             .end_drag_routing(drag.pointer)
             .map_err(|source| EngineError::Viewport { input, source })?;
-        self.finish_drag_delivery(input, release.session, *proof, events, interaction_events)
+        self.finish_drag_delivery(
+            input,
+            release.session,
+            pane_focus,
+            *proof,
+            events,
+            interaction_events,
+        )
     }
 
     fn validate_drag_release_binding(
@@ -3756,7 +5304,7 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
-        button_state: &Authority<PointerButtonState>,
+        button_state: Authority<PointerButtonState>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
         match button_state {
@@ -3887,20 +5435,24 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         session: crate::interaction::DragSessionId,
+        pane_focus: PanelFocus,
         proof: PreviewProof,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         match proof {
             PreviewProof::Dock { target, command } => self.finish_workspace_delivery(
-                input,
-                session,
-                WorkspaceDeliveryTarget {
-                    kind: WorkspaceDeliveryKind::Dock,
-                    focus_surface: target.surface(),
-                    validation: WorkspaceDeliveryValidation::Policy,
+                WorkspaceDeliveryInput {
+                    input,
+                    session,
+                    target: WorkspaceDeliveryTarget {
+                        kind: WorkspaceDeliveryKind::Dock,
+                        focus_surface: target.surface(),
+                        validation: WorkspaceDeliveryValidation::Policy,
+                    },
+                    pane_focus,
+                    command: &command,
                 },
-                &command,
                 events,
                 interaction_events,
             ),
@@ -3932,21 +5484,24 @@ impl DockEngine {
                     }
                 };
                 self.finish_workspace_delivery(
-                    input,
-                    session,
-                    WorkspaceDeliveryTarget {
-                        kind,
-                        focus_surface,
-                        validation: match mutation {
-                            ContainedMutationKind::ExistingRectUpdate => {
-                                WorkspaceDeliveryValidation::ExistingContainedRect
-                            }
-                            ContainedMutationKind::PresentationChange => {
-                                WorkspaceDeliveryValidation::Policy
-                            }
+                    WorkspaceDeliveryInput {
+                        input,
+                        session,
+                        target: WorkspaceDeliveryTarget {
+                            kind,
+                            focus_surface,
+                            validation: match mutation {
+                                ContainedMutationKind::ExistingRectUpdate => {
+                                    WorkspaceDeliveryValidation::ExistingContainedRect
+                                }
+                                ContainedMutationKind::PresentationChange => {
+                                    WorkspaceDeliveryValidation::Policy
+                                }
+                            },
                         },
+                        pane_focus,
+                        command: &command,
                     },
-                    &command,
                     events,
                     interaction_events,
                 )
@@ -3954,8 +5509,13 @@ impl DockEngine {
             PreviewProof::Native {
                 command, proposal, ..
             } => {
-                let prepared =
-                    PreparedNativeTearOff::new(session, self.version, command, *proposal);
+                let prepared = PreparedNativeTearOff::new(
+                    session,
+                    self.version,
+                    command,
+                    *proposal,
+                    pane_focus,
+                );
                 let request = self
                     .viewport
                     .start_native_create(prepared)
@@ -3975,39 +5535,45 @@ impl DockEngine {
 
     fn finish_workspace_delivery(
         &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        delivery: WorkspaceDeliveryTarget,
-        command: &WorkspaceCommand,
+        delivery: WorkspaceDeliveryInput<'_>,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let application = match delivery.validation {
+        let application = match delivery.target.validation {
             WorkspaceDeliveryValidation::Policy => {
-                self.apply_interaction_command(input, command, events)?
+                self.apply_interaction_command(delivery.input, delivery.command, events)?
             }
             WorkspaceDeliveryValidation::ExistingContainedRect => {
-                self.apply_existing_contained_rect_update(input, command, events)?
+                self.apply_existing_contained_rect_update(delivery.input, delivery.command, events)?
             }
         };
         match application {
             CommandApplication::Applied { outcome, changed } => {
-                let _ = self
+                if let Some(binding) = self
                     .viewport
-                    .request_focus(delivery.focus_surface)
-                    .map_err(|source| EngineError::Viewport { input, source })?;
+                    .viewport(delivery.target.focus_surface)
+                    .filter(|record| record.is_focusable())
+                    .map(crate::viewport_registry::ViewportRecord::binding)
+                {
+                    let _ = self.start_viewport_activation(
+                        delivery.input,
+                        ViewportActivationRequest::drop_committed(binding, delivery.pane_focus),
+                        self.last_focus_reducer_generation,
+                        events,
+                    )?;
+                }
                 interaction_events.push(InteractionEvent::new(
-                    input,
+                    delivery.input,
                     self.version,
                     InteractionEventKind::Delivered {
-                        session,
-                        kind: delivery.kind,
+                        session: delivery.session,
+                        kind: delivery.target.kind,
                     },
                 ));
                 Ok(InteractionOutcome::DragDelivered {
-                    session,
+                    session: delivery.session,
                     delivery: InteractionDelivery::Workspace {
-                        kind: delivery.kind,
+                        kind: delivery.target.kind,
                         outcome,
                         changed,
                     },
@@ -4026,7 +5592,7 @@ impl DockEngine {
         session: crate::interaction::ResizeSessionId,
         pointer: crate::intent::PointerId,
         button: crate::intent::PointerButton,
-        button_state: &Authority<PointerButtonState>,
+        button_state: Authority<PointerButtonState>,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
@@ -4330,6 +5896,30 @@ impl DockEngine {
         ))
     }
 
+    fn freeze_payload_focus(&self, payload: &MovePayload) -> PanelFocus {
+        if self.validate_payload(payload).is_err() {
+            return PanelFocus::None;
+        }
+        let Some(surface) = self.payload_surface(payload) else {
+            return PanelFocus::None;
+        };
+        let PanelFocusRecord::Item(item) = self.viewport_focus.panel_focus(surface) else {
+            return PanelFocus::None;
+        };
+        let payload_contains_item = match payload {
+            MovePayload::Item(source) => source.item() == item,
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => self
+                .workspace
+                .collect_items_in_subtree(source.node())
+                .contains(&item),
+        };
+        if payload_contains_item {
+            PanelFocus::Item(item)
+        } else {
+            PanelFocus::None
+        }
+    }
+
     fn validate_payload(&self, payload: &MovePayload) -> Result<(), crate::error::CommandError> {
         use crate::error::ReferenceRole;
 
@@ -4579,18 +6169,8 @@ impl DockEngine {
         input: InputSequence,
         command: &WorkspaceCommand,
     ) -> Result<CommandApplication, EngineError> {
-        let report = match WorkspaceTransaction::from_commands([command.clone()])
-            .preflight(&self.workspace, &self.policy)
-        {
-            Ok(report) => report,
-            Err(TransactionError::Command { index: 0, source })
-                if source.is_expected_rejection() =>
-            {
-                return Ok(CommandApplication::Rejected(source));
-            }
-            Err(source) => return Err(EngineError::Command { input, source }),
-        };
-        Self::command_application_from_report(input, report)
+        self.stage_workspace_command(input, &self.policy, command, None)
+            .map(|(_, application)| application)
     }
 
     fn apply_interaction_command(
@@ -4599,8 +6179,22 @@ impl DockEngine {
         command: &WorkspaceCommand,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<CommandApplication, EngineError> {
-        let application =
-            Self::run_command_transaction(input, &mut self.workspace, &self.policy, command)?;
+        self.apply_interaction_command_with_barrier(input, command, None, events)
+    }
+
+    fn apply_interaction_command_with_barrier(
+        &mut self,
+        input: InputSequence,
+        command: &WorkspaceCommand,
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<CommandApplication, EngineError> {
+        let (candidate, application) =
+            self.stage_workspace_command(input, &self.policy, command, action_barrier)?;
+        if let Some(candidate) = candidate {
+            self.workspace = candidate;
+            self.reconcile_viewport_focus_authority();
+        }
         self.record_interaction_command_application(input, application, events)
     }
 
@@ -4618,8 +6212,11 @@ impl DockEngine {
         }
         let mut policy = self.policy.clone();
         policy.set_allow_contained_floating(true);
-        let application =
-            Self::run_command_transaction(input, &mut self.workspace, &policy, command)?;
+        let (candidate, application) =
+            self.stage_workspace_command(input, &policy, command, None)?;
+        if let Some(candidate) = candidate {
+            self.workspace = candidate;
+        }
         self.record_interaction_command_application(input, application, events)
     }
 
@@ -4633,7 +6230,7 @@ impl DockEngine {
             && *changed
         {
             self.advance_revision(input)?;
-            self.scene = None;
+            self.invalidate_scene();
             events.push(WorkspaceEvent::new(
                 input,
                 self.version,
@@ -4643,23 +6240,62 @@ impl DockEngine {
         Ok(application)
     }
 
-    fn run_command_transaction(
+    fn invalidate_scene(&mut self) {
+        self.scene = None;
+        self.scene_coordinate_authority.clear();
+    }
+
+    fn stage_workspace_command(
+        &self,
         input: InputSequence,
-        workspace: &mut Workspace,
         policy: &DockPolicy,
         command: &WorkspaceCommand,
-    ) -> Result<CommandApplication, EngineError> {
-        let report =
-            match WorkspaceTransaction::from_commands([command.clone()]).apply(workspace, policy) {
-                Ok(report) => report,
-                Err(TransactionError::Command { index: 0, source })
-                    if source.is_expected_rejection() =>
-                {
-                    return Ok(CommandApplication::Rejected(source));
-                }
-                Err(source) => return Err(EngineError::Command { input, source }),
-            };
-        Self::command_application_from_report(input, report)
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
+    ) -> Result<(Option<Workspace>, CommandApplication), EngineError> {
+        let mut candidate = self.workspace.clone();
+        let report = match WorkspaceTransaction::from_commands([command.clone()])
+            .apply(&mut candidate, policy)
+        {
+            Ok(report) => report,
+            Err(TransactionError::Command { index: 0, source })
+                if source.is_expected_rejection() =>
+            {
+                return Ok((None, CommandApplication::Rejected(source)));
+            }
+            Err(source) => return Err(EngineError::Command { input, source }),
+        };
+        if let Some(surface) =
+            self.first_workspace_publication_mismatch(&candidate, action_barrier, None)
+        {
+            return Ok((
+                None,
+                CommandApplication::Rejected(crate::error::CommandError::SurfaceLifecycleFrozen {
+                    surface,
+                }),
+            ));
+        }
+        let application = Self::command_application_from_report(input, report)?;
+        Ok((Some(candidate), application))
+    }
+
+    fn first_workspace_publication_mismatch(
+        &self,
+        candidate: &Workspace,
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
+        excluded: Option<crate::ids::SurfaceId>,
+    ) -> Option<crate::ids::SurfaceId> {
+        let persistent = match excluded {
+            Some(surface) => self
+                .surface_recovery
+                .first_workspace_mismatch_excluding(candidate, surface),
+            None => self.surface_recovery.first_workspace_mismatch(candidate),
+        };
+        persistent.or_else(|| {
+            action_barrier?.values().find_map(|roster| {
+                (Some(roster.surface()) != excluded && !roster.matches_workspace(candidate))
+                    .then_some(roster.surface())
+            })
+        })
     }
 
     fn command_application_from_report(
@@ -4691,21 +6327,19 @@ impl DockEngine {
             });
         }
 
-        let report = match WorkspaceTransaction::from_commands([command.clone()])
-            .apply(&mut self.workspace, &self.policy)
-        {
-            Ok(report) => report,
-            Err(TransactionError::Command { index: 0, source })
-                if source.is_expected_rejection() =>
-            {
-                return Ok(InputOutcome::CommandRejected {
-                    error: source,
-                    version: self.version,
-                });
-            }
-            Err(source) => return Err(EngineError::Command { input, source }),
+        let (candidate, application) =
+            self.stage_workspace_command(input, &self.policy, command, None)?;
+        let CommandApplication::Applied { outcome, changed } = application else {
+            let CommandApplication::Rejected(error) = application else {
+                unreachable!("command application variants are exhaustive")
+            };
+            return Ok(InputOutcome::CommandRejected {
+                error,
+                version: self.version,
+            });
         };
-        let changed = report.changed();
+        self.workspace = candidate.ok_or(EngineError::MissingCommandOutcome { input })?;
+        self.reconcile_viewport_focus_authority();
         if changed {
             self.advance_revision(input)?;
             self.invalidate_transient(
@@ -4714,11 +6348,6 @@ impl DockEngine {
                 interaction_events,
             )?;
         }
-        let outcome = report
-            .into_outcomes()
-            .into_iter()
-            .next()
-            .ok_or(EngineError::MissingCommandOutcome { input })?;
         if changed {
             events.push(WorkspaceEvent::new(
                 input,
@@ -4739,9 +6368,13 @@ impl DockEngine {
             policy: self.policy.clone(),
             version: self.version,
             scene: self.scene.clone(),
+            scene_coordinate_authority: self.scene_coordinate_authority.clone(),
             last_scene_generation: self.last_scene_generation,
             interaction: self.interaction.clone(),
             viewport: self.viewport.clone(),
+            viewport_focus: self.viewport_focus.clone(),
+            last_focus_reducer_generation: self.last_focus_reducer_generation,
+            surface_recovery: self.surface_recovery.clone(),
             last_input: self.last_input,
             pending: self.pending.clone(),
         }
@@ -4758,12 +6391,21 @@ mod tests {
     use crate::hit_region::HitRegion;
     use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
     use crate::intent::{
-        ContainedTearOffProposal, DragOrigin, PointerButton, PointerId, RendererIntent,
+        Authority, ContainedTearOffProposal, DragOrigin, PointerButton, PointerId, RendererIntent,
         SurfacePointer,
     };
     use crate::interaction::{DragSessionId, InteractionOutcome, InteractionStatus};
+    use crate::platform::{
+        ObservedWindow, PlatformCapabilities, PlatformCapability, WindowPresentationState,
+    };
     use crate::scene::{NodeSceneId, ReadySurfaceScene, SceneLayerKey, SemanticRect};
     use crate::transition::InputOutcome;
+    use crate::viewport::{ViewportBinding, ViewportRole, WindowIncarnation, WindowToken};
+    use crate::viewport_focus::{
+        FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+        PaneFocusIntentGeneration, PaneFocusObservationGeneration, PaneFocusObservationTransition,
+        PanelFocusRecord, ViewportActivationRequest,
+    };
 
     const SOURCE_ROOT: RootId = RootId::new(1);
     const TARGET_ROOT: RootId = RootId::new(2);
@@ -4796,6 +6438,917 @@ mod tests {
             source_tabs,
             target_tabs,
         }
+    }
+
+    #[test]
+    fn stale_cleanup_retry_version_is_rejected_without_effects_or_state_change() {
+        let mut fixture = counter_fixture();
+        let stale = fixture.engine.version();
+        fixture
+            .engine
+            .enqueue_workspace_replacement(fixture.engine.workspace().clone())
+            .expect("workspace replacement must enqueue");
+        fixture
+            .engine
+            .reduce_pending()
+            .expect("workspace replacement must advance the epoch");
+        assert_ne!(fixture.engine.version(), stale);
+
+        let before = fixture.engine.candidate();
+        let effect_count = fixture.engine.viewport.effects().records().count();
+        let outcome = fixture
+            .engine
+            .reduce_viewport_cleanup_retry(
+                InputSequence::new(900),
+                stale,
+                crate::effect::EffectId::new(901),
+            )
+            .expect("stale retry must be a typed nonfatal rejection");
+
+        assert_eq!(
+            outcome,
+            InputOutcome::StaleRejected {
+                expected: stale,
+                accepted_base: fixture.engine.version(),
+            }
+        );
+        assert_eq!(fixture.engine, before);
+        assert_eq!(
+            fixture.engine.viewport.effects().records().count(),
+            effect_count
+        );
+    }
+
+    struct FocusRevealFixture {
+        engine: DockEngine,
+        tabs: crate::ids::NodeId,
+        binding: ViewportBinding,
+        focus_generation: u64,
+    }
+
+    fn focus_reveal_fixture() -> FocusRevealFixture {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
+        builder.set_root(SOURCE_ROOT, RootRecord::new(tabs));
+        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
+        let workspace = builder
+            .build()
+            .expect("focus reveal workspace must be valid");
+        let mut engine =
+            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
+        let token = WindowToken::new(1);
+        engine
+            .enqueue_viewport_registration(SOURCE_SURFACE, token, ViewportRole::Root, None)
+            .expect("viewport registration must enqueue");
+        let registered = engine
+            .reduce_pending()
+            .expect("viewport registration must reduce");
+        let InputOutcome::ViewportRegistered { binding } = registered.reduced_inputs()[0].outcome()
+        else {
+            panic!("viewport registration must publish its exact binding");
+        };
+        let binding = *binding;
+        let mut fixture = FocusRevealFixture {
+            engine,
+            tabs,
+            binding,
+            focus_generation: 0,
+        };
+        publish_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Dock(binding)),
+        );
+        fixture
+    }
+
+    fn publish_focus_snapshot(
+        fixture: &mut FocusRevealFixture,
+        focused: Authority<GlobalFocusedWindow>,
+    ) -> EngineTransition {
+        fixture.focus_generation += 1;
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_global_focus_observation(PlatformCapability::Supported);
+        capabilities.set_window_activation_control(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            capabilities,
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(fixture.focus_generation),
+                focused,
+                Authority::Known(None),
+            ),
+            vec![
+                ObservedWindow::new(fixture.binding.token())
+                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("focus snapshot must be canonical");
+        fixture
+            .engine
+            .enqueue_platform_snapshot(snapshot)
+            .expect("focus snapshot must enqueue");
+        fixture
+            .engine
+            .reduce_pending()
+            .expect("focus snapshot must reduce")
+    }
+
+    fn selected_item(fixture: &FocusRevealFixture) -> Option<ItemId> {
+        let Node::Tabs { selected, .. } = fixture
+            .engine
+            .workspace()
+            .node(fixture.tabs)
+            .expect("focus tabs must remain current")
+        else {
+            panic!("focus fixture node must remain tabs");
+        };
+        *selected
+    }
+
+    struct FocusEffectFixture {
+        engine: DockEngine,
+        binding_a: ViewportBinding,
+        binding_b: ViewportBinding,
+        focus_generation: u64,
+    }
+
+    fn focus_effect_fixture() -> FocusEffectFixture {
+        let mut builder = Workspace::builder();
+        let tabs_a = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let tabs_b = builder.insert_node(Node::tabs([ItemId::new(2)]));
+        builder.set_root(SOURCE_ROOT, RootRecord::new(tabs_a));
+        builder.set_root(TARGET_ROOT, RootRecord::new(tabs_b));
+        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
+        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
+        let workspace = builder
+            .build()
+            .expect("focus effect workspace must be valid");
+        let mut engine =
+            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
+        engine
+            .enqueue_viewport_registration(
+                SOURCE_SURFACE,
+                WindowToken::new(1),
+                ViewportRole::Root,
+                None,
+            )
+            .expect("first viewport registration must enqueue");
+        engine
+            .enqueue_viewport_registration(
+                TARGET_SURFACE,
+                WindowToken::new(2),
+                ViewportRole::Root,
+                None,
+            )
+            .expect("second viewport registration must enqueue");
+        engine
+            .reduce_pending()
+            .expect("viewport registrations must reduce");
+        let binding_a = engine
+            .viewport()
+            .viewport(SOURCE_SURFACE)
+            .expect("first viewport must be current")
+            .binding();
+        let binding_b = engine
+            .viewport()
+            .viewport(TARGET_SURFACE)
+            .expect("second viewport must be current")
+            .binding();
+        let mut fixture = FocusEffectFixture {
+            engine,
+            binding_a,
+            binding_b,
+            focus_generation: 0,
+        };
+        publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(None),
+        );
+        fixture
+    }
+
+    fn publish_effect_focus_snapshot(
+        fixture: &mut FocusEffectFixture,
+        focused: Authority<GlobalFocusedWindow>,
+        acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
+    ) -> EngineTransition {
+        fixture.focus_generation += 1;
+        publish_effect_focus_snapshot_at(
+            fixture,
+            fixture.focus_generation,
+            focused,
+            acknowledged_effect,
+        )
+    }
+
+    fn publish_effect_focus_snapshot_at(
+        fixture: &mut FocusEffectFixture,
+        generation: u64,
+        focused: Authority<GlobalFocusedWindow>,
+        acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
+    ) -> EngineTransition {
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_global_focus_observation(PlatformCapability::Supported);
+        capabilities.set_window_activation_control(PlatformCapability::Supported);
+        let snapshot = PlatformSnapshot::new(
+            capabilities,
+            FocusObservationEnvelope::new(
+                FocusObservationGeneration::new(generation),
+                focused,
+                acknowledged_effect,
+            ),
+            vec![
+                ObservedWindow::new(fixture.binding_a.token())
+                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
+                ObservedWindow::new(fixture.binding_b.token())
+                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("focus effect snapshot must be canonical");
+        fixture
+            .engine
+            .enqueue_platform_snapshot(snapshot)
+            .expect("focus effect snapshot must enqueue");
+        fixture
+            .engine
+            .reduce_pending()
+            .expect("focus effect snapshot must reduce")
+    }
+
+    fn request_focus_effect(
+        fixture: &mut FocusEffectFixture,
+        binding: ViewportBinding,
+        focus: PanelFocus,
+    ) -> (
+        crate::effect::EffectId,
+        crate::viewport_focus::ActivationGeneration,
+    ) {
+        fixture
+            .engine
+            .enqueue_viewport_activation(binding, focus)
+            .expect("activation must enqueue");
+        let transition = fixture
+            .engine
+            .reduce_pending()
+            .expect("activation must reduce");
+        let activation = transition
+            .reduced_inputs()
+            .iter()
+            .find_map(|input| match input.outcome() {
+                InputOutcome::ViewportActivationRequested { activation } => Some(*activation),
+                _ => None,
+            })
+            .expect("activation input must publish its generation");
+        let effect = transition
+            .platform_effects()
+            .iter()
+            .find_map(|request| match request.effect() {
+                crate::effect::PlatformEffect::RequestFocus {
+                    binding: requested, ..
+                } if *requested == binding => Some(request.id()),
+                _ => None,
+            })
+            .expect("activation must emit one exact focus effect");
+        (effect, activation.generation())
+    }
+
+    fn observed_focus_effect_ids(transition: &EngineTransition) -> Vec<crate::effect::EffectId> {
+        transition
+            .focus_delta()
+            .effects()
+            .iter()
+            .filter_map(|change| {
+                change
+                    .observed()
+                    .map(crate::viewport_focus::ObservedPlatformFocusEffect::effect)
+            })
+            .collect()
+    }
+
+    fn assert_focus_effect_observed(engine: &DockEngine, effect: crate::effect::EffectId) {
+        assert!(matches!(
+            engine
+                .viewport()
+                .effects()
+                .record(effect)
+                .map(crate::effect::EffectRecord::phase),
+            Some(crate::effect::EffectPhase::ObservedApplied { .. })
+        ));
+    }
+
+    #[test]
+    fn late_superseded_focus_ack_settles_only_its_effect_before_successor_completion() {
+        let mut fixture = focus_effect_fixture();
+        let binding_a = fixture.binding_a;
+        let binding_b = fixture.binding_b;
+        let (effect_a, activation_a) =
+            request_focus_effect(&mut fixture, binding_a, PanelFocus::Item(ItemId::new(1)));
+        let (effect_b, activation_b) =
+            request_focus_effect(&mut fixture, binding_b, PanelFocus::Item(ItemId::new(2)));
+
+        let late_a = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(effect_a)),
+        );
+        assert_eq!(observed_focus_effect_ids(&late_a), vec![effect_a]);
+        assert_focus_effect_observed(&fixture.engine, effect_a);
+        assert_eq!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_activation()
+                .map(crate::viewport_focus::PendingViewportActivation::generation),
+            Some(activation_b),
+            "late predecessor acknowledgement must not complete or cancel the successor"
+        );
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_none()
+        );
+
+        let completed_b = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+            Authority::Known(Some(effect_b)),
+        );
+        assert_eq!(observed_focus_effect_ids(&completed_b), vec![effect_b]);
+        assert_focus_effect_observed(&fixture.engine, effect_b);
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_activation()
+                .is_none()
+        );
+        let intent = fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .expect("successor target observation must install its pane intent");
+        assert_eq!(intent.activation(), Some(activation_b));
+        assert_eq!(intent.target(), binding_b);
+        assert_eq!(intent.focus(), PanelFocus::Item(ItemId::new(2)));
+        assert_ne!(intent.activation(), Some(activation_a));
+    }
+
+    #[test]
+    fn one_envelope_can_settle_late_predecessor_and_complete_current_target() {
+        let mut fixture = focus_effect_fixture();
+        let binding_a = fixture.binding_a;
+        let binding_b = fixture.binding_b;
+        let (effect_a, _) =
+            request_focus_effect(&mut fixture, binding_a, PanelFocus::Item(ItemId::new(1)));
+        let (effect_b, activation_b) =
+            request_focus_effect(&mut fixture, binding_b, PanelFocus::Item(ItemId::new(2)));
+
+        let transition = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
+            Authority::Known(Some(effect_a)),
+        );
+        assert_eq!(
+            observed_focus_effect_ids(&transition),
+            vec![effect_a, effect_b],
+            "FocusDelta must retain both exact-A and target-B settlements in effect order"
+        );
+        assert_focus_effect_observed(&fixture.engine, effect_a);
+        assert_focus_effect_observed(&fixture.engine, effect_b);
+        assert_eq!(
+            transition.focus_delta().effects()[0]
+                .observed()
+                .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
+            Some(crate::viewport_focus::PlatformFocusEvidence::ExactEffectAcknowledgement)
+        );
+        assert_eq!(
+            transition.focus_delta().effects()[1]
+                .observed()
+                .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
+            Some(crate::viewport_focus::PlatformFocusEvidence::NewerMatchingObservation)
+        );
+        let intent = fixture
+            .engine
+            .viewport_focus()
+            .pending_pane_intent()
+            .expect("current target evidence must complete the successor");
+        assert_eq!(intent.activation(), Some(activation_b));
+        assert_eq!(intent.target(), binding_b);
+    }
+
+    #[test]
+    fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
+        let mut fixture = focus_effect_fixture();
+        let binding_a = fixture.binding_a;
+        let binding_b = fixture.binding_b;
+        let (effect_a, _) = request_focus_effect(&mut fixture, binding_a, PanelFocus::None);
+        let (_, activation_b) = request_focus_effect(&mut fixture, binding_b, PanelFocus::None);
+
+        let wrong = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(crate::effect::EffectId::new(9_999))),
+        );
+        assert!(observed_focus_effect_ids(&wrong).is_empty());
+        assert_eq!(
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(effect_a)
+                .map(crate::effect::EffectRecord::phase),
+            Some(crate::effect::EffectPhase::Requested)
+        );
+
+        let stale_generation = fixture.focus_generation;
+        let stale = publish_effect_focus_snapshot_at(
+            &mut fixture,
+            stale_generation,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(effect_a)),
+        );
+        assert!(observed_focus_effect_ids(&stale).is_empty());
+        assert_eq!(
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(effect_a)
+                .map(crate::effect::EffectRecord::phase),
+            Some(crate::effect::EffectPhase::Requested)
+        );
+
+        let first = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(effect_a)),
+        );
+        assert_eq!(observed_focus_effect_ids(&first), vec![effect_a]);
+        let duplicate = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(effect_a)),
+        );
+        assert!(observed_focus_effect_ids(&duplicate).is_empty());
+        assert_eq!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_activation()
+                .map(crate::viewport_focus::PendingViewportActivation::generation),
+            Some(activation_b)
+        );
+
+        let stale_binding = ViewportBinding::new(
+            binding_a.epoch(),
+            binding_a.surface(),
+            binding_a.token(),
+            WindowIncarnation::new(binding_a.incarnation().get() + 1),
+        );
+        let stale_effect = fixture
+            .engine
+            .viewport
+            .request_focus_binding(stale_binding)
+            .expect("stale-incarnation effect must allocate for the invariant test");
+        let stale_incarnation = publish_effect_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+            Authority::Known(Some(stale_effect)),
+        );
+        assert!(observed_focus_effect_ids(&stale_incarnation).is_empty());
+        assert_eq!(
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(stale_effect)
+                .map(crate::effect::EffectRecord::phase),
+            Some(crate::effect::EffectPhase::Requested)
+        );
+    }
+
+    #[test]
+    fn explicit_focus_atomically_reveals_hidden_item_without_acknowledging_it() {
+        let mut fixture = focus_reveal_fixture();
+        assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
+
+        fixture
+            .engine
+            .enqueue_viewport_activation(fixture.binding, PanelFocus::Item(ItemId::new(2)))
+            .expect("explicit activation must enqueue");
+        let transition = fixture
+            .engine
+            .reduce_pending()
+            .expect("explicit activation must reduce");
+
+        assert_eq!(selected_item(&fixture), Some(ItemId::new(2)));
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_some()
+        );
+        assert_eq!(
+            fixture.engine.viewport_focus().panel_focus(SOURCE_SURFACE),
+            PanelFocusRecord::NoHistory,
+            "selection and pane rendering cannot acknowledge focus"
+        );
+        assert!(transition.focus_delta().pane_intent().is_some());
+    }
+
+    #[test]
+    fn platform_restore_reveals_the_exact_hidden_focus_history_item() {
+        let mut fixture = focus_reveal_fixture();
+        fixture
+            .engine
+            .enqueue_pane_focus_observation(PaneFocusObservation::new(
+                PaneFocusObservationGeneration::new(1),
+                fixture.binding,
+                PanelFocus::Item(ItemId::new(2)),
+            ))
+            .expect("pane focus history must enqueue");
+        fixture
+            .engine
+            .reduce_pending()
+            .expect("pane focus history must reduce");
+        let source = fixture
+            .engine
+            .workspace()
+            .capture_item_source(SOURCE_ROOT, fixture.tabs, ItemId::new(1))
+            .expect("first item source must be current");
+        fixture
+            .engine
+            .enqueue_command(WorkspaceCommand::Select { source })
+            .expect("selection must enqueue");
+        fixture
+            .engine
+            .reduce_pending()
+            .expect("selection must reduce");
+        assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
+
+        publish_focus_snapshot(&mut fixture, Authority::Known(GlobalFocusedWindow::Foreign));
+        let binding = fixture.binding;
+        let restored = publish_focus_snapshot(
+            &mut fixture,
+            Authority::Known(GlobalFocusedWindow::Dock(binding)),
+        );
+
+        assert_eq!(selected_item(&fixture), Some(ItemId::new(2)));
+        assert!(
+            fixture
+                .engine
+                .viewport_focus()
+                .pending_pane_intent()
+                .is_some()
+        );
+        assert!(restored.focus_delta().pane_intent().is_some());
+    }
+
+    #[test]
+    fn close_recovery_reveals_only_when_its_target_is_already_focused() {
+        let mut focused = focus_reveal_fixture();
+        let mut events = Vec::new();
+        let activation = focused
+            .engine
+            .start_viewport_activation(
+                InputSequence::new(100),
+                ViewportActivationRequest::close_recovery(
+                    focused.binding,
+                    PanelFocus::Item(ItemId::new(2)),
+                    ViewportCloseRequestId::new(1),
+                ),
+                PaneFocusIntentGeneration::new(100),
+                &mut events,
+            )
+            .expect("focused close recovery must reduce");
+        assert!(matches!(
+            activation.outcome(),
+            ActivationStartOutcome::PaneFocusReady { .. }
+        ));
+        assert_eq!(selected_item(&focused), Some(ItemId::new(2)));
+
+        let mut unfocused = focus_reveal_fixture();
+        publish_focus_snapshot(
+            &mut unfocused,
+            Authority::Known(GlobalFocusedWindow::Foreign),
+        );
+        let activation = unfocused
+            .engine
+            .start_viewport_activation(
+                InputSequence::new(101),
+                ViewportActivationRequest::close_recovery(
+                    unfocused.binding,
+                    PanelFocus::Item(ItemId::new(2)),
+                    ViewportCloseRequestId::new(2),
+                ),
+                PaneFocusIntentGeneration::new(101),
+                &mut events,
+            )
+            .expect("unfocused close recovery must remain observable");
+        assert!(matches!(
+            activation.outcome(),
+            ActivationStartOutcome::ObserveOnlyRecorded { .. }
+        ));
+        assert_eq!(selected_item(&unfocused), Some(ItemId::new(1)));
+    }
+
+    struct PayloadFocusFixture {
+        engine: DockEngine,
+        binding: ViewportBinding,
+        item_payload: MovePayload,
+        stale_item_payload: MovePayload,
+        tabs_payload: MovePayload,
+        subtree_payload: MovePayload,
+    }
+
+    fn payload_focus_fixture() -> PayloadFocusFixture {
+        let mut builder = Workspace::builder();
+        let left_tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(3)]));
+        let right_tabs = builder.insert_node(Node::tabs([ItemId::new(4)]));
+        let source_split = builder.insert_node(
+            Node::split(
+                crate::graph::Axis::Horizontal,
+                [left_tabs, right_tabs],
+                [0.5, 0.5],
+            )
+            .expect("source split must be valid"),
+        );
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
+        builder.set_root(SOURCE_ROOT, RootRecord::new(source_split));
+        builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
+        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
+        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
+        let workspace = builder
+            .build()
+            .expect("payload focus workspace must be valid");
+        let item_payload = MovePayload::Item(
+            workspace
+                .capture_item_source(SOURCE_ROOT, left_tabs, ItemId::new(1))
+                .expect("item payload must be current"),
+        );
+        let tabs_payload = MovePayload::Tabs(
+            workspace
+                .capture_node_source(SOURCE_ROOT, left_tabs)
+                .expect("tabs payload must be current"),
+        );
+        let subtree_payload = MovePayload::Subtree(
+            workspace
+                .capture_node_source(SOURCE_ROOT, source_split)
+                .expect("subtree payload must be current"),
+        );
+        let mut stale_item_payload = item_payload.clone();
+        let wrong_fingerprint = workspace
+            .capture_node_source(TARGET_ROOT, target_tabs)
+            .expect("target source must be current")
+            .fingerprint()
+            .clone();
+        let MovePayload::Item(stale_source) = &mut stale_item_payload else {
+            unreachable!("fixture creates an item payload");
+        };
+        stale_source.fingerprint = wrong_fingerprint;
+
+        PayloadFocusFixture {
+            engine: DockEngine::new(workspace, DockPolicy::default())
+                .expect("engine must be valid"),
+            binding: ViewportBinding::new(
+                WorkspaceEpoch::new(0),
+                SOURCE_SURFACE,
+                WindowToken::new(1),
+                WindowIncarnation::new(1),
+            ),
+            item_payload,
+            stale_item_payload,
+            tabs_payload,
+            subtree_payload,
+        }
+    }
+
+    fn record_payload_focus(
+        engine: &mut DockEngine,
+        binding: ViewportBinding,
+        observation_generation: &mut u64,
+        focus: PanelFocus,
+    ) {
+        *observation_generation += 1;
+        assert!(matches!(
+            engine.viewport_focus.publish_pane_focus_observation(
+                PaneFocusObservation::new(
+                    PaneFocusObservationGeneration::new(*observation_generation),
+                    binding,
+                    focus,
+                ),
+                |candidate| candidate == binding,
+                |surface, item| {
+                    surface == SOURCE_SURFACE
+                        && [ItemId::new(1), ItemId::new(3), ItemId::new(4)].contains(&item)
+                },
+            ),
+            PaneFocusObservationTransition::Applied { .. }
+        ));
+    }
+
+    #[test]
+    fn payload_focus_is_frozen_only_for_an_exact_payload_member() {
+        let PayloadFocusFixture {
+            mut engine,
+            binding,
+            item_payload,
+            stale_item_payload,
+            tabs_payload,
+            subtree_payload,
+        } = payload_focus_fixture();
+        let mut observation_generation = 0_u64;
+
+        record_payload_focus(
+            &mut engine,
+            binding,
+            &mut observation_generation,
+            PanelFocus::Item(ItemId::new(1)),
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&item_payload),
+            PanelFocus::Item(ItemId::new(1))
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&stale_item_payload),
+            PanelFocus::None
+        );
+
+        record_payload_focus(
+            &mut engine,
+            binding,
+            &mut observation_generation,
+            PanelFocus::Item(ItemId::new(3)),
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&item_payload),
+            PanelFocus::None,
+            "an inactive item drag must not invent pane focus"
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&tabs_payload),
+            PanelFocus::Item(ItemId::new(3))
+        );
+
+        record_payload_focus(
+            &mut engine,
+            binding,
+            &mut observation_generation,
+            PanelFocus::Item(ItemId::new(4)),
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&tabs_payload),
+            PanelFocus::None,
+            "a sibling item on the same surface is outside the exact tabs payload"
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&subtree_payload),
+            PanelFocus::Item(ItemId::new(4))
+        );
+
+        record_payload_focus(
+            &mut engine,
+            binding,
+            &mut observation_generation,
+            PanelFocus::None,
+        );
+        assert_eq!(
+            engine.freeze_payload_focus(&subtree_payload),
+            PanelFocus::None
+        );
+    }
+
+    #[test]
+    fn private_focus_generations_do_not_publish_state_or_focus_delta() {
+        let mut fixture = counter_fixture();
+        let stale_binding = ViewportBinding::new(
+            WorkspaceEpoch::new(0),
+            SOURCE_SURFACE,
+            WindowToken::new(99),
+            WindowIncarnation::new(99),
+        );
+        fixture
+            .engine
+            .enqueue_viewport_activation(stale_binding, PanelFocus::None)
+            .expect("suppressed activation must enqueue");
+        let transition = fixture
+            .engine
+            .reduce_pending()
+            .expect("suppressed activation must reduce");
+        let InputOutcome::ViewportActivationRequested { activation } =
+            transition.reduced_inputs()[0].outcome()
+        else {
+            panic!("explicit activation must produce an activation outcome");
+        };
+        assert_eq!(
+            activation.outcome(),
+            ActivationStartOutcome::Suppressed(
+                crate::viewport_focus::ActivationSuppression::StaleBinding
+            )
+        );
+        assert!(transition.focus_delta().is_empty());
+        assert!(!transition.published_state_changed());
+
+        fixture
+            .engine
+            .enqueue(EngineInput::ValidateWorkspace)
+            .expect("maintenance input must enqueue");
+        let maintenance = fixture
+            .engine
+            .reduce_pending()
+            .expect("maintenance input must reduce");
+        assert!(maintenance.focus_delta().is_empty());
+        assert!(!maintenance.published_state_changed());
+    }
+
+    #[test]
+    fn action_batch_barrier_rejects_a_create_ready_mutation_of_a_destroyed_source() {
+        let mut fixture = counter_fixture();
+        let before = fixture.engine.workspace().clone();
+        let roster =
+            SurfaceRosterDisposition::capture(fixture.engine.workspace(), SOURCE_SURFACE, None)
+                .expect("direct edge roster must freeze without coordinate authority");
+        let barrier = BTreeMap::from([(SOURCE_SURFACE, roster)]);
+        let source = fixture
+            .engine
+            .workspace()
+            .capture_node_source(SOURCE_ROOT, fixture.source_tabs)
+            .expect("source root must be current");
+        let mut events = Vec::new();
+
+        let application = fixture
+            .engine
+            .apply_interaction_command_with_barrier(
+                InputSequence::new(1),
+                &WorkspaceCommand::CloseRoot { source },
+                Some(&barrier),
+                &mut events,
+            )
+            .expect("same-edge action must reduce as an expected rejection");
+
+        assert!(matches!(
+            application,
+            CommandApplication::Rejected(crate::error::CommandError::SurfaceLifecycleFrozen {
+                surface: SOURCE_SURFACE
+            })
+        ));
+        assert_eq!(fixture.engine.workspace(), &before);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn roster_merge_selection_failure_does_not_publish_the_candidate() {
+        let mut fixture = counter_fixture();
+        let before_workspace = fixture.engine.workspace().clone();
+        let before_version = fixture.engine.version();
+        let roster =
+            SurfaceRosterDisposition::capture(fixture.engine.workspace(), SOURCE_SURFACE, None)
+                .expect("source roster must freeze");
+        let source = fixture
+            .engine
+            .workspace()
+            .capture_node_source(SOURCE_ROOT, fixture.source_tabs)
+            .expect("source root must be current");
+        let target = fixture
+            .engine
+            .workspace()
+            .capture_tab_target(TARGET_ROOT, fixture.target_tabs)
+            .expect("target tabs must be current");
+        let transaction = WorkspaceTransaction::from_commands([WorkspaceCommand::Move {
+            payload: MovePayload::Tabs(source),
+            target: crate::command::DockTarget::Center(target),
+        }]);
+        let barrier = BTreeMap::from([(SOURCE_SURFACE, roster.clone())]);
+        let mut events = Vec::new();
+
+        let applied = fixture
+            .engine
+            .apply_surface_roster_transaction(
+                InputSequence::new(1),
+                &roster,
+                &transaction,
+                Some(CandidatePaneSelection {
+                    surface: TARGET_SURFACE,
+                    item: ItemId::new(999),
+                }),
+                &barrier,
+                &mut events,
+            )
+            .expect("missing candidate selection is an expected rejection");
+
+        assert!(!applied);
+        assert_eq!(fixture.engine.workspace(), &before_workspace);
+        assert_eq!(fixture.engine.version(), before_version);
+        assert!(events.is_empty());
     }
 
     #[test]

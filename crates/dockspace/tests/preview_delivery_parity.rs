@@ -1,12 +1,13 @@
 use dockspace::command::MovePayload;
 use dockspace::effect::{EffectPhase, EffectRequest, PlatformEffect};
 use dockspace::engine::DockEngine;
+use dockspace::frame::PanelFocus;
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::{
-    Authority, ContainedTearOffProposal, NativeTearOffProposal, PointerButton, PointerButtonState,
-    PointerId, RendererIntent, TargetAuthority, TearOffRequest,
+    Authority, AuthorityUnavailableReason, ContainedTearOffProposal, NativeTearOffProposal,
+    PointerButton, PointerButtonState, PointerId, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
     DragSessionId, InteractionCancelReason, InteractionDelivery, InteractionOutcome,
@@ -14,14 +15,21 @@ use dockspace::interaction::{
     WorkspaceDeliveryKind,
 };
 use dockspace::platform::{
-    ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState, WindowPresentationState,
+    ButtonObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
+    PlatformCapabilities, PlatformCapability, PlatformCapabilityReason, PlatformRequirement,
+    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputObservation, WindowInputState,
+    WindowPresentationState,
 };
 use dockspace::policy::{ContainedFallback, DockPolicy};
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::InputOutcome;
-use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
+use dockspace::viewport::{
+    InputObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+};
+use dockspace::viewport_focus::{
+    FocusObservationGeneration, PaneFocusObservation, PaneFocusObservationGeneration,
+    unknown_focus_observation,
+};
 
 const ROOT_A: RootId = RootId::new(1);
 const ROOT_B: RootId = RootId::new(2);
@@ -37,6 +45,18 @@ const WORK_AREA: WorkAreaToken = WorkAreaToken::new(51);
 struct Fixture {
     engine: DockEngine,
     tabs_a: NodeId,
+    source_binding: Option<ViewportBinding>,
+    focus_generation: u64,
+}
+
+impl Fixture {
+    fn take_focus_generation(&mut self) -> FocusObservationGeneration {
+        self.focus_generation = self
+            .focus_generation
+            .checked_add(1)
+            .expect("test focus observation generation must not exhaust");
+        FocusObservationGeneration::new(self.focus_generation)
+    }
 }
 
 fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -62,21 +82,46 @@ fn platform_capabilities(native_lifecycle: PlatformCapability) -> PlatformCapabi
     capabilities.set_work_area(PlatformCapability::Supported);
     capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
     capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
-    capabilities.set_window_focus(PlatformCapability::Supported);
+    capabilities.set_global_focus_observation(PlatformCapability::Supported);
+    capabilities.set_window_activation_control(PlatformCapability::Supported);
     capabilities.set_close_cancellation(PlatformCapability::Supported);
     capabilities
 }
 
-fn platform_snapshot(native_lifecycle: PlatformCapability) -> PlatformSnapshot {
+fn platform_snapshot(
+    native_lifecycle: PlatformCapability,
+    source_binding: ViewportBinding,
+    focus_generation: FocusObservationGeneration,
+) -> PlatformSnapshot {
     platform_snapshot_with_work_area(
         native_lifecycle,
         physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+        source_binding,
+        focus_generation,
     )
 }
 
 fn platform_snapshot_with_work_area(
     native_lifecycle: PlatformCapability,
     work_area: PhysicalRect,
+    source_binding: ViewportBinding,
+    focus_generation: FocusObservationGeneration,
+) -> PlatformSnapshot {
+    platform_snapshot_with_hovered_window(
+        native_lifecycle,
+        work_area,
+        source_binding,
+        PointerWindow::None,
+        focus_generation,
+    )
+}
+
+fn platform_snapshot_with_hovered_window(
+    native_lifecycle: PlatformCapability,
+    work_area: PhysicalRect,
+    source_binding: ViewportBinding,
+    hovered: PointerWindow,
+    focus_generation: FocusObservationGeneration,
 ) -> PlatformSnapshot {
     let source = ObservedWindow::new(SOURCE_WINDOW)
         .with_content_bounds(Authority::Known(physical_rect(0.0, 0.0, 1200.0, 900.0)))
@@ -84,12 +129,17 @@ fn platform_snapshot_with_work_area(
         .with_scale_factor(Authority::Known(
             ScaleFactor::new(1.0).expect("test scale factor must be valid"),
         ))
-        .with_input_state(Authority::Known(WindowInputState::PassThrough))
+        .with_input_observation(WindowInputObservation::new(
+            source_binding,
+            InputObservationGeneration::new(1),
+            Authority::Known(WindowInputState::PassThrough),
+            InputEffectAcknowledgement::known(None),
+        ))
         .with_presentation(Authority::Known(WindowPresentationState::Visible))
         .with_close_requested(Authority::Known(false));
     let pointer = PointerObservation::new(
         POINTER,
-        Authority::Known(PointerWindow::None),
+        Authority::Known(hovered),
         Authority::Known(physical_point(150.0, 160.0)),
         Authority::Known(vec![ButtonObservation::new(
             PointerButton::Primary,
@@ -99,6 +149,7 @@ fn platform_snapshot_with_work_area(
     .expect("test pointer roster must be unambiguous");
     PlatformSnapshot::new(
         platform_capabilities(native_lifecycle),
+        unknown_focus_observation(focus_generation, AuthorityUnavailableReason::NotReported),
         vec![source],
         vec![pointer],
         vec![ObservedWorkArea::new(
@@ -120,13 +171,26 @@ fn fixture(policy: DockPolicy, source_items: &[u64]) -> Fixture {
     builder.set_surface(SURFACE_B, SurfacePresentation::new(ROOT_B));
     let workspace = builder.build().expect("test workspace must be valid");
     let engine = DockEngine::new(workspace, policy).expect("test engine must be valid");
-    Fixture { engine, tabs_a }
+    Fixture {
+        engine,
+        tabs_a,
+        source_binding: None,
+        focus_generation: 0,
+    }
 }
 
 fn publish_platform(fixture: &mut Fixture, native_lifecycle: PlatformCapability) {
+    let source_binding = fixture
+        .source_binding
+        .expect("source viewport must be registered before platform publication");
+    let focus_generation = fixture.take_focus_generation();
     fixture
         .engine
-        .enqueue_platform_snapshot(platform_snapshot(native_lifecycle))
+        .enqueue_platform_snapshot(platform_snapshot(
+            native_lifecycle,
+            source_binding,
+            focus_generation,
+        ))
         .expect("platform snapshot sequence must be available");
     let transition = fixture
         .engine
@@ -136,6 +200,31 @@ fn publish_platform(fixture: &mut Fixture, native_lifecycle: PlatformCapability)
         transition.reduced_inputs()[0].outcome(),
         InputOutcome::PlatformSnapshotPublished { .. }
     ));
+}
+
+fn publish_platform_with_hovered_window(
+    fixture: &mut Fixture,
+    native_lifecycle: PlatformCapability,
+    hovered: PointerWindow,
+) {
+    let source_binding = fixture
+        .source_binding
+        .expect("source viewport must be registered before platform publication");
+    let focus_generation = fixture.take_focus_generation();
+    fixture
+        .engine
+        .enqueue_platform_snapshot(platform_snapshot_with_hovered_window(
+            native_lifecycle,
+            physical_rect(-1920.0, -200.0, 3840.0, 1400.0),
+            source_binding,
+            hovered,
+            focus_generation,
+        ))
+        .expect("platform snapshot sequence must be available");
+    fixture
+        .engine
+        .reduce_pending()
+        .expect("platform snapshot must publish");
 }
 
 fn register_native_source(fixture: &mut Fixture, native_lifecycle: PlatformCapability) {
@@ -152,7 +241,33 @@ fn register_native_source(fixture: &mut Fixture, native_lifecycle: PlatformCapab
         InputOutcome::ViewportRegistered { binding }
             if binding.surface() == SURFACE_A && binding.token() == SOURCE_WINDOW
     ));
+    fixture.source_binding = match transition.reduced_inputs()[0].outcome() {
+        InputOutcome::ViewportRegistered { binding } => Some(*binding),
+        outcome => panic!("unexpected registration outcome: {outcome:?}"),
+    };
     publish_platform(fixture, native_lifecycle);
+}
+
+fn publish_pane_focus(fixture: &mut Fixture, generation: u64, focus: PanelFocus) {
+    let binding = fixture
+        .source_binding
+        .expect("source viewport must be registered before pane focus publication");
+    fixture
+        .engine
+        .enqueue_pane_focus_observation(PaneFocusObservation::new(
+            PaneFocusObservationGeneration::new(generation),
+            binding,
+            focus,
+        ))
+        .expect("pane focus observation must enqueue");
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("pane focus observation must reduce");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::PaneFocusObservationPublished { .. }
+    ));
 }
 
 fn unsupported_native_lifecycle() -> PlatformCapability {
@@ -435,6 +550,7 @@ fn native_release_requests_a_create_saga_without_moving_content() {
     policy.set_allow_native_surfaces(true);
     let mut fixture = fixture(policy, &[1, 2]);
     register_native_source(&mut fixture, PlatformCapability::Supported);
+    publish_pane_focus(&mut fixture, 1, PanelFocus::Item(ItemId::new(1)));
     publish_scene(&mut fixture);
     let session = arm_and_begin(&mut fixture);
     publish_platform(&mut fixture, PlatformCapability::Supported);
@@ -472,6 +588,7 @@ fn native_release_requests_a_create_saga_without_moving_content() {
         .expect("native create saga must remain queryable");
     assert_eq!(saga.prepared().source_version(), version);
     assert_eq!(saga.prepared().proposal().surface(), SURFACE_NEW);
+    assert_eq!(saga.prepared().focus(), PanelFocus::Item(ItemId::new(1)));
     assert_eq!(
         saga.prepared().command(),
         &dockspace::command::WorkspaceCommand::CreateSurfaceRoot {
@@ -518,6 +635,94 @@ fn native_release_requests_a_create_saga_without_moving_content() {
         InteractionStatus::Idle
     );
     assert!(fixture.engine.scene().is_some());
+
+    publish_pane_focus(&mut fixture, 2, PanelFocus::Item(ItemId::new(2)));
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .native_create_saga(requested.saga())
+            .expect("native create saga must remain queryable")
+            .prepared()
+            .focus(),
+        PanelFocus::Item(ItemId::new(1)),
+        "focus must remain frozen after native prepare"
+    );
+}
+
+#[test]
+fn opaque_foreign_window_blocks_native_preview_and_release_delivery() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = fixture(policy, &[1, 2]);
+    register_native_source(&mut fixture, PlatformCapability::Supported);
+    publish_scene(&mut fixture);
+    let session = arm_and_begin(&mut fixture);
+    let request = native_request(
+        &fixture,
+        SURFACE_NEW,
+        ROOT_NEW,
+        logical_rect(100.0, 120.0, 640.0, 480.0),
+        contained_proposal(&fixture, ROOT_NEW, 10.0),
+        None,
+    );
+    let before = fixture.engine.workspace().clone();
+
+    publish_platform_with_hovered_window(
+        &mut fixture,
+        PlatformCapability::Supported,
+        PointerWindow::Foreign,
+    );
+    let blocked_route = fixture
+        .engine
+        .viewport()
+        .route(POINTER)
+        .expect("opaque blocker must publish an unavailable route proof")
+        .clone();
+    let preview = preview_tear_off(&mut fixture, session, request.clone());
+    assert!(matches!(
+        preview,
+        InteractionOutcome::Cancelled {
+            reason: dockspace::interaction::InteractionCancelReason::UnknownTargetAuthority,
+            ..
+        }
+    ));
+    assert!(fixture.engine.viewport().route(POINTER).is_none());
+
+    let target = TargetAuthority::routed(blocked_route);
+    fixture
+        .engine
+        .enqueue_renderer_intent(RendererIntent::ReleaseDrag {
+            session,
+            pointer: POINTER,
+            button: PointerButton::Primary,
+            button_state: Authority::Known(PointerButtonState::Released),
+            target,
+            tear_off: Some(request),
+        })
+        .expect("blocked release must enqueue");
+    let transition = fixture
+        .engine
+        .reduce_pending()
+        .expect("blocked release must reduce without native delivery");
+    assert!(!transition.reduced_inputs().iter().any(|reduced| matches!(
+        reduced.outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::DragDelivered {
+                delivery: InteractionDelivery::NativeRequested(_),
+                ..
+            },
+            ..
+        }
+    )));
+    assert!(
+        !transition
+            .platform_effects()
+            .iter()
+            .any(|request| matches!(request.effect(), PlatformEffect::CreateWindow { .. }))
+    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert!(fixture.engine.workspace().surface(SURFACE_NEW).is_none());
 }
 
 #[test]
@@ -577,12 +782,18 @@ fn changed_work_area_facts_cancel_a_native_preview_immediately() {
     );
     preview_tear_off(&mut fixture, session, request);
     let before = fixture.engine.workspace().clone();
+    let source_binding = fixture
+        .source_binding
+        .expect("source viewport must remain registered");
+    let focus_generation = fixture.take_focus_generation();
 
     fixture
         .engine
         .enqueue_platform_snapshot(platform_snapshot_with_work_area(
             PlatformCapability::Supported,
             physical_rect(-1800.0, -200.0, 3600.0, 1400.0),
+            source_binding,
+            focus_generation,
         ))
         .expect("changed work-area snapshot must enqueue");
     let transition = fixture

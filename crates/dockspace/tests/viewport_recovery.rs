@@ -4,12 +4,15 @@ use dockspace::effect::{
 };
 use dockspace::engine::DockEngine;
 use dockspace::frame::{
-    RecoveryPendingStatus, ViewportCloseDecision, ViewportClosePlan, ViewportCloseRequestId,
+    RecoveryPendingStatus, ViewportCloseDecision, ViewportCloseDecisionRejection,
+    ViewportClosePlan, ViewportCloseRequestId, ViewportMergeBackPlan,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use dockspace::intent::{Authority, ContainedRecoveryPlan, ContainedTearOffProposal};
+use dockspace::intent::{
+    Authority, AuthorityUnavailableReason, ContainedRecoveryPlan, ContainedTearOffProposal,
+};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
     WindowInputState, WindowPresentationState,
@@ -18,6 +21,7 @@ use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken, WorkAreaToken};
+use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
 const ROOT_HOST: RootId = RootId::new(1);
 const ROOT_CHILD: RootId = RootId::new(2);
@@ -131,8 +135,18 @@ fn partially_observed_replacement_window(binding: ViewportBinding) -> ObservedWi
 }
 
 fn publish_windows(engine: &mut DockEngine, windows: Vec<ObservedWindow>) -> EngineTransition {
+    let focus_generation = engine
+        .viewport()
+        .registry()
+        .inventory_generation()
+        .checked_next()
+        .expect("test focus observation generation must not exhaust");
     let snapshot = PlatformSnapshot::new(
         platform_capabilities(),
+        unknown_focus_observation(
+            FocusObservationGeneration::new(focus_generation.get()),
+            AuthorityUnavailableReason::NotReported,
+        ),
         windows,
         Vec::new(),
         vec![ObservedWorkArea::new(
@@ -150,11 +164,7 @@ fn publish_windows(engine: &mut DockEngine, windows: Vec<ObservedWindow>) -> Eng
         .expect("platform snapshot must publish")
 }
 
-fn fixture() -> Fixture {
-    let (workspace, child_root_node) = workspace();
-    let initial_items = workspace.item_multiset();
-    let mut engine =
-        DockEngine::new(workspace, DockPolicy::default()).expect("test engine must be valid");
+fn publish_scene(engine: &mut DockEngine) {
     let mut scene = BuildingScene::new([SURFACE_HOST, SURFACE_CHILD])
         .expect("test surface roster must be unique");
     for surface in [SURFACE_HOST, SURFACE_CHILD] {
@@ -163,10 +173,24 @@ fn fixture() -> Fixture {
                 surface,
                 logical_rect(0.0, 0.0, 900.0, 700.0),
             ))
-            .expect("initial surface facts must be unique");
+            .expect("surface scene must be unique");
     }
     engine.enqueue_scene(scene).expect("scene must enqueue");
     engine.reduce_pending().expect("scene must publish");
+}
+
+fn make_host_current_and_retry_recovery(engine: &mut DockEngine) -> EngineTransition {
+    publish_windows(engine, vec![host_window()]);
+    publish_scene(engine);
+    publish_windows(engine, vec![host_window()])
+}
+
+fn fixture() -> Fixture {
+    let (workspace, child_root_node) = workspace();
+    let initial_items = workspace.item_multiset();
+    let mut engine =
+        DockEngine::new(workspace, DockPolicy::default()).expect("test engine must be valid");
+    publish_scene(&mut engine);
     let recovery = recovery(&engine);
     engine
         .enqueue_viewport_registration(SURFACE_HOST, HOST_TOKEN, ViewportRole::Root, None)
@@ -188,6 +212,7 @@ fn fixture() -> Fixture {
         .expect("child viewport must be registered")
         .binding();
     publish_windows(&mut engine, vec![host_window(), child_window(false)]);
+    publish_scene(&mut engine);
     let expected_recovery = ContainedRecoveryPlan::new(
         ROOT_CHILD,
         RECOVERY_FLOATING,
@@ -231,40 +256,12 @@ fn close_request_from(transition: &EngineTransition) -> ViewportCloseRequestId {
         .reduced_inputs()
         .iter()
         .find_map(|reduced| match reduced.outcome() {
-            InputOutcome::PlatformSnapshotPublished { transition } => {
+            InputOutcome::PlatformSnapshotPublished { transition, .. } => {
                 transition.close_requests().first().copied()
             }
             _ => None,
         })
         .expect("snapshot must publish one child close request")
-}
-
-fn accept_child_close(fixture: &mut Fixture) {
-    let close = publish_windows(&mut fixture.engine, vec![host_window(), child_window(true)]);
-    let request = close_request_from(&close);
-    fixture
-        .engine
-        .enqueue_viewport_close_decision(
-            request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, fixture.recovery)),
-        )
-        .expect("close decision must enqueue");
-    let decided = fixture
-        .engine
-        .reduce_pending()
-        .expect("close decision must reduce");
-    let releases = decided
-        .platform_effects()
-        .iter()
-        .filter(|request| {
-            matches!(
-                request.effect(),
-                PlatformEffect::ReleaseChild { binding }
-                    if *binding == fixture.child_binding
-            )
-        })
-        .count();
-    assert_eq!(releases, 1);
 }
 
 fn request_replacement(transition: &EngineTransition) -> (EffectId, ViewportBinding) {
@@ -294,7 +291,6 @@ fn request_replacement(transition: &EngineTransition) -> (EffectId, ViewportBind
 
 fn pending_fixture() -> PendingFixture {
     let mut fixture = fixture();
-    accept_child_close(&mut fixture);
     let destroyed = publish_windows(&mut fixture.engine, vec![unavailable_host_window()]);
     let (replacement_effect, replacement_binding) = request_replacement(&destroyed);
     let pending = fixture
@@ -367,9 +363,57 @@ fn assert_no_new_effects(transition: &EngineTransition) {
 }
 
 #[test]
+fn merge_back_rejects_a_visible_split_main_root() {
+    let mut fixture = fixture();
+    let close = publish_windows(&mut fixture.engine, vec![host_window(), child_window(true)]);
+    let request = close_request_from(&close);
+    let host = fixture
+        .engine
+        .workspace()
+        .surface(SURFACE_HOST)
+        .expect("host surface must exist");
+    let host_tabs = fixture
+        .engine
+        .workspace()
+        .root(host.main_root)
+        .expect("host root must exist")
+        .node;
+    let target = fixture
+        .engine
+        .workspace()
+        .capture_tab_target(host.main_root, host_tabs)
+        .expect("host tabs target must be current");
+    fixture
+        .engine
+        .enqueue_viewport_close_decision(
+            request,
+            ViewportCloseDecision::Accept(ViewportClosePlan::merge_back(
+                ViewportMergeBackPlan::new(SURFACE_HOST, target),
+            )),
+        )
+        .expect("merge-back decision must enqueue");
+
+    let rejected = fixture
+        .engine
+        .reduce_pending()
+        .expect("split main root must reject deterministically");
+
+    assert!(matches!(
+        rejected.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::ViewportCloseDecisionRejected {
+                    reason: ViewportCloseDecisionRejection::MergeBackSourceNotTabs { root },
+                    ..
+                } if *root == ROOT_CHILD
+            )
+    ));
+}
+
+#[test]
 fn destroyed_child_recovers_the_whole_root_when_the_host_is_ready() {
     let mut fixture = fixture();
-    accept_child_close(&mut fixture);
 
     let destroyed = publish_windows(&mut fixture.engine, vec![host_window()]);
 
@@ -401,6 +445,7 @@ fn recovery_uses_the_latest_native_outer_bounds_in_the_current_host_scale() {
             ready_window(CHILD_TOKEN, 300.0, false),
         ],
     );
+    publish_scene(&mut fixture.engine);
 
     publish_windows(
         &mut fixture.engine,
@@ -533,7 +578,7 @@ fn adopted_replacement_retains_recovery_for_a_second_destruction() {
             .is_none()
     );
 
-    publish_windows(&mut pending.fixture.engine, vec![host_window()]);
+    make_host_current_and_retry_recovery(&mut pending.fixture.engine);
 
     assert_whole_root_recovered(&pending.fixture);
 }
@@ -545,7 +590,7 @@ fn vetoed_child_close_still_recovers_after_unexpected_destruction() {
     let request = close_request_from(&close);
     fixture
         .engine
-        .enqueue_viewport_close_decision(request, ViewportCloseDecision::Veto)
+        .enqueue_viewport_close_decision(request, ViewportCloseDecision::Prevent)
         .expect("close veto must enqueue");
     fixture
         .engine
@@ -561,7 +606,7 @@ fn vetoed_child_close_still_recovers_after_unexpected_destruction() {
 fn host_ready_before_replacement_rehomes_and_compensates_exactly_once() {
     let mut pending = pending_fixture();
 
-    let recovered = publish_windows(&mut pending.fixture.engine, vec![host_window()]);
+    let recovered = make_host_current_and_retry_recovery(&mut pending.fixture.engine);
     let compensations: Vec<&EffectRequest> = recovered
         .platform_effects()
         .iter()
@@ -611,7 +656,7 @@ fn host_ready_before_replacement_rehomes_and_compensates_exactly_once() {
 #[test]
 fn failed_replacement_compensation_retries_only_after_explicit_input() {
     let mut pending = pending_fixture();
-    let recovered = publish_windows(&mut pending.fixture.engine, vec![host_window()]);
+    let recovered = make_host_current_and_retry_recovery(&mut pending.fixture.engine);
     let failed_cleanup = recovered
         .platform_effects()
         .iter()
@@ -744,7 +789,7 @@ fn replacement_dispatch_failure_remains_recoverable_without_redispatch() {
         1
     );
 
-    let recovered = publish_windows(&mut pending.fixture.engine, vec![host_window()]);
+    let recovered = make_host_current_and_retry_recovery(&mut pending.fixture.engine);
     assert_no_new_effects(&recovered);
     assert_whole_root_recovered(&pending.fixture);
     assert!(

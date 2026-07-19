@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::command::{CommandOutcome, MovePayload, NodeSource, WorkspaceCommand};
 use crate::drop_resolver::DropAffordance;
 use crate::drop_target::DropTargetId;
-use crate::frame::NativeCreateRequest;
+use crate::frame::{NativeCreateRequest, PanelFocus};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, InputSequence, RootId, SurfaceId, WorkspaceEpoch};
@@ -691,6 +691,7 @@ pub struct PreparedNativeTearOff {
     source_version: WorkspaceVersion,
     command: WorkspaceCommand,
     proposal: NativeTearOffProposal,
+    focus: PanelFocus,
 }
 
 impl PreparedNativeTearOff {
@@ -699,12 +700,14 @@ impl PreparedNativeTearOff {
         source_version: WorkspaceVersion,
         command: WorkspaceCommand,
         proposal: NativeTearOffProposal,
+        focus: PanelFocus,
     ) -> Self {
         Self {
             session,
             source_version,
             command,
             proposal,
+            focus,
         }
     }
 
@@ -730,6 +733,12 @@ impl PreparedNativeTearOff {
     #[must_use]
     pub const fn proposal(&self) -> &NativeTearOffProposal {
         &self.proposal
+    }
+
+    /// Returns the source pane focus frozen at the release edge.
+    #[must_use]
+    pub const fn focus(&self) -> PanelFocus {
+        self.focus
     }
 }
 

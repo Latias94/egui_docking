@@ -8,11 +8,13 @@ use crate::coordinates::{CoordinateSnapshot, CoordinateUnavailable, ViewportPlac
 use crate::geometry::LogicalRect;
 use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
-use crate::platform::WindowPresentationState;
-use crate::platform::{ObservedWindow, ObservedWorkArea, PlatformSnapshot};
+use crate::platform::{
+    ObservedWindow, ObservedWorkArea, PlatformSnapshot, WindowInputObservation,
+    WindowInputObservationStream, WindowPresentationState,
+};
 use crate::viewport::{
-    CoordinateGeneration, InventoryGeneration, ViewportBinding, ViewportRole, WindowIncarnation,
-    WindowToken, WorkAreaGeneration,
+    CoordinateGeneration, InputObservationGeneration, InventoryGeneration, ViewportBinding,
+    ViewportRole, WindowIncarnation, WindowToken, WorkAreaGeneration,
 };
 
 /// Lifecycle state derived from authoritative inventory, never from callback timing.
@@ -32,6 +34,7 @@ pub struct ViewportRecord {
     role: ViewportRole,
     lifecycle: ViewportLifecycle,
     coordinates: Option<CoordinateSnapshot>,
+    input_observations: WindowInputObservationStream,
     coordinate_generation: CoordinateGeneration,
     ever_observed: bool,
     close_request_latched: bool,
@@ -67,8 +70,36 @@ impl ViewportRecord {
             })
     }
 
+    /// Returns whether this exact observed incarnation may own native focus.
+    ///
+    /// Focus authority is independent of geometry authority: a live window remains
+    /// focusable while coordinate facts are temporarily unavailable.
+    pub(crate) const fn is_focusable(&self) -> bool {
+        self.ever_observed
+            && matches!(
+                self.lifecycle,
+                ViewportLifecycle::AwaitingObservation
+                    | ViewportLifecycle::Ready
+                    | ViewportLifecycle::CloseRequested
+            )
+    }
+
     pub(crate) const fn coordinates(&self) -> Option<CoordinateSnapshot> {
         self.coordinates
+    }
+
+    pub(crate) const fn input_observation(&self) -> Option<WindowInputObservation> {
+        self.input_observations.current()
+    }
+
+    pub(crate) const fn input_observation_generation_watermark(
+        &self,
+    ) -> Option<InputObservationGeneration> {
+        self.input_observations.generation_watermark()
+    }
+
+    pub(crate) const fn is_observed(&self) -> bool {
+        self.ever_observed && !matches!(self.lifecycle, ViewportLifecycle::Missing)
     }
 }
 
@@ -96,6 +127,7 @@ pub(crate) struct RetiredViewportFacts {
     role: ViewportRole,
     lifecycle: ViewportLifecycle,
     last_coordinates: Option<CoordinateSnapshot>,
+    input_observations: WindowInputObservationStream,
     ever_observed: bool,
     close_request_latched: bool,
 }
@@ -115,6 +147,10 @@ impl RetiredViewportFacts {
 
     pub(crate) const fn last_coordinates(self) -> Option<CoordinateSnapshot> {
         self.last_coordinates
+    }
+
+    pub(crate) const fn input_observations(self) -> WindowInputObservationStream {
+        self.input_observations
     }
 
     pub(crate) const fn ever_observed(self) -> bool {
@@ -239,6 +275,7 @@ impl ViewportRegistry {
                 role,
                 lifecycle: ViewportLifecycle::AwaitingObservation,
                 coordinates: None,
+                input_observations: WindowInputObservationStream::default(),
                 coordinate_generation: CoordinateGeneration::default(),
                 ever_observed: false,
                 close_request_latched: false,
@@ -300,6 +337,9 @@ impl ViewportRegistry {
                 matches!(record.lifecycle, ViewportLifecycle::AwaitingDestroyed);
             let was_ready = record.is_ready();
             let previous_coordinates = record.coordinates;
+            record
+                .input_observations
+                .observe(record.binding, observation.input_observation());
             let mut coordinates = CoordinateSnapshot::from_observation(
                 record.binding,
                 record.coordinate_generation,
@@ -446,6 +486,7 @@ impl ViewportRegistry {
                     role: record.role,
                     lifecycle: record.lifecycle,
                     last_coordinates: record.coordinates,
+                    input_observations: record.input_observations,
                     ever_observed: record.ever_observed,
                     close_request_latched: record.close_request_latched,
                 });
@@ -460,6 +501,7 @@ impl ViewportRegistry {
             record.binding = after;
             record.lifecycle = ViewportLifecycle::AwaitingObservation;
             record.coordinates = None;
+            record.input_observations = WindowInputObservationStream::default();
             retained.push((before, after));
         }
         Ok(RestoreRegistryReconciliation { retained, retired })
@@ -618,9 +660,11 @@ pub enum ViewportRegistryError {
 mod tests {
     use super::*;
     use crate::geometry::{PhysicalRect, ScaleFactor};
+    use crate::intent::AuthorityUnavailableReason;
     use crate::platform::{
         PlatformCapabilities, PlatformCapability, WindowInputState, WindowPresentationState,
     };
+    use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
     fn ready_window(token: WindowToken, close_requested: bool) -> ObservedWindow {
         ObservedWindow::new(token)
@@ -638,11 +682,20 @@ mod tests {
             .with_close_requested(Authority::Known(close_requested))
     }
 
-    fn snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
+    fn snapshot(generation: u64, windows: Vec<ObservedWindow>) -> PlatformSnapshot {
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        PlatformSnapshot::new(capabilities, windows, Vec::new(), Vec::new())
-            .expect("test snapshot must be valid")
+        PlatformSnapshot::new(
+            capabilities,
+            unknown_focus_observation(
+                FocusObservationGeneration::new(generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
+            windows,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("test snapshot must be valid")
     }
 
     #[test]
@@ -658,10 +711,10 @@ mod tests {
             )
             .expect("first binding must register");
         registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, false)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, false)]))
             .expect("ready snapshot must apply");
         registry
-            .apply_snapshot(&snapshot(Vec::new()))
+            .apply_snapshot(&snapshot(2, Vec::new()))
             .expect("destroyed snapshot must apply");
         registry
             .remove_missing(first)
@@ -691,7 +744,7 @@ mod tests {
             )
             .expect("binding must register");
         let first = registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, true)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, true)]))
             .expect("close snapshot must apply");
         assert_eq!(
             first
@@ -702,7 +755,7 @@ mod tests {
             1
         );
         let repeated = registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, true)]))
+            .apply_snapshot(&snapshot(2, vec![ready_window(token, true)]))
             .expect("repeated snapshot must apply");
         assert!(
             !repeated
@@ -712,7 +765,7 @@ mod tests {
         );
 
         let destroyed = registry
-            .apply_snapshot(&snapshot(Vec::new()))
+            .apply_snapshot(&snapshot(3, Vec::new()))
             .expect("destroyed snapshot must apply");
         assert!(
             destroyed
@@ -728,7 +781,7 @@ mod tests {
         registry.exhaust_inventory_generation();
         let before = registry.clone();
         assert_eq!(
-            registry.apply_snapshot(&snapshot(Vec::new())),
+            registry.apply_snapshot(&snapshot(1, Vec::new())),
             Err(ViewportRegistryError::InventoryGenerationExhausted)
         );
         assert_eq!(registry, before);
@@ -750,7 +803,7 @@ mod tests {
         let before = registry.clone();
 
         assert_eq!(
-            registry.apply_snapshot(&snapshot(vec![ready_window(token, false)])),
+            registry.apply_snapshot(&snapshot(1, vec![ready_window(token, false)])),
             Err(ViewportRegistryError::CoordinateGenerationExhausted)
         );
         assert_eq!(registry, before);
@@ -779,7 +832,7 @@ mod tests {
             )
             .expect("observed binding must reserve");
         registry
-            .apply_snapshot(&snapshot(vec![ready_window(observed.token(), false)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(observed.token(), false)]))
             .expect("window must become observed");
         assert_eq!(
             registry.discard_unobserved(observed),
@@ -828,7 +881,7 @@ mod tests {
             .register_existing(WorkspaceEpoch::new(0), surface, token, ViewportRole::Root)
             .expect("binding must register");
         registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, true)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, true)]))
             .expect("close-request snapshot must apply");
 
         let reconciliation = registry
@@ -854,7 +907,7 @@ mod tests {
         assert!(record.close_request_latched);
 
         let repeated_close = registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, true)]))
+            .apply_snapshot(&snapshot(2, vec![ready_window(token, true)]))
             .expect("same close request must apply to the rebound window");
         assert!(repeated_close.events().is_empty());
         assert_eq!(
@@ -875,7 +928,7 @@ mod tests {
             .register_existing(WorkspaceEpoch::new(0), surface, token, ViewportRole::Child)
             .expect("binding must register");
         registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, false)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, false)]))
             .expect("ready snapshot must apply");
         registry
             .mark_awaiting_destroyed(binding)
@@ -913,14 +966,14 @@ mod tests {
             .register_existing(WorkspaceEpoch::new(0), surface, token, ViewportRole::Child)
             .expect("binding must register");
         registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, false)]))
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, false)]))
             .expect("ready snapshot must apply");
         registry
             .mark_awaiting_destroyed(binding)
             .expect("current binding can await destruction");
 
         let still_observed = registry
-            .apply_snapshot(&snapshot(vec![ready_window(token, true)]))
+            .apply_snapshot(&snapshot(2, vec![ready_window(token, true)]))
             .expect("observed snapshot must apply");
         assert_eq!(
             registry
@@ -932,7 +985,7 @@ mod tests {
         assert!(still_observed.events().is_empty());
 
         let facts_unavailable = registry
-            .apply_snapshot(&snapshot(vec![ObservedWindow::new(token)]))
+            .apply_snapshot(&snapshot(3, vec![ObservedWindow::new(token)]))
             .expect("incomplete observed snapshot must apply");
         assert_eq!(
             registry
@@ -944,7 +997,7 @@ mod tests {
         assert!(facts_unavailable.events().is_empty());
 
         let destroyed = registry
-            .apply_snapshot(&snapshot(Vec::new()))
+            .apply_snapshot(&snapshot(4, Vec::new()))
             .expect("authoritative absence must apply");
         assert_eq!(
             registry
@@ -954,5 +1007,65 @@ mod tests {
             ViewportLifecycle::Missing
         );
         assert_eq!(destroyed.events(), &[RegistryEvent::Destroyed { binding }]);
+    }
+
+    #[test]
+    fn focus_authority_survives_coordinate_gaps_but_not_terminal_lifecycle() {
+        let mut registry = ViewportRegistry::default();
+        let surface = SurfaceId::new(1);
+        let token = WindowToken::new(3);
+        let binding = registry
+            .register_existing(WorkspaceEpoch::new(0), surface, token, ViewportRole::Child)
+            .expect("binding must register");
+        assert!(
+            !registry
+                .record(surface)
+                .expect("reservation must exist")
+                .is_focusable(),
+            "an unobserved reservation cannot own provider focus"
+        );
+
+        registry
+            .apply_snapshot(&snapshot(1, vec![ready_window(token, false)]))
+            .expect("ready snapshot must apply");
+        assert!(
+            registry
+                .record(surface)
+                .expect("ready record must exist")
+                .is_focusable()
+        );
+
+        registry
+            .apply_snapshot(&snapshot(2, vec![ObservedWindow::new(token)]))
+            .expect("coordinate gap must apply");
+        let unavailable = registry
+            .record(surface)
+            .expect("observed record must remain registered");
+        assert_eq!(
+            unavailable.lifecycle(),
+            ViewportLifecycle::AwaitingObservation
+        );
+        assert!(unavailable.is_focusable());
+        assert!(!unavailable.is_routeable());
+
+        registry
+            .mark_awaiting_destroyed(binding)
+            .expect("binding must enter terminal close state");
+        assert!(
+            !registry
+                .record(surface)
+                .expect("closing record must remain queryable")
+                .is_focusable()
+        );
+
+        registry
+            .apply_snapshot(&snapshot(3, Vec::new()))
+            .expect("destroyed snapshot must apply");
+        assert!(
+            !registry
+                .record(surface)
+                .expect("missing record remains queryable")
+                .is_focusable()
+        );
     }
 }

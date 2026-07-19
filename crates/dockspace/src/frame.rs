@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use crate::command::WorkspaceCommand;
+use crate::command::TabTarget;
 use crate::coordinates::{
-    CoordinateSnapshot, CoordinateUnavailable, TearOffPlacementProof, TearOffPlacementRequest,
+    CoordinateUnavailable, TearOffPlacementProof, TearOffPlacementRequest,
     TearOffPlacementUnavailable, ViewportPlacementProof,
 };
 use crate::effect::{
@@ -14,17 +14,18 @@ use crate::effect::{
     EffectResult, EffectTransition, PlatformEffect,
 };
 use crate::geometry::LogicalRect;
-use crate::ids::{SurfaceId, WorkspaceEpoch};
+use crate::ids::{ItemId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{
     ContainedPlacementUnavailable, ContainedRecoveryPlan, NativePlacementProof, PointerId,
 };
 use crate::interaction::PreparedNativeTearOff;
 use crate::platform::{
-    ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot, WindowInputState,
+    ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
+    WindowInputObservation, WindowInputObservationStream, WindowInputState,
 };
 use crate::viewport::{
-    CapabilityGeneration, RouteGeneration, ViewportBinding, ViewportRole, WindowToken,
-    WorkAreaGeneration, WorkAreaToken,
+    CapabilityGeneration, InputObservationGeneration, RouteGeneration, ViewportBinding,
+    ViewportRole, WindowToken, WorkAreaGeneration, WorkAreaToken,
 };
 use crate::viewport_registry::{
     RegistryEvent, RetiredViewportFacts, ViewportLifecycle, ViewportRecord, ViewportRegistry,
@@ -76,17 +77,10 @@ pub enum NativeCreateStatus {
     Requested,
     Indeterminate,
     GeometryReadyUncommitted,
-    CommittedAwaitingVisibility {
-        show: EffectId,
-    },
-    Committed {
-        show: Option<EffectId>,
-        focus: Option<EffectId>,
-    },
+    CommittedAwaitingVisibility { show: EffectId },
+    Committed { show: Option<EffectId> },
     Cancelled,
-    Compensating {
-        effect: EffectId,
-    },
+    Compensating { effect: EffectId },
 }
 
 impl NativeCreateStatus {
@@ -160,44 +154,67 @@ impl NativeCreateSaga {
     }
 }
 
-/// Workspace mutation frozen when an application accepts one viewport close.
-///
-/// `primary` is attempted only after the matching native binding is observed
-/// destroyed. `recovery` retains the complete root when the primary command is
-/// no longer valid at that point.
+/// Typed logical disposition frozen when an application accepts one viewport close.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ViewportClosePlan {
-    primary: Option<WorkspaceCommand>,
-    recovery: ContainedRecoveryPlan,
+pub enum ViewportClosePlan {
+    /// Unbind the destroyed native window while preserving the complete logical surface.
+    RetainLayout,
+    /// Atomically merge the main tabs and complete contained forest into another surface.
+    MergeBack(ViewportMergeBackPlan),
 }
 
 impl ViewportClosePlan {
     #[must_use]
-    pub fn new(
-        primary: Option<WorkspaceCommand>,
-        recovery: impl Into<ContainedRecoveryPlan>,
-    ) -> Self {
+    pub const fn retain_layout() -> Self {
+        Self::RetainLayout
+    }
+
+    #[must_use]
+    pub const fn merge_back(plan: ViewportMergeBackPlan) -> Self {
+        Self::MergeBack(plan)
+    }
+}
+
+/// Prevalidated semantic target for one full-surface merge-back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewportMergeBackPlan {
+    target_surface: SurfaceId,
+    target: TabTarget,
+}
+
+/// Exact panel-focus disposition owned by the core focus coordinator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelFocus {
+    /// Activate and focus this exact source-roster item after merge-back.
+    Item(ItemId),
+    /// Explicitly leave the merged content without a focused panel.
+    None,
+}
+
+impl ViewportMergeBackPlan {
+    #[must_use]
+    pub const fn new(target_surface: SurfaceId, target: TabTarget) -> Self {
         Self {
-            primary,
-            recovery: recovery.into(),
+            target_surface,
+            target,
         }
     }
 
     #[must_use]
-    pub const fn primary(&self) -> Option<&WorkspaceCommand> {
-        self.primary.as_ref()
+    pub const fn target_surface(&self) -> SurfaceId {
+        self.target_surface
     }
 
     #[must_use]
-    pub const fn recovery(&self) -> ContainedRecoveryPlan {
-        self.recovery
+    pub const fn target(&self) -> &TabTarget {
+        &self.target
     }
 }
 
 /// Application decision for one exact platform close-request edge.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ViewportCloseDecision {
-    Veto,
+    Prevent,
     Accept(ViewportClosePlan),
 }
 
@@ -208,8 +225,19 @@ pub enum ViewportCloseDecisionRejection {
     DestructionAuthorityUnavailable { capability: PlatformCapability },
     /// The recovery placement is no longer authorized by the current scene.
     RecoveryPlacementUnavailable(ContainedPlacementUnavailable),
-    /// The accepted recovery root differs from the closing surface's main root.
-    RecoveryRootMismatch,
+    /// Merge-back cannot target the same logical surface whose native host is closing.
+    MergeBackTargetsClosingSurface { surface: SurfaceId },
+    /// Merge-back must target the child surface's registered recovery host.
+    MergeBackRecoveryTargetMismatch {
+        expected: SurfaceId,
+        actual: SurfaceId,
+    },
+    /// Merge-back requires the source main root to be one complete tabs stack.
+    MergeBackSourceNotTabs { root: crate::ids::RootId },
+    /// The frozen merge-back tabs target is absent, stale, or outside the target surface.
+    MergeBackTargetUnavailable { surface: SurfaceId },
+    /// The accepted close cannot freeze authoritative source content geometry.
+    SourceGeometryUnavailable,
 }
 
 /// Queryable phase of one viewport close saga.
@@ -277,9 +305,19 @@ impl ViewportReconciliation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RetiredViewportStatus {
     AwaitingAppearance,
-    CleanupRequested { effect: EffectId },
-    CleanupIndeterminate { effect: EffectId },
-    CleanupFailed { effect: EffectId },
+    CleanupRequested {
+        effect: EffectId,
+    },
+    CleanupIndeterminate {
+        effect: EffectId,
+    },
+    /// The observation-only continuation failed; the destructive predecessor remains unknown.
+    CleanupObservationFailed {
+        effect: EffectId,
+    },
+    CleanupFailed {
+        effect: EffectId,
+    },
 }
 
 /// Old-epoch binding isolated from the current logical surface roster.
@@ -289,6 +327,7 @@ pub struct RetiredViewport {
     role: ViewportRole,
     status: RetiredViewportStatus,
     observed: bool,
+    input_observations: WindowInputObservationStream,
     may_appear_late: bool,
     cleanup: RetiredCleanup,
 }
@@ -330,6 +369,7 @@ enum RetiredCleanup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecoveryPendingStatus {
     AwaitingRecoveryHost,
+    ReplacementRegistered,
     ReplacementRequested { effect: EffectId },
     ReplacementIndeterminate { effect: EffectId },
     ReplacementFailed { effect: EffectId },
@@ -342,6 +382,7 @@ pub enum RecoveryPendingStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryPending {
     destroyed_binding: ViewportBinding,
+    role: ViewportRole,
     recovery: ContainedRecoveryPlan,
     replacement_binding: Option<ViewportBinding>,
     replacement_effect: Option<EffectId>,
@@ -386,6 +427,11 @@ impl RecoveryPending {
     #[must_use]
     pub const fn destroyed_binding(&self) -> ViewportBinding {
         self.destroyed_binding
+    }
+
+    #[must_use]
+    pub const fn role(&self) -> ViewportRole {
+        self.role
     }
 
     #[must_use]
@@ -454,6 +500,10 @@ pub(crate) enum ViewportLifecycleAction {
         saga: NativeCreateSagaId,
         prepared: Box<PreparedNativeTearOff>,
     },
+    CreateVisible {
+        saga: NativeCreateSagaId,
+        binding: ViewportBinding,
+    },
     SurfaceDestroyed {
         binding: ViewportBinding,
         resolution: ViewportDestructionResolution,
@@ -469,6 +519,7 @@ pub(crate) enum ViewportDestructionResolution {
     Accepted {
         request: ViewportCloseRequestId,
         plan: ViewportClosePlan,
+        recovery: Option<ContainedRecoveryPlan>,
     },
     Recover {
         recovery: ContainedRecoveryPlan,
@@ -542,8 +593,9 @@ pub struct ViewportCoordinator {
     registry: ViewportRegistry,
     routes: ViewportRouteState,
     effects: EffectLedger,
+    focus_effect_lane_tail: Option<EffectId>,
     drag_sources: BTreeMap<PointerId, ViewportBinding>,
-    pointer_hit_test_leases: BTreeMap<ViewportBinding, PointerHitTestLease>,
+    pointer_passthrough_sagas: BTreeMap<ViewportBinding, PointerPassthroughSaga>,
     last_create_saga: NativeCreateSagaId,
     create_sagas: BTreeMap<NativeCreateSagaId, NativeCreateSaga>,
     last_close_request: ViewportCloseRequestId,
@@ -556,10 +608,476 @@ pub struct ViewportCoordinator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PointerHitTestLease {
-    original: WindowInputState,
-    changed_by_us: bool,
+struct PointerPassthroughSaga {
+    original: Option<PointerInputOriginal>,
     holders: BTreeSet<PointerId>,
+    enable: Option<PointerInputEnableAttempt>,
+    restore: Option<PointerInputRestoreObligation>,
+    lane_tail: Option<EffectId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerInputOriginal {
+    state: WindowInputState,
+    generation: InputObservationGeneration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerInputEffectAttempt {
+    effect: EffectId,
+    retry: PointerPassthroughRetryFence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerInputEnableAttempt {
+    effect: PointerInputEffectAttempt,
+    issued_after: InputObservationGeneration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerInputRestoreAttempt {
+    effect: PointerInputEffectAttempt,
+    issued_after: Option<InputObservationGeneration>,
+    terminal_reported_after: Option<InputObservationGeneration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerInputRestoreObligation {
+    settlement: PointerInputRestoreSettlement,
+    attempt: Option<PointerInputRestoreAttempt>,
+    state_settled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerInputRestoreSettlement {
+    StateOrExactEffect,
+    ExactEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerPassthroughRetryFence {
+    None,
+    DispatchFailed {
+        evidence: PointerPassthroughRetryEvidence,
+        edge_seen: bool,
+    },
+    Unsupported {
+        capabilities: PointerPassthroughCapabilities,
+        edge_seen: bool,
+    },
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerPassthroughAction {
+    None,
+    Remove,
+    RequestEnable,
+    RequestRestore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerPassthroughCapabilities {
+    observation: PlatformCapability,
+    control: PlatformCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerPassthroughEvidence {
+    observation: Option<WindowInputObservation>,
+    generation_watermark: Option<InputObservationGeneration>,
+    window_observed: bool,
+    routeable: bool,
+    capabilities: PointerPassthroughCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerPassthroughRetryEvidence {
+    input_state: Option<WindowInputState>,
+    acknowledgement_known: bool,
+    acknowledged_effect: Option<EffectId>,
+    window_observed: bool,
+    routeable: bool,
+    capabilities: PointerPassthroughCapabilities,
+}
+
+impl PointerPassthroughEvidence {
+    fn authoritative_observation(self) -> Option<WindowInputObservation> {
+        self.observation
+            .filter(|observation| observation.known_state().is_some())
+    }
+
+    fn authoritative_state(self) -> Option<WindowInputState> {
+        self.authoritative_observation()
+            .and_then(WindowInputObservation::known_state)
+    }
+
+    fn retry_evidence(self) -> PointerPassthroughRetryEvidence {
+        let (acknowledgement_known, acknowledged_effect) =
+            self.observation.map_or((false, None), |observation| {
+                match observation.acknowledged_effect() {
+                    crate::platform::InputEffectAcknowledgement::Known(effect) => (true, effect),
+                    crate::platform::InputEffectAcknowledgement::Unknown(_) => (false, None),
+                }
+            });
+        PointerPassthroughRetryEvidence {
+            input_state: self
+                .observation
+                .and_then(WindowInputObservation::known_state),
+            acknowledgement_known,
+            acknowledged_effect,
+            window_observed: self.window_observed,
+            routeable: self.routeable,
+            capabilities: self.capabilities,
+        }
+    }
+}
+
+impl PointerPassthroughSaga {
+    fn new(holder: PointerId) -> Self {
+        Self {
+            original: None,
+            holders: BTreeSet::from([holder]),
+            enable: None,
+            restore: None,
+            lane_tail: None,
+        }
+    }
+
+    fn epoch_recovery(previous: &Self) -> Self {
+        Self {
+            original: previous.original,
+            holders: BTreeSet::new(),
+            enable: None,
+            restore: Some(PointerInputRestoreObligation {
+                settlement: PointerInputRestoreSettlement::ExactEffect,
+                attempt: None,
+                state_settled: false,
+            }),
+            lane_tail: previous.lane_tail,
+        }
+    }
+
+    fn retired_recovery(&self) -> Self {
+        let mut recovery = self.clone();
+        recovery.holders.clear();
+        recovery
+    }
+
+    fn recovery_required(&self) -> bool {
+        self.restore.is_some()
+            || (self
+                .original
+                .is_some_and(|original| original.state == WindowInputState::ReceivesInput)
+                && self.enable.is_some())
+    }
+
+    fn route_source(&self, binding: ViewportBinding) -> crate::viewport_route::ViewportRouteSource {
+        if self.restore.is_some() {
+            return crate::viewport_route::ViewportRouteSource::unavailable(binding);
+        }
+        if let Some(enable) = self.enable {
+            return crate::viewport_route::ViewportRouteSource::core_effect(
+                binding,
+                enable.effect.effect,
+                enable.issued_after,
+            );
+        }
+        if self
+            .original
+            .is_some_and(|original| original.state == WindowInputState::PassThrough)
+        {
+            crate::viewport_route::ViewportRouteSource::preexisting(binding)
+        } else {
+            crate::viewport_route::ViewportRouteSource::unavailable(binding)
+        }
+    }
+
+    fn causal_effect(&self, observation: WindowInputObservation) -> Option<EffectId> {
+        if let Some(attempt) = self.restore.and_then(|restore| restore.attempt)
+            && attempt
+                .issued_after
+                .is_none_or(|generation| observation.generation() > generation)
+            && observation.known_state() == Some(WindowInputState::ReceivesInput)
+            && observation.acknowledges(attempt.effect.effect)
+        {
+            return Some(attempt.effect.effect);
+        }
+        self.enable.and_then(|attempt| {
+            (observation.generation() > attempt.issued_after
+                && observation.known_state() == Some(WindowInputState::PassThrough)
+                && observation.acknowledges(attempt.effect.effect))
+            .then_some(attempt.effect.effect)
+        })
+    }
+
+    fn accept_observed_effect(&mut self, effect: EffectId) {
+        if self
+            .restore
+            .and_then(|restore| restore.attempt)
+            .is_some_and(|attempt| attempt.effect.effect == effect)
+        {
+            self.restore = None;
+            self.enable = None;
+        }
+    }
+
+    fn record_dispatch_result(
+        &mut self,
+        effect: EffectId,
+        result: EffectDispatchResult,
+        evidence: PointerPassthroughEvidence,
+    ) -> bool {
+        if let Some(enable) = &mut self.enable
+            && enable.effect.effect == effect
+        {
+            enable.effect.record_dispatch_result(result, evidence);
+            return true;
+        }
+        if let Some(restore) = &mut self.restore
+            && let Some(attempt) = &mut restore.attempt
+            && attempt.effect.effect == effect
+        {
+            if matches!(
+                result,
+                EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_)
+            ) {
+                attempt.terminal_reported_after =
+                    attempt.issued_after.max(evidence.generation_watermark);
+            }
+            attempt.effect.record_dispatch_result(result, evidence);
+            return true;
+        }
+        false
+    }
+
+    fn action(
+        &mut self,
+        evidence: PointerPassthroughEvidence,
+        enable_phase: Option<EffectPhase>,
+        restore_phase: Option<EffectPhase>,
+    ) -> PointerPassthroughAction {
+        self.capture_original_state(evidence);
+        self.observe_retry_edges(evidence);
+        self.settle_restore_from_state(evidence, enable_phase, restore_phase);
+
+        if self.restore.is_some_and(|restore| restore.state_settled) {
+            if self.holders.is_empty()
+                && !matches!(
+                    restore_phase,
+                    Some(
+                        EffectPhase::DispatchFailed(_)
+                            | EffectPhase::ObservedApplied { .. }
+                            | EffectPhase::Unsupported(_)
+                            | EffectPhase::Destroyed { .. }
+                            | EffectPhase::InvalidatedByRestore { .. }
+                    )
+                )
+            {
+                return PointerPassthroughAction::None;
+            }
+            self.restore = None;
+        }
+
+        if let Some(restore) = self.restore {
+            let request_restore = match restore.attempt {
+                None => true,
+                Some(attempt) => {
+                    evidence.capabilities.control.is_supported()
+                        && (matches!(
+                            restore_phase,
+                            Some(EffectPhase::InvalidatedByRestore { .. })
+                        ) || restore_phase.is_some_and(|phase| attempt.effect.can_retry(phase)))
+                }
+            };
+            return if request_restore {
+                PointerPassthroughAction::RequestRestore
+            } else {
+                PointerPassthroughAction::None
+            };
+        }
+
+        if self.holders.is_empty() {
+            if self
+                .original
+                .is_some_and(|original| original.state == WindowInputState::ReceivesInput)
+                && self.enable.is_some()
+            {
+                self.restore = Some(PointerInputRestoreObligation {
+                    settlement: PointerInputRestoreSettlement::StateOrExactEffect,
+                    attempt: None,
+                    state_settled: false,
+                });
+                return PointerPassthroughAction::RequestRestore;
+            }
+            return PointerPassthroughAction::Remove;
+        }
+
+        let Some(original) = self.original else {
+            return PointerPassthroughAction::None;
+        };
+        let needs_enable = self.enable.map_or_else(
+            || {
+                original.state == WindowInputState::ReceivesInput
+                    || evidence.authoritative_state() != Some(WindowInputState::PassThrough)
+            },
+            |attempt| {
+                let state_proves_passthrough =
+                    evidence
+                        .authoritative_observation()
+                        .is_some_and(|observation| {
+                            observation.generation() > attempt.issued_after
+                                && observation.known_state() == Some(WindowInputState::PassThrough)
+                        });
+                !state_proves_passthrough
+                    && (matches!(enable_phase, Some(EffectPhase::InvalidatedByRestore { .. }))
+                        || enable_phase.is_some_and(|phase| attempt.effect.can_retry(phase)))
+            },
+        );
+        if needs_enable
+            && evidence.authoritative_observation().is_some()
+            && evidence.routeable
+            && evidence.capabilities.observation.is_supported()
+            && evidence.capabilities.control.is_supported()
+        {
+            PointerPassthroughAction::RequestEnable
+        } else {
+            PointerPassthroughAction::None
+        }
+    }
+
+    fn capture_original_state(&mut self, evidence: PointerPassthroughEvidence) {
+        if self.original.is_none() {
+            self.original = evidence
+                .authoritative_observation()
+                .and_then(|observation| {
+                    observation.known_state().map(|state| PointerInputOriginal {
+                        state,
+                        generation: observation.generation(),
+                    })
+                });
+        }
+    }
+
+    fn observe_retry_edges(&mut self, evidence: PointerPassthroughEvidence) {
+        if let Some(enable) = &mut self.enable {
+            enable.effect.observe_retry_edge(evidence);
+        }
+        if let Some(restore) = &mut self.restore
+            && let Some(attempt) = &mut restore.attempt
+        {
+            attempt.effect.observe_retry_edge(evidence);
+        }
+    }
+
+    fn settle_restore_from_state(
+        &mut self,
+        evidence: PointerPassthroughEvidence,
+        enable_phase: Option<EffectPhase>,
+        restore_phase: Option<EffectPhase>,
+    ) {
+        let enable_cannot_apply_later = matches!(
+            enable_phase,
+            Some(
+                EffectPhase::DispatchFailed(_)
+                    | EffectPhase::ObservedApplied { .. }
+                    | EffectPhase::Unsupported(_)
+                    | EffectPhase::Destroyed { .. }
+            )
+        );
+        let restore_reached_terminal_lane_position = matches!(
+            restore_phase,
+            Some(EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_))
+        );
+        let state_can_settle_restore = self.restore.is_some_and(|restore| {
+            restore.settlement == PointerInputRestoreSettlement::StateOrExactEffect
+                && !restore.state_settled
+                && restore.attempt.is_some_and(|attempt| {
+                    evidence
+                        .authoritative_observation()
+                        .is_some_and(|observation| {
+                            let barrier = if restore_reached_terminal_lane_position {
+                                attempt.terminal_reported_after
+                            } else if enable_cannot_apply_later {
+                                attempt.issued_after
+                            } else {
+                                return false;
+                            };
+                            barrier.is_none_or(|generation| observation.generation() > generation)
+                                && observation.known_state()
+                                    == Some(WindowInputState::ReceivesInput)
+                        })
+                })
+        });
+        if state_can_settle_restore {
+            if let Some(restore) = &mut self.restore {
+                restore.state_settled = true;
+            }
+            self.enable = None;
+        }
+    }
+}
+
+impl PointerInputEffectAttempt {
+    const fn new(effect: EffectId) -> Self {
+        Self {
+            effect,
+            retry: PointerPassthroughRetryFence::None,
+        }
+    }
+
+    fn record_dispatch_result(
+        &mut self,
+        result: EffectDispatchResult,
+        evidence: PointerPassthroughEvidence,
+    ) {
+        self.retry = match result {
+            EffectDispatchResult::DispatchFailed(_) => {
+                PointerPassthroughRetryFence::DispatchFailed {
+                    evidence: evidence.retry_evidence(),
+                    edge_seen: false,
+                }
+            }
+            EffectDispatchResult::Unsupported(_) => PointerPassthroughRetryFence::Unsupported {
+                capabilities: evidence.capabilities,
+                edge_seen: false,
+            },
+            EffectDispatchResult::Indeterminate(_) => PointerPassthroughRetryFence::Indeterminate,
+        };
+    }
+
+    fn observe_retry_edge(&mut self, evidence: PointerPassthroughEvidence) {
+        match &mut self.retry {
+            PointerPassthroughRetryFence::DispatchFailed {
+                evidence: blocked,
+                edge_seen,
+            } => *edge_seen |= *blocked != evidence.retry_evidence(),
+            PointerPassthroughRetryFence::Unsupported {
+                capabilities,
+                edge_seen,
+            } => *edge_seen |= *capabilities != evidence.capabilities,
+            PointerPassthroughRetryFence::None | PointerPassthroughRetryFence::Indeterminate => {}
+        }
+    }
+
+    const fn can_retry(self, phase: EffectPhase) -> bool {
+        matches!(
+            (phase, self.retry),
+            (
+                EffectPhase::DispatchFailed(_),
+                PointerPassthroughRetryFence::DispatchFailed {
+                    edge_seen: true,
+                    ..
+                }
+            ) | (
+                EffectPhase::Unsupported(_),
+                PointerPassthroughRetryFence::Unsupported {
+                    edge_seen: true,
+                    ..
+                }
+            )
+        )
+    }
 }
 
 struct RestoreAnalysis {
@@ -567,7 +1085,7 @@ struct RestoreAnalysis {
     creation_by_binding: BTreeMap<ViewportBinding, (EffectId, RetiredCleanup)>,
     cleanup_by_binding: BTreeMap<ViewportBinding, EffectId>,
     retained_bindings: BTreeSet<ViewportBinding>,
-    passthrough_restores: BTreeSet<ViewportBinding>,
+    passthrough_recoveries: BTreeMap<ViewportBinding, PointerPassthroughSaga>,
     replacement_supported: bool,
 }
 
@@ -577,6 +1095,22 @@ struct RestoreAccumulation {
     cleanup_effects: Vec<EffectId>,
     replacements: Vec<ViewportBinding>,
     unbound_surfaces: Vec<SurfaceId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetiredCleanupRestoreAction {
+    Redispatch {
+        token: WindowToken,
+        binding: ViewportBinding,
+        cleanup: RetiredCleanup,
+        observed: bool,
+    },
+    ContinueObservation {
+        token: WindowToken,
+        binding: ViewportBinding,
+        predecessor: EffectId,
+        after: Option<EffectId>,
+    },
 }
 
 impl ViewportCoordinator {
@@ -601,12 +1135,49 @@ impl ViewportCoordinator {
         if role == ViewportRole::Child && recovery.is_none() {
             return Err(ViewportCoordinatorError::ChildRecoveryRequired { surface });
         }
+        let pending_recovery = self
+            .pending_recoveries
+            .get(&surface)
+            .map(|pending| pending.recovery);
+        let adopts_pending_recovery = if let Some(pending) = self.pending_recoveries.get(&surface) {
+            let may_adopt = pending.replacement_binding.is_none()
+                && matches!(
+                    pending.status,
+                    RecoveryPendingStatus::AwaitingRecoveryHost
+                        | RecoveryPendingStatus::ReplacementFailed { .. }
+                )
+                && pending.role == role
+                && recovery
+                    .is_some_and(|candidate| pending.recovery.matches_registration(candidate));
+            if !may_adopt {
+                return Err(
+                    ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface },
+                );
+            }
+            true
+        } else {
+            false
+        };
         let binding = self
             .registry
             .register_existing(epoch, surface, token, role)
             .map_err(ViewportCoordinatorError::Registry)?;
+        let recovery = if adopts_pending_recovery {
+            pending_recovery
+        } else {
+            recovery
+        };
         if let Some(recovery) = recovery {
             self.recovery_plans.insert(surface, recovery);
+        }
+        if adopts_pending_recovery {
+            let pending = self
+                .pending_recoveries
+                .get_mut(&surface)
+                .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
+            pending.replacement_binding = Some(binding);
+            pending.replacement_effect = None;
+            pending.status = RecoveryPendingStatus::ReplacementRegistered;
         }
         self.workspace_epoch = epoch;
         Ok(binding)
@@ -631,10 +1202,16 @@ impl ViewportCoordinator {
         candidate.workspace_epoch = new_epoch;
         candidate.routes.clear();
         candidate.drag_sources.clear();
-        candidate.pointer_hit_test_leases.clear();
+        candidate.pointer_passthrough_sagas.clear();
         candidate.restore_replacements.clear();
         let mut accumulated = RestoreAccumulation::default();
-        candidate.reissue_invalidated_retired_cleanup(&mut accumulated.cleanup_effects)?;
+        candidate
+            .migrate_retired_cleanup_obligations(new_epoch, &mut accumulated.cleanup_effects)?;
+        candidate.request_retired_restore_cleanup(
+            new_epoch,
+            &analysis,
+            &mut accumulated.cleanup_effects,
+        )?;
         candidate.request_rebound_restore_cleanup(
             new_epoch,
             &analysis,
@@ -752,14 +1329,19 @@ impl ViewportCoordinator {
             creation_by_binding,
             cleanup_by_binding,
             retained_bindings,
-            passthrough_restores: self
-                .pointer_hit_test_leases
-                .iter()
-                .filter_map(|(binding, lease)| lease.changed_by_us.then_some(*binding))
-                .collect(),
+            passthrough_recoveries: self.passthrough_recovery_sagas(),
             replacement_supported: self.capabilities.native_window_lifecycle().is_supported()
                 && self.capabilities.authoritative_inventory().is_supported(),
         }
+    }
+
+    fn passthrough_recovery_sagas(&self) -> BTreeMap<ViewportBinding, PointerPassthroughSaga> {
+        self.pointer_passthrough_sagas
+            .iter()
+            .filter_map(|(binding, saga)| {
+                saga.recovery_required().then_some((*binding, saga.clone()))
+            })
+            .collect()
     }
 
     fn restore_binding_is_safe(
@@ -782,7 +1364,12 @@ impl ViewportCoordinator {
                         | ViewportCloseStatus::Indeterminate { .. }
                 )
         });
+        // A surface identity alone cannot prove that a replacement workspace preserved the
+        // child's exact root, recovery host, floating identities, ownership, and geometry
+        // contract. Until restore publishes that semantic manifest, child bindings fail closed
+        // and require a new explicit registration carrying a freshly validated recovery plan.
         desired_surfaces.contains(&surface)
+            && record.role() != ViewportRole::Child
             && create_is_committed
             && !destructive_close
             && !replacements.contains(&binding)
@@ -792,35 +1379,202 @@ impl ViewportCoordinator {
             )
     }
 
-    fn reissue_invalidated_retired_cleanup(
+    fn migrate_retired_cleanup_obligations(
         &mut self,
+        new_epoch: WorkspaceEpoch,
         cleanup_effects: &mut Vec<EffectId>,
     ) -> Result<(), ViewportCoordinatorError> {
-        let invalidated: Vec<_> = self
+        let actions: Vec<_> = self
             .retired_viewports
             .iter()
-            .filter_map(|(token, retired)| {
-                retired_effect(retired.status)
-                    .filter(|effect| {
-                        self.effects.record(*effect).is_some_and(|record| {
-                            matches!(record.phase(), EffectPhase::InvalidatedByRestore { .. })
-                        })
-                    })
-                    .map(|_| (*token, retired.binding, retired.cleanup, retired.observed))
-            })
+            .map(|(token, retired)| self.retired_cleanup_restore_action(*token, retired))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
             .collect();
-        for (token, binding, cleanup, observed) in invalidated {
-            if let Some(retired) = self.retired_viewports.get_mut(&token) {
-                retired.status = RetiredViewportStatus::AwaitingAppearance;
+
+        for action in actions {
+            match action {
+                RetiredCleanupRestoreAction::Redispatch {
+                    token,
+                    binding,
+                    cleanup,
+                    observed,
+                } => {
+                    self.retired_viewports
+                        .get_mut(&token)
+                        .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
+                        .status = RetiredViewportStatus::AwaitingAppearance;
+                    if observed {
+                        let effect = self.request_retired_cleanup(binding, cleanup)?;
+                        self.retired_viewports
+                            .get_mut(&token)
+                            .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
+                            .status = RetiredViewportStatus::CleanupRequested { effect };
+                        cleanup_effects.push(effect);
+                    }
+                }
+                RetiredCleanupRestoreAction::ContinueObservation {
+                    token,
+                    binding,
+                    predecessor,
+                    after,
+                } => {
+                    let successor = self
+                        .effects
+                        .request_in(
+                            new_epoch,
+                            PlatformEffect::ContinueCleanup {
+                                binding,
+                                predecessor,
+                                after,
+                            },
+                        )
+                        .map_err(ViewportCoordinatorError::Effect)?;
+                    self.retired_viewports
+                        .get_mut(&token)
+                        .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
+                        .status = RetiredViewportStatus::CleanupRequested { effect: successor };
+                    cleanup_effects.push(successor);
+                }
             }
-            if observed {
-                let effect = self.request_retired_cleanup(binding, cleanup)?;
-                self.retired_viewports
-                    .get_mut(&token)
-                    .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
-                    .status = RetiredViewportStatus::CleanupRequested { effect };
-                cleanup_effects.push(effect);
+        }
+        Ok(())
+    }
+
+    fn retired_cleanup_restore_action(
+        &self,
+        token: WindowToken,
+        retired: &RetiredViewport,
+    ) -> Result<Option<RetiredCleanupRestoreAction>, ViewportCoordinatorError> {
+        let Some(effect) = retired_effect(retired.status) else {
+            return Ok(None);
+        };
+        let record = self
+            .effects
+            .record(effect)
+            .ok_or(ViewportCoordinatorError::MissingCleanupEffect { effect })?;
+        match record.request().effect() {
+            PlatformEffect::ContinueCleanup {
+                binding,
+                predecessor,
+                ..
+            } => {
+                let predecessor_record = self.effects.record(*predecessor).ok_or(
+                    ViewportCoordinatorError::InvalidCleanupContinuation {
+                        effect,
+                        predecessor: *predecessor,
+                    },
+                )?;
+                if *binding != retired.binding
+                    || predecessor_record.request().effect().binding() != retired.binding
+                    || !predecessor_record.was_emitted()
+                    || !is_destructive_cleanup(predecessor_record.request().effect())
+                {
+                    return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                        effect,
+                        predecessor: *predecessor,
+                    });
+                }
+                if !matches!(
+                    predecessor_record.phase(),
+                    EffectPhase::Requested | EffectPhase::Indeterminate(_)
+                ) {
+                    return Ok(None);
+                }
+                Ok(Some(RetiredCleanupRestoreAction::ContinueObservation {
+                    token,
+                    binding: retired.binding,
+                    predecessor: *predecessor,
+                    after: self.cleanup_observation_lane_predecessor(effect)?,
+                }))
             }
+            platform_effect if is_destructive_cleanup(platform_effect) => {
+                if platform_effect.binding() != retired.binding {
+                    return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                        effect,
+                        predecessor: effect,
+                    });
+                }
+                if record.was_emitted()
+                    && matches!(
+                        record.phase(),
+                        EffectPhase::Requested | EffectPhase::Indeterminate(_)
+                    )
+                {
+                    return Ok(Some(RetiredCleanupRestoreAction::ContinueObservation {
+                        token,
+                        binding: retired.binding,
+                        predecessor: effect,
+                        after: None,
+                    }));
+                }
+                Ok((!record.was_emitted()
+                    && matches!(record.phase(), EffectPhase::InvalidatedByRestore { .. }))
+                .then_some(RetiredCleanupRestoreAction::Redispatch {
+                    token,
+                    binding: retired.binding,
+                    cleanup: retired.cleanup,
+                    observed: retired.observed,
+                }))
+            }
+            _ => Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                effect,
+                predecessor: effect,
+            }),
+        }
+    }
+
+    fn cleanup_observation_lane_predecessor(
+        &self,
+        tail: EffectId,
+    ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
+        let mut current = Some(tail);
+        while let Some(effect) = current {
+            let record = self
+                .effects
+                .record(effect)
+                .ok_or(ViewportCoordinatorError::MissingCleanupEffect { effect })?;
+            let invalidated_unemitted = !record.was_emitted()
+                && matches!(record.phase(), EffectPhase::InvalidatedByRestore { .. });
+            if !invalidated_unemitted {
+                return Ok(Some(effect));
+            }
+            current = match record.request().effect() {
+                PlatformEffect::ContinueCleanup { after, .. }
+                    if after.is_none_or(|predecessor| predecessor < effect) =>
+                {
+                    *after
+                }
+                _ => {
+                    return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                        effect,
+                        predecessor: effect,
+                    });
+                }
+            };
+        }
+        Ok(None)
+    }
+
+    fn request_retired_restore_cleanup(
+        &mut self,
+        new_epoch: WorkspaceEpoch,
+        analysis: &RestoreAnalysis,
+        cleanup_effects: &mut Vec<EffectId>,
+    ) -> Result<(), ViewportCoordinatorError> {
+        for (binding, old_saga) in &analysis.passthrough_recoveries {
+            let is_existing_retired = self
+                .retired_viewports
+                .get(&binding.token())
+                .is_some_and(|retired| retired.binding == *binding);
+            if !is_existing_retired {
+                continue;
+            }
+            self.pointer_passthrough_sagas
+                .insert(*binding, PointerPassthroughSaga::epoch_recovery(old_saga));
+            let effect = self.request_pointer_input_restore_in(new_epoch, *binding)?;
+            cleanup_effects.push(effect);
         }
         Ok(())
     }
@@ -832,21 +1586,15 @@ impl ViewportCoordinator {
         rebound: &BTreeMap<ViewportBinding, ViewportBinding>,
         cleanup_effects: &mut Vec<EffectId>,
     ) -> Result<(), ViewportCoordinatorError> {
-        for old_binding in &analysis.passthrough_restores {
+        for (old_binding, old_saga) in &analysis.passthrough_recoveries {
             let Some(binding) = rebound.get(old_binding).copied() else {
                 continue;
             };
-            let effect = self
-                .effects
-                .request_in(
-                    new_epoch,
-                    PlatformEffect::SetPointerPassthrough {
-                        binding,
-                        enabled: false,
-                    },
-                )
-                .map_err(ViewportCoordinatorError::Effect)?;
-            cleanup_effects.push(effect);
+            self.pointer_passthrough_sagas
+                .insert(binding, PointerPassthroughSaga::epoch_recovery(old_saga));
+            if let Some(effect) = self.reconcile_pointer_passthrough_saga(binding)? {
+                cleanup_effects.push(effect);
+            }
         }
         for (old_binding, request) in &analysis.close_by_binding {
             let Some(binding) = rebound.get(old_binding).copied() else {
@@ -876,6 +1624,10 @@ impl ViewportCoordinator {
         for facts in retired {
             let surface = facts.binding().surface();
             if !desired_surfaces.contains(&surface) {
+                continue;
+            }
+            if facts.role() == ViewportRole::Child {
+                accumulated.unbound_surfaces.push(surface);
                 continue;
             }
             let placement = facts.last_coordinates().map(|coordinates| {
@@ -977,10 +1729,18 @@ impl ViewportCoordinator {
                     role: facts.role(),
                     status,
                     observed,
+                    input_observations: facts.input_observations(),
                     may_appear_late,
                     cleanup,
                 },
             );
+            if let Some(old_saga) = analysis.passthrough_recoveries.get(&binding) {
+                self.pointer_passthrough_sagas
+                    .insert(binding, old_saga.retired_recovery());
+                if let Some(effect) = self.reconcile_pointer_passthrough_saga(binding)? {
+                    accumulated.cleanup_effects.push(effect);
+                }
+            }
             if observed && existing_effect.is_none() {
                 let effect = self.request_retired_cleanup(binding, cleanup)?;
                 self.retired_viewports
@@ -1004,6 +1764,9 @@ impl ViewportCoordinator {
             Some(EffectPhase::Indeterminate(_)) => {
                 RetiredViewportStatus::CleanupIndeterminate { effect }
             }
+            Some(
+                EffectPhase::ObservationDispatchFailed(_) | EffectPhase::ObservationUnsupported(_),
+            ) => RetiredViewportStatus::CleanupObservationFailed { effect },
             Some(EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_)) => {
                 RetiredViewportStatus::CleanupFailed { effect }
             }
@@ -1079,7 +1842,7 @@ impl ViewportCoordinator {
         }
 
         let (effect, status, plan) = match decision {
-            ViewportCloseDecision::Veto => {
+            ViewportCloseDecision::Prevent => {
                 let effect_kind = match request.role {
                     ViewportRole::Root => PlatformEffect::CancelRootClose {
                         binding: request.binding,
@@ -1094,20 +1857,7 @@ impl ViewportCoordinator {
                     .map_err(ViewportCoordinatorError::Effect)?;
                 (effect, ViewportCloseStatus::Vetoed { effect }, None)
             }
-            ViewportCloseDecision::Accept(mut plan) => {
-                if request
-                    .recovery
-                    .is_some_and(|recovery| recovery.root() != plan.recovery().root())
-                {
-                    return Err(ViewportCoordinatorError::CloseRecoveryRootMismatch {
-                        request: request_id,
-                    });
-                }
-                if let Some(projected) =
-                    candidate.project_recovery_plan(request.binding.surface(), plan.recovery())
-                {
-                    plan.recovery = projected;
-                }
+            ViewportCloseDecision::Accept(plan) => {
                 let effect_kind = match request.role {
                     ViewportRole::Root => PlatformEffect::RequestRootClose {
                         binding: request.binding,
@@ -1234,16 +1984,41 @@ impl ViewportCoordinator {
             .registry
             .apply_snapshot(snapshot)
             .map_err(ViewportCoordinatorError::Registry)?;
+        for binding in registry.events().iter().filter_map(|event| match event {
+            RegistryEvent::Destroyed { binding } => Some(*binding),
+            RegistryEvent::Ready { .. }
+            | RegistryEvent::FactsUnavailable { .. }
+            | RegistryEvent::CloseRequested { .. }
+            | RegistryEvent::CloseRequestCleared { .. } => None,
+        }) {
+            candidate.terminate_pointer_passthrough_binding(binding);
+        }
         candidate.refresh_recovery_geometry();
         candidate.reconcile_create_inventory(snapshot)?;
         candidate.reconcile_retired_inventory(snapshot)?;
+        candidate.observe_pointer_passthrough_snapshot();
+        candidate.reconcile_pointer_passthrough_sagas()?;
+        let route_sources: BTreeMap<_, _> = candidate
+            .drag_sources
+            .iter()
+            .map(|(pointer, binding)| {
+                let source = candidate
+                    .pointer_passthrough_sagas
+                    .get(binding)
+                    .map_or_else(
+                        || crate::viewport_route::ViewportRouteSource::unavailable(*binding),
+                        |saga| saga.route_source(*binding),
+                    );
+                (*pointer, source)
+            })
+            .collect();
         let route_generation = candidate
             .routes
             .publish(
                 snapshot,
                 &candidate.registry,
                 capability_generation,
-                &candidate.drag_sources,
+                &route_sources,
             )
             .map_err(ViewportCoordinatorError::Route)?;
         let registry_events = registry.events().to_vec();
@@ -1301,21 +2076,17 @@ impl ViewportCoordinator {
         &mut self,
         snapshot: &PlatformSnapshot,
     ) -> Result<(), ViewportCoordinatorError> {
-        if !snapshot
+        let authoritative = snapshot
             .capabilities()
             .authoritative_inventory()
-            .is_supported()
-        {
-            return Ok(());
-        }
-        let present: BTreeSet<WindowToken> = snapshot
+            .is_supported();
+        let observations: BTreeMap<WindowToken, _> = snapshot
             .windows()
             .iter()
-            .map(crate::platform::ObservedWindow::token)
+            .map(|window| (window.token(), window))
             .collect();
         let tokens: Vec<WindowToken> = self.retired_viewports.keys().copied().collect();
         for token in tokens {
-            let is_present = present.contains(&token);
             let (binding, cleanup, status, observed, may_appear_late) = {
                 let retired = self
                     .retired_viewports
@@ -1329,9 +2100,12 @@ impl ViewportCoordinator {
                     retired.may_appear_late,
                 )
             };
-            if is_present {
+            if let Some(observation) = observations.get(&token) {
                 if let Some(retired) = self.retired_viewports.get_mut(&token) {
                     retired.observed = true;
+                    retired
+                        .input_observations
+                        .observe(binding, observation.input_observation());
                 }
                 if status == RetiredViewportStatus::AwaitingAppearance {
                     let effect = self.request_retired_cleanup(binding, cleanup)?;
@@ -1339,6 +2113,9 @@ impl ViewportCoordinator {
                         retired.status = RetiredViewportStatus::CleanupRequested { effect };
                     }
                 }
+                continue;
+            }
+            if !authoritative {
                 continue;
             }
             if observed {
@@ -1349,8 +2126,10 @@ impl ViewportCoordinator {
                         self.registry.inventory_generation(),
                     );
                 }
+                self.terminate_pointer_passthrough_binding(binding);
                 self.retired_viewports.remove(&token);
             } else if !may_appear_late {
+                self.terminate_pointer_passthrough_binding(binding);
                 self.retired_viewports.remove(&token);
             }
         }
@@ -1452,6 +2231,7 @@ impl ViewportCoordinator {
                 role: ViewportRole::Child,
                 status: RetiredViewportStatus::AwaitingAppearance,
                 observed: false,
+                input_observations: WindowInputObservationStream::default(),
                 may_appear_late: true,
                 cleanup,
             },
@@ -1633,14 +2413,14 @@ impl ViewportCoordinator {
                 binding,
                 self.registry.inventory_generation(),
             );
-            let focus = self.request_focus(binding.surface())?;
             self.create_sagas
                 .get_mut(&saga_id)
                 .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                .status = NativeCreateStatus::Committed {
-                show: Some(show),
-                focus,
-            };
+                .status = NativeCreateStatus::Committed { show: Some(show) };
+            actions.push(ViewportLifecycleAction::CreateVisible {
+                saga: saga_id,
+                binding,
+            });
         }
         Ok(())
     }
@@ -1678,7 +2458,8 @@ impl ViewportCoordinator {
                 .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
             if matches!(
                 status,
-                RecoveryPendingStatus::ReplacementRequested { .. }
+                RecoveryPendingStatus::ReplacementRegistered
+                    | RecoveryPendingStatus::ReplacementRequested { .. }
                     | RecoveryPendingStatus::ReplacementIndeterminate { .. }
                     | RecoveryPendingStatus::ReplacementFailed { .. }
             ) {
@@ -1705,27 +2486,11 @@ impl ViewportCoordinator {
         else {
             return;
         };
-        let input_state = coordinates.input_state();
-        let focused = coordinates.focused();
         let presentation = coordinates.presentation();
         let observed: Vec<EffectId> = self
             .effects
             .records()
             .filter_map(|(effect, record)| match record.request().effect() {
-                PlatformEffect::SetPointerPassthrough {
-                    binding: target,
-                    enabled,
-                } if *target == binding
-                    && ((*enabled && input_state == Some(WindowInputState::PassThrough))
-                        || (!*enabled && input_state == Some(WindowInputState::ReceivesInput))) =>
-                {
-                    Some(effect)
-                }
-                PlatformEffect::RequestFocus { binding: target }
-                    if *target == binding && focused == Some(true) =>
-                {
-                    Some(effect)
-                }
                 PlatformEffect::ShowWindow { binding: target }
                     if *target == binding
                         && presentation
@@ -1742,6 +2507,280 @@ impl ViewportCoordinator {
                 binding,
                 self.registry.inventory_generation(),
             );
+        }
+    }
+
+    fn reduce_pointer_passthrough_dispatch_result(
+        &mut self,
+        effect: EffectId,
+        result: EffectDispatchResult,
+    ) -> Result<(), ViewportCoordinatorError> {
+        let Some(binding) =
+            self.effects
+                .record(effect)
+                .and_then(|record| match record.request().effect() {
+                    PlatformEffect::SetPointerPassthrough { binding, .. } => Some(*binding),
+                    _ => None,
+                })
+        else {
+            return Ok(());
+        };
+        let evidence = self.pointer_passthrough_evidence(binding);
+        let matched = self
+            .pointer_passthrough_sagas
+            .get_mut(&binding)
+            .is_some_and(|saga| saga.record_dispatch_result(effect, result, evidence));
+        if matched {
+            let _ = self.reconcile_pointer_passthrough_saga(binding)?;
+        }
+        Ok(())
+    }
+
+    fn observe_pointer_passthrough_snapshot(&mut self) {
+        let bindings: Vec<ViewportBinding> =
+            self.pointer_passthrough_sagas.keys().copied().collect();
+        for binding in bindings {
+            let Some(observation) = self.pointer_passthrough_evidence(binding).observation else {
+                continue;
+            };
+            let Some(effect) = self
+                .pointer_passthrough_sagas
+                .get(&binding)
+                .and_then(|saga| saga.causal_effect(observation))
+            else {
+                continue;
+            };
+            let transition = self.effects.mark_observed_applied(
+                effect,
+                binding,
+                self.registry.inventory_generation(),
+            );
+            let accepted = matches!(
+                transition,
+                EffectTransition::Applied | EffectTransition::Duplicate
+            ) && self.effects.record(effect).is_some_and(|record| {
+                matches!(record.phase(), EffectPhase::ObservedApplied { .. })
+            });
+            if accepted && let Some(saga) = self.pointer_passthrough_sagas.get_mut(&binding) {
+                saga.accept_observed_effect(effect);
+            }
+        }
+    }
+
+    fn reconcile_pointer_passthrough_sagas(&mut self) -> Result<(), ViewportCoordinatorError> {
+        let bindings: Vec<ViewportBinding> =
+            self.pointer_passthrough_sagas.keys().copied().collect();
+        for binding in bindings {
+            let _ = self.reconcile_pointer_passthrough_saga(binding)?;
+        }
+        Ok(())
+    }
+
+    fn reconcile_pointer_passthrough_saga(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
+        let evidence = self.pointer_passthrough_evidence(binding);
+        let (enable, restore) =
+            self.pointer_passthrough_sagas
+                .get(&binding)
+                .map_or((None, None), |saga| {
+                    (
+                        saga.enable.map(|attempt| attempt.effect.effect),
+                        saga.restore
+                            .and_then(|obligation| obligation.attempt)
+                            .map(|attempt| attempt.effect.effect),
+                    )
+                });
+        let enable_phase = enable.and_then(|effect| {
+            self.effects
+                .record(effect)
+                .map(crate::effect::EffectRecord::phase)
+        });
+        let restore_phase = restore.and_then(|effect| {
+            self.effects
+                .record(effect)
+                .map(crate::effect::EffectRecord::phase)
+        });
+        let action = self
+            .pointer_passthrough_sagas
+            .get_mut(&binding)
+            .map_or(PointerPassthroughAction::None, |saga| {
+                saga.action(evidence, enable_phase, restore_phase)
+            });
+        match action {
+            PointerPassthroughAction::None => Ok(None),
+            PointerPassthroughAction::Remove => {
+                self.pointer_passthrough_sagas.remove(&binding);
+                Ok(None)
+            }
+            PointerPassthroughAction::RequestEnable => {
+                self.request_pointer_passthrough_enable(binding).map(Some)
+            }
+            PointerPassthroughAction::RequestRestore => self
+                .request_pointer_input_restore_in(self.workspace_epoch, binding)
+                .map(Some),
+        }
+    }
+
+    fn request_pointer_passthrough_enable(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<EffectId, ViewportCoordinatorError> {
+        let observation = self
+            .pointer_passthrough_evidence(binding)
+            .authoritative_observation()
+            .ok_or(ViewportCoordinatorError::PointerInputObservationMissing { binding })?;
+        let after = self.pointer_input_lane_predecessor(binding);
+        let effect = self
+            .effects
+            .request(PlatformEffect::SetPointerPassthrough {
+                binding,
+                enabled: true,
+                after,
+            })
+            .map_err(ViewportCoordinatorError::Effect)?;
+        let saga = self
+            .pointer_passthrough_sagas
+            .get_mut(&binding)
+            .ok_or(ViewportCoordinatorError::PointerPassthroughSagaMissing { binding })?;
+        saga.lane_tail = Some(effect);
+        saga.enable = Some(PointerInputEnableAttempt {
+            effect: PointerInputEffectAttempt::new(effect),
+            issued_after: observation.generation(),
+        });
+        Ok(effect)
+    }
+
+    fn request_pointer_input_restore_in(
+        &mut self,
+        issuance_epoch: WorkspaceEpoch,
+        binding: ViewportBinding,
+    ) -> Result<EffectId, ViewportCoordinatorError> {
+        let issued_after = self
+            .pointer_passthrough_evidence(binding)
+            .generation_watermark;
+        let after = self.pointer_input_lane_predecessor(binding);
+        let effect = self
+            .effects
+            .request_in(
+                issuance_epoch,
+                PlatformEffect::SetPointerPassthrough {
+                    binding,
+                    enabled: false,
+                    after,
+                },
+            )
+            .map_err(ViewportCoordinatorError::Effect)?;
+        let saga = self
+            .pointer_passthrough_sagas
+            .get_mut(&binding)
+            .ok_or(ViewportCoordinatorError::PointerPassthroughSagaMissing { binding })?;
+        let restore = saga
+            .restore
+            .as_mut()
+            .ok_or(ViewportCoordinatorError::PointerInputRestoreObligationMissing { binding })?;
+        restore.attempt = Some(PointerInputRestoreAttempt {
+            effect: PointerInputEffectAttempt::new(effect),
+            issued_after,
+            terminal_reported_after: None,
+        });
+        saga.lane_tail = Some(effect);
+        Ok(effect)
+    }
+
+    fn pointer_input_lane_predecessor(&self, binding: ViewportBinding) -> Option<EffectId> {
+        let mut predecessor = self
+            .pointer_passthrough_sagas
+            .get(&binding)
+            .and_then(|saga| saga.lane_tail);
+        while let Some(effect) = predecessor {
+            let record = self.effects.record(effect)?;
+            let invalidated_unemitted = !record.was_emitted()
+                && matches!(record.phase(), EffectPhase::InvalidatedByRestore { .. });
+            if !invalidated_unemitted {
+                return Some(effect);
+            }
+            predecessor = match record.request().effect() {
+                PlatformEffect::SetPointerPassthrough { after, .. } => *after,
+                _ => None,
+            };
+        }
+        None
+    }
+
+    fn pointer_passthrough_evidence(&self, binding: ViewportBinding) -> PointerPassthroughEvidence {
+        let (observation, generation_watermark, window_observed, routeable) =
+            self.pointer_input_facts(binding);
+        PointerPassthroughEvidence {
+            observation,
+            generation_watermark,
+            window_observed,
+            routeable,
+            capabilities: PointerPassthroughCapabilities {
+                observation: self.capabilities.pointer_hit_test_observation(),
+                control: self.capabilities.pointer_hit_test_control(),
+            },
+        }
+    }
+
+    fn pointer_input_facts(
+        &self,
+        binding: ViewportBinding,
+    ) -> (
+        Option<WindowInputObservation>,
+        Option<InputObservationGeneration>,
+        bool,
+        bool,
+    ) {
+        if let Some(record) = self
+            .registry
+            .record(binding.surface())
+            .filter(|record| record.binding() == binding)
+        {
+            return (
+                record.input_observation(),
+                record.input_observation_generation_watermark(),
+                record.is_observed(),
+                record.is_routeable(),
+            );
+        }
+        self.retired_viewports
+            .get(&binding.token())
+            .filter(|retired| retired.binding == binding)
+            .map_or((None, None, false, false), |retired| {
+                (
+                    retired.input_observations.current(),
+                    retired.input_observations.generation_watermark(),
+                    retired.observed,
+                    false,
+                )
+            })
+    }
+
+    fn terminate_pointer_passthrough_binding(&mut self, binding: ViewportBinding) {
+        self.pointer_passthrough_sagas.remove(&binding);
+        let had_drag_source = self.drag_sources.values().any(|source| *source == binding);
+        self.drag_sources.retain(|_, source| *source != binding);
+        if had_drag_source {
+            self.routes.clear();
+        }
+        let effects: Vec<EffectId> = self
+            .effects
+            .records()
+            .filter_map(|(effect, record)| {
+                matches!(
+                    record.request().effect(),
+                    PlatformEffect::SetPointerPassthrough { binding: target, .. }
+                        if *target == binding
+                )
+                .then_some(effect)
+            })
+            .collect();
+        for effect in effects {
+            let _ =
+                self.effects
+                    .mark_destroyed(effect, binding, self.registry.inventory_generation());
         }
     }
 
@@ -1876,6 +2915,7 @@ impl ViewportCoordinator {
                 resolution: ViewportDestructionResolution::Accepted {
                     request: request_id,
                     plan,
+                    recovery,
                 },
             });
         } else if let Some(recovery) = recovery {
@@ -1962,21 +3002,21 @@ impl ViewportCoordinator {
             .registry
             .record(surface)
             .is_some_and(|record| record.binding() == binding && record.is_routeable());
-        let (show, focus) = if routeable {
-            (None, self.request_focus(surface)?)
+        let show = if routeable {
+            None
         } else {
             let show = self
                 .effects
                 .request(PlatformEffect::ShowWindow { binding })
                 .map_err(ViewportCoordinatorError::Effect)?;
-            (Some(show), None)
+            Some(show)
         };
         self.create_sagas
             .get_mut(&saga_id)
             .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
             .status = match show {
             Some(show) => NativeCreateStatus::CommittedAwaitingVisibility { show },
-            None => NativeCreateStatus::Committed { show, focus },
+            None => NativeCreateStatus::Committed { show },
         };
         self.recovery_plans.insert(surface, recovery);
         Ok(())
@@ -2021,7 +3061,11 @@ impl ViewportCoordinator {
             .ok_or(ViewportCoordinatorError::MissingCleanupEffect {
                 effect: failed_effect,
             })?;
-        if !matches!(phase, EffectPhase::DispatchFailed(_)) {
+        let retry_observation = matches!(
+            phase,
+            EffectPhase::ObservationDispatchFailed(_) | EffectPhase::ObservationUnsupported(_)
+        );
+        if !matches!(phase, EffectPhase::DispatchFailed(_)) && !retry_observation {
             return Err(ViewportCoordinatorError::CleanupEffectNotRetryable {
                 effect: failed_effect,
                 phase,
@@ -2029,9 +3073,15 @@ impl ViewportCoordinator {
         }
 
         let mut candidate = self.clone();
-        let retry = if let Some(retry) = candidate.retry_create_cleanup(failed_effect)? {
+        let retry = if retry_observation {
+            candidate
+                .retry_retired_cleanup_observation(failed_effect)?
+                .ok_or(ViewportCoordinatorError::MissingCleanupEffect {
+                    effect: failed_effect,
+                })?
+        } else if let Some(retry) = candidate.retry_create_cleanup(failed_effect)? {
             retry
-        } else if let Some(retry) = candidate.retry_retired_cleanup(failed_effect)? {
+        } else if let Some(retry) = candidate.retry_retired_destructive_cleanup(failed_effect)? {
             retry
         } else if let Some(retry) = candidate.retry_replacement_cleanup(failed_effect)? {
             retry
@@ -2079,7 +3129,7 @@ impl ViewportCoordinator {
         Ok(Some(retry))
     }
 
-    fn retry_retired_cleanup(
+    fn retry_retired_destructive_cleanup(
         &mut self,
         failed_effect: EffectId,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
@@ -2103,6 +3153,82 @@ impl ViewportCoordinator {
             });
         }
         let retry = self.request_retired_cleanup(binding, cleanup)?;
+        self.retired_viewports
+            .get_mut(&token)
+            .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
+            .status = RetiredViewportStatus::CleanupRequested { effect: retry };
+        Ok(Some(retry))
+    }
+
+    fn retry_retired_cleanup_observation(
+        &mut self,
+        failed_effect: EffectId,
+    ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
+        let Some(token) = self.retired_viewports.iter().find_map(|(token, retired)| {
+            matches!(
+                retired.status,
+                RetiredViewportStatus::CleanupObservationFailed { effect }
+                    if effect == failed_effect
+            )
+            .then_some(*token)
+        }) else {
+            return Ok(None);
+        };
+        let retired = self
+            .retired_viewports
+            .get(&token)
+            .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?;
+        let failed_record = self.effects.record(failed_effect).ok_or(
+            ViewportCoordinatorError::MissingCleanupEffect {
+                effect: failed_effect,
+            },
+        )?;
+        let PlatformEffect::ContinueCleanup {
+            binding,
+            predecessor,
+            ..
+        } = failed_record.request().effect()
+        else {
+            return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                effect: failed_effect,
+                predecessor: failed_effect,
+            });
+        };
+        let predecessor_record = self.effects.record(*predecessor).ok_or(
+            ViewportCoordinatorError::InvalidCleanupContinuation {
+                effect: failed_effect,
+                predecessor: *predecessor,
+            },
+        )?;
+        if !failed_record.was_emitted()
+            || *binding != retired.binding
+            || predecessor_record.request().effect().binding() != retired.binding
+            || !predecessor_record.was_emitted()
+            || !is_destructive_cleanup(predecessor_record.request().effect())
+            || !matches!(
+                predecessor_record.phase(),
+                EffectPhase::Requested | EffectPhase::Indeterminate(_)
+            )
+        {
+            return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                effect: failed_effect,
+                predecessor: *predecessor,
+            });
+        }
+        let binding = *binding;
+        let predecessor = *predecessor;
+        let after = self.cleanup_observation_lane_predecessor(failed_effect)?;
+        let retry = self
+            .effects
+            .request_in(
+                self.workspace_epoch,
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after,
+                },
+            )
+            .map_err(ViewportCoordinatorError::Effect)?;
         self.retired_viewports
             .get_mut(&token)
             .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
@@ -2154,12 +3280,31 @@ impl ViewportCoordinator {
         &mut self,
         current_epoch: WorkspaceEpoch,
         result: EffectResult,
-    ) -> EffectTransition {
+    ) -> Result<EffectTransition, ViewportCoordinatorError> {
         let effect = result.effect();
         let transition = self.effects.report(current_epoch, result);
-        if transition != EffectTransition::Applied {
-            return transition;
+        if transition == EffectTransition::StaleEpoch
+            && let Some(token) =
+                self.active_cleanup_continuation_for(current_epoch, result.effect())
+        {
+            let exact = self.effects.report_exact(result);
+            if exact == EffectTransition::Applied
+                && matches!(
+                    result.result(),
+                    EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_)
+                )
+            {
+                self.retired_viewports
+                    .get_mut(&token)
+                    .ok_or(ViewportCoordinatorError::MissingRetiredViewport { token })?
+                    .status = RetiredViewportStatus::CleanupFailed { effect };
+            }
+            return Ok(exact);
         }
+        if transition != EffectTransition::Applied {
+            return Ok(transition);
+        }
+        self.reduce_pointer_passthrough_dispatch_result(effect, result.result())?;
         let status = match result.result() {
             EffectDispatchResult::Indeterminate(_) => NativeCreateStatus::Indeterminate,
             EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_) => {
@@ -2195,22 +3340,39 @@ impl ViewportCoordinator {
                 }
             }
         }
-        if let Some(retired) = self.retired_viewports.values_mut().find(|retired| {
-            matches!(
-                retired.status,
-                RetiredViewportStatus::CleanupRequested { effect: current }
-                    if current == effect
-            )
-        }) {
-            retired.status = match result.result() {
-                EffectDispatchResult::Indeterminate(_) => {
+        self.reduce_retired_cleanup_result(effect);
+        self.reduce_pending_recovery_result(effect, result.result());
+        self.reduce_restore_replacement_result(effect, result.result());
+        Ok(transition)
+    }
+
+    fn reduce_retired_cleanup_result(&mut self, effect: EffectId) {
+        let retired_phase = self
+            .effects
+            .record(effect)
+            .map(crate::effect::EffectRecord::phase);
+        if let Some(retired) = self
+            .retired_viewports
+            .values_mut()
+            .find(|retired| retired_effect(retired.status) == Some(effect))
+        {
+            retired.status = match retired_phase {
+                Some(EffectPhase::Indeterminate(_)) => {
                     RetiredViewportStatus::CleanupIndeterminate { effect }
                 }
-                EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_) => {
+                Some(
+                    EffectPhase::ObservationDispatchFailed(_)
+                    | EffectPhase::ObservationUnsupported(_),
+                ) => RetiredViewportStatus::CleanupObservationFailed { effect },
+                Some(EffectPhase::DispatchFailed(_) | EffectPhase::Unsupported(_)) => {
                     RetiredViewportStatus::CleanupFailed { effect }
                 }
+                _ => retired.status,
             };
         }
+    }
+
+    fn reduce_pending_recovery_result(&mut self, effect: EffectId, result: EffectDispatchResult) {
         let recovery_surface = self
             .pending_recoveries
             .iter()
@@ -2220,7 +3382,7 @@ impl ViewportCoordinator {
         if let Some(surface) = recovery_surface
             && let Some(pending) = self.pending_recoveries.get_mut(&surface)
         {
-            pending.status = match result.result() {
+            pending.status = match result {
                 EffectDispatchResult::Indeterminate(_) => {
                     RecoveryPendingStatus::ReplacementIndeterminate { effect }
                 }
@@ -2234,12 +3396,19 @@ impl ViewportCoordinator {
                 }
             };
         }
+    }
+
+    fn reduce_restore_replacement_result(
+        &mut self,
+        effect: EffectId,
+        result: EffectDispatchResult,
+    ) {
         if let Some(replacement) = self
             .restore_replacements
             .values_mut()
             .find(|replacement| replacement.effect == effect)
         {
-            replacement.status = match result.result() {
+            replacement.status = match result {
                 EffectDispatchResult::Indeterminate(_) => {
                     RestoreReplacementStatus::Indeterminate { effect }
                 }
@@ -2249,7 +3418,45 @@ impl ViewportCoordinator {
                 }
             };
         }
-        transition
+    }
+
+    fn active_cleanup_continuation_for(
+        &self,
+        current_epoch: WorkspaceEpoch,
+        predecessor: EffectId,
+    ) -> Option<WindowToken> {
+        self.retired_viewports.iter().find_map(|(token, retired)| {
+            let active = retired_effect(retired.status)?;
+            let active_record = self.effects.record(active)?;
+            if !active_record.was_emitted()
+                || active_record.request().epoch() != current_epoch
+                || matches!(
+                    active_record.phase(),
+                    EffectPhase::InvalidatedByRestore { .. }
+                        | EffectPhase::ObservedApplied { .. }
+                        | EffectPhase::Destroyed { .. }
+                )
+            {
+                return None;
+            }
+            let PlatformEffect::ContinueCleanup {
+                binding,
+                predecessor: exact,
+                ..
+            } = active_record.request().effect()
+            else {
+                return None;
+            };
+            if *exact != predecessor {
+                return None;
+            }
+            let predecessor_record = self.effects.record(predecessor)?;
+            (*binding == retired.binding
+                && predecessor_record.was_emitted()
+                && predecessor_record.request().effect().binding() == retired.binding
+                && is_destructive_cleanup(predecessor_record.request().effect()))
+            .then_some(*token)
+        })
     }
 
     pub(crate) fn take_new_effects(&mut self) -> Vec<EffectRequest> {
@@ -2436,70 +3643,25 @@ impl ViewportCoordinator {
         pointer: PointerId,
         surface: SurfaceId,
     ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
-        if !self
-            .capabilities
-            .pointer_hit_test_observation()
-            .is_supported()
-        {
-            return Ok(None);
-        }
-        let Some((binding, original)) = self
-            .registry
-            .record(surface)
-            .filter(|record| record.is_routeable())
-            .and_then(|record| {
-                record
-                    .coordinates()
-                    .and_then(CoordinateSnapshot::input_state)
-                    .map(|input| (record.binding(), input))
-            })
-        else {
+        let Some(record) = self.registry.record(surface) else {
             return Ok(None);
         };
+        let binding = record.binding();
         if self.drag_sources.get(&pointer) == Some(&binding) {
             return Ok(None);
         }
         let mut candidate = self.clone();
         let restored = candidate.end_drag_routing(pointer)?;
-        if let Some(lease) = candidate.pointer_hit_test_leases.get_mut(&binding) {
-            lease.holders.insert(pointer);
-            candidate.drag_sources.insert(pointer, binding);
-            candidate.routes.clear();
-            *self = candidate;
-            return Ok(restored);
+        if let Some(saga) = candidate.pointer_passthrough_sagas.get_mut(&binding) {
+            saga.holders.insert(pointer);
+        } else {
+            candidate
+                .pointer_passthrough_sagas
+                .insert(binding, PointerPassthroughSaga::new(pointer));
         }
-
-        let (changed_by_us, effect) = match original {
-            WindowInputState::PassThrough => (false, None),
-            WindowInputState::ReceivesInput => {
-                if !candidate
-                    .capabilities
-                    .pointer_hit_test_control()
-                    .is_supported()
-                {
-                    *self = candidate;
-                    return Ok(restored);
-                }
-                let effect = candidate
-                    .effects
-                    .request(PlatformEffect::SetPointerPassthrough {
-                        binding,
-                        enabled: true,
-                    })
-                    .map_err(ViewportCoordinatorError::Effect)?;
-                (true, Some(effect))
-            }
-        };
-        candidate.pointer_hit_test_leases.insert(
-            binding,
-            PointerHitTestLease {
-                original,
-                changed_by_us,
-                holders: BTreeSet::from([pointer]),
-            },
-        );
         candidate.drag_sources.insert(pointer, binding);
         candidate.routes.clear();
+        let effect = candidate.reconcile_pointer_passthrough_saga(binding)?;
         *self = candidate;
         Ok(effect.or(restored))
     }
@@ -2518,29 +3680,13 @@ impl ViewportCoordinator {
         };
         let mut candidate = self.clone();
         candidate.drag_sources.remove(&pointer);
-        let Some(lease) = candidate.pointer_hit_test_leases.get_mut(&binding) else {
-            return Err(ViewportCoordinatorError::PointerHitTestLeaseMissing { binding });
-        };
-        lease.holders.remove(&pointer);
-        let last_holder = lease.holders.is_empty();
-        let restore =
-            last_holder && lease.changed_by_us && lease.original == WindowInputState::ReceivesInput;
-        if last_holder {
-            candidate.pointer_hit_test_leases.remove(&binding);
-        }
-        let effect = if restore {
-            Some(
-                candidate
-                    .effects
-                    .request(PlatformEffect::SetPointerPassthrough {
-                        binding,
-                        enabled: false,
-                    })
-                    .map_err(ViewportCoordinatorError::Effect)?,
-            )
-        } else {
-            None
-        };
+        candidate
+            .pointer_passthrough_sagas
+            .get_mut(&binding)
+            .ok_or(ViewportCoordinatorError::PointerPassthroughSagaMissing { binding })?
+            .holders
+            .remove(&pointer);
+        let effect = candidate.reconcile_pointer_passthrough_saga(binding)?;
         candidate.routes.clear();
         *self = candidate;
         Ok(effect)
@@ -2556,25 +3702,43 @@ impl ViewportCoordinator {
         Ok(())
     }
 
-    pub(crate) fn request_focus(
+    pub(crate) fn request_focus_binding(
         &mut self,
-        surface: SurfaceId,
-    ) -> Result<Option<EffectId>, ViewportCoordinatorError> {
-        if !self.capabilities.window_focus().is_supported() {
-            return Ok(None);
+        binding: ViewportBinding,
+    ) -> Result<EffectId, ViewportCoordinatorError> {
+        let after = self.focus_effect_lane_predecessor();
+        let effect = self
+            .effects
+            .request(PlatformEffect::RequestFocus { binding, after })
+            .map_err(ViewportCoordinatorError::Effect)?;
+        self.focus_effect_lane_tail = Some(effect);
+        Ok(effect)
+    }
+
+    fn focus_effect_lane_predecessor(&self) -> Option<EffectId> {
+        let mut predecessor = self.focus_effect_lane_tail;
+        while let Some(effect) = predecessor {
+            let record = self.effects.record(effect)?;
+            let invalidated_unemitted = !record.was_emitted()
+                && matches!(record.phase(), EffectPhase::InvalidatedByRestore { .. });
+            if !invalidated_unemitted {
+                return Some(effect);
+            }
+            predecessor = match record.request().effect() {
+                PlatformEffect::RequestFocus { after, .. } => *after,
+                _ => None,
+            };
         }
-        let Some(binding) = self
-            .registry
-            .record(surface)
-            .filter(|record| record.is_routeable())
-            .map(ViewportRecord::binding)
-        else {
-            return Ok(None);
-        };
+        None
+    }
+
+    pub(crate) fn observe_focus_effect(
+        &mut self,
+        effect: EffectId,
+        binding: ViewportBinding,
+    ) -> EffectTransition {
         self.effects
-            .request(PlatformEffect::RequestFocus { binding })
-            .map(Some)
-            .map_err(ViewportCoordinatorError::Effect)
+            .mark_observed_applied(effect, binding, self.registry.inventory_generation())
     }
 
     pub(crate) fn complete_destroyed_surface(
@@ -2621,6 +3785,7 @@ impl ViewportCoordinator {
             .map_err(ViewportCoordinatorError::Registry)?;
         let mut pending = RecoveryPending {
             destroyed_binding: binding,
+            role,
             recovery,
             replacement_binding: None,
             replacement_effect: None,
@@ -2724,9 +3889,19 @@ const fn retired_effect(status: RetiredViewportStatus) -> Option<EffectId> {
     match status {
         RetiredViewportStatus::CleanupRequested { effect }
         | RetiredViewportStatus::CleanupIndeterminate { effect }
+        | RetiredViewportStatus::CleanupObservationFailed { effect }
         | RetiredViewportStatus::CleanupFailed { effect } => Some(effect),
         RetiredViewportStatus::AwaitingAppearance => None,
     }
+}
+
+const fn is_destructive_cleanup(effect: &PlatformEffect) -> bool {
+    matches!(
+        effect,
+        PlatformEffect::CompensatingClose { .. }
+            | PlatformEffect::ReleaseChild { .. }
+            | PlatformEffect::RequestRootClose { .. }
+    )
 }
 
 /// Fatal platform coordinator transition failure.
@@ -2748,8 +3923,12 @@ pub enum ViewportCoordinatorError {
     StaleRoute { pointer: PointerId },
     #[error(transparent)]
     TearOffPlacement(TearOffPlacementUnavailable),
-    #[error("pointer hit-test lease is missing for drag source {binding:?}")]
-    PointerHitTestLeaseMissing { binding: ViewportBinding },
+    #[error("pointer pass-through saga is missing for drag source {binding:?}")]
+    PointerPassthroughSagaMissing { binding: ViewportBinding },
+    #[error("pointer-input restore obligation is missing for {binding:?}")]
+    PointerInputRestoreObligationMissing { binding: ViewportBinding },
+    #[error("authoritative pointer-input observation is unavailable for {binding:?}")]
+    PointerInputObservationMissing { binding: ViewportBinding },
     #[error("workspace does not contain logical surface {surface:?}")]
     MissingWorkspaceSurface { surface: SurfaceId },
     #[error("docking-owned child surface {surface:?} requires an explicit whole-root recovery")]
@@ -2767,6 +3946,8 @@ pub enum ViewportCoordinatorError {
     DestroyedSurfaceStillObserved { binding: ViewportBinding },
     #[error("native recovery is not pending for surface {surface:?}")]
     MissingRecoveryPending { surface: SurfaceId },
+    #[error("registered replacement does not match pending recovery for surface {surface:?}")]
+    PendingRecoveryRegistrationMismatch { surface: SurfaceId },
     #[error("native replacement effect is missing for surface {surface:?}")]
     MissingReplacementEffect { surface: SurfaceId },
     #[error("native create saga identity is exhausted")]
@@ -2787,6 +3968,13 @@ pub enum ViewportCoordinatorError {
     CreateSagaAlreadyCommitted { saga: NativeCreateSagaId },
     #[error("platform effect {effect:?} does not belong to a retryable cleanup")]
     MissingCleanupEffect { effect: EffectId },
+    #[error(
+        "cleanup continuation {effect:?} does not name a valid emitted predecessor {predecessor:?}"
+    )]
+    InvalidCleanupContinuation {
+        effect: EffectId,
+        predecessor: EffectId,
+    },
     #[error("cleanup effect {effect:?} cannot be retried from phase {phase:?}")]
     CleanupEffectNotRetryable {
         effect: EffectId,
@@ -2801,8 +3989,6 @@ pub enum ViewportCoordinatorError {
         request: ViewportCloseRequestId,
         status: ViewportCloseStatus,
     },
-    #[error("viewport close request {request:?} changed its recovery root")]
-    CloseRecoveryRootMismatch { request: ViewportCloseRequestId },
     #[error("viewport close destruction authority is unavailable: {capability:?}")]
     CloseDestructionAuthorityUnavailable { capability: PlatformCapability },
 }
@@ -2813,10 +3999,16 @@ mod tests {
     use crate::effect::EffectPhase;
     use crate::geometry::{LogicalSize, PhysicalRect, ScaleFactor};
     use crate::ids::{FloatingPresentationId, RootId};
-    use crate::intent::{Authority, ContainedPlacementProof, ContainedTearOffProposal};
-    use crate::platform::{ObservedWindow, WindowInputState, WindowPresentationState};
+    use crate::intent::{
+        Authority, AuthorityUnavailableReason, ContainedPlacementProof, ContainedTearOffProposal,
+    };
+    use crate::platform::{
+        InputEffectAcknowledgement, ObservedWindow, WindowInputObservation, WindowInputState,
+        WindowPresentationState,
+    };
     use crate::scene::{SceneGeneration, SceneStamp};
     use crate::transition::WorkspaceVersion;
+    use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
     fn observed_window(token: WindowToken, close_requested: bool) -> ObservedWindow {
         ObservedWindow::new(token)
@@ -2838,8 +4030,17 @@ mod tests {
     fn snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        PlatformSnapshot::new(capabilities, windows, Vec::new(), Vec::new())
-            .expect("test snapshot must be valid")
+        PlatformSnapshot::new(
+            capabilities,
+            unknown_focus_observation(
+                FocusObservationGeneration::new(1),
+                AuthorityUnavailableReason::NotReported,
+            ),
+            windows,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("test snapshot must be valid")
     }
 
     fn routing_coordinator(
@@ -2859,19 +4060,528 @@ mod tests {
                 None,
             )
             .expect("test viewport must register");
-        let window = observed_window(token, false)
-            .with_input_state(Authority::Known(input))
+        let facts = routing_snapshot(
+            binding,
+            1,
+            input,
+            presentation,
+            control,
+            InputEffectAcknowledgement::known(None),
+        );
+        coordinator
+            .publish_snapshot(&facts)
+            .expect("test routing facts must publish");
+        (coordinator, binding)
+    }
+
+    fn routing_snapshot(
+        binding: ViewportBinding,
+        generation: u64,
+        input: WindowInputState,
+        presentation: WindowPresentationState,
+        control: PlatformCapability,
+        acknowledgement: InputEffectAcknowledgement,
+    ) -> PlatformSnapshot {
+        routing_snapshot_with_input_authority(
+            binding,
+            generation,
+            Authority::Known(input),
+            presentation,
+            control,
+            acknowledgement,
+        )
+    }
+
+    fn routing_snapshot_with_input_authority(
+        binding: ViewportBinding,
+        generation: u64,
+        input: Authority<WindowInputState>,
+        presentation: WindowPresentationState,
+        control: PlatformCapability,
+        acknowledgement: InputEffectAcknowledgement,
+    ) -> PlatformSnapshot {
+        let window = observed_window(binding.token(), false)
+            .with_input_observation(WindowInputObservation::new(
+                binding,
+                InputObservationGeneration::new(generation),
+                input,
+                acknowledgement,
+            ))
             .with_presentation(Authority::Known(presentation));
         let mut capabilities = PlatformCapabilities::default();
         capabilities.set_authoritative_inventory(PlatformCapability::Supported);
         capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
         capabilities.set_pointer_hit_test_control(control);
-        let facts = PlatformSnapshot::new(capabilities, vec![window], Vec::new(), Vec::new())
-            .expect("test routing snapshot must be valid");
+        PlatformSnapshot::new(
+            capabilities,
+            unknown_focus_observation(
+                FocusObservationGeneration::new(generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
+            vec![window],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("test routing snapshot must be valid")
+    }
+
+    fn released_unobserved_enable() -> (ViewportCoordinator, ViewportBinding, EffectId, EffectId) {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let enable = coordinator
+            .begin_drag_routing(PointerId::new(1), binding.surface())
+            .expect("drag routing must begin")
+            .expect("enable effect must exist");
+        let _ = coordinator.take_new_effects();
+        let restore = coordinator
+            .end_drag_routing(PointerId::new(1))
+            .expect("drag release must preserve restoration")
+            .expect("release must queue restoration behind the enable attempt");
+        let requests = coordinator.take_new_effects();
+        assert!(matches!(
+            requests.as_slice(),
+            [request]
+                if request.id() == restore
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::SetPointerPassthrough {
+                            binding: actual,
+                            enabled: false,
+                            after: Some(predecessor),
+                        } if *actual == binding && *predecessor == enable
+                    )
+        ));
+        (coordinator, binding, enable, restore)
+    }
+
+    fn take_single_pointer_restore(
+        coordinator: &mut ViewportCoordinator,
+        binding: ViewportBinding,
+        expected_after: Option<EffectId>,
+    ) -> EffectId {
+        let restore_effects = coordinator.take_new_effects();
+        let [restore_request] = restore_effects.as_slice() else {
+            panic!("passthrough edge must issue exactly one restore: {restore_effects:?}");
+        };
+        assert_eq!(
+            restore_request.effect(),
+            &PlatformEffect::SetPointerPassthrough {
+                binding,
+                enabled: false,
+                after: expected_after,
+            }
+        );
+        restore_request.id()
+    }
+
+    fn report_effect_result(
+        coordinator: &mut ViewportCoordinator,
+        current_epoch: WorkspaceEpoch,
+        effect: EffectId,
+        issuance_epoch: WorkspaceEpoch,
+        result: EffectDispatchResult,
+    ) -> EffectTransition {
         coordinator
-            .publish_snapshot(&facts)
-            .expect("test routing facts must publish");
-        (coordinator, binding)
+            .report_effect(
+                current_epoch,
+                EffectResult::new(effect, issuance_epoch, result),
+            )
+            .expect("effect result must reduce")
+    }
+
+    fn migrated_retired_effects(
+        requests: &[EffectRequest],
+        binding: ViewportBinding,
+        cleanup: EffectId,
+        old_restore: EffectId,
+    ) -> (EffectId, EffectId) {
+        let cleanup_successor = requests
+            .iter()
+            .find_map(|request| match request.effect() {
+                PlatformEffect::ContinueCleanup {
+                    binding: actual,
+                    predecessor,
+                    ..
+                } if *actual == binding && *predecessor == cleanup => Some(request.id()),
+                _ => None,
+            })
+            .expect("emitted cleanup must receive an observation-only successor");
+        let restore_successor = requests
+            .iter()
+            .find_map(|request| match request.effect() {
+                PlatformEffect::SetPointerPassthrough {
+                    binding: actual,
+                    enabled: false,
+                    after: Some(predecessor),
+                } if *actual == binding && *predecessor == old_restore => Some(request.id()),
+                _ => None,
+            })
+            .expect("retired pointer restore must receive a causally ordered successor");
+        assert!(requests.iter().all(|request| {
+            !matches!(
+                request.effect(),
+                PlatformEffect::RequestRootClose { .. } | PlatformEffect::ReleaseChild { .. }
+            )
+        }));
+        (cleanup_successor, restore_successor)
+    }
+
+    struct RepeatedRestoreBoundary {
+        coordinator: ViewportCoordinator,
+        binding: ViewportBinding,
+        enable: EffectId,
+        destructive: EffectId,
+        fourth_epoch: WorkspaceEpoch,
+        emitted_cleanup: EffectId,
+        emitted_restore: EffectId,
+        unemitted_cleanup: EffectId,
+        unemitted_restore: EffectId,
+        current: Vec<EffectRequest>,
+    }
+
+    fn repeated_restore_boundary() -> RepeatedRestoreBoundary {
+        let (mut coordinator, binding, enable, old_restore) = released_unobserved_enable();
+        coordinator
+            .reconcile_workspace_epoch(WorkspaceEpoch::new(1), &BTreeSet::new())
+            .expect("first restore must retire the source binding");
+        let destructive = coordinator
+            .take_new_effects()
+            .into_iter()
+            .find_map(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::RequestRootClose { binding: actual } if *actual == binding
+                )
+                .then_some(request.id())
+            })
+            .expect("first restore must emit one destructive cleanup");
+
+        coordinator
+            .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &BTreeSet::new())
+            .expect("second restore must establish emitted observation lanes");
+        let emitted = coordinator.take_new_effects();
+        let (emitted_cleanup, emitted_restore) =
+            migrated_retired_effects(&emitted, binding, destructive, old_restore);
+
+        let third = coordinator
+            .reconcile_workspace_epoch(WorkspaceEpoch::new(3), &BTreeSet::new())
+            .expect("third restore must queue observation successors");
+        let unemitted_cleanup = third
+            .cleanup_effects()
+            .iter()
+            .copied()
+            .find(|effect| {
+                matches!(
+                    coordinator
+                        .effects()
+                        .record(*effect)
+                        .map(|record| record.request().effect()),
+                    Some(PlatformEffect::ContinueCleanup { .. })
+                )
+            })
+            .expect("third restore must queue a cleanup observation successor");
+        let unemitted_restore = third
+            .cleanup_effects()
+            .iter()
+            .copied()
+            .find(|effect| {
+                matches!(
+                    coordinator
+                        .effects()
+                        .record(*effect)
+                        .map(|record| record.request().effect()),
+                    Some(PlatformEffect::SetPointerPassthrough { enabled: false, .. })
+                )
+            })
+            .expect("third restore must queue a pointer restore successor");
+
+        let fourth_epoch = WorkspaceEpoch::new(4);
+        coordinator
+            .reconcile_workspace_epoch(fourth_epoch, &BTreeSet::new())
+            .expect("fourth restore must migrate both observation lanes");
+        let current = coordinator.take_new_effects();
+        RepeatedRestoreBoundary {
+            coordinator,
+            binding,
+            enable,
+            destructive,
+            fourth_epoch,
+            emitted_cleanup,
+            emitted_restore,
+            unemitted_cleanup,
+            unemitted_restore,
+            current,
+        }
+    }
+
+    struct MigratedRetiredObligations {
+        coordinator: ViewportCoordinator,
+        binding: ViewportBinding,
+        old_restore: EffectId,
+        cleanup: EffectId,
+        cleanup_successor: EffectId,
+        restore_successor: EffectId,
+        first_epoch: WorkspaceEpoch,
+        second_epoch: WorkspaceEpoch,
+    }
+
+    fn migrated_retired_obligations(restore_was_indeterminate: bool) -> MigratedRetiredObligations {
+        let (mut coordinator, binding, _, old_restore) = released_unobserved_enable();
+        if restore_was_indeterminate {
+            assert_eq!(
+                report_effect_result(
+                    &mut coordinator,
+                    binding.epoch(),
+                    old_restore,
+                    binding.epoch(),
+                    EffectDispatchResult::Indeterminate(
+                        crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+                    ),
+                ),
+                EffectTransition::Applied
+            );
+        }
+
+        let first_epoch = WorkspaceEpoch::new(1);
+        coordinator
+            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+            .expect("first workspace replacement must retire the binding");
+        let cleanup = coordinator
+            .take_new_effects()
+            .iter()
+            .find_map(|request| match request.effect() {
+                PlatformEffect::RequestRootClose { binding: actual } if *actual == binding => {
+                    Some(request.id())
+                }
+                _ => None,
+            })
+            .expect("first restore must emit one destructive cleanup");
+
+        let second_epoch = WorkspaceEpoch::new(2);
+        coordinator
+            .reconcile_workspace_epoch(second_epoch, &BTreeSet::new())
+            .expect("second workspace replacement must migrate retired obligations");
+        let migrated = coordinator.take_new_effects();
+        let (cleanup_successor, restore_successor) =
+            migrated_retired_effects(&migrated, binding, cleanup, old_restore);
+        MigratedRetiredObligations {
+            coordinator,
+            binding,
+            old_restore,
+            cleanup,
+            cleanup_successor,
+            restore_successor,
+            first_epoch,
+            second_epoch,
+        }
+    }
+
+    fn assert_cleanup_observation_successor_is_retryable(fixture: &mut MigratedRetiredObligations) {
+        assert_eq!(
+            report_effect_result(
+                &mut fixture.coordinator,
+                fixture.second_epoch,
+                fixture.old_restore,
+                fixture.binding.epoch(),
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            ),
+            EffectTransition::StaleEpoch
+        );
+        assert_eq!(
+            report_effect_result(
+                &mut fixture.coordinator,
+                fixture.second_epoch,
+                fixture.cleanup_successor,
+                fixture.second_epoch,
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            fixture
+                .coordinator
+                .effects()
+                .record(fixture.cleanup_successor)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::ObservationDispatchFailed(
+                crate::effect::DispatchFailureReason::ProviderStopped,
+            ))
+        );
+
+        let observation_retry = fixture
+            .coordinator
+            .retry_cleanup(fixture.cleanup_successor)
+            .expect("provider recovery must retry only cleanup observation");
+        let retry_requests = fixture.coordinator.take_new_effects();
+        assert!(matches!(
+            retry_requests.as_slice(),
+            [request]
+                if request.id() == observation_retry
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::ContinueCleanup {
+                            binding: actual,
+                            predecessor,
+                            after: Some(after),
+                        } if *actual == fixture.binding
+                            && *predecessor == fixture.cleanup
+                            && *after == fixture.cleanup_successor
+                    )
+        ));
+    }
+
+    fn assert_destructive_cleanup_result_requires_its_issuance_epoch(
+        fixture: &mut MigratedRetiredObligations,
+    ) {
+        let failure = EffectDispatchResult::DispatchFailed(
+            crate::effect::DispatchFailureReason::ProviderStopped,
+        );
+        assert_eq!(
+            report_effect_result(
+                &mut fixture.coordinator,
+                fixture.second_epoch,
+                fixture.cleanup,
+                fixture.second_epoch,
+                failure,
+            ),
+            EffectTransition::StaleEpoch
+        );
+        assert_eq!(
+            report_effect_result(
+                &mut fixture.coordinator,
+                fixture.second_epoch,
+                fixture.cleanup,
+                fixture.first_epoch,
+                failure,
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            fixture
+                .coordinator
+                .effects()
+                .record(fixture.cleanup)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::DispatchFailed(
+                crate::effect::DispatchFailureReason::ProviderStopped,
+            ))
+        );
+        assert_eq!(
+            fixture
+                .coordinator
+                .retired_viewports()
+                .find_map(|(token, retired)| {
+                    (token == fixture.binding.token()).then_some(retired.status())
+                }),
+            Some(RetiredViewportStatus::CleanupFailed {
+                effect: fixture.cleanup,
+            })
+        );
+    }
+
+    fn settle_migrated_pointer_restore(fixture: &mut MigratedRetiredObligations) {
+        fixture
+            .coordinator
+            .publish_snapshot(&routing_snapshot(
+                fixture.binding,
+                2,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(fixture.restore_successor)),
+            ))
+            .expect("exact current restore acknowledgement must settle the obligation");
+        assert!(
+            !fixture
+                .coordinator
+                .pointer_passthrough_sagas
+                .contains_key(&fixture.binding)
+        );
+        assert!(matches!(
+            fixture
+                .coordinator
+                .effects()
+                .record(fixture.restore_successor)
+                .expect("restore successor must remain auditable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+    }
+
+    fn failed_cleanup_observation() -> (
+        ViewportCoordinator,
+        ViewportBinding,
+        EffectId,
+        EffectId,
+        WorkspaceEpoch,
+        WorkspaceEpoch,
+    ) {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let destructive_epoch = WorkspaceEpoch::new(1);
+        coordinator
+            .reconcile_workspace_epoch(destructive_epoch, &BTreeSet::new())
+            .expect("first restore must retire the binding");
+        let destructive = coordinator
+            .take_new_effects()
+            .into_iter()
+            .find_map(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::RequestRootClose { binding: actual } if *actual == binding
+                )
+                .then_some(request.id())
+            })
+            .expect("first restore must emit destructive cleanup");
+        let observation_epoch = WorkspaceEpoch::new(2);
+        coordinator
+            .reconcile_workspace_epoch(observation_epoch, &BTreeSet::new())
+            .expect("second restore must continue cleanup observation");
+        let continuation = coordinator
+            .take_new_effects()
+            .into_iter()
+            .find_map(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::ContinueCleanup {
+                        binding: actual,
+                        predecessor,
+                        ..
+                    } if *actual == binding && *predecessor == destructive
+                )
+                .then_some(request.id())
+            })
+            .expect("second restore must emit cleanup continuation");
+        assert_eq!(
+            report_effect_result(
+                &mut coordinator,
+                observation_epoch,
+                continuation,
+                observation_epoch,
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            ),
+            EffectTransition::Applied
+        );
+        (
+            coordinator,
+            binding,
+            destructive,
+            continuation,
+            destructive_epoch,
+            observation_epoch,
+        )
     }
 
     fn recovery(root: u64) -> ContainedTearOffProposal {
@@ -2921,6 +4631,10 @@ mod tests {
         let before = coordinator.clone();
         let snapshot = PlatformSnapshot::new(
             PlatformCapabilities::default(),
+            unknown_focus_observation(
+                FocusObservationGeneration::new(1),
+                AuthorityUnavailableReason::NotReported,
+            ),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -2943,6 +4657,10 @@ mod tests {
         capabilities.set_work_area(PlatformCapability::Supported);
         let snapshot = PlatformSnapshot::new(
             capabilities,
+            unknown_focus_observation(
+                FocusObservationGeneration::new(1),
+                AuthorityUnavailableReason::NotReported,
+            ),
             Vec::new(),
             Vec::new(),
             vec![ObservedWorkArea::new(
@@ -2962,64 +4680,85 @@ mod tests {
     }
 
     #[test]
-    fn focus_request_is_applied_only_after_the_exact_binding_is_observed_focused() {
+    fn focus_requests_form_one_provider_serialized_global_lane() {
         let mut coordinator = ViewportCoordinator::default();
-        let binding = register(&mut coordinator, 7, 70, ViewportRole::Child);
-        let mut capabilities = PlatformCapabilities::default();
-        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        capabilities.set_window_focus(PlatformCapability::Supported);
-        let platform_snapshot = |focused| {
-            PlatformSnapshot::new(
-                capabilities.clone(),
-                vec![
-                    observed_window(binding.token(), false).with_focused(Authority::Known(focused)),
-                ],
-                Vec::new(),
-                Vec::new(),
-            )
-            .expect("focus snapshot must be valid")
-        };
-        coordinator
-            .publish_snapshot(&platform_snapshot(false))
-            .expect("initial unfocused observation must publish");
-
-        let effect = coordinator
-            .request_focus(binding.surface())
-            .expect("focus request must enter the ledger")
-            .expect("supported focus must produce an effect");
+        let first_binding = register(&mut coordinator, 7, 70, ViewportRole::Root);
+        let second_binding = register(&mut coordinator, 8, 80, ViewportRole::Root);
+        let first = coordinator
+            .request_focus_binding(first_binding)
+            .expect("first focus request must enter the ledger");
+        let second = coordinator
+            .request_focus_binding(second_binding)
+            .expect("second focus request must enter the ledger");
         assert!(matches!(
             coordinator.take_new_effects().as_slice(),
-            [request]
-                if request.id() == effect
+            [first_request, second_request]
+                if first_request.id() == first
+                    && second_request.id() == second
                     && matches!(
-                        request.effect(),
-                        PlatformEffect::RequestFocus { binding: actual }
-                            if *actual == binding
+                        first_request.effect(),
+                        PlatformEffect::RequestFocus {
+                            binding,
+                            after: None,
+                        } if *binding == first_binding
+                    )
+                    && matches!(
+                        second_request.effect(),
+                        PlatformEffect::RequestFocus {
+                            binding,
+                            after: Some(predecessor),
+                        } if *binding == second_binding && *predecessor == first
                     )
         ));
-        coordinator
-            .publish_snapshot(&platform_snapshot(false))
-            .expect("unfocused observation must remain pending");
-        assert_eq!(
-            coordinator
-                .effects()
-                .record(effect)
-                .expect("focus effect must remain queryable")
-                .phase(),
-            EffectPhase::Requested
-        );
+    }
 
-        coordinator
-            .publish_snapshot(&platform_snapshot(true))
-            .expect("focused observation must publish");
-        assert!(matches!(
+    #[test]
+    fn restore_skips_only_a_focus_predecessor_the_provider_never_received() {
+        for emit_old in [false, true] {
+            let mut coordinator = ViewportCoordinator::default();
+            let old_binding = register(&mut coordinator, 9, 90, ViewportRole::Root);
+            let old = coordinator
+                .request_focus_binding(old_binding)
+                .expect("old focus request must allocate");
+            if emit_old {
+                let emitted = coordinator.take_new_effects();
+                assert_eq!(emitted.len(), 1);
+                assert_eq!(emitted[0].id(), old);
+            }
+
+            let desired = BTreeSet::from([old_binding.surface()]);
             coordinator
-                .effects()
-                .record(effect)
-                .expect("focus effect must remain queryable")
-                .phase(),
-            EffectPhase::ObservedApplied { .. }
-        ));
+                .reconcile_workspace_epoch(WorkspaceEpoch::new(2), &desired)
+                .expect("restore must reconcile focus history");
+            let existing_binding = coordinator
+                .registry()
+                .record(old_binding.surface())
+                .map(ViewportRecord::binding);
+            let new_binding = existing_binding.unwrap_or_else(|| {
+                coordinator
+                    .register_existing(
+                        WorkspaceEpoch::new(2),
+                        old_binding.surface(),
+                        WindowToken::new(91),
+                        ViewportRole::Root,
+                        None,
+                    )
+                    .expect("restored binding must register")
+            });
+            let new = coordinator
+                .request_focus_binding(new_binding)
+                .expect("new focus request must allocate");
+            let request = coordinator
+                .take_new_effects()
+                .into_iter()
+                .find(|request| request.id() == new)
+                .expect("new focus request must be emitted");
+            assert!(matches!(
+                request.effect(),
+                PlatformEffect::RequestFocus { after, .. }
+                    if *after == emit_old.then_some(old)
+            ));
+        }
     }
 
     #[test]
@@ -3037,7 +4776,7 @@ mod tests {
             };
 
             let effect = coordinator
-                .decide_viewport_close(*request, ViewportCloseDecision::Veto)
+                .decide_viewport_close(*request, ViewportCloseDecision::Prevent)
                 .expect("veto must enter the effect ledger");
             let emitted = coordinator.take_new_effects();
             assert_eq!(emitted.len(), 1);
@@ -3052,7 +4791,7 @@ mod tests {
                 _ => false,
             });
             assert_eq!(
-                coordinator.decide_viewport_close(*request, ViewportCloseDecision::Veto),
+                coordinator.decide_viewport_close(*request, ViewportCloseDecision::Prevent),
                 Err(ViewportCoordinatorError::CloseRequestAlreadyDecided {
                     request: *request,
                     status: ViewportCloseStatus::Vetoed { effect },
@@ -3092,7 +4831,7 @@ mod tests {
             .publish_snapshot(&snapshot(vec![observed_window(binding.token(), true)]))
             .expect("close edge must publish");
         let request = transition.close_requests()[0];
-        let plan = ViewportClosePlan::new(None, recovery);
+        let plan = ViewportClosePlan::retain_layout();
         let effect = coordinator
             .decide_viewport_close(request, ViewportCloseDecision::Accept(plan.clone()))
             .expect("accept must enter the release effect");
@@ -3123,8 +4862,12 @@ mod tests {
                 resolution: ViewportDestructionResolution::Accepted {
                     request: actual_request,
                     plan: actual_plan,
+                    recovery: actual_recovery,
                 },
-            }] if *actual == binding && *actual_request == request && *actual_plan == plan
+            }] if *actual == binding
+                && *actual_request == request
+                && *actual_plan == plan
+                && *actual_recovery == Some(recovery.into())
         ));
         assert_eq!(
             coordinator
@@ -3192,6 +4935,7 @@ mod tests {
             None
         );
         let requested = coordinator.take_new_effects();
+        let enable = requested[0].id();
         assert!(matches!(
             requested.as_slice(),
             [request]
@@ -3200,9 +4944,20 @@ mod tests {
                     PlatformEffect::SetPointerPassthrough {
                         binding: actual,
                         enabled: true,
+                        ..
                     } if *actual == binding
                 )
         ));
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("enable must be observed before restoration can be confirmed");
 
         assert_eq!(
             coordinator
@@ -3218,6 +4973,7 @@ mod tests {
                 .is_some()
         );
         let restored = coordinator.take_new_effects();
+        let restore = restored[0].id();
         assert!(matches!(
             restored.as_slice(),
             [request]
@@ -3226,9 +4982,713 @@ mod tests {
                     PlatformEffect::SetPointerPassthrough {
                         binding: actual,
                         enabled: false,
+                        ..
                     } if *actual == binding
                 )
         ));
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(restore)),
+            ))
+            .expect("restored input observation must publish");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn wrong_effect_and_stale_capture_cannot_attribute_a_late_enable() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag routing must end")
+            .expect("release must queue restoration");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("newer receiving observation must publish");
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("stale exact acknowledgement must be ignored");
+        assert!(coordinator.take_new_effects().is_empty());
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                4,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(EffectId::new(900))),
+            ))
+            .expect("wrong effect acknowledgement must publish without attribution");
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                5,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("fresh exact enable acknowledgement must publish");
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(restore)
+                .expect("queued restore must remain")
+                .phase(),
+            EffectPhase::Requested
+        ));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                6,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(restore)),
+            ))
+            .expect("exact restore acknowledgement must settle the saga");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn unknown_acknowledgement_does_not_erase_known_input_state_authority() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::unknown(
+                    crate::intent::AuthorityUnavailableReason::NotReported,
+                ),
+            ))
+            .expect("unknown acknowledgement authority must publish");
+
+        let enable = coordinator
+            .begin_drag_routing(PointerId::new(1), binding.surface())
+            .expect("drag routing must remain total")
+            .expect("known receiving state must request passthrough");
+        assert!(matches!(
+            coordinator.take_new_effects().as_slice(),
+            [request]
+                if request.id() == enable
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::SetPointerPassthrough {
+                            binding: actual,
+                            enabled: true,
+                            ..
+                        } if *actual == binding
+                    )
+        ));
+    }
+
+    #[test]
+    fn newer_passthrough_state_with_unknown_ack_does_not_retry_failed_enable() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        enable,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("enable result must reduce"),
+            EffectTransition::Applied
+        );
+        let unavailable = crate::intent::AuthorityUnavailableReason::NotReported;
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::unknown(unavailable),
+            ))
+            .expect("newer passthrough state must publish without exact attribution");
+        assert!(coordinator.take_new_effects().is_empty());
+
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("known passthrough state must still be restored");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+    }
+
+    #[test]
+    fn definitive_enable_failure_after_release_preserves_queued_restoration() {
+        for result in [
+            EffectDispatchResult::DispatchFailed(
+                crate::effect::DispatchFailureReason::AdapterRejected,
+            ),
+            EffectDispatchResult::Unsupported(
+                crate::effect::EffectUnsupportedReason::BackendUnsupported,
+            ),
+        ] {
+            let (mut coordinator, binding, enable, restore) = released_unobserved_enable();
+            assert_eq!(
+                coordinator
+                    .report_effect(
+                        binding.epoch(),
+                        EffectResult::new(enable, binding.epoch(), result),
+                    )
+                    .expect("effect report must reduce"),
+                EffectTransition::Applied
+            );
+            assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+            assert!(coordinator.take_new_effects().is_empty());
+            assert!(matches!(
+                coordinator
+                    .effects()
+                    .record(restore)
+                    .expect("queued restore must remain durable")
+                    .phase(),
+                EffectPhase::Requested
+            ));
+        }
+    }
+
+    #[test]
+    fn late_enable_after_active_failure_still_restores_after_release() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        enable,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("late enable observation must remain causal");
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(enable)
+                .expect("enable effect must remain queryable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("late enable must be followed by restoration");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+    }
+
+    #[test]
+    fn lost_enable_acknowledgement_cannot_block_restore_queue() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        enable,
+                        binding.epoch(),
+                        EffectDispatchResult::Indeterminate(
+                            crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("indeterminate enable must still queue restoration");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn control_loss_between_enable_and_release_cannot_block_the_first_restore() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let unavailable = PlatformCapability::unsupported(
+            crate::platform::PlatformRequirement::PointerHitTestControl,
+            crate::platform::PlatformCapabilityReason::BackendUnsupported,
+        );
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                unavailable,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("control loss must remain representable");
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve the restore obligation")
+            .expect("control loss must not block the first restore request");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::Unsupported(
+                            crate::effect::EffectUnsupportedReason::CapabilityRevoked,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                unavailable,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("late enable under control loss must preserve restoration");
+        assert!(coordinator.take_new_effects().is_empty());
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                4,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("control recovery must unlock one restore retry");
+        let retry = take_single_pointer_restore(&mut coordinator, binding, Some(restore));
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert_ne!(retry, restore);
+    }
+
+    #[test]
+    fn versioned_gap_watermark_allows_newer_safe_state_to_settle_failed_restore() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let unavailable = crate::intent::AuthorityUnavailableReason::NotReported;
+        coordinator
+            .publish_snapshot(&routing_snapshot_with_input_authority(
+                binding,
+                2,
+                Authority::Unknown(unavailable),
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::unknown(unavailable),
+            ))
+            .expect("versioned input tombstone must publish");
+        assert_eq!(
+            coordinator
+                .registry()
+                .record(binding.surface())
+                .expect("source binding must remain registered")
+                .input_observation(),
+            None
+        );
+
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("versioned input gap must not block restoration");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+        assert_eq!(
+            coordinator
+                .pointer_passthrough_sagas
+                .get(&binding)
+                .and_then(|saga| saga.restore)
+                .and_then(|obligation| obligation.attempt)
+                .and_then(|attempt| attempt.issued_after),
+            Some(InputObservationGeneration::new(2))
+        );
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("restore result must reduce"),
+            EffectTransition::Applied
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::unknown(unavailable),
+            ))
+            .expect("newer safe state must publish independently of effect acknowledgement");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert!(coordinator.take_new_effects().is_empty());
+    }
+
+    #[test]
+    fn stale_pre_restore_receiving_state_cannot_settle_a_failed_restore() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("release must queue restoration");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("late enable must not erase the restore obligation");
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        let retry = take_single_pointer_restore(&mut coordinator, binding, Some(restore));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(retry)),
+            ))
+            .expect("the retry acknowledgement must settle late enable restoration");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn safe_state_keeps_requested_restore_as_the_next_drag_predecessor() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let first_pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(first_pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("enable acknowledgement must publish");
+        let restore = coordinator
+            .end_drag_routing(first_pointer)
+            .expect("drag routing must end")
+            .expect("restoration must be requested");
+        let _ = coordinator.take_new_effects();
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("safe state without restore attribution must publish");
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(restore)
+                .expect("restore history must remain")
+                .phase(),
+            EffectPhase::Requested
+        ));
+
+        let second_enable = coordinator
+            .begin_drag_routing(PointerId::new(2), binding.surface())
+            .expect("a new drag must preserve the pointer-input lane")
+            .expect("the new drag must request pass-through again");
+        assert!(matches!(
+            coordinator.take_new_effects().as_slice(),
+            [request]
+                if request.id() == second_enable
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::SetPointerPassthrough {
+                            binding: actual,
+                            enabled: true,
+                            after: Some(predecessor),
+                        } if *actual == binding && *predecessor == restore
+                    )
+        ));
+    }
+
+    #[test]
+    fn restore_failure_requires_a_safe_observation_newer_than_its_report() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag routing must end")
+            .expect("release must queue restoration");
+        let _ = coordinator.take_new_effects();
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("the pre-dispatch safe observation must publish");
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(enable)
+                .expect("enable history must remain")
+                .phase(),
+            EffectPhase::Requested
+        ));
+
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("restore failure must reduce"),
+            EffectTransition::Applied
+        );
+        let restore_attempt = coordinator
+            .pointer_passthrough_sagas
+            .get(&binding)
+            .and_then(|saga| saga.restore)
+            .and_then(|obligation| obligation.attempt)
+            .expect("the pre-report observation must not settle restoration");
+        assert_eq!(
+            restore_attempt.terminal_reported_after,
+            Some(InputObservationGeneration::new(2))
+        );
+        assert!(
+            !coordinator
+                .pointer_passthrough_sagas
+                .get(&binding)
+                .expect("restore saga must remain")
+                .restore
+                .expect("restore obligation must remain")
+                .state_settled
+        );
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("a post-report safe observation must publish");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
     }
 
     #[test]
@@ -3258,10 +5718,11 @@ mod tests {
             None
         );
         assert!(coordinator.take_new_effects().is_empty());
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
     }
 
     #[test]
-    fn receiving_source_without_hit_test_control_does_not_acquire_a_lease() {
+    fn receiving_source_without_hit_test_control_still_freezes_the_source() {
         let (mut coordinator, binding) = routing_coordinator(
             WindowInputState::ReceivesInput,
             WindowPresentationState::Visible,
@@ -3275,15 +5736,996 @@ mod tests {
         assert_eq!(
             coordinator
                 .begin_drag_routing(pointer, binding.surface())
-                .expect("missing control is a supported no-op"),
+                .expect("missing control must still freeze the drag source"),
             None
         );
-        assert_eq!(coordinator.drag_source(pointer), None);
+        assert_eq!(coordinator.drag_source(pointer), Some(binding));
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
         assert!(coordinator.take_new_effects().is_empty());
+
+        assert_eq!(
+            coordinator
+                .end_drag_routing(pointer)
+                .expect("uncontrolled source freeze must end cleanly"),
+            None
+        );
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
     }
 
     #[test]
-    fn hidden_and_minimized_windows_cannot_start_pointer_routing_or_focus() {
+    fn definitive_enable_failure_waits_for_a_new_fact_edge_before_retry() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let first = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("initial enable must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        first,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        let effect_count = coordinator.effects().records().count();
+
+        for generation in 2..5 {
+            coordinator
+                .publish_snapshot(&routing_snapshot(
+                    binding,
+                    generation,
+                    WindowInputState::ReceivesInput,
+                    WindowPresentationState::Visible,
+                    PlatformCapability::Supported,
+                    InputEffectAcknowledgement::known(None),
+                ))
+                .expect("unchanged observation must publish without retrying");
+            assert!(coordinator.take_new_effects().is_empty());
+            assert_eq!(coordinator.effects().records().count(), effect_count);
+        }
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                5,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Hidden,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("hidden edge must publish without enabling");
+        assert!(coordinator.take_new_effects().is_empty());
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                6,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(None),
+            ))
+            .expect("routeable edge must unlock one retry");
+        assert!(matches!(
+            coordinator.take_new_effects().as_slice(),
+            [request]
+                if request.id() != first
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::SetPointerPassthrough {
+                            binding: actual,
+                            enabled: true,
+                            ..
+                        } if *actual == binding
+                    )
+        ));
+        assert_eq!(coordinator.drag_source(pointer), Some(binding));
+    }
+
+    #[test]
+    fn unsupported_and_indeterminate_enable_attempts_do_not_retry_each_snapshot() {
+        for result in [
+            EffectDispatchResult::Unsupported(
+                crate::effect::EffectUnsupportedReason::BackendUnsupported,
+            ),
+            EffectDispatchResult::Indeterminate(
+                crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+            ),
+        ] {
+            let (mut coordinator, binding) = routing_coordinator(
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+            );
+            let first = coordinator
+                .begin_drag_routing(PointerId::new(1), binding.surface())
+                .expect("initial enable must begin")
+                .expect("receiving input must request passthrough");
+            let _ = coordinator.take_new_effects();
+            assert_eq!(
+                coordinator
+                    .report_effect(
+                        binding.epoch(),
+                        EffectResult::new(first, binding.epoch(), result),
+                    )
+                    .expect("effect report must reduce"),
+                EffectTransition::Applied
+            );
+            let effect_count = coordinator.effects().records().count();
+
+            for generation in 2..5 {
+                coordinator
+                    .publish_snapshot(&routing_snapshot(
+                        binding,
+                        generation,
+                        WindowInputState::ReceivesInput,
+                        WindowPresentationState::Visible,
+                        PlatformCapability::Supported,
+                        InputEffectAcknowledgement::known(None),
+                    ))
+                    .expect("unchanged observation must remain stable");
+                assert!(coordinator.take_new_effects().is_empty());
+                assert_eq!(coordinator.effects().records().count(), effect_count);
+            }
+        }
+    }
+
+    #[test]
+    fn late_enable_after_drag_end_cannot_overtake_the_queued_restore() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("enable must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag end must preserve restoration")
+            .expect("drag end must queue restoration immediately");
+        assert_eq!(
+            take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+            restore
+        );
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        let effect_count = coordinator.effects().records().count();
+        for generation in 2..5 {
+            coordinator
+                .publish_snapshot(&routing_snapshot(
+                    binding,
+                    generation,
+                    WindowInputState::ReceivesInput,
+                    WindowPresentationState::Visible,
+                    PlatformCapability::Supported,
+                    InputEffectAcknowledgement::known(None),
+                ))
+                .expect("pre-enable input observation must not satisfy restoration");
+            assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+            assert!(coordinator.take_new_effects().is_empty());
+            assert_eq!(coordinator.effects().records().count(), effect_count);
+        }
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                5,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("late enable observation must publish");
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(enable)
+                .expect("enable effect must remain queryable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                6,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(restore)),
+            ))
+            .expect("restored input observation must publish");
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(restore)
+                .expect("restore effect must remain queryable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn failed_restore_waits_for_a_capability_edge_before_retry() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("enable must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("passthrough observation must publish");
+
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag end must preserve restoration")
+            .expect("drag end must request restoration");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        let effect_count = coordinator.effects().records().count();
+        for generation in 3..6 {
+            coordinator
+                .publish_snapshot(&routing_snapshot(
+                    binding,
+                    generation,
+                    WindowInputState::PassThrough,
+                    WindowPresentationState::Visible,
+                    PlatformCapability::Supported,
+                    InputEffectAcknowledgement::known(Some(enable)),
+                ))
+                .expect("unchanged passthrough must not retry restoration");
+            assert!(coordinator.take_new_effects().is_empty());
+            assert_eq!(coordinator.effects().records().count(), effect_count);
+        }
+
+        let unsupported = PlatformCapability::unsupported(
+            crate::platform::PlatformRequirement::PointerHitTestControl,
+            crate::platform::PlatformCapabilityReason::BackendUnsupported,
+        );
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                6,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                unsupported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("capability loss must publish without restoring");
+        assert!(coordinator.take_new_effects().is_empty());
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                7,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("capability recovery must unlock one restore retry");
+        assert!(matches!(
+            coordinator.take_new_effects().as_slice(),
+            [request]
+                if request.id() != restore
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::SetPointerPassthrough {
+                            binding: actual,
+                            enabled: false,
+                            ..
+                        } if *actual == binding
+                    )
+        ));
+    }
+
+    #[test]
+    fn indeterminate_restore_is_not_reissued_concurrently() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("enable must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("passthrough observation must publish");
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag end must preserve restoration")
+            .expect("drag end must request restoration");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        restore,
+                        binding.epoch(),
+                        EffectDispatchResult::Indeterminate(
+                            crate::effect::EffectIndeterminateReason::AcknowledgementLost,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        for generation in 3..6 {
+            coordinator
+                .publish_snapshot(&routing_snapshot(
+                    binding,
+                    generation,
+                    WindowInputState::PassThrough,
+                    WindowPresentationState::Visible,
+                    PlatformCapability::Supported,
+                    InputEffectAcknowledgement::known(Some(enable)),
+                ))
+                .expect("indeterminate restore must remain singular");
+            assert!(coordinator.take_new_effects().is_empty());
+        }
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                6,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(restore)),
+            ))
+            .expect("authoritative restored input must settle the attempt");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn authoritative_destruction_terminates_active_and_released_pointer_sagas() {
+        for release_before_destroy in [false, true] {
+            let (mut coordinator, binding) = routing_coordinator(
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+            );
+            let pointer = PointerId::new(1);
+            let enable = coordinator
+                .begin_drag_routing(pointer, binding.surface())
+                .expect("drag routing must begin")
+                .expect("enable effect must exist");
+            let _ = coordinator.take_new_effects();
+            if release_before_destroy {
+                let restore = coordinator
+                    .end_drag_routing(pointer)
+                    .expect("drag routing must release")
+                    .expect("release must queue restoration");
+                assert_eq!(
+                    take_single_pointer_restore(&mut coordinator, binding, Some(enable)),
+                    restore
+                );
+            }
+
+            coordinator
+                .publish_snapshot(&snapshot(Vec::new()))
+                .expect("authoritative absence must terminate pointer saga");
+            assert_eq!(coordinator.drag_source(pointer), None);
+            assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+            assert!(coordinator.take_new_effects().is_empty());
+            assert!(matches!(
+                coordinator
+                    .effects()
+                    .record(enable)
+                    .expect("enable effect history must remain")
+                    .phase(),
+                EffectPhase::Destroyed { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn window_unavailable_waits_for_authoritative_destruction_without_retrying() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("enable effect must exist");
+        let _ = coordinator.take_new_effects();
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    binding.epoch(),
+                    EffectResult::new(
+                        enable,
+                        binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::WindowUnavailable,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+        coordinator
+            .publish_snapshot(&snapshot(Vec::new()))
+            .expect("authoritative absence must terminate unavailable binding");
+        assert_eq!(coordinator.drag_source(pointer), None);
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(enable)
+                .expect("enable effect history must remain")
+                .phase(),
+            EffectPhase::Destroyed { .. }
+        ));
+    }
+
+    #[test]
+    fn workspace_rebound_requires_a_fresh_restore_ack_and_ignores_old_effects() {
+        let (mut coordinator, old_binding, old_enable, old_restore) = released_unobserved_enable();
+
+        let new_epoch = WorkspaceEpoch::new(1);
+        let reconciliation = coordinator
+            .reconcile_workspace_epoch(new_epoch, &BTreeSet::from([old_binding.surface()]))
+            .expect("workspace replacement must reconcile the binding");
+        let &[(actual_old, new_binding)] = reconciliation.rebound() else {
+            panic!("one binding must rebound: {reconciliation:?}");
+        };
+        assert_eq!(actual_old, old_binding);
+        let rebound_restore =
+            take_single_pointer_restore(&mut coordinator, new_binding, Some(old_restore));
+        assert!(
+            coordinator
+                .pointer_passthrough_sagas
+                .contains_key(&new_binding)
+        );
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                new_binding,
+                2,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::unknown(
+                    crate::intent::AuthorityUnavailableReason::NotReported,
+                ),
+            ))
+            .expect("transient acknowledgement loss must preserve the queued safety restore");
+        assert!(coordinator.take_new_effects().is_empty());
+        assert!(
+            coordinator
+                .pointer_passthrough_sagas
+                .contains_key(&new_binding)
+        );
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    new_epoch,
+                    EffectResult::new(
+                        old_enable,
+                        old_binding.epoch(),
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::StaleEpoch
+        );
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                new_binding,
+                3,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(old_enable)),
+            ))
+            .expect("an old-incarnation acknowledgement must not settle the new restore");
+        assert!(
+            coordinator
+                .pointer_passthrough_sagas
+                .contains_key(&new_binding)
+        );
+        assert!(coordinator.take_new_effects().is_empty());
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                new_binding,
+                4,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(rebound_restore)),
+            ))
+            .expect("post-barrier restored input must settle the rebound saga");
+        assert!(
+            !coordinator
+                .pointer_passthrough_sagas
+                .contains_key(&new_binding)
+        );
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(rebound_restore)
+                .expect("rebound restore must remain queryable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+    }
+
+    #[test]
+    fn repeated_restore_in_one_boundary_skips_unemitted_cleanup_and_pointer_successors() {
+        let RepeatedRestoreBoundary {
+            mut coordinator,
+            binding,
+            enable,
+            destructive,
+            fourth_epoch,
+            emitted_cleanup,
+            emitted_restore,
+            unemitted_cleanup,
+            unemitted_restore,
+            current,
+        } = repeated_restore_boundary();
+        assert_eq!(
+            coordinator
+                .effects()
+                .record(unemitted_cleanup)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::InvalidatedByRestore {
+                replacement_epoch: fourth_epoch,
+            })
+        );
+        assert_eq!(
+            coordinator
+                .effects()
+                .record(unemitted_restore)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::InvalidatedByRestore {
+                replacement_epoch: fourth_epoch,
+            })
+        );
+        let current_cleanup = current
+            .iter()
+            .find(|request| matches!(request.effect(), PlatformEffect::ContinueCleanup { .. }))
+            .expect("cleanup observation must remain observation-only");
+        assert!(matches!(
+            current_cleanup.effect(),
+            PlatformEffect::ContinueCleanup {
+                binding: actual,
+                predecessor,
+                after: Some(after),
+            } if *actual == binding
+                && *predecessor == destructive
+                && *after == emitted_cleanup
+        ));
+        let current_restore = current
+            .iter()
+            .find(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::SetPointerPassthrough { enabled: false, .. }
+                )
+            })
+            .expect("pointer restore obligation must remain queued");
+        assert!(matches!(
+            current_restore.effect(),
+            PlatformEffect::SetPointerPassthrough {
+                binding: actual,
+                enabled: false,
+                after: Some(after),
+            } if *actual == binding && *after == emitted_restore
+        ));
+        assert!(current.iter().all(|request| {
+            !matches!(
+                request.effect(),
+                PlatformEffect::RequestRootClose { binding: actual }
+                    | PlatformEffect::ReleaseChild { binding: actual }
+                    if *actual == binding
+            )
+        }));
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("late enable acknowledgement must remain observable");
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert!(coordinator.take_new_effects().is_empty());
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(current_restore.id())),
+            ))
+            .expect("only the exact current restore may settle the obligation");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+    }
+
+    #[test]
+    fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let first_epoch = WorkspaceEpoch::new(1);
+        coordinator
+            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+            .expect("first restore must retire the binding");
+        let destructive = coordinator
+            .take_new_effects()
+            .into_iter()
+            .find_map(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::RequestRootClose { binding: actual } if *actual == binding
+                )
+                .then_some(request.id())
+            })
+            .expect("first restore must emit destructive cleanup");
+        let current_epoch = WorkspaceEpoch::new(2);
+        coordinator
+            .reconcile_workspace_epoch(current_epoch, &BTreeSet::new())
+            .expect("second restore must create a cleanup continuation");
+        let _ = coordinator.take_new_effects();
+
+        let wrong_incarnation = ViewportBinding::new(
+            binding.epoch(),
+            binding.surface(),
+            binding.token(),
+            binding
+                .incarnation()
+                .checked_next()
+                .expect("test incarnation must advance"),
+        );
+        coordinator
+            .retired_viewports
+            .get_mut(&binding.token())
+            .expect("retired cleanup must remain queryable")
+            .binding = wrong_incarnation;
+
+        assert_eq!(
+            report_effect_result(
+                &mut coordinator,
+                current_epoch,
+                destructive,
+                first_epoch,
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            ),
+            EffectTransition::StaleEpoch
+        );
+        assert_eq!(
+            coordinator
+                .effects()
+                .record(destructive)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+    }
+
+    #[test]
+    fn old_cleanup_result_is_stale_while_same_boundary_continuation_is_unemitted() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let first_epoch = WorkspaceEpoch::new(1);
+        coordinator
+            .reconcile_workspace_epoch(first_epoch, &BTreeSet::new())
+            .expect("first restore must retire the binding");
+        let destructive = coordinator
+            .take_new_effects()
+            .into_iter()
+            .find_map(|request| {
+                matches!(
+                    request.effect(),
+                    PlatformEffect::RequestRootClose { binding: actual } if *actual == binding
+                )
+                .then_some(request.id())
+            })
+            .expect("first restore must emit destructive cleanup");
+
+        let current_epoch = WorkspaceEpoch::new(2);
+        let reconciliation = coordinator
+            .reconcile_workspace_epoch(current_epoch, &BTreeSet::new())
+            .expect("same boundary restore must queue a continuation");
+        let continuation = reconciliation
+            .cleanup_effects()
+            .iter()
+            .copied()
+            .find(|effect| {
+                matches!(
+                    coordinator.effects().record(*effect).map(|record| record.request().effect()),
+                    Some(PlatformEffect::ContinueCleanup {
+                        predecessor,
+                        ..
+                    }) if *predecessor == destructive
+                )
+            })
+            .expect("restore must queue the exact cleanup continuation");
+        assert!(
+            !coordinator
+                .effects()
+                .record(continuation)
+                .expect("continuation must remain queryable")
+                .was_emitted()
+        );
+
+        assert_eq!(
+            report_effect_result(
+                &mut coordinator,
+                current_epoch,
+                destructive,
+                first_epoch,
+                EffectDispatchResult::DispatchFailed(
+                    crate::effect::DispatchFailureReason::ProviderStopped,
+                ),
+            ),
+            EffectTransition::StaleEpoch
+        );
+        assert_eq!(
+            coordinator
+                .effects()
+                .record(destructive)
+                .map(crate::effect::EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+    }
+
+    #[test]
+    fn cleanup_observation_retry_rejects_ineligible_protocol_state_atomically() {
+        #[derive(Debug, Clone, Copy)]
+        enum IneligibleState {
+            WrongTombstoneBinding,
+            TerminalDestructivePredecessor,
+            InventoryRemoved,
+        }
+
+        for state in [
+            IneligibleState::WrongTombstoneBinding,
+            IneligibleState::TerminalDestructivePredecessor,
+            IneligibleState::InventoryRemoved,
+        ] {
+            let (mut coordinator, binding, destructive, continuation, destructive_epoch, _) =
+                failed_cleanup_observation();
+            match state {
+                IneligibleState::WrongTombstoneBinding => {
+                    let wrong_binding = ViewportBinding::new(
+                        binding.epoch(),
+                        binding.surface(),
+                        binding.token(),
+                        binding
+                            .incarnation()
+                            .checked_next()
+                            .expect("test incarnation must advance"),
+                    );
+                    coordinator
+                        .retired_viewports
+                        .get_mut(&binding.token())
+                        .expect("failed observer tombstone must remain queryable")
+                        .binding = wrong_binding;
+                }
+                IneligibleState::TerminalDestructivePredecessor => {
+                    assert_eq!(
+                        coordinator.effects.report_exact(EffectResult::new(
+                            destructive,
+                            destructive_epoch,
+                            EffectDispatchResult::DispatchFailed(
+                                crate::effect::DispatchFailureReason::ProviderStopped,
+                            ),
+                        )),
+                        EffectTransition::Applied
+                    );
+                }
+                IneligibleState::InventoryRemoved => {
+                    coordinator
+                        .publish_snapshot(&snapshot(Vec::new()))
+                        .expect("authoritative inventory removal must publish");
+                    assert!(!coordinator.retired_viewports.contains_key(&binding.token()));
+                }
+            }
+
+            let before = coordinator.clone();
+            let rejected = coordinator.retry_cleanup(continuation);
+            match state {
+                IneligibleState::WrongTombstoneBinding
+                | IneligibleState::TerminalDestructivePredecessor => assert!(matches!(
+                    rejected,
+                    Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                        effect,
+                        predecessor,
+                    }) if effect == continuation && predecessor == destructive
+                )),
+                IneligibleState::InventoryRemoved => assert!(matches!(
+                    rejected,
+                    Err(ViewportCoordinatorError::CleanupEffectNotRetryable {
+                        effect,
+                        phase: EffectPhase::Destroyed { .. },
+                    })
+                        if effect == continuation
+                )),
+            }
+            assert_eq!(coordinator, before, "retry mutated {state:?}");
+            assert!(coordinator.take_new_effects().is_empty());
+        }
+    }
+
+    #[test]
+    fn repeated_restore_migrates_retired_pointer_and_cleanup_obligations() {
+        for restore_was_indeterminate in [false, true] {
+            let mut fixture = migrated_retired_obligations(restore_was_indeterminate);
+            assert_cleanup_observation_successor_is_retryable(&mut fixture);
+            assert_destructive_cleanup_result_requires_its_issuance_epoch(&mut fixture);
+            settle_migrated_pointer_restore(&mut fixture);
+        }
+    }
+
+    #[test]
+    fn retired_observed_window_keeps_restoration_after_close_cleanup_failure() {
+        let (mut coordinator, binding) = routing_coordinator(
+            WindowInputState::ReceivesInput,
+            WindowPresentationState::Visible,
+            PlatformCapability::Supported,
+        );
+        let pointer = PointerId::new(1);
+        let enable = coordinator
+            .begin_drag_routing(pointer, binding.surface())
+            .expect("drag routing must begin")
+            .expect("receiving input must request passthrough");
+        let _ = coordinator.take_new_effects();
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                2,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("passthrough must be observed before replacement");
+        let restore = coordinator
+            .end_drag_routing(pointer)
+            .expect("drag release must preserve restoration")
+            .expect("old restore effect must exist");
+        let _ = coordinator.take_new_effects();
+
+        let new_epoch = WorkspaceEpoch::new(1);
+        let reconciliation = coordinator
+            .reconcile_workspace_epoch(new_epoch, &BTreeSet::new())
+            .expect("workspace replacement must retire the old binding");
+        assert_eq!(reconciliation.retired(), &[binding]);
+        let cleanup = coordinator.take_new_effects();
+        let close = cleanup
+            .iter()
+            .find_map(|request| match request.effect() {
+                PlatformEffect::RequestRootClose { binding: actual } if *actual == binding => {
+                    Some(request.id())
+                }
+                _ => None,
+            })
+            .expect("retired root must still request close cleanup");
+        assert_eq!(
+            coordinator
+                .report_effect(
+                    new_epoch,
+                    EffectResult::new(
+                        close,
+                        new_epoch,
+                        EffectDispatchResult::DispatchFailed(
+                            crate::effect::DispatchFailureReason::AdapterRejected,
+                        ),
+                    ),
+                )
+                .expect("effect report must reduce"),
+            EffectTransition::Applied
+        );
+
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                3,
+                WindowInputState::PassThrough,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(enable)),
+            ))
+            .expect("failed close must not discard retired restoration");
+        assert!(coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        coordinator
+            .publish_snapshot(&routing_snapshot(
+                binding,
+                4,
+                WindowInputState::ReceivesInput,
+                WindowPresentationState::Visible,
+                PlatformCapability::Supported,
+                InputEffectAcknowledgement::known(Some(restore)),
+            ))
+            .expect("retired restored input must settle independently of close cleanup");
+        assert!(!coordinator.pointer_passthrough_sagas.contains_key(&binding));
+        assert!(matches!(
+            coordinator
+                .effects()
+                .record(restore)
+                .expect("retired restore must remain queryable")
+                .phase(),
+            EffectPhase::ObservedApplied { .. }
+        ));
+    }
+
+    #[test]
+    fn hidden_and_minimized_windows_cannot_start_pointer_routing() {
         for presentation in [
             WindowPresentationState::Hidden,
             WindowPresentationState::Minimized,
@@ -3293,20 +6735,10 @@ mod tests {
                 presentation,
                 PlatformCapability::Supported,
             );
-            coordinator
-                .capabilities
-                .set_window_focus(PlatformCapability::Supported);
-
             assert_eq!(
                 coordinator
                     .begin_drag_routing(PointerId::new(1), binding.surface())
                     .expect("non-routeable presentation is a supported no-op"),
-                None
-            );
-            assert_eq!(
-                coordinator
-                    .request_focus(binding.surface())
-                    .expect("non-routeable presentation cannot receive focus"),
                 None
             );
             assert!(coordinator.take_new_effects().is_empty());

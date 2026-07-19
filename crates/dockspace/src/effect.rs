@@ -66,16 +66,36 @@ pub enum PlatformEffect {
     ReleaseChild {
         binding: ViewportBinding,
     },
+    /// Continue observing one already-emitted destructive cleanup after an epoch change.
+    ///
+    /// This is an observation-only protocol request. The provider must not execute `predecessor`
+    /// again. A dispatch result for this request describes only the observation request itself;
+    /// the provider reports a terminal predecessor result with the predecessor's original effect
+    /// identity and epoch. `after` serializes successive observation requests across restores.
+    ContinueCleanup {
+        binding: ViewportBinding,
+        predecessor: EffectId,
+        after: Option<EffectId>,
+    },
     RequestRootClose {
         binding: ViewportBinding,
     },
     SetPointerPassthrough {
         binding: ViewportBinding,
         enabled: bool,
+        /// Previous effect in this native pointer-input property's causal lane.
+        ///
+        /// The provider must serialize this request after the predecessor even
+        /// when the predecessor's acknowledgement is lost. A definitive
+        /// predecessor dispatch failure is terminal and therefore also
+        /// releases this request.
+        after: Option<EffectId>,
     },
     /// Ask the adapter to focus one exact current window incarnation.
     RequestFocus {
         binding: ViewportBinding,
+        /// Previous effect in the global native-window focus causal lane.
+        after: Option<EffectId>,
     },
     RequestReplacement {
         binding: ViewportBinding,
@@ -94,9 +114,10 @@ impl PlatformEffect {
             | Self::CancelRootClose { binding }
             | Self::RetainChild { binding }
             | Self::ReleaseChild { binding }
+            | Self::ContinueCleanup { binding, .. }
             | Self::RequestRootClose { binding }
             | Self::SetPointerPassthrough { binding, .. }
-            | Self::RequestFocus { binding }
+            | Self::RequestFocus { binding, .. }
             | Self::RequestReplacement { binding, .. } => *binding,
         }
     }
@@ -166,10 +187,19 @@ pub enum EffectIndeterminateReason {
 pub enum EffectPhase {
     Requested,
     DispatchFailed(DispatchFailureReason),
+    /// An observation-only continuation was not dispatched.
+    ///
+    /// Retrying this phase may issue only another observation continuation; it must never
+    /// redispatch the destructive predecessor.
+    ObservationDispatchFailed(DispatchFailureReason),
     ObservedApplied {
         inventory_generation: InventoryGeneration,
     },
     Unsupported(EffectUnsupportedReason),
+    /// An observation-only continuation is unsupported.
+    ///
+    /// A later provider recovery may retry only the observation continuation.
+    ObservationUnsupported(EffectUnsupportedReason),
     Indeterminate(EffectIndeterminateReason),
     Destroyed {
         inventory_generation: InventoryGeneration,
@@ -344,21 +374,50 @@ impl EffectLedger {
         if result.epoch != current_epoch {
             return EffectTransition::StaleEpoch;
         }
+        self.report_exact(result)
+    }
+
+    /// Applies a result against its exact immutable request epoch.
+    ///
+    /// The viewport coordinator uses this only after proving that an active current-epoch cleanup
+    /// continuation names this exact older destructive predecessor and binding incarnation.
+    pub(crate) fn report_exact(&mut self, result: EffectResult) -> EffectTransition {
         let Some(record) = self.records.get_mut(&result.effect) else {
             return EffectTransition::UnknownEffect;
         };
         if record.request.epoch != result.epoch {
             return EffectTransition::StaleEpoch;
         }
-        let phase = match result.result {
-            EffectDispatchResult::DispatchFailed(reason) => EffectPhase::DispatchFailed(reason),
-            EffectDispatchResult::Unsupported(reason) => EffectPhase::Unsupported(reason),
-            EffectDispatchResult::Indeterminate(reason) => EffectPhase::Indeterminate(reason),
+        let observation_only = matches!(
+            record.request.effect,
+            PlatformEffect::ContinueCleanup { .. }
+        );
+        let phase = match (observation_only, result.result) {
+            (false, EffectDispatchResult::DispatchFailed(reason)) => {
+                EffectPhase::DispatchFailed(reason)
+            }
+            (true, EffectDispatchResult::DispatchFailed(reason)) => {
+                EffectPhase::ObservationDispatchFailed(reason)
+            }
+            (false, EffectDispatchResult::Unsupported(reason)) => EffectPhase::Unsupported(reason),
+            (true, EffectDispatchResult::Unsupported(reason)) => {
+                EffectPhase::ObservationUnsupported(reason)
+            }
+            (_, EffectDispatchResult::Indeterminate(reason)) => EffectPhase::Indeterminate(reason),
         };
         if record.phase == phase {
             return EffectTransition::Duplicate;
         }
-        if !matches!(record.phase, EffectPhase::Requested) {
+        let transition_allowed = matches!(record.phase, EffectPhase::Requested)
+            || matches!(record.phase, EffectPhase::Indeterminate(_))
+                && matches!(
+                    phase,
+                    EffectPhase::DispatchFailed(_)
+                        | EffectPhase::ObservationDispatchFailed(_)
+                        | EffectPhase::Unsupported(_)
+                        | EffectPhase::ObservationUnsupported(_)
+                );
+        if !transition_allowed {
             return EffectTransition::Duplicate;
         }
         record.phase = phase;
@@ -492,6 +551,92 @@ mod tests {
             EffectTransition::Applied
         );
         assert!(ledger.take_new_requests().is_empty());
+    }
+
+    #[test]
+    fn definitive_failure_may_refine_an_indeterminate_dispatch() {
+        let mut ledger = EffectLedger::default();
+        let effect = ledger
+            .request(create_effect(binding(1, 1)))
+            .expect("effect identity must be available");
+        assert_eq!(
+            ledger.report(
+                WorkspaceEpoch::new(1),
+                EffectResult::new(
+                    effect,
+                    WorkspaceEpoch::new(1),
+                    EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::AcknowledgementLost,
+                    ),
+                ),
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            ledger.report(
+                WorkspaceEpoch::new(1),
+                EffectResult::new(
+                    effect,
+                    WorkspaceEpoch::new(1),
+                    EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+                ),
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            ledger.record(effect).map(EffectRecord::phase),
+            Some(EffectPhase::DispatchFailed(
+                DispatchFailureReason::ProviderStopped
+            ))
+        );
+    }
+
+    #[test]
+    fn cleanup_continuation_dispatch_results_do_not_mutate_the_destructive_predecessor() {
+        for (result, expected_phase) in [
+            (
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+                EffectPhase::ObservationDispatchFailed(DispatchFailureReason::ProviderStopped),
+            ),
+            (
+                EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+                EffectPhase::ObservationUnsupported(EffectUnsupportedReason::BackendUnsupported),
+            ),
+        ] {
+            let mut ledger = EffectLedger::default();
+            let binding = binding(1, 1);
+            let predecessor = ledger
+                .request(PlatformEffect::ReleaseChild { binding })
+                .expect("destructive cleanup must allocate");
+            let _ = ledger.take_new_requests();
+            let continuation = ledger
+                .request_in(
+                    WorkspaceEpoch::new(2),
+                    PlatformEffect::ContinueCleanup {
+                        binding,
+                        predecessor,
+                        after: None,
+                    },
+                )
+                .expect("observation continuation must allocate");
+            let _ = ledger.take_new_requests();
+
+            assert_eq!(
+                ledger.report(
+                    WorkspaceEpoch::new(2),
+                    EffectResult::new(continuation, WorkspaceEpoch::new(2), result),
+                ),
+                EffectTransition::Applied
+            );
+            assert_eq!(
+                ledger.record(continuation).map(EffectRecord::phase),
+                Some(expected_phase)
+            );
+            assert_eq!(
+                ledger.record(predecessor).map(EffectRecord::phase),
+                Some(EffectPhase::Requested)
+            );
+        }
     }
 
     #[test]

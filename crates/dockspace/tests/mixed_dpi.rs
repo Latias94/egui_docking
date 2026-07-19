@@ -3,13 +3,14 @@ use dockspace::engine::DockEngine;
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, NativePlacementProof, PointerId};
+use dockspace::intent::{Authority, AuthorityUnavailableReason, NativePlacementProof, PointerId};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
     PointerObservation, PointerWindow, WindowInputState, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
+use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
 const SURFACE_ONE: SurfaceId = SurfaceId::new(1);
 const SURFACE_ONE_AND_HALF: SurfaceId = SurfaceId::new(2);
@@ -117,8 +118,23 @@ fn publish_snapshot(
     pointers: Vec<PointerObservation>,
     work_areas: Vec<ObservedWorkArea>,
 ) {
-    let snapshot = PlatformSnapshot::new(supported_capabilities(), windows, pointers, work_areas)
-        .expect("test platform snapshot must be valid");
+    let focus_generation = engine
+        .viewport()
+        .registry()
+        .inventory_generation()
+        .checked_next()
+        .expect("test focus observation generation must not exhaust");
+    let snapshot = PlatformSnapshot::new(
+        supported_capabilities(),
+        unknown_focus_observation(
+            FocusObservationGeneration::new(focus_generation.get()),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        windows,
+        pointers,
+        work_areas,
+    )
+    .expect("test platform snapshot must be valid");
     engine
         .enqueue_platform_snapshot(snapshot)
         .expect("platform snapshot sequence must be available");

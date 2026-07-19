@@ -13,6 +13,7 @@ use crate::ids::{InputSequence, WorkspaceEpoch, WorkspaceRevision};
 use crate::interaction::{InteractionEvent, InteractionOutcome};
 use crate::scene::{SceneBuildError, SceneStamp};
 use crate::viewport::ViewportBinding;
+use crate::viewport_focus::FocusDelta;
 
 /// Version of all workspace and policy state used to derive semantic input.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -73,6 +74,10 @@ pub enum InputOutcome {
     PlatformSnapshotPublished {
         /// Structured capability, inventory, and route transition.
         transition: ViewportFrameTransition,
+        /// Single global native-focus observation reduced in this same core input.
+        focus: crate::viewport_focus::FocusObservationTransition,
+        /// Explicit activations created by lifecycle commits in this same core input.
+        activations: Vec<crate::viewport_focus::ActivationStart>,
     },
     /// Platform facts from an earlier workspace epoch were consumed without mutation.
     PlatformSnapshotStale {
@@ -83,6 +88,25 @@ pub enum InputOutcome {
     PlatformEffectReported {
         effect: EffectId,
         transition: EffectTransition,
+        /// Activation state change when the effect belongs to the global focus lane.
+        focus: Option<crate::viewport_focus::FocusEffectReportTransition>,
+    },
+    /// One explicit viewport activation request was reduced.
+    ViewportActivationRequested {
+        activation: crate::viewport_focus::ActivationStart,
+    },
+    /// A caller attempted to inject a core-owned lifecycle activation cause.
+    ViewportActivationRejected {
+        request: crate::viewport_focus::ViewportActivationRequest,
+    },
+    /// One exact pane-focus observation was reduced.
+    PaneFocusObservationPublished {
+        transition: crate::viewport_focus::PaneFocusObservationTransition,
+    },
+    /// Pane focus from an older workspace epoch was consumed without mutation.
+    PaneFocusObservationStale {
+        expected_epoch: WorkspaceEpoch,
+        current_epoch: WorkspaceEpoch,
     },
     /// One exact close request was decided without mutating topology.
     ViewportCloseDecided {
@@ -222,19 +246,33 @@ pub struct EngineTransition {
     events: Vec<WorkspaceEvent>,
     interaction_events: Vec<InteractionEvent>,
     platform_effects: Vec<EffectRequest>,
+    focus_delta: FocusDelta,
     published_state_changed: bool,
 }
 
+pub(crate) struct EngineTransitionParts {
+    pub(crate) before: WorkspaceVersion,
+    pub(crate) after: WorkspaceVersion,
+    pub(crate) reduced: Vec<ReducedInput>,
+    pub(crate) events: Vec<WorkspaceEvent>,
+    pub(crate) interaction_events: Vec<InteractionEvent>,
+    pub(crate) platform_effects: Vec<EffectRequest>,
+    pub(crate) focus_delta: FocusDelta,
+    pub(crate) published_state_changed: bool,
+}
+
 impl EngineTransition {
-    pub(crate) fn new(
-        before: WorkspaceVersion,
-        after: WorkspaceVersion,
-        reduced: Vec<ReducedInput>,
-        events: Vec<WorkspaceEvent>,
-        interaction_events: Vec<InteractionEvent>,
-        platform_effects: Vec<EffectRequest>,
-        published_state_changed: bool,
-    ) -> Self {
+    pub(crate) fn new(parts: EngineTransitionParts) -> Self {
+        let EngineTransitionParts {
+            before,
+            after,
+            reduced,
+            events,
+            interaction_events,
+            platform_effects,
+            focus_delta,
+            published_state_changed,
+        } = parts;
         Self {
             before,
             after,
@@ -242,6 +280,7 @@ impl EngineTransition {
             events,
             interaction_events,
             platform_effects,
+            focus_delta,
             published_state_changed,
         }
     }
@@ -280,6 +319,12 @@ impl EngineTransition {
     #[must_use]
     pub fn platform_effects(&self) -> &[EffectRequest] {
         &self.platform_effects
+    }
+
+    /// Returns the adapter-facing net focus change for this atomic boundary.
+    #[must_use]
+    pub const fn focus_delta(&self) -> &FocusDelta {
+        &self.focus_delta
     }
 
     /// Returns whether any durable or policy state changed.

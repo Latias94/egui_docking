@@ -1,20 +1,19 @@
 use dockspace::command::{MovePayload, RootContent, WorkspaceCommand};
 use dockspace::coordinates::TearOffPlacementRequest;
 use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectIndeterminateReason, EffectPhase,
-    EffectRequest, EffectResult, EffectTransition, PlatformEffect,
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason, EffectPhase,
+    EffectRequest, EffectResult, EffectTransition, EffectUnsupportedReason, PlatformEffect,
 };
 use dockspace::engine::{DockEngine, EngineError, EngineInput};
 use dockspace::frame::{
-    NativeCreateRequest, NativeCreateStatus, RestoreReplacementStatus, RetiredViewportStatus,
-    ViewportCloseDecision, ViewportCloseDecisionRejection, ViewportClosePlan,
-    ViewportCloseRequestId, ViewportCloseStatus,
+    NativeCreateRequest, NativeCreateStatus, RetiredViewportStatus, ViewportCloseDecision,
+    ViewportCloseDecisionRejection, ViewportClosePlan, ViewportCloseRequestId, ViewportCloseStatus,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{
-    Authority, ContainedPlacementUnavailable, ContainedTearOffProposal, NativeTearOffProposal,
+    Authority, AuthorityUnavailableReason, ContainedTearOffProposal, NativeTearOffProposal,
     PointerButton, PointerButtonState, PointerId, RendererIntent, TargetAuthority, TearOffRequest,
 };
 use dockspace::interaction::{
@@ -22,14 +21,21 @@ use dockspace::interaction::{
     PreviewResolutionStatus,
 };
 use dockspace::platform::{
-    ButtonObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
-    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState, WindowPresentationState,
+    ButtonObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
+    PlatformCapabilities, PlatformCapability, PlatformCapabilityReason, PlatformRequirement,
+    PlatformSnapshot, PointerObservation, PointerWindow, WindowInputObservation, WindowInputState,
+    WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::{EngineTransition, InputOutcome};
-use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken, WorkAreaToken};
+use dockspace::viewport::{
+    InputObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaToken,
+};
+use dockspace::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+    unknown_focus_observation,
+};
 use dockspace::viewport_registry::ViewportLifecycle;
 
 const ROOT_SOURCE: RootId = RootId::new(1);
@@ -47,6 +53,7 @@ const POINTER: PointerId = PointerId::new(1);
 struct Fixture {
     engine: DockEngine,
     source_tabs: NodeId,
+    input_generation: u64,
 }
 
 fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -111,6 +118,7 @@ fn fixture() -> Fixture {
     Fixture {
         engine,
         source_tabs,
+        input_generation: 0,
     }
 }
 
@@ -122,17 +130,7 @@ fn fixture_with_source_items(source_items: &[u64]) -> Fixture {
     Fixture {
         engine,
         source_tabs,
-    }
-}
-
-fn fixture_with_host_items(host_items: &[u64]) -> Fixture {
-    let (workspace, source_tabs) = base_workspace_with_items(&[1, 2], host_items);
-    let mut policy = DockPolicy::default();
-    policy.set_allow_native_surfaces(true);
-    let engine = DockEngine::new(workspace, policy).expect("test engine must be valid");
-    Fixture {
-        engine,
-        source_tabs,
+        input_generation: 0,
     }
 }
 
@@ -157,6 +155,7 @@ fn fixture_with_split_source() -> (Fixture, NodeId) {
         Fixture {
             engine,
             source_tabs,
+            input_generation: 0,
         },
         source_split,
     )
@@ -173,7 +172,8 @@ fn platform_capabilities() -> PlatformCapabilities {
     capabilities.set_work_area(PlatformCapability::Supported);
     capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
     capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
-    capabilities.set_window_focus(PlatformCapability::Supported);
+    capabilities.set_global_focus_observation(PlatformCapability::Supported);
+    capabilities.set_window_activation_control(PlatformCapability::Supported);
     capabilities.set_close_cancellation(PlatformCapability::Supported);
     capabilities
 }
@@ -237,9 +237,13 @@ fn pointer_observation() -> PointerObservation {
     .expect("test pointer observation must be canonical")
 }
 
-fn platform_snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
+fn platform_snapshot(
+    focus: FocusObservationEnvelope,
+    windows: Vec<ObservedWindow>,
+) -> PlatformSnapshot {
     PlatformSnapshot::new(
         platform_capabilities(),
+        focus,
         windows,
         vec![pointer_observation()],
         vec![ObservedWorkArea::new(
@@ -252,9 +256,60 @@ fn platform_snapshot(windows: Vec<ObservedWindow>) -> PlatformSnapshot {
 }
 
 fn publish_windows(fixture: &mut Fixture, windows: Vec<ObservedWindow>) -> EngineTransition {
+    fixture.input_generation += 1;
+    let focus = unknown_focus_observation(
+        FocusObservationGeneration::new(fixture.input_generation),
+        AuthorityUnavailableReason::NotReported,
+    );
+    publish_windows_with_focus_observation(fixture, windows, focus)
+}
+
+fn publish_windows_with_global_focus(
+    fixture: &mut Fixture,
+    windows: Vec<ObservedWindow>,
+    focused: GlobalFocusedWindow,
+    acknowledged_effect: Option<dockspace::effect::EffectId>,
+) -> EngineTransition {
+    fixture.input_generation += 1;
+    let focus = FocusObservationEnvelope::new(
+        FocusObservationGeneration::new(fixture.input_generation),
+        Authority::Known(focused),
+        Authority::Known(acknowledged_effect),
+    );
+    publish_windows_with_focus_observation(fixture, windows, focus)
+}
+
+fn publish_windows_with_focus_observation(
+    fixture: &mut Fixture,
+    mut windows: Vec<ObservedWindow>,
+    focus: FocusObservationEnvelope,
+) -> EngineTransition {
+    if let Some(binding) = fixture
+        .engine
+        .viewport()
+        .viewport(SURFACE_SOURCE)
+        .map(dockspace::viewport_registry::ViewportRecord::binding)
+    {
+        for window in &mut windows {
+            let state = match window.input_state() {
+                Authority::Known(state) => *state,
+                Authority::Unknown(_) => continue,
+            };
+            if window.token() == SOURCE_TOKEN {
+                *window = window
+                    .clone()
+                    .with_input_observation(WindowInputObservation::new(
+                        binding,
+                        InputObservationGeneration::new(fixture.input_generation),
+                        Authority::Known(state),
+                        InputEffectAcknowledgement::known(None),
+                    ));
+            }
+        }
+    }
     fixture
         .engine
-        .enqueue_platform_snapshot(platform_snapshot(windows))
+        .enqueue_platform_snapshot(platform_snapshot(focus, windows))
         .expect("platform snapshot must enqueue");
     let transition = fixture
         .engine
@@ -558,14 +613,8 @@ fn native_window_with_presentation(
     request: NativeCreateRequest,
     close_requested: bool,
     presentation: WindowPresentationState,
-    focused: Option<bool>,
 ) -> ObservedWindow {
-    let window =
-        native_window(request, close_requested).with_presentation(Authority::Known(presentation));
-    match focused {
-        Some(focused) => window.with_focused(Authority::Known(focused)),
-        None => window,
-    }
+    native_window(request, close_requested).with_presentation(Authority::Known(presentation))
 }
 
 fn close_request_from(transition: &EngineTransition) -> ViewportCloseRequestId {
@@ -573,7 +622,7 @@ fn close_request_from(transition: &EngineTransition) -> ViewportCloseRequestId {
         .reduced_inputs()
         .iter()
         .find_map(|reduced| match reduced.outcome() {
-            InputOutcome::PlatformSnapshotPublished { transition } => {
+            InputOutcome::PlatformSnapshotPublished { transition, .. } => {
                 transition.close_requests().first().copied()
             }
             _ => None,
@@ -675,6 +724,7 @@ fn assert_old_platform_inputs_are_stale(
         InputOutcome::PlatformEffectReported {
             effect,
             transition: EffectTransition::StaleEpoch,
+            ..
         } if *effect == request.effect()
     )));
 }
@@ -707,7 +757,7 @@ fn create_commits_only_after_the_reserved_binding_is_observed_ready() {
     effect_of_kind(ready.platform_effects(), |effect| {
         matches!(
             effect,
-            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
         )
     });
 
@@ -718,10 +768,7 @@ fn create_commits_only_after_the_reserved_binding_is_observed_ready() {
             .native_create_saga(request.saga())
             .expect("committed saga must remain queryable")
             .status(),
-        NativeCreateStatus::Committed {
-            show: None,
-            focus: Some(_),
-        }
+        NativeCreateStatus::Committed { show: None }
     ));
     assert!(fixture.engine.workspace().surface(SURFACE_NATIVE).is_some());
     assert!(fixture.engine.workspace().root(ROOT_NATIVE).is_some());
@@ -747,18 +794,15 @@ fn hidden_native_create_commits_topology_before_showing_the_window() {
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
 
-    let hidden = publish_windows(
+    let hidden = publish_windows_with_global_focus(
         &mut fixture,
         vec![
             source_window(false),
             host_window(false),
-            native_window_with_presentation(
-                request,
-                false,
-                WindowPresentationState::Hidden,
-                Some(false),
-            ),
+            native_window_with_presentation(request, false, WindowPresentationState::Hidden),
         ],
+        GlobalFocusedWindow::None,
+        None,
     );
     let show = effect_of_kind(hidden.platform_effects(), |effect| {
         matches!(
@@ -769,7 +813,7 @@ fn hidden_native_create_commits_topology_before_showing_the_window() {
     assert!(!hidden.platform_effects().iter().any(|effect| {
         matches!(
             effect.effect(),
-            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
         )
     }));
     assert!(matches!(
@@ -800,37 +844,31 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let _ = publish_windows(
+    let _ = publish_windows_with_global_focus(
         &mut fixture,
         vec![
             source_window(false),
             host_window(false),
-            native_window_with_presentation(
-                request,
-                false,
-                WindowPresentationState::Hidden,
-                Some(false),
-            ),
+            native_window_with_presentation(request, false, WindowPresentationState::Hidden),
         ],
+        GlobalFocusedWindow::None,
+        None,
     );
 
-    let visible = publish_windows(
+    let visible = publish_windows_with_global_focus(
         &mut fixture,
         vec![
             source_window(false),
             host_window(false),
-            native_window_with_presentation(
-                request,
-                false,
-                WindowPresentationState::Visible,
-                Some(false),
-            ),
+            native_window_with_presentation(request, false, WindowPresentationState::Visible),
         ],
+        GlobalFocusedWindow::None,
+        None,
     );
     let focus = effect_of_kind(visible.platform_effects(), |effect| {
         matches!(
             effect,
-            PlatformEffect::RequestFocus { binding } if *binding == request.binding()
+            PlatformEffect::RequestFocus { binding, .. } if *binding == request.binding()
         )
     });
     assert!(matches!(
@@ -840,10 +878,7 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
             .native_create_saga(request.saga())
             .expect("visible create saga must remain queryable")
             .status(),
-        NativeCreateStatus::Committed {
-            show: Some(_),
-            focus: Some(actual),
-        } if actual == focus.id()
+        NativeCreateStatus::Committed { show: Some(_) }
     ));
     assert!(matches!(
         fixture
@@ -866,18 +901,15 @@ fn hidden_native_create_waits_for_visible_and_focused_observations() {
         EffectPhase::Requested
     ));
 
-    let focused = publish_windows(
+    let focused = publish_windows_with_global_focus(
         &mut fixture,
         vec![
             source_window(false),
             host_window(false),
-            native_window_with_presentation(
-                request,
-                false,
-                WindowPresentationState::Visible,
-                Some(true),
-            ),
+            native_window_with_presentation(request, false, WindowPresentationState::Visible),
         ],
+        GlobalFocusedWindow::Dock(request.binding()),
+        Some(focus.id()),
     );
     assert!(focused.platform_effects().is_empty());
     assert!(matches!(
@@ -1508,7 +1540,7 @@ fn root_and_child_close_veto_emit_role_specific_effects_without_mutating_workspa
         let close = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
         let request = close_request_from(&close);
 
-        let decided = decide_close(&mut fixture, request, ViewportCloseDecision::Veto);
+        let decided = decide_close(&mut fixture, request, ViewportCloseDecision::Prevent);
         assert_eq!(fixture.engine.workspace(), &before);
         let expected_binding = fixture
             .engine
@@ -1539,7 +1571,7 @@ fn root_and_child_close_veto_emit_role_specific_effects_without_mutating_workspa
 
         let repeated = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
         assert!(repeated.platform_effects().is_empty());
-        let InputOutcome::PlatformSnapshotPublished { transition } =
+        let InputOutcome::PlatformSnapshotPublished { transition, .. } =
             repeated.reduced_inputs()[0].outcome()
         else {
             panic!("repeated close fact must publish a platform transition");
@@ -1560,8 +1592,13 @@ fn close_accept_without_authoritative_inventory_is_rejected_and_held() {
             PlatformCapabilityReason::NotReported,
         );
         capabilities.set_authoritative_inventory(unavailable);
+        fixture.input_generation += 1;
         let snapshot = PlatformSnapshot::new(
             capabilities,
+            unknown_focus_observation(
+                FocusObservationGeneration::new(fixture.input_generation),
+                AuthorityUnavailableReason::NotReported,
+            ),
             vec![source_window(false), host_window(true)],
             vec![pointer_observation()],
             vec![ObservedWorkArea::new(
@@ -1580,10 +1617,7 @@ fn close_accept_without_authoritative_inventory_is_rejected_and_held() {
             .reduce_pending()
             .expect("degraded close snapshot must reduce");
         let request = close_request_from(&close);
-        let plan = ViewportClosePlan::new(
-            None,
-            close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(91)),
-        );
+        let plan = ViewportClosePlan::retain_layout();
 
         fixture
             .engine
@@ -1634,16 +1668,13 @@ fn close_accept_without_authoritative_inventory_is_rejected_and_held() {
 }
 
 #[test]
-fn close_accept_with_unavailable_recovery_placement_is_rejected_and_held() {
+fn retain_layout_accept_does_not_depend_on_recovery_scene_availability() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let before = fixture.engine.workspace().clone();
     let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
     let request = close_request_from(&requested);
-    let plan = ViewportClosePlan::new(
-        None,
-        close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(93)),
-    );
+    let plan = ViewportClosePlan::retain_layout();
     let mut scene = BuildingScene::new([SURFACE_SOURCE, SURFACE_HOST])
         .expect("test surface roster must be unique");
     scene
@@ -1665,52 +1696,48 @@ fn close_accept_with_unavailable_recovery_placement_is_rejected_and_held() {
         .engine
         .enqueue_viewport_close_decision(request, ViewportCloseDecision::Accept(plan))
         .expect("close decision must enqueue");
-    let rejected = fixture
+    let accepted = fixture
         .engine
         .reduce_pending()
-        .expect("unavailable recovery placement must fail closed");
-    let InputOutcome::ViewportCloseDecisionRejected {
-        request: actual_request,
-        reason:
-            ViewportCloseDecisionRejection::RecoveryPlacementUnavailable(
-                ContainedPlacementUnavailable::BootstrapSurface { surface },
-            ),
-        hold_effect,
-    } = rejected.reduced_inputs()[0].outcome()
-    else {
-        panic!("unavailable recovery placement must publish a structured hold: {rejected:?}");
-    };
-    assert_eq!(*actual_request, request);
-    assert_eq!(*surface, SURFACE_SOURCE);
-    assert!(rejected.platform_effects().iter().any(|effect| {
-        effect.id() == *hold_effect && matches!(effect.effect(), PlatformEffect::RetainChild { .. })
-    }));
+        .expect("retain-layout close must not inspect the bootstrap host");
+    assert!(matches!(
+        accepted.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::ViewportCloseDecided {
+                    request: actual,
+                    ..
+                } if *actual == request
+            )
+    ));
+    assert!(
+        accepted
+            .platform_effects()
+            .iter()
+            .any(|effect| { matches!(effect.effect(), PlatformEffect::ReleaseChild { .. }) })
+    );
     assert_eq!(fixture.engine.workspace(), &before);
     assert!(matches!(
         fixture
             .engine
             .viewport()
             .viewport_close_request(request)
-            .expect("rejected close remains queryable")
+            .expect("accepted close remains queryable")
             .status(),
-        ViewportCloseStatus::Vetoed { effect } if effect == *hold_effect
+        ViewportCloseStatus::AwaitingDestroyed { .. }
     ));
 }
 
 #[test]
-fn root_and_child_close_accept_commit_recovery_only_after_authoritative_destruction() {
-    for (index, role) in [ViewportRole::Root, ViewportRole::Child]
-        .into_iter()
-        .enumerate()
-    {
+fn root_and_child_retain_layout_close_only_unbind_after_authoritative_destruction() {
+    for role in [ViewportRole::Root, ViewportRole::Child] {
         let mut fixture = fixture();
         prepare_base_platform(&mut fixture, role);
         let before = fixture.engine.workspace().clone();
         let close = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
         let request = close_request_from(&close);
-        let floating = FloatingPresentationId::new(80 + index as u64);
-        let plan =
-            ViewportClosePlan::new(None, close_recovery(&fixture.engine, ROOT_HOST, floating));
+        let plan = ViewportClosePlan::retain_layout();
 
         let decided = decide_close(
             &mut fixture,
@@ -1749,14 +1776,8 @@ fn root_and_child_close_accept_commit_recovery_only_after_authoritative_destruct
         assert_eq!(fixture.engine.workspace(), &before);
 
         publish_windows(&mut fixture, vec![source_window(false)]);
-        assert!(fixture.engine.workspace().surface(SURFACE_HOST).is_none());
-        let recovered = fixture
-            .engine
-            .workspace()
-            .contained_floating(floating)
-            .expect("destroyed root must be recovered whole");
-        assert_eq!(recovered.root, ROOT_HOST);
-        assert_eq!(recovered.surface, SURFACE_SOURCE);
+        assert_eq!(fixture.engine.workspace(), &before);
+        assert!(fixture.engine.viewport().viewport(SURFACE_HOST).is_none());
         assert_eq!(
             fixture
                 .engine
@@ -1780,150 +1801,13 @@ fn root_and_child_close_accept_commit_recovery_only_after_authoritative_destruct
 }
 
 #[test]
-fn partial_close_primary_is_discarded_before_whole_root_recovery() {
-    let mut fixture = fixture_with_host_items(&[3, 4]);
-    prepare_base_platform(&mut fixture, ViewportRole::Child);
-    let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
-    let request = close_request_from(&requested);
-    let host_node = fixture
-        .engine
-        .workspace()
-        .root(ROOT_HOST)
-        .expect("host root must exist")
-        .node;
-    let partial = fixture
-        .engine
-        .workspace()
-        .capture_item_source(ROOT_HOST, host_node, ItemId::new(3))
-        .expect("partial close source must be current");
-    let floating = FloatingPresentationId::new(90);
-    let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
-    decide_close(
-        &mut fixture,
-        request,
-        ViewportCloseDecision::Accept(ViewportClosePlan::new(
-            Some(WorkspaceCommand::Close { source: partial }),
-            recovery,
-        )),
-    );
-
-    publish_windows(&mut fixture, vec![source_window(false)]);
-
-    let items = fixture.engine.workspace().item_multiset();
-    assert!(items.contains_key(&ItemId::new(3)));
-    assert!(items.contains_key(&ItemId::new(4)));
-    assert!(fixture.engine.workspace().surface(SURFACE_HOST).is_none());
-    assert_eq!(
-        fixture
-            .engine
-            .workspace()
-            .contained_floating(floating)
-            .expect("complete host root must recover")
-            .root,
-        ROOT_HOST
-    );
-}
-
-#[test]
-fn unrelated_close_primary_is_discarded_before_whole_root_recovery() {
-    let mut fixture = fixture();
-    prepare_base_platform(&mut fixture, ViewportRole::Child);
-    let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
-    let request = close_request_from(&requested);
-    let unrelated = fixture
-        .engine
-        .workspace()
-        .capture_item_source(ROOT_SOURCE, fixture.source_tabs, ItemId::new(2))
-        .expect("unrelated source selection must be current");
-    let floating = FloatingPresentationId::new(91);
-    let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
-    decide_close(
-        &mut fixture,
-        request,
-        ViewportCloseDecision::Accept(ViewportClosePlan::new(
-            Some(WorkspaceCommand::Select { source: unrelated }),
-            recovery,
-        )),
-    );
-
-    publish_windows(&mut fixture, vec![source_window(false)]);
-
-    assert!(matches!(
-        fixture.engine.workspace().node(fixture.source_tabs),
-        Some(Node::Tabs {
-            selected: Some(item),
-            ..
-        }) if *item == ItemId::new(1)
-    ));
-    assert_eq!(
-        fixture
-            .engine
-            .workspace()
-            .contained_floating(floating)
-            .expect("complete host root must recover")
-            .root,
-        ROOT_HOST
-    );
-}
-
-#[test]
-fn close_accept_rejects_a_recovery_root_from_another_surface() {
-    let mut fixture = fixture();
-    prepare_base_platform(&mut fixture, ViewportRole::Child);
-    let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
-    let request = close_request_from(&requested);
-    let recovery = close_recovery(
-        &fixture.engine,
-        ROOT_SOURCE,
-        FloatingPresentationId::new(92),
-    );
-    fixture
-        .engine
-        .enqueue_viewport_close_decision(
-            request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
-        )
-        .expect("invalid close decision must enqueue");
-
-    let rejected = fixture
-        .engine
-        .reduce_pending()
-        .expect("a mismatched recovery root must fail closed");
-    let InputOutcome::ViewportCloseDecisionRejected {
-        request: actual_request,
-        reason: ViewportCloseDecisionRejection::RecoveryRootMismatch,
-        hold_effect,
-    } = rejected.reduced_inputs()[0].outcome()
-    else {
-        panic!("mismatched recovery root must publish a structured hold: {rejected:?}");
-    };
-    assert_eq!(*actual_request, request);
-    assert!(rejected.platform_effects().iter().any(|effect| {
-        effect.id() == *hold_effect && matches!(effect.effect(), PlatformEffect::RetainChild { .. })
-    }));
-    assert!(matches!(
-        fixture
-            .engine
-            .viewport()
-            .viewport_close_request(request)
-            .expect("rejected close remains queryable")
-            .status(),
-        ViewportCloseStatus::Vetoed { effect } if effect == *hold_effect
-    ));
-    assert!(fixture.engine.workspace().surface(SURFACE_HOST).is_some());
-}
-
-#[test]
 fn accepted_close_dispatch_failure_keeps_the_root_and_allows_an_explicit_retry() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let before = fixture.engine.workspace().clone();
     let requested = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
     let request = close_request_from(&requested);
-    let plan = ViewportClosePlan::new(
-        None,
-        close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(31)),
-    );
+    let plan = ViewportClosePlan::retain_layout();
     let first = decide_close(
         &mut fixture,
         request,
@@ -1973,30 +1857,22 @@ fn accepted_close_dispatch_failure_keeps_the_root_and_allows_an_explicit_retry()
     });
     assert_ne!(retry_effect.id(), first_effect.id());
     publish_windows(&mut fixture, vec![source_window(false)]);
-    assert!(fixture.engine.workspace().surface(SURFACE_HOST).is_none());
-    assert!(
-        fixture
-            .engine
-            .workspace()
-            .contained_floating(FloatingPresentationId::new(31))
-            .is_some()
-    );
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert!(fixture.engine.viewport().viewport(SURFACE_HOST).is_none());
 }
 
 #[test]
 fn accepted_close_result_is_independent_of_failure_and_destruction_order() {
     fn accepted_close(
         fixture: &mut Fixture,
-        floating: FloatingPresentationId,
     ) -> (ViewportCloseRequestId, dockspace::effect::EffectId) {
         prepare_base_platform(fixture, ViewportRole::Child);
         let requested = publish_windows(fixture, vec![source_window(false), host_window(true)]);
         let request = close_request_from(&requested);
-        let recovery = close_recovery(&fixture.engine, ROOT_HOST, floating);
         let decided = decide_close(
             fixture,
             request,
-            ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
+            ViewportCloseDecision::Accept(ViewportClosePlan::retain_layout()),
         );
         let effect = effect_of_kind(decided.platform_effects(), |effect| {
             matches!(effect, PlatformEffect::ReleaseChild { .. })
@@ -2004,10 +1880,8 @@ fn accepted_close_result_is_independent_of_failure_and_destruction_order() {
         (request, effect.id())
     }
 
-    let floating = FloatingPresentationId::new(32);
     let mut failure_first = fixture();
-    let (failure_first_request, failure_first_effect) =
-        accepted_close(&mut failure_first, floating);
+    let (failure_first_request, failure_first_effect) = accepted_close(&mut failure_first);
     failure_first
         .engine
         .enqueue_platform_effect_result(EffectResult::new(
@@ -2033,7 +1907,7 @@ fn accepted_close_result_is_independent_of_failure_and_destruction_order() {
 
     let mut destruction_first = fixture();
     let (destruction_first_request, destruction_first_effect) =
-        accepted_close(&mut destruction_first, floating);
+        accepted_close(&mut destruction_first);
     publish_windows(&mut destruction_first, vec![source_window(false)]);
     destruction_first
         .engine
@@ -2112,7 +1986,7 @@ fn direct_native_destruction_waits_for_current_scene_before_whole_root_recovery(
 }
 
 #[test]
-fn restore_rebinds_retained_tokens_to_the_new_epoch_and_incarnation() {
+fn restore_rebinds_roots_but_fails_closed_for_child_recovery_contracts() {
     let mut fixture = fixture();
     let (source_before, host_before) = register_base_viewports(&mut fixture, ViewportRole::Child);
     publish_windows(&mut fixture, vec![source_window(false), host_window(false)]);
@@ -2139,131 +2013,66 @@ fn restore_rebinds_retained_tokens_to_the_new_epoch_and_incarnation() {
         }
         outcome => panic!("unexpected restore outcome: {outcome:?}"),
     };
-    assert_eq!(reconciliation.rebound().len(), 2);
-    assert!(reconciliation.retired().is_empty());
-
-    for before in [source_before, host_before] {
-        let after = fixture
+    let [(actual_source, source_after)] = reconciliation.rebound() else {
+        panic!("only the root binding may be rebound: {reconciliation:?}");
+    };
+    assert_eq!(*actual_source, source_before);
+    assert_eq!(source_after.surface(), source_before.surface());
+    assert_eq!(source_after.token(), source_before.token());
+    assert_ne!(source_after.epoch(), source_before.epoch());
+    assert_ne!(source_after.incarnation(), source_before.incarnation());
+    assert_eq!(reconciliation.retired(), &[host_before]);
+    assert!(reconciliation.replacements().is_empty());
+    assert_eq!(reconciliation.unbound_surfaces(), &[SURFACE_HOST]);
+    assert_eq!(
+        fixture
             .engine
             .viewport()
-            .viewport(before.surface())
-            .expect("retained surface must remain registered")
-            .binding();
-        assert_eq!(after.surface(), before.surface());
-        assert_eq!(after.token(), before.token());
-        assert_ne!(after.epoch(), before.epoch());
-        assert_ne!(after.incarnation(), before.incarnation());
-        assert_eq!(
-            fixture
-                .engine
-                .viewport()
-                .viewport(before.surface())
-                .expect("retained viewport must be queryable")
-                .lifecycle(),
-            ViewportLifecycle::AwaitingObservation
-        );
-        assert!(
-            reconciliation
-                .rebound()
-                .iter()
-                .any(|(old, new)| *old == before && *new == after)
-        );
-    }
+            .viewport(SURFACE_SOURCE)
+            .expect("root viewport must remain registered")
+            .lifecycle(),
+        ViewportLifecycle::AwaitingObservation
+    );
+    assert!(fixture.engine.viewport().viewport(SURFACE_HOST).is_none());
+    assert!(
+        transition.platform_effects().iter().all(|request| {
+            !matches!(request.effect(), PlatformEffect::RequestReplacement { .. })
+        })
+    );
 }
 
 #[test]
-fn a_ready_restore_replacement_is_rebound_instead_of_recreated_on_the_next_restore() {
+fn child_with_pending_close_is_unbound_without_an_automatic_restore_replacement() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let close = publish_windows(&mut fixture, vec![source_window(false), host_window(true)]);
     let close_request = close_request_from(&close);
-    let recovery = close_recovery(&fixture.engine, ROOT_HOST, FloatingPresentationId::new(30));
     decide_close(
         &mut fixture,
         close_request,
-        ViewportCloseDecision::Accept(ViewportClosePlan::new(None, recovery)),
+        ViewportCloseDecision::Accept(ViewportClosePlan::retain_layout()),
     );
 
     let workspace = fixture.engine.workspace().clone();
     fixture
         .engine
-        .enqueue_workspace_replacement(workspace.clone())
-        .expect("first workspace replacement must enqueue");
-    let first = fixture
-        .engine
-        .reduce_pending()
-        .expect("first workspace replacement must reduce");
-    let first_reconciliation = match first.reduced_inputs()[0].outcome() {
-        InputOutcome::WorkspaceReplaced { reconciliation, .. } => reconciliation,
-        outcome => panic!("unexpected first restore outcome: {outcome:?}"),
-    };
-    let [replacement_before] = first_reconciliation.replacements() else {
-        panic!("destructive pending close must request one replacement");
-    };
-    assert!(first.platform_effects().iter().any(|request| {
-        matches!(
-            request.effect(),
-            PlatformEffect::RequestReplacement { binding, .. }
-                if binding == replacement_before
-        )
-    }));
-
-    publish_windows(
-        &mut fixture,
-        vec![
-            source_window(false),
-            observed_window(
-                replacement_before.token(),
-                900.0,
-                false,
-                WindowInputState::ReceivesInput,
-            ),
-        ],
-    );
-    assert_eq!(
-        fixture
-            .engine
-            .viewport()
-            .restore_replacement(SURFACE_HOST)
-            .expect("ready replacement must remain queryable")
-            .status(),
-        RestoreReplacementStatus::Ready
-    );
-
-    fixture
-        .engine
         .enqueue_workspace_replacement(workspace)
-        .expect("second workspace replacement must enqueue");
-    let second = fixture
+        .expect("workspace replacement must enqueue");
+    let restored = fixture
         .engine
         .reduce_pending()
-        .expect("second workspace replacement must reduce");
-    let second_reconciliation = match second.reduced_inputs()[0].outcome() {
+        .expect("workspace replacement must reduce");
+    let reconciliation = match restored.reduced_inputs()[0].outcome() {
         InputOutcome::WorkspaceReplaced { reconciliation, .. } => reconciliation,
-        outcome => panic!("unexpected second restore outcome: {outcome:?}"),
+        outcome => panic!("unexpected restore outcome: {outcome:?}"),
     };
-    assert!(second_reconciliation.replacements().is_empty());
+    assert!(reconciliation.replacements().is_empty());
+    assert_eq!(reconciliation.unbound_surfaces(), &[SURFACE_HOST]);
+    assert!(fixture.engine.viewport().viewport(SURFACE_HOST).is_none());
     assert!(
-        second
-            .platform_effects()
-            .iter()
-            .all(|request| !matches!(request.effect(), PlatformEffect::RequestReplacement { .. }))
-    );
-    let replacement_after = fixture
-        .engine
-        .viewport()
-        .viewport(SURFACE_HOST)
-        .expect("ready replacement must remain bound")
-        .binding();
-    assert_eq!(replacement_after.token(), replacement_before.token());
-    assert_ne!(
-        replacement_after.incarnation(),
-        replacement_before.incarnation()
-    );
-    assert!(
-        second_reconciliation
-            .rebound()
-            .contains(&(*replacement_before, replacement_after))
+        restored.platform_effects().iter().all(|request| {
+            !matches!(request.effect(), PlatformEffect::RequestReplacement { .. })
+        })
     );
 }
 
@@ -2480,12 +2289,330 @@ fn repeated_restore_in_one_boundary_reissues_only_the_current_tombstone_cleanup(
     );
 }
 
+#[derive(Clone, Copy)]
+struct EffectIdentity {
+    id: EffectId,
+    epoch: WorkspaceEpoch,
+}
+
+impl EffectIdentity {
+    fn from_request(request: &EffectRequest) -> Self {
+        Self {
+            id: request.id(),
+            epoch: request.epoch(),
+        }
+    }
+}
+
+struct CleanupContinuationFixture {
+    fixture: Fixture,
+    host_binding: ViewportBinding,
+    destructive: EffectIdentity,
+    successor: EffectIdentity,
+    observer_result: EffectDispatchResult,
+    observer_phase: EffectPhase,
+}
+
+fn cleanup_continuation_fixture(role: ViewportRole) -> CleanupContinuationFixture {
+    let mut fixture = fixture();
+    let (_, host_binding) = register_base_viewports(&mut fixture, role);
+    publish_windows(&mut fixture, vec![source_window(false), host_window(false)]);
+
+    let replacement = source_only_workspace();
+    fixture
+        .engine
+        .enqueue_workspace_replacement(replacement.clone())
+        .expect("first workspace replacement must enqueue");
+    let first = fixture
+        .engine
+        .reduce_pending()
+        .expect("first workspace replacement must reduce");
+    let destructive = EffectIdentity::from_request(effect_of_kind(
+        first.platform_effects(),
+        |effect| match role {
+            ViewportRole::Root => matches!(
+                effect,
+                PlatformEffect::RequestRootClose { binding } if *binding == host_binding
+            ),
+            ViewportRole::Child => matches!(
+                effect,
+                PlatformEffect::ReleaseChild { binding } if *binding == host_binding
+            ),
+        },
+    ));
+
+    fixture
+        .engine
+        .enqueue_workspace_replacement(replacement)
+        .expect("second workspace replacement must enqueue");
+    let second = fixture
+        .engine
+        .reduce_pending()
+        .expect("second workspace replacement must reduce independently");
+    let successor =
+        EffectIdentity::from_request(effect_of_kind(second.platform_effects(), |effect| {
+            matches!(
+                effect,
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    ..
+                } if *binding == host_binding && *predecessor == destructive.id
+            )
+        }));
+    assert!(second.platform_effects().iter().all(|request| {
+        !matches!(
+            request.effect(),
+            PlatformEffect::ReleaseChild { binding }
+                | PlatformEffect::RequestRootClose { binding }
+                if *binding == host_binding
+        )
+    }));
+
+    let (observer_result, observer_phase) = match role {
+        ViewportRole::Root => (
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+            EffectPhase::ObservationDispatchFailed(DispatchFailureReason::ProviderStopped),
+        ),
+        ViewportRole::Child => (
+            EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+            EffectPhase::ObservationUnsupported(EffectUnsupportedReason::BackendUnsupported),
+        ),
+    };
+    CleanupContinuationFixture {
+        fixture,
+        host_binding,
+        destructive,
+        successor,
+        observer_result,
+        observer_phase,
+    }
+}
+
+fn fail_cleanup_continuation_observer(case: &mut CleanupContinuationFixture) {
+    case.fixture
+        .engine
+        .enqueue_platform_effect_result(EffectResult::new(
+            case.successor.id,
+            case.successor.epoch,
+            case.observer_result,
+        ))
+        .expect("continuation dispatch result must enqueue");
+    let observer = case
+        .fixture
+        .engine
+        .reduce_pending()
+        .expect("continuation dispatch result must reduce");
+    assert!(matches!(
+        observer.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition: EffectTransition::Applied,
+                    ..
+                } if *effect == case.successor.id
+            )
+    ));
+    assert_eq!(
+        case.fixture
+            .engine
+            .viewport()
+            .retired_viewports()
+            .find_map(|(token, retired)| (token == HOST_TOKEN).then_some(retired.status()))
+            .expect("retired cleanup obligation must remain queryable"),
+        RetiredViewportStatus::CleanupObservationFailed {
+            effect: case.successor.id,
+        }
+    );
+    assert_eq!(
+        case.fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(case.successor.id)
+            .expect("continuation effect must remain auditable")
+            .phase(),
+        case.observer_phase
+    );
+}
+
+fn retry_cleanup_continuation(case: &mut CleanupContinuationFixture) -> EffectIdentity {
+    let still_present = publish_windows(
+        &mut case.fixture,
+        vec![source_window(false), host_window(false)],
+    );
+    assert!(
+        still_present
+            .platform_effects()
+            .iter()
+            .all(|request| { !matches!(request.effect(), PlatformEffect::ContinueCleanup { .. }) })
+    );
+    case.fixture
+        .engine
+        .enqueue_viewport_cleanup_retry(case.successor.id)
+        .expect("provider recovery must enqueue an observation retry");
+    let retried = case
+        .fixture
+        .engine
+        .reduce_pending()
+        .expect("provider recovery must retry cleanup observation");
+    let retry =
+        EffectIdentity::from_request(effect_of_kind(retried.platform_effects(), |effect| {
+            matches!(
+                effect,
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after: Some(after),
+                } if *binding == case.host_binding
+                    && *predecessor == case.destructive.id
+                    && *after == case.successor.id
+            )
+        }));
+    assert!(retried.platform_effects().iter().all(|request| {
+        !matches!(
+            request.effect(),
+            PlatformEffect::ReleaseChild { binding }
+                | PlatformEffect::RequestRootClose { binding }
+                if *binding == case.host_binding
+        )
+    }));
+    retry
+}
+
+fn retry_failed_cleanup_continuation(case: &mut CleanupContinuationFixture, retry: EffectIdentity) {
+    case.fixture
+        .engine
+        .enqueue_platform_effect_result(EffectResult::new(
+            retry.id,
+            retry.epoch,
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+        ))
+        .expect("retry dispatch failure must enqueue");
+    case.fixture
+        .engine
+        .reduce_pending()
+        .expect("retry dispatch failure must remain observation-only");
+    case.fixture
+        .engine
+        .enqueue_viewport_cleanup_retry(retry.id)
+        .expect("a second observation retry must enqueue");
+    let retried_again = case
+        .fixture
+        .engine
+        .reduce_pending()
+        .expect("a second observation retry must reduce");
+    let retry_again = effect_of_kind(retried_again.platform_effects(), |effect| {
+        matches!(
+            effect,
+            PlatformEffect::ContinueCleanup {
+                binding,
+                predecessor,
+                after: Some(after),
+            } if *binding == case.host_binding
+                && *predecessor == case.destructive.id
+                && *after == retry.id
+        )
+    });
+    assert_eq!(retry_again.epoch(), case.successor.epoch);
+}
+
+fn assert_cleanup_predecessor_epoch_fence(case: &mut CleanupContinuationFixture) {
+    case.fixture
+        .engine
+        .enqueue_platform_effect_result(EffectResult::new(
+            case.destructive.id,
+            case.successor.epoch,
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+        ))
+        .expect("wrong-epoch predecessor evidence must enqueue");
+    let wrong_epoch = case
+        .fixture
+        .engine
+        .reduce_pending()
+        .expect("wrong-epoch predecessor evidence must reduce harmlessly");
+    assert!(matches!(
+        wrong_epoch.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition: EffectTransition::StaleEpoch,
+                    ..
+                } if *effect == case.destructive.id
+            )
+    ));
+
+    case.fixture
+        .engine
+        .enqueue_platform_effect_result(EffectResult::new(
+            case.destructive.id,
+            case.destructive.epoch,
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+        ))
+        .expect("exact predecessor evidence must enqueue");
+    let terminal = case
+        .fixture
+        .engine
+        .reduce_pending()
+        .expect("exact predecessor evidence must reduce");
+    assert!(matches!(
+        terminal.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition: EffectTransition::Applied,
+                    ..
+                } if *effect == case.destructive.id
+            )
+    ));
+    assert_eq!(
+        case.fixture
+            .engine
+            .viewport()
+            .retired_viewports()
+            .find_map(|(token, retired)| (token == HOST_TOKEN).then_some(retired.status()))
+            .expect("retired cleanup obligation must remain queryable"),
+        RetiredViewportStatus::CleanupFailed {
+            effect: case.destructive.id,
+        }
+    );
+}
+
 #[test]
-fn restore_tombstones_a_pending_create_and_compensates_one_late_appearance() {
+fn repeated_restore_across_boundaries_continues_cleanup_without_redispatch() {
+    for role in [ViewportRole::Root, ViewportRole::Child] {
+        let mut case = cleanup_continuation_fixture(role);
+        fail_cleanup_continuation_observer(&mut case);
+        let retry = retry_cleanup_continuation(&mut case);
+        retry_failed_cleanup_continuation(&mut case, retry);
+        assert_cleanup_predecessor_epoch_fence(&mut case);
+    }
+}
+
+struct PendingCreateTombstoneFixture {
+    fixture: Fixture,
+    request: NativeCreateRequest,
+    old_snapshot: PlatformSnapshot,
+}
+
+fn pending_create_tombstone_fixture() -> PendingCreateTombstoneFixture {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let old_snapshot = platform_snapshot(vec![source_window(false), host_window(false)]);
+    fixture.input_generation += 1;
+    let old_snapshot = platform_snapshot(
+        unknown_focus_observation(
+            FocusObservationGeneration::new(fixture.input_generation),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        vec![source_window(false), host_window(false)],
+    );
     let replacement = fixture.engine.workspace().clone();
 
     fixture
@@ -2501,7 +2628,22 @@ fn restore_tombstones_a_pending_create_and_compensates_one_late_appearance() {
         outcome => panic!("unexpected restore outcome: {outcome:?}"),
     };
     assert!(reconciliation.retired().contains(&request.binding()));
-    assert!(reconciliation.cleanup_effects().is_empty());
+    assert!(reconciliation.cleanup_effects().iter().all(|effect| {
+        !matches!(
+            fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(*effect)
+                .expect("restore cleanup effect must remain queryable")
+                .request()
+                .effect(),
+            PlatformEffect::CompensatingClose {
+                binding,
+                compensates,
+            } if *binding == request.binding() && *compensates == request.effect()
+        )
+    }));
     let tombstone = fixture
         .engine
         .viewport()
@@ -2514,6 +2656,20 @@ fn restore_tombstones_a_pending_create_and_compensates_one_late_appearance() {
         tombstone.status(),
         RetiredViewportStatus::AwaitingAppearance
     );
+    PendingCreateTombstoneFixture {
+        fixture,
+        request,
+        old_snapshot,
+    }
+}
+
+#[test]
+fn restore_tombstones_a_pending_create_and_compensates_one_late_appearance() {
+    let PendingCreateTombstoneFixture {
+        mut fixture,
+        request,
+        old_snapshot,
+    } = pending_create_tombstone_fixture();
 
     assert_old_platform_inputs_are_stale(&mut fixture, request, old_snapshot);
 

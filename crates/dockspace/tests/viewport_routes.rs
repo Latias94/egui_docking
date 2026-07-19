@@ -10,14 +10,16 @@ use dockspace::intent::{
 };
 use dockspace::interaction::{DragSessionId, InteractionOutcome, InteractionStatus};
 use dockspace::platform::{
-    ButtonObservation, ObservedWindow, PlatformCapabilities, PlatformCapability,
-    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot, PointerObservation,
-    PointerWindow, WindowInputState, WindowPresentationState,
+    ButtonObservation, InputEffectAcknowledgement, ObservedWindow, PlatformCapabilities,
+    PlatformCapability, PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
+    PointerObservation, PointerWindow, WindowInputObservation, WindowInputState,
+    WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::scene::{BuildingScene, ReadySurfaceScene};
 use dockspace::transition::InputOutcome;
-use dockspace::viewport::{ViewportRole, WindowToken};
+use dockspace::viewport::{InputObservationGeneration, ViewportBinding, ViewportRole, WindowToken};
+use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
 
 const ROOT_SOURCE: RootId = RootId::new(1);
 const ROOT_TARGET: RootId = RootId::new(2);
@@ -31,6 +33,18 @@ const POINTER: PointerId = PointerId::new(1);
 struct Fixture {
     engine: DockEngine,
     source_tabs: NodeId,
+    source_binding: ViewportBinding,
+    focus_generation: u64,
+}
+
+impl Fixture {
+    fn take_focus_generation(&mut self) -> FocusObservationGeneration {
+        self.focus_generation = self
+            .focus_generation
+            .checked_add(1)
+            .expect("test focus observation generation must not exhaust");
+        FocusObservationGeneration::new(self.focus_generation)
+    }
 }
 
 fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
@@ -100,9 +114,15 @@ fn fixture() -> Fixture {
             .all(|reduced| matches!(reduced.outcome(), InputOutcome::ViewportRegistered { .. }))
     );
 
+    let source_binding = match transition.reduced_inputs()[0].outcome() {
+        InputOutcome::ViewportRegistered { binding } => *binding,
+        outcome => panic!("unexpected source registration outcome: {outcome:?}"),
+    };
     Fixture {
         engine,
         source_tabs,
+        source_binding,
+        focus_generation: 0,
     }
 }
 
@@ -149,11 +169,61 @@ fn pointer_observation(hovered: Authority<PointerWindow>) -> PointerObservation 
     .expect("test pointer observation must be unambiguous")
 }
 
-fn snapshot(hovered: Authority<PointerWindow>, source_input: WindowInputState) -> PlatformSnapshot {
-    PlatformSnapshot::new(
+fn snapshot(
+    source_binding: ViewportBinding,
+    hovered: Authority<PointerWindow>,
+    source_input: WindowInputState,
+    focus_generation: FocusObservationGeneration,
+) -> PlatformSnapshot {
+    snapshot_with_capabilities(
+        source_binding,
+        hovered,
+        source_input,
         routing_capabilities(),
+        focus_generation,
+    )
+}
+
+fn snapshot_with_capabilities(
+    source_binding: ViewportBinding,
+    hovered: Authority<PointerWindow>,
+    source_input: WindowInputState,
+    capabilities: PlatformCapabilities,
+    focus_generation: FocusObservationGeneration,
+) -> PlatformSnapshot {
+    snapshot_with_input_observation(
+        source_binding,
+        hovered,
+        source_input,
+        InputObservationGeneration::new(1),
+        InputEffectAcknowledgement::known(None),
+        capabilities,
+        focus_generation,
+    )
+}
+
+fn snapshot_with_input_observation(
+    source_binding: ViewportBinding,
+    hovered: Authority<PointerWindow>,
+    source_input: WindowInputState,
+    generation: InputObservationGeneration,
+    acknowledgement: InputEffectAcknowledgement,
+    capabilities: PlatformCapabilities,
+    focus_generation: FocusObservationGeneration,
+) -> PlatformSnapshot {
+    let source = observed_window(SOURCE_TOKEN, 0.0, source_input).with_input_observation(
+        WindowInputObservation::new(
+            source_binding,
+            generation,
+            Authority::Known(source_input),
+            acknowledgement,
+        ),
+    );
+    PlatformSnapshot::new(
+        capabilities,
+        unknown_focus_observation(focus_generation, AuthorityUnavailableReason::NotReported),
         vec![
-            observed_window(SOURCE_TOKEN, 0.0, source_input),
+            source,
             observed_window(TARGET_TOKEN, 600.0, WindowInputState::ReceivesInput),
         ],
         vec![pointer_observation(hovered)],
@@ -167,9 +237,20 @@ fn publish_snapshot(
     hovered: Authority<PointerWindow>,
     source_input: WindowInputState,
 ) {
+    let focus_generation = fixture.take_focus_generation();
+    let snapshot = snapshot(
+        fixture.source_binding,
+        hovered,
+        source_input,
+        focus_generation,
+    );
+    publish_platform_snapshot(fixture, snapshot);
+}
+
+fn publish_platform_snapshot(fixture: &mut Fixture, snapshot: PlatformSnapshot) {
     fixture
         .engine
-        .enqueue_platform_snapshot(snapshot(hovered, source_input))
+        .enqueue_platform_snapshot(snapshot)
         .expect("platform snapshot must enqueue");
     let transition = fixture
         .engine
@@ -291,7 +372,7 @@ fn unknown_hover_authority_stays_unknown() {
 }
 
 #[test]
-fn foreign_window_is_authoritative_known_none() {
+fn foreign_window_is_an_opaque_blocker() {
     let mut fixture = fixture();
 
     publish_snapshot(
@@ -305,7 +386,10 @@ fn foreign_window_is_authoritative_known_none() {
         .viewport()
         .route(POINTER)
         .expect("foreign classification must still publish a route proof");
-    assert_eq!(proof.target(), &Authority::Known(None));
+    assert_eq!(
+        proof.target(),
+        &Authority::Unknown(AuthorityUnavailableReason::SurfaceUnavailable)
+    );
     assert_eq!(proof.target_binding(), None);
 }
 
@@ -384,6 +468,7 @@ fn requested_but_unobserved_source_passthrough_blocks_cross_window_routing() {
         PlatformEffect::SetPointerPassthrough {
             binding,
             enabled: true,
+            ..
         } if *binding == source_binding
     )));
 
@@ -406,6 +491,53 @@ fn requested_but_unobserved_source_passthrough_blocks_cross_window_routing() {
 }
 
 #[test]
+fn unsupported_source_passthrough_control_freezes_source_and_blocks_routing() {
+    let mut fixture = fixture();
+    let mut capabilities = routing_capabilities();
+    capabilities.set_pointer_hit_test_control(PlatformCapability::unsupported(
+        PlatformRequirement::PointerHitTestControl,
+        PlatformCapabilityReason::BackendUnsupported,
+    ));
+    let source_binding = fixture.source_binding;
+    let focus_generation = fixture.take_focus_generation();
+    let platform_snapshot = snapshot_with_capabilities(
+        source_binding,
+        Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
+        WindowInputState::ReceivesInput,
+        capabilities.clone(),
+        focus_generation,
+    );
+    publish_platform_snapshot(&mut fixture, platform_snapshot);
+    publish_scene(&mut fixture);
+
+    let (_session, begin) = arm_and_begin(&mut fixture);
+    assert!(!begin.platform_effects().iter().any(|request| matches!(
+        request.effect(),
+        PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+    )));
+
+    let focus_generation = fixture.take_focus_generation();
+    let platform_snapshot = snapshot_with_capabilities(
+        source_binding,
+        Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
+        WindowInputState::ReceivesInput,
+        capabilities,
+        focus_generation,
+    );
+    publish_platform_snapshot(&mut fixture, platform_snapshot);
+    let proof = fixture
+        .engine
+        .viewport()
+        .route(POINTER)
+        .expect("the frozen source must publish an unavailable route proof");
+    assert_eq!(
+        proof.target(),
+        &Authority::Unknown(AuthorityUnavailableReason::SurfaceUnavailable)
+    );
+    assert_eq!(proof.target_binding(), None);
+}
+
+#[test]
 fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration() {
     let mut fixture = fixture();
     publish_snapshot(
@@ -414,12 +546,29 @@ fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration
         WindowInputState::ReceivesInput,
     );
     publish_scene(&mut fixture);
-    let (session, _) = arm_and_begin(&mut fixture);
-    publish_snapshot(
-        &mut fixture,
+    let (session, begin) = arm_and_begin(&mut fixture);
+    let enable = begin
+        .platform_effects()
+        .iter()
+        .find(|request| {
+            matches!(
+                request.effect(),
+                PlatformEffect::SetPointerPassthrough { enabled: true, .. }
+            )
+        })
+        .expect("drag must request source pass-through")
+        .id();
+    let focus_generation = fixture.take_focus_generation();
+    let passthrough = snapshot_with_input_observation(
+        fixture.source_binding,
         Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
         WindowInputState::PassThrough,
+        InputObservationGeneration::new(2),
+        InputEffectAcknowledgement::known(Some(enable)),
+        routing_capabilities(),
+        focus_generation,
     );
+    publish_platform_snapshot(&mut fixture, passthrough);
     assert_eq!(
         fixture.engine.interaction().status(),
         InteractionStatus::Dragging { session }
@@ -430,18 +579,16 @@ fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration
         PlatformRequirement::PointerHitTestObservation,
         PlatformCapabilityReason::BackendUnsupported,
     ));
-    let degraded = PlatformSnapshot::new(
+    let focus_generation = fixture.take_focus_generation();
+    let degraded = snapshot_with_input_observation(
+        fixture.source_binding,
+        Authority::Known(PointerWindow::Dock(TARGET_TOKEN)),
+        WindowInputState::PassThrough,
+        InputObservationGeneration::new(3),
+        InputEffectAcknowledgement::known(Some(enable)),
         capabilities,
-        vec![
-            observed_window(SOURCE_TOKEN, 0.0, WindowInputState::PassThrough),
-            observed_window(TARGET_TOKEN, 600.0, WindowInputState::ReceivesInput),
-        ],
-        vec![pointer_observation(Authority::Known(PointerWindow::Dock(
-            TARGET_TOKEN,
-        )))],
-        Vec::new(),
-    )
-    .expect("degraded snapshot must remain canonical");
+        focus_generation,
+    );
     fixture
         .engine
         .enqueue_platform_snapshot(degraded)
@@ -466,6 +613,7 @@ fn routing_capability_revocation_cancels_the_drag_and_requests_input_restoration
         PlatformEffect::SetPointerPassthrough {
             binding,
             enabled: false,
+            ..
         } if *binding == source_binding
     )));
 }

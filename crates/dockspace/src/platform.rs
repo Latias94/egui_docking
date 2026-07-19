@@ -7,11 +7,13 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
+use crate::effect::EffectId;
 use crate::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use crate::intent::{
     Authority, AuthorityUnavailableReason, PointerButton, PointerButtonState, PointerId,
 };
-use crate::viewport::{WindowToken, WorkAreaToken};
+use crate::viewport::{InputObservationGeneration, ViewportBinding, WindowToken, WorkAreaToken};
+use crate::viewport_focus::FocusObservationEnvelope;
 
 /// One independently degradable platform requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -25,7 +27,8 @@ pub enum PlatformRequirement {
     WorkArea,
     PointerHitTestObservation,
     PointerHitTestControl,
-    WindowFocus,
+    GlobalFocusObservation,
+    WindowActivationControl,
     CloseCancellation,
 }
 
@@ -108,7 +111,8 @@ pub struct PlatformCapabilities {
     work_area: PlatformCapability,
     pointer_hit_test_observation: PlatformCapability,
     pointer_hit_test_control: PlatformCapability,
-    window_focus: PlatformCapability,
+    global_focus_observation: PlatformCapability,
+    window_activation_control: PlatformCapability,
     close_cancellation: PlatformCapability,
 }
 
@@ -166,7 +170,16 @@ impl PlatformCapabilities {
             set_pointer_hit_test_control,
             pointer_hit_test_control
         ),
-        (window_focus, set_window_focus, window_focus),
+        (
+            global_focus_observation,
+            set_global_focus_observation,
+            global_focus_observation
+        ),
+        (
+            window_activation_control,
+            set_window_activation_control,
+            window_activation_control
+        ),
         (
             close_cancellation,
             set_close_cancellation,
@@ -217,7 +230,8 @@ impl Default for PlatformCapabilities {
                 PlatformRequirement::PointerHitTestObservation,
             ),
             pointer_hit_test_control: not_reported(PlatformRequirement::PointerHitTestControl),
-            window_focus: not_reported(PlatformRequirement::WindowFocus),
+            global_focus_observation: not_reported(PlatformRequirement::GlobalFocusObservation),
+            window_activation_control: not_reported(PlatformRequirement::WindowActivationControl),
             close_cancellation: not_reported(PlatformRequirement::CloseCancellation),
         }
     }
@@ -248,6 +262,168 @@ pub enum WindowInputState {
     PassThrough,
 }
 
+/// Provider authority over the exact effect reflected by an input observation.
+///
+/// `Known(Some(id))` means that the pointer-input property effect identified by
+/// `id` was applied and that the provider serialized every earlier effect for
+/// the same native-window token and property before this observation. That
+/// serialization obligation crosses binding incarnation changes, so a restore
+/// on a rebound binding orders any late enable for the previous incarnation.
+/// This acknowledgement is stronger than dispatch success or merely sampling
+/// after dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEffectAcknowledgement {
+    Known(Option<EffectId>),
+    Unknown(AuthorityUnavailableReason),
+}
+
+impl InputEffectAcknowledgement {
+    #[must_use]
+    pub const fn known(effect: Option<EffectId>) -> Self {
+        Self::Known(effect)
+    }
+
+    #[must_use]
+    pub const fn unknown(reason: AuthorityUnavailableReason) -> Self {
+        Self::Unknown(reason)
+    }
+
+    #[must_use]
+    pub fn acknowledges(self, effect: EffectId) -> bool {
+        matches!(self, Self::Known(Some(actual)) if actual == effect)
+    }
+}
+
+/// One provider-captured envelope for a window's pointer-input property.
+///
+/// The binding prevents a recycled token or a previous workspace incarnation
+/// from authorizing the current window. The generation is owned by the
+/// provider per native window and advances when that provider captures a fresh
+/// property value; core receipt order is deliberately not a substitute. Both
+/// the state and effect acknowledgement live inside this generated envelope,
+/// so an unavailable state is a versioned tombstone rather than an unsequenced
+/// absence. An acknowledged effect is exact to this property observation,
+/// while `Known(None)` denotes a baseline observation and `Unknown` cannot
+/// settle an effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowInputObservation {
+    binding: ViewportBinding,
+    generation: InputObservationGeneration,
+    state: Authority<WindowInputState>,
+    acknowledged_effect: InputEffectAcknowledgement,
+}
+
+impl WindowInputObservation {
+    #[must_use]
+    pub const fn new(
+        binding: ViewportBinding,
+        generation: InputObservationGeneration,
+        state: Authority<WindowInputState>,
+        acknowledged_effect: InputEffectAcknowledgement,
+    ) -> Self {
+        Self {
+            binding,
+            generation,
+            state,
+            acknowledged_effect,
+        }
+    }
+
+    #[must_use]
+    pub const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+
+    #[must_use]
+    pub const fn generation(self) -> InputObservationGeneration {
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn state(self) -> Authority<WindowInputState> {
+        self.state
+    }
+
+    #[must_use]
+    pub const fn known_state(self) -> Option<WindowInputState> {
+        match self.state {
+            Authority::Known(state) => Some(state),
+            Authority::Unknown(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn acknowledged_effect(self) -> InputEffectAcknowledgement {
+        self.acknowledged_effect
+    }
+
+    #[must_use]
+    pub fn acknowledges(self, effect: EffectId) -> bool {
+        self.acknowledged_effect.acknowledges(effect)
+    }
+}
+
+/// Last authoritative member of one provider-owned per-incarnation stream.
+///
+/// A versioned unknown state advances the stream as a tombstone. Missing,
+/// wrong-incarnation, or same-generation conflicting envelopes revoke current
+/// authority. After an unversioned gap, a versioned tombstone is required
+/// before known state can become authoritative again. Older generations and
+/// exact duplicates never advance state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WindowInputObservationStream {
+    current: Option<WindowInputObservation>,
+    last_generation: Option<InputObservationGeneration>,
+    last_envelope: Option<WindowInputObservation>,
+    requires_tombstone: bool,
+}
+
+impl WindowInputObservationStream {
+    pub(crate) fn observe(
+        &mut self,
+        binding: ViewportBinding,
+        observation: Option<WindowInputObservation>,
+    ) {
+        let Some(observation) = observation else {
+            self.current = None;
+            self.requires_tombstone |= self.last_generation.is_some();
+            return;
+        };
+        if observation.binding() != binding {
+            self.current = None;
+            self.requires_tombstone |= self.last_generation.is_some();
+            return;
+        }
+        match self.last_generation {
+            Some(generation) if observation.generation() < generation => return,
+            Some(generation) if observation.generation() == generation => {
+                if self.last_envelope != Some(observation) {
+                    self.current = None;
+                    self.requires_tombstone = true;
+                }
+                return;
+            }
+            Some(_) | None => {}
+        }
+        self.last_generation = Some(observation.generation());
+        self.last_envelope = Some(observation);
+        if self.requires_tombstone && observation.known_state().is_some() {
+            self.current = None;
+            return;
+        }
+        self.current = observation.known_state().map(|_| observation);
+        self.requires_tombstone = false;
+    }
+
+    pub(crate) const fn current(self) -> Option<WindowInputObservation> {
+        self.current
+    }
+
+    pub(crate) const fn generation_watermark(self) -> Option<InputObservationGeneration> {
+        self.last_generation
+    }
+}
+
 /// Independently observed presentation state of one native window.
 ///
 /// This fact is deliberately separate from [`WindowInputState`]: a minimized
@@ -268,8 +444,8 @@ pub struct ObservedWindow {
     outer_bounds: Authority<PhysicalRect>,
     scale_factor: Authority<ScaleFactor>,
     input_state: Authority<WindowInputState>,
+    input_observation: Option<WindowInputObservation>,
     presentation: Authority<WindowPresentationState>,
-    focused: Authority<bool>,
     close_requested: Authority<bool>,
 }
 
@@ -283,8 +459,8 @@ impl ObservedWindow {
             outer_bounds: unavailable(),
             scale_factor: unavailable(),
             input_state: unavailable(),
+            input_observation: None,
             presentation: unavailable(),
-            focused: unavailable(),
             close_requested: unavailable(),
         }
     }
@@ -315,13 +491,13 @@ impl ObservedWindow {
     }
 
     #[must_use]
-    pub const fn presentation(&self) -> &Authority<WindowPresentationState> {
-        &self.presentation
+    pub const fn input_observation(&self) -> Option<WindowInputObservation> {
+        self.input_observation
     }
 
     #[must_use]
-    pub const fn focused(&self) -> &Authority<bool> {
-        &self.focused
+    pub const fn presentation(&self) -> &Authority<WindowPresentationState> {
+        &self.presentation
     }
 
     #[must_use]
@@ -354,14 +530,17 @@ impl ObservedWindow {
     }
 
     #[must_use]
-    pub fn with_presentation(mut self, value: Authority<WindowPresentationState>) -> Self {
-        self.presentation = value;
+    pub fn with_input_observation(mut self, value: WindowInputObservation) -> Self {
+        if let Some(state) = value.known_state() {
+            self.input_state = Authority::Known(state);
+        }
+        self.input_observation = Some(value);
         self
     }
 
     #[must_use]
-    pub fn with_focused(mut self, value: Authority<bool>) -> Self {
-        self.focused = value;
+    pub fn with_presentation(mut self, value: Authority<WindowPresentationState>) -> Self {
+        self.presentation = value;
         self
     }
 
@@ -524,6 +703,7 @@ impl PointerObservation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlatformSnapshot {
     capabilities: PlatformCapabilities,
+    focus: FocusObservationEnvelope,
     windows: Vec<ObservedWindow>,
     pointers: Vec<PointerObservation>,
     work_areas: Vec<ObservedWorkArea>,
@@ -538,12 +718,14 @@ impl PlatformSnapshot {
     /// contradicts the declared capability.
     pub fn new(
         capabilities: PlatformCapabilities,
+        focus: FocusObservationEnvelope,
         mut windows: Vec<ObservedWindow>,
         mut pointers: Vec<PointerObservation>,
         mut work_areas: Vec<ObservedWorkArea>,
     ) -> Result<Self, PlatformSnapshotError> {
         windows.sort_by_key(ObservedWindow::token);
         reject_duplicate_windows(&windows)?;
+        validate_input_observations(&windows)?;
         pointers.sort_by_key(PointerObservation::pointer);
         reject_duplicate_pointers(&pointers)?;
         work_areas.sort_by_key(|work_area| work_area.token);
@@ -556,6 +738,7 @@ impl PlatformSnapshot {
         }
         Ok(Self {
             capabilities,
+            focus,
             windows,
             pointers,
             work_areas,
@@ -565,6 +748,12 @@ impl PlatformSnapshot {
     #[must_use]
     pub const fn capabilities(&self) -> &PlatformCapabilities {
         &self.capabilities
+    }
+
+    /// Returns the provider-generated single global native-focus observation.
+    #[must_use]
+    pub const fn focus(&self) -> FocusObservationEnvelope {
+        self.focus
     }
 
     #[must_use]
@@ -612,6 +801,28 @@ fn reject_duplicate_windows(windows: &[ObservedWindow]) -> Result<(), PlatformSn
     Ok(())
 }
 
+fn validate_input_observations(windows: &[ObservedWindow]) -> Result<(), PlatformSnapshotError> {
+    for window in windows {
+        let Some(observation) = window.input_observation() else {
+            continue;
+        };
+        if observation.binding().token() != window.token() {
+            return Err(PlatformSnapshotError::InputObservationTokenMismatch {
+                window: window.token(),
+                observation: observation.binding().token(),
+            });
+        }
+        if let Some(state) = observation.known_state()
+            && window.input_state() != &Authority::Known(state)
+        {
+            return Err(PlatformSnapshotError::InputObservationStateMismatch {
+                token: window.token(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn reject_duplicate_pointers(pointers: &[PointerObservation]) -> Result<(), PlatformSnapshotError> {
     let mut identities = BTreeSet::new();
     for pointer in pointers {
@@ -629,6 +840,13 @@ fn reject_duplicate_pointers(pointers: &[PointerObservation]) -> Result<(), Plat
 pub enum PlatformSnapshotError {
     #[error("platform snapshot repeats window token {token:?}")]
     DuplicateWindow { token: WindowToken },
+    #[error("window {window:?} carries an input observation for a different token {observation:?}")]
+    InputObservationTokenMismatch {
+        window: WindowToken,
+        observation: WindowToken,
+    },
+    #[error("window {token:?} carries conflicting input state and causal observation")]
+    InputObservationStateMismatch { token: WindowToken },
     #[error("platform snapshot repeats pointer {pointer:?}")]
     DuplicatePointer { pointer: PointerId },
     #[error("platform snapshot repeats work-area token {token:?}")]
@@ -649,6 +867,23 @@ pub enum PlatformSnapshotError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+
+    fn unknown_focus(generation: u64) -> FocusObservationEnvelope {
+        unknown_focus_observation(
+            FocusObservationGeneration::new(generation),
+            AuthorityUnavailableReason::NotReported,
+        )
+    }
+
+    fn binding(incarnation: u64) -> ViewportBinding {
+        ViewportBinding::new(
+            crate::ids::WorkspaceEpoch::new(1),
+            crate::ids::SurfaceId::new(2),
+            WindowToken::new(3),
+            crate::viewport::WindowIncarnation::new(incarnation),
+        )
+    }
 
     #[test]
     fn unsupported_is_stronger_than_unknown_for_a_required_operation() {
@@ -688,6 +923,7 @@ mod tests {
         assert!(matches!(
             PlatformSnapshot::new(
                 PlatformCapabilities::default(),
+                unknown_focus(1),
                 vec![window.clone(), window],
                 Vec::new(),
                 Vec::new(),
@@ -705,6 +941,7 @@ mod tests {
         assert!(matches!(
             PlatformSnapshot::new(
                 PlatformCapabilities::default(),
+                unknown_focus(2),
                 Vec::new(),
                 vec![pointer.clone(), pointer],
                 Vec::new(),
@@ -723,12 +960,19 @@ mod tests {
         supported.set_work_area(PlatformCapability::Supported);
 
         assert_eq!(
-            PlatformSnapshot::new(supported.clone(), Vec::new(), Vec::new(), Vec::new()),
+            PlatformSnapshot::new(
+                supported.clone(),
+                unknown_focus(1),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
             Err(PlatformSnapshotError::MissingWorkAreaRoster)
         );
         assert_eq!(
             PlatformSnapshot::new(
                 PlatformCapabilities::default(),
+                unknown_focus(2),
                 Vec::new(),
                 Vec::new(),
                 vec![work_area],
@@ -738,6 +982,7 @@ mod tests {
         assert!(matches!(
             PlatformSnapshot::new(
                 supported,
+                unknown_focus(3),
                 Vec::new(),
                 Vec::new(),
                 vec![work_area, work_area],
@@ -753,12 +998,174 @@ mod tests {
                     capabilities.set_work_area(PlatformCapability::Supported);
                     capabilities
                 },
+                unknown_focus(4),
                 Vec::new(),
                 Vec::new(),
                 vec![ObservedWorkArea::new(WorkAreaToken::new(4), empty, scale)],
             ),
             Err(PlatformSnapshotError::EmptyWorkArea {
                 token: WorkAreaToken::new(4),
+            })
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn input_observation_stream_rejects_stale_duplicate_and_wrong_binding_facts() {
+        let current_binding = binding(1);
+        let mut stream = WindowInputObservationStream::default();
+        let observation = |binding, generation, state| {
+            WindowInputObservation::new(
+                binding,
+                InputObservationGeneration::new(generation),
+                Authority::Known(state),
+                InputEffectAcknowledgement::known(None),
+            )
+        };
+        let tombstone = |binding, generation| {
+            WindowInputObservation::new(
+                binding,
+                InputObservationGeneration::new(generation),
+                Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                InputEffectAcknowledgement::unknown(AuthorityUnavailableReason::NotReported),
+            )
+        };
+
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                4,
+                WindowInputState::ReceivesInput,
+            )),
+        );
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                3,
+                WindowInputState::PassThrough,
+            )),
+        );
+        assert_eq!(
+            stream
+                .current()
+                .and_then(WindowInputObservation::known_state),
+            Some(WindowInputState::ReceivesInput)
+        );
+
+        stream.observe(current_binding, None);
+        assert_eq!(stream.current(), None);
+        assert_eq!(
+            stream.generation_watermark(),
+            Some(InputObservationGeneration::new(4))
+        );
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                4,
+                WindowInputState::ReceivesInput,
+            )),
+        );
+        assert_eq!(stream.current(), None);
+        stream.observe(
+            current_binding,
+            Some(observation(binding(2), 5, WindowInputState::PassThrough)),
+        );
+        assert_eq!(stream.current(), None);
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                6,
+                WindowInputState::PassThrough,
+            )),
+        );
+        assert_eq!(stream.current(), None);
+        assert_eq!(
+            stream.generation_watermark(),
+            Some(InputObservationGeneration::new(6))
+        );
+        stream.observe(current_binding, Some(tombstone(current_binding, 5)));
+        assert_eq!(stream.current(), None);
+        assert_eq!(
+            stream.generation_watermark(),
+            Some(InputObservationGeneration::new(6))
+        );
+        stream.observe(current_binding, Some(tombstone(current_binding, 7)));
+        assert_eq!(stream.current(), None);
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                8,
+                WindowInputState::PassThrough,
+            )),
+        );
+        assert_eq!(
+            stream
+                .current()
+                .and_then(WindowInputObservation::known_state),
+            Some(WindowInputState::PassThrough)
+        );
+
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                8,
+                WindowInputState::ReceivesInput,
+            )),
+        );
+        assert_eq!(stream.current(), None);
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                9,
+                WindowInputState::PassThrough,
+            )),
+        );
+        assert_eq!(stream.current(), None);
+        stream.observe(current_binding, Some(tombstone(current_binding, 10)));
+        stream.observe(
+            current_binding,
+            Some(observation(
+                current_binding,
+                11,
+                WindowInputState::ReceivesInput,
+            )),
+        );
+        assert_eq!(
+            stream
+                .current()
+                .and_then(WindowInputObservation::known_state),
+            Some(WindowInputState::ReceivesInput)
+        );
+    }
+
+    #[test]
+    fn snapshot_rejects_conflicting_causal_input_facts() {
+        let binding = binding(1);
+        let window = ObservedWindow::new(binding.token())
+            .with_input_observation(WindowInputObservation::new(
+                binding,
+                InputObservationGeneration::new(1),
+                Authority::Known(WindowInputState::PassThrough),
+                InputEffectAcknowledgement::known(None),
+            ))
+            .with_input_state(Authority::Known(WindowInputState::ReceivesInput));
+        assert_eq!(
+            PlatformSnapshot::new(
+                PlatformCapabilities::default(),
+                unknown_focus(1),
+                vec![window],
+                Vec::new(),
+                Vec::new(),
+            ),
+            Err(PlatformSnapshotError::InputObservationStateMismatch {
+                token: binding.token(),
             })
         );
     }

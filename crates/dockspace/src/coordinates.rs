@@ -6,9 +6,7 @@ use crate::geometry::{
     GeometryError, LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
-use crate::platform::{
-    ObservedWindow, ObservedWorkArea, WindowInputState, WindowPresentationState,
-};
+use crate::platform::{ObservedWindow, ObservedWorkArea, WindowPresentationState};
 use crate::viewport::{CoordinateGeneration, ViewportBinding, WorkAreaGeneration, WorkAreaToken};
 use crate::viewport_route::{ViewportRouteProof, ViewportRouteStamp};
 
@@ -176,12 +174,22 @@ pub(crate) struct CoordinateSnapshot {
     content_bounds: PhysicalRect,
     outer_bounds: Option<PhysicalRect>,
     scale_factor: ScaleFactor,
-    input_state: Option<WindowInputState>,
     presentation: Option<WindowPresentationState>,
-    focused: Option<bool>,
 }
 
 impl CoordinateSnapshot {
+    pub(crate) const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+
+    pub(crate) const fn scale_factor(self) -> ScaleFactor {
+        self.scale_factor
+    }
+
+    pub(crate) const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+
     pub(crate) fn from_observation(
         binding: ViewportBinding,
         coordinate_generation: CoordinateGeneration,
@@ -199,9 +207,7 @@ impl CoordinateSnapshot {
             content_bounds,
             outer_bounds: observation.outer_bounds().known().copied(),
             scale_factor,
-            input_state: observation.input_state().known().copied(),
             presentation: observation.presentation().known().copied(),
-            focused: observation.focused().known().copied(),
         })
     }
 
@@ -213,16 +219,8 @@ impl CoordinateSnapshot {
         self.outer_bounds
     }
 
-    pub(crate) const fn input_state(self) -> Option<WindowInputState> {
-        self.input_state
-    }
-
     pub(crate) const fn presentation(self) -> Option<WindowPresentationState> {
         self.presentation
-    }
-
-    pub(crate) const fn focused(self) -> Option<bool> {
-        self.focused
     }
 
     pub(crate) const fn with_generation(mut self, generation: CoordinateGeneration) -> Self {
@@ -235,9 +233,7 @@ impl CoordinateSnapshot {
             && self.content_bounds == other.content_bounds
             && self.outer_bounds == other.outer_bounds
             && self.scale_factor == other.scale_factor
-            && self.input_state == other.input_state
             && self.presentation == other.presentation
-            && self.focused == other.focused
     }
 
     pub(crate) fn same_placement_facts(self, other: Self) -> bool {
@@ -258,6 +254,13 @@ impl CoordinateSnapshot {
         rect: PhysicalRect,
     ) -> Result<LogicalRect, GeometryError> {
         rect.to_target_logical(self.content_bounds.min(), self.scale_factor)
+    }
+
+    pub(crate) fn surface_rect_to_desktop(
+        self,
+        rect: LogicalRect,
+    ) -> Result<PhysicalRect, GeometryError> {
+        rect.to_desktop_physical(self.content_bounds.min(), self.scale_factor)
     }
 
     pub(crate) fn placement(
@@ -432,8 +435,7 @@ mod tests {
             )))
             .with_scale_factor(Authority::Known(
                 ScaleFactor::new(scale).expect("test scale must be valid"),
-            ))
-            .with_input_state(Authority::Known(WindowInputState::ReceivesInput));
+            ));
         let observation =
             observation.with_presentation(Authority::Known(WindowPresentationState::Visible));
         CoordinateSnapshot::from_observation(binding, CoordinateGeneration::new(11), &observation)

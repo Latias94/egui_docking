@@ -51,6 +51,10 @@ monotonic_id!(
     "Generation of the complete accepted native-window inventory."
 );
 monotonic_id!(
+    InputObservationGeneration,
+    "Provider-captured generation of one window's pointer-input observation."
+);
+monotonic_id!(
     CoordinateGeneration,
     "Generation of acknowledged placement facts for one native-window binding."
 );
@@ -140,6 +144,10 @@ mod tests {
         );
         assert_eq!(RouteGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(InventoryGeneration::new(u64::MAX).checked_next(), None);
+        assert_eq!(
+            InputObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
         assert_eq!(CoordinateGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(WorkAreaToken::new(u64::MAX).checked_next(), None);
         assert_eq!(WorkAreaGeneration::new(u64::MAX).checked_next(), None);

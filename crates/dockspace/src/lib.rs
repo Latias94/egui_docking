@@ -30,10 +30,12 @@ pub mod persistence;
 pub mod platform;
 pub mod policy;
 pub mod scene;
+pub mod surface_recovery;
 pub mod transaction;
 pub mod transition;
 pub mod validation;
 pub mod viewport;
+pub mod viewport_focus;
 #[cfg(feature = "serde")]
 pub mod viewport_persistence;
 pub mod viewport_registry;
