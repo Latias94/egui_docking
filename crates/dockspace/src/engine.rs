@@ -731,6 +731,11 @@ impl DockEngine {
     /// The cursor offset, preferred size, and minimum size are logical values
     /// for the selected work area. They are scaled exactly once and the result
     /// is clamped without monitor-selection heuristics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed viewport-coordinate error when the pointer route, work
+    /// area, or placement facts are unavailable or stale.
     pub fn tear_off_placement(
         &self,
         pointer: crate::intent::PointerId,

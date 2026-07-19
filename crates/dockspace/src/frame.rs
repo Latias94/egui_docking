@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::command::WorkspaceCommand;
 use crate::coordinates::{
-    CoordinateUnavailable, TearOffPlacementProof, TearOffPlacementRequest,
+    CoordinateSnapshot, CoordinateUnavailable, TearOffPlacementProof, TearOffPlacementRequest,
     TearOffPlacementUnavailable, ViewportPlacementProof,
 };
 use crate::effect::{
@@ -1561,47 +1561,8 @@ impl ViewportCoordinator {
         actions: &mut Vec<ViewportLifecycleAction>,
     ) -> Result<(), ViewportCoordinatorError> {
         self.reduce_observed_effects(binding);
-        if let Some(replacement) = self
-            .restore_replacements
-            .values_mut()
-            .find(|replacement| replacement.binding == binding)
-        {
-            let _ = self.effects.mark_observed_applied(
-                replacement.effect,
-                binding,
-                self.registry.inventory_generation(),
-            );
-            replacement.status = RestoreReplacementStatus::Ready;
-        }
-        let recovery_surface = self
-            .pending_recoveries
-            .iter()
-            .find_map(|(surface, pending)| {
-                (pending.replacement_binding == Some(binding)).then_some(*surface)
-            });
-        if let Some(surface) = recovery_surface {
-            let (effect, status, recovery) = self
-                .pending_recoveries
-                .get(&surface)
-                .map(|pending| (pending.replacement_effect, pending.status, pending.recovery))
-                .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
-            if matches!(
-                status,
-                RecoveryPendingStatus::ReplacementRequested { .. }
-                    | RecoveryPendingStatus::ReplacementIndeterminate { .. }
-                    | RecoveryPendingStatus::ReplacementFailed { .. }
-            ) {
-                if let Some(effect) = effect {
-                    let _ = self.effects.mark_observed_applied(
-                        effect,
-                        binding,
-                        self.registry.inventory_generation(),
-                    );
-                }
-                self.recovery_plans.insert(surface, recovery);
-                self.pending_recoveries.remove(&surface);
-            }
-        }
+        self.reduce_ready_restore_replacement(binding);
+        self.reduce_ready_recovery_replacement(binding)?;
         let Some(saga_id) = self
             .create_sagas
             .iter()
@@ -1640,18 +1601,12 @@ impl ViewportCoordinator {
             | NativeCreateStatus::Committed { .. }
             | NativeCreateStatus::Compensating { .. } => {}
         }
-        if matches!(
-            status,
-            NativeCreateStatus::CommittedAwaitingVisibility { .. }
-        ) && self
-            .registry
-            .record(binding.surface())
-            .is_some_and(|record| record.binding() == binding && record.is_routeable())
+        if let NativeCreateStatus::CommittedAwaitingVisibility { show } = status
+            && self
+                .registry
+                .record(binding.surface())
+                .is_some_and(|record| record.binding() == binding && record.is_routeable())
         {
-            let show = match status {
-                NativeCreateStatus::CommittedAwaitingVisibility { show } => show,
-                _ => unreachable!("visibility transition checked above"),
-            };
             let _ = self.effects.mark_observed_applied(
                 show,
                 binding,
@@ -1665,6 +1620,57 @@ impl ViewportCoordinator {
                 show: Some(show),
                 focus,
             };
+        }
+        Ok(())
+    }
+
+    fn reduce_ready_restore_replacement(&mut self, binding: ViewportBinding) {
+        if let Some(replacement) = self
+            .restore_replacements
+            .values_mut()
+            .find(|replacement| replacement.binding == binding)
+        {
+            let _ = self.effects.mark_observed_applied(
+                replacement.effect,
+                binding,
+                self.registry.inventory_generation(),
+            );
+            replacement.status = RestoreReplacementStatus::Ready;
+        }
+    }
+
+    fn reduce_ready_recovery_replacement(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<(), ViewportCoordinatorError> {
+        let recovery_surface = self
+            .pending_recoveries
+            .iter()
+            .find_map(|(surface, pending)| {
+                (pending.replacement_binding == Some(binding)).then_some(*surface)
+            });
+        if let Some(surface) = recovery_surface {
+            let (effect, status, recovery) = self
+                .pending_recoveries
+                .get(&surface)
+                .map(|pending| (pending.replacement_effect, pending.status, pending.recovery))
+                .ok_or(ViewportCoordinatorError::MissingRecoveryPending { surface })?;
+            if matches!(
+                status,
+                RecoveryPendingStatus::ReplacementRequested { .. }
+                    | RecoveryPendingStatus::ReplacementIndeterminate { .. }
+                    | RecoveryPendingStatus::ReplacementFailed { .. }
+            ) {
+                if let Some(effect) = effect {
+                    let _ = self.effects.mark_observed_applied(
+                        effect,
+                        binding,
+                        self.registry.inventory_generation(),
+                    );
+                }
+                self.recovery_plans.insert(surface, recovery);
+                self.pending_recoveries.remove(&surface);
+            }
         }
         Ok(())
     }
@@ -2423,7 +2429,7 @@ impl ViewportCoordinator {
             .and_then(|record| {
                 record
                     .coordinates()
-                    .and_then(|coordinates| coordinates.input_state())
+                    .and_then(CoordinateSnapshot::input_state)
                     .map(|input| (record.binding(), input))
             })
         else {
