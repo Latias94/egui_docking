@@ -351,9 +351,10 @@ pub enum WorkspaceCommand {
     /// Replace a contained rectangle only when its exact previous value still matches.
     ///
     /// This command is intended for application or offline mutation. Renderer
-    /// adapters must use either the scene-proof-bearing
-    /// [`crate::intent::RendererIntent::ApplyContainedPlacement`] one-shot path
-    /// or the contained transform session protocol instead.
+    /// adapters must not guess its geometry: they use the scene-proof-bearing
+    /// [`crate::intent::RendererIntent::ApplyContainedPlacement`] one-shot path,
+    /// the contained transform session protocol, or the ordinary drag protocol
+    /// whose contained preview proof freezes this command internally.
     UpdateContainedRect {
         surface: SurfaceId,
         root: RootId,

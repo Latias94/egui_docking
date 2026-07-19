@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 use crate::command::{
-    CommandOutcome, MovePayload, RootContent, RootPresentationTarget, WorkspaceCommand,
+    CommandOutcome, MovePayload, NodeSource, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
 use crate::drop_resolver::{DropAffordance, DropResolution, DropResolutionError, query_drop};
 use crate::effect::{EffectResult, EffectTransition};
@@ -2585,9 +2585,15 @@ impl DockEngine {
                             }),
                         }
                     }
-                    DropResolution::KnownNone(_) => {
-                        PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
-                    }
+                    DropResolution::KnownNone(_) => match tear_off {
+                        Some(request @ TearOffRequest::Contained(proposal)) => self
+                            .resolve_contained_tear_off(
+                                input, payload, *proposal, request, false,
+                            )?,
+                        None | Some(TearOffRequest::Native { .. }) => {
+                            PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
+                        }
+                    },
                     DropResolution::Rejected(_) => {
                         PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
                     }
@@ -2667,44 +2673,65 @@ impl DockEngine {
         request: &TearOffRequest,
         fallback: bool,
     ) -> Result<PreviewDecision, EngineError> {
-        if self
-            .validate_contained_placement(proposal.placement())
-            .is_err()
+        // Lifecycle commands can advance the revision without cancelling an
+        // unrelated gesture, so the frozen source must be checked every frame.
+        if self.validate_payload(payload).is_err()
+            || self
+                .validate_contained_placement(proposal.placement())
+                .is_err()
             || self
                 .policy
                 .check_tear_off(TearOffPresentation::Contained)
                 .is_err()
-            || !self.tear_off_root_identity_matches(input, payload, proposal.root())?
         {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
-        let command = self.tear_off_command(
-            input,
-            payload,
-            RootPresentationTarget::Contained {
-                surface: proposal.surface(),
-                floating: proposal.floating(),
-                rect: proposal.rect(),
-                z_order: proposal.z_order(),
-            },
-            proposal.root(),
-        )?;
+        if let Some(command) = self.same_contained_move_command_for_valid_payload(payload, proposal)
+        {
+            return Ok(Self::contained_preview_decision(
+                proposal, request, fallback, command,
+            ));
+        }
+        let complete_root =
+            self.complete_root_source(payload)
+                .map_err(|_| EngineError::Interaction {
+                    input,
+                    source: InteractionCounterError::StateInvariant,
+                })?;
+        if complete_root
+            .as_ref()
+            .is_some_and(|source| source.root() != proposal.root())
+        {
+            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
+        }
+        let command = self.contained_presentation_command(payload, proposal, complete_root);
         match self.preflight_command(input, &command)? {
-            CommandApplication::Applied { .. } => Ok(PreviewDecision::Publish {
-                visual: PreviewVisual::Contained {
-                    surface: proposal.surface(),
-                    rect: proposal.rect(),
-                    fallback,
-                },
-                proof: Box::new(PreviewProof::Contained {
-                    command,
-                    request: request.clone(),
-                    fallback,
-                }),
-            }),
+            CommandApplication::Applied { .. } => Ok(Self::contained_preview_decision(
+                proposal, request, fallback, command,
+            )),
             CommandApplication::Rejected(_) => {
                 Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
             }
+        }
+    }
+
+    fn contained_preview_decision(
+        proposal: crate::intent::ContainedTearOffProposal,
+        request: &TearOffRequest,
+        fallback: bool,
+        command: WorkspaceCommand,
+    ) -> PreviewDecision {
+        PreviewDecision::Publish {
+            visual: PreviewVisual::Contained {
+                surface: proposal.surface(),
+                rect: proposal.rect(),
+                fallback,
+            },
+            proof: Box::new(PreviewProof::Contained {
+                command,
+                request: request.clone(),
+                fallback,
+            }),
         }
     }
 
@@ -3355,8 +3382,39 @@ impl DockEngine {
                 self.workspace
                     .capture_item_source(source.root(), source.tabs(), source.item())?;
             }
-            MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
+            MovePayload::Tabs(source) => {
                 self.validate_node_source(source)?;
+                match self.workspace.node(source.node()) {
+                    Some(crate::graph::Node::Tabs { items, .. }) if !items.is_empty() => {}
+                    Some(crate::graph::Node::Tabs { .. }) => {
+                        return Err(crate::error::CommandError::EmptyPayload {
+                            node: source.node(),
+                        });
+                    }
+                    Some(crate::graph::Node::Split { .. }) => {
+                        return Err(crate::error::CommandError::NodeIsNotTabs {
+                            node: source.node(),
+                        });
+                    }
+                    None => {
+                        return Err(crate::error::CommandError::MissingNode {
+                            role: ReferenceRole::Source,
+                            node: source.node(),
+                        });
+                    }
+                }
+            }
+            MovePayload::Subtree(source) => {
+                self.validate_node_source(source)?;
+                if self
+                    .workspace
+                    .collect_items_in_subtree(source.node())
+                    .is_empty()
+                {
+                    return Err(crate::error::CommandError::EmptyPayload {
+                        node: source.node(),
+                    });
+                }
             }
         }
         Ok(())
@@ -3389,7 +3447,21 @@ impl DockEngine {
                     input,
                     source: InteractionCounterError::StateInvariant,
                 })?;
-        Ok(match (complete_root, target) {
+        Ok(Self::tear_off_command_from_complete_root(
+            payload,
+            target,
+            new_root,
+            complete_root,
+        ))
+    }
+
+    fn tear_off_command_from_complete_root(
+        payload: &MovePayload,
+        target: RootPresentationTarget,
+        new_root: crate::ids::RootId,
+        complete_root: Option<NodeSource>,
+    ) -> WorkspaceCommand {
+        match (complete_root, target) {
             (Some(source), target) => WorkspaceCommand::RehomeRoot { source, target },
             (None, RootPresentationTarget::Surface { surface }) => {
                 WorkspaceCommand::CreateSurfaceRoot {
@@ -3414,6 +3486,69 @@ impl DockEngine {
                 z_order,
                 content: RootContent::Move(payload.clone()),
             },
+        }
+    }
+
+    fn contained_presentation_command(
+        &self,
+        payload: &MovePayload,
+        proposal: crate::intent::ContainedTearOffProposal,
+        complete_root: Option<NodeSource>,
+    ) -> WorkspaceCommand {
+        if let Some(source) = complete_root.as_ref()
+            && let Some(current) = self.workspace.contained_floating(proposal.floating())
+            && current.root == source.root()
+            && current.surface == proposal.surface()
+            && current.z_order == proposal.z_order()
+        {
+            return WorkspaceCommand::UpdateContainedRect {
+                surface: current.surface,
+                root: current.root,
+                floating: current.id,
+                expected_rect: current.rect,
+                rect: proposal.rect(),
+            };
+        }
+
+        Self::tear_off_command_from_complete_root(
+            payload,
+            RootPresentationTarget::Contained {
+                surface: proposal.surface(),
+                floating: proposal.floating(),
+                rect: proposal.rect(),
+                z_order: proposal.z_order(),
+            },
+            proposal.root(),
+            complete_root,
+        )
+    }
+
+    fn same_contained_move_command_for_valid_payload(
+        &self,
+        payload: &MovePayload,
+        proposal: crate::intent::ContainedTearOffProposal,
+    ) -> Option<WorkspaceCommand> {
+        let source = match payload {
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => source,
+            MovePayload::Item(_) => return None,
+        };
+        let root = self.workspace.root(source.root())?;
+        if source.node() != root.node || source.root() != proposal.root() {
+            return None;
+        }
+        let current = self.workspace.contained_floating(proposal.floating())?;
+        if current.root != source.root()
+            || current.surface != proposal.surface()
+            || current.z_order != proposal.z_order()
+        {
+            return None;
+        }
+        Some(WorkspaceCommand::UpdateContainedRect {
+            surface: current.surface,
+            root: current.root,
+            floating: current.id,
+            expected_rect: current.rect,
+            rect: proposal.rect(),
         })
     }
 
@@ -3482,8 +3617,18 @@ impl DockEngine {
         input: InputSequence,
         command: &WorkspaceCommand,
     ) -> Result<CommandApplication, EngineError> {
-        let mut candidate = self.workspace.clone();
-        Self::run_command_transaction(input, &mut candidate, &self.policy, command)
+        let report = match WorkspaceTransaction::from_commands([command.clone()])
+            .preflight(&self.workspace, &self.policy)
+        {
+            Ok(report) => report,
+            Err(TransactionError::Command { index: 0, source })
+                if source.is_expected_rejection() =>
+            {
+                return Ok(CommandApplication::Rejected(source));
+            }
+            Err(source) => return Err(EngineError::Command { input, source }),
+        };
+        Self::command_application_from_report(input, report)
     }
 
     fn apply_interaction_command(
@@ -3524,6 +3669,13 @@ impl DockEngine {
                 }
                 Err(source) => return Err(EngineError::Command { input, source }),
             };
+        Self::command_application_from_report(input, report)
+    }
+
+    fn command_application_from_report(
+        input: InputSequence,
+        report: crate::transaction::TransactionReport,
+    ) -> Result<CommandApplication, EngineError> {
         let changed = report.changed();
         let outcome = report
             .into_outcomes()
@@ -3611,11 +3763,13 @@ mod tests {
     use super::*;
     use crate::command::DockTarget;
     use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual};
-    use crate::geometry::{LogicalPoint, LogicalRect};
-    use crate::graph::{Node, RootRecord, SurfacePresentation};
+    use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+    use crate::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
     use crate::hit_region::HitRegion;
-    use crate::ids::{ItemId, RootId, SurfaceId, WorkspaceEpoch};
-    use crate::intent::{PointerButton, PointerId, RendererIntent, SurfacePointer};
+    use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
+    use crate::intent::{
+        ContainedTearOffProposal, PointerButton, PointerId, RendererIntent, SurfacePointer,
+    };
     use crate::interaction::{DragSessionId, InteractionOutcome, InteractionStatus};
     use crate::scene::{NodeSceneId, ReadySurfaceScene, SceneLayerKey, SemanticRect};
     use crate::transition::InputOutcome;
@@ -3651,6 +3805,92 @@ mod tests {
             source_tabs,
             target_tabs,
         }
+    }
+
+    #[test]
+    fn contained_preview_resolution_rejects_a_stale_source_fingerprint() {
+        let floating = FloatingPresentationId::new(1);
+        let mut builder = Workspace::builder();
+        let host_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        let floating_tabs = builder.insert_node(Node::tabs([ItemId::new(2), ItemId::new(3)]));
+        builder.set_root(SOURCE_ROOT, RootRecord::new(host_tabs));
+        builder.set_root(TARGET_ROOT, RootRecord::new(floating_tabs));
+        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
+        builder.set_contained_floating(ContainedFloating::new(
+            floating,
+            TARGET_ROOT,
+            SOURCE_SURFACE,
+            test_rect(),
+            7,
+        ));
+        builder
+            .attach_contained(SOURCE_SURFACE, floating)
+            .expect("host surface must exist");
+        let workspace = builder.build().expect("workspace must be valid");
+        let mut engine =
+            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
+        let payload = MovePayload::Subtree(
+            engine
+                .workspace()
+                .capture_node_source(TARGET_ROOT, floating_tabs)
+                .expect("source must be current"),
+        );
+        let mut scene = BuildingScene::new([SOURCE_SURFACE]).expect("roster must be unique");
+        scene
+            .insert_ready(ReadySurfaceScene::new(
+                SOURCE_SURFACE,
+                LogicalRect::new(0.0, 0.0, 400.0, 300.0).expect("scene rectangle must be valid"),
+            ))
+            .expect("surface facts must be unique");
+        engine
+            .enqueue_scene(scene)
+            .expect("scene sequence must be available");
+        engine.reduce_pending().expect("scene must publish");
+        let placement = engine
+            .contained_placement(
+                SOURCE_SURFACE,
+                LogicalRect::new(40.0, 30.0, 100.0, 100.0)
+                    .expect("requested rectangle must be valid"),
+                LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
+            )
+            .expect("contained placement must be available");
+        let proposal = ContainedTearOffProposal::new(TARGET_ROOT, floating, placement, 7);
+        let session = begin_drag(&mut engine, payload);
+        let Some(Node::Tabs { selected, .. }) = engine.workspace.nodes.get_mut(floating_tabs)
+        else {
+            panic!("floating source must remain tabs");
+        };
+        *selected = Some(ItemId::new(3));
+        engine
+            .workspace
+            .validate()
+            .expect("selection mutation must keep the workspace valid");
+        engine
+            .enqueue_renderer_intent(RendererIntent::UpdateDrag {
+                session,
+                target: TargetAuthority::local(
+                    SOURCE_SURFACE,
+                    Authority::Known(Some(SurfacePointer::new(
+                        SOURCE_SURFACE,
+                        LogicalPoint::new(200.0, 150.0).expect("pointer must be valid"),
+                    ))),
+                ),
+                tear_off: Some(TearOffRequest::Contained(proposal)),
+            })
+            .expect("update sequence must be available");
+
+        let update = engine.reduce_pending().expect("update must reduce");
+        assert!(matches!(
+            update.reduced_inputs()[0].outcome(),
+            InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::PreviewUpdated {
+                    preview: None,
+                    status: PreviewResolutionStatus::Rejected,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 
     fn ready_counter_scene(fixture: &CounterFixture) -> BuildingScene {
@@ -3691,15 +3931,18 @@ mod tests {
                 .capture_item_source(SOURCE_ROOT, fixture.source_tabs, ItemId::new(1))
                 .expect("source must be current"),
         );
-        fixture
-            .engine
+        begin_drag(&mut fixture.engine, payload)
+    }
+
+    fn begin_drag(engine: &mut DockEngine, payload: MovePayload) -> DragSessionId {
+        engine
             .enqueue_renderer_intent(RendererIntent::ArmDrag {
                 pointer: TEST_POINTER,
                 button: PointerButton::Primary,
                 payload,
             })
             .expect("arm sequence must be available");
-        let armed = fixture.engine.reduce_pending().expect("arm must reduce");
+        let armed = engine.reduce_pending().expect("arm must reduce");
         let session = match armed.reduced_inputs()[0].outcome() {
             InputOutcome::InteractionProcessed {
                 outcome: InteractionOutcome::DragArmed { session, .. },
@@ -3707,15 +3950,14 @@ mod tests {
             } => *session,
             outcome => panic!("unexpected arm outcome: {outcome:?}"),
         };
-        fixture
-            .engine
+        engine
             .enqueue_renderer_intent(RendererIntent::BeginDrag {
                 session,
                 pointer: TEST_POINTER,
                 button: PointerButton::Primary,
             })
             .expect("begin sequence must be available");
-        fixture.engine.reduce_pending().expect("begin must reduce");
+        engine.reduce_pending().expect("begin must reduce");
         session
     }
 

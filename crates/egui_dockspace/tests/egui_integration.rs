@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::interaction::InteractionStatus;
+use dockspace::interaction::{InteractionStatus, PreviewVisual};
 use dockspace::scene::SurfaceScene;
 use dockspace::transition::WorkspaceVersion;
 use egui::accesskit::{Action, ActionRequest};
@@ -245,8 +245,8 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
 
 fn translated_rect(rect: LogicalRect, origin: Pos2, current: Pos2) -> LogicalRect {
     LogicalRect::new(
-        rect.x() + f64::from(current.x - origin.x),
-        rect.y() + f64::from(current.y - origin.y),
+        rect.x() + f64::from(current.x) - f64::from(origin.x),
+        rect.y() + f64::from(current.y) - f64::from(origin.y),
         rect.width(),
         rect.height(),
     )
@@ -267,17 +267,24 @@ fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
     let title_inset = style
         .floating_resize_extent
         .min(style.floating_title_height * 0.5);
-    let dock_grip_width = style.floating_title_height - 2.0 * title_inset;
     Pos2::new(
         floating.rect.min().x() as f32
             + style.floating_border_width
-            + style.floating_resize_extent
-            + dock_grip_width
+            + title_inset
             + style.tab_horizontal_padding,
         floating.rect.min().y() as f32
             + style.floating_border_width
             + style.floating_title_height * 0.5,
     )
+}
+
+fn contained_rect(dockspace: &Dockspace) -> LogicalRect {
+    dockspace
+        .engine()
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("fixture has one contained floating")
+        .rect
 }
 
 #[allow(
@@ -967,15 +974,7 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
             pointer_button(press_origin, true),
         ],
     );
-    assert_eq!(
-        dockspace
-            .engine()
-            .workspace()
-            .contained_floating(FLOATING)
-            .expect("floating remains")
-            .rect,
-        original
-    );
+    assert_eq!(contained_rect(&dockspace), original);
 
     run_frame(
         &context,
@@ -985,7 +984,7 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Armed { .. }
     ));
 
     run_frame(
@@ -996,17 +995,30 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Dragging { .. }
     ));
-    assert_eq!(
+    assert_eq!(contained_rect(&dockspace), original);
+
+    run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(painted_pointer)],
+    );
+    let expected = translated_rect(original, press_origin, painted_pointer);
+    assert!(matches!(
         dockspace
             .engine()
-            .workspace()
-            .contained_floating(FLOATING)
-            .expect("floating remains")
-            .rect,
-        original
-    );
+            .interaction()
+            .preview()
+            .expect("last painted move candidate remains authoritative")
+            .visual(),
+        PreviewVisual::Contained {
+            surface: SURFACE,
+            rect,
+            fallback: false,
+        } if *rect == expected
+    ));
 
     run_frame(
         &context,
@@ -1019,17 +1031,9 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Dragging { .. }
     ));
-    assert_eq!(
-        dockspace
-            .engine()
-            .workspace()
-            .contained_floating(FLOATING)
-            .expect("floating remains")
-            .rect,
-        original
-    );
+    assert_eq!(contained_rect(&dockspace), original);
 
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let floating = dockspace
@@ -1037,7 +1041,6 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating remains");
-    let expected = translated_rect(original, press_origin, painted_pointer);
     assert_eq!(floating.rect, expected);
     assert_eq!(floating.z_order, original_floating.z_order);
     assert_eq!(
@@ -1124,7 +1127,7 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
 }
 
 #[test]
-fn stale_projection_still_releases_active_contained_transform() {
+fn stale_projection_still_releases_active_contained_title_drag() {
     let context = Context::default();
     let original = LogicalRect::new(120.0, 80.0, 220.0, 150.0).expect("finite rect");
     let mut dockspace =
@@ -1159,7 +1162,7 @@ fn stale_projection_still_releases_active_contained_transform() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Dragging { .. }
     ));
 
     let released = run_frame_with_size(
@@ -1182,7 +1185,7 @@ fn stale_projection_still_releases_active_contained_transform() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Dragging { .. }
     ));
 
     run_frame_with_size(

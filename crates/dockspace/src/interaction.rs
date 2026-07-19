@@ -640,7 +640,7 @@ pub enum InteractionRejection {
 pub enum PreviewResolutionStatus {
     /// One exact dock or tear-off preview was published.
     Resolved,
-    /// Authority proved there is no dock target and no tear-off was requested.
+    /// Authority proved there is no dock target and no eligible non-docking request.
     KnownNone,
     /// Geometry was hit, but every candidate was explicitly ineligible.
     Rejected,
@@ -653,7 +653,7 @@ pub enum PreviewResolutionStatus {
 pub enum WorkspaceDeliveryKind {
     /// Move into a sealed docking target.
     Dock,
-    /// Create or rehome into a contained floating by explicit request.
+    /// Create, rehome, or move a contained floating by explicit request.
     Contained,
     /// Use the explicitly enabled contained fallback for an unavailable native request.
     ContainedFallback,

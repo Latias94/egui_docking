@@ -1,11 +1,11 @@
-use dockspace::command::CommandOutcome;
+use dockspace::command::{CommandOutcome, MovePayload};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::intent::{
     ContainedHorizontalResizeEdge, ContainedResizeEdges, ContainedTransformKind,
 };
-use dockspace::interaction::{InteractionOutcome, InteractionStatus};
+use dockspace::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
 use dockspace::transition::InputOutcome;
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};
@@ -41,11 +41,11 @@ struct FrameObservation {
     z_order: u64,
     preview: Option<LogicalRect>,
     raised: Option<(u64, u64)>,
-    transform_events: TransformEvents,
+    gesture_events: GestureEvents,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct TransformEvents {
+struct GestureEvents {
     began: usize,
     preview_acknowledged: bool,
     delivered: bool,
@@ -113,7 +113,7 @@ fn run_frame(
     let mut observation = None;
     let mut saw_stale_pass = false;
     let mut raised_across_passes = None;
-    let mut transform_events = TransformEvents::default();
+    let mut gesture_events = GestureEvents::default();
     let _ = context.run_ui(input, |ui| {
         let response = dockspace
             .show(SURFACE, ui, panes)
@@ -137,20 +137,25 @@ fn run_frame(
                     ..
                 } if *floating == REAR_FLOATING => raised = Some((*previous, *current)),
                 InputOutcome::InteractionProcessed {
-                    outcome: InteractionOutcome::ContainedTransformBegan { .. },
+                    outcome:
+                        InteractionOutcome::DragBegan { .. }
+                        | InteractionOutcome::ContainedTransformBegan { .. },
                     ..
-                } => transform_events.began += 1,
+                } => gesture_events.began += 1,
                 InputOutcome::InteractionProcessed {
                     outcome:
-                        InteractionOutcome::ContainedTransformPreviewAcknowledged {
+                        InteractionOutcome::PreviewAcknowledged { changed: true, .. }
+                        | InteractionOutcome::ContainedTransformPreviewAcknowledged {
                             changed: true, ..
                         },
                     ..
-                } => transform_events.preview_acknowledged = true,
+                } => gesture_events.preview_acknowledged = true,
                 InputOutcome::InteractionProcessed {
-                    outcome: InteractionOutcome::ContainedTransformDelivered { .. },
+                    outcome:
+                        InteractionOutcome::DragDelivered { .. }
+                        | InteractionOutcome::ContainedTransformDelivered { .. },
                     ..
-                } => transform_events.delivered = true,
+                } => gesture_events.delivered = true,
                 _ => {}
             }
         }
@@ -170,10 +175,20 @@ fn run_frame(
             preview: dockspace
                 .engine()
                 .interaction()
-                .contained_transform_preview()
-                .map(|preview| preview.rect()),
+                .preview()
+                .and_then(|preview| match preview.visual() {
+                    PreviewVisual::Contained { rect, .. } => Some(*rect),
+                    PreviewVisual::Dock { .. } | PreviewVisual::Native { .. } => None,
+                })
+                .or_else(|| {
+                    dockspace
+                        .engine()
+                        .interaction()
+                        .contained_transform_preview()
+                        .map(|preview| preview.rect())
+                }),
             raised: raised_across_passes,
-            transform_events,
+            gesture_events,
         });
     });
     observation.expect("one egui pass must paint")
@@ -255,6 +270,7 @@ fn raise_rear_and_recover_begin(
     dockspace: &mut Dockspace,
     panes: &mut TestPanes,
     original: LogicalRect,
+    gesture: Gesture,
     press: Pos2,
     current: Pos2,
 ) -> FrameObservation {
@@ -277,7 +293,10 @@ fn raise_rear_and_recover_begin(
     assert!(stale_move.saw_stale_pass);
     assert!(stale_move.interactions_current);
     assert_eq!(stale_move.raised, Some((REAR_Z, FRONT_Z + 1)));
-    assert_eq!(stale_move.status, InteractionStatus::Idle);
+    match gesture {
+        Gesture::Move => assert!(matches!(stale_move.status, InteractionStatus::Armed { .. })),
+        Gesture::ResizeWest => assert_eq!(stale_move.status, InteractionStatus::Idle),
+    }
     assert_eq!(stale_move.rect, original);
     assert_eq!(stale_move.z_order, FRONT_Z + 1);
     assert_eq!(
@@ -298,16 +317,22 @@ fn raise_rear_and_recover_begin(
         vec![Event::PointerMoved(current)],
     );
     assert!(stable_begin.interactions_current);
-    assert_eq!(stable_begin.transform_events.began, 1);
-    assert!(matches!(
-        stable_begin.status,
-        InteractionStatus::ContainedTransforming { .. }
-    ));
+    assert_eq!(stable_begin.gesture_events.began, 1);
+    match gesture {
+        Gesture::Move => assert!(matches!(
+            stable_begin.status,
+            InteractionStatus::Dragging { .. }
+        )),
+        Gesture::ResizeWest => assert!(matches!(
+            stable_begin.status,
+            InteractionStatus::ContainedTransforming { .. }
+        )),
+    }
     assert_eq!(stable_begin.rect, original);
     stable_begin
 }
 
-fn exercise_rear_gesture(gesture: Gesture, expected_kind: ContainedTransformKind) {
+fn exercise_rear_gesture(gesture: Gesture) {
     let context = Context::default();
     let original = LogicalRect::new(80.0, 70.0, 240.0, 180.0).expect("finite fixture");
     let mut dockspace =
@@ -323,20 +348,42 @@ fn exercise_rear_gesture(gesture: Gesture, expected_kind: ContainedTransformKind
         &mut dockspace,
         &mut panes,
         original,
+        gesture,
         press,
         current,
     );
-    let active_view = dockspace
-        .engine()
-        .interaction()
-        .active_contained_transform_view()
-        .expect("transform is active");
-    let session = active_view.session();
-    assert_eq!(
-        active_view.initial_pointer(),
-        LogicalPoint::new(f64::from(press.x), f64::from(press.y)).expect("press origin is finite")
-    );
-    assert_eq!(active_view.kind(), expected_kind);
+    let active_status = active.status;
+    match gesture {
+        Gesture::Move => {
+            let active_view = dockspace
+                .engine()
+                .interaction()
+                .active_drag_view()
+                .expect("title drag is active");
+            let MovePayload::Subtree(source) = active_view.payload() else {
+                panic!("contained title drag preserves the complete rear root");
+            };
+            assert_eq!(source.root(), REAR_ROOT);
+        }
+        Gesture::ResizeWest => {
+            let active_view = dockspace
+                .engine()
+                .interaction()
+                .active_contained_transform_view()
+                .expect("resize transform is active");
+            assert_eq!(
+                active_view.initial_pointer(),
+                LogicalPoint::new(f64::from(press.x), f64::from(press.y))
+                    .expect("press origin is finite")
+            );
+            assert_eq!(
+                active_view.kind(),
+                ContainedTransformKind::Resize(ContainedResizeEdges::horizontal(
+                    ContainedHorizontalResizeEdge::Left,
+                ))
+            );
+        }
+    }
     assert_eq!(active.rect, original);
 
     let preview_painted = run_frame(
@@ -348,18 +395,10 @@ fn exercise_rear_gesture(gesture: Gesture, expected_kind: ContainedTransformKind
     assert_eq!(preview_painted.preview, Some(expected));
     assert_eq!(preview_painted.rect, original);
     assert_eq!(
-        preview_painted.transform_events.began, 0,
+        preview_painted.gesture_events.began, 0,
         "an active session cannot restart"
     );
-    assert_eq!(
-        dockspace
-            .engine()
-            .interaction()
-            .active_contained_transform_view()
-            .expect("same transform remains active")
-            .session(),
-        session
-    );
+    assert_eq!(preview_painted.status, active_status);
 
     let released = run_frame(
         &context,
@@ -367,16 +406,13 @@ fn exercise_rear_gesture(gesture: Gesture, expected_kind: ContainedTransformKind
         &mut panes,
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(released.transform_events.preview_acknowledged);
-    assert!(!released.transform_events.delivered);
+    assert!(released.gesture_events.preview_acknowledged);
+    assert!(!released.gesture_events.delivered);
     assert_eq!(released.rect, original);
-    assert!(matches!(
-        released.status,
-        InteractionStatus::ContainedTransforming { .. }
-    ));
+    assert_eq!(released.status, active_status);
 
     let idle = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert!(idle.transform_events.delivered);
+    assert!(idle.gesture_events.delivered);
     assert_eq!(idle.status, InteractionStatus::Idle);
     assert_eq!(idle.rect, expected);
     assert_eq!(idle.z_order, FRONT_Z + 1);
@@ -384,15 +420,10 @@ fn exercise_rear_gesture(gesture: Gesture, expected_kind: ContainedTransformKind
 
 #[test]
 fn rear_contained_move_survives_raise_staleness_and_commits_a_painted_preview() {
-    exercise_rear_gesture(Gesture::Move, ContainedTransformKind::Move);
+    exercise_rear_gesture(Gesture::Move);
 }
 
 #[test]
 fn rear_contained_resize_survives_raise_staleness_and_commits_a_painted_preview() {
-    exercise_rear_gesture(
-        Gesture::ResizeWest,
-        ContainedTransformKind::Resize(ContainedResizeEdges::horizontal(
-            ContainedHorizontalResizeEdge::Left,
-        )),
-    );
+    exercise_rear_gesture(Gesture::ResizeWest);
 }

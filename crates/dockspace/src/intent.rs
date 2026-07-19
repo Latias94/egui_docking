@@ -604,10 +604,16 @@ impl NativeTearOffProposal {
     }
 }
 
-/// Explicit tear-off mode and all facts required to preview it.
+/// Explicit non-docking presentation request and all facts required to preview it.
+///
+/// With an authoritative surface-local pointer, a contained request is considered
+/// only after exact drop resolution proves [`crate::drop_resolver::DropResolution::KnownNone`].
+/// A resolved or rejected exact target always wins, and unavailable authority never
+/// falls back. With authoritative `Known(None)`, the request retains its direct
+/// tear-off semantics.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TearOffRequest {
-    /// Request an immediate contained-floating command.
+    /// Request an immediate contained creation, rehome, or same-presentation move.
     Contained(ContainedTearOffProposal),
     /// Request a native lifecycle saga, with an independently explicit fallback.
     Native {
@@ -660,7 +666,8 @@ pub enum RendererIntent {
         session: DragSessionId,
         /// Authoritative target surface and location, known none, or unknown.
         target: TargetAuthority,
-        /// Explicit tear-off request used only with `Known(None)`.
+        /// Explicit non-docking request for `Known(None)`, or a contained
+        /// alternative used only when exact surface resolution is known none.
         tear_off: Option<TearOffRequest>,
     },
     /// Confirm that the exact published preview was painted.
@@ -677,7 +684,7 @@ pub enum RendererIntent {
         button_state: Authority<PointerButtonState>,
         /// Authoritative release target and location.
         target: TargetAuthority,
-        /// Exact tear-off request painted for a known-none target.
+        /// Exact non-docking request which participated in the painted preview.
         tear_off: Option<TearOffRequest>,
     },
     /// Cancel an active drag for an explicit reason.

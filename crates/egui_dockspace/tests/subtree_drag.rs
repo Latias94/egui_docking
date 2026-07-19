@@ -5,7 +5,8 @@ use dockspace::command::MovePayload;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::interaction::InteractionStatus;
+use dockspace::intent::TearOffRequest;
+use dockspace::interaction::{InteractionStatus, PreviewVisual};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, UiBuilder, vec2};
 use egui_dockspace::{ContainedPresentationIds, Dockspace, PaneView, TearOffMode};
 
@@ -100,7 +101,7 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
     clippy::cast_possible_truncation,
     reason = "finite workspace coordinates are converted to egui's f32 input space"
 )]
-fn floating_dock_grip_center(dockspace: &Dockspace) -> Pos2 {
+fn floating_title_point(dockspace: &Dockspace) -> Pos2 {
     let floating = dockspace
         .engine()
         .workspace()
@@ -123,7 +124,7 @@ fn floating_dock_grip_center(dockspace: &Dockspace) -> Pos2 {
 }
 
 #[test]
-fn explicit_floating_grip_arms_the_complete_split_subtree() {
+fn floating_title_arms_the_complete_split_subtree() {
     let context = Context::default();
     let original = workspace();
     let root_node = original
@@ -135,14 +136,14 @@ fn explicit_floating_grip_arms_the_complete_split_subtree() {
         .expect("fixture facade builds");
     let mut panes = TestPanes;
     warm(&context, &mut dockspace, &mut panes);
-    let grip = floating_dock_grip_center(&dockspace);
-    let moved = grip + vec2(100.0, 45.0);
+    let title = floating_title_point(&dockspace);
+    let moved = title + vec2(100.0, 45.0);
 
     run_frame(
         &context,
         &mut dockspace,
         &mut panes,
-        vec![Event::PointerMoved(grip), pointer_button(grip, true)],
+        vec![Event::PointerMoved(title), pointer_button(title, true)],
     );
     run_frame(
         &context,
@@ -167,7 +168,7 @@ fn explicit_floating_grip_arms_the_complete_split_subtree() {
         .active_drag_view()
         .expect("subtree drag is active");
     let MovePayload::Subtree(source) = active.payload() else {
-        panic!("floating docking grip must preserve the complete split subtree");
+        panic!("floating title drag must preserve the complete split subtree");
     };
     assert_eq!(source.root(), FLOATING_ROOT);
     assert_eq!(source.node(), root_node);
@@ -191,6 +192,9 @@ fn explicit_floating_grip_arms_the_complete_split_subtree() {
 fn complete_contained_root_does_not_allocate_a_new_identity_in_its_current_host() {
     let context = Context::default();
     let original = workspace();
+    let original_floating = *original
+        .contained_floating(FLOATING)
+        .expect("original contained presentation exists");
     let allocations = Rc::new(Cell::new(0));
     let observed_allocations = Rc::clone(&allocations);
     let mut dockspace = Dockspace::builder("contained-root-identity", original.clone())
@@ -203,14 +207,14 @@ fn complete_contained_root_does_not_allocate_a_new_identity_in_its_current_host(
         .expect("fixture facade builds");
     let mut panes = TestPanes;
     warm(&context, &mut dockspace, &mut panes);
-    let grip = floating_dock_grip_center(&dockspace);
+    let title = floating_title_point(&dockspace);
     let outside_host = Pos2::new(550.0, 210.0);
 
     run_frame(
         &context,
         &mut dockspace,
         &mut panes,
-        vec![Event::PointerMoved(grip), pointer_button(grip, true)],
+        vec![Event::PointerMoved(title), pointer_button(title, true)],
     );
     for _ in 0..4 {
         run_frame(
@@ -226,7 +230,28 @@ fn complete_contained_root_does_not_allocate_a_new_identity_in_its_current_host(
         .interaction()
         .active_drag_view()
         .expect("whole-root drag remains active");
-    assert_eq!(active.tear_off(), None);
+    let TearOffRequest::Contained(proposal) = active
+        .tear_off()
+        .expect("whole-root title drag proposes moving its existing presentation")
+    else {
+        panic!("whole-root title drag must use a contained move proposal");
+    };
+    let proposal = *proposal;
+    assert_eq!(proposal.root(), FLOATING_ROOT);
+    assert_eq!(proposal.floating(), FLOATING);
+    assert!(matches!(
+        dockspace
+            .engine()
+            .interaction()
+            .preview()
+            .expect("contained move proposal is painted")
+            .visual(),
+        PreviewVisual::Contained {
+            surface: SURFACE,
+            rect,
+            fallback: false,
+        } if *rect == proposal.rect()
+    ));
     assert_eq!(allocations.get(), 0);
     assert_eq!(dockspace.engine().workspace(), &original);
 
@@ -243,7 +268,27 @@ fn complete_contained_root_does_not_allocate_a_new_identity_in_its_current_host(
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert_eq!(allocations.get(), 0);
-    assert_eq!(dockspace.engine().workspace(), &original);
+    let moved = dockspace
+        .engine()
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("existing contained presentation remains");
+    assert_eq!(moved.root, FLOATING_ROOT);
+    assert_eq!(moved.surface, SURFACE);
+    assert_eq!(moved.rect, proposal.rect());
+    assert_eq!(moved.rect.size(), original_floating.rect.size());
+    assert!(dockspace.engine().workspace().root(UNUSED_ROOT).is_none());
+    assert!(
+        dockspace
+            .engine()
+            .workspace()
+            .contained_floating(UNUSED_FLOATING)
+            .is_none()
+    );
+    assert_eq!(
+        dockspace.engine().workspace().item_multiset(),
+        original.item_multiset()
+    );
     assert_eq!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Idle

@@ -60,7 +60,6 @@ pub(crate) struct FloatingPlan {
     pub(crate) id: FloatingPresentationId,
     pub(crate) outer_rect: Rect,
     pub(crate) title_rect: Rect,
-    pub(crate) dock_drag_rect: Rect,
     pub(crate) title_drag_rect: Rect,
     pub(crate) close_rect: Option<Rect>,
     pub(crate) resize_zones: [(FloatingResizeDirection, Rect); 8],
@@ -160,7 +159,6 @@ enum ProjectionRegionId {
         index: usize,
     },
     FloatingTitle(FloatingPresentationId),
-    FloatingDock(FloatingPresentationId),
     FloatingClose(FloatingPresentationId),
     FloatingResize {
         floating: FloatingPresentationId,
@@ -301,7 +299,6 @@ pub(crate) fn build_surface_plan(
             id: floating.id,
             outer_rect,
             title_rect,
-            dock_drag_rect: Rect::NOTHING,
             title_drag_rect: title_rect,
             close_rect: None,
             resize_zones: floating_resize_zones(outer_rect, style.floating_resize_extent),
@@ -338,13 +335,6 @@ pub(crate) fn build_surface_plan(
             rect: floating_plan.title_drag_rect,
             layer,
         });
-        if floating_plan.dock_drag_rect.is_positive() {
-            fingerprint_regions.push(ProjectionRegion {
-                id: ProjectionRegionId::FloatingDock(floating.id),
-                rect: floating_plan.dock_drag_rect,
-                layer,
-            });
-        }
         if let Some(rect) = floating_plan.close_rect {
             fingerprint_regions.push(ProjectionRegion {
                 id: ProjectionRegionId::FloatingClose(floating.id),
@@ -413,17 +403,7 @@ fn complete_floating_plan(root: &RootPlan, floating: &mut FloatingPlan, style: &
             ),
         )
     });
-    if has_items {
-        let dock_width = movable_title.height().min(movable_title.width());
-        floating.dock_drag_rect =
-            Rect::from_min_size(movable_title.min, vec2(dock_width, movable_title.height()));
-        floating.title_drag_rect = Rect::from_min_max(
-            pos2(floating.dock_drag_rect.max.x, movable_title.min.y),
-            movable_title.max,
-        );
-    } else {
-        floating.title_drag_rect = movable_title;
-    }
+    floating.title_drag_rect = movable_title;
 }
 
 fn floating_close_rect(title_rect: Rect, style: &DockStyle) -> Rect {

@@ -9,7 +9,7 @@ use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::error::{CommandError, ReferenceRole};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, Workspace};
-use dockspace::ids::{InputSequence, ItemId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, InputSequence, ItemId, RootId, SurfaceId};
 use dockspace::intent::{
     ContainedTearOffProposal, RendererIntent, TargetAuthority, TearOffRequest,
 };
@@ -30,7 +30,7 @@ use crate::projection::{
     ProjectionError, ProjectionFingerprint, SurfacePlan, build_surface_plan,
     floating_minimum_for_payload,
 };
-use crate::renderer::{RenderAction, RenderOutput, paint_surface};
+use crate::renderer::{ContainedMoveCandidate, RenderAction, RenderOutput, paint_surface};
 use crate::response::{
     DockspaceCapability, DockspaceInputRejection, DockspaceResponse, DockspaceSurfaceStatus,
     DockspaceUnavailableReason,
@@ -62,6 +62,19 @@ enum GestureIdentity {
     Drag(DragSessionId),
     Resize(ResizeSessionId),
     ContainedTransform(ContainedTransformSessionId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ContainedReservation {
+    session: DragSessionId,
+    root: RootId,
+    floating: FloatingPresentationId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContainedAllocation {
+    Reserved(ContainedReservation),
+    Unavailable(DragSessionId),
 }
 
 struct FrameState {
@@ -109,7 +122,7 @@ pub struct Dockspace {
     previous_projections: BTreeMap<SurfaceId, ProjectionFingerprint>,
     published_projection: Option<PublishedProjection>,
     last_contained_unavailable: Option<DockspaceUnavailableReason>,
-    contained_allocation_attempt: Option<DragSessionId>,
+    contained_allocation: Option<ContainedAllocation>,
 }
 
 impl Dockspace {
@@ -139,7 +152,7 @@ impl Dockspace {
             previous_projections: BTreeMap::new(),
             published_projection: None,
             last_contained_unavailable: None,
-            contained_allocation_attempt: None,
+            contained_allocation: None,
         })
     }
 
@@ -318,7 +331,7 @@ impl Dockspace {
             }
         }
         if self.engine.interaction().active_drag_view().is_none() {
-            self.contained_allocation_attempt = None;
+            self.contained_allocation = None;
             self.last_contained_unavailable = None;
         }
 
@@ -708,10 +721,17 @@ impl Dockspace {
             RenderAction::UpdateDrag {
                 session,
                 target,
-                tear_off_position,
+                pointer_position,
+                contained_move,
             } => Some(RendererIntent::UpdateDrag {
                 session,
-                tear_off: self.tear_off_for_update(session, &target, tear_off_position, panes)?,
+                tear_off: self.non_docking_request_for_update(
+                    session,
+                    &target,
+                    pointer_position,
+                    contained_move,
+                    panes,
+                )?,
                 target,
             }),
             RenderAction::ReleaseDrag {
@@ -720,7 +740,6 @@ impl Dockspace {
                 button,
                 button_state,
                 target,
-                tear_off_position: _,
             } => {
                 let active = self
                     .engine
@@ -1006,11 +1025,12 @@ impl Dockspace {
         Ok(())
     }
 
-    fn tear_off_for_update(
+    fn non_docking_request_for_update(
         &mut self,
         session: DragSessionId,
         target: &TargetAuthority,
         position: Option<LogicalPoint>,
+        contained_move: Option<ContainedMoveCandidate>,
         panes: &dyn PaneView,
     ) -> Result<Option<TearOffRequest>, DockspaceError> {
         let Some(active) = self
@@ -1022,18 +1042,21 @@ impl Dockspace {
             return Ok(None);
         };
         let payload = active.payload().clone();
+        if let Some(candidate) = contained_move {
+            return self.contained_move_for_update(session, target, &payload, candidate, panes);
+        }
         let existing = active.tear_off().and_then(|request| match request {
             TearOffRequest::Contained(proposal) => Some(*proposal),
             TearOffRequest::Native { .. } => None,
         });
         let Some(position) = position else {
-            return Ok(active.tear_off().cloned());
+            return Ok(None);
         };
         let TargetAuthority::Local(local) = target else {
-            return Ok(active.tear_off().cloned());
+            return Ok(None);
         };
         if !matches!(local.target().known(), Some(None)) {
-            return Ok(active.tear_off().cloned());
+            return Ok(None);
         }
         if self.tear_off_mode != TearOffMode::Contained {
             self.last_contained_unavailable = Some(DockspaceUnavailableReason::TearOffModeDisabled);
@@ -1096,6 +1119,83 @@ impl Dockspace {
         )))
     }
 
+    fn contained_move_for_update(
+        &mut self,
+        session: DragSessionId,
+        target: &TargetAuthority,
+        payload: &MovePayload,
+        candidate: ContainedMoveCandidate,
+        panes: &dyn PaneView,
+    ) -> Result<Option<TearOffRequest>, DockspaceError> {
+        let TargetAuthority::Local(local) = target else {
+            return Ok(None);
+        };
+        if local.observer() != candidate.surface {
+            return Ok(None);
+        }
+        if !self.engine.policy().allows_contained_floating() {
+            self.last_contained_unavailable =
+                Some(DockspaceUnavailableReason::ContainedPolicyDisabled);
+            return Ok(None);
+        }
+        if complete_root_id(self.engine.workspace(), payload) != Some(candidate.root)
+            || self
+                .engine
+                .workspace()
+                .presentation_for_root(candidate.root)
+                != Some(RootPresentationOwner::Contained {
+                    surface: candidate.surface,
+                    floating: candidate.floating,
+                })
+        {
+            return Ok(None);
+        }
+        let Some(record) = self
+            .engine
+            .workspace()
+            .contained_floating(candidate.floating)
+            .copied()
+            .filter(|record| {
+                record.root == candidate.root
+                    && record.surface == candidate.surface
+                    && record.rect == candidate.expected_rect
+            })
+        else {
+            return Ok(None);
+        };
+        let minimum =
+            floating_minimum_for_payload(self.engine.workspace(), payload, panes, &self.style)?;
+        if minimum != candidate.minimum_size {
+            return Ok(None);
+        }
+        let Ok(placement) = self.engine.contained_placement(
+            candidate.surface,
+            candidate.requested_rect,
+            candidate.minimum_size,
+        ) else {
+            self.last_contained_unavailable =
+                Some(DockspaceUnavailableReason::SurfaceBoundsUnavailable);
+            return Ok(None);
+        };
+        let active_matches = self
+            .engine
+            .interaction()
+            .active_drag_view()
+            .is_some_and(|active| active.session() == session && active.payload() == payload);
+        if !active_matches {
+            return Ok(None);
+        }
+        self.last_contained_unavailable = None;
+        Ok(Some(TearOffRequest::Contained(
+            ContainedTearOffProposal::new(
+                candidate.root,
+                candidate.floating,
+                placement,
+                record.z_order,
+            ),
+        )))
+    }
+
     fn contained_presentation_for_update(
         &mut self,
         session: DragSessionId,
@@ -1107,12 +1207,21 @@ impl Dockspace {
             return Some((root, floating));
         }
         if let Some(proposal) = existing {
+            self.contained_allocation = Some(ContainedAllocation::Reserved(ContainedReservation {
+                session,
+                root: proposal.root(),
+                floating: proposal.floating(),
+            }));
             return Some((proposal.root(), proposal.floating()));
         }
-        if self.contained_allocation_attempt == Some(session) {
-            return None;
+        match self.contained_allocation {
+            Some(ContainedAllocation::Reserved(reservation)) if reservation.session == session => {
+                return Some((reservation.root, reservation.floating));
+            }
+            Some(ContainedAllocation::Unavailable(attempt)) if attempt == session => return None,
+            Some(_) | None => {}
         }
-        self.contained_allocation_attempt = Some(session);
+        self.contained_allocation = Some(ContainedAllocation::Unavailable(session));
         let Some(source) = self.presentation_ids.as_mut() else {
             self.last_contained_unavailable =
                 Some(DockspaceUnavailableReason::PresentationIdSourceMissing);
@@ -1136,6 +1245,11 @@ impl Dockspace {
                 Some(DockspaceUnavailableReason::PresentationIdentityCollision);
             return None;
         }
+        self.contained_allocation = Some(ContainedAllocation::Reserved(ContainedReservation {
+            session,
+            root,
+            floating: ids.floating,
+        }));
         Some((root, ids.floating))
     }
 

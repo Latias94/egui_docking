@@ -408,7 +408,7 @@ fn active_resize_cancels_when_the_button_is_no_longer_down_without_a_release_edg
 }
 
 #[test]
-fn contained_transform_cancels_on_focus_loss_without_committing_the_preview() {
+fn contained_title_drag_cancels_on_focus_loss_without_committing_the_preview() {
     let context = Context::default();
     let rect = LogicalRect::new(140.0, 90.0, 220.0, 160.0).expect("finite rect");
     let original = contained_workspace(rect);
@@ -440,7 +440,7 @@ fn contained_transform_cancels_on_focus_loss_without_committing_the_preview() {
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
-        InteractionStatus::ContainedTransforming { .. }
+        InteractionStatus::Dragging { .. }
     ));
 
     run_input(

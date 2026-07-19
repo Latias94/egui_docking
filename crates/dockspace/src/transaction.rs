@@ -47,6 +47,16 @@ impl WorkspaceTransaction {
         let prepared = crate::operation::prepare_transaction(workspace, policy, &self.commands)?;
         Ok(prepared.publish(workspace))
     }
+
+    /// Stages this transaction and returns its report without publishing it.
+    pub(crate) fn preflight(
+        &self,
+        workspace: &Workspace,
+        policy: &DockPolicy,
+    ) -> Result<TransactionReport, TransactionError> {
+        let prepared = crate::operation::prepare_transaction(workspace, policy, &self.commands)?;
+        Ok(prepared.into_report(workspace))
+    }
 }
 
 impl FromIterator<WorkspaceCommand> for WorkspaceTransaction {
@@ -62,6 +72,13 @@ pub(crate) struct PreparedTransaction {
 }
 
 impl PreparedTransaction {
+    fn into_report(self, workspace: &Workspace) -> TransactionReport {
+        TransactionReport {
+            outcomes: self.outcomes,
+            changed: self.candidate != *workspace,
+        }
+    }
+
     pub(crate) fn publish(self, workspace: &mut Workspace) -> TransactionReport {
         let changed = self.candidate != *workspace;
         *workspace = self.candidate;

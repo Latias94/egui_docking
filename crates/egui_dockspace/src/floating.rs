@@ -25,13 +25,22 @@ use crate::renderer::{
 use crate::style::DockStyle;
 
 #[derive(Clone, Copy)]
-struct TransformContext<'a> {
+struct ResizeContext<'a> {
     surface: SurfaceId,
     root: RootId,
     floating: FloatingPresentationId,
     minimum_size: dockspace::geometry::LogicalSize,
     status: InteractionStatus,
     active: Option<ActiveContainedTransformView<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct TitleDragContext<'a> {
+    root: RootId,
+    workspace: &'a Workspace,
+    payload_available: bool,
+    status: InteractionStatus,
+    active: Option<ActiveDragView<'a>>,
 }
 
 pub(crate) fn paint_background(
@@ -105,7 +114,8 @@ pub(crate) fn paint_chrome_and_interact(
 ) {
     let title = floating_title(root);
     let title_drag_rect = floating.title_drag_rect;
-    let transform = TransformContext {
+    let title_drag_available = root.tabs.iter().any(|tabs| !tabs.tabs.is_empty());
+    let resize = ResizeContext {
         surface,
         root: root.root,
         floating: floating.id,
@@ -135,7 +145,7 @@ pub(crate) fn paint_chrome_and_interact(
         style.tab_active_text_color,
     );
 
-    if interactions_current {
+    if interactions_current && title_drag_available {
         if title_response.hovered() || title_response.dragged() {
             ui.ctx().set_cursor_icon(if title_response.dragged() {
                 CursorIcon::Grabbing
@@ -143,34 +153,25 @@ pub(crate) fn paint_chrome_and_interact(
                 CursorIcon::Grab
             });
         }
-        emit_transform_response(
+        emit_title_drag_response(
             &title_response,
             title_drag_rect,
-            transform,
-            ContainedTransformKind::Move,
+            TitleDragContext {
+                root: root.root,
+                workspace,
+                payload_available: title_drag_available,
+                status,
+                active: active_drag,
+            },
             output,
         );
     }
-
-    paint_dock_grip(
-        ui,
-        instance_id,
-        surface,
-        root,
-        floating,
-        workspace,
-        style,
-        status,
-        active_drag,
-        interactions_current,
-        output,
-    );
 
     paint_resize_handles(
         ui,
         instance_id,
         floating,
-        transform,
+        resize,
         interactions_current,
         output,
     );
@@ -195,7 +196,7 @@ fn paint_resize_handles(
     ui: &Ui,
     instance_id: Id,
     floating: &FloatingPlan,
-    transform: TransformContext<'_>,
+    resize: ResizeContext<'_>,
     interactions_current: bool,
     output: &mut RenderOutput,
 ) {
@@ -203,9 +204,9 @@ fn paint_resize_handles(
         let id = ui.make_persistent_id((
             "egui_dockspace",
             instance_id,
-            transform.surface,
-            transform.root,
-            transform.floating,
+            resize.surface,
+            resize.root,
+            resize.floating,
             direction,
             "contained-resize",
         ));
@@ -217,81 +218,50 @@ fn paint_resize_handles(
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(resize_cursor(direction));
         }
-        emit_transform_response(
-            &response,
-            rect,
-            transform,
-            ContainedTransformKind::Resize(resize_edges(direction)),
-            output,
-        );
+        emit_resize_response(&response, rect, resize, resize_edges(direction), output);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn paint_dock_grip(
-    ui: &Ui,
-    instance_id: Id,
-    surface: SurfaceId,
-    root: &RootPlan,
-    floating: &FloatingPlan,
-    workspace: &Workspace,
-    style: &DockStyle,
-    status: InteractionStatus,
-    active_drag: Option<ActiveDragView<'_>>,
-    interactions_current: bool,
+fn emit_title_drag_response(
+    response: &egui::Response,
+    region: Rect,
+    drag: TitleDragContext<'_>,
     output: &mut RenderOutput,
 ) {
-    if !floating.dock_drag_rect.is_positive() {
+    if !drag.payload_available {
         return;
     }
-    let id = ui.make_persistent_id((
-        "egui_dockspace",
-        instance_id,
-        surface,
-        root.root,
-        floating.id,
-        "contained-dock-grip",
-    ));
-    let response = ui
-        .interact(interact_rect(floating.dock_drag_rect), id, Sense::DRAG)
-        .on_hover_text("Dock floating group");
-    ui.ctx().accesskit_node_builder(id, |node| {
-        node.set_role(Role::Button);
-        node.set_bounds(accesskit_bounds(floating.dock_drag_rect));
-        node.set_label("Dock floating group");
-    });
-
-    let active = interactions_current && (response.hovered() || response.dragged());
-    if active {
-        ui.ctx().set_cursor_icon(if response.dragged() {
-            CursorIcon::Grabbing
-        } else {
-            CursorIcon::Grab
-        });
-    }
-    paint_dock_grip_icon(ui, floating.dock_drag_rect, style, active);
-
-    if interactions_current
-        && status == InteractionStatus::Idle
+    if drag.status == InteractionStatus::Idle
         && response.is_pointer_button_down_on()
-        && ui.input(|input| input.pointer.button_down(PointerButton::Primary))
-        && ui
+        && response
+            .ctx
+            .input(|input| input.pointer.button_down(PointerButton::Primary))
+        && response
+            .ctx
             .input(|input| input.pointer.press_origin())
-            .is_some_and(|origin| contains_half_open(floating.dock_drag_rect, origin))
-        && let Some(root_record) = workspace.root(root.root)
-        && let Some(source) =
-            output.capture(workspace.capture_node_source(root.root, root_record.node))
+            .is_some_and(|origin| contains_half_open(region, origin))
+        && let Some(root_record) = drag.workspace.root(drag.root)
+        && let Some(source) = output.capture(
+            drag.workspace
+                .capture_node_source(drag.root, root_record.node),
+        )
     {
         output.push(RenderAction::ArmDrag(MovePayload::Subtree(source)));
     }
-    if interactions_current
-        && (response.drag_started_by(PointerButton::Primary)
-            || response.dragged_by(PointerButton::Primary))
-        && let Some(active_drag) = active_drag.filter(|drag| drag.phase() == DragPhase::Armed)
+    if (response.drag_started_by(PointerButton::Primary)
+        || response.dragged_by(PointerButton::Primary))
+        && response
+            .ctx
+            .input(|input| input.pointer.press_origin())
+            .is_some_and(|origin| contains_half_open(region, origin))
+        && let Some(active_drag) = drag
+            .active
+            .filter(|active| active.phase() == DragPhase::Armed)
         && let MovePayload::Subtree(source) = active_drag.payload()
-        && source.root() == root.root
-        && workspace
-            .root(root.root)
+        && source.root() == drag.root
+        && drag
+            .workspace
+            .root(drag.root)
             .is_some_and(|record| source.node() == record.node)
     {
         output.push(RenderAction::BeginDrag {
@@ -299,25 +269,6 @@ fn paint_dock_grip(
             pointer: PRIMARY_POINTER,
             button: PRIMARY_BUTTON,
         });
-    }
-}
-
-fn paint_dock_grip_icon(ui: &Ui, rect: Rect, style: &DockStyle, active: bool) {
-    let color = if active {
-        style.tab_active_text_color
-    } else {
-        style.tab_text_color
-    };
-    let spacing = 3.5_f32.min(rect.width() * 0.18).min(rect.height() * 0.18);
-    let radius = 1.0_f32.min(spacing * 0.32);
-    for x in [-0.5, 0.5] {
-        for y in [-1.0, 0.0, 1.0] {
-            ui.painter().circle_filled(
-                rect.center() + vec2(x * spacing, y * spacing),
-                radius,
-                color,
-            );
-        }
     }
 }
 
@@ -412,38 +363,38 @@ pub(crate) fn request_raise(
     });
 }
 
-fn emit_transform_response(
+fn emit_resize_response(
     response: &egui::Response,
     region: Rect,
-    transform: TransformContext<'_>,
-    kind: ContainedTransformKind,
+    resize: ResizeContext<'_>,
+    edges: ContainedResizeEdges,
     output: &mut RenderOutput,
 ) {
     if (response.drag_started_by(PointerButton::Primary)
         || response.dragged_by(PointerButton::Primary))
-        && transform.status == InteractionStatus::Idle
+        && resize.status == InteractionStatus::Idle
         && let Some(initial_position) = response.ctx.input(|input| input.pointer.press_origin())
         && contains_half_open(region, initial_position)
         && let Ok(initial_pointer) = to_logical_point(initial_position)
     {
         output.push(RenderAction::BeginContainedTransform {
-            surface: transform.surface,
-            root: transform.root,
-            floating: transform.floating,
+            surface: resize.surface,
+            root: resize.root,
+            floating: resize.floating,
             pointer: PRIMARY_POINTER,
             button: PRIMARY_BUTTON,
             initial_pointer,
-            kind,
-            minimum_size: transform.minimum_size,
+            kind: ContainedTransformKind::Resize(edges),
+            minimum_size: resize.minimum_size,
         });
     } else if response.dragged_by(PointerButton::Primary)
         && let Some(current_pointer) = response
             .interact_pointer_pos()
             .and_then(|position| to_logical_point(position).ok())
-        && let Some(active) = transform.active.filter(|active| {
-            active.surface() == transform.surface
-                && active.root() == transform.root
-                && active.floating() == transform.floating
+        && let Some(active) = resize.active.filter(|active| {
+            active.surface() == resize.surface
+                && active.root() == resize.root
+                && active.floating() == resize.floating
                 && active.pointer() == PRIMARY_POINTER
                 && active.button() == PRIMARY_BUTTON
         })
@@ -536,9 +487,116 @@ fn configure_resize_accessibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockspace::geometry::LogicalRect;
+    use dockspace::graph::{
+        Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+    };
+    use dockspace::ids::ItemId;
+
+    const SURFACE: SurfaceId = SurfaceId::new(1);
+    const MAIN_ROOT: RootId = RootId::new(2);
+    const FLOATING_ROOT: RootId = RootId::new(3);
+    const FLOATING: FloatingPresentationId = FloatingPresentationId::new(4);
+
+    fn contained_split_workspace() -> (Workspace, dockspace::ids::NodeId) {
+        let mut builder = Workspace::builder();
+        let main = builder.insert_node(Node::tabs([ItemId::new(10)]));
+        let left = builder.insert_node(Node::tabs([ItemId::new(11)]));
+        let right = builder.insert_node(Node::tabs([ItemId::new(12)]));
+        let floating_root = builder.insert_node(
+            Node::equal_split(Axis::Horizontal, [left, right]).expect("two children form a split"),
+        );
+        builder.set_root(MAIN_ROOT, RootRecord::new(main));
+        builder.set_root(FLOATING_ROOT, RootRecord::new(floating_root));
+        builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+        builder.set_contained_floating(ContainedFloating::new(
+            FLOATING,
+            FLOATING_ROOT,
+            SURFACE,
+            LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("fixture rect is valid"),
+            1,
+        ));
+        builder
+            .attach_contained(SURFACE, FLOATING)
+            .expect("surface exists");
+        (
+            builder.build().expect("contained fixture is valid"),
+            floating_root,
+        )
+    }
 
     #[test]
-    fn contained_transform_begins_at_press_origin() {
+    fn complete_contained_title_arms_the_complete_subtree_from_its_full_width() {
+        let (workspace, floating_root) = contained_split_workspace();
+        let context = egui::Context::default();
+        let title_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 28.0));
+        let press = pos2(92.0, title_rect.center().y);
+        let screen_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(120.0, 80.0));
+        let widget_id = Id::new("contained-title-subtree-test");
+        let _ = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen_rect),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = ui.interact(title_rect, widget_id, Sense::drag());
+            },
+        );
+        let mut input = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        input.events.extend([
+            egui::Event::PointerMoved(press),
+            egui::Event::PointerButton {
+                pos: press,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let mut output = RenderOutput::default();
+        let mut unavailable_output = RenderOutput::default();
+
+        let _ = context.run_ui(input, |ui| {
+            let response = ui.interact(title_rect, widget_id, Sense::drag());
+            emit_title_drag_response(
+                &response,
+                title_rect,
+                TitleDragContext {
+                    root: FLOATING_ROOT,
+                    workspace: &workspace,
+                    payload_available: false,
+                    status: InteractionStatus::Idle,
+                    active: None,
+                },
+                &mut unavailable_output,
+            );
+            emit_title_drag_response(
+                &response,
+                title_rect,
+                TitleDragContext {
+                    root: FLOATING_ROOT,
+                    workspace: &workspace,
+                    payload_available: true,
+                    status: InteractionStatus::Idle,
+                    active: None,
+                },
+                &mut output,
+            );
+        });
+
+        assert!(unavailable_output.actions.is_empty());
+        let [RenderAction::ArmDrag(MovePayload::Subtree(source))] = output.actions.as_slice()
+        else {
+            panic!("title press must arm exactly one subtree drag");
+        };
+        assert_eq!(source.root(), FLOATING_ROOT);
+        assert_eq!(source.node(), floating_root);
+    }
+
+    #[test]
+    fn contained_resize_begins_at_press_origin() {
         let context = egui::Context::default();
         let press_origin = pos2(18.0, 22.0);
         let latest_position = pos2(41.0, 37.0);
@@ -572,10 +630,10 @@ mod tests {
 
         let _ = context.run_ui(input, |ui| {
             let response = ui.interact(widget_rect, widget_id, Sense::drag());
-            emit_transform_response(
+            emit_resize_response(
                 &response,
                 widget_rect,
-                TransformContext {
+                ResizeContext {
                     surface: SurfaceId::new(1),
                     root: RootId::new(2),
                     floating: FloatingPresentationId::new(3),
@@ -584,14 +642,16 @@ mod tests {
                     status: InteractionStatus::Idle,
                     active: None,
                 },
-                ContainedTransformKind::Move,
+                ContainedResizeEdges::horizontal(ContainedHorizontalResizeEdge::Right),
                 &mut output,
             );
         });
 
         let [
             RenderAction::BeginContainedTransform {
-                initial_pointer, ..
+                initial_pointer,
+                kind: ContainedTransformKind::Resize(_),
+                ..
             },
         ] = output.actions.as_slice()
         else {

@@ -50,7 +50,8 @@ pub(crate) enum RenderAction {
     UpdateDrag {
         session: DragSessionId,
         target: TargetAuthority,
-        tear_off_position: Option<LogicalPoint>,
+        pointer_position: Option<LogicalPoint>,
+        contained_move: Option<ContainedMoveCandidate>,
     },
     ReleaseDrag {
         session: DragSessionId,
@@ -58,7 +59,6 @@ pub(crate) enum RenderAction {
         button: PointerButton,
         button_state: Authority<PointerButtonState>,
         target: TargetAuthority,
-        tear_off_position: Option<LogicalPoint>,
     },
     CancelDrag {
         session: DragSessionId,
@@ -120,6 +120,28 @@ pub(crate) enum RenderAction {
     },
     AcknowledgePreview(PaintAcknowledgement),
     AcknowledgeContainedTransformPreview(ContainedTransformPaintAcknowledgement),
+}
+
+/// Frozen adapter facts for moving one existing contained presentation.
+///
+/// The facade validates these facts against the authoritative workspace before
+/// asking the core to produce a scene-bound placement proof.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ContainedMoveCandidate {
+    pub(crate) surface: SurfaceId,
+    pub(crate) root: RootId,
+    pub(crate) floating: FloatingPresentationId,
+    pub(crate) expected_rect: LogicalRect,
+    pub(crate) requested_rect: LogicalRect,
+    pub(crate) minimum_size: LogicalSize,
+}
+
+#[derive(Clone, Copy)]
+struct GestureFrameFacts {
+    escape_pressed: bool,
+    primary_released: bool,
+    lost_authority: Option<InteractionCancelReason>,
+    interactions_current: bool,
 }
 
 /// Paint result kept separate from the docking engine mutation boundary.
@@ -215,10 +237,11 @@ pub(crate) fn paint_surface(
         interactions_current,
         &mut output,
     );
-    paint_drag_ghost(ui, plan, interaction.active_drag_view(), style);
+    paint_drag_ghost(ui, plan, workspace, interaction.active_drag_view(), style);
     extract_global_gesture_actions(
         ui,
         plan,
+        workspace,
         interaction,
         escape_pressed,
         accept_events,
@@ -390,12 +413,16 @@ fn paint_contained_transform_preview(
 fn paint_drag_ghost(
     ui: &Ui,
     plan: &SurfacePlan,
+    workspace: &Workspace,
     active: Option<ActiveDragView<'_>>,
     style: &DockStyle,
 ) {
     let Some(active) = active.filter(|drag| drag.phase() == DragPhase::Dragging) else {
         return;
     };
+    if is_complete_contained_root_drag(workspace, active.payload()) {
+        return;
+    }
     let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) else {
         return;
     };
@@ -426,6 +453,19 @@ fn paint_drag_ghost(
     );
 }
 
+fn is_complete_contained_root_drag(workspace: &Workspace, payload: &MovePayload) -> bool {
+    let MovePayload::Subtree(source) = payload else {
+        return false;
+    };
+    workspace
+        .root(source.root())
+        .is_some_and(|record| record.node == source.node())
+        && matches!(
+            workspace.presentation_for_root(source.root()),
+            Some(dockspace::RootPresentationOwner::Contained { .. })
+        )
+}
+
 fn drag_title(plan: &SurfacePlan, payload: &MovePayload) -> String {
     let (root, node, item) = match payload {
         MovePayload::Item(source) => (source.root(), source.tabs(), Some(source.item())),
@@ -454,91 +494,68 @@ fn drag_title(plan: &SurfacePlan, payload: &MovePayload) -> String {
 fn extract_global_gesture_actions(
     ui: &Ui,
     plan: &SurfacePlan,
+    workspace: &Workspace,
     interaction: &InteractionState,
     escape_pressed: bool,
     interactions_current: bool,
     output: &mut RenderOutput,
 ) {
-    let lost_authority = lost_primary_gesture_authority(ui);
-    let primary_released = primary_released(ui);
+    let facts = GestureFrameFacts {
+        escape_pressed,
+        primary_released: primary_released(ui),
+        lost_authority: lost_primary_gesture_authority(ui),
+        interactions_current,
+    };
     if interaction.status() != InteractionStatus::Idle
-        && !escape_pressed
-        && !primary_released
-        && lost_authority.is_some()
+        && !facts.escape_pressed
+        && !facts.primary_released
+        && facts.lost_authority.is_some()
     {
         ui.ctx().stop_dragging();
     }
     match interaction.status() {
         InteractionStatus::Armed { session } => {
-            if escape_pressed {
+            if facts.escape_pressed {
                 output.push(RenderAction::CancelDrag {
                     session,
                     reason: InteractionCancelReason::Escape,
                 });
-            } else if primary_released {
+            } else if facts.primary_released {
                 output.push(RenderAction::CancelDrag {
                     session,
                     reason: InteractionCancelReason::ReleasedBeforeDrag,
                 });
-            } else if let Some(reason) = lost_authority {
+            } else if let Some(reason) = facts.lost_authority {
                 output.push(RenderAction::CancelDrag { session, reason });
             }
         }
         InteractionStatus::Dragging { session } => {
-            if escape_pressed {
-                output.push(RenderAction::CancelDrag {
-                    session,
-                    reason: InteractionCancelReason::Escape,
-                });
-            } else if primary_released {
-                let (target, tear_off_position) = if interactions_current {
-                    local_target(ui, plan)
-                } else {
-                    (unreported_local_target(plan), None)
-                };
-                output.push(RenderAction::ReleaseDrag {
-                    session,
-                    pointer: PRIMARY_POINTER,
-                    button: PRIMARY_BUTTON,
-                    button_state: Authority::Known(PointerButtonState::Released),
-                    target,
-                    tear_off_position,
-                });
-            } else if let Some(reason) = lost_authority {
-                output.push(RenderAction::CancelDrag { session, reason });
-            } else if interactions_current {
-                let (target, tear_off_position) = local_target(ui, plan);
-                output.push(RenderAction::UpdateDrag {
-                    session,
-                    target,
-                    tear_off_position,
-                });
-            }
+            extract_dragging_actions(ui, plan, workspace, interaction, session, facts, output);
         }
         InteractionStatus::Resizing { session } => {
-            if escape_pressed {
+            if facts.escape_pressed {
                 output.push(RenderAction::CancelResize {
                     session,
                     reason: InteractionCancelReason::Escape,
                 });
-            } else if primary_released {
+            } else if facts.primary_released {
                 output.push(RenderAction::ReleaseResize {
                     session,
                     pointer: PRIMARY_POINTER,
                     button: PRIMARY_BUTTON,
                     button_state: Authority::Known(PointerButtonState::Released),
                 });
-            } else if let Some(reason) = lost_authority {
+            } else if let Some(reason) = facts.lost_authority {
                 output.push(RenderAction::CancelResize { session, reason });
             }
         }
         InteractionStatus::ContainedTransforming { session } => {
-            if escape_pressed {
+            if facts.escape_pressed {
                 output.push(RenderAction::CancelContainedTransform {
                     session,
                     reason: InteractionCancelReason::Escape,
                 });
-            } else if primary_released
+            } else if facts.primary_released
                 && interaction
                     .active_contained_transform_view()
                     .is_some_and(|transform| {
@@ -552,12 +569,107 @@ fn extract_global_gesture_actions(
                     button: PRIMARY_BUTTON,
                     button_state: Authority::Known(PointerButtonState::Released),
                 });
-            } else if let Some(reason) = lost_authority {
+            } else if let Some(reason) = facts.lost_authority {
                 output.push(RenderAction::CancelContainedTransform { session, reason });
             }
         }
         InteractionStatus::Idle => {}
     }
+}
+
+fn extract_dragging_actions(
+    ui: &Ui,
+    plan: &SurfacePlan,
+    workspace: &Workspace,
+    interaction: &InteractionState,
+    session: DragSessionId,
+    facts: GestureFrameFacts,
+    output: &mut RenderOutput,
+) {
+    if facts.escape_pressed {
+        output.push(RenderAction::CancelDrag {
+            session,
+            reason: InteractionCancelReason::Escape,
+        });
+    } else if facts.primary_released {
+        let (target, _) = if facts.interactions_current {
+            local_target(ui, plan)
+        } else {
+            (unreported_local_target(plan), None)
+        };
+        output.push(RenderAction::ReleaseDrag {
+            session,
+            pointer: PRIMARY_POINTER,
+            button: PRIMARY_BUTTON,
+            button_state: Authority::Known(PointerButtonState::Released),
+            target,
+        });
+    } else if let Some(reason) = facts.lost_authority {
+        output.push(RenderAction::CancelDrag { session, reason });
+    } else if facts.interactions_current {
+        let (target, pointer_position) = local_target(ui, plan);
+        let contained_move = interaction
+            .active_drag_view()
+            .and_then(|active| contained_move_candidate(ui, plan, workspace, active));
+        output.push(RenderAction::UpdateDrag {
+            session,
+            target,
+            pointer_position,
+            contained_move,
+        });
+    }
+}
+
+fn contained_move_candidate(
+    ui: &Ui,
+    plan: &SurfacePlan,
+    workspace: &Workspace,
+    active: ActiveDragView<'_>,
+) -> Option<ContainedMoveCandidate> {
+    let MovePayload::Subtree(source) = active.payload() else {
+        return None;
+    };
+    let root_record = workspace.root(source.root())?;
+    if root_record.node != source.node() {
+        return None;
+    }
+    let dockspace::RootPresentationOwner::Contained { surface, floating } =
+        workspace.presentation_for_root(source.root())?
+    else {
+        return None;
+    };
+    if surface != plan.surface {
+        return None;
+    }
+    let record = workspace.contained_floating(floating)?;
+    if record.root != source.root() || record.surface != surface {
+        return None;
+    }
+    let floating_plan = plan
+        .roots
+        .iter()
+        .find(|root| root.root == source.root())?
+        .floating
+        .as_ref()
+        .filter(|candidate| candidate.id == floating)?;
+    let (initial, current) =
+        ui.input(|input| (input.pointer.press_origin(), input.pointer.interact_pos()));
+    let initial = initial?;
+    let current = current?;
+    let requested_min = LogicalPoint::new(
+        record.rect.min().x() + f64::from(current.x) - f64::from(initial.x),
+        record.rect.min().y() + f64::from(current.y) - f64::from(initial.y),
+    )
+    .ok()?;
+    let requested_rect = LogicalRect::from_min_size(requested_min, record.rect.size()).ok()?;
+    Some(ContainedMoveCandidate {
+        surface,
+        root: source.root(),
+        floating,
+        expected_rect: record.rect,
+        requested_rect,
+        minimum_size: floating_plan.minimum_size,
+    })
 }
 
 fn discard_drag_arm_without_press_edge(
@@ -643,10 +755,9 @@ fn local_target(ui: &Ui, plan: &SurfacePlan) -> (TargetAuthority, Option<Logical
         );
     }
     let target = inside.then(|| SurfacePointer::new(plan.surface, logical));
-    let tear_off_position = (!inside).then_some(logical);
     (
         TargetAuthority::local(plan.surface, Authority::Known(target)),
-        tear_off_position,
+        Some(logical),
     )
 }
 
