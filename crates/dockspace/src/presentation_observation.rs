@@ -343,6 +343,19 @@ pub struct HostPresentationStreamId {
     serial: PresentationStreamSerial,
 }
 
+/// Affine renderer acknowledgement that one retiring stream is externally quiescent.
+///
+/// A host may obtain this only after it has stopped every path which could submit another
+/// observation for the stream. Consuming it removes the detailed retiring-stream record once
+/// core has also released every exact reference. The private fields and lack of `Clone` prevent
+/// a renderer from manufacturing or replaying acknowledgements.
+#[must_use = "submit stream quiescence to reclaim the retiring stream record"]
+#[derive(Debug)]
+pub struct PresentationStreamQuiescence {
+    host: PresentationHostLease,
+    stream: HostPresentationStreamId,
+}
+
 /// Opaque core-minted identity of one actual presentation emission.
 ///
 /// Keys are stream-local and strictly monotonic. The host may retain and later
@@ -1180,6 +1193,20 @@ pub(crate) enum PresentationLedgerError {
         actual: PresentationHostLease,
         stream: HostPresentationStreamId,
     },
+    #[error("presentation stream {stream:?} is not retiring")]
+    StreamNotRetiring { stream: HostPresentationStreamId },
+    #[error("presentation stream {stream:?} still has pending outputs")]
+    StreamHasPendingOutputs { stream: HostPresentationStreamId },
+    #[error(
+        "presentation host {host:?} cannot quiesce stream {stream:?} because surface {surface} is not owned by a same-host successor"
+    )]
+    StreamQuiescenceRequiresSameHostSuccessor {
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+        surface: SurfaceId,
+    },
+    #[error("presentation stream {stream:?} remains retained by core authority")]
+    StreamQuiescenceStillRetained { stream: HostPresentationStreamId },
     #[error(
         "superseded presentation host {host:?} cannot emit surface {surface} while stream {active_stream:?} is active"
     )]
@@ -1455,6 +1482,50 @@ impl PresentationLedger {
         stream: HostPresentationStreamId,
     ) -> Option<PresentationHostLease> {
         self.streams.get(&stream).map(|state| state.host)
+    }
+
+    /// Prepares the one-shot acknowledgement required to reclaim a settled retiring stream.
+    ///
+    /// The caller must invoke this only after its renderer has drained every path that could
+    /// submit another observation for `stream`. Core rechecks the ledger conditions when the
+    /// acknowledgement is consumed, because the candidate may have changed in the meantime.
+    pub(crate) fn prepare_stream_quiescence(
+        &self,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<PresentationStreamQuiescence, PresentationLedgerError> {
+        self.validate_stream_quiescence(host, stream)?;
+        Ok(PresentationStreamQuiescence { host, stream })
+    }
+
+    /// Consumes an externally acknowledged quiescence proof and drops one retiring stream.
+    ///
+    /// This deliberately retains no endpoint tombstone. The acknowledgement means the renderer
+    /// can no longer submit the retired stream, while stream serials remain monotonic and frozen
+    /// host-frame scopes still reject any stale observation that names it.
+    pub(crate) fn compact_quiesced_retiring_stream(
+        &mut self,
+        quiescence: PresentationStreamQuiescence,
+        retained_streams: &BTreeSet<HostPresentationStreamId>,
+    ) -> Result<(), PresentationLedgerError> {
+        let PresentationStreamQuiescence { host, stream } = quiescence;
+        self.validate_stream_quiescence(host, stream)?;
+        if retained_streams.contains(&stream) {
+            return Err(PresentationLedgerError::StreamQuiescenceStillRetained { stream });
+        }
+
+        let removed = self.streams.remove(&stream);
+        debug_assert!(removed.is_some(), "validated stream must still be present");
+        let host_state = self
+            .hosts
+            .get_mut(&host)
+            .ok_or(PresentationLedgerError::UnknownHostLease)?;
+        let removed_from_host = host_state.streams.remove(&stream);
+        debug_assert!(
+            removed_from_host,
+            "validated stream must be owned by its host"
+        );
+        Ok(())
     }
 
     pub(crate) fn validate_lease(
@@ -1778,6 +1849,48 @@ impl PresentationLedger {
         }
     }
 
+    fn validate_stream_quiescence(
+        &self,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<(), PresentationLedgerError> {
+        self.host(host)?;
+        let state = self
+            .streams
+            .get(&stream)
+            .ok_or(PresentationLedgerError::UnknownStream { stream })?;
+        if state.host != host {
+            return Err(PresentationLedgerError::StreamHostMismatch {
+                expected: host,
+                actual: state.host,
+                stream,
+            });
+        }
+        if state.lifecycle != PresentationStreamLifecycle::Retiring {
+            return Err(PresentationLedgerError::StreamNotRetiring { stream });
+        }
+        if !state.pending.is_empty() {
+            return Err(PresentationLedgerError::StreamHasPendingOutputs { stream });
+        }
+        let has_same_host_successor = self
+            .active_streams
+            .get(&state.surface)
+            .and_then(|successor| self.streams.get(successor))
+            .is_some_and(|successor| {
+                successor.host == host && successor.lifecycle == PresentationStreamLifecycle::Active
+            });
+        if !has_same_host_successor {
+            return Err(
+                PresentationLedgerError::StreamQuiescenceRequiresSameHostSuccessor {
+                    host,
+                    stream,
+                    surface: state.surface,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn active_stream_for(
         &mut self,
         lease: PresentationHostLease,
@@ -2081,6 +2194,52 @@ mod tests {
         PresentationLedger::new(EngineAuthorityDomainId::new_for_test(71))
     }
 
+    fn native_endpoint(window: u64) -> HostPresentationEndpoint {
+        HostPresentationEndpoint::Native(ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(71),
+            WorkspaceEpoch::new(1),
+            SURFACE_A,
+            WindowToken::new(window),
+            WindowIncarnation::new(1),
+        ))
+    }
+
+    fn settle_retiring_stream(
+        ledger: &mut PresentationLedger,
+        host: PresentationHostLease,
+        retiring: HostPresentationOutput,
+        active: HostPresentationOutput,
+        generation: u64,
+    ) {
+        let scope = ledger
+            .pending_stream_scope(host)
+            .expect("complete pending scope");
+        assert!(scope.contains(&retiring.stream()));
+        assert!(scope.contains(&active.stream()));
+        ledger
+            .reduce_observation(
+                host,
+                &scope,
+                HostPresentationObservation::Batch(vec![
+                    HostPresentationObservationEntry::new(
+                        retiring.stream(),
+                        HostPresentationStreamObservation::Captured {
+                            generation: HostPresentationCaptureGeneration::new(generation),
+                            progress: HostPresentationProgress::Retired {
+                                settled_through: retiring.key(),
+                                presented: Authority::Known(None),
+                            },
+                        },
+                    ),
+                    HostPresentationObservationEntry::new(
+                        active.stream(),
+                        HostPresentationStreamObservation::NoUpdate,
+                    ),
+                ]),
+            )
+            .expect("retiring stream settles without promoting authority");
+    }
+
     #[test]
     fn repeated_emissions_have_distinct_core_keys_in_one_stream() {
         let mut ledger = ledger();
@@ -2353,6 +2512,135 @@ mod tests {
                 stream,
             } if endpoint == first_endpoint && stream == first.stream()
         ));
+    }
+
+    #[test]
+    fn quiescence_reclaims_only_a_settled_same_host_retiring_stream_and_late_results_fail_closed() {
+        let mut ledger = ledger();
+        let host = ledger.create_host().expect("host lease");
+        let retiring = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                native_endpoint(10),
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("first endpoint emits");
+        let active = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                native_endpoint(11),
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("successor endpoint emits");
+
+        assert!(matches!(
+            ledger.prepare_stream_quiescence(host, retiring.stream()),
+            Err(PresentationLedgerError::StreamHasPendingOutputs { stream }) if stream == retiring.stream()
+        ));
+
+        settle_retiring_stream(&mut ledger, host, retiring, active, 1);
+        let retained_before = crate::retention::PresentationRetentionManifest::from_resources(
+            ledger.pending_output_keys(),
+            ledger.retained_stream_ids(),
+        );
+        assert!(retained_before.retains_stream(retiring.stream()));
+        let proof = ledger
+            .prepare_stream_quiescence(host, retiring.stream())
+            .expect("settled retiring stream may be externally quiesced");
+        assert!(matches!(
+            ledger.compact_quiesced_retiring_stream(proof, &BTreeSet::from([retiring.stream()])),
+            Err(PresentationLedgerError::StreamQuiescenceStillRetained { stream }) if stream == retiring.stream()
+        ));
+
+        let proof = ledger
+            .prepare_stream_quiescence(host, retiring.stream())
+            .expect("failed compaction consumes only its proof");
+        ledger
+            .compact_quiesced_retiring_stream(proof, &BTreeSet::new())
+            .expect("quiesced stream is reclaimed after every core reference disappears");
+        assert!(!ledger.streams.contains_key(&retiring.stream()));
+        assert!(
+            ledger
+                .hosts
+                .get(&host)
+                .is_some_and(|state| !state.streams.contains(&retiring.stream()))
+        );
+        assert_eq!(
+            ledger.retained_stream_ids().collect::<Vec<_>>(),
+            vec![active.stream()]
+        );
+        let retained_after = crate::retention::PresentationRetentionManifest::from_resources(
+            ledger.pending_output_keys(),
+            ledger.retained_stream_ids(),
+        );
+        assert!(!retained_after.retains_stream(retiring.stream()));
+
+        let error = ledger
+            .reduce_observation(
+                host,
+                &BTreeSet::new(),
+                HostPresentationObservation::Batch(vec![HostPresentationObservationEntry::new(
+                    retiring.stream(),
+                    HostPresentationStreamObservation::NoUpdate,
+                )]),
+            )
+            .expect_err("late results for a quiesced stream remain outside the frozen scope");
+        assert!(matches!(
+            error,
+            PresentationLedgerError::BatchExtraStreams { extra } if extra == vec![retiring.stream()]
+        ));
+    }
+
+    #[test]
+    fn ten_thousand_same_host_native_endpoint_rotations_reclaim_quiesced_streams() {
+        let mut ledger = ledger();
+        let host = ledger.create_host().expect("host lease");
+        let mut retiring = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                native_endpoint(10),
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("initial endpoint emits");
+
+        for generation in 1..=10_000 {
+            let endpoint = if generation % 2 == 0 {
+                native_endpoint(10)
+            } else {
+                native_endpoint(11)
+            };
+            let active = ledger
+                .emit(
+                    host,
+                    SURFACE_A,
+                    endpoint,
+                    HostPresentationOutputPayload::Bootstrap,
+                )
+                .expect("quiesced endpoints may rotate without retaining old stream state");
+            settle_retiring_stream(&mut ledger, host, retiring, active, generation);
+            let proof = ledger
+                .prepare_stream_quiescence(host, retiring.stream())
+                .expect("settled old endpoint is externally quiescent");
+            ledger
+                .compact_quiesced_retiring_stream(proof, &BTreeSet::new())
+                .expect("quiesced old endpoint stream is compacted");
+            retiring = active;
+        }
+
+        let diagnostics = ledger.diagnostics();
+        assert_eq!(diagnostics.live_hosts(), 1);
+        assert_eq!(diagnostics.retained_host_states(), 1);
+        assert_eq!(diagnostics.active_streams(), 1);
+        assert_eq!(diagnostics.retiring_streams(), 0);
+        assert_eq!(diagnostics.retained_stream_states(), 1);
+        assert_eq!(diagnostics.pending_streams(), 1);
+        assert_eq!(
+            ledger.hosts[&host].streams,
+            BTreeSet::from([retiring.stream()])
+        );
     }
 
     #[test]

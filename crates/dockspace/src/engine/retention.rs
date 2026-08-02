@@ -3,6 +3,13 @@
 use super::*;
 
 impl DockEngine {
+    pub(super) fn retained_presentation_streams(&self) -> BTreeSet<HostPresentationStreamId> {
+        self.retained_presentation_emissions()
+            .into_iter()
+            .map(HostFrameKey::stream)
+            .collect()
+    }
+
     /// Derives every concrete emission still referenced by core presentation authority.
     pub(super) fn retained_presentation_emissions(&self) -> BTreeSet<HostFrameKey> {
         let mut emissions = self
@@ -42,11 +49,7 @@ impl DockEngine {
     /// Frozen host-frame capabilities are intentionally not blockers. Their core-minted serials
     /// remain represented by the compact retirement ranges and therefore continue to fail closed.
     pub(super) fn settle_retired_presentation_hosts(&mut self) -> Result<usize, EngineError> {
-        let retained_streams = self
-            .retained_presentation_emissions()
-            .into_iter()
-            .map(HostFrameKey::stream)
-            .collect::<BTreeSet<_>>();
+        let retained_streams = self.retained_presentation_streams();
         let backend_host = self
             .backend_ingress
             .active()

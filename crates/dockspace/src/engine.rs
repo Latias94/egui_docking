@@ -170,8 +170,8 @@ use crate::presentation_observation::{
     NativeStagingResourceDescriptor, NativeStagingResourceId, PresentationHostLease,
     PresentationHostRetirementReason, PresentationHostRetirementStatus, PresentationLedger,
     PresentationLedgerDiagnostics, PresentationLedgerError, PresentationObservationReduction,
-    PresentationOutputSerial, PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
-    SurfacePresentationOutputTicket,
+    PresentationOutputSerial, PresentationStreamQuiescence, PresentedNativeStagingPresentation,
+    PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
 use crate::retention::{
     InputSourceRetentionManifest, PresentationRetentionManifest, RuntimeRetentionManifest,
@@ -2731,6 +2731,54 @@ impl DockEngine {
             InputSourceRetentionManifest::new(self.source_watermarks.len()),
             self.scroll_interaction.retention_manifest(),
         )
+    }
+
+    /// Prepares an affine acknowledgement for a renderer that has externally quiesced a retiring
+    /// presentation stream.
+    ///
+    /// The host must stop every path that could submit another observation for `stream` before
+    /// calling this method. The returned acknowledgement is consumed by
+    /// [`Self::confirm_presentation_stream_quiescence`], which revalidates core retention before
+    /// reclaiming the stream record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stream is foreign, still active, unsettled, or lacks a live
+    /// same-host successor for its surface.
+    pub fn prepare_presentation_stream_quiescence(
+        &self,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<PresentationStreamQuiescence, EngineError> {
+        self.presentation_authority
+            .presentation
+            .prepare_stream_quiescence(host, stream)
+            .map_err(presentation_ledger_error)
+    }
+
+    /// Consumes a renderer's affine quiescence acknowledgement for one retiring stream.
+    ///
+    /// No age or capacity policy participates in this reclamation. The exact stream remains in
+    /// the retention manifest until this acknowledgement is accepted and every core reference has
+    /// disappeared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when core still retains the stream or its ledger state changed after the
+    /// acknowledgement was prepared.
+    pub fn confirm_presentation_stream_quiescence(
+        &mut self,
+        quiescence: PresentationStreamQuiescence,
+    ) -> Result<(), EngineError> {
+        let mut candidate = self.candidate();
+        let retained_streams = candidate.retained_presentation_streams();
+        candidate
+            .presentation_authority
+            .presentation
+            .compact_quiesced_retiring_stream(quiescence, &retained_streams)
+            .map_err(presentation_ledger_error)?;
+        self.publish_candidate(candidate);
+        Ok(())
     }
 
     /// Permanently retires one presentation host and all streams it ever owned.
