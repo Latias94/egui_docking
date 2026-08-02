@@ -38,14 +38,14 @@ fn workspace() -> Workspace {
     let floating = builder.insert_node(Node::tabs([FRONT_ITEM]));
     builder.set_root(MAIN_ROOT, RootRecord::new(main));
     builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(
         FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        LogicalRect::new(180.0, 80.0, 240.0, 200.0).expect("floating rect is valid"),
-        1,
-    ));
+        ContainedFloating::new(
+            FLOATING_ROOT,
+            LogicalRect::new(180.0, 80.0, 240.0, 200.0).expect("floating rect is valid"),
+        ),
+    );
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("surface exists");
@@ -59,7 +59,7 @@ fn rear_button_rect() -> Rect {
 fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0))),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         ..RawInput::default()
     }
 }
@@ -81,7 +81,7 @@ fn run_frame(
 ) {
     let _ = context.run_ui(input(events), |ui| {
         dockspace
-            .show(SURFACE, ui, panes)
+            .show_single_surface(SURFACE, ui, panes)
             .expect("occlusion frame advances");
     });
 }

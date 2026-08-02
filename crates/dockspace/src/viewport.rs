@@ -1,6 +1,6 @@
 //! Stable logical viewport identities and ephemeral native-window bindings.
 
-use crate::ids::{SurfaceId, WorkspaceEpoch};
+use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 
 macro_rules! monotonic_id {
     ($name:ident, $description:literal) => {
@@ -43,8 +43,20 @@ monotonic_id!(
     "Core-owned incarnation which changes whenever a token is rebound."
 );
 monotonic_id!(
+    CapabilityObservationGeneration,
+    "Provider-captured generation of the complete platform-capability roster."
+);
+monotonic_id!(
+    PlatformSnapshotGeneration,
+    "Provider-captured generation of one complete atomic platform snapshot."
+);
+monotonic_id!(
     CapabilityGeneration,
     "Generation of the complete accepted platform-capability snapshot."
+);
+monotonic_id!(
+    InventoryObservationGeneration,
+    "Provider-captured generation of the complete native-window inventory."
 );
 monotonic_id!(
     InventoryGeneration,
@@ -55,6 +67,18 @@ monotonic_id!(
     "Provider-captured generation of one window's pointer-input observation."
 );
 monotonic_id!(
+    CloseObservationGeneration,
+    "Provider-captured generation of one exact binding's native-close observation."
+);
+monotonic_id!(
+    PresentationObservationGeneration,
+    "Provider-captured generation of one window's presentation observation."
+);
+monotonic_id!(
+    CoordinateObservationGeneration,
+    "Provider-captured generation of one exact binding's coordinate observation."
+);
+monotonic_id!(
     CoordinateGeneration,
     "Generation of acknowledged placement facts for one native-window binding."
 );
@@ -63,20 +87,21 @@ monotonic_id!(
     "Opaque adapter identity of one explicitly selectable desktop work area."
 );
 monotonic_id!(
+    WorkAreaObservationGeneration,
+    "Provider-captured generation of the complete desktop work-area roster."
+);
+monotonic_id!(
     WorkAreaGeneration,
     "Generation of the complete canonical desktop work-area roster."
 );
-monotonic_id!(
-    RouteGeneration,
-    "Generation of a core-resolved authoritative pointer route."
-);
-
 /// Complete identity of one native-window binding.
 ///
-/// `SurfaceId` remains stable across window recreation. The epoch and incarnation
-/// make callbacks from a previous workspace or recycled platform token harmless.
+/// `SurfaceId` remains stable across window recreation. The engine domain, epoch,
+/// and incarnation make callbacks from another engine, a previous workspace, or
+/// a recycled platform token harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ViewportBinding {
+    authority_domain: EngineAuthorityDomainId,
     epoch: WorkspaceEpoch,
     surface: SurfaceId,
     token: WindowToken,
@@ -85,17 +110,25 @@ pub struct ViewportBinding {
 
 impl ViewportBinding {
     pub(crate) const fn new(
+        authority_domain: EngineAuthorityDomainId,
         epoch: WorkspaceEpoch,
         surface: SurfaceId,
         token: WindowToken,
         incarnation: WindowIncarnation,
     ) -> Self {
         Self {
+            authority_domain,
             epoch,
             surface,
             token,
             incarnation,
         }
+    }
+
+    /// Returns the engine authority domain which minted this binding.
+    #[must_use]
+    pub const fn authority_domain(self) -> EngineAuthorityDomainId {
+        self.authority_domain
     }
 
     /// Returns the workspace epoch which owns this binding.
@@ -138,20 +171,39 @@ mod tests {
 
     #[test]
     fn protocol_generations_never_wrap() {
-        assert_eq!(
-            RouteGeneration::new(0).checked_next(),
-            Some(RouteGeneration::new(1))
-        );
-        assert_eq!(RouteGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(InventoryGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(
             InputObservationGeneration::new(u64::MAX).checked_next(),
             None
         );
+        assert_eq!(
+            CloseObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
+        assert_eq!(
+            CoordinateObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
         assert_eq!(CoordinateGeneration::new(u64::MAX).checked_next(), None);
         assert_eq!(WorkAreaToken::new(u64::MAX).checked_next(), None);
+        assert_eq!(
+            WorkAreaObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
         assert_eq!(WorkAreaGeneration::new(u64::MAX).checked_next(), None);
+        assert_eq!(
+            CapabilityObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
         assert_eq!(CapabilityGeneration::new(u64::MAX).checked_next(), None);
+        assert_eq!(
+            PlatformSnapshotGeneration::new(u64::MAX).checked_next(),
+            None
+        );
+        assert_eq!(
+            InventoryObservationGeneration::new(u64::MAX).checked_next(),
+            None
+        );
         assert_eq!(WindowIncarnation::new(u64::MAX).checked_next(), None);
         assert_eq!(WindowToken::new(u64::MAX).checked_next(), None);
     }
@@ -159,12 +211,17 @@ mod tests {
     #[test]
     fn binding_keeps_every_identity_domain_distinct() {
         let binding = ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(2),
             WorkspaceEpoch::new(3),
             SurfaceId::new(5),
             WindowToken::new(7),
             WindowIncarnation::new(11),
         );
 
+        assert_eq!(
+            binding.authority_domain(),
+            EngineAuthorityDomainId::new_for_test(2)
+        );
         assert_eq!(binding.epoch(), WorkspaceEpoch::new(3));
         assert_eq!(binding.surface(), SurfaceId::new(5));
         assert_eq!(binding.token(), WindowToken::new(7));

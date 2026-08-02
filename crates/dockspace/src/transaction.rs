@@ -3,7 +3,7 @@
 use crate::command::{CommandOutcome, WorkspaceCommand};
 use crate::error::TransactionError;
 use crate::graph::Workspace;
-use crate::policy::DockPolicy;
+use crate::policy::DockPolicySnapshot;
 
 /// Ordered command batch applied as one atomic workspace transaction.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -42,10 +42,18 @@ impl WorkspaceTransaction {
     pub fn apply(
         &self,
         workspace: &mut Workspace,
-        policy: &DockPolicy,
+        policy: &DockPolicySnapshot,
     ) -> Result<TransactionReport, TransactionError> {
         let prepared = crate::operation::prepare_transaction(workspace, policy, &self.commands)?;
         Ok(prepared.publish(workspace))
+    }
+
+    pub(crate) fn preflight(
+        &self,
+        workspace: &Workspace,
+        policy: &DockPolicySnapshot,
+    ) -> Result<(), TransactionError> {
+        crate::operation::prepare_transaction(workspace, policy, &self.commands).map(drop)
     }
 }
 

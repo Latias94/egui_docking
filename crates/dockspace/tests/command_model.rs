@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 
-use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand};
+use dockspace::command::{
+    DockFraction, DockTarget, Edge, MovePayload, SplitResize, WorkspaceCommand,
+};
 use dockspace::graph::{Axis, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::policy::DockPolicy;
+use dockspace::policy::DockPolicySnapshot;
 use dockspace::transaction::WorkspaceTransaction;
 
 const ROOT: RootId = RootId::new(1);
@@ -15,7 +17,6 @@ const STEPS: usize = 5_000;
 enum ModelDelta {
     None,
     Open(ItemId),
-    Close(ItemId),
 }
 
 struct DeterministicRng(u64);
@@ -41,7 +42,7 @@ fn initial_workspace() -> Workspace {
     let split = builder
         .insert_node(Node::equal_split(Axis::Horizontal, [central, side]).expect("valid split"));
     builder.set_root(ROOT, RootRecord::new(split).with_central(central));
-    builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("model workspace must be valid")
 }
 
@@ -93,13 +94,7 @@ fn command_for_step(
         4 if open.len() < usize::try_from(ITEM_COUNT).expect("item count fits usize") => {
             open_command(workspace, open, rng, &tab_nodes)
         }
-        4 => {
-            let (tabs, item) = items[rng.index(items.len())];
-            let source = workspace
-                .capture_item_source(ROOT, tabs, item)
-                .expect("fresh close source must be valid");
-            (WorkspaceCommand::Close { source }, ModelDelta::Close(item))
-        }
+        4 => select_command(workspace, rng, &items),
         _ => resize_or_toggle_command(workspace, open, rng, &tab_nodes, &items),
     }
 }
@@ -146,7 +141,11 @@ fn center_move_command(
     items: &[(NodeId, ItemId)],
 ) -> (WorkspaceCommand, ModelDelta) {
     let (source_tabs, item) = items[rng.index(items.len())];
-    let (target_tabs, _) = &tab_nodes[rng.index(tab_nodes.len())];
+    let nonempty_targets: Vec<_> = tab_nodes
+        .iter()
+        .filter(|(_, items)| !items.is_empty())
+        .collect();
+    let (target_tabs, _) = nonempty_targets[rng.index(nonempty_targets.len())];
     let source = workspace
         .capture_item_source(ROOT, source_tabs, item)
         .expect("fresh move source must be valid");
@@ -169,14 +168,18 @@ fn edge_move_command(
     items: &[(NodeId, ItemId)],
 ) -> (WorkspaceCommand, ModelDelta) {
     let (source_tabs, item) = items[rng.index(items.len())];
-    let (target_tabs, _) = &tab_nodes[rng.index(tab_nodes.len())];
+    let nonempty_targets: Vec<_> = tab_nodes
+        .iter()
+        .filter(|(_, items)| !items.is_empty())
+        .collect();
+    let (target_tabs, _) = nonempty_targets[rng.index(nonempty_targets.len())];
     let edges = [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom];
     let fractions = [0.25_f32, 0.5, 0.75];
     let source = workspace
         .capture_item_source(ROOT, source_tabs, item)
         .expect("fresh edge source must be valid");
     let target = workspace
-        .capture_edge_target(
+        .capture_inner_edge_target(
             ROOT,
             *target_tabs,
             edges[rng.index(edges.len())],
@@ -187,7 +190,7 @@ fn edge_move_command(
     (
         WorkspaceCommand::Move {
             payload: MovePayload::Item(source),
-            target: DockTarget::Edge(target),
+            target: DockTarget::InnerEdge(target),
         },
         ModelDelta::None,
     )
@@ -202,7 +205,7 @@ fn resize_or_toggle_command(
 ) -> (WorkspaceCommand, ModelDelta) {
     let split_nodes = splits(workspace);
     if split_nodes.is_empty() {
-        return open_or_close_command(workspace, open, rng, tab_nodes, items);
+        return open_or_select_command(workspace, open, rng, tab_nodes, items);
     }
     let (split, child_count) = split_nodes[rng.index(split_nodes.len())];
     let source = workspace
@@ -211,15 +214,14 @@ fn resize_or_toggle_command(
     let weights = SplitWeight::normalize(std::iter::repeat_n(1.0, child_count))
         .expect("equal model weights must normalize");
     (
-        WorkspaceCommand::ResizeSplit {
-            split: source,
-            weights,
+        WorkspaceCommand::ResizeSplits {
+            splits: vec![SplitResize::new(source, weights)],
         },
         ModelDelta::None,
     )
 }
 
-fn open_or_close_command(
+fn open_or_select_command(
     workspace: &Workspace,
     open: &BTreeSet<ItemId>,
     rng: &mut DeterministicRng,
@@ -229,11 +231,7 @@ fn open_or_close_command(
     if open.len() < usize::try_from(ITEM_COUNT).expect("item count fits usize") {
         open_command(workspace, open, rng, tab_nodes)
     } else {
-        let (tabs, item) = items[rng.index(items.len())];
-        let source = workspace
-            .capture_item_source(ROOT, tabs, item)
-            .expect("fresh close source must be valid");
-        (WorkspaceCommand::Close { source }, ModelDelta::Close(item))
+        select_command(workspace, rng, items)
     }
 }
 
@@ -248,7 +246,11 @@ fn open_command(
         .filter(|item| !open.contains(item))
         .collect();
     let item = closed[rng.index(closed.len())];
-    let (target_tabs, _) = &tab_nodes[rng.index(tab_nodes.len())];
+    let nonempty_targets: Vec<_> = tab_nodes
+        .iter()
+        .filter(|(_, items)| !items.is_empty())
+        .collect();
+    let (target_tabs, _) = nonempty_targets[rng.index(nonempty_targets.len())];
     let target = workspace
         .capture_tab_target(ROOT, *target_tabs)
         .expect("fresh open target must be valid");
@@ -264,7 +266,7 @@ fn open_command(
 #[test]
 fn seeded_command_model_preserves_invariants_for_thousands_of_steps() {
     let mut workspace = initial_workspace();
-    let policy = DockPolicy::default();
+    let policy = DockPolicySnapshot::default();
     let mut expected: BTreeSet<ItemId> = (1..=ITEM_COUNT).map(ItemId::new).collect();
     let mut rng = DeterministicRng(0xd0c5_9ace_5eed_f00d);
     let mut committed = 0_usize;
@@ -282,7 +284,6 @@ fn seeded_command_model_preserves_invariants_for_thousands_of_steps() {
             match delta {
                 ModelDelta::None => {}
                 ModelDelta::Open(item) => assert!(expected.insert(item)),
-                ModelDelta::Close(item) => assert!(expected.remove(&item)),
             }
         }
 

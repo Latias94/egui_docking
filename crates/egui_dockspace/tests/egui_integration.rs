@@ -5,14 +5,24 @@ use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::interaction::{InteractionStatus, PreviewVisual};
-use dockspace::scene::SurfaceScene;
+use dockspace::policy::{
+    CloseCapability, DockItemRule, DockPolicy, DockTargetRule, DockTargetRuleKey,
+    TabBarInteraction, TabBarPolicy, TabBarVisibility,
+};
+use dockspace::scene::{SplitterGapPresentation, SurfaceScene};
+use dockspace::tab_strip::TabStripControlId;
 use dockspace::transition::WorkspaceVersion;
-use egui::accesskit::{Action, ActionRequest, NodeId as AccessKitNodeId, Role, TreeUpdate};
+use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
+use egui::accesskit::{
+    Action, ActionRequest, NodeId as AccessKitNodeId, Orientation, Role, TreeUpdate,
+};
 use egui::{
     Context, Event, Frame, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect,
     Sense, TouchPhase, Ui, UiBuilder, vec2,
 };
-use egui_dockspace::{Dockspace, DockspaceSurfaceStatus, PaneCloseResponse, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceSurfaceStatus, EguiFrameScheduleKey, EguiPresentationResult, PaneView,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -29,12 +39,12 @@ const ITEM_G: ItemId = ItemId::new(106);
 #[derive(Default)]
 struct TestPanes {
     titles: BTreeMap<ItemId, String>,
-    close_response: BTreeMap<ItemId, PaneCloseResponse>,
+    monospace_titles: bool,
     minimum_sizes: BTreeMap<ItemId, egui::Vec2>,
     ui_calls: BTreeMap<ItemId, usize>,
     disabled_ui_calls: BTreeMap<ItemId, usize>,
     pane_clicks: BTreeMap<ItemId, usize>,
-    close_calls: BTreeMap<ItemId, usize>,
+    last_ui_rects: BTreeMap<ItemId, Rect>,
 }
 
 impl TestPanes {
@@ -52,10 +62,6 @@ impl TestPanes {
         self.ui_calls.get(&item).copied().unwrap_or_default()
     }
 
-    fn close_calls(&self, item: ItemId) -> usize {
-        self.close_calls.get(&item).copied().unwrap_or_default()
-    }
-
     fn disabled_ui_calls(&self, item: ItemId) -> usize {
         self.disabled_ui_calls
             .get(&item)
@@ -66,29 +72,31 @@ impl TestPanes {
     fn pane_clicks(&self, item: ItemId) -> usize {
         self.pane_clicks.get(&item).copied().unwrap_or_default()
     }
+
+    fn last_ui_rect(&self, item: ItemId) -> Option<Rect> {
+        self.last_ui_rects.get(&item).copied()
+    }
 }
 
 impl PaneView for TestPanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
-        self.titles.get(&item).cloned().map(Into::into)
+        let title = self.titles.get(&item)?.clone();
+        Some(if self.monospace_titles {
+            egui::RichText::new(title).monospace().into()
+        } else {
+            title.into()
+        })
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         *self.ui_calls.entry(item).or_default() += 1;
+        self.last_ui_rects.insert(item, ui.max_rect());
         if !ui.is_enabled() {
             *self.disabled_ui_calls.entry(item).or_default() += 1;
         }
         if ui.allocate_rect(ui.max_rect(), Sense::click()).clicked() {
             *self.pane_clicks.entry(item).or_default() += 1;
         }
-    }
-
-    fn close(&mut self, item: ItemId) -> PaneCloseResponse {
-        *self.close_calls.entry(item).or_default() += 1;
-        self.close_response
-            .get(&item)
-            .copied()
-            .unwrap_or(PaneCloseResponse::Allow)
     }
 
     fn minimum_size(&self, item: ItemId) -> egui::Vec2 {
@@ -100,7 +108,9 @@ impl PaneView for TestPanes {
 struct Observation {
     pass: usize,
     interactions_current: bool,
+    surface_status: DockspaceSurfaceStatus,
     missing: Vec<ItemId>,
+    close_requests: Vec<ClosePlan>,
     version: WorkspaceVersion,
     workspace: Workspace,
 }
@@ -109,7 +119,7 @@ fn single_workspace(items: impl IntoIterator<Item = ItemId>) -> Workspace {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs(items));
     builder.set_root(MAIN_ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
     builder.build().expect("single-surface fixture must build")
 }
 
@@ -119,34 +129,8 @@ fn contained_workspace(rect: LogicalRect) -> Workspace {
     let floating = builder.insert_node(Node::tabs([ITEM_B]));
     builder.set_root(MAIN_ROOT, RootRecord::new(main));
     builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
-        FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        rect,
-        1,
-    ));
-    builder
-        .attach_contained(SURFACE, FLOATING)
-        .expect("surface exists");
-    builder.build().expect("contained fixture must build")
-}
-
-fn contained_group_workspace(rect: LogicalRect) -> Workspace {
-    let mut builder = Workspace::builder();
-    let main = builder.insert_node(Node::tabs([ITEM_A]));
-    let floating = builder.insert_node(Node::tabs([ITEM_B, ITEM_C]));
-    builder.set_root(MAIN_ROOT, RootRecord::new(main));
-    builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
-        FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        rect,
-        1,
-    ));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(FLOATING, ContainedFloating::new(FLOATING_ROOT, rect));
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("surface exists");
@@ -164,14 +148,8 @@ fn overlapping_overflow_workspace(rect: LogicalRect) -> Workspace {
     let floating = builder.insert_node(Node::tabs([ITEM_D, ITEM_E, ITEM_F]));
     builder.set_root(MAIN_ROOT, RootRecord::new(main));
     builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
-        FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        rect,
-        1,
-    ));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(FLOATING, ContainedFloating::new(FLOATING_ROOT, rect));
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("surface exists");
@@ -189,27 +167,21 @@ fn popup_overlapping_tab_strip_workspace(
         let underlay = builder.insert_node(Node::tabs(underlay_items.iter().copied()));
         builder.set_root(MAIN_ROOT, RootRecord::new(popup));
         builder.set_root(FLOATING_ROOT, RootRecord::new(underlay));
-        builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
         let rect =
             LogicalRect::new(20.0, 50.0, 200.0, 150.0).expect("floating underlay rect is valid");
-        builder.set_contained_floating(ContainedFloating::new(
-            FLOATING,
-            FLOATING_ROOT,
-            SURFACE,
-            rect,
-            1,
-        ));
+        builder.set_contained_floating(FLOATING, ContainedFloating::new(FLOATING_ROOT, rect));
         builder
             .attach_contained(SURFACE, FLOATING)
             .expect("surface exists");
     } else {
         let underlay = builder.insert_node(Node::tabs(underlay_items.iter().copied()));
         let split = builder.insert_node(
-            Node::split(Axis::Vertical, [popup, underlay], [0.35, 0.65])
+            Node::split(Axis::Vertical, [popup, underlay], [0.45, 0.55])
                 .expect("vertical popup overlap fixture is valid"),
         );
         builder.set_root(MAIN_ROOT, RootRecord::new(split));
-        builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
     }
     builder.build().expect("popup overlap fixture must build")
 }
@@ -222,7 +194,7 @@ fn split_workspace() -> Workspace {
         Node::equal_split(Axis::Horizontal, [left, right]).expect("two children form a split"),
     );
     builder.set_root(MAIN_ROOT, RootRecord::new(split));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
     builder.build().expect("split fixture must build")
 }
 
@@ -237,7 +209,7 @@ fn input_with_size(events: Vec<Event>, size: egui::Vec2) -> RawInput {
 fn input_with_rect(events: Vec<Event>, screen_rect: Rect) -> RawInput {
     RawInput {
         screen_rect: Some(screen_rect),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         ..RawInput::default()
     }
 }
@@ -259,19 +231,118 @@ fn run_frame_with_size(
     events: Vec<Event>,
 ) -> Vec<Observation> {
     let mut observations = Vec::new();
-    let _ = context.run_ui(input_with_size(events, size), |ui| {
+    let _ = crate::test_support::run_ui(context, input_with_size(events, size), |ui| {
         let response = dockspace
-            .show(SURFACE, ui, panes)
+            .show_single_surface(SURFACE, ui, panes)
             .expect("egui frame must advance");
         observations.push(Observation {
             pass: ui.ctx().current_pass_index(),
             interactions_current: response.interactions_current(),
+            surface_status: response.surface_status(),
             missing: response.missing_panes().to_vec(),
+            close_requests: response.close_requests().cloned().collect(),
             version: dockspace.engine().version(),
             workspace: dockspace.engine().workspace().clone(),
         });
     });
     observations
+}
+
+fn run_outer_frame_with_size(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    size: egui::Vec2,
+    events: Vec<Event>,
+) -> Observation {
+    let sequence = dockspace.last_egui_frame_schedule_key().map_or(1, |key| {
+        key.sequence()
+            .checked_add(1)
+            .expect("test host sequence must remain representable")
+    });
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("outer frame must begin");
+    let paint = frame
+        .run_surface(SURFACE, context, input_with_size(events, size), panes)
+        .expect("outer host must paint the surface");
+    let (host, outputs) = frame
+        .finish()
+        .expect("outer frame must commit atomically")
+        .into_parts();
+    for output in outputs {
+        output.settle_with(|_, _| EguiPresentationResult::Presented);
+    }
+    Observation {
+        pass: context.current_pass_index(),
+        interactions_current: paint.interactions_current(),
+        surface_status: paint.surface_status(),
+        missing: paint.missing_panes().to_vec(),
+        close_requests: host.close_requests().cloned().collect(),
+        version: dockspace.engine().version(),
+        workspace: dockspace.engine().workspace().clone(),
+    }
+}
+
+fn warm_outer_with_size(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    size: egui::Vec2,
+) {
+    for _ in 0..8 {
+        let observation = run_outer_frame_with_size(context, dockspace, panes, size, Vec::new());
+        if observation.interactions_current && paint_projection_is_authoritative(dockspace) {
+            return;
+        }
+    }
+    panic!("a later outer-host frame must acknowledge the rendered projection");
+}
+
+fn run_authoritative_frame_with_size(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    size: egui::Vec2,
+) -> Vec<Observation> {
+    for _ in 0..8 {
+        let observations = run_frame_with_size(context, dockspace, panes, size, Vec::new());
+        if observations
+            .last()
+            .is_some_and(|observation| observation.interactions_current)
+            && paint_projection_is_authoritative(dockspace)
+        {
+            return observations;
+        }
+    }
+    panic!("a later host sequence must acknowledge the rendered projection");
+}
+
+fn only_close_request(observations: &[Observation]) -> ClosePlan {
+    let mut requests = observations
+        .iter()
+        .flat_map(|observation| observation.close_requests.iter());
+    let request = requests
+        .next()
+        .expect("the semantic close activation must publish one close plan")
+        .clone();
+    assert!(
+        requests.next().is_none(),
+        "one activation must publish exactly one close plan"
+    );
+    request
+}
+
+fn resolve_close_plan(
+    dockspace: &mut Dockspace,
+    plan: &ClosePlan,
+    decision_for: impl Fn(ItemId) -> CloseDecision,
+) {
+    for item in plan.items() {
+        dockspace
+            .resolve_close(plan.request(), item.token(), decision_for(item.item()))
+            .expect("an exact close decision must commit immediately");
+    }
 }
 
 fn run_accesskit_frame(
@@ -281,15 +352,44 @@ fn run_accesskit_frame(
     size: egui::Vec2,
     events: Vec<Event>,
 ) -> TreeUpdate {
-    let output = context.run_ui(input_with_size(events, size), |ui| {
-        dockspace
-            .show(SURFACE, ui, panes)
+    run_accesskit_frame_with_authority(context, dockspace, panes, size, events).0
+}
+
+fn run_accesskit_frame_with_authority(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    size: egui::Vec2,
+    events: Vec<Event>,
+) -> (TreeUpdate, bool) {
+    let mut interactions_current = false;
+    let output = crate::test_support::run_ui(context, input_with_size(events, size), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, panes)
             .expect("AccessKit frame must advance");
+        interactions_current = response.interactions_current();
     });
-    output
+    let update = output
         .platform_output
         .accesskit_update
-        .expect("AccessKit output is enabled")
+        .expect("AccessKit output is enabled");
+    (update, interactions_current)
+}
+
+fn run_authoritative_accesskit_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    size: egui::Vec2,
+) -> TreeUpdate {
+    for _ in 0..4 {
+        let (update, interactions_current) =
+            run_accesskit_frame_with_authority(context, dockspace, panes, size, Vec::new());
+        if interactions_current {
+            return update;
+        }
+    }
+    panic!("a later host sequence must acknowledge the rendered projection");
 }
 
 fn run_accesskit_frame_in_rect(
@@ -300,16 +400,61 @@ fn run_accesskit_frame_in_rect(
     dock_rect: Rect,
     events: Vec<Event>,
 ) -> TreeUpdate {
-    let output = context.run_ui(input_with_rect(events, screen_rect), |ui| {
+    run_accesskit_frame_in_rect_with_authority(
+        context,
+        dockspace,
+        panes,
+        screen_rect,
+        dock_rect,
+        events,
+    )
+    .0
+}
+
+fn run_accesskit_frame_in_rect_with_authority(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    screen_rect: Rect,
+    dock_rect: Rect,
+    events: Vec<Event>,
+) -> (TreeUpdate, bool) {
+    let mut interactions_current = false;
+    let output = crate::test_support::run_ui(context, input_with_rect(events, screen_rect), |ui| {
         let mut child = ui.new_child(UiBuilder::new().max_rect(dock_rect));
-        dockspace
-            .show(SURFACE, &mut child, panes)
+        let response = dockspace
+            .show_single_surface(SURFACE, &mut child, panes)
             .expect("positioned AccessKit frame must advance");
+        interactions_current = response.interactions_current();
     });
-    output
+    let update = output
         .platform_output
         .accesskit_update
-        .expect("AccessKit output is enabled")
+        .expect("AccessKit output is enabled");
+    (update, interactions_current)
+}
+
+fn run_authoritative_accesskit_frame_in_rect(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    screen_rect: Rect,
+    dock_rect: Rect,
+) -> TreeUpdate {
+    for _ in 0..4 {
+        let (update, interactions_current) = run_accesskit_frame_in_rect_with_authority(
+            context,
+            dockspace,
+            panes,
+            screen_rect,
+            dock_rect,
+            Vec::new(),
+        );
+        if interactions_current {
+            return update;
+        }
+    }
+    panic!("a later positioned host sequence must acknowledge the rendered projection");
 }
 
 fn run_accesskit_frame_with_competing_popup(
@@ -319,9 +464,9 @@ fn run_accesskit_frame_with_competing_popup(
     size: egui::Vec2,
     competing_id: Id,
 ) -> TreeUpdate {
-    let output = context.run_ui(input_with_size(Vec::new(), size), |ui| {
+    let output = crate::test_support::run_ui(context, input_with_size(Vec::new(), size), |ui| {
         dockspace
-            .show(SURFACE, ui, panes)
+            .show_single_surface(SURFACE, ui, panes)
             .expect("AccessKit frame must advance");
         egui::Popup::open_id(ui.ctx(), competing_id);
     });
@@ -341,7 +486,7 @@ fn run_accesskit_frame_in_ancestor_scroll_area(
     events: Vec<Event>,
 ) -> (TreeUpdate, f32) {
     let mut outer_offset = None;
-    let output = context.run_ui(input_with_size(events, size), |ui| {
+    let output = crate::test_support::run_ui(context, input_with_size(events, size), |ui| {
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt(Id::new(("ancestor-scroll", salt)))
             .auto_shrink([false, false]);
@@ -355,7 +500,7 @@ fn run_accesskit_frame_in_ancestor_scroll_area(
                 egui::Layout::top_down(egui::Align::Min),
                 |dock_ui| {
                     dockspace
-                        .show(SURFACE, dock_ui, panes)
+                        .show_single_surface(SURFACE, dock_ui, panes)
                         .expect("nested AccessKit frame must advance");
                 },
             );
@@ -460,14 +605,57 @@ fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) -> 
     assert!(
         first
             .iter()
-            .any(|observation| !observation.interactions_current),
-        "the initial projection must have an observation-only pass"
+            .all(|observation| !observation.interactions_current),
+        "no pass may acknowledge output from its own host sequence"
     );
-    assert!(first.last().expect("one pass").interactions_current);
     let second = run_frame(context, dockspace, panes, Vec::new());
-    let stable = second.into_iter().last().expect("one stable pass");
+    let stable = second.into_iter().last().expect("one authoritative pass");
     assert!(stable.interactions_current);
     stable
+}
+
+#[test]
+fn equal_width_title_changes_refresh_paint_resources_without_changing_scene_identity() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("equal-width-title-refresh", single_workspace([ITEM_A]))
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A]);
+    panes.monospace_titles = true;
+    panes.titles.insert(ITEM_A, "AAAA".to_owned());
+    let _ = warm(&context, &mut dockspace, &mut panes);
+    let before = dockspace
+        .engine()
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::ready)
+        .expect("surface is ready")
+        .candidate()
+        .stamp();
+
+    panes.titles.insert(ITEM_A, "BBBB".to_owned());
+    let refreshed = run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        Vec::new(),
+    );
+    let after = dockspace
+        .engine()
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::ready)
+        .expect("surface remains ready")
+        .candidate()
+        .stamp();
+
+    assert_eq!(
+        after, before,
+        "paint-only changes must not mint a scene stamp"
+    );
+    accesskit_node_by_label(&refreshed, Role::Tab, "BBBB");
 }
 
 fn contained_close_id(
@@ -477,7 +665,7 @@ fn contained_close_id(
     salt: &'static str,
 ) -> Id {
     let mut close_id = None;
-    let _ = context.run_ui(input(Vec::new()), |ui| {
+    let _ = crate::test_support::run_ui(context, input(Vec::new()), |ui| {
         let instance_id = Id::new(("egui_dockspace", salt));
         close_id = Some(ui.make_persistent_id((
             "egui_dockspace",
@@ -488,7 +676,7 @@ fn contained_close_id(
             "contained-close",
         )));
         dockspace
-            .show(SURFACE, ui, panes)
+            .show_single_surface(SURFACE, ui, panes)
             .expect("contained close frame must advance");
     });
     close_id.expect("contained close widget must be registered")
@@ -579,28 +767,6 @@ fn contained_north_west_resize_point(dockspace: &Dockspace) -> Pos2 {
 
 #[allow(
     clippy::cast_possible_truncation,
-    reason = "fixture geometry is finite and deliberately converted into egui's f32 input space"
-)]
-fn contained_close_point(dockspace: &Dockspace) -> Pos2 {
-    let floating = dockspace
-        .engine()
-        .workspace()
-        .contained_floating(FLOATING)
-        .expect("fixture has one contained floating");
-    let style = dockspace.style();
-    let border = style.floating_border_width;
-    let title_height = style.floating_title_height;
-    let resize = style.floating_resize_extent;
-    let inner_title_max_x = floating.rect.max().x() as f32 - border - resize;
-    let close_size = style.tab_close_size.min(title_height - 2.0 * resize);
-    Pos2::new(
-        inner_title_max_x - style.tab_horizontal_padding - close_size * 0.5,
-        floating.rect.min().y() as f32 + border + title_height * 0.5,
-    )
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
     reason = "the published finite splitter rectangle is converted back to egui's f32 input space"
 )]
 fn splitter_center(dockspace: &Dockspace) -> Pos2 {
@@ -612,32 +778,21 @@ fn splitter_center(dockspace: &Dockspace) -> Pos2 {
     reason = "the published finite splitter rectangle is converted back to egui's f32 input space"
 )]
 fn splitter_hit_rect(dockspace: &Dockspace) -> Rect {
-    let scene = dockspace.engine().scene().expect("scene was published");
-    let SurfaceScene::Ready(ready) = scene.surface(SURFACE).expect("surface is in roster") else {
-        panic!("surface must be ready");
-    };
-    let splitter = ready
-        .splitters()
+    let painted = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("surface must have an acknowledged paint");
+    let splitter = painted
+        .plan()
+        .splitter_records()
         .first()
         .expect("split fixture has one splitter")
+        .hit()
         .rect();
-    let visible = Rect::from_min_max(
+    Rect::from_min_max(
         Pos2::new(splitter.min().x() as f32, splitter.min().y() as f32),
         Pos2::new(splitter.max().x() as f32, splitter.max().y() as f32),
-    );
-    Rect::from_center_size(
-        visible.center(),
-        vec2(dockspace.style().splitter_hit_extent, visible.height()),
     )
-    .intersect(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0)))
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the published finite scene rectangle is converted back to egui's f32 input space"
-)]
-fn tab_close_center(dockspace: &Dockspace) -> Pos2 {
-    tab_close_rect(dockspace).center()
 }
 
 #[allow(
@@ -645,38 +800,31 @@ fn tab_close_center(dockspace: &Dockspace) -> Pos2 {
     reason = "the published finite scene rectangle is converted back to egui's f32 input space"
 )]
 fn tab_close_rect(dockspace: &Dockspace) -> Rect {
-    let scene = dockspace.engine().scene().expect("scene was published");
-    let SurfaceScene::Ready(ready) = scene.surface(SURFACE).expect("surface is in roster") else {
-        panic!("surface must be ready");
-    };
-    let tab = ready.tabs().first().expect("fixture has one tab").rect();
-    let style = dockspace.style();
-    let width = tab.width();
-    let height = tab.height();
-    let close_size = f64::from(style.tab_close_size).min(width).min(height);
-    Rect::from_center_size(
-        Pos2::new(
-            (tab.max().x() - f64::from(style.tab_horizontal_padding) - close_size * 0.5) as f32,
-            ((tab.min().y() + tab.max().y()) * 0.5) as f32,
-        ),
-        egui::Vec2::splat(close_size as f32),
-    )
-    .intersect(Rect::from_min_max(
+    let painted = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("surface must have an acknowledged paint");
+    let tab = painted
+        .plan()
+        .tab_records()
+        .first()
+        .and_then(|tab| tab.close_bounds())
+        .expect("fixture has one closeable tab");
+    Rect::from_min_max(
         Pos2::new(tab.min().x() as f32, tab.min().y() as f32),
         Pos2::new(tab.max().x() as f32, tab.max().y() as f32),
-    ))
+    )
 }
 
 fn published_tab_rect(dockspace: &Dockspace, item: ItemId) -> Option<LogicalRect> {
-    let scene = dockspace.engine().scene()?;
-    let SurfaceScene::Ready(ready) = scene.surface(SURFACE)? else {
-        return None;
-    };
-    ready
-        .tabs()
+    dockspace
+        .engine()
+        .interaction_projection(SURFACE)?
+        .plan()
+        .tab_records()
         .iter()
         .find(|tab| tab.id().item == item)
-        .map(dockspace::scene::SemanticRect::rect)
+        .map(dockspace::scene::TabRecord::visible_bounds)
 }
 
 #[allow(
@@ -720,6 +868,24 @@ fn selected_item(dockspace: &Dockspace, root: RootId) -> Option<ItemId> {
     }
 }
 
+fn select_item(dockspace: &mut Dockspace, item: ItemId) {
+    let source = dockspace
+        .engine()
+        .workspace()
+        .roots()
+        .find_map(|(root, record)| {
+            dockspace
+                .engine()
+                .workspace()
+                .capture_item_source(root, record.node, item)
+                .ok()
+        })
+        .expect("selected pane source must capture");
+    dockspace
+        .submit_command(dockspace::command::WorkspaceCommand::Select { source })
+        .expect("selection command must commit immediately");
+}
+
 fn selected_in_group_containing(dockspace: &Dockspace, item: ItemId) -> Option<ItemId> {
     dockspace
         .engine()
@@ -731,8 +897,135 @@ fn selected_in_group_containing(dockspace: &Dockspace, item: ItemId) -> Option<I
         })
 }
 
+fn paint_projection_is_authoritative(dockspace: &Dockspace) -> bool {
+    let scene = dockspace.engine().scene().surface(SURFACE);
+    scene
+        .and_then(SurfaceScene::paint_projection)
+        .zip(dockspace.engine().interaction_projection(SURFACE))
+        .is_some_and(|(paint, interaction)| {
+            paint.output_ticket() == interaction.output_ticket()
+                && interaction
+                    .authority()
+                    .matches_output(paint.output_ticket())
+        })
+}
+
 #[test]
-fn scene_is_ready_before_paint_and_paint_does_not_mutate_workspace() {
+fn inactive_tab_pointer_down_selects_and_arms_in_one_core_revision() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder(
+        "inactive-tab-atomic-pointer-activation",
+        single_workspace([ITEM_A, ITEM_B]),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+
+    let press = logical_rect_center(
+        published_tab_rect(&dockspace, ITEM_B).expect("inactive tab is visible"),
+    );
+    let before = dockspace.engine().version();
+
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        vec![Event::PointerMoved(press), pointer_button(press, true)],
+    );
+
+    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Armed { .. }
+    ));
+    assert_eq!(dockspace.engine().version().epoch(), before.epoch());
+    assert_eq!(
+        dockspace.engine().version().revision().get(),
+        before.revision().get() + 1,
+        "selection and gesture activation must publish one atomic core revision"
+    );
+}
+
+#[test]
+fn same_frame_press_and_release_still_activate_an_inactive_tab() {
+    let context = Context::default();
+    let mut dockspace =
+        Dockspace::builder("same-frame-tab-click", single_workspace([ITEM_A, ITEM_B]))
+            .build()
+            .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+
+    let click = logical_rect_center(
+        published_tab_rect(&dockspace, ITEM_B).expect("inactive tab is visible"),
+    );
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        vec![
+            Event::PointerMoved(click),
+            pointer_button(click, true),
+            pointer_button(click, false),
+        ],
+    );
+
+    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle,
+        "a complete click must not leave a gesture owner behind"
+    );
+}
+
+#[test]
+fn same_frame_press_and_release_requests_one_exact_tab_close() {
+    let context = Context::default();
+    let mut dockspace =
+        Dockspace::builder("same-frame-tab-close", single_workspace([ITEM_A, ITEM_B]))
+            .build()
+            .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+
+    let close = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("the tab strip is authoritative")
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|tab| tab.id().item == ITEM_B)
+        .and_then(|tab| tab.close_bounds())
+        .map(logical_rect_center)
+        .expect("the inactive tab exposes an operable close affordance");
+    let observation = run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        vec![
+            Event::PointerMoved(close),
+            pointer_button(close, true),
+            pointer_button(close, false),
+        ],
+    );
+
+    assert_eq!(observation.close_requests.len(), 1);
+    assert_eq!(observation.close_requests[0].items().len(), 1);
+    assert_eq!(observation.close_requests[0].items()[0].item(), ITEM_B);
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle,
+        "a complete close click must not leave a gesture owner behind"
+    );
+}
+
+#[test]
+fn painted_prepared_contribution_requires_a_later_host_sequence_acknowledgement() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
     let mut dockspace = Dockspace::builder("ready-scene", workspace.clone())
@@ -745,21 +1038,160 @@ fn scene_is_ready_before_paint_and_paint_does_not_mutate_workspace() {
 
     assert_eq!(painted.workspace, workspace);
     assert_eq!(painted.version, WorkspaceVersion::default());
-    assert!(
+    assert_eq!(
         observations
             .iter()
-            .any(|observation| !observation.interactions_current)
+            .map(|observation| observation.interactions_current)
+            .collect::<Vec<_>>(),
+        vec![false, false]
     );
-    assert!(painted.interactions_current);
+    assert_eq!(
+        observations
+            .iter()
+            .map(|observation| observation.surface_status)
+            .collect::<Vec<_>>(),
+        vec![
+            DockspaceSurfaceStatus::Bootstrap,
+            DockspaceSurfaceStatus::Ready
+        ]
+    );
     assert_eq!(painted.pass, 1);
     assert!(matches!(
-        dockspace
-            .engine()
-            .scene()
-            .and_then(|scene| scene.surface(SURFACE)),
+        dockspace.engine().scene().surface(SURFACE),
         Some(SurfaceScene::Ready(_))
     ));
-    assert_eq!(panes.ui_calls(ITEM_A), observations.len());
+    assert!(!paint_projection_is_authoritative(&dockspace));
+
+    let current = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        current
+            .last()
+            .expect("next host sequence acknowledges the final painted pass")
+            .interactions_current
+    );
+    assert!(paint_projection_is_authoritative(&dockspace));
+    assert_eq!(panes.ui_calls(ITEM_A), observations.len() + current.len());
+}
+
+#[test]
+fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass() {
+    for (salt, discard_before_dockspace) in [
+        ("external-discard-before", true),
+        ("external-discard-after", false),
+    ] {
+        let context = Context::default();
+        context.options_mut(|options| {
+            options.max_passes = 4.try_into().expect("four is non-zero");
+        });
+        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A]))
+            .build()
+            .expect("facade must build");
+        let mut panes = TestPanes::with_items([ITEM_A]);
+        let mut sequence_passes = Vec::new();
+
+        let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
+            let pass = ui.ctx().current_pass_index();
+            if pass == 1 && discard_before_dockspace {
+                ui.ctx()
+                    .request_discard("external widget changed before dockspace");
+            }
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("multipass dockspace frame must advance");
+            sequence_passes.push((pass, response.interactions_current()));
+            if pass == 1 && !discard_before_dockspace {
+                ui.ctx()
+                    .request_discard("external widget changed after dockspace");
+            }
+        });
+
+        assert_eq!(
+            sequence_passes,
+            [(0, false), (1, false), (2, false)],
+            "no pass may acknowledge presentation from its own host sequence"
+        );
+        let candidate = dockspace
+            .engine()
+            .scene()
+            .surface(SURFACE)
+            .and_then(SurfaceScene::ready)
+            .expect("the final pass paints a ready candidate")
+            .candidate()
+            .stamp();
+        assert!(!paint_projection_is_authoritative(&dockspace));
+
+        let accepted = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            accepted
+                .last()
+                .expect("the next host sequence observes the acknowledgement")
+                .interactions_current
+        );
+        assert_eq!(
+            dockspace
+                .engine()
+                .interaction_projection(SURFACE)
+                .map(dockspace::scene::SurfaceInteractionProjection::plan_stamp),
+            Some(candidate)
+        );
+    }
+}
+
+#[test]
+fn omitted_final_pass_cannot_acknowledge_an_earlier_dockspace_pass() {
+    let context = Context::default();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("omitted-final-pass", single_workspace([ITEM_A]))
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A]);
+
+    let mut bootstrap_passes = Vec::new();
+    let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
+        let pass = ui.ctx().current_pass_index();
+        bootstrap_passes.push(pass);
+        if pass == 0 {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("bootstrap pass commits its candidate");
+        }
+    });
+    assert_eq!(bootstrap_passes, [0, 1]);
+    assert!(!paint_projection_is_authoritative(&dockspace));
+
+    let mut discarded_passes = Vec::new();
+    let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
+        let pass = ui.ctx().current_pass_index();
+        discarded_passes.push(pass);
+        if pass == 0 {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("candidate paints in the pass that will be discarded");
+            ui.ctx()
+                .request_discard("the final pass deliberately omits dockspace");
+        }
+    });
+    assert_eq!(discarded_passes, [0, 1]);
+    assert!(!paint_projection_is_authoritative(&dockspace));
+
+    let unconfirmed = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        unconfirmed
+            .last()
+            .is_some_and(|observation| !observation.interactions_current)
+    );
+    assert!(
+        !paint_projection_is_authoritative(&dockspace),
+        "a pass omitted from the final egui output cannot become presentation authority"
+    );
+
+    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        paint_projection_is_authoritative(&dockspace),
+        "the later pass that really was final remains acknowledgeable"
+    );
 }
 
 #[test]
@@ -772,18 +1204,19 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
     let size = vec2(180.0, 200.0);
 
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    assert!(published_tab_rect(&dockspace, ITEM_A).is_some());
+    run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
+    let selected_before = published_tab_rect(&dockspace, ITEM_A);
+    let neighbor_before = published_tab_rect(&dockspace, ITEM_B);
+    assert!(selected_before.is_some());
     assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
-    run_frame_with_size(
+    let wheel_frame = run_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![
-            Event::PointerMoved(Pos2::new(100.0, 14.0)),
+            Event::PointerMoved(Pos2::new(90.0, 14.0)),
             Event::MouseWheel {
                 unit: MouseWheelUnit::Point,
                 delta: vec2(0.0, -72.0),
@@ -792,32 +1225,35 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
             },
         ],
     );
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
-        published_tab_rect(&dockspace, ITEM_A).is_some(),
-        "ordinary wheel scrolling must preserve selected tab chrome"
+        wheel_frame
+            .last()
+            .is_some_and(|observation| !observation.interactions_current),
+        "a committed scroll invalidates the prior interaction projection until it is presented"
     );
-    assert_eq!(
-        published_tab_rect(&dockspace, ITEM_B).map(LogicalRect::width),
-        Some(72.0)
+    run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
+    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
+    let selected_after = published_tab_rect(&dockspace, ITEM_A)
+        .expect("the selected tab must retain enough visible chrome to remain operable");
+    let neighbor_after = published_tab_rect(&dockspace, ITEM_B);
+    assert_ne!(
+        (Some(selected_after), neighbor_after),
+        (selected_before, neighbor_before),
+        "the wheel request must move the tab-strip projection"
     );
-    assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
-    let SurfaceScene::Ready(ready) = dockspace
+    let painted = dockspace
         .engine()
-        .scene()
-        .and_then(|scene| scene.surface(SURFACE))
-        .expect("overflow fixture publishes a ready scene")
-    else {
-        panic!("overflow fixture surface must be ready");
-    };
+        .interaction_projection(SURFACE)
+        .expect("overflow fixture publishes an acknowledged scene");
     assert!(
-        ready
-            .tabs()
-            .iter()
-            .all(|tab| { tab.rect().min().x() >= 28.0 && tab.rect().max().x() <= 152.0 })
+        selected_after.width() >= dockspace.engine().presentation_config().tab_close_extent(),
+        "the selected closeable tab must retain its close and drag affordances"
     );
-    assert!(ready.drop_targets().iter().all(|target| {
+    assert!(painted.plan().tab_records().iter().all(|tab| {
+        tab.visible_bounds().min().x() >= 28.0 && tab.visible_bounds().max().x() <= 152.0
+    }));
+    assert!(painted.plan().drop_targets().iter().all(|target| {
         !matches!(target.id(), DropTargetId::TabGap { .. })
             || target.region().rect().min().x() >= 28.0 && target.region().rect().max().x() <= 152.0
     }));
@@ -834,9 +1270,25 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
         .capture_item_source(MAIN_ROOT, tabs, ITEM_C)
         .expect("hidden item source captures");
     dockspace
-        .enqueue_command(dockspace::command::WorkspaceCommand::Select { source })
-        .expect("selection command enqueues");
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+        .submit_command(dockspace::command::WorkspaceCommand::Select { source })
+        .expect("selection command commits immediately");
+    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_C));
+    let painted_selection =
+        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        !painted_selection
+            .last()
+            .expect("the selected candidate paints")
+            .interactions_current
+    );
+    let acknowledged_selection =
+        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        acknowledged_selection
+            .last()
+            .expect("the next host sequence acknowledges the selected candidate")
+            .interactions_current
+    );
     assert_eq!(
         published_tab_rect(&dockspace, ITEM_C).map(LogicalRect::width),
         Some(72.0)
@@ -856,7 +1308,7 @@ fn keyboard_focused_tab_survives_extreme_wheel_scroll() {
     .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E]);
 
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let _ = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
     let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
     let (first, _) = accesskit_node_by_label(&stable, Role::Tab, &format!("Pane {}", ITEM_A.get()));
     run_accesskit_frame(
@@ -866,7 +1318,7 @@ fn keyboard_focused_tab_survives_extreme_wheel_scroll() {
         size,
         vec![accesskit_action(first, Action::Focus)],
     );
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let _ = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
     run_accesskit_frame(
         &context,
         &mut dockspace,
@@ -880,8 +1332,7 @@ fn keyboard_focused_tab_survives_extreme_wheel_scroll() {
             modifiers: Modifiers::NONE,
         }],
     );
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let focused = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let focused = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
     let last_label = format!("Pane {}", ITEM_E.get());
     let (last_id, _) = accesskit_node_by_label(&focused, Role::Tab, &last_label);
     assert_eq!(focused.focus, last_id);
@@ -923,27 +1374,26 @@ fn active_dragged_tab_survives_extreme_wheel_scroll() {
     .build()
     .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E]);
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     let dragged_before = published_tab_rect(&dockspace, ITEM_B).expect("second tab is visible");
     let press = logical_rect_center(dragged_before);
     let current = press + vec2(20.0, 0.0);
-    run_frame_with_size(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![Event::PointerMoved(press), pointer_button(press, true)],
     );
-    run_frame_with_size(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![Event::PointerMoved(current)],
     );
-    run_frame_with_size(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
@@ -955,7 +1405,7 @@ fn active_dragged_tab_survives_extreme_wheel_scroll() {
         InteractionStatus::Dragging { .. }
     ));
 
-    run_frame_with_size(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
@@ -970,25 +1420,28 @@ fn active_dragged_tab_survives_extreme_wheel_scroll() {
             },
         ],
     );
-    run_frame_with_size(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![Event::PointerMoved(current)],
-    );
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     assert!(matches!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     assert!(
-        published_tab_rect(&dockspace, ITEM_A).is_some(),
-        "feasible selected identity remains visible"
-    );
-    assert!(
         published_tab_rect(&dockspace, ITEM_B).is_some(),
         "active drag source remains visible"
+    );
+    assert!(
+        dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .and_then(|projection| projection
+                .plan()
+                .tab_records()
+                .iter()
+                .find(|tab| tab.id().item == ITEM_B)
+                .map(dockspace::scene::TabRecord::selected))
+            == Some(true),
+        "the atomically selected drag source remains selected after scrolling",
     );
 }
 
@@ -1003,8 +1456,9 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_wheel_scroll() {
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E, ITEM_F, ITEM_G]);
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
+    select_item(&mut dockspace, ITEM_E);
+    run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
 
     let background_before = published_tab_rect(&dockspace, ITEM_A).expect("main tab is visible");
     let foreground_before =
@@ -1027,7 +1481,22 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_wheel_scroll() {
             },
         ],
     );
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let painted_scroll =
+        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        !painted_scroll
+            .last()
+            .expect("the floating scroll candidate paints")
+            .interactions_current
+    );
+    let acknowledged_scroll =
+        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        acknowledged_scroll
+            .last()
+            .expect("the next host sequence acknowledges the floating scroll candidate")
+            .interactions_current
+    );
 
     assert_eq!(
         published_tab_rect(&dockspace, ITEM_A),
@@ -1050,55 +1519,87 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E, ITEM_F, ITEM_G]);
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
+    select_item(&mut dockspace, ITEM_E);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     let background_before = published_tab_rect(&dockspace, ITEM_A).expect("main tab is visible");
     let foreground_before =
         published_tab_rect(&dockspace, ITEM_D).expect("floating tab is visible");
-    let overlap = logical_rect_intersection(background_before, foreground_before)
-        .expect("fixture tab strips overlap");
-    let press = logical_rect_center(foreground_before);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "finite fixture geometry is converted to egui input coordinates"
-    )]
-    let edge = Pos2::new(
-        floating_rect.max().x() as f32
-            - dockspace.style().floating_border_width
-            - dockspace.style().tab_bar_height
-            - 4.0,
-        logical_rect_center(overlap).y,
+    let press = logical_rect_center(
+        published_tab_rect(&dockspace, ITEM_E).expect("middle floating tab is visible"),
+    );
+    let edge = logical_rect_center(
+        dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .expect("the floating strip has authoritative controls")
+            .plan()
+            .tab_strip_control_records()
+            .iter()
+            .find_map(|control| match control.id() {
+                TabStripControlId::ScrollForward(bar) if bar.root == FLOATING_ROOT => {
+                    Some(control.hit().rect())
+                }
+                TabStripControlId::ScrollBackward(_) | TabStripControlId::TabListMenu(_) => None,
+                TabStripControlId::ScrollForward(_) => None,
+            })
+            .expect("the overflowing floating strip exposes its forward control"),
     );
 
-    run_frame_with_size(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![Event::PointerMoved(press), pointer_button(press, true)],
     );
-    run_frame_with_size(
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![Event::PointerMoved(press - vec2(12.0, 0.0))],
+    );
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![Event::PointerMoved(press - vec2(12.0, 0.0))],
+    );
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
+    let drag_pointer = press - vec2(12.0, 0.0);
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![Event::PointerMoved(drag_pointer)],
+    );
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
+
+    let edge_scroll = run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![Event::PointerMoved(edge)],
     );
-    run_frame_with_size(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![Event::PointerMoved(edge)],
+    assert!(
+        edge_scroll.interactions_current,
+        "the edge action is reduced against the prior authoritative receiver view"
     );
-    run_frame_with_size(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![Event::PointerMoved(logical_rect_center(overlap))],
+    let projected =
+        run_outer_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        !projected.interactions_current,
+        "the changed scroll projection remains fail-closed until it is presented"
     );
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     assert!(matches!(
         dockspace.engine().interaction().status(),
@@ -1135,36 +1636,57 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
     );
     assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
+    let added_workspace = single_workspace([ITEM_A, ITEM_B, ITEM_C, ITEM_D]);
     dockspace
-        .replace_workspace(single_workspace([ITEM_A, ITEM_B, ITEM_C, ITEM_D]))
-        .expect("hidden-item addition queues");
+        .replace_workspace(added_workspace.clone())
+        .expect("hidden-item addition commits immediately");
+    assert_eq!(dockspace.engine().workspace(), &added_workspace);
     let added = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
-        added
-            .iter()
-            .any(|observation| !observation.interactions_current)
+        !added
+            .first()
+            .expect("addition paints one stale pass")
+            .interactions_current
     );
     assert!(
-        added
+        !added
             .last()
-            .expect("addition repaints")
+            .expect("addition paints its candidate without same-sequence authority")
+            .interactions_current
+    );
+    let added_current = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        added_current
+            .last()
+            .expect("addition reaches a later authoritative frame")
             .interactions_current
     );
     assert!(published_tab_rect(&dockspace, ITEM_D).is_none());
 
+    let removed_workspace = single_workspace([ITEM_A, ITEM_B, ITEM_C]);
     dockspace
-        .replace_workspace(single_workspace([ITEM_A, ITEM_B, ITEM_C]))
-        .expect("hidden-item removal queues");
+        .replace_workspace(removed_workspace.clone())
+        .expect("hidden-item removal commits immediately");
+    assert_eq!(dockspace.engine().workspace(), &removed_workspace);
     let removed = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
-        removed
-            .iter()
-            .any(|observation| !observation.interactions_current)
+        !removed
+            .first()
+            .expect("removal paints one stale pass")
+            .interactions_current
     );
     assert!(
-        removed
+        !removed
             .last()
-            .expect("removal repaints")
+            .expect("removal paints its candidate without same-sequence authority")
+            .interactions_current
+    );
+    let removed_current =
+        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        removed_current
+            .last()
+            .expect("removal reaches a later authoritative frame")
             .interactions_current
     );
 }
@@ -1184,8 +1706,7 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let (overflow, overflow_node) =
-            accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
+        let (_, overflow_node) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
         assert!(overflow_node.supports_action(Action::Click));
 
         let mut pre_open_style = dockspace.style().clone();
@@ -1194,13 +1715,28 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
             .set_style(pre_open_style)
             .expect("pre-open overflow style remains valid");
 
-        let open = run_accesskit_frame(
+        let pre_open_painted =
+            run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
+        assert!(
+            !pre_open_painted
+                .last()
+                .expect("the changed pre-open projection paints")
+                .interactions_current
+        );
+        let pre_open_current =
+            run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+        assert!(paint_projection_is_authoritative(&dockspace));
+        let (overflow, _) =
+            accesskit_node_by_label(&pre_open_current, Role::Button, "Show hidden tabs");
+
+        run_accesskit_frame(
             &context,
             &mut dockspace,
             &mut panes,
             size,
             vec![accesskit_action(overflow, Action::Click)],
         );
+        let open = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
         let hidden_label = format!("Pane {}", ITEM_C.get());
         let (hidden_before_stale_pass, hidden_node) =
             accesskit_node_by_label(&open, Role::MenuItem, &hidden_label);
@@ -1215,7 +1751,21 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
             .expect("changed overflow style remains valid");
         let after_stale_pass =
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let (hidden, _) = accesskit_node_by_label(&after_stale_pass, Role::MenuItem, &hidden_label);
+        assert!(
+            after_stale_pass.nodes.iter().all(|(_, node)| {
+                !matches!(node.role(), Role::Menu | Role::MenuItem | Role::ScrollBar)
+                    || node.is_disabled()
+            }),
+            "a stale projection may paint popup chrome but must not publish actionable controls"
+        );
+        assert!(!paint_projection_is_authoritative(&dockspace));
+        let after_current =
+            run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+        assert!(paint_projection_is_authoritative(&dockspace));
+        let (_, overflow_after_style) =
+            accesskit_node_by_label(&after_current, Role::Button, "Show hidden tabs");
+        assert_eq!(overflow_after_style.is_expanded(), Some(true));
+        let (hidden, _) = accesskit_node_by_label(&after_current, Role::MenuItem, &hidden_label);
         assert_eq!(hidden, hidden_before_stale_pass);
 
         if keyboard {
@@ -1226,6 +1776,7 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
                 size,
                 vec![accesskit_action(hidden, Action::Focus)],
             );
+            let _ = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
             run_accesskit_frame(
                 &context,
                 &mut dockspace,
@@ -1251,7 +1802,11 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
         run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
         run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
 
-        assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_C));
+        assert_eq!(
+            selected_item(&dockspace, MAIN_ROOT),
+            Some(ITEM_C),
+            "overflow menu activation failed for keyboard={keyboard}"
+        );
         assert_eq!(
             published_tab_rect(&dockspace, ITEM_C).map(LogicalRect::width),
             Some(72.0)
@@ -1286,13 +1841,32 @@ fn keyboard_opening_overflow_menu_does_not_activate_its_first_item() {
         let focused = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         assert_eq!(focused.focus, overflow);
 
-        let opened =
+        let action_frame =
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, key_press(key));
-        let (_, overflow_node) = accesskit_node_by_label(&opened, Role::Button, "Show hidden tabs");
-        assert_eq!(overflow_node.is_expanded(), Some(true));
-        accesskit_node_by_label(&opened, Role::MenuItem, &format!("Pane {}", ITEM_B.get()));
+        let (_, overflow_node) =
+            accesskit_node_by_label(&action_frame, Role::Button, "Show hidden tabs");
+        assert_eq!(overflow_node.is_expanded(), Some(false));
+        assert!(
+            action_frame
+                .nodes
+                .iter()
+                .all(|(_, node)| node.role() != Role::MenuItem)
+        );
 
-        let settled = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+        let (painted, interactions_current) = run_accesskit_frame_with_authority(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            size,
+            Vec::new(),
+        );
+        assert!(!interactions_current);
+        let (_, painted_overflow) =
+            accesskit_node_by_label(&painted, Role::Button, "Show hidden tabs");
+        assert_eq!(painted_overflow.is_expanded(), Some(true));
+        accesskit_node_by_label(&painted, Role::MenuItem, &format!("Pane {}", ITEM_B.get()));
+
+        let settled = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
         assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
         assert_eq!(
             accesskit_node_by_id(&settled, overflow).is_expanded(),
@@ -1302,7 +1876,7 @@ fn keyboard_opening_overflow_menu_does_not_activate_its_first_item() {
 }
 
 #[test]
-fn external_popup_closure_is_not_resurrected_by_overflow_adapter_state() {
+fn external_popup_state_does_not_override_the_authoritative_overflow_menu() {
     for (salt, competing_popup) in [
         ("overflow-external-close-all", false),
         ("overflow-competing-popup", true),
@@ -1332,7 +1906,7 @@ fn external_popup_closure_is_not_resurrected_by_overflow_adapter_state() {
         );
 
         let competing_id = Id::new((salt, "competing-popup"));
-        let closed = if competing_popup {
+        let observed = if competing_popup {
             run_accesskit_frame_with_competing_popup(
                 &context,
                 &mut dockspace,
@@ -1352,164 +1926,20 @@ fn external_popup_closure_is_not_resurrected_by_overflow_adapter_state() {
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new())
         };
         assert_eq!(
-            accesskit_node_by_id(&closed, overflow).is_expanded(),
-            Some(false)
+            accesskit_node_by_id(&observed, overflow).is_expanded(),
+            Some(true),
+            "external egui popup memory cannot mutate the core-owned menu session"
         );
         assert_eq!(
             egui::Popup::is_id_open(&context, competing_id),
             competing_popup,
-            "closing overflow state must not disturb a competing popup"
+            "the core-owned menu must not disturb a competing egui popup"
         );
-        let still_closed =
+        let still_open =
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         assert_eq!(
-            accesskit_node_by_id(&still_closed, overflow).is_expanded(),
-            Some(false)
-        );
-    }
-}
-
-#[test]
-#[allow(clippy::too_many_lines)]
-fn large_overflow_menu_reaches_the_last_item_by_pointer_keyboard_and_accesskit() {
-    for mode in ["pointer", "keyboard", "accesskit"] {
-        let context = Context::default();
-        context.enable_accesskit();
-        let size = vec2(180.0, 140.0);
-        let items = numbered_items(1_000, 64);
-        let last = *items.last().expect("large fixture has a last item");
-        let mut dockspace = Dockspace::builder(mode, single_workspace(items.iter().copied()))
-            .build()
-            .expect("facade must build");
-        let mut panes = TestPanes::with_items(items.iter().copied());
-
-        run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-        run_accesskit_frame(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            size,
-            vec![accesskit_action(overflow, Action::Click)],
-        );
-        run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let menu = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        let (_, menu_node) = accesskit_node_by_role(&menu, Role::Menu);
-        let menu_rect = accesskit_node_rect(menu_node);
-        assert!(menu_node.clips_children());
-        assert!(menu_node.child_supports_action(Action::ScrollIntoView));
-        assert!(menu_rect.min.x >= 0.0 && menu_rect.min.y >= 0.0);
-        assert!(
-            menu_rect.max.x <= size.x && menu_rect.max.y <= size.y,
-            "bounded menu {menu_rect:?} must fit host size {size:?}"
-        );
-        assert!(
-            menu.nodes
-                .iter()
-                .filter(|(_, node)| node.role() == Role::MenuItem)
-                .count()
-                >= 60,
-            "the bounded popup must retain the complete stable accessibility roster"
-        );
-        let last_label = format!("Pane {}", last.get());
-        let (last_node_id, last_node) = accesskit_node_by_label(&menu, Role::MenuItem, &last_label);
-        assert!(last_node.supports_action(Action::Focus));
-        assert!(last_node.supports_action(Action::Click));
-        assert!(last_node.supports_action(Action::ScrollIntoView));
-
-        match mode {
-            "pointer" => {
-                let pointer = menu_rect.center();
-                let mut scrolled = run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![
-                        Event::PointerMoved(pointer),
-                        Event::MouseWheel {
-                            unit: MouseWheelUnit::Point,
-                            delta: vec2(0.0, -10_000.0),
-                            phase: TouchPhase::Move,
-                            modifiers: Modifiers::NONE,
-                        },
-                    ],
-                );
-                for _ in 0..32 {
-                    scrolled =
-                        run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-                }
-                let (_, last_node) =
-                    accesskit_node_by_label(&scrolled, Role::MenuItem, &last_label);
-                let last_center = accesskit_node_center(last_node);
-                assert!(
-                    menu_rect.contains(last_center),
-                    "scrolled last item center {last_center:?} must enter menu {menu_rect:?}"
-                );
-                run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![
-                        Event::PointerMoved(last_center),
-                        pointer_button(last_center, true),
-                        pointer_button(last_center, false),
-                    ],
-                );
-            }
-            "keyboard" => {
-                run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![Event::Key {
-                        key: Key::End,
-                        physical_key: Some(Key::End),
-                        pressed: true,
-                        repeat: false,
-                        modifiers: Modifiers::NONE,
-                    }],
-                );
-                run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-                let scrolled =
-                    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-                let (_, last_node) =
-                    accesskit_node_by_label(&scrolled, Role::MenuItem, &last_label);
-                assert!(menu_rect.contains(accesskit_node_center(last_node)));
-                run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![Event::Key {
-                        key: Key::Enter,
-                        physical_key: Some(Key::Enter),
-                        pressed: true,
-                        repeat: false,
-                        modifiers: Modifiers::NONE,
-                    }],
-                );
-            }
-            "accesskit" => {
-                run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![accesskit_action(last_node_id, Action::Click)],
-                );
-            }
-            _ => unreachable!("fixture mode is exhaustive"),
-        }
-        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-        assert_eq!(
-            selected_item(&dockspace, MAIN_ROOT),
-            Some(last),
-            "large overflow activation failed in {mode} mode"
+            accesskit_node_by_id(&still_open, overflow).is_expanded(),
+            Some(true)
         );
     }
 }
@@ -1564,7 +1994,7 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
             Vec::new(),
         );
         let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-        let opening = run_accesskit_frame_in_rect(
+        run_accesskit_frame_in_rect(
             &context,
             &mut dockspace,
             &mut panes,
@@ -1572,8 +2002,7 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
             dock,
             vec![accesskit_action(overflow, Action::Click)],
         );
-        let opening_menu = accesskit_node_rect(accesskit_node_by_role(&opening, Role::Menu).1);
-        run_accesskit_frame_in_rect(
+        let (opening, opening_current) = run_accesskit_frame_in_rect_with_authority(
             &context,
             &mut dockspace,
             &mut panes,
@@ -1581,13 +2010,17 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
             dock,
             Vec::new(),
         );
-        let opened = run_accesskit_frame_in_rect(
+        let opening_menu = accesskit_node_rect(accesskit_node_by_role(&opening, Role::Menu).1);
+        assert!(
+            !opening_current,
+            "the first painted popup candidate cannot acknowledge itself"
+        );
+        let opened = run_authoritative_accesskit_frame_in_rect(
             &context,
             &mut dockspace,
             &mut panes,
             screen,
             dock,
-            Vec::new(),
         );
         let (_, menu) = accesskit_node_by_role(&opened, Role::Menu);
         let menu = accesskit_node_rect(menu);
@@ -1597,21 +2030,22 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
             menu, opening_menu,
             "popup geometry shifted after its opening frame at {pixels_per_point} PPP"
         );
+        let physical_rounding_tolerance = 0.5 / pixels_per_point + egui::emath::GUI_ROUNDING;
         assert!(
-            menu.min.x > screen.min.x,
-            "left edge escaped at {pixels_per_point} PPP"
+            menu.min.x + physical_rounding_tolerance >= screen.min.x,
+            "left edge of {menu:?} escaped {screen:?} at {pixels_per_point} PPP"
         );
         assert!(
-            menu.min.y > screen.min.y,
-            "top edge escaped at {pixels_per_point} PPP"
+            menu.min.y + physical_rounding_tolerance >= screen.min.y,
+            "top edge of {menu:?} escaped {screen:?} at {pixels_per_point} PPP"
         );
         assert!(
-            menu.max.x < screen.max.x,
-            "right edge escaped at {pixels_per_point} PPP"
+            menu.max.x <= screen.max.x + physical_rounding_tolerance,
+            "right edge of {menu:?} escaped {screen:?} at {pixels_per_point} PPP"
         );
         assert!(
-            menu.max.y < screen.max.y,
-            "bottom edge escaped at {pixels_per_point} PPP"
+            menu.max.y <= screen.max.y + physical_rounding_tolerance,
+            "bottom edge of {menu:?} escaped {screen:?} at {pixels_per_point} PPP"
         );
         assert!(
             menu.max.y <= overflow_rect.min.y + 0.5 / pixels_per_point + egui::emath::GUI_ROUNDING,
@@ -1619,7 +2053,7 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
         );
         assert!(
             menu.min.x - screen.min.x < 2.0 / pixels_per_point + 1.0,
-            "the wide popup must exercise the left host budget at {pixels_per_point} PPP"
+            "the wide popup {menu:?} must exercise the left host budget {screen:?} at {pixels_per_point} PPP"
         );
     }
 }
@@ -1657,13 +2091,20 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         Vec::new(),
     );
     let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    let opened = run_accesskit_frame_in_rect(
+    run_accesskit_frame_in_rect(
         &context,
         &mut dockspace,
         &mut panes,
         screen,
         dock,
         vec![accesskit_action(overflow, Action::Click)],
+    );
+    let opened = run_authoritative_accesskit_frame_in_rect(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        screen,
+        dock,
     );
     assert_eq!(
         accesskit_node_by_id(&opened, overflow).is_expanded(),
@@ -1675,7 +2116,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         Pos2::new(tiny_screen.max.x - dock.width(), tiny_screen.min.y),
         dock.size(),
     );
-    let tiny = run_accesskit_frame_in_rect(
+    let (tiny, interactions_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -1683,15 +2124,38 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         tiny_dock,
         Vec::new(),
     );
-    assert!(tiny.nodes.iter().all(|(_, node)| node.role() != Role::Menu));
+    assert!(!interactions_current);
+    assert!(
+        tiny.nodes
+            .iter()
+            .filter(|(_, node)| matches!(
+                node.role(),
+                Role::Menu | Role::MenuItem | Role::ScrollBar
+            ))
+            .all(|(_, node)| node.is_disabled()),
+        "the prior popup may paint during settlement but cannot remain interactive"
+    );
 
-    let restored = run_accesskit_frame_in_rect(
+    let closed = run_authoritative_accesskit_frame_in_rect(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        tiny_screen,
+        tiny_dock,
+    );
+    assert!(
+        closed
+            .nodes
+            .iter()
+            .all(|(_, node)| node.role() != Role::Menu)
+    );
+
+    let restored = run_authoritative_accesskit_frame_in_rect(
         &context,
         &mut dockspace,
         &mut panes,
         screen,
         dock,
-        Vec::new(),
     );
     let (_, restored_overflow) =
         accesskit_node_by_label(&restored, Role::Button, "Show hidden tabs");
@@ -1702,56 +2166,6 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
             .iter()
             .all(|(_, node)| node.role() != Role::Menu)
     );
-}
-
-#[test]
-fn overflow_menu_short_items_own_the_full_clickable_row() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let size = vec2(180.0, 200.0);
-    let mut dockspace = Dockspace::builder(
-        "overflow-full-width-short-row",
-        single_workspace([ITEM_A, ITEM_B, ITEM_C]),
-    )
-    .build()
-    .expect("facade must build");
-    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
-    let short_label = "B".to_owned();
-    let long_label = "An intentionally wide overflow menu item".to_owned();
-    panes.titles.insert(ITEM_B, short_label.clone());
-    panes.titles.insert(ITEM_C, long_label.clone());
-
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    run_accesskit_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![accesskit_action(overflow, Action::Click)],
-    );
-    let opened = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let short =
-        accesskit_node_rect(accesskit_node_by_label(&opened, Role::MenuItem, &short_label).1);
-    let long = accesskit_node_rect(accesskit_node_by_label(&opened, Role::MenuItem, &long_label).1);
-
-    assert_eq!(short.x_range(), long.x_range());
-    let row_end = Pos2::new(long.max.x - 1.0, short.center().y);
-    run_accesskit_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![
-            Event::PointerMoved(row_end),
-            pointer_button(row_end, true),
-            pointer_button(row_end, false),
-        ],
-    );
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-
-    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
 }
 
 #[test]
@@ -1793,13 +2207,20 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
         Vec::new(),
     );
     let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    let opened = run_accesskit_frame_in_rect(
+    run_accesskit_frame_in_rect(
         &context,
         &mut dockspace,
         &mut panes,
         screen,
         dock,
         vec![accesskit_action(overflow, Action::Click)],
+    );
+    let opened = run_authoritative_accesskit_frame_in_rect(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        screen,
+        dock,
     );
     assert_eq!(
         accesskit_node_by_id(&opened, overflow).is_expanded(),
@@ -1818,7 +2239,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
     assert!(narrow_screen.width() > frame_width);
     assert!(narrow_screen.width() < frame_width + scrollbar_width);
 
-    let narrow = run_accesskit_frame_in_rect(
+    let (narrow, interactions_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -1826,20 +2247,39 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
         narrow_dock,
         Vec::new(),
     );
+    assert!(!interactions_current);
     assert!(
         narrow
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(
+                node.role(),
+                Role::Menu | Role::MenuItem | Role::ScrollBar
+            ))
+            .all(|(_, node)| node.is_disabled()),
+        "the prior popup may paint during settlement but cannot remain interactive"
+    );
+
+    let closed = run_authoritative_accesskit_frame_in_rect(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        narrow_screen,
+        narrow_dock,
+    );
+    assert!(
+        closed
             .nodes
             .iter()
             .all(|(_, node)| node.role() != Role::Menu)
     );
 
-    let restored = run_accesskit_frame_in_rect(
+    let restored = run_authoritative_accesskit_frame_in_rect(
         &context,
         &mut dockspace,
         &mut panes,
         screen,
         dock,
-        Vec::new(),
     );
     let (_, overflow) = accesskit_node_by_label(&restored, Role::Button, "Show hidden tabs");
     assert_eq!(overflow.is_expanded(), Some(false));
@@ -1887,13 +2327,14 @@ fn overflow_scrollbar_and_rows_keep_their_first_frame_width_allocation() {
     run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
     let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
     let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    let opened = run_accesskit_frame(
+    run_accesskit_frame(
         &context,
         &mut dockspace,
         &mut panes,
         size,
         vec![accesskit_action(overflow, Action::Click)],
     );
+    let opened = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
     let (_, opened_menu) = accesskit_node_by_role(&opened, Role::Menu);
     let opened_menu_bounds = opened_menu.bounds().expect("menu has bounds");
     let (_, opened_scrollbar) = accesskit_node_by_role(&opened, Role::ScrollBar);
@@ -1953,12 +2394,33 @@ fn overflow_scrollbar_and_rows_keep_their_first_frame_width_allocation() {
         "the tall popup establishes a hidden-scrollbar animation state"
     );
 
-    let resized = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let stale_resize = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    assert!(
+        stale_resize
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::ScrollBar)
+            .all(|(_, node)| node.is_disabled()),
+        "the replacement scrollbar may paint immediately but cannot interact before acknowledgement"
+    );
+    assert!(!paint_projection_is_authoritative(&dockspace));
+    let (_, stale_scrollbar) = accesskit_node_by_role(&stale_resize, Role::ScrollBar);
+    let stale_scrollbar_bounds = stale_scrollbar.bounds();
+    let (_, stale_first_hidden) =
+        accesskit_node_by_label(&stale_resize, Role::MenuItem, &first_hidden_label);
+    let stale_first_hidden_bounds = stale_first_hidden.bounds();
+    let resized = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
+    assert!(paint_projection_is_authoritative(&dockspace));
+    let (_, overflow_after_resize) =
+        accesskit_node_by_label(&resized, Role::Button, "Show hidden tabs");
+    assert_eq!(overflow_after_resize.is_expanded(), Some(true));
     let (_, resized_scrollbar) = accesskit_node_by_role(&resized, Role::ScrollBar);
     let resized_scrollbar_bounds = resized_scrollbar.bounds();
     let (_, resized_first_hidden) =
         accesskit_node_by_label(&resized, Role::MenuItem, &first_hidden_label);
     let resized_first_hidden_bounds = resized_first_hidden.bounds();
+    assert_eq!(resized_scrollbar_bounds, stale_scrollbar_bounds);
+    assert_eq!(resized_first_hidden_bounds, stale_first_hidden_bounds);
     let mut resized_settled = None;
     for _ in 0..20 {
         resized_settled = Some(run_accesskit_frame(
@@ -1983,6 +2445,74 @@ fn overflow_scrollbar_and_rows_keep_their_first_frame_width_allocation() {
         resized_first_hidden_bounds,
         "row width must not animate while solid scrollbar space is reserved"
     );
+}
+
+#[test]
+fn overflow_scrollbar_accesskit_adjustments_commit_one_row_steps() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let size = vec2(180.0, 140.0);
+    let items = numbered_items(1_700, 32);
+    let mut dockspace = Dockspace::builder(
+        "overflow-scrollbar-accesskit-adjustment",
+        single_workspace(items.iter().copied()),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items(items);
+
+    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
+    run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![accesskit_action(overflow, Action::Click)],
+    );
+    let opened = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
+    let (scrollbar, scrollbar_node) = accesskit_node_by_role(&opened, Role::ScrollBar);
+    assert!(scrollbar_node.supports_action(Action::Increment));
+    assert!(scrollbar_node.supports_action(Action::Decrement));
+    let initial_offset = scrollbar_node
+        .numeric_value()
+        .expect("the scrollbar exposes its authoritative offset");
+    let row_height = opened
+        .nodes
+        .iter()
+        .find_map(|(_, node)| {
+            (node.role() == Role::MenuItem)
+                .then(|| node.bounds())
+                .flatten()
+                .map(|bounds| bounds.y1 - bounds.y0)
+        })
+        .expect("the menu exposes at least one measured row");
+
+    run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![accesskit_action(scrollbar, Action::Increment)],
+    );
+    let incremented = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
+    let (scrollbar, scrollbar_node) = accesskit_node_by_role(&incremented, Role::ScrollBar);
+    let incremented_offset = scrollbar_node
+        .numeric_value()
+        .expect("the incremented scrollbar exposes its offset");
+    assert!((incremented_offset - initial_offset - row_height).abs() <= f64::EPSILON);
+
+    run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        size,
+        vec![accesskit_action(scrollbar, Action::Decrement)],
+    );
+    let decremented = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
+    let (_, scrollbar_node) = accesskit_node_by_role(&decremented, Role::ScrollBar);
+    assert_eq!(scrollbar_node.numeric_value(), Some(initial_offset));
 }
 
 #[test]
@@ -2273,187 +2803,7 @@ fn overflow_popup_wheel_never_falls_through_to_tiled_or_floating_tab_strips() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one parameterized ownership scenario keeps identical pointer assertions across layers"
-)]
-fn overflow_popup_pointer_ownership_blocks_tiled_and_floating_underlays() {
-    for floating_underlay in [false, true] {
-        for interaction in ["row", "gap", "scrollbar"] {
-            let context = Context::default();
-            context.enable_accesskit();
-            context.all_styles_mut(|style| {
-                style.spacing.item_spacing.y = 10.0;
-                style.spacing.scroll.floating = false;
-                style.spacing.scroll.bar_width = 16.0;
-                style.spacing.scroll.bar_inner_margin = 2.0;
-                style.spacing.scroll.bar_outer_margin = 2.0;
-            });
-            let size = vec2(220.0, 220.0);
-            let popup_items = numbered_items(4_000, 32);
-            let underlay_items = numbered_items(5_000, 4);
-            let workspace = popup_overlapping_tab_strip_workspace(
-                &popup_items,
-                &underlay_items,
-                floating_underlay,
-            );
-            let salt = format!("popup-pointer-{floating_underlay}-{interaction}");
-            let mut dockspace = Dockspace::builder(salt, workspace)
-                .build()
-                .expect("facade must build");
-            let mut panes =
-                TestPanes::with_items(popup_items.iter().chain(&underlay_items).copied());
-
-            run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-            let stable =
-                run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-            let (overflow, _) = stable
-                .nodes
-                .iter()
-                .filter(|(_, node)| {
-                    node.role() == Role::Button && node.label() == Some("Show hidden tabs")
-                })
-                .min_by(|(_, left), (_, right)| {
-                    left.bounds()
-                        .expect("overflow button has bounds")
-                        .y0
-                        .total_cmp(&right.bounds().expect("overflow button has bounds").y0)
-                })
-                .map(|(id, node)| (*id, node))
-                .expect("topmost overflow button exists");
-            run_accesskit_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                size,
-                vec![accesskit_action(overflow, Action::Click)],
-            );
-            run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-            let menu = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-            let (_, menu_node) = accesskit_node_by_role(&menu, Role::Menu);
-            let menu_rect = accesskit_node_rect(menu_node);
-            let underlay_tab = egui_rect(
-                published_tab_rect(&dockspace, underlay_items[1]).expect("underlay tab is visible"),
-            );
-            let (_, underlay_panel_node) = accesskit_node_by_label(
-                &menu,
-                Role::TabPanel,
-                &format!("Pane {}", underlay_items[0].get()),
-            );
-            let underlay_panel = accesskit_node_rect(underlay_panel_node);
-            let (_, scrollbar_node) = accesskit_node_by_role(&menu, Role::ScrollBar);
-            let scrollbar_response = accesskit_node_rect(scrollbar_node);
-            let scrollbar_overlap = scrollbar_response
-                .intersect(menu_rect)
-                .intersect(underlay_panel);
-            assert!(
-                scrollbar_overlap.is_positive(),
-                "the actual popup scrollbar response overlaps the underlay pane"
-            );
-            let mut visible_rows = popup_items
-                .iter()
-                .filter_map(|item| {
-                    let label = format!("Pane {}", item.get());
-                    let node = menu.nodes.iter().find_map(|(_, node)| {
-                        (node.role() == Role::MenuItem && node.label() == Some(label.as_str()))
-                            .then_some(node)
-                    })?;
-                    let rect = accesskit_node_rect(node);
-                    rect.intersect(menu_rect)
-                        .is_positive()
-                        .then_some((*item, rect))
-                })
-                .collect::<Vec<_>>();
-            visible_rows.sort_by(|(_, left), (_, right)| left.min.y.total_cmp(&right.min.y));
-            let row = visible_rows
-                .iter()
-                .find_map(|(item, rect)| {
-                    let overlap = rect.intersect(underlay_tab).intersect(menu_rect);
-                    overlap.is_positive().then_some((*item, overlap.center()))
-                })
-                .expect("a popup row covers the underlay tab strip");
-            let gap = visible_rows
-                .windows(2)
-                .find_map(|rows| {
-                    let left = rows[0].1.min.x.max(rows[1].1.min.x);
-                    let right = rows[0].1.max.x.min(rows[1].1.max.x);
-                    let gap = Rect::from_min_max(
-                        Pos2::new(left, rows[0].1.max.y),
-                        Pos2::new(right, rows[1].1.min.y),
-                    )
-                    .intersect(underlay_tab)
-                    .intersect(menu_rect);
-                    gap.is_positive().then_some(gap.center())
-                })
-                .expect("a popup row gap covers the underlay tab strip");
-            let scrollbar = scrollbar_overlap.center();
-            let underlay_selected = selected_in_group_containing(&dockspace, underlay_items[0]);
-            let underlay_clicks = panes.pane_clicks(underlay_items[0]);
-            let underlay_closes = panes.close_calls(underlay_items[0]);
-            let version_before = dockspace.engine().version();
-            let (pointer, drag_delta) = match interaction {
-                "row" => (row.1, egui::Vec2::ZERO),
-                "gap" => (gap, vec2(4.0, 0.0)),
-                "scrollbar" => (scrollbar, vec2(0.0, 24.0)),
-                _ => unreachable!("fixture interaction is exhaustive"),
-            };
-            run_accesskit_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                size,
-                vec![Event::PointerMoved(pointer), pointer_button(pointer, true)],
-            );
-            if drag_delta != egui::Vec2::ZERO {
-                run_accesskit_frame(
-                    &context,
-                    &mut dockspace,
-                    &mut panes,
-                    size,
-                    vec![Event::PointerMoved(pointer + drag_delta)],
-                );
-            }
-            run_accesskit_frame(
-                &context,
-                &mut dockspace,
-                &mut panes,
-                size,
-                vec![
-                    Event::PointerMoved(pointer + drag_delta),
-                    pointer_button(pointer + drag_delta, false),
-                ],
-            );
-            let settled =
-                run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-
-            assert_eq!(
-                selected_in_group_containing(&dockspace, underlay_items[0]),
-                underlay_selected
-            );
-            assert_eq!(panes.pane_clicks(underlay_items[0]), underlay_clicks);
-            assert_eq!(panes.close_calls(underlay_items[0]), underlay_closes);
-            assert_eq!(
-                dockspace.engine().interaction().status(),
-                InteractionStatus::Idle
-            );
-            let expanded = accesskit_node_by_id(&settled, overflow).is_expanded();
-            if interaction == "row" {
-                assert_eq!(
-                    selected_in_group_containing(&dockspace, row.0),
-                    Some(row.0),
-                    "popup row activation failed for floating_underlay={floating_underlay}"
-                );
-                assert_eq!(expanded, Some(false));
-            } else {
-                assert_eq!(dockspace.engine().version(), version_before);
-                assert_eq!(expanded, Some(true));
-            }
-        }
-    }
-}
-
-#[test]
-fn stale_overflow_clicks_cannot_activate_or_close_the_popup() {
+fn stale_overflow_clicks_cannot_activate_or_dismiss_a_remeasured_popup() {
     for (salt, click_item) in [
         ("stale-overflow-item-click", true),
         ("stale-overflow-outside-click", false),
@@ -2476,8 +2826,10 @@ fn stale_overflow_clicks_cannot_activate_or_close_the_popup() {
             size,
             vec![accesskit_action(overflow, Action::Click)],
         );
+        run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         let authoritative_menu =
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+        assert!(paint_projection_is_authoritative(&dockspace));
         let old_label = format!("Pane {}", ITEM_C.get());
         let (_, hidden) = accesskit_node_by_label(&authoritative_menu, Role::MenuItem, &old_label);
         let stale_click = if click_item {
@@ -2486,8 +2838,10 @@ fn stale_overflow_clicks_cannot_activate_or_close_the_popup() {
             Pos2::new(4.0, size.y - 4.0)
         };
 
-        let changed_label = format!("Pane {} with a much wider overflow label", ITEM_C.get());
-        panes.titles.insert(ITEM_C, changed_label.clone());
+        panes.titles.insert(
+            ITEM_C,
+            format!("Pane {} with a much wider overflow label", ITEM_C.get()),
+        );
         context.all_styles_mut(|style| {
             style.spacing.item_spacing.y += 3.0;
             style.spacing.default_area_size += vec2(7.0, 11.0);
@@ -2516,90 +2870,28 @@ fn stale_overflow_clicks_cannot_activate_or_close_the_popup() {
             options.max_passes = 4.try_into().expect("four is non-zero");
         });
         let recovered = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-        accesskit_node_by_label(&recovered, Role::MenuItem, &changed_label);
+        assert!(
+            recovered.nodes.iter().all(|(_, node)| {
+                !matches!(node.role(), Role::Menu | Role::MenuItem | Role::ScrollBar)
+                    || node.is_disabled()
+            }),
+            "the first recovery sequence may paint replacement popup chrome but cannot authorize it"
+        );
+        assert!(!paint_projection_is_authoritative(&dockspace));
+        let authoritative =
+            run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
+        assert!(paint_projection_is_authoritative(&dockspace));
+        let (_, overflow_after_recovery) =
+            accesskit_node_by_label(&authoritative, Role::Button, "Show hidden tabs");
+        assert_eq!(overflow_after_recovery.is_expanded(), Some(true));
+        let (_, remeasured_hidden) = accesskit_node_by_label(
+            &authoritative,
+            Role::MenuItem,
+            &format!("Pane {} with a much wider overflow label", ITEM_C.get()),
+        );
+        assert!(!remeasured_hidden.is_disabled());
         assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
     }
-}
-
-#[test]
-fn opening_overflow_click_survives_geometry_discard_in_the_same_frame() {
-    let context = Context::default();
-    context.enable_accesskit();
-    context.options_mut(|options| {
-        options.max_passes = 4.try_into().expect("four is non-zero");
-    });
-    let size = vec2(180.0, 200.0);
-    let mut dockspace = Dockspace::builder(
-        "overflow-open-multipass",
-        single_workspace([ITEM_A, ITEM_B, ITEM_C]),
-    )
-    .build()
-    .expect("facade must build");
-    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
-
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let (_, overflow) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    let open = accesskit_node_center(overflow);
-    let opened = run_accesskit_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![
-            Event::PointerMoved(open),
-            pointer_button(open, true),
-            pointer_button(open, false),
-        ],
-    );
-
-    let (_, overflow) = accesskit_node_by_label(&opened, Role::Button, "Show hidden tabs");
-    assert_eq!(overflow.is_expanded(), Some(true));
-    accesskit_node_by_label(&opened, Role::MenuItem, &format!("Pane {}", ITEM_C.get()));
-}
-
-#[test]
-fn authoritative_overflow_outside_click_closes_the_popup() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let size = vec2(180.0, 200.0);
-    let mut dockspace = Dockspace::builder(
-        "authoritative-overflow-outside-click",
-        single_workspace([ITEM_A, ITEM_B, ITEM_C]),
-    )
-    .build()
-    .expect("facade must build");
-    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
-
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let (overflow, _) = accesskit_node_by_label(&stable, Role::Button, "Show hidden tabs");
-    run_accesskit_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![accesskit_action(overflow, Action::Click)],
-    );
-    run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-
-    let outside = Pos2::new(4.0, size.y - 4.0);
-    run_accesskit_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        size,
-        vec![
-            Event::PointerMoved(outside),
-            pointer_button(outside, true),
-            pointer_button(outside, false),
-        ],
-    );
-    let closed = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
-    let (_, overflow_node) = accesskit_node_by_label(&closed, Role::Button, "Show hidden tabs");
-
-    assert_eq!(overflow_node.is_expanded(), Some(false));
-    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
 }
 
 #[test]
@@ -2628,7 +2920,7 @@ fn authoritative_overflow_gap_click_keeps_the_popup_open() {
         size,
         vec![accesskit_action(overflow, Action::Click)],
     );
-    let opened = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
+    let opened = run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, size);
     let first = accesskit_node_rect(
         accesskit_node_by_label(&opened, Role::MenuItem, &format!("Pane {}", ITEM_B.get())).1,
     );
@@ -2666,7 +2958,7 @@ fn authoritative_overflow_gap_click_keeps_the_popup_open() {
 }
 
 #[test]
-fn stale_projection_paints_pane_but_disables_widget_interaction() {
+fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
     let mut dockspace = Dockspace::builder("stale-pane-fail-closed", workspace)
@@ -2703,19 +2995,43 @@ fn stale_projection_paints_pane_but_disables_widget_interaction() {
         1,
         "the configured pass budget rejects discard"
     );
+    assert_eq!(
+        stale_observations[0].surface_status,
+        DockspaceSurfaceStatus::Stale
+    );
     assert!(!stale_observations[0].interactions_current);
     assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 1);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
     assert_eq!(panes.pane_clicks(ITEM_A), clicks_before);
 
+    let recovered_observations = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !recovered_observations
+            .last()
+            .expect("the recovered candidate paints without same-sequence authority")
+            .interactions_current
+    );
+    assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 2);
+    assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
+
     let current_observations = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
         current_observations
             .last()
-            .expect("stable frame paints")
+            .expect("the sealed frame observes presentation authority before painting")
             .interactions_current
     );
-    assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 2);
+    assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 3);
+    assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
+
+    let authoritative_observations = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        authoritative_observations
+            .last()
+            .expect("the following host sequence observes accepted authority")
+            .interactions_current
+    );
+    assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 4);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
     assert_eq!(panes.pane_clicks(ITEM_A), clicks_before);
 
@@ -2733,7 +3049,7 @@ fn stale_projection_paints_pane_but_disables_widget_interaction() {
 }
 
 #[test]
-fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
+fn stale_selection_paints_current_pane_without_running_superseded_callback() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B]);
     let mut dockspace = Dockspace::builder("selected-pane-fingerprint", workspace.clone())
@@ -2742,22 +3058,8 @@ fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     warm(&context, &mut dockspace, &mut panes);
 
-    let source = dockspace
-        .engine()
-        .workspace()
-        .roots()
-        .next()
-        .and_then(|(root, record)| {
-            dockspace
-                .engine()
-                .workspace()
-                .capture_item_source(root, record.node, ITEM_B)
-                .ok()
-        })
-        .expect("selected pane source must capture");
-    dockspace
-        .enqueue_command(dockspace::command::WorkspaceCommand::Select { source })
-        .expect("selection command must enqueue");
+    select_item(&mut dockspace, ITEM_B);
+    assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
     context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
@@ -2765,6 +3067,9 @@ fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
     let b_ui_before = panes.ui_calls(ITEM_B);
     let b_disabled_before = panes.disabled_ui_calls(ITEM_B);
     let b_clicks_before = panes.pane_clicks(ITEM_B);
+    let a_ui_before = panes.ui_calls(ITEM_A);
+    let a_disabled_before = panes.disabled_ui_calls(ITEM_A);
+    let a_clicks_before = panes.pane_clicks(ITEM_A);
     let press = Pos2::new(300.0, 200.0);
     let stale_frame = run_frame(
         &context,
@@ -2778,20 +3083,56 @@ fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
     );
     assert_eq!(stale_frame.len(), 1, "the one-pass budget must fail closed");
     assert!(!stale_frame[0].interactions_current);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+    assert_eq!(panes.disabled_ui_calls(ITEM_A), a_disabled_before);
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 1);
     assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
+    assert_eq!(panes.pane_clicks(ITEM_A), a_clicks_before);
     assert_eq!(panes.pane_clicks(ITEM_B), b_clicks_before);
 
     let recovered_frame = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
-        recovered_frame
+        !recovered_frame
             .last()
-            .expect("stable frame paints")
+            .expect("the selected candidate paints without same-sequence authority")
             .interactions_current
     );
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 2);
     assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
-    assert_eq!(panes.pane_clicks(ITEM_B), b_clicks_before);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+
+    let stable_frame = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(press),
+            pointer_button(press, true),
+            pointer_button(press, false),
+        ],
+    );
+    assert!(
+        stable_frame
+            .last()
+            .expect("the sealed frame observes selection authority before input")
+            .interactions_current
+    );
+    assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 3);
+    assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
+    assert_eq!(panes.pane_clicks(ITEM_B), b_clicks_before + 1);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+
+    let authoritative_frame = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        authoritative_frame
+            .last()
+            .expect("the following host sequence observes accepted selection authority")
+            .interactions_current
+    );
+    assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 4);
+    assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
+    assert_eq!(panes.pane_clicks(ITEM_B), b_clicks_before + 1);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
     assert_eq!(
         dockspace
             .engine()
@@ -2804,6 +3145,288 @@ fn selected_pane_is_part_of_projection_authority_before_pointer_delivery() {
                 Node::Split { .. } => None,
             }),
         Some(ITEM_B)
+    );
+}
+
+#[test]
+fn workspace_replacement_bootstrap_paints_only_the_current_pane() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder("replacement-pane-identity", single_workspace([ITEM_A]))
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm(&context, &mut dockspace, &mut panes);
+
+    let a_ui_before = panes.ui_calls(ITEM_A);
+    let b_ui_before = panes.ui_calls(ITEM_B);
+    dockspace
+        .replace_workspace(single_workspace([ITEM_B]))
+        .expect("replacement must commit immediately");
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let bootstrap = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(bootstrap.len(), 1, "the one-pass budget must fail closed");
+    assert_eq!(
+        bootstrap[0].surface_status,
+        DockspaceSurfaceStatus::Bootstrap
+    );
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+    assert_eq!(
+        panes.ui_calls(ITEM_B),
+        b_ui_before + 1,
+        "the current replacement plan proves B independently of presentation authority"
+    );
+
+    for _ in 0..3 {
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+    }
+    assert!(panes.ui_calls(ITEM_B) > b_ui_before + 1);
+}
+
+#[test]
+fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder("relocated-pane-identity", split_workspace())
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm(&context, &mut dockspace, &mut panes);
+
+    let (source_tabs, target_tabs) = dockspace.engine().workspace().nodes().fold(
+        (None, None),
+        |(source, target), (node, record)| match record {
+            Node::Tabs { items, .. } if items.contains(&ITEM_A) => (Some(node), target),
+            Node::Tabs { items, .. } if items.contains(&ITEM_B) => (source, Some(node)),
+            Node::Tabs { .. } | Node::Split { .. } => (source, target),
+        },
+    );
+    let source_tabs = source_tabs.expect("source tabs exist");
+    let target_tabs = target_tabs.expect("target tabs exist");
+    let source = dockspace
+        .engine()
+        .workspace()
+        .capture_item_source(MAIN_ROOT, source_tabs, ITEM_A)
+        .expect("source item must capture");
+    let target = dockspace
+        .engine()
+        .workspace()
+        .capture_tab_target(MAIN_ROOT, target_tabs)
+        .expect("target tabs must capture");
+    let a_ui_before = panes.ui_calls(ITEM_A);
+    let b_ui_before = panes.ui_calls(ITEM_B);
+    let source_rect = panes.last_ui_rect(ITEM_A).expect("source pane was painted");
+    let target_rect = panes.last_ui_rect(ITEM_B).expect("target pane was painted");
+    assert_ne!(source_rect, target_rect);
+    dockspace
+        .submit_command(dockspace::command::WorkspaceCommand::Move {
+            payload: dockspace::command::MovePayload::Item(source),
+            target: dockspace::command::DockTarget::Center(target),
+        })
+        .expect("move must commit immediately");
+    assert_eq!(
+        dockspace
+            .engine()
+            .workspace()
+            .root(MAIN_ROOT)
+            .map(|root| root.node),
+        Some(target_tabs),
+        "removing the source leaf collapses the split and relocates the target tabs"
+    );
+    assert_eq!(
+        selected_in_group_containing(&dockspace, ITEM_A),
+        Some(ITEM_A)
+    );
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let stale = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(stale.len(), 1, "the one-pass budget must fail closed");
+    assert_eq!(stale[0].surface_status, DockspaceSurfaceStatus::Stale);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before + 1);
+    assert_eq!(panes.ui_calls(ITEM_B), b_ui_before);
+    assert_eq!(
+        panes.last_ui_rect(ITEM_A),
+        Some(target_rect),
+        "the moved item must paint once through the stable target node, not its removed source slot"
+    );
+
+    for _ in 0..3 {
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert_eq!(panes.ui_calls(ITEM_B), b_ui_before);
+    }
+    assert!(panes.ui_calls(ITEM_A) > a_ui_before + 1);
+}
+
+#[test]
+fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
+    let context = Context::default();
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ITEM_A]));
+    builder.set_root(FLOATING_ROOT, RootRecord::new(tabs));
+    builder.set_surface(SURFACE, SurfacePresentation::rootless());
+    let contained_rect =
+        LogicalRect::new(80.0, 60.0, 260.0, 220.0).expect("contained fixture rect is valid");
+    builder.set_contained_floating(
+        FLOATING,
+        ContainedFloating::new(FLOATING_ROOT, contained_rect),
+    );
+    builder
+        .attach_contained(SURFACE, FLOATING)
+        .expect("surface exists");
+    let workspace = builder
+        .build()
+        .expect("rootless contained fixture is valid");
+    let mut dockspace = Dockspace::builder("pane-owner-change", workspace)
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A]);
+    warm(&context, &mut dockspace, &mut panes);
+
+    let source = dockspace
+        .engine()
+        .workspace()
+        .capture_node_source(FLOATING_ROOT, tabs)
+        .expect("contained root source must capture");
+    let ui_calls_before = panes.ui_calls(ITEM_A);
+    let contained_content_rect = panes
+        .last_ui_rect(ITEM_A)
+        .expect("contained pane was painted");
+    dockspace
+        .submit_command(dockspace::command::WorkspaceCommand::PromoteContained {
+            source,
+            surface: SURFACE,
+            floating: FLOATING,
+        })
+        .expect("contained root promotion must commit immediately");
+    assert_eq!(
+        dockspace
+            .engine()
+            .workspace()
+            .surface(SURFACE)
+            .and_then(|surface| surface.main_root),
+        Some(FLOATING_ROOT)
+    );
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let stale = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(stale.len(), 1, "the one-pass budget must fail closed");
+    assert_eq!(stale[0].surface_status, DockspaceSurfaceStatus::Stale);
+    assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before);
+
+    for _ in 0..3 {
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    }
+    assert!(panes.ui_calls(ITEM_A) > ui_calls_before);
+    assert_ne!(panes.last_ui_rect(ITEM_A), Some(contained_content_rect));
+}
+
+#[test]
+fn stale_selection_uses_current_missing_pane_state() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder(
+        "stale-selection-current-missing",
+        single_workspace([ITEM_A, ITEM_B]),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm(&context, &mut dockspace, &mut panes);
+
+    let a_ui_before = panes.ui_calls(ITEM_A);
+    let b_ui_before = panes.ui_calls(ITEM_B);
+    panes.titles.remove(&ITEM_B);
+    select_item(&mut dockspace, ITEM_B);
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let stale = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(stale.len(), 1, "the one-pass budget must fail closed");
+    assert_eq!(stale[0].surface_status, DockspaceSurfaceStatus::Stale);
+    assert_eq!(stale[0].missing, [ITEM_B]);
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+    assert_eq!(panes.ui_calls(ITEM_B), b_ui_before);
+}
+
+#[test]
+fn stale_selection_uses_currently_recovered_pane_state() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder(
+        "stale-selection-current-recovered",
+        single_workspace([ITEM_A, ITEM_B]),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A]);
+    warm(&context, &mut dockspace, &mut panes);
+
+    let a_ui_before = panes.ui_calls(ITEM_A);
+    let b_ui_before = panes.ui_calls(ITEM_B);
+    let b_disabled_before = panes.disabled_ui_calls(ITEM_B);
+    panes.titles.insert(ITEM_B, "Recovered B".to_owned());
+    select_item(&mut dockspace, ITEM_B);
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let stale = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(stale.len(), 1, "the one-pass budget must fail closed");
+    assert_eq!(stale[0].surface_status, DockspaceSurfaceStatus::Stale);
+    assert!(stale[0].missing.is_empty());
+    assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
+    assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 1);
+    assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
+}
+
+#[test]
+fn stale_selection_accessibility_uses_current_pane_identity() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "stale-selection-current-accessibility",
+        single_workspace([ITEM_A, ITEM_B]),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    let _ =
+        run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+
+    select_item(&mut dockspace, ITEM_B);
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+    let (tree, interactions_current) = run_accesskit_frame_with_authority(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        Vec::new(),
+    );
+
+    assert!(!interactions_current);
+    let a_label = format!("Pane {}", ITEM_A.get());
+    let b_label = format!("Pane {}", ITEM_B.get());
+    let (_, tab_a) = accesskit_node_by_label(&tree, Role::Tab, &a_label);
+    let (tab_b_id, tab_b) = accesskit_node_by_label(&tree, Role::Tab, &b_label);
+    assert_ne!(tab_a.is_selected(), Some(true));
+    assert!(tab_a.is_disabled());
+    assert_eq!(tab_b.is_selected(), Some(true));
+    assert!(tab_b.is_disabled());
+    let (_, tab_list) = accesskit_node_by_role(&tree, Role::TabList);
+    assert_eq!(tab_list.active_descendant(), Some(tab_b_id));
+    let (_, panel_b) = accesskit_node_by_label(&tree, Role::TabPanel, &b_label);
+    assert!(panel_b.is_disabled());
+    assert!(
+        !tree.nodes.iter().any(
+            |(_, node)| node.role() == Role::TabPanel && node.label() == Some(a_label.as_str())
+        )
     );
 }
 
@@ -2823,41 +3446,183 @@ fn missing_pane_is_reported_and_recovers_without_topology_changes() {
     panes.titles.insert(ITEM_A, "Recovered".to_owned());
     let recovered = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(recovered.last().expect("frame paints").missing.is_empty());
-    assert_eq!(panes.ui_calls(ITEM_A), recovered.len());
+    assert_eq!(panes.ui_calls(ITEM_A), 2);
+    assert_eq!(panes.disabled_ui_calls(ITEM_A), 1);
+    assert!(
+        !recovered
+            .last()
+            .expect("the recovered pane candidate paints")
+            .interactions_current
+    );
+    let acknowledged = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        acknowledged
+            .last()
+            .expect("the next host sequence acknowledges the recovered pane")
+            .interactions_current
+    );
+    assert_eq!(panes.ui_calls(ITEM_A), 4);
+    assert_eq!(panes.disabled_ui_calls(ITEM_A), 1);
     assert_eq!(dockspace.engine().workspace(), &workspace);
 }
 
 #[test]
-fn close_veto_runs_once_at_the_next_frame_boundary() {
+fn disabled_close_policy_removes_the_egui_affordance() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
-    let mut dockspace = Dockspace::builder("close-veto", workspace.clone())
+    let mut policy = DockPolicy::default();
+    let mut item_rule = DockItemRule::default();
+    item_rule.set_close_capability(Some(CloseCapability::Disabled));
+    policy.set_item_rule(ITEM_A, item_rule);
+    let mut dockspace = Dockspace::builder("disabled-close", workspace.clone())
+        .policy(policy)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
-    panes.close_response.insert(ITEM_A, PaneCloseResponse::Veto);
     warm(&context, &mut dockspace, &mut panes);
-    let close = tab_close_center(&dockspace);
 
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, true)],
-    );
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, false)],
-    );
-    assert_eq!(panes.close_calls(ITEM_A), 0);
-    assert_eq!(dockspace.engine().workspace(), &workspace);
+    let painted = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("disabled fixture must have an acknowledged paint");
+    let tab = painted
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|tab| tab.id().item == ITEM_A)
+        .expect("fixture tab is painted");
+    assert!(tab.close_bounds().is_none());
 
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.close_calls(ITEM_A), 1);
     assert_eq!(dockspace.engine().workspace(), &workspace);
     assert_eq!(dockspace.engine().version(), WorkspaceVersion::default());
+}
+
+#[test]
+fn hidden_tab_bar_gives_the_full_leaf_to_content_without_tab_accessibility() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let workspace = single_workspace([ITEM_A, ITEM_B]);
+    let mut policy = DockPolicy::default();
+    policy.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::Hidden,
+        TabBarInteraction::Enabled,
+    ));
+    let mut dockspace = Dockspace::builder("hidden-tab-bar", workspace)
+        .policy(policy)
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm(&context, &mut dockspace, &mut panes);
+    let tree = run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        Vec::new(),
+    );
+
+    let ready = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("hidden fixture has an acknowledged scene")
+        .plan();
+    let pane = ready
+        .pane_records()
+        .first()
+        .expect("hidden bar keeps its pane record");
+    assert_eq!(pane.content_bounds(), pane.bounds());
+    assert!(ready.tab_bar_records().is_empty());
+    assert!(ready.tab_records().is_empty());
+    assert!(tree.nodes.iter().all(|(_, node)| {
+        !matches!(node.role(), Role::Tab | Role::TabList)
+            && node.label().is_none_or(|label| {
+                label != "Drag tab group"
+                    && label != "Show hidden tabs"
+                    && !label.starts_with("Close Pane ")
+            })
+    }));
+    accesskit_node_by_label(&tree, Role::TabPanel, &format!("Pane {}", ITEM_A.get()));
+    assert!(panes.ui_calls(ITEM_A) > 0);
+}
+
+#[test]
+fn disabled_tab_bar_paints_static_chrome_without_input_or_accessibility_actions() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let workspace = single_workspace([ITEM_A, ITEM_B]);
+    let mut target_rule = DockTargetRule::default();
+    target_rule.set_tab_bar(TabBarPolicy::new(
+        TabBarVisibility::Visible,
+        TabBarInteraction::Disabled,
+    ));
+    let mut policy = DockPolicy::default();
+    policy.set_target_rule(DockTargetRuleKey::Item(ITEM_A), target_rule);
+    let mut dockspace = Dockspace::builder("disabled-tab-bar", workspace.clone())
+        .policy(policy)
+        .build()
+        .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    warm(&context, &mut dockspace, &mut panes);
+    let tree = run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        Vec::new(),
+    );
+
+    let ready = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .expect("paint-only fixture has an acknowledged scene")
+        .plan();
+    let second = ready
+        .tab_records()
+        .iter()
+        .find(|tab| tab.id().item == ITEM_B)
+        .expect("paint-only chrome retains the second visual tab");
+    let visible = second.visible_bounds();
+    let tab_center = Pos2::new(
+        (visible.x() + visible.width() * 0.5) as f32,
+        (visible.y() + visible.height() * 0.5) as f32,
+    );
+    assert!(second.close_visual_bounds().is_some());
+    assert!(second.close_bounds().is_none());
+    assert!(second.drag_hit().rect().width() <= 0.0 || second.drag_hit().rect().height() <= 0.0);
+    assert!(tree.nodes.iter().all(|(_, node)| {
+        !matches!(node.role(), Role::Tab | Role::TabList)
+            && node.label().is_none_or(|label| {
+                label != "Drag tab group"
+                    && label != "Show hidden tabs"
+                    && !label.starts_with("Close Pane ")
+            })
+    }));
+    accesskit_node_by_label(&tree, Role::TabPanel, &format!("Pane {}", ITEM_A.get()));
+
+    run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(tab_center),
+            pointer_button(tab_center, true),
+        ],
+    );
+    let released = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(tab_center),
+            pointer_button(tab_center, false),
+        ],
+    );
+    assert!(
+        released
+            .iter()
+            .all(|observation| observation.close_requests.is_empty())
+    );
+    assert_eq!(dockspace.engine().workspace(), &workspace);
 }
 
 #[test]
@@ -2887,7 +3652,7 @@ fn contained_close_accepts_keyboard_and_accesskit_activation_without_pointer_geo
         let workspace = contained_workspace(
             LogicalRect::new(100.0, 80.0, 260.0, 190.0).expect("contained rect is valid"),
         );
-        let mut dockspace = Dockspace::builder(salt, workspace)
+        let mut dockspace = Dockspace::builder(salt, workspace.clone())
             .build()
             .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -2905,15 +3670,41 @@ fn contained_close_accepts_keyboard_and_accesskit_activation_without_pointer_geo
             context.memory_mut(|memory| memory.request_focus(close_id));
             run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         }
-        run_frame(&context, &mut dockspace, &mut panes, vec![event]);
+        let requested = run_frame(&context, &mut dockspace, &mut panes, vec![event]);
+        let plan = only_close_request(&requested);
+        assert_eq!(
+            plan.target(),
+            ClosePlanTarget::Root {
+                root: FLOATING_ROOT,
+            }
+        );
+        assert_eq!(
+            plan.items()
+                .iter()
+                .map(|item| item.item())
+                .collect::<Vec<_>>(),
+            [ITEM_B]
+        );
+        assert_eq!(dockspace.engine().workspace(), &workspace);
+
+        resolve_close_plan(&mut dockspace, &plan, |_| CloseDecision::Allow);
         assert!(
             dockspace
                 .engine()
                 .workspace()
                 .contained_floating(FLOATING)
-                .is_some()
+                .is_none()
         );
-        assert_eq!(panes.close_calls(ITEM_B), 0);
+        assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
+        run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        assert!(
+            dockspace
+                .engine()
+                .workspace()
+                .contained_floating(FLOATING)
+                .is_none()
+        );
+        assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
 
         run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(
@@ -2924,8 +3715,234 @@ fn contained_close_accepts_keyboard_and_accesskit_activation_without_pointer_geo
                 .is_none()
         );
         assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
-        assert_eq!(panes.close_calls(ITEM_B), 1);
     }
+}
+
+#[test]
+fn contained_resize_edges_expose_truthful_one_axis_accessibility_and_keyboard_equivalence() {
+    fn adjusted_right_edge(salt: &'static str, keyboard: bool) -> LogicalRect {
+        let context = Context::default();
+        context.enable_accesskit();
+        let original =
+            LogicalRect::new(100.0, 80.0, 240.0, 180.0).expect("contained rect is valid");
+        let mut dockspace = Dockspace::builder(salt, contained_workspace(original))
+            .build()
+            .expect("facade must build");
+        let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+        let tree = run_authoritative_accesskit_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec2(600.0, 400.0),
+        );
+        let (right, _) = accesskit_node_by_label(&tree, Role::Splitter, "Resize right edge");
+
+        if keyboard {
+            run_accesskit_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec2(600.0, 400.0),
+                vec![accesskit_action(right, Action::Focus)],
+            );
+            assert_eq!(
+                context
+                    .memory(egui::Memory::focused)
+                    .map(|id| id.accesskit_id()),
+                Some(right),
+                "the edge splitter must accept semantic focus"
+            );
+            run_accesskit_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec2(600.0, 400.0),
+                key_press(Key::ArrowRight),
+            );
+        } else {
+            run_accesskit_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec2(600.0, 400.0),
+                vec![accesskit_action(right, Action::Increment)],
+            );
+        }
+        contained_rect(&dockspace)
+    }
+
+    let context = Context::default();
+    context.enable_accesskit();
+    let original = LogicalRect::new(100.0, 80.0, 240.0, 180.0).expect("contained rect is valid");
+    let mut dockspace = Dockspace::builder(
+        "contained-resize-accessibility-tree",
+        contained_workspace(original),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    let tree =
+        run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+    let expected = [
+        (
+            "Resize top edge",
+            Orientation::Horizontal,
+            original.min().y(),
+        ),
+        (
+            "Resize right edge",
+            Orientation::Vertical,
+            original.max().x(),
+        ),
+        (
+            "Resize bottom edge",
+            Orientation::Horizontal,
+            original.max().y(),
+        ),
+        (
+            "Resize left edge",
+            Orientation::Vertical,
+            original.min().x(),
+        ),
+    ];
+    for (label, orientation, value) in expected {
+        let (_, node) = accesskit_node_by_label(&tree, Role::Splitter, label);
+        assert_eq!(node.orientation(), Some(orientation));
+        assert_eq!(node.numeric_value(), Some(value));
+        assert!(node.supports_action(Action::Focus));
+        assert!(node.supports_action(Action::Increment));
+        assert!(node.supports_action(Action::Decrement));
+    }
+    assert_eq!(
+        tree.nodes
+            .iter()
+            .filter(|(_, node)| node.role() == Role::Splitter)
+            .count(),
+        4,
+        "the four diagonal pointer grips must not masquerade as one-axis splitters"
+    );
+
+    let keyboard = adjusted_right_edge("contained-resize-keyboard", true);
+    let accesskit = adjusted_right_edge("contained-resize-accesskit", false);
+    assert_eq!(keyboard, accesskit);
+    assert_eq!(keyboard.min(), original.min());
+    assert_eq!(keyboard.max().y(), original.max().y());
+    assert!(keyboard.max().x() > original.max().x());
+}
+
+#[test]
+fn contained_edge_adjustment_clamps_at_minimum_without_moving_the_opposite_anchor() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let original = LogicalRect::new(100.0, 80.0, 125.0, 180.0).expect("contained rect is valid");
+    let mut dockspace = Dockspace::builder(
+        "contained-resize-minimum-clamp",
+        contained_workspace(original),
+    )
+    .build()
+    .expect("facade must build");
+    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    let tree =
+        run_authoritative_accesskit_frame(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
+    let (left, _) = accesskit_node_by_label(&tree, Role::Splitter, "Resize left edge");
+
+    run_accesskit_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        vec![accesskit_action(left, Action::Increment)],
+    );
+    let resized = contained_rect(&dockspace);
+
+    assert_eq!(resized.max(), original.max());
+    assert_eq!(
+        resized.width(),
+        f64::from(dockspace.style().minimum_floating_size.x)
+    );
+}
+
+#[test]
+fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
+    let original = LogicalRect::new(100.0, 80.0, 240.0, 180.0).expect("contained rect is valid");
+
+    let policy_context = Context::default();
+    policy_context.enable_accesskit();
+    let mut policy = DockPolicy::default();
+    policy.set_allow_contained_transform(false);
+    let mut policy_dockspace = Dockspace::builder(
+        "contained-resize-policy-disabled",
+        contained_workspace(original),
+    )
+    .policy(policy)
+    .build()
+    .expect("facade must build");
+    let mut policy_panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    let policy_tree = run_authoritative_accesskit_frame(
+        &policy_context,
+        &mut policy_dockspace,
+        &mut policy_panes,
+        vec2(600.0, 400.0),
+    );
+    let (policy_right, _) =
+        accesskit_node_by_label(&policy_tree, Role::Splitter, "Resize right edge");
+    let policy_version = policy_dockspace.engine().version();
+    run_accesskit_frame(
+        &policy_context,
+        &mut policy_dockspace,
+        &mut policy_panes,
+        vec2(600.0, 400.0),
+        vec![accesskit_action(policy_right, Action::Increment)],
+    );
+    assert_eq!(contained_rect(&policy_dockspace), original);
+    assert_eq!(policy_dockspace.engine().version(), policy_version);
+
+    let stale_context = Context::default();
+    stale_context.enable_accesskit();
+    let mut stale_dockspace = Dockspace::builder(
+        "contained-resize-stale-projection",
+        contained_workspace(original),
+    )
+    .build()
+    .expect("facade must build");
+    let mut stale_panes = TestPanes::with_items([ITEM_A, ITEM_B]);
+    let current_tree = run_authoritative_accesskit_frame(
+        &stale_context,
+        &mut stale_dockspace,
+        &mut stale_panes,
+        vec2(600.0, 400.0),
+    );
+    let (stale_right, _) =
+        accesskit_node_by_label(&current_tree, Role::Splitter, "Resize right edge");
+    let replacement =
+        LogicalRect::new(130.0, 100.0, 210.0, 160.0).expect("replacement rect is valid");
+    stale_dockspace
+        .replace_workspace(contained_workspace(replacement))
+        .expect("replacement must commit before the stale callback");
+    stale_context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+    let before_stale_action = stale_dockspace.engine().version();
+    let (stale_tree, interactions_current) = run_accesskit_frame_with_authority(
+        &stale_context,
+        &mut stale_dockspace,
+        &mut stale_panes,
+        vec2(600.0, 400.0),
+        vec![accesskit_action(stale_right, Action::Increment)],
+    );
+
+    assert!(!interactions_current);
+    assert_eq!(contained_rect(&stale_dockspace), replacement);
+    assert_eq!(stale_dockspace.engine().version(), before_stale_action);
+    let stale_node = stale_tree
+        .nodes
+        .iter()
+        .find_map(|(id, node)| (*id == stale_right).then_some(node));
+    assert!(stale_node.is_none_or(|node| {
+        node.role() != Role::Splitter
+            && !node.supports_action(Action::Increment)
+            && !node.supports_action(Action::Decrement)
+    }));
 }
 
 #[test]
@@ -2959,7 +3976,6 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
         ],
     );
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.close_calls(ITEM_A), 0);
     assert_eq!(dockspace.engine().workspace(), &original);
 
     let context = Context::default();
@@ -3003,69 +4019,7 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
 }
 
 #[test]
-fn root_close_queries_every_pane_and_commits_atomically() {
-    let context = Context::default();
-    let rect = LogicalRect::new(120.0, 80.0, 300.0, 220.0).expect("valid fixture rect");
-    let workspace = contained_group_workspace(rect);
-    let mut dockspace = Dockspace::builder("root-close", workspace.clone())
-        .build()
-        .expect("facade must build");
-    let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
-    panes.close_response.insert(ITEM_B, PaneCloseResponse::Veto);
-    warm(&context, &mut dockspace, &mut panes);
-    let close = contained_close_point(&dockspace);
-
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, true)],
-    );
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, false)],
-    );
-    assert_eq!(panes.close_calls(ITEM_B), 0);
-    assert_eq!(panes.close_calls(ITEM_C), 0);
-
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(panes.close_calls(ITEM_B), 1);
-    assert_eq!(panes.close_calls(ITEM_C), 1);
-    assert_eq!(dockspace.engine().workspace(), &workspace);
-
-    panes
-        .close_response
-        .insert(ITEM_B, PaneCloseResponse::Allow);
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, true)],
-    );
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(close), pointer_button(close, false)],
-    );
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-
-    assert_eq!(panes.close_calls(ITEM_B), 2);
-    assert_eq!(panes.close_calls(ITEM_C), 2);
-    assert!(
-        dockspace
-            .engine()
-            .workspace()
-            .contained_floating(FLOATING)
-            .is_none()
-    );
-    assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
-}
-
-#[test]
-fn multipass_never_reduces_inputs_queued_during_paint() {
+fn multipass_observes_a_command_submitted_between_passes() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B]);
     let mut dockspace = Dockspace::builder("multipass-boundary", workspace.clone())
@@ -3089,40 +4043,40 @@ fn multipass_never_reduces_inputs_queued_during_paint() {
     let mut command = Some(dockspace::command::WorkspaceCommand::Select { source });
     let mut versions = Vec::new();
     let mut workspaces = Vec::new();
+    let mut submitted_workspace = None;
 
-    let _ = context.run_ui(input(Vec::new()), |ui| {
+    let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
         dockspace
-            .show(SURFACE, ui, &mut panes)
+            .show_single_surface(SURFACE, ui, &mut panes)
             .expect("multipass show must succeed");
         versions.push(dockspace.engine().version());
         workspaces.push(dockspace.engine().workspace().clone());
         if ui.ctx().current_pass_index() == 0 {
             dockspace
-                .enqueue_command(command.take().expect("queued only in pass zero"))
-                .expect("input sequence must advance");
+                .submit_command(command.take().expect("submitted only in pass zero"))
+                .expect("command must commit before the next pass");
+            submitted_workspace = Some(dockspace.engine().workspace().clone());
             ui.ctx()
                 .request_discard("exercise dockspace multipass gate");
         }
     });
 
     assert_eq!(versions.len(), 2);
-    assert!(versions.iter().all(|version| *version == versions[0]));
-    assert!(workspaces.iter().all(|candidate| candidate == &workspace));
-    assert_eq!(dockspace.engine().pending_inputs().len(), 1);
-
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let selected = dockspace
-        .engine()
-        .workspace()
+    assert_eq!(versions[0], WorkspaceVersion::default());
+    assert_eq!(workspaces[0], workspace);
+    let submitted_workspace = submitted_workspace.expect("pass zero must submit one command");
+    assert_ne!(versions[1], WorkspaceVersion::default());
+    assert_eq!(workspaces[1], submitted_workspace);
+    let selected = workspaces[1]
         .roots()
         .next()
-        .and_then(|(_, root)| dockspace.engine().workspace().node(root.node))
+        .and_then(|(_, root)| workspaces[1].node(root.node))
         .and_then(|node| match node {
             Node::Tabs { selected, .. } => *selected,
             Node::Split { .. } => None,
         });
     assert_eq!(selected, Some(ITEM_B));
-    assert_ne!(dockspace.engine().version(), WorkspaceVersion::default());
+    assert_eq!(dockspace.engine().workspace(), &submitted_workspace);
 }
 
 #[test]
@@ -3135,15 +4089,48 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     let tiny = Rect::from_min_size(Pos2::new(20.0, 20.0), vec2(2.0, 160.0));
 
-    for _ in 0..2 {
-        let _ = context.run_ui(input(Vec::new()), |ui| {
-            let mut child = ui.new_child(UiBuilder::new().max_rect(tiny));
-            let response = dockspace
-                .show(SURFACE, &mut child, &mut panes)
-                .expect("collapsed host remains projectable");
-            assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Ready);
-        });
-    }
+    let mut statuses = Vec::new();
+    let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
+        let mut child = ui.new_child(UiBuilder::new().max_rect(tiny));
+        let response = dockspace
+            .show_single_surface(SURFACE, &mut child, &mut panes)
+            .expect("collapsed host remains projectable");
+        statuses.push((response.surface_status(), response.interactions_current()));
+    });
+    assert_eq!(
+        statuses,
+        vec![
+            (DockspaceSurfaceStatus::Bootstrap, false),
+            (DockspaceSurfaceStatus::Ready, false)
+        ]
+    );
+
+    let mut current = None;
+    let _ = crate::test_support::run_ui(&context, input(Vec::new()), |ui| {
+        let mut child = ui.new_child(UiBuilder::new().max_rect(tiny));
+        let response = dockspace
+            .show_single_surface(SURFACE, &mut child, &mut panes)
+            .expect("collapsed host remains projectable");
+        current = Some((response.surface_status(), response.interactions_current()));
+    });
+    assert_eq!(current, Some((DockspaceSurfaceStatus::Ready, true)));
+
+    let degraded_plan = dockspace
+        .engine()
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::paint_projection)
+        .expect("ready degraded surface remains paintable")
+        .plan();
+    assert_eq!(degraded_plan.splitter_gap_records().len(), 1);
+    assert_eq!(
+        degraded_plan.splitter_gap_records()[0].presentation(),
+        SplitterGapPresentation::Collapsed
+    );
+    assert!(
+        degraded_plan.splitter_records().is_empty(),
+        "a collapsed gap has no paint or interaction record"
+    );
 
     assert_eq!(dockspace.engine().workspace(), &original);
     assert_eq!(
@@ -3151,16 +4138,13 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
         BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)])
     );
     assert!(matches!(
-        dockspace
-            .engine()
-            .scene()
-            .and_then(|scene| scene.surface(SURFACE)),
+        dockspace.engine().scene().surface(SURFACE),
         Some(SurfaceScene::Ready(_))
     ));
 }
 
 #[test]
-fn contained_bounds_reconciliation_is_proof_driven_and_conserves_items() {
+fn contained_measurements_clip_presentation_without_rewriting_durable_bounds() {
     let context = Context::default();
     let original = LogicalRect::new(550.0, 330.0, 200.0, 160.0).expect("finite rect");
     let workspace = contained_workspace(original);
@@ -3169,6 +4153,7 @@ fn contained_bounds_reconciliation_is_proof_driven_and_conserves_items() {
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     panes.minimum_sizes.insert(ITEM_B, vec2(420.0, 280.0));
+    let before_version = dockspace.engine().version();
 
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let floating = dockspace
@@ -3177,40 +4162,52 @@ fn contained_bounds_reconciliation_is_proof_driven_and_conserves_items() {
         .contained_floating(FLOATING)
         .expect("floating remains presented");
 
-    assert_ne!(floating.rect, original);
-    assert!(floating.rect.min().x() >= 0.0);
-    assert!(floating.rect.min().y() >= 0.0);
-    assert!(floating.rect.max().x() <= 600.0);
-    assert!(floating.rect.max().y() <= 400.0);
-    let style = dockspace.style();
-    assert!(floating.rect.width() >= 420.0 + 2.0 * f64::from(style.floating_border_width));
-    assert!(
-        floating.rect.height()
-            >= f64::from(280.0 + style.tab_bar_height + style.floating_title_height)
-                + 2.0 * f64::from(style.floating_border_width)
-    );
+    assert_eq!(floating.rect, original);
+    assert_eq!(dockspace.engine().version(), before_version);
     assert_eq!(
         dockspace.engine().workspace().item_multiset(),
         BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)])
     );
-    assert!(matches!(
-        dockspace
-            .engine()
-            .scene()
-            .and_then(|scene| scene.surface(SURFACE)),
-        Some(SurfaceScene::Ready(_))
-    ));
+    let ready = dockspace
+        .engine()
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::ready)
+        .expect("the measured surface must publish a ready plan");
+    let occlusion = ready
+        .plan()
+        .drop_occlusions()
+        .iter()
+        .find(|occlusion| occlusion.floating() == FLOATING)
+        .expect("the durable contained root owns one raw occlusion");
+    assert_eq!(occlusion.region().rect(), original);
+    let presented = ready
+        .plan()
+        .contained_records()
+        .iter()
+        .find(|record| record.floating() == FLOATING)
+        .expect("the visible corner remains presentable");
+    let surface_bounds = ready.plan().bounds();
+    assert!(presented.outer_bounds().min().x() >= surface_bounds.min().x());
+    assert!(presented.outer_bounds().min().y() >= surface_bounds.min().y());
+    assert!(presented.outer_bounds().max().x() <= surface_bounds.max().x());
+    assert!(presented.outer_bounds().max().y() <= surface_bounds.max().y());
+    assert_ne!(presented.outer_bounds(), original);
 }
 
 #[test]
-fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the linear frame sequence proves that release cannot replay a stale painted preview"
+)]
+fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() {
     let context = Context::default();
     let original = LogicalRect::new(140.0, 90.0, 220.0, 160.0).expect("finite rect");
     let mut dockspace = Dockspace::builder("contained-move", contained_workspace(original))
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
-    warm(&context, &mut dockspace, &mut panes);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let original_floating = *dockspace
         .engine()
@@ -3221,10 +4218,11 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     let painted_pointer = press_origin + vec2(48.0, 36.0);
     let release_pointer = press_origin + vec2(72.0, 54.0);
 
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![
             Event::PointerMoved(press_origin),
             pointer_button(press_origin, true),
@@ -3232,21 +4230,11 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     );
     assert_eq!(contained_rect(&dockspace), original);
 
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
-        vec![Event::PointerMoved(painted_pointer)],
-    );
-    assert!(matches!(
-        dockspace.engine().interaction().status(),
-        InteractionStatus::Armed { .. }
-    ));
-
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(painted_pointer)],
     );
     assert!(matches!(
@@ -3255,10 +4243,11 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
     ));
     assert_eq!(contained_rect(&dockspace), original);
 
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(painted_pointer)],
     );
     let expected = translated_rect(original, press_origin, painted_pointer);
@@ -3276,32 +4265,157 @@ fn contained_move_commits_only_the_last_painted_absolute_pointer_preview() {
         } if *rect == expected
     ));
 
-    run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(release_pointer),
-            pointer_button(release_pointer, false),
-        ],
+    let sequence = dockspace
+        .last_egui_frame_schedule_key()
+        .expect("the warmed facade has a schedule key")
+        .sequence()
+        .checked_add(1)
+        .expect("the test schedule remains representable");
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("release frame begins");
+    frame
+        .run_surface(
+            SURFACE,
+            &context,
+            input_with_size(
+                vec![
+                    Event::PointerMoved(release_pointer),
+                    pointer_button(release_pointer, false),
+                ],
+                vec2(600.0, 400.0),
+            ),
+            &mut panes,
+        )
+        .expect("release frame paints");
+    let (host, outputs) = frame
+        .finish()
+        .expect("release frame commits atomically")
+        .into_parts();
+    let outcomes =
+        crate::test_support::ordered_interaction_outcomes(std::slice::from_ref(host.transition()));
+    assert!(
+        outcomes.iter().any(|outcome| matches!(
+            outcome,
+            dockspace::interaction::InteractionOutcome::ReleasePending { .. }
+        )),
+        "release must wait for its newly sampled preview: {outcomes:#?}"
     );
-    assert!(matches!(
-        dockspace.engine().interaction().status(),
-        InteractionStatus::Dragging { .. }
-    ));
-    assert_eq!(contained_rect(&dockspace), original);
-
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let pending = dockspace
+        .engine()
+        .pending_release_preview()
+        .expect("release retains the newly sampled preview");
+    let release_output = outputs
+        .iter()
+        .find(|output| output.surface() == SURFACE)
+        .expect("release paint produces the source surface output");
+    assert_ne!(
+        release_output
+            .presentation_output()
+            .and_then(|output| output.payload().interaction())
+            .and_then(|interaction| interaction.drag_preview()),
+        Some(pending.1),
+        "the pre-input paint must not claim the preview sampled later in the frame"
+    );
+    let expected_release_rect = egui_rect(translated_rect(original, press_origin, release_pointer));
+    assert!(
+        !release_output
+            .full_output()
+            .shapes
+            .iter()
+            .any(|clipped| matches!(
+                &clipped.shape,
+                egui::Shape::Rect(shape)
+                    if shape.rect == expected_release_rect
+                        && shape.fill == dockspace.style().drop_fill
+            )),
+        "the release position was sampled after this paint and must not be claimed as drawn"
+    );
+    for output in outputs {
+        output.settle_with(|_, _| EguiPresentationResult::Presented);
+    }
     let floating = dockspace
         .engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating remains");
-    assert_eq!(floating.rect, expected);
-    assert_eq!(floating.z_order, original_floating.z_order);
+    assert_eq!(floating.rect, original);
+    assert_eq!(
+        dockspace
+            .engine()
+            .workspace()
+            .surface(SURFACE)
+            .expect("surface remains present")
+            .contained,
+        vec![FLOATING]
+    );
+    assert_eq!(floating.root, original_floating.root);
     assert_eq!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Idle
+    );
+
+    let sequence = dockspace
+        .last_egui_frame_schedule_key()
+        .expect("release frame established a schedule key")
+        .sequence()
+        .checked_add(1)
+        .expect("preview frame sequence remains representable");
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("preview frame begins");
+    frame
+        .run_surface(
+            SURFACE,
+            &context,
+            input_with_size(Vec::new(), vec2(600.0, 400.0)),
+            &mut panes,
+        )
+        .expect("preview frame paints");
+    let (_, outputs) = frame
+        .finish()
+        .expect("preview frame commits atomically")
+        .into_parts();
+    let preview_output = outputs
+        .iter()
+        .find(|output| output.surface() == SURFACE)
+        .expect("preview frame produces the source surface output");
+    assert_eq!(
+        preview_output
+            .presentation_output()
+            .and_then(|output| output.payload().interaction())
+            .and_then(|interaction| interaction.drag_preview()),
+        Some(pending.1),
+        "the next output must name the exact pending preview it painted"
+    );
+    assert!(
+        preview_output
+            .full_output()
+            .shapes
+            .iter()
+            .any(|clipped| matches!(
+                &clipped.shape,
+                egui::Shape::Rect(shape)
+                    if shape.rect == expected_release_rect
+                        && shape.fill == dockspace.style().drop_fill
+            )),
+        "the output carrying the pending token must contain its exact preview rectangle"
+    );
+    for output in outputs {
+        output.settle_with(|_, _| EguiPresentationResult::Presented);
+    }
+    assert!(dockspace.engine().pending_release_preview().is_some());
+    run_outer_frame_with_size(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec2(600.0, 400.0),
+        Vec::new(),
+    );
+    assert_eq!(dockspace.engine().pending_release_preview(), None);
+    assert_eq!(
+        contained_rect(&dockspace),
+        translated_rect(original, press_origin, release_pointer)
     );
 }
 
@@ -3313,7 +4427,7 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
-    warm(&context, &mut dockspace, &mut panes);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let press_origin = contained_north_west_resize_point(&dockspace);
     #[allow(
@@ -3322,45 +4436,37 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
     )]
     let current = Pos2::new(original.max().x() as f32, -40.0);
 
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![
             Event::PointerMoved(press_origin),
             pointer_button(press_origin, true),
         ],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current)],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current)],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert_eq!(
-        dockspace
-            .engine()
-            .workspace()
-            .contained_floating(FLOATING)
-            .expect("floating remains")
-            .rect,
-        original,
-        "release is reduced only at the next complete frame boundary"
-    );
-
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let resized = dockspace
         .engine()
         .workspace()
@@ -3383,7 +4489,7 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
 }
 
 #[test]
-fn stale_projection_still_releases_active_contained_title_drag() {
+fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
     let context = Context::default();
     let original = LogicalRect::new(120.0, 80.0, 220.0, 150.0).expect("finite rect");
     let mut dockspace =
@@ -3391,70 +4497,68 @@ fn stale_projection_still_releases_active_contained_title_drag() {
             .build()
             .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
-    warm(&context, &mut dockspace, &mut panes);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let press_origin = contained_title_point(&dockspace);
     let current = press_origin + vec2(30.0, 20.0);
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![
             Event::PointerMoved(press_origin),
             pointer_button(press_origin, true),
         ],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current)],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current)],
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
+    let before_release = dockspace.engine().workspace().clone();
 
-    let released = run_frame_with_size(
+    let released = run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
         vec2(560.0, 360.0),
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(
-        released
-            .iter()
-            .any(|observation| !observation.interactions_current)
-    );
-    assert!(
-        released
-            .last()
-            .expect("release frame paints")
-            .interactions_current
-    );
-    assert!(matches!(
-        dockspace.engine().interaction().status(),
-        InteractionStatus::Dragging { .. }
-    ));
-
-    run_frame_with_size(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec2(560.0, 360.0),
-        Vec::new(),
-    );
+    assert!(!released.interactions_current);
     assert_eq!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Idle
     );
+    assert_eq!(dockspace.engine().workspace(), &before_release);
+    let projection = dockspace
+        .engine()
+        .scene()
+        .surface(SURFACE)
+        .and_then(SurfaceScene::paint_projection)
+        .expect("the resized surface projection is painted");
+    let interaction = dockspace.engine().interaction_projection(SURFACE);
+    assert!(
+        interaction.is_none_or(|interaction| {
+            interaction.output_ticket() != projection.output_ticket()
+        }),
+        "the release callback cannot acknowledge its replacement candidate"
+    );
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(560.0, 360.0));
+    assert!(paint_projection_is_authoritative(&dockspace));
 }
 
 #[test]
@@ -3464,55 +4568,73 @@ fn stale_projection_still_releases_active_split_resize() {
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
-    warm(&context, &mut dockspace, &mut panes);
+    warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let press_origin = splitter_center(&dockspace);
     let current = press_origin + vec2(60.0, 0.0);
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![
             Event::PointerMoved(press_origin),
             pointer_button(press_origin, true),
         ],
     );
-    run_frame(
+    run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current)],
     );
     assert!(matches!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Resizing { .. }
     ));
+    let version_before_release = dockspace.engine().version();
 
-    let released = run_frame(
+    let released = run_outer_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
+        vec2(600.0, 400.0),
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(
-        released
-            .iter()
-            .any(|observation| !observation.interactions_current)
-    );
-    assert!(
-        released
-            .last()
-            .expect("release frame paints")
-            .interactions_current
-    );
-    assert!(matches!(
-        dockspace.engine().interaction().status(),
-        InteractionStatus::Resizing { .. }
-    ));
-
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(!released.interactions_current);
+    assert_ne!(dockspace.engine().version(), version_before_release);
     assert_eq!(
         dockspace.engine().interaction().status(),
         InteractionStatus::Idle
     );
+    assert!(
+        dockspace
+            .engine()
+            .scene()
+            .surface(SURFACE)
+            .and_then(SurfaceScene::paint_projection)
+            .is_some(),
+        "the resized split candidate is published"
+    );
+    assert!(
+        dockspace.engine().interaction_projection(SURFACE).is_none(),
+        "the resize release cannot acknowledge its replacement candidate"
+    );
+
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        !settled
+            .last()
+            .expect("the next host sequence paints the replacement candidate")
+            .interactions_current
+    );
+    let acknowledged = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(
+        acknowledged
+            .last()
+            .expect("the later host sequence acknowledges the replacement candidate")
+            .interactions_current
+    );
+    assert!(paint_projection_is_authoritative(&dockspace));
 }

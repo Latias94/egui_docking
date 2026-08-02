@@ -1,16 +1,13 @@
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::scene::SurfaceScene;
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, DockspaceInputRejection, PaneCloseResponse, PaneView};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
 const ITEM: ItemId = ItemId::new(3);
 
-struct TestPane {
-    close_calls: usize,
-}
+struct TestPane;
 
 impl PaneView for TestPane {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
@@ -18,25 +15,20 @@ impl PaneView for TestPane {
     }
 
     fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
-
-    fn close(&mut self, _item: ItemId) -> PaneCloseResponse {
-        self.close_calls += 1;
-        PaneCloseResponse::Allow
-    }
 }
 
 fn workspace() -> Workspace {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("fixture workspace is valid")
 }
 
 fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0))),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         ..RawInput::default()
     }
 }
@@ -46,15 +38,15 @@ fn run(
     dockspace: &mut Dockspace,
     pane: &mut TestPane,
     events: Vec<Event>,
-) -> Vec<DockspaceInputRejection> {
-    let mut rejections = Vec::new();
-    let _ = context.run_ui(input(events), |ui| {
+) -> usize {
+    let mut close_requests = 0;
+    let _ = crate::test_support::run_ui(context, input(events), |ui| {
         let response = dockspace
-            .show(SURFACE, ui, pane)
+            .show_single_surface(SURFACE, ui, pane)
             .expect("fixture frame advances");
-        rejections.extend_from_slice(response.input_rejections());
+        close_requests += response.close_requests().count();
     });
-    rejections
+    close_requests
 }
 
 fn pointer_button(position: Pos2, pressed: bool) -> Event {
@@ -71,63 +63,60 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
     reason = "finite scene coordinates are converted to egui's f32 input space"
 )]
 fn close_center(dockspace: &Dockspace) -> Pos2 {
-    let SurfaceScene::Ready(ready) = dockspace
+    let painted = dockspace
         .engine()
-        .scene()
-        .and_then(|scene| scene.surface(SURFACE))
-        .expect("fixture surface is ready")
-    else {
-        panic!("fixture surface is not bootstrapping");
-    };
-    let tab = ready.tabs().first().expect("fixture has one tab").rect();
-    let style = dockspace.style();
-    let close_size = f64::from(style.tab_close_size)
-        .min(tab.width())
-        .min(tab.height());
+        .interaction_projection(SURFACE)
+        .expect("fixture surface must have acknowledged painted geometry");
+    let tab = painted
+        .plan()
+        .tab_records()
+        .first()
+        .and_then(|tab| tab.close_bounds())
+        .expect("fixture has one closeable tab");
     Pos2::new(
-        (tab.max().x() - f64::from(style.tab_horizontal_padding) - close_size * 0.5) as f32,
+        ((tab.min().x() + tab.max().x()) * 0.5) as f32,
         ((tab.min().y() + tab.max().y()) * 0.5) as f32,
     )
 }
 
 #[test]
-fn restored_epoch_rejects_prior_paint_actions_before_close_callback() {
+fn restored_epoch_rejects_prior_scene_close_release_without_a_request() {
     let context = Context::default();
     let original = workspace();
     let mut dockspace = Dockspace::builder("stale-actions", original.clone())
         .build()
         .expect("fixture facade builds");
-    let mut pane = TestPane { close_calls: 0 };
+    let mut pane = TestPane;
 
-    run(&context, &mut dockspace, &mut pane, Vec::new());
-    run(&context, &mut dockspace, &mut pane, Vec::new());
+    assert_eq!(run(&context, &mut dockspace, &mut pane, Vec::new()), 0);
+    assert_eq!(run(&context, &mut dockspace, &mut pane, Vec::new()), 0);
     let close = close_center(&dockspace);
-    run(
-        &context,
-        &mut dockspace,
-        &mut pane,
-        vec![Event::PointerMoved(close), pointer_button(close, true)],
+    assert_eq!(
+        run(
+            &context,
+            &mut dockspace,
+            &mut pane,
+            vec![Event::PointerMoved(close), pointer_button(close, true)],
+        ),
+        0,
+        "pressing a close control must not open a close plan"
     );
-    run(
+
+    let version_before_replacement = dockspace.engine().version();
+    dockspace
+        .replace_workspace(original.clone())
+        .expect("replacement commits before the release renderer boundary");
+    assert_ne!(dockspace.engine().version(), version_before_replacement);
+    let close_requests = run(
         &context,
         &mut dockspace,
         &mut pane,
         vec![Event::PointerMoved(close), pointer_button(close, false)],
     );
-    assert_eq!(pane.close_calls, 0);
 
-    dockspace
-        .replace_workspace(original.clone())
-        .expect("replacement queues before the renderer boundary");
-    let rejections = run(&context, &mut dockspace, &mut pane, Vec::new());
-
-    assert_eq!(pane.close_calls, 0);
+    assert_eq!(
+        close_requests, 0,
+        "a release captured from the prior scene must not reach application close decisions"
+    );
     assert_eq!(dockspace.engine().workspace(), &original);
-    assert!(matches!(
-        rejections.as_slice(),
-        [DockspaceInputRejection::StaleWorkspace {
-            dropped_actions: 1,
-            ..
-        }]
-    ));
 }

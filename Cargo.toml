@@ -1,7 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/dockspace", "crates/egui_dockspace"]
-exclude = ["integration/egui-fork-harness"]
+members = [
+    "crates/dockspace",
+    "crates/dockspace_core_protocol",
+    "crates/dockspace_host_conformance",
+    "crates/egui_dockspace",
+]
+exclude = [
+    "crates/egui_dockspace_native",
+    "integration/egui-fork-harness",
+    "integration/egui-native-e2e",
+    "integration/egui-official-harness",
+    "repo-ref/egui",
+    "repo-ref/egui-release",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,9 +24,10 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/egui_docking"
 
 [workspace.dependencies]
+blake3 = "1.8.3"
 dockspace = { version = "0.1.0", path = "crates/dockspace", default-features = false }
-egui = { version = "0.35.0", default-features = false }
-eframe = { version = "0.35.0", default-features = false }
+egui = { version = "=0.35.0", default-features = false }
+eframe = { version = "=0.35.0", default-features = false }
 proptest = "1.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

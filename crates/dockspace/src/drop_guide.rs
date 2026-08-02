@@ -161,9 +161,10 @@ impl DropGuideEdgeSet {
 
 /// Complete guide cluster with an exact activation region and paint layer.
 ///
-/// The enum shape makes inner clusters contain center plus four edges, while
-/// outer clusters contain exactly four edges. Callers cannot construct a
-/// partially populated cluster.
+/// The enum shape makes ordinary inner clusters contain center plus four
+/// edges, root-central inner clusters contain only center, and outer clusters
+/// contain exactly four edges. Callers cannot construct a partially populated
+/// edge set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropGuideClusterRecord {
     id: DropGuideClusterId,
@@ -176,7 +177,7 @@ pub struct DropGuideClusterRecord {
 enum DropGuideClusterTargets {
     Inner {
         center: DropGuideTargetRecord,
-        edges: DropGuideEdgeSet,
+        edges: Option<DropGuideEdgeSet>,
     },
     Outer {
         edges: DropGuideEdgeSet,
@@ -199,7 +200,31 @@ impl DropGuideClusterRecord {
             id: DropGuideClusterId::inner(surface, root, node),
             activation,
             layer,
-            targets: DropGuideClusterTargets::Inner { center, edges },
+            targets: DropGuideClusterTargets::Inner {
+                center,
+                edges: Some(edges),
+            },
+        }
+    }
+
+    /// Creates a center-only inner cluster for a root-central tabs leaf.
+    #[must_use]
+    pub const fn inner_center(
+        surface: SurfaceId,
+        root: RootId,
+        node: NodeId,
+        activation: HitRegion,
+        layer: SceneLayerKey,
+        center: DropGuideTargetRecord,
+    ) -> Self {
+        Self {
+            id: DropGuideClusterId::inner(surface, root, node),
+            activation,
+            layer,
+            targets: DropGuideClusterTargets::Inner {
+                center,
+                edges: None,
+            },
         }
     }
 
@@ -238,12 +263,12 @@ impl DropGuideClusterRecord {
         self.layer
     }
 
-    /// Returns the complete four-direction edge set.
+    /// Returns the complete four-direction edge set when this cluster has one.
     #[must_use]
-    pub const fn edges(&self) -> &DropGuideEdgeSet {
+    pub const fn edges(&self) -> Option<&DropGuideEdgeSet> {
         match &self.targets {
-            DropGuideClusterTargets::Inner { edges, .. }
-            | DropGuideClusterTargets::Outer { edges } => edges,
+            DropGuideClusterTargets::Inner { edges, .. } => edges.as_ref(),
+            DropGuideClusterTargets::Outer { edges } => Some(edges),
         }
     }
 
@@ -253,11 +278,15 @@ impl DropGuideClusterRecord {
         match (&self.targets, slot) {
             (DropGuideClusterTargets::Inner { center, .. }, DropGuideSlot::Center) => Some(center),
             (DropGuideClusterTargets::Outer { .. }, DropGuideSlot::Center) => None,
-            (
-                DropGuideClusterTargets::Inner { edges, .. }
-                | DropGuideClusterTargets::Outer { edges },
-                DropGuideSlot::Edge(edge),
-            ) => Some(edges.target(edge)),
+            (DropGuideClusterTargets::Inner { edges, .. }, DropGuideSlot::Edge(edge)) => {
+                match edges {
+                    Some(edges) => Some(edges.target(edge)),
+                    None => None,
+                }
+            }
+            (DropGuideClusterTargets::Outer { edges }, DropGuideSlot::Edge(edge)) => {
+                Some(edges.target(edge))
+            }
         }
     }
 
@@ -269,14 +298,11 @@ impl DropGuideClusterRecord {
             DropGuideClusterTargets::Inner { center, .. } => Some(center),
             DropGuideClusterTargets::Outer { .. } => None,
         };
+        let edges = self.edges().into_iter().flat_map(DropGuideEdgeSet::targets);
         center
             .into_iter()
             .map(|target| (DropGuideSlot::Center, target))
-            .chain(
-                self.edges()
-                    .targets()
-                    .map(|(edge, target)| (DropGuideSlot::Edge(edge), target)),
-            )
+            .chain(edges.map(|(edge, target)| (DropGuideSlot::Edge(edge), target)))
     }
 
     pub(crate) fn for_each_target_mut(
@@ -286,9 +312,11 @@ impl DropGuideClusterRecord {
         match &mut self.targets {
             DropGuideClusterTargets::Inner { center, edges } => {
                 visit(DropGuideSlot::Center, center);
-                edges.for_each_target_mut(|edge, target| {
-                    visit(DropGuideSlot::Edge(edge), target);
-                });
+                if let Some(edges) = edges {
+                    edges.for_each_target_mut(|edge, target| {
+                        visit(DropGuideSlot::Edge(edge), target);
+                    });
+                }
             }
             DropGuideClusterTargets::Outer { edges } => {
                 edges.for_each_target_mut(|edge, target| {

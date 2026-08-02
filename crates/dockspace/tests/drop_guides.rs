@@ -1,28 +1,21 @@
-use dockspace::command::{DockFraction, DockTarget, Edge};
+mod support;
+
+use dockspace::command::Edge;
 use dockspace::drop_guide::{
-    DropGuideClusterId, DropGuideClusterRecord, DropGuideEdgeSet, DropGuideScope, DropGuideSlot,
-    DropGuideTargetRecord,
+    DropGuideClusterId, DropGuideClusterRecord, DropGuideScope, DropGuideSlot,
 };
-use dockspace::drop_target::{
-    DropTargetAvailability, DropTargetId, DropTargetRecord, DropTargetUnavailable, DropVisual,
-    SceneLayerKey,
-};
+use dockspace::drop_target::{DropTargetAvailability, DropTargetId, DropTargetUnavailable};
 use dockspace::engine::DockEngine;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder};
-use dockspace::hit_region::HitRegion;
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
-use dockspace::scene::{
-    BuildingScene, ReadySurfaceScene, SceneBuildError, SealedScene, SurfaceScene,
-};
-use dockspace::transition::InputOutcome;
+use dockspace::scene::PresentationPlan;
 
 const SPLIT_ROOT: RootId = RootId::new(1);
 const SINGLE_ROOT: RootId = RootId::new(2);
 const SPLIT_SURFACE: SurfaceId = SurfaceId::new(1);
 const SINGLE_SURFACE: SurfaceId = SurfaceId::new(2);
-const LAYER: SceneLayerKey = SceneLayerKey::new(7);
 
 struct Fixture {
     workspace: Workspace,
@@ -30,36 +23,6 @@ struct Fixture {
     split_tabs_a: NodeId,
     split_tabs_b: NodeId,
     single_tabs: NodeId,
-}
-
-#[derive(Clone, Copy)]
-struct GuideOwner {
-    surface: SurfaceId,
-    root: RootId,
-    node: NodeId,
-}
-
-impl GuideOwner {
-    const fn new(surface: SurfaceId, root: RootId, node: NodeId) -> Self {
-        Self {
-            surface,
-            root,
-            node,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct GuideGeometry {
-    hit: LogicalRect,
-    draw: LogicalRect,
-    preview: LogicalRect,
-}
-
-impl GuideGeometry {
-    const fn new(hit: LogicalRect, draw: LogicalRect, preview: LogicalRect) -> Self {
-        Self { hit, draw, preview }
-    }
 }
 
 fn fixture() -> Fixture {
@@ -72,10 +35,16 @@ fn fixture() -> Fixture {
     );
     let single_tabs = builder.insert_node(Node::tabs([ItemId::new(3)]));
 
-    builder.set_root(SPLIT_ROOT, RootRecord::new(split_root_node));
-    builder.set_root(SINGLE_ROOT, RootRecord::new(single_tabs));
-    builder.set_surface(SPLIT_SURFACE, SurfacePresentation::new(SPLIT_ROOT));
-    builder.set_surface(SINGLE_SURFACE, SurfacePresentation::new(SINGLE_ROOT));
+    builder.set_root(
+        SPLIT_ROOT,
+        RootRecord::new(split_root_node).with_central(split_tabs_b),
+    );
+    builder.set_root(
+        SINGLE_ROOT,
+        RootRecord::new(single_tabs).with_central(single_tabs),
+    );
+    builder.set_surface(SPLIT_SURFACE, SurfacePresentation::with_main(SPLIT_ROOT));
+    builder.set_surface(SINGLE_SURFACE, SurfacePresentation::with_main(SINGLE_ROOT));
 
     Fixture {
         workspace: builder.build().expect("fixture workspace is valid"),
@@ -86,604 +55,92 @@ fn fixture() -> Fixture {
     }
 }
 
-fn rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
-    LogicalRect::new(x, y, width, height).expect("test rectangle is valid")
-}
-
 fn bounds() -> LogicalRect {
-    rect(0.0, 0.0, 400.0, 300.0)
+    LogicalRect::new(0.0, 0.0, 400.0, 300.0).expect("test rectangle is valid")
 }
 
-fn slot_hit(slot: DropGuideSlot) -> LogicalRect {
-    match slot {
-        DropGuideSlot::Center => rect(180.0, 130.0, 40.0, 40.0),
-        DropGuideSlot::Edge(Edge::Left) => rect(130.0, 130.0, 40.0, 40.0),
-        DropGuideSlot::Edge(Edge::Right) => rect(230.0, 130.0, 40.0, 40.0),
-        DropGuideSlot::Edge(Edge::Top) => rect(180.0, 80.0, 40.0, 40.0),
-        DropGuideSlot::Edge(Edge::Bottom) => rect(180.0, 180.0, 40.0, 40.0),
-    }
-}
-
-fn slot_draw(slot: DropGuideSlot) -> LogicalRect {
-    let hit = slot_hit(slot);
-    rect(hit.x() + 5.0, hit.y() + 5.0, 30.0, 30.0)
-}
-
-fn slot_preview(slot: DropGuideSlot) -> LogicalRect {
-    match slot {
-        DropGuideSlot::Center => rect(80.0, 60.0, 240.0, 180.0),
-        DropGuideSlot::Edge(Edge::Left) => rect(0.0, 0.0, 140.0, 300.0),
-        DropGuideSlot::Edge(Edge::Right) => rect(260.0, 0.0, 140.0, 300.0),
-        DropGuideSlot::Edge(Edge::Top) => rect(0.0, 0.0, 400.0, 105.0),
-        DropGuideSlot::Edge(Edge::Bottom) => rect(0.0, 195.0, 400.0, 105.0),
-    }
-}
-
-fn center_guide(
-    fixture: &Fixture,
-    owner: GuideOwner,
-    layer: SceneLayerKey,
-    geometry: GuideGeometry,
-) -> DropGuideTargetRecord {
-    DropGuideTargetRecord::new(
-        DropTargetRecord::new(
-            DropTargetId::Center {
-                surface: owner.surface,
-                root: owner.root,
-                tabs: owner.node,
-            },
-            DockTarget::Center(
-                fixture
-                    .workspace
-                    .capture_tab_target(owner.root, owner.node)
-                    .expect("center target is current"),
-            ),
-            DropTargetAvailability::Available,
-            HitRegion::new(geometry.hit),
-            layer,
-            DropVisual::new(geometry.preview),
-        ),
-        geometry.draw,
-    )
-}
-
-fn edge_guide(
-    fixture: &Fixture,
-    owner: GuideOwner,
-    edge: Edge,
-    outer: bool,
-    layer: SceneLayerKey,
-    geometry: GuideGeometry,
-) -> DropGuideTargetRecord {
-    let id = if outer {
-        DropTargetId::OuterEdge {
-            surface: owner.surface,
-            root: owner.root,
-            node: owner.node,
-            edge,
-        }
-    } else {
-        DropTargetId::InnerEdge {
-            surface: owner.surface,
-            root: owner.root,
-            node: owner.node,
-            edge,
-        }
-    };
-    DropGuideTargetRecord::new(
-        DropTargetRecord::new(
-            id,
-            DockTarget::Edge(
-                fixture
-                    .workspace
-                    .capture_edge_target(
-                        owner.root,
-                        owner.node,
-                        edge,
-                        DockFraction::new(0.35).expect("test fraction is valid"),
-                    )
-                    .expect("edge target is current"),
-            ),
-            DropTargetAvailability::Available,
-            HitRegion::new(geometry.hit),
-            layer,
-            DropVisual::new(geometry.preview),
-        ),
-        geometry.draw,
-    )
-}
-
-fn standard_center(
-    fixture: &Fixture,
-    surface: SurfaceId,
-    root: RootId,
-    tabs: NodeId,
-) -> DropGuideTargetRecord {
-    center_guide(
-        fixture,
-        GuideOwner::new(surface, root, tabs),
-        LAYER,
-        GuideGeometry::new(
-            slot_hit(DropGuideSlot::Center),
-            slot_draw(DropGuideSlot::Center),
-            slot_preview(DropGuideSlot::Center),
-        ),
-    )
-}
-
-fn standard_edge(
-    fixture: &Fixture,
-    surface: SurfaceId,
-    root: RootId,
-    node: NodeId,
-    edge: Edge,
-    outer: bool,
-) -> DropGuideTargetRecord {
-    let slot = DropGuideSlot::Edge(edge);
-    edge_guide(
-        fixture,
-        GuideOwner::new(surface, root, node),
-        edge,
-        outer,
-        LAYER,
-        GuideGeometry::new(slot_hit(slot), slot_draw(slot), slot_preview(slot)),
-    )
-}
-
-fn edge_set(
-    fixture: &Fixture,
-    surface: SurfaceId,
-    root: RootId,
-    node: NodeId,
-    outer: bool,
-) -> DropGuideEdgeSet {
-    DropGuideEdgeSet::new(
-        standard_edge(fixture, surface, root, node, Edge::Left, outer),
-        standard_edge(fixture, surface, root, node, Edge::Right, outer),
-        standard_edge(fixture, surface, root, node, Edge::Top, outer),
-        standard_edge(fixture, surface, root, node, Edge::Bottom, outer),
-    )
-}
-
-fn nested_inner_cluster(fixture: &Fixture, tabs: NodeId) -> DropGuideClusterRecord {
-    DropGuideClusterRecord::inner(
-        SPLIT_SURFACE,
-        SPLIT_ROOT,
-        tabs,
-        HitRegion::new(bounds()),
-        LAYER,
-        standard_center(fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs),
-        edge_set(fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, false),
-    )
-}
-
-fn single_inner_cluster(fixture: &Fixture) -> DropGuideClusterRecord {
-    DropGuideClusterRecord::inner(
-        SINGLE_SURFACE,
-        SINGLE_ROOT,
-        fixture.single_tabs,
-        HitRegion::new(bounds()),
-        LAYER,
-        standard_center(fixture, SINGLE_SURFACE, SINGLE_ROOT, fixture.single_tabs),
-        edge_set(
-            fixture,
-            SINGLE_SURFACE,
-            SINGLE_ROOT,
-            fixture.single_tabs,
-            true,
-        ),
-    )
-}
-
-fn outer_cluster(fixture: &Fixture) -> DropGuideClusterRecord {
-    DropGuideClusterRecord::outer(
-        SPLIT_SURFACE,
-        SPLIT_ROOT,
-        HitRegion::new(bounds()),
-        LAYER,
-        edge_set(
-            fixture,
-            SPLIT_SURFACE,
-            SPLIT_ROOT,
-            fixture.split_root_node,
-            true,
-        ),
-    )
-}
-
-fn publish(
-    fixture: &Fixture,
-    surface: SurfaceId,
-    ready: ReadySurfaceScene,
-    policy: DockPolicy,
-) -> Result<SealedScene, SceneBuildError> {
-    let mut building = BuildingScene::new([surface]).expect("test roster is unique");
-    building
-        .insert_ready(ready)
-        .expect("test scene identities are unique");
-    publish_building(fixture, policy, building)
-}
-
-fn publish_building(
-    fixture: &Fixture,
-    policy: DockPolicy,
-    building: BuildingScene,
-) -> Result<SealedScene, SceneBuildError> {
+fn engine(fixture: &Fixture, policy: DockPolicy) -> (DockEngine, support::TestPresentationHost) {
     let mut engine =
-        DockEngine::new(fixture.workspace.clone(), policy).expect("fixture engine must be valid");
-    engine
-        .enqueue_scene(building)
-        .expect("scene input sequence is available");
-    let transition = engine
-        .reduce_pending()
-        .expect("scene rejection is not a fatal engine error");
-    match transition.reduced_inputs()[0].outcome() {
-        InputOutcome::ScenePublished { .. } => Ok(engine
-            .scene()
-            .expect("published outcome installs a scene")
-            .clone()),
-        InputOutcome::SceneRejected { error } => Err(error.clone()),
-        outcome => panic!("unexpected scene outcome: {outcome:?}"),
-    }
+        DockEngine::new(fixture.workspace.clone(), policy).expect("fixture engine is valid");
+    let host = support::TestPresentationHost::new(&mut engine);
+    (engine, host)
 }
 
-fn ready_from(scene: &SealedScene, surface: SurfaceId) -> &ReadySurfaceScene {
-    match scene.surface(surface) {
-        Some(SurfaceScene::Ready(ready)) => ready,
-        state => panic!("expected ready surface, got {state:?}"),
-    }
+fn publish_all_surfaces(
+    (mut engine, mut host): (DockEngine, support::TestPresentationHost),
+) -> (DockEngine, support::TestPresentationHost) {
+    support::publish_surfaces(
+        &mut engine,
+        &mut host,
+        [(SPLIT_SURFACE, bounds()), (SINGLE_SURFACE, bounds())],
+    );
+    (engine, host)
 }
 
-fn assert_cluster_rejected(
-    fixture: &Fixture,
-    surface: SurfaceId,
-    cluster: DropGuideClusterRecord,
-    expected: impl FnOnce(&SceneBuildError) -> bool,
-) {
-    let mut ready = ReadySurfaceScene::new(surface, bounds());
-    ready.push_drop_guide_cluster(cluster);
-    let error = publish(fixture, surface, ready, DockPolicy::default())
-        .expect_err("invalid guide cluster must fail scene sealing");
-    assert!(expected(&error), "unexpected scene error: {error:?}");
+fn ready_from(engine: &DockEngine, surface: SurfaceId) -> &PresentationPlan {
+    support::next_plan(engine, surface)
 }
 
-struct GeometryFixture<'a> {
-    fixture: &'a Fixture,
-    tabs: NodeId,
+fn cluster(ready: &PresentationPlan, scope: DropGuideScope) -> &DropGuideClusterRecord {
+    ready
+        .drop_guide_clusters()
+        .iter()
+        .find(|cluster| cluster.id().scope == scope)
+        .unwrap_or_else(|| panic!("expected {scope:?} guide cluster"))
 }
 
-impl<'a> GeometryFixture<'a> {
-    const fn new(fixture: &'a Fixture) -> Self {
-        Self {
-            fixture,
-            tabs: fixture.split_tabs_a,
-        }
-    }
+fn canonical_inner_slots() -> Vec<DropGuideSlot> {
+    vec![
+        DropGuideSlot::Center,
+        DropGuideSlot::Edge(Edge::Left),
+        DropGuideSlot::Edge(Edge::Right),
+        DropGuideSlot::Edge(Edge::Top),
+        DropGuideSlot::Edge(Edge::Bottom),
+    ]
+}
 
-    fn left(
-        &self,
-        layer: SceneLayerKey,
-        hit: LogicalRect,
-        draw: LogicalRect,
-        preview: LogicalRect,
-    ) -> DropGuideTargetRecord {
-        edge_guide(
-            self.fixture,
-            GuideOwner::new(SPLIT_SURFACE, SPLIT_ROOT, self.tabs),
-            Edge::Left,
-            false,
-            layer,
-            GuideGeometry::new(hit, draw, preview),
-        )
-    }
+fn canonical_outer_slots() -> Vec<DropGuideSlot> {
+    [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom]
+        .map(DropGuideSlot::Edge)
+        .to_vec()
+}
 
-    fn cluster(
-        &self,
-        activation: LogicalRect,
-        left: DropGuideTargetRecord,
-        layer: SceneLayerKey,
-    ) -> DropGuideClusterRecord {
-        self.cluster_with_center(
-            activation,
-            standard_center(self.fixture, SPLIT_SURFACE, SPLIT_ROOT, self.tabs),
-            left,
-            layer,
-        )
-    }
-
-    fn cluster_with_center(
-        &self,
-        activation: LogicalRect,
-        center: DropGuideTargetRecord,
-        left: DropGuideTargetRecord,
-        layer: SceneLayerKey,
-    ) -> DropGuideClusterRecord {
-        DropGuideClusterRecord::inner(
-            SPLIT_SURFACE,
-            SPLIT_ROOT,
-            self.tabs,
-            HitRegion::new(activation),
-            layer,
-            center,
-            DropGuideEdgeSet::new(
-                left,
-                standard_edge(
-                    self.fixture,
-                    SPLIT_SURFACE,
-                    SPLIT_ROOT,
-                    self.tabs,
-                    Edge::Right,
-                    false,
-                ),
-                standard_edge(
-                    self.fixture,
-                    SPLIT_SURFACE,
-                    SPLIT_ROOT,
-                    self.tabs,
-                    Edge::Top,
-                    false,
-                ),
-                standard_edge(
-                    self.fixture,
-                    SPLIT_SURFACE,
-                    SPLIT_ROOT,
-                    self.tabs,
-                    Edge::Bottom,
-                    false,
-                ),
-            ),
-        )
-    }
+fn rect_contains(outer: LogicalRect, inner: LogicalRect) -> bool {
+    outer.x() <= inner.x()
+        && outer.y() <= inner.y()
+        && outer.max().x() >= inner.max().x()
+        && outer.max().y() >= inner.max().y()
 }
 
 #[test]
-fn constructors_expose_only_complete_inner_and_outer_shapes() {
+fn core_compiler_emits_only_complete_inner_and_outer_shapes() {
     let fixture = fixture();
-    let inner = nested_inner_cluster(&fixture, fixture.split_tabs_a);
-    let outer = outer_cluster(&fixture);
+    let (mut engine, mut host) = engine(&fixture, DockPolicy::default());
+    support::install_surface_projection(&mut engine, &mut host, SPLIT_SURFACE, bounds());
+    let ready = ready_from(&engine, SPLIT_SURFACE);
 
+    for tabs in [fixture.split_tabs_a, fixture.split_tabs_b] {
+        let inner = cluster(&ready, DropGuideScope::Inner(tabs));
+        assert_eq!(
+            inner.targets().map(|(slot, _)| slot).collect::<Vec<_>>(),
+            canonical_inner_slots()
+        );
+        assert!(inner.target(DropGuideSlot::Center).is_some());
+        assert!(inner.edges().is_some());
+    }
+
+    let outer = cluster(&ready, DropGuideScope::Outer);
     assert_eq!(
-        inner.id().scope,
-        DropGuideScope::Inner(fixture.split_tabs_a)
+        outer.targets().map(|(slot, _)| slot).collect::<Vec<_>>(),
+        canonical_outer_slots()
     );
-    assert_eq!(inner.targets().count(), 5);
-    assert!(inner.target(DropGuideSlot::Center).is_some());
-    assert_eq!(outer.id().scope, DropGuideScope::Outer);
-    assert_eq!(outer.targets().count(), 4);
     assert!(outer.target(DropGuideSlot::Center).is_none());
+    assert!(outer.edges().is_some());
     for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        assert!(inner.target(DropGuideSlot::Edge(edge)).is_some());
-        assert!(outer.target(DropGuideSlot::Edge(edge)).is_some());
-    }
-
-    assert_eq!(
-        inner.targets().map(|(slot, _)| slot).collect::<Vec<_>>(),
-        [
-            DropGuideSlot::Center,
-            DropGuideSlot::Edge(Edge::Left),
-            DropGuideSlot::Edge(Edge::Right),
-            DropGuideSlot::Edge(Edge::Top),
-            DropGuideSlot::Edge(Edge::Bottom),
-        ]
-    );
-}
-
-#[test]
-fn cluster_and_owned_target_identities_are_globally_unique() {
-    let fixture = fixture();
-    let cluster = nested_inner_cluster(&fixture, fixture.split_tabs_a);
-    let cluster_id = cluster.id();
-    let mut duplicate_cluster = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    duplicate_cluster.push_drop_guide_cluster(cluster.clone());
-    duplicate_cluster.push_drop_guide_cluster(cluster.clone());
-    let mut building = BuildingScene::new([SPLIT_SURFACE]).expect("test roster is unique");
-    assert_eq!(
-        building.insert_ready(duplicate_cluster),
-        Err(SceneBuildError::DuplicateDropGuideCluster { id: cluster_id })
-    );
-
-    let duplicate_target = cluster
-        .target(DropGuideSlot::Center)
-        .expect("inner cluster has a center")
-        .target()
-        .clone();
-    let duplicate_target_id = duplicate_target.id();
-    let mut duplicate_across_storage = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    duplicate_across_storage.push_drop_target(duplicate_target);
-    duplicate_across_storage.push_drop_guide_cluster(cluster);
-    let mut building = BuildingScene::new([SPLIT_SURFACE]).expect("test roster is unique");
-    assert_eq!(
-        building.insert_ready(duplicate_across_storage),
-        Err(SceneBuildError::DuplicateDropTarget {
-            id: duplicate_target_id
-        })
-    );
-}
-
-#[test]
-fn wrong_direction_in_a_named_edge_slot_is_rejected() {
-    let fixture = fixture();
-    let tabs = fixture.split_tabs_a;
-    let swapped = DropGuideEdgeSet::new(
-        standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Left, false),
-        standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Top, false),
-        standard_edge(
-            &fixture,
-            SPLIT_SURFACE,
-            SPLIT_ROOT,
-            tabs,
-            Edge::Right,
-            false,
-        ),
-        standard_edge(
-            &fixture,
-            SPLIT_SURFACE,
-            SPLIT_ROOT,
-            tabs,
-            Edge::Bottom,
-            false,
-        ),
-    );
-    let cluster = DropGuideClusterRecord::inner(
-        SPLIT_SURFACE,
-        SPLIT_ROOT,
-        tabs,
-        HitRegion::new(bounds()),
-        LAYER,
-        standard_center(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs),
-        swapped,
-    );
-
-    assert_cluster_rejected(&fixture, SPLIT_SURFACE, cluster, |error| {
-        matches!(
-            error,
-            SceneBuildError::DropGuideTargetSlotMismatch {
-                slot: DropGuideSlot::Edge(Edge::Right),
-                target: DropTargetId::InnerEdge {
-                    edge: Edge::Top,
-                    ..
-                },
-                ..
-            }
-        )
-    });
-}
-
-#[test]
-fn positive_hit_overlap_is_rejected_only_within_one_cluster() {
-    let fixture = fixture();
-    let tabs = fixture.split_tabs_a;
-    let left_hit = slot_hit(DropGuideSlot::Edge(Edge::Left));
-    let overlapping_edges = DropGuideEdgeSet::new(
-        standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Left, false),
-        edge_guide(
-            &fixture,
-            GuideOwner::new(SPLIT_SURFACE, SPLIT_ROOT, tabs),
-            Edge::Right,
-            false,
-            LAYER,
-            GuideGeometry::new(
-                left_hit,
-                rect(left_hit.x() + 5.0, left_hit.y() + 5.0, 30.0, 30.0),
-                slot_preview(DropGuideSlot::Edge(Edge::Right)),
-            ),
-        ),
-        standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Top, false),
-        standard_edge(
-            &fixture,
-            SPLIT_SURFACE,
-            SPLIT_ROOT,
-            tabs,
-            Edge::Bottom,
-            false,
-        ),
-    );
-    let cluster = DropGuideClusterRecord::inner(
-        SPLIT_SURFACE,
-        SPLIT_ROOT,
-        tabs,
-        HitRegion::new(bounds()),
-        LAYER,
-        standard_center(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs),
-        overlapping_edges,
-    );
-
-    assert_cluster_rejected(&fixture, SPLIT_SURFACE, cluster, |error| {
-        matches!(
-            error,
-            SceneBuildError::OverlappingDropGuideHitRegions {
-                first: DropGuideSlot::Edge(Edge::Left),
-                second: DropGuideSlot::Edge(Edge::Right),
-                ..
-            }
-        )
-    });
-
-    let mut cross_cluster_overlap = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    cross_cluster_overlap
-        .push_drop_guide_cluster(nested_inner_cluster(&fixture, fixture.split_tabs_a));
-    cross_cluster_overlap
-        .push_drop_guide_cluster(nested_inner_cluster(&fixture, fixture.split_tabs_b));
-    cross_cluster_overlap.push_drop_guide_cluster(outer_cluster(&fixture));
-    publish(
-        &fixture,
-        SPLIT_SURFACE,
-        cross_cluster_overlap,
-        DockPolicy::default(),
-    )
-    .expect("overlap across distinct clusters remains valid");
-}
-
-#[test]
-fn single_tabs_inner_uses_outer_edges_while_nested_inner_uses_inner_edges() {
-    let fixture = fixture();
-    let single = single_inner_cluster(&fixture);
-    let nested = nested_inner_cluster(&fixture, fixture.split_tabs_a);
-    let outer = outer_cluster(&fixture);
-
-    let mut single_ready = ReadySurfaceScene::new(SINGLE_SURFACE, bounds());
-    single_ready.push_drop_guide_cluster(single);
-    let single_scene = publish(
-        &fixture,
-        SINGLE_SURFACE,
-        single_ready,
-        DockPolicy::default(),
-    )
-    .expect("single-tabs inner guide is valid");
-    let single_cluster = &ready_from(&single_scene, SINGLE_SURFACE).drop_guide_clusters()[0];
-    for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        assert!(matches!(
-            single_cluster
-                .target(DropGuideSlot::Edge(edge))
-                .expect("edge slot is complete")
-                .id(),
-            DropTargetId::OuterEdge { node, .. } if node == fixture.single_tabs
-        ));
-    }
-
-    let single_outer = DropGuideClusterRecord::outer(
-        SINGLE_SURFACE,
-        SINGLE_ROOT,
-        HitRegion::new(bounds()),
-        LAYER,
-        edge_set(
-            &fixture,
-            SINGLE_SURFACE,
-            SINGLE_ROOT,
-            fixture.single_tabs,
-            true,
-        ),
-    );
-    assert_cluster_rejected(&fixture, SINGLE_SURFACE, single_outer, |error| {
-        matches!(error, SceneBuildError::InvalidDropGuideCluster { .. })
-    });
-
-    let mut split_ready = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    split_ready.push_drop_guide_cluster(outer);
-    split_ready.push_drop_guide_cluster(nested);
-    let split_scene = publish(&fixture, SPLIT_SURFACE, split_ready, DockPolicy::default())
-        .expect("nested and outer guides are valid");
-    let clusters = ready_from(&split_scene, SPLIT_SURFACE).drop_guide_clusters();
-    let nested = clusters
-        .iter()
-        .find(|cluster| cluster.id().scope == DropGuideScope::Inner(fixture.split_tabs_a))
-        .expect("nested cluster is present");
-    let outer = clusters
-        .iter()
-        .find(|cluster| cluster.id().scope == DropGuideScope::Outer)
-        .expect("outer cluster is present");
-    for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
-        assert!(matches!(
-            nested
-                .target(DropGuideSlot::Edge(edge))
-                .expect("edge slot is complete")
-                .id(),
-            DropTargetId::InnerEdge { node, .. } if node == fixture.split_tabs_a
-        ));
         assert!(matches!(
             outer
                 .target(DropGuideSlot::Edge(edge))
-                .expect("edge slot is complete")
+                .expect("outer edge slot is complete")
                 .id(),
             DropTargetId::OuterEdge { node, .. } if node == fixture.split_root_node
         ));
@@ -691,264 +148,118 @@ fn single_tabs_inner_uses_outer_edges_while_nested_inner_uses_inner_edges() {
 }
 
 #[test]
-fn guide_activation_geometry_is_validated_independently() {
+fn root_central_leaf_uses_center_only_inner_plus_outer_edges() {
     let fixture = fixture();
-    let tabs = fixture.split_tabs_a;
-    let geometry = GeometryFixture::new(&fixture);
+    let (mut engine, mut host) = engine(&fixture, DockPolicy::default());
+    support::install_surface_projection(&mut engine, &mut host, SINGLE_SURFACE, bounds());
+    let ready = ready_from(&engine, SINGLE_SURFACE);
 
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            rect(0.0, 0.0, 0.0, 300.0),
-            standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Left, false),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::EmptyDropGuideActivation { .. }),
+    let inner = cluster(&ready, DropGuideScope::Inner(fixture.single_tabs));
+    assert_eq!(
+        inner.targets().map(|(slot, _)| slot).collect::<Vec<_>>(),
+        vec![DropGuideSlot::Center]
     );
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            rect(-1.0, 0.0, 400.0, 300.0),
-            standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Left, false),
-            LAYER,
-        ),
-        |error| {
-            matches!(
-                error,
-                SceneBuildError::DropGuideActivationOutsideSurface { .. }
-            )
-        },
-    );
-    let activation = rect(100.0, 0.0, 300.0, 300.0);
-    let hit_outside_activation = geometry.cluster_with_center(
-        activation,
-        center_guide(
-            &fixture,
-            GuideOwner::new(SPLIT_SURFACE, SPLIT_ROOT, tabs),
-            LAYER,
-            GuideGeometry::new(
-                slot_hit(DropGuideSlot::Center),
-                slot_draw(DropGuideSlot::Center),
-                rect(120.0, 60.0, 200.0, 180.0),
-            ),
-        ),
-        geometry.left(
-            LAYER,
-            rect(50.0, 130.0, 40.0, 40.0),
-            rect(55.0, 135.0, 30.0, 30.0),
-            rect(100.0, 0.0, 140.0, 300.0),
-        ),
-        LAYER,
-    );
-    assert_cluster_rejected(&fixture, SPLIT_SURFACE, hit_outside_activation, |error| {
-        matches!(
-            error,
-            SceneBuildError::DropGuideHitRegionOutsideActivation { .. }
-        )
-    });
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            rect(0.0, 0.0, 300.0, 300.0),
-            standard_edge(&fixture, SPLIT_SURFACE, SPLIT_ROOT, tabs, Edge::Left, false),
-            LAYER,
-        ),
-        |error| {
-            matches!(
-                error,
-                SceneBuildError::DropGuidePreviewOutsideActivation { .. }
-            )
-        },
-    );
-}
+    assert!(inner.edges().is_none());
 
-#[test]
-fn guide_hit_geometry_is_validated_independently() {
-    let fixture = fixture();
-    let geometry = GeometryFixture::new(&fixture);
-
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                rect(130.0, 130.0, 0.0, 40.0),
-                rect(130.0, 130.0, 0.0, 30.0),
-                slot_preview(DropGuideSlot::Edge(Edge::Left)),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::EmptyDropGuideHitRegion { .. }),
+    let outer = cluster(&ready, DropGuideScope::Outer);
+    assert_eq!(
+        outer.targets().map(|(slot, _)| slot).collect::<Vec<_>>(),
+        canonical_outer_slots()
     );
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                rect(-1.0, 130.0, 40.0, 40.0),
-                rect(0.0, 135.0, 30.0, 30.0),
-                slot_preview(DropGuideSlot::Edge(Edge::Left)),
-            ),
-            LAYER,
-        ),
-        |error| {
-            matches!(
-                error,
-                SceneBuildError::DropGuideHitRegionOutsideSurface { .. }
-            )
-        },
-    );
-}
-
-#[test]
-fn guide_draw_geometry_and_layer_are_validated_independently() {
-    let fixture = fixture();
-    let geometry = GeometryFixture::new(&fixture);
-
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                slot_hit(DropGuideSlot::Edge(Edge::Left)),
-                rect(135.0, 135.0, 0.0, 30.0),
-                slot_preview(DropGuideSlot::Edge(Edge::Left)),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::EmptyDropGuideDraw { .. }),
-    );
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                slot_hit(DropGuideSlot::Edge(Edge::Left)),
-                rect(125.0, 135.0, 30.0, 30.0),
-                slot_preview(DropGuideSlot::Edge(Edge::Left)),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::DropGuideDrawOutsideHitRegion { .. }),
-    );
-}
-
-#[test]
-fn guide_preview_geometry_and_target_layer_are_validated_independently() {
-    let fixture = fixture();
-    let geometry = GeometryFixture::new(&fixture);
-
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                slot_hit(DropGuideSlot::Edge(Edge::Left)),
-                slot_draw(DropGuideSlot::Edge(Edge::Left)),
-                rect(0.0, 0.0, 0.0, 300.0),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::EmptyDropVisual { .. }),
-    );
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                LAYER,
-                slot_hit(DropGuideSlot::Edge(Edge::Left)),
-                slot_draw(DropGuideSlot::Edge(Edge::Left)),
-                rect(-1.0, 0.0, 140.0, 300.0),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::DropVisualOutsideSurface { .. }),
-    );
-    assert_cluster_rejected(
-        &fixture,
-        SPLIT_SURFACE,
-        geometry.cluster(
-            bounds(),
-            geometry.left(
-                SceneLayerKey::new(LAYER.get() + 1),
-                slot_hit(DropGuideSlot::Edge(Edge::Left)),
-                slot_draw(DropGuideSlot::Edge(Edge::Left)),
-                slot_preview(DropGuideSlot::Edge(Edge::Left)),
-            ),
-            LAYER,
-        ),
-        |error| matches!(error, SceneBuildError::DropGuideTargetLayerMismatch { .. }),
-    );
-}
-
-#[test]
-fn guide_clusters_and_slots_have_canonical_order_after_sealing() {
-    let fixture = fixture();
-    let first_tabs = fixture.split_tabs_a.min(fixture.split_tabs_b);
-    let second_tabs = fixture.split_tabs_a.max(fixture.split_tabs_b);
-    let inserted = [
-        DropGuideClusterId::outer(SPLIT_SURFACE, SPLIT_ROOT),
-        DropGuideClusterId::inner(SPLIT_SURFACE, SPLIT_ROOT, second_tabs),
-        DropGuideClusterId::inner(SPLIT_SURFACE, SPLIT_ROOT, first_tabs),
-    ];
-    let mut ready = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    ready.push_drop_guide_cluster(outer_cluster(&fixture));
-    ready.push_drop_guide_cluster(nested_inner_cluster(&fixture, second_tabs));
-    ready.push_drop_guide_cluster(nested_inner_cluster(&fixture, first_tabs));
-
-    let scene = publish(&fixture, SPLIT_SURFACE, ready, DockPolicy::default())
-        .expect("complete guides seal successfully");
-    let ready = ready_from(&scene, SPLIT_SURFACE);
-    let ids = ready
-        .drop_guide_clusters()
-        .iter()
-        .map(DropGuideClusterRecord::id)
-        .collect::<Vec<_>>();
-    let mut expected = inserted;
-    expected.sort_unstable();
-    assert_eq!(ids, expected);
-    for cluster in ready.drop_guide_clusters() {
-        let target_ids = cluster
-            .targets()
-            .map(|(_, target)| target.id())
-            .collect::<Vec<_>>();
-        let mut sorted = target_ids.clone();
-        sorted.sort_unstable();
-        assert_eq!(target_ids, sorted);
+    for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
+        assert!(matches!(
+            outer
+                .target(DropGuideSlot::Edge(edge))
+                .expect("outer edge slot is complete")
+                .id(),
+            DropTargetId::OuterEdge { node, .. } if node == fixture.single_tabs
+        ));
     }
 }
 
 #[test]
-fn policy_canonicalization_applies_to_every_guide_owned_target() {
+fn published_plans_keep_clusters_and_slots_in_canonical_order() {
+    let fixture = fixture();
+    let (engine, _host) = publish_all_surfaces(engine(&fixture, DockPolicy::default()));
+    let ready = ready_from(&engine, SPLIT_SURFACE);
+
+    let cluster_ids = ready
+        .drop_guide_clusters()
+        .iter()
+        .map(DropGuideClusterRecord::id)
+        .collect::<Vec<_>>();
+    let mut sorted_cluster_ids = cluster_ids.clone();
+    sorted_cluster_ids.sort_unstable();
+    assert_eq!(cluster_ids, sorted_cluster_ids);
+    assert_eq!(
+        cluster_ids,
+        [
+            DropGuideClusterId::inner(SPLIT_SURFACE, SPLIT_ROOT, fixture.split_tabs_a),
+            DropGuideClusterId::inner(SPLIT_SURFACE, SPLIT_ROOT, fixture.split_tabs_b),
+            DropGuideClusterId::outer(SPLIT_SURFACE, SPLIT_ROOT),
+        ]
+        .into_iter()
+        .collect::<Vec<_>>()
+    );
+
+    for cluster in ready.drop_guide_clusters() {
+        let slots = cluster.targets().map(|(slot, _)| slot).collect::<Vec<_>>();
+        match cluster.id().scope {
+            DropGuideScope::Inner(_) => assert_eq!(slots, canonical_inner_slots()),
+            DropGuideScope::Outer => assert_eq!(slots, canonical_outer_slots()),
+        }
+    }
+}
+
+#[test]
+fn compiled_guide_geometry_separates_activation_draw_hit_and_preview() {
+    let fixture = fixture();
+    let (mut engine, mut host) = engine(&fixture, DockPolicy::default());
+    support::install_surface_projection(&mut engine, &mut host, SPLIT_SURFACE, bounds());
+    let ready = ready_from(&engine, SPLIT_SURFACE);
+
+    for cluster in ready.drop_guide_clusters() {
+        let activation = cluster.activation().rect();
+        for (slot, guide) in cluster.targets() {
+            let draw = guide.draw();
+            let hit = guide.target().region().rect();
+            let preview = guide.target().visual().rect();
+
+            assert!(
+                rect_contains(activation, hit),
+                "{slot:?} hit geometry stays inside cluster activation"
+            );
+            assert!(
+                rect_contains(hit, draw),
+                "{slot:?} draw geometry stays inside the exact hit geometry"
+            );
+            assert!(
+                rect_contains(activation, preview),
+                "{slot:?} preview stays inside cluster activation"
+            );
+            assert_ne!(draw, hit, "{slot:?} draw and hit remain distinct");
+            assert_ne!(draw, preview, "{slot:?} draw and preview remain distinct");
+            assert_ne!(hit, preview, "{slot:?} hit and preview remain distinct");
+            assert_eq!(cluster.layer(), guide.target().layer());
+        }
+    }
+}
+
+#[test]
+fn policy_availability_is_compiled_into_every_guide_owned_target() {
     let fixture = fixture();
     let mut policy = DockPolicy::default();
     policy.set_allow_tab_merge(false);
     policy.set_allow_edge_split(false);
-    let mut ready = ReadySurfaceScene::new(SPLIT_SURFACE, bounds());
-    ready.push_drop_guide_cluster(nested_inner_cluster(&fixture, fixture.split_tabs_a));
+    let (engine, _host) = publish_all_surfaces(engine(&fixture, policy));
+    let ready = ready_from(&engine, SPLIT_SURFACE);
 
-    let scene = publish(&fixture, SPLIT_SURFACE, ready, policy)
-        .expect("policy disables targets without invalidating scene facts");
-    let cluster = &ready_from(&scene, SPLIT_SURFACE).drop_guide_clusters()[0];
-    for (_, target) in cluster.targets() {
-        assert_eq!(
-            target.target().availability(),
-            DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
-        );
+    for cluster in ready.drop_guide_clusters() {
+        for (_, target) in cluster.targets() {
+            assert_eq!(
+                target.target().availability(),
+                DropTargetAvailability::Unavailable(DropTargetUnavailable::PolicyDisabled)
+            );
+        }
     }
 }

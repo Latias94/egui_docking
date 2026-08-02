@@ -1,15 +1,14 @@
-//! Versioned persistence for native viewport placement preferences.
+//! Runtime native viewport placement preferences and document-internal wire data.
 //!
-//! This sidecar is deliberately independent from
-//! [`crate::persistence::WorkspaceSnapshot`]. It stores only stable logical
-//! surface identities and last-confirmed placement hints. Native window tokens,
-//! incarnations, focus, hover, scene proofs, and other session authority never
-//! cross this boundary.
+//! Placement snapshots are not an independent durable boundary. They are encoded,
+//! hashed, restored, and published only as part of [`crate::document::DockspaceDocument`].
+//! Public callers receive validated runtime preferences and register them through
+//! the session which owns the workspace, external item identities, and lineage.
 //!
-//! Work-area tokens and scale factors are hints from the observation which
-//! confirmed the outer rectangle. A platform adapter must revalidate them
-//! against its current authoritative inventory before applying a restored
-//! preference.
+//! Scale factors are durable hints from the observation which confirmed the
+//! outer rectangle. Provider-local work-area tokens are deliberately excluded
+//! from the wire schema and must be reacquired from the current authoritative
+//! inventory after restore.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -19,12 +18,12 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::geometry::{GeometryError, PhysicalRect, ScaleFactor};
+use crate::geometry::{GeometryError, PhysicalRect, PhysicalSize, ScaleFactor};
 use crate::ids::SurfaceId;
 use crate::viewport::WorkAreaToken;
 
 /// The viewport-placement sidecar schema emitted and accepted by this release.
-pub const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 1;
+pub(crate) const VIEWPORT_PLACEMENT_SNAPSHOT_VERSION: u32 = 1;
 
 /// A durable window presentation preference.
 ///
@@ -46,6 +45,7 @@ pub enum WindowPresentationPreference {
 pub struct ViewportPlacementPreference {
     surface: SurfaceId,
     outer_rect: PhysicalRect,
+    inner_size: Option<PhysicalSize>,
     work_area: Option<WorkAreaToken>,
     scale_factor: Option<ScaleFactor>,
     presentation: Option<WindowPresentationPreference>,
@@ -68,10 +68,30 @@ impl ViewportPlacementPreference {
         Ok(Self {
             surface,
             outer_rect,
+            inner_size: None,
             work_area: None,
             scale_factor: None,
             presentation: None,
         })
+    }
+
+    /// Associates the last-confirmed native inner size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ViewportPlacementRestoreError::EmptyInnerSize`] when either
+    /// dimension is zero and therefore cannot restore a native window.
+    pub fn try_with_inner_size(
+        mut self,
+        inner_size: PhysicalSize,
+    ) -> Result<Self, ViewportPlacementRestoreError> {
+        if inner_size.width() == 0.0 || inner_size.height() == 0.0 {
+            return Err(ViewportPlacementRestoreError::EmptyInnerSize {
+                surface: self.surface,
+            });
+        }
+        self.inner_size = Some(inner_size);
+        Ok(self)
     }
 
     /// Associates the work-area identity which confirmed this placement.
@@ -105,6 +125,12 @@ impl ViewportPlacementPreference {
     #[must_use]
     pub const fn outer_rect(self) -> PhysicalRect {
         self.outer_rect
+    }
+
+    /// Returns the last-confirmed native inner size, when available.
+    #[must_use]
+    pub const fn inner_size(self) -> Option<PhysicalSize> {
+        self.inner_size
     }
 
     /// Returns the work-area hint recorded with the rectangle.
@@ -176,6 +202,24 @@ impl ViewportPlacementPreferences {
     pub fn is_empty(&self) -> bool {
         self.placements.is_empty()
     }
+
+    pub(crate) fn retain_surfaces(&mut self, surfaces: &BTreeSet<SurfaceId>) {
+        self.placements
+            .retain(|surface, _| surfaces.contains(surface));
+    }
+
+    pub(crate) fn remap_surfaces(&mut self, remap: &BTreeMap<SurfaceId, SurfaceId>) {
+        let placements = std::mem::take(&mut self.placements);
+        self.placements = placements
+            .into_values()
+            .map(|mut preference| {
+                if let Some(surface) = remap.get(&preference.surface) {
+                    preference.surface = *surface;
+                }
+                (preference.surface, preference)
+            })
+            .collect();
+    }
 }
 
 /// A versioned, renderer-neutral viewport placement sidecar.
@@ -184,11 +228,9 @@ impl ViewportPlacementPreferences {
 /// or migrate untrusted data. Call [`Self::restore`] before using any record as
 /// a platform placement preference.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ViewportPlacementSnapshot {
-    /// Snapshot schema version.
-    pub version: u32,
+pub(crate) struct ViewportPlacementSnapshot {
     /// One record per stable logical surface.
-    pub placements: Vec<SnapshotViewportPlacementRecord>,
+    pub(crate) placements: Vec<SnapshotViewportPlacementRecord>,
 }
 
 #[derive(Serialize)]
@@ -202,7 +244,7 @@ impl Serialize for ViewportPlacementSnapshot {
         S: Serializer,
     {
         let mut document = serializer.serialize_tuple(2)?;
-        document.serialize_element(&self.version)?;
+        document.serialize_element(&VIEWPORT_PLACEMENT_SNAPSHOT_VERSION)?;
         document.serialize_element(&ViewportPlacementSnapshotPayloadRef {
             placements: &self.placements,
         })?;
@@ -211,11 +253,17 @@ impl Serialize for ViewportPlacementSnapshot {
 }
 
 impl ViewportPlacementSnapshot {
+    /// Returns the schema version emitted for this normalized snapshot.
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn version(&self) -> u32 {
+        VIEWPORT_PLACEMENT_SNAPSHOT_VERSION
+    }
+
     /// Captures a canonical sidecar from validated preferences.
     #[must_use]
-    pub fn capture(preferences: &ViewportPlacementPreferences) -> Self {
+    pub(crate) fn capture(preferences: &ViewportPlacementPreferences) -> Self {
         Self {
-            version: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
             placements: preferences
                 .iter()
                 .copied()
@@ -231,14 +279,9 @@ impl ViewportPlacementSnapshot {
     /// Returns a structured error for unsupported versions, duplicate surfaces,
     /// non-finite or invalid geometry, empty outer rectangles, and invalid scale
     /// factors.
-    pub fn restore(&self) -> Result<ViewportPlacementPreferences, ViewportPlacementRestoreError> {
-        if self.version != VIEWPORT_PLACEMENT_SNAPSHOT_VERSION {
-            return Err(ViewportPlacementRestoreError::UnsupportedVersion {
-                found: self.version,
-                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
-            });
-        }
-
+    pub(crate) fn restore(
+        &self,
+    ) -> Result<ViewportPlacementPreferences, ViewportPlacementRestoreError> {
         let mut surfaces = BTreeSet::new();
         for record in &self.placements {
             if !surfaces.insert(record.surface) {
@@ -260,17 +303,18 @@ impl ViewportPlacementSnapshot {
 /// One untrusted persisted placement record.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SnapshotViewportPlacementRecord {
+pub(crate) struct SnapshotViewportPlacementRecord {
     /// Stable logical surface identity.
-    pub surface: SurfaceId,
+    pub(crate) surface: SurfaceId,
     /// Last-confirmed native outer rectangle in desktop physical pixels.
-    pub outer_rect: SnapshotPhysicalRect,
-    /// Optional provider-defined work-area identity hint.
-    pub work_area: Option<u64>,
+    pub(crate) outer_rect: SnapshotPhysicalRect,
+    /// Optional native inner size captured with the outer rectangle.
+    #[serde(default)]
+    pub(crate) inner_size: Option<SnapshotPhysicalSize>,
     /// Optional scale-factor hint from the confirming observation.
-    pub scale_factor: Option<f64>,
+    pub(crate) scale_factor: Option<f64>,
     /// Optional durable window presentation preference.
-    pub presentation: Option<WindowPresentationPreference>,
+    pub(crate) presentation: Option<WindowPresentationPreference>,
 }
 
 impl SnapshotViewportPlacementRecord {
@@ -282,8 +326,14 @@ impl SnapshotViewportPlacementRecord {
             }
         })?;
         let mut preference = ViewportPlacementPreference::new(self.surface, outer_rect)?;
-        if let Some(work_area) = self.work_area {
-            preference = preference.with_work_area(WorkAreaToken::new(work_area));
+        if let Some(value) = self.inner_size {
+            let inner_size = value.restore().map_err(|source| {
+                ViewportPlacementRestoreError::InvalidInnerSize {
+                    surface: self.surface,
+                    source,
+                }
+            })?;
+            preference = preference.try_with_inner_size(inner_size)?;
         }
         if let Some(value) = self.scale_factor {
             let scale_factor = ScaleFactor::new(value).map_err(|source| {
@@ -306,9 +356,32 @@ impl From<ViewportPlacementPreference> for SnapshotViewportPlacementRecord {
         Self {
             surface: preference.surface(),
             outer_rect: SnapshotPhysicalRect::from(preference.outer_rect()),
-            work_area: preference.work_area().map(WorkAreaToken::get),
+            inner_size: preference.inner_size().map(SnapshotPhysicalSize::from),
             scale_factor: preference.scale_factor().map(ScaleFactor::get),
             presentation: preference.presentation(),
+        }
+    }
+}
+
+/// An untrusted physical size represented by scalar components.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SnapshotPhysicalSize {
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+}
+
+impl SnapshotPhysicalSize {
+    fn restore(self) -> Result<PhysicalSize, GeometryError> {
+        PhysicalSize::new(self.width, self.height)
+    }
+}
+
+impl From<PhysicalSize> for SnapshotPhysicalSize {
+    fn from(size: PhysicalSize) -> Self {
+        Self {
+            width: size.width(),
+            height: size.height(),
         }
     }
 }
@@ -316,15 +389,15 @@ impl From<ViewportPlacementPreference> for SnapshotViewportPlacementRecord {
 /// An untrusted physical rectangle represented by scalar components.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SnapshotPhysicalRect {
+pub(crate) struct SnapshotPhysicalRect {
     /// Minimum desktop-physical horizontal coordinate.
-    pub x: f64,
+    pub(crate) x: f64,
     /// Minimum desktop-physical vertical coordinate.
-    pub y: f64,
+    pub(crate) y: f64,
     /// Physical width, which must be finite and strictly positive for placement.
-    pub width: f64,
+    pub(crate) width: f64,
     /// Physical height, which must be finite and strictly positive for placement.
-    pub height: f64,
+    pub(crate) height: f64,
 }
 
 impl SnapshotPhysicalRect {
@@ -353,7 +426,6 @@ struct ViewportPlacementSnapshotV1 {
 impl ViewportPlacementSnapshotV1 {
     fn into_snapshot(self) -> ViewportPlacementSnapshot {
         ViewportPlacementSnapshot {
-            version: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
             placements: self.placements,
         }
     }
@@ -366,7 +438,7 @@ impl ViewportPlacementSnapshotV1 {
 /// accept any payload shape so callers receive a typed version error instead of
 /// a misleading current-schema decoding error.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ViewportPlacementSnapshotEnvelope {
+pub(crate) struct ViewportPlacementSnapshotEnvelope {
     version: u32,
     snapshot: Option<ViewportPlacementSnapshot>,
 }
@@ -374,7 +446,8 @@ pub struct ViewportPlacementSnapshotEnvelope {
 impl ViewportPlacementSnapshotEnvelope {
     /// Returns the schema version declared by the serialized document.
     #[must_use]
-    pub const fn version(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) const fn version(&self) -> u32 {
         self.version
     }
 
@@ -384,7 +457,9 @@ impl ViewportPlacementSnapshotEnvelope {
     ///
     /// Returns [`ViewportPlacementRestoreError::UnsupportedVersion`] for every
     /// version other than [`VIEWPORT_PLACEMENT_SNAPSHOT_VERSION`].
-    pub fn into_snapshot(self) -> Result<ViewportPlacementSnapshot, ViewportPlacementRestoreError> {
+    pub(crate) fn into_snapshot(
+        self,
+    ) -> Result<ViewportPlacementSnapshot, ViewportPlacementRestoreError> {
         self.snapshot
             .ok_or(ViewportPlacementRestoreError::UnsupportedVersion {
                 found: self.version,
@@ -397,7 +472,8 @@ impl ViewportPlacementSnapshotEnvelope {
     /// # Errors
     ///
     /// Returns a structured version, identity, geometry, or scale-factor error.
-    pub fn into_preferences(
+    #[cfg(test)]
+    pub(crate) fn into_preferences(
         self,
     ) -> Result<ViewportPlacementPreferences, ViewportPlacementRestoreError> {
         self.into_snapshot()?.restore()
@@ -480,6 +556,20 @@ pub enum ViewportPlacementRestoreError {
         /// Stable logical surface owning the record.
         surface: SurfaceId,
     },
+    /// A record contains an invalid inner size.
+    #[error("surface {surface} has an invalid physical inner size: {source}")]
+    InvalidInnerSize {
+        /// Stable logical surface owning the record.
+        surface: SurfaceId,
+        /// Geometry validation failure.
+        source: GeometryError,
+    },
+    /// A record contains a valid but empty inner size.
+    #[error("surface {surface} has an empty physical inner size")]
+    EmptyInnerSize {
+        /// Stable logical surface owning the record.
+        surface: SurfaceId,
+    },
     /// A record contains an invalid scale-factor hint.
     #[error("surface {surface} has an invalid scale-factor hint: {source}")]
     InvalidScaleFactor {
@@ -488,4 +578,142 @@ pub enum ViewportPlacementRestoreError {
         /// Scale validation failure.
         source: GeometryError,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIRST: SurfaceId = SurfaceId::new(7);
+
+    fn record() -> SnapshotViewportPlacementRecord {
+        SnapshotViewportPlacementRecord {
+            surface: FIRST,
+            outer_rect: SnapshotPhysicalRect {
+                x: 100.0,
+                y: -40.0,
+                width: 900.0,
+                height: 700.0,
+            },
+            inner_size: Some(SnapshotPhysicalSize {
+                width: 880.0,
+                height: 660.0,
+            }),
+            scale_factor: Some(1.5),
+            presentation: Some(WindowPresentationPreference::Maximized),
+        }
+    }
+
+    #[test]
+    fn internal_component_round_trip_drops_provider_local_work_area_identity() {
+        let mut preferences = ViewportPlacementPreferences::new();
+        preferences.set(
+            record()
+                .restore()
+                .expect("fixture placement must validate")
+                .with_work_area(WorkAreaToken::new(31)),
+        );
+        let snapshot = ViewportPlacementSnapshot::capture(&preferences);
+        assert_eq!(snapshot.version(), VIEWPORT_PLACEMENT_SNAPSHOT_VERSION);
+        let json = serde_json::to_string(&snapshot).expect("component must encode");
+        let restored = serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(&json)
+            .expect("component envelope must decode")
+            .into_preferences()
+            .expect("component must validate");
+        let placement = restored.get(FIRST).expect("placement must restore");
+        assert_eq!(placement.work_area(), None);
+        assert_eq!(
+            placement.inner_size(),
+            preferences.get(FIRST).unwrap().inner_size()
+        );
+        assert_eq!(
+            placement.scale_factor(),
+            preferences.get(FIRST).unwrap().scale_factor()
+        );
+        assert_eq!(
+            placement.presentation(),
+            preferences.get(FIRST).unwrap().presentation()
+        );
+    }
+
+    #[test]
+    fn internal_component_rejects_future_versions_and_invalid_records() {
+        let future = serde_json::from_str::<ViewportPlacementSnapshotEnvelope>(
+            r#"[9,{"future":{"shape":[1,2,3]}}]"#,
+        )
+        .expect("future payload must be skipped");
+        assert_eq!(future.version(), 9);
+        assert_eq!(
+            future
+                .into_preferences()
+                .expect_err("future component must not restore"),
+            ViewportPlacementRestoreError::UnsupportedVersion {
+                found: 9,
+                supported: VIEWPORT_PLACEMENT_SNAPSHOT_VERSION,
+            }
+        );
+
+        let duplicate = ViewportPlacementSnapshot {
+            placements: vec![record(), record()],
+        };
+        assert_eq!(
+            duplicate
+                .restore()
+                .expect_err("duplicate surface must be rejected"),
+            ViewportPlacementRestoreError::DuplicateSurface { surface: FIRST }
+        );
+
+        let mut invalid = record();
+        invalid.outer_rect.width = 0.0;
+        assert_eq!(
+            ViewportPlacementSnapshot {
+                placements: vec![invalid]
+            }
+            .restore()
+            .expect_err("empty placement must be rejected"),
+            ViewportPlacementRestoreError::EmptyOuterRect { surface: FIRST }
+        );
+
+        let mut invalid = record();
+        invalid
+            .inner_size
+            .as_mut()
+            .expect("fixture inner size exists")
+            .width = 0.0;
+        assert_eq!(
+            ViewportPlacementSnapshot {
+                placements: vec![invalid]
+            }
+            .restore()
+            .expect_err("empty inner size must be rejected"),
+            ViewportPlacementRestoreError::EmptyInnerSize { surface: FIRST }
+        );
+    }
+
+    #[test]
+    fn missing_inner_size_remains_an_explicit_legacy_absence() {
+        let snapshot = ViewportPlacementSnapshot {
+            placements: vec![record()],
+        };
+        let mut value = serde_json::to_value(snapshot).expect("component must encode");
+        value[1]["placements"][0]
+            .as_object_mut()
+            .expect("placement payload is an object")
+            .remove("inner_size");
+        let restored = serde_json::from_value::<ViewportPlacementSnapshotEnvelope>(value)
+            .expect("missing optional inner size must decode")
+            .into_preferences()
+            .expect("legacy placement remains valid");
+        assert_eq!(restored.get(FIRST).unwrap().inner_size(), None);
+    }
+
+    #[test]
+    fn supported_component_schema_rejects_unknown_fields() {
+        let snapshot = ViewportPlacementSnapshot {
+            placements: vec![record()],
+        };
+        let mut value = serde_json::to_value(snapshot).expect("component must encode");
+        value[1]["placements"][0]["window_token"] = serde_json::json!(99);
+        assert!(serde_json::from_value::<ViewportPlacementSnapshotEnvelope>(value).is_err());
+    }
 }

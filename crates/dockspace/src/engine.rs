@@ -1,230 +1,1157 @@
 //! Single-writer input queue and atomic headless state reducer.
 
+mod close_workflow;
+mod contained_geometry;
+mod host_frame;
+mod input;
+mod native_admission;
+mod pointer_contained;
+mod pointer_proof;
+mod pointer_session;
+mod pointer_splitter;
+mod pointer_transaction;
+mod presentation_authority;
+mod presentation_identity;
+mod presentation_roster;
+mod provider_lifecycle;
+mod reducer;
+mod retention;
+mod scroll_interaction;
+mod semantic_keyboard;
+mod semantic_receiver;
+mod splitter_geometry;
+mod surface_runtime;
+mod surface_vacancy;
+mod tab_strip_input;
+
+#[cfg(test)]
+use self::tab_strip_input::aligned_tab_strip_scroll_offset;
+
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use thiserror::Error;
 
+use self::contained_geometry::{
+    clamp_contained_rect, clamp_moved_contained_rect, contained_resize_edges,
+    contained_transform_requested_rect, translated_contained_rect,
+};
+use self::input::TabScrollAdjustmentKind;
+pub use self::input::{
+    EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
+    PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
+    PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
+    ValidatedWorkspaceRestore,
+};
+use self::native_admission::NativeAdmissionState;
+use self::presentation_authority::PresentationAuthorityState;
+use self::presentation_identity::{
+    DragPresentationIdentityReservation, PresentationIdentityAuthority,
+};
+use self::presentation_roster::{
+    FrozenSurfacePresentationOutput, HostPresentationObligationSet, HostPresentationRoster,
+    presentation_endpoint_from_capture,
+};
+pub use self::presentation_roster::{
+    HostPresentationDisposition, HostPresentationDispositionOutcome, HostPresentationObligation,
+    HostPresentationSlot, HostPresentationUnavailableReason,
+};
+use self::reducer::{
+    HostBackendIngressCursor, HostPointerProtocolSegment, PreparedHostPointerProtocol,
+    SequencedInput,
+};
+use self::splitter_geometry::{
+    prepare_resize_axis_groups, resize_delta_interval, split_resize_update, split_resize_updates,
+};
+use self::surface_vacancy::TickVacancyLedger;
+
+use crate::backend_ingress::{
+    BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitWatermark,
+    BackendIngressError, BackendIngressLease, BackendIngressOrdinal, BackendIngressPayload,
+    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
+};
+use crate::close_plan::{
+    CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCoordinator, CloseDecision,
+    CloseDecisionToken, CloseDestroyedProof, CloseItemRequirement, CloseNativeSettlement,
+    ClosePlan, ClosePlanLookup, ClosePlanPhase, ClosePlanTarget, CloseRequestId,
+    CloseResolutionOutcome, DeferredCloseDecision, DeferredCloseToken, NativeCloseEdge,
+    SurfaceCloseRequest, SurfaceMainRehomeTarget, SurfaceRehomeTarget,
+};
 use crate::command::{
-    CommandOutcome, MovePayload, NodeSource, RootContent, RootPresentationTarget, WorkspaceCommand,
+    CloseCommitOutcome, CommandOutcome, ContainedPosition, ContentCloseTarget, MovePayload,
+    NodeFingerprint, NodeSource, RootContent, RootPresentationTarget, SplitResize,
+    WorkspaceCommand,
 };
-use crate::coordinates::CoordinateSnapshot;
-use crate::drop_resolver::{DropAffordance, DropResolution, DropResolutionError, query_drop};
-use crate::effect::{EffectResult, EffectTransition};
-use crate::error::TransactionError;
-use crate::event::{WorkspaceEvent, WorkspaceEventKind};
+use crate::coordinates::{CoordinateSnapshot, TearOffPlacementRequest, solve_tear_off_placement};
+use crate::drop_resolver::{
+    DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop,
+};
+use crate::effect::{
+    EffectDispatchResult, EffectResult, EffectTransition, NativeCloseResolution, PlatformEffect,
+    PlatformEffectEmission,
+};
+use crate::error::{CommandError, ReferenceRole, TransactionError};
+use crate::event::{ReductionCause, WorkspaceEvent, WorkspaceEventKind};
 use crate::frame::{
-    NativeCreateSagaId, PanelFocus, ViewportCloseDecision, ViewportCloseDecisionRejection,
-    ViewportClosePlan, ViewportCloseRequestId, ViewportCloseStatus, ViewportCoordinator,
-    ViewportCoordinatorError,
+    PanelFocus, SurfaceVacancyAuthority, ViewportCoordinator, ViewportCoordinatorError,
 };
-use crate::graph::{ContainedStackKey, Node, Workspace};
-use crate::ids::{InputSequence, WorkspaceRevision};
+use crate::geometry::{LogicalRect, LogicalSize};
+use crate::graph::{Node, Workspace};
+use crate::ids::{
+    EngineAuthorityDomainId, FloatingPresentationId, HostPresentationAttemptId, InputSequence,
+    ItemId, NativeCreateSagaId, PresentationIdentityFrontier, ReducerCausalOrdinal, ReducerTickId,
+    RootId, SourceSequence, StableInputSourceId, SurfaceId, WorkspaceRevision,
+};
 use crate::intent::{
-    Authority, ContainedHorizontalResizeEdge, ContainedPlacementProof,
-    ContainedPlacementUnavailable, ContainedPresentationOffer, ContainedStackPlacement,
-    ContainedTransformKind, ContainedVerticalResizeEdge, DragOrigin, PointerButtonState,
-    RendererIntent, SurfacePointer, TargetAuthority, TearOffRequest,
+    Authority, CloseActivation, CloseSceneTarget, ContainedGestureKind, ContainedPlacementProof,
+    ContainedPlacementUnavailable, ContainedTransformKind, LocalTargetAuthorityProof,
+    LocalTargetObservation, NativePlacementProof, NativePresentationOffer, NativeTearOffProposal,
+    PointerButton, SurfacePointer, TabGestureSource, TargetAuthority,
 };
 use crate::interaction::{
-    ActiveContainedTransform, ContainedMutationKind, ContainedTransformSessionId,
-    ContainedTransformStart, DragArmStart, DragObservationProtocol, FrozenContainedDragOrigin,
-    FrozenDragOrigin, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
+    ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart,
+    ContainedTransformPaintAcknowledgement, ContainedTransformPlacement, ContainedTransformPreview,
+    ContainedTransformSessionId, ContainedTransformStart, DragArmStart, EscapeDelivery,
+    FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin,
+    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
+    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
+    GestureOwner, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
-    InteractionState, InteractionStatus, PreparedNativeTearOff, PreviewProof,
-    PreviewResolutionStatus, PreviewVisual, WorkspaceDeliveryKind,
+    InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
+    PaintAcknowledgement, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus,
+    PreviewVisual, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
+    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
+    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
-use crate::platform::{PlatformCapability, PlatformSnapshot};
-use crate::policy::{DockPolicy, TearOffPresentation};
+use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
+use crate::operation::{
+    PreparedContentClose, PreparedSurfaceContentClose, prepare_content_close,
+    prepare_surface_content_close,
+};
+use crate::platform::{
+    CloseEffectAcknowledgement, PlatformCapability, PlatformSnapshot, WindowCloseObservation,
+};
+use crate::platform_provider::{
+    PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderAuthorityFrontier,
+    PlatformProviderReplacementTicket,
+};
+use crate::pointer_journal::{
+    DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
+    PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerEventDeliveryOwner, PointerInputLease, PointerJournalLedger, PointerJournalLedgerError,
+    PointerProviderScope, PointerStreamId, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
+    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
+    ValidatedDesktopRoute,
+};
+use crate::pointer_receiver::{
+    PointerReceiverAttemptError, PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster,
+    PointerReceiverCandidateRosterError, PointerReceiverCandidateSpec,
+    PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
+    PointerReceiverHoverHitDisposition, PointerReceiverObservation,
+    PointerReceiverObservationError, PointerReceiverPresentedOutput, PointerReceiverProbeReceipt,
+    PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError,
+    ValidatedPointerReceiverReceipt, ValidatedPointerReceiverReceiptBatch,
+};
+use crate::policy::{
+    DockPolicy, DockPolicyRequest, DockPolicySnapshot, DockPresentationMode,
+    DockResizePolicyRequest, DockSurfaceRecoveryPolicyRequest, DockSurfaceRecoveryRootFacts,
+    PolicyDecision, PolicyRevision, TabBarInteraction, TearOffPresentation,
+};
+use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
+use crate::presentation_hit::{
+    PresentationHitRegionId, PresentationHitRegionKind, PresentationHitResolutionError,
+    PresentationPointerLane,
+};
+use crate::presentation_observation::{
+    HostFrameKey, HostInteractionPresentation, HostPresentationEmission,
+    HostPresentationEmissionRequest, HostPresentationEndpoint, HostPresentationObservation,
+    HostPresentationObservationEntry, HostPresentationObservationOutcome,
+    HostPresentationOutputPayload, HostPresentationStreamId, NativeStagingPresentation,
+    NativeStagingResourceDescriptor, NativeStagingResourceId, PresentationHostLease,
+    PresentationHostRetirementReason, PresentationHostRetirementStatus, PresentationLedger,
+    PresentationLedgerDiagnostics, PresentationLedgerError, PresentationObservationReduction,
+    PresentationOutputSerial, PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
+    SurfacePresentationOutputTicket,
+};
+use crate::retention::{
+    InputSourceRetentionManifest, PresentationRetentionManifest, RuntimeRetentionManifest,
+};
 use crate::scene::{
-    BuildingScene, SceneBuildError, SceneGeneration, SceneStamp, SealedScene, SurfaceScene,
+    BootstrapSurfaceSceneReason, PopupGeometryUnavailableReason, PresentationPlan,
+    PresentationPlanValidator, SceneBuildError, SplitterResizeTarget, SplitterSceneId,
+    StaleSurfaceSceneReason, SurfaceCoordinateCapture, SurfaceInteractionProjection, SurfaceScene,
+    SurfaceSceneSet, SurfaceSceneStamp, TabBarRecord, TabListMenuBackdropRecord, TabListMenuRecord,
+    TabStripMemberRecord,
 };
+use crate::scene_compiler::{
+    PresentationCompilationError, compile_surface_measurements, derive_scene_requirement_draft,
+    derive_scene_requirement_draft_with_index,
+};
+use crate::scene_manifest::{
+    MeasurementUnavailableReason, RequirementRevision, SceneRequirementDraft,
+    SceneRequirementManifest, SurfaceMeasurementTicket, SurfaceMeasurements,
+    SurfaceRequirementRevision,
+};
+use crate::semantic_input::SemanticReceiverEvent;
 use crate::surface_recovery::{
-    ContainedRootPlacement, PendingSurfaceRecoveryDisposition, SurfaceForestPlacement,
-    SurfaceRecoveryState, SurfaceRecoveryTargetFacts, SurfaceRosterCaptureError,
-    SurfaceRosterDisposition, SurfaceRosterPlacement,
+    ContainedRootPlacement, ConvertedMainRecovery, RootRecoveryAnchor, RootRecoveryAnchorId,
+    SurfaceMainRehome, SurfaceRecoveryBlockedReason, SurfaceRecoveryBootstrap,
+    SurfaceRecoveryError, SurfaceRecoveryHostFacts, SurfaceRecoveryObligation,
+    SurfaceRecoveryObligationId, SurfaceRecoveryState, SurfaceRecoveryTarget,
+    SurfaceRecoveryTransaction, SurfaceRehomePlacement, SurfaceRosterCaptureError,
+    SurfaceRosterDisposition,
+};
+use crate::tab_strip::{
+    PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripInfluenceDomain,
+    TabStripStateDelta, TabStripStateError, TabStripStateKey, TabStripStateStore,
 };
 use crate::transaction::WorkspaceTransaction;
 use crate::transition::{
-    EngineTransition, EngineTransitionParts, InputOutcome, InputPriority, ReducedInput,
-    WorkspaceVersion,
+    BackendIngressProviderReplacementStart, ContentCloseRequestRejection, EngineTransition,
+    EngineTransitionParts, InputOutcome, InputPriority, PlatformProviderReplacementStart,
+    PresentationHostRetirementOutcome, ReducedInput, SurfaceCloseRequestRejection,
+    SurfaceContributionOutcome, SurfaceContributionRejection, SurfaceContributionUnavailableReason,
+    SurfaceSceneDelta, SurfaceSceneStateKind, WorkspaceVersion,
 };
 use crate::validation::WorkspaceValidationErrors;
-use crate::viewport::{ViewportRole, WindowToken};
+use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
 use crate::viewport_focus::{
-    ActivationStart, ActivationStartOutcome, FocusDelta, FocusObservationTransition,
-    ObservedPlatformFocusEffect, PaneFocusIntent, PaneFocusIntentGeneration, PaneFocusObservation,
-    PaneFocusRevealRejection, PanelFocusRecord, PlatformFocusEvidence, PlatformFocusRestoreGate,
+    ActivationStart, ActivationStartOutcome, FocusCausalStamp, FocusDelta,
+    FocusObservationTransition, ObservedPlatformFocusEffect, PaneFocusDisposition, PaneFocusIntent,
+    PaneFocusIntentGeneration, PaneFocusObservation, PaneFocusRevealRejection, PanelFocusRecord,
+    PendingPlatformFocus, PlatformFocusEvidence, PlatformFocusRestoreGate,
     ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
 };
+use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission};
 
-/// Input accepted by the U3 engine boundary.
-#[derive(Debug, Clone, PartialEq)]
-pub enum EngineInput {
-    /// Bind an existing adapter window to a current logical surface.
-    RegisterViewport {
-        /// Workspace version whose surface roster was inspected.
-        expected: WorkspaceVersion,
-        /// Stable logical surface already present in the workspace.
-        surface: crate::ids::SurfaceId,
-        /// Opaque adapter token, never an operating-system handle.
-        token: WindowToken,
-        /// Root or docking-owned child close semantics.
-        role: ViewportRole,
-        /// Whole-root fallback required for docking-owned child windows.
-        recovery: Option<crate::intent::ContainedTearOffProposal>,
-    },
-    /// Publish one complete frame-before-paint platform snapshot.
-    PublishPlatformSnapshot {
-        /// Workspace epoch against which adapter bindings were observed.
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        /// Complete capabilities, inventory, and pointer facts.
-        snapshot: PlatformSnapshot,
-    },
-    /// Report an adapter dispatch result without claiming the effect was observed applied.
-    ReportPlatformEffect {
-        /// Workspace epoch in which the result was received.
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        /// Exact effect identity and non-observational dispatch result.
-        result: EffectResult,
-    },
-    /// Request explicit activation of one exact current docking viewport.
-    ActivateViewport {
-        /// Workspace version whose binding and pane were inspected.
-        expected: WorkspaceVersion,
-        /// Exact-incarnation activation with explicit item-or-none pane focus.
-        request: ViewportActivationRequest,
-    },
-    /// Publish one adapter-observed pane-focus fact.
-    PublishPaneFocusObservation {
-        /// Workspace epoch in which the exact binding was observed.
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        /// Provider-owned pane focus observation and optional intent acknowledgement.
-        observation: PaneFocusObservation,
-    },
-    /// Decide one exact edge-triggered native close request.
-    DecideViewportClose {
-        /// Workspace version against which the close plan was captured.
-        expected: WorkspaceVersion,
-        /// Exact close request produced by a platform snapshot transition.
-        request: ViewportCloseRequestId,
-        /// Application veto or frozen accepted plan.
-        decision: ViewportCloseDecision,
-    },
-    /// Explicitly cancel one unresolved native-create saga.
-    CancelNativeCreate {
-        /// Workspace version against which the saga was inspected.
-        expected: WorkspaceVersion,
-        /// Exact create saga to cancel without a timeout heuristic.
-        saga: NativeCreateSagaId,
-    },
-    /// Explicitly retry one exact failed cleanup under its phase-specific protocol.
+const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(u64::MAX);
+
+/// Core-minted capture of one surface measurement callback's exact base facts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceContributionToken {
+    base: SurfaceSceneStamp,
+    coordinates: SurfaceCoordinateCapture,
+}
+
+impl SurfaceContributionToken {
+    /// Returns the exact presentation authority observed before measurement.
+    #[must_use]
+    pub const fn base(self) -> SurfaceSceneStamp {
+        self.base
+    }
+
+    /// Returns the exact requirement the adapter must answer.
+    #[must_use]
+    pub const fn ticket(self) -> SurfaceMeasurementTicket {
+        self.base.requirement()
+    }
+
+    /// Returns the sole logical surface this token can contribute.
+    #[must_use]
+    pub const fn surface(self) -> crate::ids::SurfaceId {
+        self.base.surface()
+    }
+}
+
+/// Paint result of a core-prepared surface contribution.
+#[derive(Debug)]
+pub enum PreparedSurfacePaintCandidate<'a> {
+    /// A complete, validated candidate available for adapter resource preparation.
+    Ready(PreparedReadySurfacePaintCandidate<'a>),
+    /// The host explicitly retained the current exact ready candidate.
     ///
-    /// A definitively failed destructive cleanup is retried only under its original
-    /// cleanup-specific guards. `ObservationDispatchFailed` and `ObservationUnsupported` may
-    /// retry only an observation-only `ContinueCleanup` which keeps the same destructive
-    /// predecessor; they never redispatch that predecessor.
-    RetryViewportCleanup {
-        /// Workspace version against which the failed cleanup was inspected.
-        expected: WorkspaceVersion,
-        /// Exact failed cleanup effect; indeterminate and all other phases are not retryable.
-        failed_effect: crate::effect::EffectId,
+    /// This does not carry a replacement plan. The adapter must continue to
+    /// paint the current core projection identified by `ticket`; a later exact
+    /// presentation observation remains the only way to grant hit
+    /// authority.
+    Retained {
+        /// Exact current ready candidate retained by this contribution.
+        ticket: SurfacePresentationOutputTicket,
     },
-    /// Authoritatively replace the complete workspace.
-    ReplaceWorkspace(Workspace),
-    /// Apply one checked command derived from an exact engine version.
-    WorkspaceCommand {
-        /// Version from which source and target references were captured.
-        expected: WorkspaceVersion,
-        /// Checked durable mutation.
-        command: WorkspaceCommand,
+    /// Exact measurements were accepted but cannot currently authorize a ready plan.
+    Unavailable {
+        /// Explicit non-authoritative reason retained for reduction.
+        reason: SurfaceContributionUnavailableReason,
     },
-    /// Replace application policy if the input is still current.
-    ReplacePolicy {
-        /// Version observed when the application chose the policy.
-        expected: WorkspaceVersion,
-        /// Complete replacement policy.
-        policy: DockPolicy,
-    },
-    /// Seal and publish the next scene after current renderer intents reduce.
-    PublishScene {
-        /// Workspace and policy version from which all scene facts were captured.
-        expected: WorkspaceVersion,
-        /// Complete frozen-roster scene builder.
-        scene: BuildingScene,
-    },
-    /// Reduce one semantic renderer callback input.
-    RendererIntent {
-        /// Workspace and policy version from which the intent was derived.
-        expected: WorkspaceVersion,
-        /// Typed interaction input.
-        intent: Box<RendererIntent>,
-    },
-    /// Re-run strict validation without changing state.
-    ValidateWorkspace,
 }
 
-impl EngineInput {
-    /// Returns the fixed source-class priority used during reduction.
+/// Read-only capability tied to one exact prepared Ready candidate.
+#[derive(Debug)]
+pub struct PreparedReadySurfacePaintCandidate<'a> {
+    plan: &'a PresentationPlan,
+}
+
+impl PreparedReadySurfacePaintCandidate<'_> {
+    /// Returns the exact core-compiled plan covered by this capability.
     #[must_use]
-    pub const fn priority(&self) -> InputPriority {
-        match self {
-            Self::RegisterViewport { .. }
-            | Self::DecideViewportClose { .. }
-            | Self::CancelNativeCreate { .. }
-            | Self::RetryViewportCleanup { .. }
-            | Self::ReplaceWorkspace(_) => InputPriority::LifecycleControl,
-            Self::PublishPlatformSnapshot { .. } | Self::ReportPlatformEffect { .. } => {
-                InputPriority::PlatformObservation
+    pub const fn plan(&self) -> &PresentationPlan {
+        self.plan
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum PreparedSurfaceContributionState {
+    Ready {
+        plan: PresentationPlan,
+    },
+    Retained {
+        ticket: SurfacePresentationOutputTicket,
+    },
+    Unavailable(SurfaceContributionUnavailableReason),
+}
+
+/// One core-compiled surface contribution awaiting an atomic reducer boundary.
+///
+/// Private fields make this a capability minted only by
+/// [`DockEngine::prepare_surface_contribution`]. Adapters may inspect the exact
+/// paint candidate, but cannot replace the plan or its frozen authority.
+#[derive(Debug, PartialEq)]
+pub struct PreparedSurfaceContribution {
+    token: SurfaceContributionToken,
+    policy_revision: PolicyRevision,
+    state: PreparedSurfaceContributionState,
+}
+
+impl PreparedSurfaceContribution {
+    /// Returns the core-minted callback token frozen by preparation.
+    #[must_use]
+    pub const fn token(&self) -> SurfaceContributionToken {
+        self.token
+    }
+
+    /// Returns the sole logical surface this prepared contribution can update.
+    #[must_use]
+    pub const fn surface(&self) -> SurfaceId {
+        self.token.surface()
+    }
+
+    /// Borrows the exact candidate for adapter resource preparation.
+    ///
+    /// A contribution never proves presentation and cannot grant hit authority. The host must
+    /// later submit an exact presentation observation after presentation of a final
+    /// host pass has been observed.
+    #[must_use]
+    pub fn paint_candidate(&self) -> PreparedSurfacePaintCandidate<'_> {
+        match &self.state {
+            PreparedSurfaceContributionState::Ready { plan } => {
+                PreparedSurfacePaintCandidate::Ready(PreparedReadySurfacePaintCandidate { plan })
             }
-            Self::PublishPaneFocusObservation { .. } => InputPriority::PlatformObservation,
-            Self::ActivateViewport { .. }
-            | Self::WorkspaceCommand { .. }
-            | Self::ReplacePolicy { .. } => InputPriority::ApplicationCommand,
-            Self::RendererIntent { .. } => InputPriority::RendererIntent,
-            Self::PublishScene { .. } | Self::ValidateWorkspace => InputPriority::Maintenance,
-        }
-    }
-
-    const fn reduction_rank(&self) -> u8 {
-        match self {
-            Self::RendererIntent { intent, .. } => intent.reduction_rank(),
-            Self::PublishScene { .. } => 1,
-            Self::ValidateWorkspace => 2,
-            Self::RegisterViewport { .. }
-            | Self::PublishPlatformSnapshot { .. }
-            | Self::ReportPlatformEffect { .. }
-            | Self::ActivateViewport { .. }
-            | Self::PublishPaneFocusObservation { .. }
-            | Self::DecideViewportClose { .. }
-            | Self::CancelNativeCreate { .. }
-            | Self::RetryViewportCleanup { .. }
-            | Self::ReplaceWorkspace(_)
-            | Self::WorkspaceCommand { .. }
-            | Self::ReplacePolicy { .. } => 0,
+            PreparedSurfaceContributionState::Retained { ticket } => {
+                PreparedSurfacePaintCandidate::Retained { ticket: *ticket }
+            }
+            PreparedSurfaceContributionState::Unavailable(reason) => {
+                PreparedSurfacePaintCandidate::Unavailable { reason: *reason }
+            }
         }
     }
 }
 
-/// Input after assignment by the engine's sole sequence writer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SequencedInput {
-    sequence: InputSequence,
-    input: EngineInput,
-    scene_coordinate_proofs: BTreeMap<crate::ids::SurfaceId, CoordinateSnapshot>,
+/// Failure to begin measurement for one logical surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SurfaceContributionBeginError {
+    /// The surface is outside the current presentation roster.
+    #[error("surface {surface} is outside the current presentation roster")]
+    SurfaceOutsideRoster {
+        /// Requested logical surface.
+        surface: crate::ids::SurfaceId,
+    },
 }
 
-impl SequencedInput {
-    /// Returns the monotonic writer sequence.
-    #[must_use]
-    pub const fn sequence(&self) -> InputSequence {
-        self.sequence
+/// Failure to turn adapter measurements into a core-owned contribution.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum SurfaceContributionPrepareError {
+    /// The token's exact base authority was superseded before preparation.
+    #[error("surface {surface} contribution base {submitted:?} is stale; current is {current:?}")]
+    StaleBase {
+        /// Surface frozen by the token.
+        surface: SurfaceId,
+        /// Authority frozen before measurement.
+        submitted: SurfaceSceneStamp,
+        /// Current authority, or `None` after roster removal.
+        current: Option<SurfaceSceneStamp>,
+    },
+    /// Measurements did not echo the core-minted requirement ticket.
+    #[error("surface {surface} measurements carry ticket {actual:?}, expected {expected:?}")]
+    TicketMismatch {
+        /// Surface frozen by the token.
+        surface: SurfaceId,
+        /// Ticket frozen by the token.
+        expected: SurfaceMeasurementTicket,
+        /// Ticket carried by the measurements.
+        actual: SurfaceMeasurementTicket,
+    },
+    /// Policy authority changed before preparation.
+    #[error("surface {surface} contribution policy {submitted:?} is stale; current is {current:?}")]
+    PolicyAuthorityChanged {
+        /// Surface frozen by the token.
+        surface: SurfaceId,
+        /// Policy authority frozen in the requirement ticket.
+        submitted: PolicyRevision,
+        /// Current policy authority.
+        current: PolicyRevision,
+    },
+    /// Binding, lifecycle, or coordinates changed before preparation.
+    #[error("surface {surface} coordinate authority changed before preparation")]
+    CoordinateAuthorityChanged {
+        /// Surface whose callback facts are late.
+        surface: SurfaceId,
+    },
+    /// The exact surface state has no current Ready candidate to retain.
+    #[error("surface {surface} has no ready presentation candidate to retain")]
+    RetainedCandidateUnavailable {
+        /// Surface whose non-emitting retention was requested.
+        surface: SurfaceId,
+    },
+    /// Exact-set validation or semantic compilation rejected the measurements.
+    #[error("surface contribution compilation failed: {0}")]
+    Compilation(#[source] PresentationCompilationError),
+    /// The core compiler produced a plan that failed final validation.
+    #[error("surface contribution validation failed: {0}")]
+    Validation(#[source] SceneBuildError),
+}
+
+/// Explicit phase of one core-owned host frame.
+///
+/// The semantic phase retains provider append order. Configuration changes are
+/// intentionally applied after surface contributions so one frame has a stable
+/// policy/configuration authority for interaction and measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostFrameInputPhase {
+    /// Platform, application, renderer, lifecycle, and maintenance input.
+    Semantic,
+    /// Policy or presentation configuration replacement.
+    Configuration,
+}
+
+/// Progress while replaying one immutable backend ingress batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendIngressProgress {
+    /// The current pointer record has frozen an exact receiver challenge.
+    ReceiverReceiptsRequired,
+    /// Every record reduced and the candidate ingress watermark advanced.
+    Complete,
+}
+
+/// Invalid construction of one core-owned host frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum CoreHostFrameError {
+    /// Native platform or desktop pointer facts bypassed the joined ingress lane.
+    #[error("native backend facts must be submitted through the joined backend ingress batch")]
+    BackendIngressRequired,
+    /// A backend batch was supplied without an active joined provider pair.
+    #[error("host frame has no active backend ingress provider")]
+    BackendIngressUnexpected,
+    /// A second backend batch was supplied in one host frame.
+    #[error("host frame already contains a backend ingress batch")]
+    DuplicateBackendIngressBatch,
+    /// The submitted backend batch failed provider, interval, or replay validation.
+    #[error("backend ingress batch was rejected: {source}")]
+    BackendIngressRejected {
+        /// Exact backend-ingress validation failure.
+        #[source]
+        source: BackendIngressError,
+    },
+    /// Receiver receipts were supplied without a paused backend pointer record.
+    #[error("backend pointer receipts require a paused backend ingress pointer record")]
+    BackendIngressReceiptsUnexpected,
+    /// The caller attempted presentation before completing the joined batch.
+    #[error("presentation cannot begin before the backend ingress batch completes")]
+    BackendIngressIncomplete,
+    /// The internal diagnostic source identity is unavailable to adapter input.
+    #[error("input source {input_source} is reserved for core-owned backend ingress")]
+    ReservedInputSource {
+        /// Rejected caller-provided source.
+        input_source: StableInputSourceId,
+    },
+    /// An input attempted to introduce an item outside the session-owned identity roster.
+    #[error("application item {item} is outside the identity scope frozen for this host frame")]
+    ItemIdentityOutsideScope {
+        /// Unadmitted application item.
+        item: ItemId,
+    },
+    /// A document-bound session received a frame without its exact frozen identity roster.
+    #[error("host-frame application identity scope is missing or stale")]
+    ItemIdentityScopeMismatch,
+    /// The core-owned ordinal cannot advance without wrapping.
+    #[error("core host-frame causal ordinal is exhausted")]
+    CausalOrdinalExhausted,
+    /// The caller used the wrong explicit reduction phase for an input.
+    #[error("input class {actual:?} cannot be appended in {phase:?} host-frame phase")]
+    InputPhaseMismatch {
+        /// Phase selected by the caller.
+        phase: HostFrameInputPhase,
+        /// Diagnostic input class.
+        actual: InputPriority,
+    },
+    /// Semantic input cannot follow an accepted configuration input in one frame.
+    ///
+    /// Configuration is a terminal phase because it is deliberately reduced
+    /// after semantic inputs and surface contributions. Accepting a later
+    /// semantic input would silently reorder the core-minted append sequence.
+    #[error("a semantic input cannot follow the terminal configuration phase")]
+    SemanticAfterConfiguration,
+    /// A host frame may submit exactly one presentation observation.
+    #[error("a host frame already contains a presentation observation")]
+    DuplicatePresentationObservation,
+    /// A supplementary presentation observer is not part of this core-frozen
+    /// host-frame scope.
+    #[error("presentation observer {host:?} is outside this core-frozen host-frame scope")]
+    PresentationObservationHostOutsideScope {
+        /// Observer lease supplied by the caller.
+        host: PresentationHostLease,
+    },
+    /// One enrolled observer supplied more than one observation batch.
+    #[error("presentation observer {host:?} already supplied an observation batch")]
+    DuplicatePresentationObservationForHost {
+        /// Observer lease which repeated its submission.
+        host: PresentationHostLease,
+    },
+    /// A complete observation batch repeated one stream identity.
+    #[error("presentation observation batch repeats stream {stream:?}")]
+    DuplicatePresentationObservationStream {
+        /// Stream repeated by the submitted batch.
+        stream: HostPresentationStreamId,
+    },
+    /// A complete observation batch omitted one pending stream frozen at frame begin.
+    #[error("presentation observation batch omitted frozen stream {stream:?}")]
+    MissingPresentationObservationStream {
+        /// Pending stream absent from the submitted batch.
+        stream: HostPresentationStreamId,
+    },
+    /// A complete observation batch named a stream outside the frozen pending scope.
+    #[error("presentation observation batch named stream {stream:?} outside the frozen scope")]
+    PresentationObservationStreamOutsideScope {
+        /// Stream not pending for this host at frame begin.
+        stream: HostPresentationStreamId,
+    },
+    /// A tick can carry one independently compiled contribution for each surface.
+    #[error("a host frame already contains a surface contribution for {surface}")]
+    DuplicateSurfaceContribution {
+        /// Surface already represented in this tick.
+        surface: crate::ids::SurfaceId,
+    },
+    /// A presentation fact belongs to a surface outside this core-frozen roster.
+    #[error("surface {surface} is outside the core-frozen host-frame roster")]
+    SurfaceOutsideRoster {
+        /// Surface supplied by the caller.
+        surface: SurfaceId,
+    },
+    /// Pointer or semantic input was appended after presentation publication
+    /// started for the post-input candidate.
+    #[error("host-frame input cannot follow presentation staging")]
+    InputAfterPresentation,
+    /// The non-replayable host presentation attempt counter cannot advance.
+    #[error("core host-frame presentation attempt space is exhausted")]
+    PresentationAttemptSpaceExhausted,
+    /// Presentation tickets have already been issued for this host frame.
+    #[error("host-frame presentation obligations were already issued")]
+    PresentationObligationsAlreadyIssued,
+    /// A disposition was supplied before the core issued this frame's ticket set.
+    #[error("host-frame presentation obligations have not been issued")]
+    PresentationObligationsNotIssued,
+    /// A host tried to replace checked-out presentation tickets with a bulk disposition.
+    #[error("host-frame presentation obligations were issued but not completely resolved")]
+    PresentationObligationsPartiallyResolved,
+    /// A presentation ticket belongs to another non-replayable host-frame attempt.
+    #[error(
+        "presentation obligation attempt {submitted:?} does not match current attempt {expected:?}"
+    )]
+    PresentationObligationAttemptMismatch {
+        /// Current host-frame attempt.
+        expected: HostPresentationAttemptId,
+        /// Attempt carried by the submitted ticket.
+        submitted: HostPresentationAttemptId,
+    },
+    /// A presentation ticket names no slot in this frame's exact physical roster.
+    #[error("presentation obligation slot {slot:?} is outside the current physical roster")]
+    PresentationObligationOutsideRoster {
+        /// Unexpected physical slot.
+        slot: HostPresentationSlot,
+    },
+    /// One physical presentation ticket was resolved more than once.
+    #[error("presentation obligation slot {slot:?} was already resolved")]
+    PresentationObligationAlreadyResolved {
+        /// Repeated physical slot.
+        slot: HostPresentationSlot,
+    },
+    /// A surface contribution was paired with a ticket for another physical slot.
+    #[error(
+        "presentation obligation slot {slot:?} cannot authorize contribution for surface {surface}"
+    )]
+    PresentationObligationSurfaceMismatch {
+        /// Submitted physical presentation slot.
+        slot: HostPresentationSlot,
+        /// Surface named by the contribution token.
+        surface: SurfaceId,
+    },
+    /// The host claimed transient visuals which differ from the frozen output.
+    #[error(
+        "surface {surface} painted interaction evidence {submitted:?} does not match frozen output {expected:?}"
+    )]
+    PresentationInteractionMismatch {
+        /// Surface whose paint evidence was rejected.
+        surface: SurfaceId,
+        /// Exact transient visuals frozen by core.
+        expected: HostInteractionPresentation,
+        /// Transient visuals reported by the host.
+        submitted: HostInteractionPresentation,
+    },
+    /// The host attempted to stage an output which was not paintable when the
+    /// post-observation frame was sealed.
+    #[error("surface {surface} has no frozen paintable presentation output")]
+    PresentationOutputUnavailable {
+        /// Surface whose staged output was rejected.
+        surface: SurfaceId,
+    },
+    /// The supplied native staging request is not current for this frame.
+    #[error("native staging presentation {presentation:?} is not requested by this host frame")]
+    NativeStagingPresentationUnavailable {
+        presentation: NativeStagingPresentation,
+    },
+    /// A host frame may stage only one actual presentation output for each
+    /// frozen logical surface.
+    #[error("a host frame already staged a presentation output for surface {surface}")]
+    DuplicatePresentationOutput {
+        /// Surface whose second output was rejected.
+        surface: SurfaceId,
+    },
+    /// A retained contribution requires a Ready output that was paintable at
+    /// this exact host-frame boundary.
+    #[error("surface {surface} has no frozen Ready output eligible for paired retention")]
+    RetainedContributionNotPaintable {
+        /// Surface whose retained contribution was rejected.
+        surface: SurfaceId,
+    },
+    /// The contribution token was minted for a different scene than the one
+    /// whose actual output was paired in this frame.
+    #[error(
+        "surface {surface} retained contribution stamp {submitted:?} does not match frozen stamp {expected:?}"
+    )]
+    RetainedContributionStampMismatch {
+        /// Surface whose contribution was rejected.
+        surface: SurfaceId,
+        /// Scene authority frozen in the contribution token.
+        submitted: SurfaceSceneStamp,
+        /// Scene authority frozen for actual paint in this host frame.
+        expected: SurfaceSceneStamp,
+    },
+    /// The contribution token's coordinate capture differs from the capture
+    /// frozen for the paired actual output.
+    #[error("surface {surface} retained contribution coordinates differ from frozen paint output")]
+    RetainedContributionCoordinateMismatch {
+        /// Surface whose contribution was rejected.
+        surface: SurfaceId,
+    },
+    /// The host-frame-local presentation output request counter cannot advance.
+    #[error("core host-frame presentation output request ordinal is exhausted")]
+    PresentationOutputRequestExhausted,
+    /// A pointer journal was supplied although this frame froze no active
+    /// pointer provider.
+    #[error("host frame has no active pointer provider for a submitted pointer journal")]
+    PointerJournalUnexpected,
+    /// Presentation cannot begin before a live pointer provider submits its checkpoint.
+    #[error("presentation cannot begin before pointer provider {provider:?} submits its journal")]
+    PointerJournalMissingBeforePresentation {
+        /// Frozen live pointer provider.
+        provider: PointerInputLease,
+    },
+    /// The submitted journal names a provider other than the one frozen when
+    /// the post-observation frame was sealed.
+    #[error(
+        "host frame pointer provider {submitted:?} does not match frozen provider {expected:?}"
+    )]
+    PointerJournalProviderMismatch {
+        /// Provider frozen by the core when the frame was sealed.
+        expected: PointerInputLease,
+        /// Provider lease supplied with the journal.
+        submitted: PointerInputLease,
+    },
+    /// The pointer journal failed its provider, scope, or watermark checks.
+    #[error("pointer journal was rejected while building host frame: {source}")]
+    PointerJournalRejected {
+        /// Exact ledger rejection retained for diagnostics.
+        #[source]
+        source: PointerJournalLedgerError,
+    },
+    /// Receiver questions are minted from the exact reducer prefix, so one
+    /// challenge may carry at most one pointer edge.
+    #[error("host-frame pointer journals must be submitted one edge at a time")]
+    PointerJournalMustBeEdgewise,
+    /// The engine could not mint the non-replayable receiver attempt for the
+    /// frame's frozen provider.
+    #[error("host frame could not mint a pointer receiver attempt: {source}")]
+    PointerReceiverAttempt {
+        /// Exact attempt-issuer rejection retained for diagnostics.
+        #[source]
+        source: PointerReceiverAttemptError,
+    },
+    /// Freezing candidates from the validated journal violated the exact
+    /// candidate/output roster contract.
+    #[error("host frame could not freeze pointer receiver candidates: {source}")]
+    PointerReceiverRoster {
+        /// Exact candidate-roster failure retained for diagnostics.
+        #[source]
+        source: PointerReceiverCandidateRosterError,
+    },
+    /// Receiver receipts require a previously staged pointer journal segment.
+    #[error("host frame submitted pointer receiver receipts before its pointer journal")]
+    PointerReceiverReceiptBeforeJournal,
+    /// A new segment cannot begin until the preceding segment has its exact
+    /// receipt batch. Otherwise segment ownership would be ambiguous.
+    #[error("previous host-frame pointer journal segment has no receiver receipts")]
+    PointerReceiverReceiptsMissingBeforeNextSegment,
+    /// No later semantic input may reduce while an earlier pointer challenge is
+    /// waiting for its exact receipt batch. Otherwise the core-minted causal
+    /// ordinals would disagree with the actual reducer mutation order.
+    #[error("host-frame semantic input cannot bypass a pending pointer receiver challenge")]
+    PointerReceiverReceiptsMissingBeforeInput,
+    /// Presentation cannot begin while one pointer challenge remains unanswered.
+    #[error("presentation cannot begin before the pending pointer challenge is answered")]
+    PointerReceiverReceiptsMissingBeforePresentation,
+    /// A pointer journal segment may receive one exact receipt batch.
+    #[error("latest host-frame pointer journal segment already has receiver receipts")]
+    DuplicatePointerReceiverReceipts,
+    /// Receiver receipts were supplied although this frame froze no active
+    /// pointer provider.
+    #[error("host frame has no active pointer provider for submitted receiver receipts")]
+    PointerReceiverReceiptsUnexpected,
+    /// Exact receipt or semantic-input reduction failed inside the private
+    /// rollback candidate. The original typed engine error is returned by
+    /// `finish`; no later receiver challenge may be minted.
+    #[error("host-frame input-prefix reduction failed")]
+    InputPrefixReductionFailed,
+}
+
+/// An opaque causal position minted by the core while appending one host input.
+///
+/// It is intentionally not exposed through a public constructor or reducer
+/// input API. Provider-specific global event identity is carried by the
+/// forthcoming pointer edge journal; this stamp only records the immutable
+/// order accepted inside this exact host frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CoreCausalStamp(u64);
+
+impl CoreCausalStamp {
+    const fn ordinal(self) -> ReducerCausalOrdinal {
+        ReducerCausalOrdinal::new(self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StagedPresentationOutput {
+    request: HostPresentationEmissionRequest,
+    surface: SurfaceId,
+    endpoint: HostPresentationEndpoint,
+    payload: HostPresentationOutputPayload,
+}
+
+/// Observation-only admission stage of one core-owned host frame.
+///
+/// Beginning a frame freezes only identities that must causally precede
+/// presentation observation: the engine domain, predecessor tick, rendering
+/// host, platform-provider authority frontier, and every enrolled host's
+/// pending stream scope. Scene, interaction, surface roster, and output
+/// authority are deliberately unavailable until [`Self::seal`] has reduced
+/// those observations into one private candidate.
+#[derive(Debug)]
+pub struct CoreHostFramePrelude {
+    authority_domain: EngineAuthorityDomainId,
+    presentation_host: PresentationHostLease,
+    predecessor_tick: ReducerTickId,
+    presentation_host_frontier: u64,
+    platform_provider_frontier: PlatformProviderAuthorityFrontier,
+    presentation_scopes: BTreeMap<PresentationHostLease, BTreeSet<HostPresentationStreamId>>,
+    presentation_observations: BTreeMap<PresentationHostLease, HostPresentationObservation>,
+    item_identity_scope: Option<BTreeSet<ItemId>>,
+    poison: Option<CoreHostFrameError>,
+}
+
+/// Failure to derive one exact HoverDrop receipt from sealed frame authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum HostFrameHoverDropResolutionError {
+    /// The sealed frame has no receiver-authoritative output for this surface.
+    #[error("sealed host frame has no interaction projection for surface {surface}")]
+    InteractionProjectionUnavailable {
+        /// Surface for which the adapter requested a HoverDrop answer.
+        surface: SurfaceId,
+    },
+    /// Two distinct compiled regions have identical frontmost precedence.
+    #[error("sealed HoverDrop receiver is ambiguous between {first:?} and {second:?}")]
+    Ambiguous {
+        /// First equally frontmost semantic region.
+        first: PresentationHitRegionId,
+        /// Second equally frontmost semantic region.
+        second: PresentationHitRegionId,
+    },
+    /// The sealed projection could not bind its own resolved receiver.
+    #[error("sealed HoverDrop receiver binding is inconsistent: {source}")]
+    ObservationBinding {
+        /// Exact output/authority binding failure.
+        #[source]
+        source: PointerReceiverObservationError,
+    },
+}
+
+/// Narrow read-only authority exposed by a sealed host frame.
+///
+/// The view references the frame's rollback candidate after presentation
+/// observations have reduced. It cannot publish state or access a newer live
+/// engine while measurements and receiver facts are being prepared.
+#[derive(Debug, Clone, Copy)]
+pub struct HostFrameView<'frame> {
+    engine: &'frame DockEngine,
+    presentation_roster: &'frame HostPresentationRoster,
+    receiver_presentations: &'frame BTreeMap<SurfaceId, JournalSurfacePresentation>,
+    semantic_presentations: &'frame BTreeMap<SurfaceId, JournalSurfacePresentation>,
+}
+
+/// Inputs and independently measured surfaces collected under one sealed,
+/// post-observation host-frame authority.
+#[derive(Debug)]
+pub struct CoreHostFrame {
+    authority_domain: EngineAuthorityDomainId,
+    presentation_host: PresentationHostLease,
+    workspace: WorkspaceVersion,
+    requirements: RequirementRevision,
+    predecessor_tick: ReducerTickId,
+    presentation_host_frontier: u64,
+    platform_provider_frontier: PlatformProviderAuthorityFrontier,
+    tick: ReducerTickId,
+    /// Surface roster frozen from the published engine before observation
+    /// reduction. This is the frame capability's stale-admission baseline.
+    admission_surface_scope: BTreeSet<SurfaceId>,
+    frozen_presentation_roster: HostPresentationRoster,
+    /// Exact affine output obligations for this non-replayable frame attempt.
+    presentation_obligations: HostPresentationObligationSet,
+    /// Exact joined native ingress provider frozen for this frame.
+    backend_ingress: Option<BackendIngressLease>,
+    backend_ingress_batch_submitted: bool,
+    backend_ingress_complete: bool,
+    pending_backend_ingress: Option<HostBackendIngressCursor>,
+    /// Sole provider lease frozen for this frame, when the host runtime has
+    /// enrolled pointer delivery. A live provider makes a complete contiguous
+    /// sequence of journal segments and one exact receipt batch per segment
+    /// mandatory at finish.
+    pointer_provider: Option<PointerInputLease>,
+    /// Speculative ledger advanced only inside this host frame to validate a
+    /// contiguous sequence of submitted edges. It is never published; each
+    /// answered edge is reduced immediately against the rollbackable engine
+    /// candidate before another receiver question can be minted.
+    staged_pointer_journal: PointerJournalLedger,
+    /// Interactive outputs visible after presentation observations reduce.
+    /// Candidate identities and receipt validation remain bound to this sealed
+    /// roster for the complete host frame. Semantic inputs may invalidate the
+    /// candidate scene, but cannot retroactively present newly compiled hit
+    /// regions to a later pointer segment in the same frame.
+    frozen_pointer_outputs: BTreeMap<SurfaceId, PointerReceiverPresentedOutput>,
+    /// Exact sealed projections backing `frozen_pointer_outputs`. These retain
+    /// the presented plan and hit manifest needed to reduce all pointer edges
+    /// in this host frame without consulting a causally newer candidate scene.
+    frozen_pointer_presentations: BTreeMap<SurfaceId, JournalSurfacePresentation>,
+    /// Exact semantic projections for the complete roster. These remain
+    /// available to keyboard and accessibility actions even when a local
+    /// pointer provider scopes receiver authority to one surface.
+    frozen_semantic_presentations: BTreeMap<SurfaceId, JournalSurfacePresentation>,
+    /// Non-replayable issuer shared with the engine. Every segment receives a
+    /// distinct attempt even when the enclosing host frame later fails.
+    pointer_receiver_attempt_issuer: Option<Arc<PointerReceiverAttemptIssuer>>,
+    pending_pointer_segment: Option<HostPointerProtocolSegment>,
+    pointer_segment_submitted: bool,
+    presentation_scopes: BTreeMap<PresentationHostLease, BTreeSet<HostPresentationStreamId>>,
+    /// Session-owned application identities admitted for the complete frame.
+    /// `None` is reserved for engines not bound to durable external identities.
+    item_identity_scope: Option<BTreeSet<ItemId>>,
+    presentation_snapshot_changed: bool,
+    presentation_projection_changed: bool,
+    candidate: DockEngine,
+    tick_policy: DockPolicySnapshot,
+    vacancy_ledger: TickVacancyLedger,
+    application_base: WorkspaceVersion,
+    presentation_observation_outcomes: Vec<HostPresentationObservationOutcome>,
+    reduced_inputs: Vec<ReducedInput>,
+    reduced_pointer_edges: Vec<crate::transition::ReducedPointerEdge>,
+    events: Vec<WorkspaceEvent>,
+    interaction_events: Vec<InteractionEvent>,
+    last_reduced_input: Option<InputSequence>,
+    last_causal_cause: Option<ReductionCause>,
+    configuration_inputs: Vec<SequencedInput>,
+    staged_presentation_outputs: Vec<StagedPresentationOutput>,
+    staged_presentation_output_surfaces: BTreeSet<SurfaceId>,
+    surface_contributions: Vec<PreparedSurfaceContribution>,
+    presentation_phase_started: bool,
+    configuration_phase_started: bool,
+    next_causal_ordinal: u64,
+    poison: Option<CoreHostFrameError>,
+    input_prefix_error: Option<EngineError>,
+}
+
+/// Presentation-only phase of one rollbackable core host frame.
+///
+/// The wrapper deliberately exposes no semantic or pointer append methods. Its
+/// view is the exact post-input candidate used for measurement and paint.
+#[derive(Debug)]
+pub struct CoreHostPresentationFrame {
+    frame: CoreHostFrame,
+}
+
+/// Fully reduced host-frame candidate awaiting one infallible publication.
+///
+/// Adapters may inspect the exact transition to complete their own fallible
+/// preflight. They cannot mutate the original engine until this capability is
+/// either committed or dropped.
+#[must_use = "dropping a prepared host frame rolls back the candidate"]
+pub struct PreparedHostFrameCommit<'a> {
+    engine: &'a mut DockEngine,
+    candidate: DockEngine,
+    transition: EngineTransition,
+}
+
+/// Fully reduced host-frame candidate which does not borrow its destination engine.
+///
+/// This affine capability is intended for hosts whose own transaction must seal
+/// after the docking reducer has completed its fallible work but before semantic
+/// state may publish. Committing revalidates the exact engine authority frozen by
+/// preparation, so an intervening mutation fails closed instead of overwriting it.
+#[must_use = "dropping an owned prepared host frame rolls back the candidate"]
+pub struct OwnedPreparedHostFrameCommit {
+    fence: HostFrameCommitFence,
+    candidate: DockEngine,
+    transition: EngineTransition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HostFrameCommitFence {
+    authority_domain: EngineAuthorityDomainId,
+    predecessor_tick: ReducerTickId,
+    workspace: WorkspaceVersion,
+    requirements: RequirementRevision,
+    presentation_host_frontier: u64,
+    platform_provider_frontier: PlatformProviderAuthorityFrontier,
+    pointer_provider: Option<PointerInputLease>,
+    backend_ingress: Option<BackendIngressLease>,
+}
+
+fn pointer_receiver_candidate_spec(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+    stream: PointerStreamId,
+) -> PointerReceiverCandidateSpec {
+    if matches!(edge.kind(), PointerEdgeKind::Scrolled(_)) {
+        let delivery_point = match edge.location() {
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Known(point),
+            } => Some(point),
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Unknown(_),
+            } => None,
+            PointerEdgeLocation::Desktop { .. } => validated_desktop_delivery_route(engine, edge)
+                .and_then(DesktopRouteValidation::dock_route)
+                .map(|route| route.surface_position()),
+        };
+        return PointerReceiverCandidateSpec::delivery(edge.sequence(), delivery_point);
+    }
+    let (receiver_route, hover_point) = match edge.location() {
+        PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Known(point),
+        } => (true, Some(point)),
+        PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Unknown(_),
+        } => (true, None),
+        PointerEdgeLocation::Desktop { route } => match route
+            .validate_against_registry(engine.authority_domain, engine.viewport.registry())
+            .dock_route()
+        {
+            Some(route) => (true, Some(route.surface_position())),
+            None => (false, None),
+        },
+    };
+    if !receiver_route {
+        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
     }
 
-    /// Returns the typed input payload.
-    #[must_use]
-    pub const fn input(&self) -> &EngineInput {
-        &self.input
+    let owns_stream = engine.interaction.active_stream() == Some(stream);
+    let (delivery, hover) = match (engine.interaction.status(), edge.kind(), owns_stream) {
+        (InteractionStatus::Idle, PointerEdgeKind::ButtonPressed(PointerButton::Primary), _) => {
+            (true, false)
+        }
+        (
+            InteractionStatus::Pressed { .. },
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            true,
+        ) => (true, false),
+        (
+            InteractionStatus::Armed { .. } | InteractionStatus::Dragging { .. },
+            PointerEdgeKind::Moved,
+            true,
+        )
+        | (
+            InteractionStatus::Dragging { .. },
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            true,
+        ) => (false, true),
+        _ => (false, false),
+    };
+    match (delivery, hover) {
+        (false, false) => PointerReceiverCandidateSpec::not_applicable(edge.sequence()),
+        (true, false) => PointerReceiverCandidateSpec::delivery(edge.sequence(), hover_point),
+        (false, true) => PointerReceiverCandidateSpec::hover_hit(edge.sequence(), hover_point),
+        (true, true) => {
+            PointerReceiverCandidateSpec::delivery_and_hover_hit(edge.sequence(), hover_point)
+        }
     }
+}
+
+/// Joins the edge-local delivery binding with the independent desktop position.
+/// The hovered-window classification is deliberately not consulted.
+fn validated_desktop_delivery_route(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+) -> Option<DesktopRouteValidation> {
+    let position = edge.desktop_route()?.position();
+    let Authority::Known(PointerEventDeliveryOwner::Native(binding)) = edge.delivery_owner() else {
+        return None;
+    };
+    Some(
+        DesktopRouteFact::dock_from_desktop_position(binding, position)
+            .validate_against_registry(engine.authority_domain, engine.viewport.registry()),
+    )
+}
+
+/// Returns the semantic delivery lane which must have produced a core action
+/// for one claimed receiver region.
+///
+/// Pane and contained-frame fallbacks deliberately have no action lane: they
+/// prove only that docking did not own a control activation at that point.
+const fn delivery_action_lane(kind: PresentationHitRegionKind) -> Option<PresentationPointerLane> {
+    match kind {
+        PresentationHitRegionKind::TabClose(_)
+        | PresentationHitRegionKind::TabStripControl(_)
+        | PresentationHitRegionKind::TabListMenuRow { .. }
+        | PresentationHitRegionKind::TabListMenuBlocker(_)
+        | PresentationHitRegionKind::TabListMenuBackdrop(_)
+        | PresentationHitRegionKind::ContainedClose(_) => Some(PresentationPointerLane::Click),
+        PresentationHitRegionKind::TabStripScroll(_)
+        | PresentationHitRegionKind::TabListMenuScroll(_) => Some(PresentationPointerLane::Scroll),
+        PresentationHitRegionKind::TabBody(_)
+        | PresentationHitRegionKind::TabGroupGrip(_)
+        | PresentationHitRegionKind::SplitterHandle(_)
+        | PresentationHitRegionKind::SplitterJunction(_)
+        | PresentationHitRegionKind::ContainedTitle(_)
+        | PresentationHitRegionKind::ContainedResize { .. } => Some(PresentationPointerLane::Drag),
+        PresentationHitRegionKind::PaneBody(_)
+        | PresentationHitRegionKind::ContainedFrameBlocker(_)
+        | PresentationHitRegionKind::DropGuideActivation(_)
+        | PresentationHitRegionKind::DropTarget(_) => None,
+    }
+}
+
+const fn is_tab_list_menu_click(kind: PresentationHitRegionKind) -> bool {
+    matches!(
+        kind,
+        PresentationHitRegionKind::TabListMenuRow { .. }
+            | PresentationHitRegionKind::TabListMenuBlocker(_)
+            | PresentationHitRegionKind::TabListMenuBackdrop(_)
+    )
+}
+
+/// Failure while proving that a receipt names the semantic receiver at the
+/// journal edge's exact logical point.
+///
+/// Receipt construction proves only that a region belongs to a presented
+/// output. The reducer additionally owns the point-to-region relationship so
+/// an adapter cannot reuse another valid region from the same output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PointerReceiverGeometryError {
+    /// The receipt survived output-authority validation but the corresponding
+    /// current interaction manifest is no longer available. This is an engine
+    /// invariant failure surfaced as a fail-closed receipt rejection.
+    #[error(
+        "pointer receipt for edge {sequence} has no current interaction manifest for surface {surface}"
+    )]
+    InteractionManifestUnavailable {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface named by the receipt's semantic region.
+        surface: SurfaceId,
+    },
+    /// The current provider lane cannot supply a logical point for a docking
+    /// receiver claim.
+    #[error("pointer receipt for edge {sequence} names a docking region without a logical point")]
+    LogicalPointUnavailable {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+    },
+    /// A known receiver-absence claim was bound to another logical surface.
+    #[error(
+        "pointer receipt for edge {sequence} claims no receiver on surface {actual}, expected {expected}"
+    )]
+    AbsenceSurfaceMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface implied by the provider route.
+        expected: SurfaceId,
+        /// Surface bound to the claimed absence observation.
+        actual: SurfaceId,
+    },
+    /// A desktop-global route was validated against the native inventory, but
+    /// the receiver output belongs to another binding incarnation or
+    /// coordinate generation.
+    #[error(
+        "pointer receipt for edge {sequence} does not match its exact desktop route presentation: {source}"
+    )]
+    DesktopRoutePresentationMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Exact route-to-presentation mismatch.
+        #[source]
+        source: DesktopRoutePresentationError,
+    },
+    /// A local edge was answered using a receiver from another surface.
+    #[error(
+        "pointer receipt for edge {sequence} names receiver {region:?} on surface {actual}, expected {expected}"
+    )]
+    SurfaceMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface implied by the provider's local endpoint.
+        expected: SurfaceId,
+        /// Surface owned by the receipt's semantic region.
+        actual: SurfaceId,
+        /// Claimed semantic region.
+        region: PresentationHitRegionId,
+    },
+    /// A claimed docking region does not cover the edge's exact logical point.
+    #[error("pointer receipt for edge {sequence} names region {region:?} outside the edge point")]
+    RegionDoesNotCoverPoint {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Claimed semantic region.
+        region: PresentationHitRegionId,
+    },
+    /// A receiver claim lost the core-owned deterministic winner comparison
+    /// for its action lane. `None` represents an asserted known absence.
+    #[error(
+        "pointer receipt for edge {sequence} claims receiver {claimed:?}, but lane {lane:?} winner is {winner:?}"
+    )]
+    ReceiverWinnerMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Action lane selected from the semantic region kind.
+        lane: PresentationPointerLane,
+        /// Region claimed by the adapter, or `None` for known absence.
+        claimed: Option<PresentationHitRegionId>,
+        /// Core-computed winner, when one exists.
+        winner: Option<PresentationHitRegionId>,
+    },
+    /// The core hit manifest contained two equally ranked regions on a lane,
+    /// so no receipt can safely choose one.
+    #[error("pointer receipt for edge {sequence} has an ambiguous {lane:?} receiver winner")]
+    ReceiverWinnerAmbiguous {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Action lane selected from the semantic region kind.
+        lane: PresentationPointerLane,
+    },
 }
 
 /// Failure to construct or atomically reduce engine state.
@@ -233,9 +1160,375 @@ pub enum EngineError {
     /// Initial or replacement workspace violated a durable invariant.
     #[error("workspace is invalid: {0}")]
     InvalidWorkspace(#[source] WorkspaceValidationErrors),
+    /// A replacement attempted to revive a presentation identity retired by this engine.
+    #[error("workspace replacement input {input} rejected: {source}")]
+    WorkspaceReplacementIdentityRetired {
+        /// Input which attempted the replacement.
+        input: InputSequence,
+        /// Exact retired identity rejection.
+        #[source]
+        source: CommandError,
+    },
+    /// Process-local engine authority identities cannot advance without wrapping.
+    #[error("engine authority domain identity is exhausted")]
+    EngineAuthorityDomainExhausted,
     /// The single-writer input counter cannot advance without wrapping.
     #[error("engine input sequence is exhausted")]
     InputSequenceExhausted,
+    /// The reducer tick counter cannot advance without wrapping.
+    #[error("engine reducer tick is exhausted")]
+    ReducerTickExhausted,
+    /// The core-owned committed-presentation output counter cannot advance without wrapping.
+    #[error("presentation output ticket counter is exhausted")]
+    PresentationOutputSerialExhausted,
+    /// The document-local surface identity counter cannot advance without wrapping.
+    #[error("core presentation surface identity frontier is exhausted")]
+    PresentationSurfaceIdentityExhausted,
+    /// The document-local root identity counter cannot advance without wrapping.
+    #[error("core presentation root identity frontier is exhausted")]
+    PresentationRootIdentityExhausted,
+    /// The document-local contained-floating identity counter cannot advance without wrapping.
+    #[error("core contained-floating identity frontier is exhausted")]
+    PresentationFloatingIdentityExhausted,
+    /// Core-owned presentation host, stream, or emission state rejected an invariant.
+    #[error("presentation ledger invariant failed: {detail}")]
+    PresentationLedger {
+        /// Stable diagnostic for the rejected ledger operation.
+        detail: String,
+    },
+    /// Pointer-provider ledger rejected a lifecycle or commit operation.
+    #[error("pointer input ledger invariant failed: {source}")]
+    PointerJournal {
+        /// Exact pointer-ledger rejection retained for diagnostics.
+        #[source]
+        source: PointerJournalLedgerError,
+    },
+    /// Joined backend ingress rejected provider pairing, ordering, or replay.
+    #[error("backend ingress invariant failed: {source}")]
+    BackendIngress {
+        /// Exact backend-ingress rejection retained for diagnostics.
+        #[source]
+        source: BackendIngressError,
+    },
+    /// Joined backend authority no longer matches the active lane providers.
+    #[error(
+        "backend ingress {ingress:?} does not match active platform {platform:?} and pointer {pointer:?} providers"
+    )]
+    BackendIngressProviderMismatch {
+        /// Joined provider pair frozen by the engine.
+        ingress: BackendIngressLease,
+        /// Currently active platform provider.
+        platform: Option<PlatformObservationLease>,
+        /// Currently active pointer provider.
+        pointer: Option<PointerInputLease>,
+    },
+    /// Platform-observation provider authority rejected a lifecycle operation.
+    #[error("platform observation provider invariant failed: {source}")]
+    PlatformProvider {
+        /// Exact provider-authority rejection retained for diagnostics.
+        #[source]
+        source: PlatformObservationAuthorityError,
+    },
+    /// The engine could not mint a non-replayable receiver attempt.
+    #[error("pointer receiver attempt issuer failed: {source}")]
+    PointerReceiverAttempt {
+        /// Exact attempt issuer rejection retained for diagnostics.
+        #[source]
+        source: PointerReceiverAttemptError,
+    },
+    /// A pointer receipt was incomplete, foreign, stale, or otherwise unable
+    /// to prove delivery against the current interactive output roster.
+    #[error("pointer receiver receipt validation failed: {source}")]
+    PointerReceiverReceipt {
+        /// Exact receipt validation rejection retained for diagnostics.
+        #[source]
+        source: PointerReceiverReceiptValidationError,
+    },
+    /// A validated pointer receipt could not be bound to the exact presented
+    /// projection that it references for this journal reduction.
+    #[error("pointer journal presentation snapshot failed: {detail}")]
+    JournalPresentationSnapshot {
+        /// Exact snapshot failure retained for protocol diagnostics.
+        detail: String,
+    },
+    /// A journal edge reached an internal counter, transaction, or scene
+    /// invariant after its receipt and presentation authority were validated.
+    #[error("pointer interaction reduction for {cause:?} failed: {detail}")]
+    PointerInteractionInvariant {
+        /// Exact core-minted journal cause being reduced.
+        cause: ReductionCause,
+        /// Stable diagnostic for the failed internal boundary.
+        detail: String,
+    },
+    /// A receipt named a region which does not prove the semantic receiver at
+    /// its own exact journal edge point.
+    #[error("pointer receiver geometry validation failed: {source}")]
+    PointerReceiverGeometry {
+        /// Exact geometry rejection retained for diagnostics.
+        #[source]
+        source: PointerReceiverGeometryError,
+    },
+    /// A surface-local provider named an endpoint which the current core state
+    /// cannot admit.
+    #[error("pointer provider scope is unavailable: {detail}")]
+    PointerProviderScope { detail: String },
+    /// A frame froze a surface-local provider whose owning presentation host
+    /// was not enrolled to report presentation facts in that frame.
+    #[error(
+        "pointer provider {provider:?} requires presentation host {host:?} outside the frozen frame scope"
+    )]
+    PointerProviderHostOutsideFrameScope {
+        /// Exact frozen provider lease.
+        provider: PointerInputLease,
+        /// Required local presentation host.
+        host: PresentationHostLease,
+    },
+    /// A live provider changed after a host frame froze its authority scope.
+    #[error(
+        "host frame pointer provider {submitted:?} no longer matches active provider {current:?}"
+    )]
+    HostFramePointerProviderStale {
+        /// Provider frozen by the frame, when any.
+        submitted: Option<PointerInputLease>,
+        /// Provider active when the frame tried to finish.
+        current: Option<PointerInputLease>,
+    },
+    /// A frame with a live pointer provider omitted its mandatory complete
+    /// journal.
+    #[error("host frame omitted the mandatory pointer journal for provider {provider:?}")]
+    HostFramePointerJournalMissing {
+        /// Frozen live provider lease.
+        provider: PointerInputLease,
+    },
+    /// A frame with a staged pointer journal omitted its mandatory exact
+    /// receiver receipt batch.
+    #[error("host frame omitted mandatory pointer receiver receipts for provider {provider:?}")]
+    HostFramePointerReceiverReceiptsMissing {
+        /// Frozen live provider lease.
+        provider: PointerInputLease,
+    },
+    /// A frame froze joined backend authority but did not complete one exact batch.
+    #[error("host frame omitted or did not complete its mandatory backend ingress batch")]
+    HostFrameBackendIngressIncomplete,
+    /// A frame staged backend state although no joined provider was frozen.
+    #[error("host frame staged backend ingress without a frozen joined provider")]
+    HostFrameBackendIngressUnexpected,
+    /// A terminal presentation host was used after its retirement boundary.
+    #[error("presentation host {host:?} was retired at reducer tick {retired_at:?} ({reason:?})")]
+    PresentationHostRetired {
+        /// Exact terminal host lease.
+        host: PresentationHostLease,
+        /// Reducer boundary which recorded the retirement.
+        retired_at: ReducerTickId,
+        /// Original terminal lifecycle reason.
+        reason: PresentationHostRetirementReason,
+    },
+    /// A terminal presentation host was used after its detailed tombstone was compacted.
+    #[error(
+        "presentation host {host:?} was retired and its detailed terminal record was compacted"
+    )]
+    PresentationHostRetiredCompacted {
+        /// Exact terminal host lease.
+        host: PresentationHostLease,
+    },
+    /// The engine-local recovery-obligation identity cannot advance without wrapping.
+    #[error("surface recovery obligation identity is exhausted at input {input}")]
+    SurfaceRecoveryObligationExhausted {
+        /// Input which attempted to mint the obligation.
+        input: InputSequence,
+    },
+    /// The engine-local root recovery anchor identity cannot advance without wrapping.
+    #[error("root recovery anchor identity is exhausted at input {input}")]
+    RootRecoveryAnchorExhausted {
+        /// Input which attempted to mint the anchor.
+        input: InputSequence,
+    },
+    /// One source repeated or moved backwards from its last submitted sequence.
+    #[error(
+        "input source {input_source} sequence {submitted} must be greater than previous sequence {previous}"
+    )]
+    SourceSequenceNotIncreasing {
+        /// Stable semantic input producer.
+        input_source: StableInputSourceId,
+        /// Last accepted sequence or preceding sequence in this batch.
+        previous: SourceSequence,
+        /// Duplicate or decreasing sequence supplied by the producer.
+        submitted: SourceSequence,
+    },
+    /// A host frame minted by one engine cannot reduce through another engine.
+    #[error("host frame authority domain {submitted:?} does not match engine domain {expected:?}")]
+    HostFrameAuthorityDomainMismatch {
+        /// Domain of the engine receiving `finish`.
+        expected: EngineAuthorityDomainId,
+        /// Domain frozen by the frame at `begin_host_frame`.
+        submitted: EngineAuthorityDomainId,
+    },
+    /// Core state changed after a host frame froze its exact roster and requirements.
+    #[error(
+        "host frame is stale: workspace {submitted_workspace:?}/{current_workspace:?}, requirements {submitted_requirements:?}/{current_requirements:?}"
+    )]
+    HostFrameStale {
+        /// Workspace version frozen when the post-observation frame was sealed.
+        submitted_workspace: WorkspaceVersion,
+        /// Workspace version at frame finish.
+        current_workspace: WorkspaceVersion,
+        /// Requirement revision frozen when the post-observation frame was sealed.
+        submitted_requirements: RequirementRevision,
+        /// Requirement revision at frame finish.
+        current_requirements: RequirementRevision,
+    },
+    /// A host frame was constructed against an earlier reducer boundary.
+    ///
+    /// A successful host-frame finish advances the reducer tick even when it
+    /// has no semantic inputs. Reusing an independently begun capability after
+    /// that boundary would make callback completion order part of the protocol.
+    #[error(
+        "host frame began after reducer tick {submitted:?}, but the current reducer tick is {current:?}"
+    )]
+    HostFramePredecessorStale {
+        /// Reducer tick observed while the capability was minted.
+        submitted: ReducerTickId,
+        /// Last successfully committed reducer tick at finish time.
+        current: ReducerTickId,
+    },
+    /// Presentation-host identity allocation advanced outside the frozen frame.
+    ///
+    /// Host creation does not consume a reducer tick. Publishing an older
+    /// candidate across this boundary would otherwise discard the new lease
+    /// and permit its serial to be minted again.
+    #[error(
+        "host frame presentation-host frontier {submitted} no longer matches current frontier {current}"
+    )]
+    HostFramePresentationHostFrontierStale {
+        /// Host identity frontier frozen by the frame prelude.
+        submitted: u64,
+        /// Host identity frontier observed at seal or finish.
+        current: u64,
+    },
+    /// Platform-provider authority changed outside the frozen frame.
+    ///
+    /// Provider activation does not consume a reducer tick. Publishing an
+    /// older candidate across this boundary would otherwise revoke the live
+    /// provider and restore a stale replacement state.
+    #[error(
+        "host frame platform-provider frontier {submitted} no longer matches current frontier {current}"
+    )]
+    HostFramePlatformProviderFrontierStale {
+        /// Provider authority frontier frozen by the frame prelude.
+        submitted: u64,
+        /// Provider authority frontier observed at seal or finish.
+        current: u64,
+    },
+    /// One physical surface was derived as both semantic content and native staging.
+    #[error("physical surface {surface} appears in multiple host presentation slots")]
+    HostPresentationRosterCollision {
+        /// Surface whose lifecycle and semantic ownership overlap.
+        surface: SurfaceId,
+    },
+    /// A staging output referenced a resource absent from the exact retained roster.
+    #[error("native staging request references missing retained resource {resource:?}")]
+    HostPresentationStagingResourceMissing {
+        /// Resource which must stay pinned across this native-create saga.
+        resource: NativeStagingResourceId,
+    },
+    /// The core-derived roster no longer matches the capability frozen at seal.
+    #[error("core host-frame roster {submitted:?} no longer matches current roster {current:?}")]
+    HostFrameRosterStale {
+        /// Exact roster frozen by the capability.
+        submitted: Vec<SurfaceId>,
+        /// Current core-derived roster.
+        current: Vec<SurfaceId>,
+    },
+    /// A host-frame prelude did not submit the mandatory presentation observation before sealing.
+    #[error("host-frame prelude sealed without its mandatory presentation observation")]
+    HostFramePresentationObservationMissing,
+    /// An explicitly enrolled presentation observer did not submit its
+    /// mandatory observation before the prelude was sealed.
+    #[error("host-frame prelude sealed without the mandatory observation from {host:?}")]
+    HostFrameSupplementaryPresentationObservationMissing {
+        /// Observer lease that was frozen into this host frame.
+        host: PresentationHostLease,
+    },
+    /// A caller attempted to enrol the rendering host as a supplementary
+    /// observer as well.
+    #[error("rendering host {host:?} cannot be enrolled as a supplementary observer")]
+    HostFrameObserverIsRenderingHost {
+        /// Duplicate rendering host lease.
+        host: PresentationHostLease,
+    },
+    /// A caller repeated one supplementary observer lease while constructing a
+    /// core-frozen host-frame scope.
+    #[error("supplementary observer {host:?} was enrolled more than once")]
+    HostFrameObserverDuplicate {
+        /// Repeated observer lease.
+        host: PresentationHostLease,
+    },
+    /// The core-owned presentation stream scope changed after host-frame begin.
+    #[error(
+        "host frame presentation stream scope {submitted:?} no longer matches current scope {current:?}"
+    )]
+    HostFramePresentationScopeStale {
+        /// Exact pending stream scope frozen by the capability.
+        submitted: Vec<HostPresentationStreamId>,
+        /// Current pending stream scope for the same host lease.
+        current: Vec<HostPresentationStreamId>,
+    },
+    /// A supplementary observer's pending stream scope changed after the
+    /// frame began.
+    #[error(
+        "supplementary observer {host:?} presentation scope {submitted:?} no longer matches current scope {current:?}"
+    )]
+    HostFrameSupplementaryPresentationScopeStale {
+        /// Observer lease whose scope changed.
+        host: PresentationHostLease,
+        /// Exact scope frozen by the capability.
+        submitted: Vec<HostPresentationStreamId>,
+        /// Scope at frame finish.
+        current: Vec<HostPresentationStreamId>,
+    },
+    /// One or more core-frozen surfaces were not represented by exactly one contribution.
+    ///
+    /// Missing callbacks are not an implicit `KnownNone`: an adapter must
+    /// submit an exact unavailable contribution when it cannot measure a
+    /// surface during this host frame.
+    #[error(
+        "host frame contribution roster is incomplete; expected {expected:?}, submitted {submitted:?}"
+    )]
+    HostFrameContributionRosterIncomplete {
+        /// Complete core-frozen roster.
+        expected: Vec<SurfaceId>,
+        /// Surfaces represented by submitted contributions.
+        submitted: Vec<SurfaceId>,
+    },
+    /// One or more core-issued physical presentation obligations were omitted.
+    ///
+    /// Missing callbacks are never interpreted as an unavailable output. Each
+    /// physical slot must be resolved as either painted or explicitly unavailable.
+    #[error(
+        "host frame presentation obligation roster is incomplete; expected {expected:?}, resolved {resolved:?}"
+    )]
+    HostFramePresentationObligationRosterIncomplete {
+        /// Complete core-derived physical output roster.
+        expected: Vec<HostPresentationSlot>,
+        /// Physical slots carrying an explicit disposition.
+        resolved: Vec<HostPresentationSlot>,
+    },
+    /// A structural host-frame construction error poisoned the entire batch.
+    ///
+    /// The original typed error is retained so callers can diagnose the first
+    /// invalid action without allowing an accepted prefix to commit.
+    #[error("host frame was poisoned while being constructed: {source}")]
+    HostFramePoisoned {
+        /// First structural construction error retained by the capability.
+        #[source]
+        source: CoreHostFrameError,
+    },
+    /// An internal event escaped reduction without its exact core-minted cause.
+    #[error("reduction event cause invariant failed: {detail}")]
+    ReductionCauseInvariant {
+        /// Static diagnostic for the broken binding boundary.
+        detail: &'static str,
+    },
     /// A workspace replacement epoch cannot advance without wrapping.
     #[error("workspace epoch is exhausted while reducing input {input}")]
     WorkspaceEpochExhausted {
@@ -247,6 +1540,82 @@ pub enum EngineError {
     WorkspaceRevisionExhausted {
         /// Input which attempted mutation.
         input: InputSequence,
+    },
+    /// The aggregate semantic-requirement counter cannot advance without wrapping.
+    #[error("presentation requirement revision is exhausted while reducing input {input}")]
+    PresentationRequirementRevisionExhausted {
+        /// Input which attempted to replace presentation requirements.
+        input: InputSequence,
+    },
+    /// The renderer-neutral presentation configuration counter cannot advance.
+    #[error("presentation configuration revision is exhausted while reducing input {input}")]
+    PresentationConfigRevisionExhausted {
+        /// Input which attempted to replace semantic geometry.
+        input: InputSequence,
+    },
+    /// The presentation policy counter cannot advance without wrapping.
+    #[error("presentation policy revision is exhausted while reducing input {input}")]
+    PolicyRevisionExhausted {
+        /// Input which attempted to replace presentation policy.
+        input: InputSequence,
+    },
+    /// One surface's independent requirement counter cannot advance without wrapping.
+    #[error("surface {surface} requirement revision is exhausted while reducing input {input}")]
+    SurfaceRequirementRevisionExhausted {
+        /// Input which attempted to replace presentation requirements.
+        input: InputSequence,
+        /// Surface whose independent counter was exhausted.
+        surface: crate::ids::SurfaceId,
+    },
+    /// Validated engine state could not produce its core-owned presentation manifest.
+    #[error("presentation requirement invariant failed at input {input:?}: {detail}")]
+    PresentationRequirementInvariant {
+        /// Reducing input, or `None` during engine construction.
+        input: Option<InputSequence>,
+        /// Internal derivation detail retained for diagnostics.
+        detail: String,
+    },
+    /// The internal close coordinator could not preserve its typed protocol invariants.
+    #[error("close plan invariant failed at input {input}: {detail}")]
+    ClosePlanInvariant {
+        /// Input which attempted the invalid close transition.
+        input: InputSequence,
+        /// Internal protocol detail retained for diagnostics.
+        detail: String,
+    },
+    /// A surface contribution could not advance core presentation state atomically.
+    #[error("surface contribution {surface} from {base:?} failed: {detail}")]
+    SurfaceContributionInvariant {
+        /// Surface whose exact contribution was being reduced.
+        surface: crate::ids::SurfaceId,
+        /// Exact pre-measurement authority.
+        base: SurfaceSceneStamp,
+        /// Typed failure rendered without inventing an input sequence.
+        detail: String,
+    },
+    /// A batch-level interaction reconciliation failed after surface contributions.
+    #[error("surface contribution batch {tick} invariant failed: {detail}")]
+    SurfaceContributionBatchInvariant {
+        /// Reducer boundary containing the contributing surface batch.
+        tick: ReducerTickId,
+        /// Low-level invariant diagnostic.
+        detail: String,
+    },
+    /// A batch-level interaction reconciliation failed after presentation observations.
+    #[error("surface presentation observation batch {tick} invariant failed: {detail}")]
+    SurfacePresentationObservationBatchInvariant {
+        /// Reducer boundary containing the observation batch.
+        tick: ReducerTickId,
+        /// Low-level invariant diagnostic.
+        detail: String,
+    },
+    /// Interaction reconciliation failed during terminal host retirement.
+    #[error("presentation host retirement at reducer tick {tick} failed: {detail}")]
+    PresentationHostRetirementInvariant {
+        /// Reducer boundary which attempted the retirement.
+        tick: ReducerTickId,
+        /// Internal invariant diagnostic.
+        detail: String,
     },
     /// A checked command transaction failed; no engine state was published.
     #[error("workspace command input {input} failed: {source}")]
@@ -262,11 +1631,13 @@ pub enum EngineError {
         /// Input whose transaction violated the engine contract.
         input: InputSequence,
     },
-    /// A scene generation counter cannot advance without wrapping.
-    #[error("scene generation is exhausted while reducing input {input}")]
-    SceneGenerationExhausted {
-        /// Input which attempted to seal the next scene.
+    /// One surface presentation authority revision cannot advance without wrapping.
+    #[error("surface {surface} scene revision is exhausted while reducing input {input}")]
+    SurfaceSceneRevisionExhausted {
+        /// Input whose state change required the revision.
         input: InputSequence,
+        /// Surface whose private revision tombstone was exhausted.
+        surface: crate::ids::SurfaceId,
     },
     /// A transient interaction identity cannot advance without wrapping.
     #[error("interaction input {input} failed: {source}")]
@@ -300,6 +1671,22 @@ pub enum EngineError {
         /// Typed activation and pane-focus coordinator failure.
         source: ViewportFocusError,
     },
+    /// A provider named a docking binding which is not observable in the exact registry state.
+    #[error("global focus input {input} names an unavailable binding {binding:?}")]
+    GlobalFocusBindingUnavailable {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Exact stale, destroyed, or otherwise unobservable binding.
+        binding: ViewportBinding,
+    },
+    /// A pointer edge or another already-bound reducer fact could not advance focus state.
+    #[error("viewport focus reduction {cause:?} failed: {source}")]
+    CausedViewportFocus {
+        /// Exact core-minted reducer fact which attempted the transition.
+        cause: ReductionCause,
+        /// Typed activation and pane-focus coordinator failure.
+        source: ViewportFocusError,
+    },
     /// A lifecycle edge could not freeze the complete logical surface roster.
     #[error("surface roster input {input} failed: {source}")]
     SurfaceRoster {
@@ -307,6 +1694,14 @@ pub enum EngineError {
         input: InputSequence,
         /// Exact roster capture failure.
         source: SurfaceRosterCaptureError,
+    },
+    /// Complete-roster recovery failed after exact target facts were frozen.
+    #[error("surface recovery input {input} failed: {source}")]
+    SurfaceRecovery {
+        /// Failing sequenced input.
+        input: InputSequence,
+        /// Typed recovery compiler failure.
+        source: SurfaceRecoveryError,
     },
     /// An accepted close reached destruction without its edge-frozen roster.
     #[error("surface {surface} destroyed at input {input} without a frozen close roster")]
@@ -326,40 +1721,173 @@ pub enum EngineError {
     },
 }
 
+fn presentation_ledger_error(source: PresentationLedgerError) -> EngineError {
+    match source {
+        PresentationLedgerError::HostRetired {
+            host,
+            retired_at,
+            reason,
+        } => EngineError::PresentationHostRetired {
+            host,
+            retired_at,
+            reason,
+        },
+        PresentationLedgerError::HostRetiredCompacted { host } => {
+            EngineError::PresentationHostRetiredCompacted { host }
+        }
+        source => EngineError::PresentationLedger {
+            detail: source.to_string(),
+        },
+    }
+}
+
 /// Authoritative renderer-neutral docking engine.
 #[derive(Debug, PartialEq)]
 pub struct DockEngine {
+    authority_domain: EngineAuthorityDomainId,
     workspace: Workspace,
-    policy: DockPolicy,
+    presentation_identity: PresentationIdentityAuthority,
+    policy: DockPolicySnapshot,
     version: WorkspaceVersion,
-    scene: Option<SealedScene>,
-    scene_coordinate_authority: BTreeMap<crate::ids::SurfaceId, SurfaceSceneCoordinateAuthority>,
-    last_scene_generation: SceneGeneration,
+    presentation_authority: PresentationAuthorityState,
+    /// Sole live pointer-provider ledger. Its speculative clones share an
+    /// identity allocation so prepared journals cannot cross engine domains or
+    /// escape an abandoned candidate transaction.
+    pointer_journal: PointerJournalLedger,
+    /// Sole joined native backend ingress lane. The watermark advances only in
+    /// the rollback candidate of a complete host frame.
+    backend_ingress: BackendIngressAuthority,
+    /// Monotonic receiver-attempt authority deliberately shared with
+    /// speculative candidates. Issuing an attempt is a non-replayable boundary
+    /// even when a later host frame fails.
+    pointer_receiver_attempt_issuer: Arc<PointerReceiverAttemptIssuer>,
+    scroll_interaction: scroll_interaction::ScrollInteractionState,
     interaction: InteractionState,
+    pending_drag_release: Option<PendingDragRelease>,
+    pending_contained_transform_release: Option<PendingContainedTransformRelease>,
+    close: CloseCoordinator<PreparedCloseOperation>,
     viewport: ViewportCoordinator,
     viewport_focus: ViewportFocusCoordinator,
     last_focus_reducer_generation: PaneFocusIntentGeneration,
     surface_recovery: SurfaceRecoveryState,
+    last_root_recovery_anchor: RootRecoveryAnchorId,
+    root_recovery_anchors: BTreeMap<crate::ids::SurfaceId, RootRecoveryAnchor>,
+    last_surface_recovery_obligation: SurfaceRecoveryObligationId,
+    bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
+    native_admission: NativeAdmissionState,
+    last_reducer_tick: ReducerTickId,
+    source_watermarks: BTreeMap<StableInputSourceId, SourceSequence>,
     last_input: InputSequence,
-    pending: Vec<SequencedInput>,
+}
+
+#[derive(Debug)]
+struct StagedWorkspacePublication {
+    workspace: Workspace,
+    root_recovery_anchors: BTreeMap<crate::ids::SurfaceId, RootRecoveryAnchor>,
+    bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct BoundSurfaceRecovery {
+    binding: crate::viewport::ViewportBinding,
+    obligation: SurfaceRecoveryObligation,
+    retained_staging_resource: Option<NativeStagingResourceId>,
+}
+
+impl BoundSurfaceRecovery {
+    const fn new(
+        binding: crate::viewport::ViewportBinding,
+        obligation: SurfaceRecoveryObligation,
+    ) -> Self {
+        Self {
+            binding,
+            obligation,
+            retained_staging_resource: None,
+        }
+    }
+
+    const fn retaining_staging_resource(mut self, resource: NativeStagingResourceId) -> Self {
+        self.retained_staging_resource = Some(resource);
+        self
+    }
+
+    fn reauthorize(mut self, obligation: SurfaceRecoveryObligation) -> Self {
+        self.obligation = obligation;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspacePublicationAuthority {
+    Ordinary,
+    NativeCommit {
+        saga: NativeCreateSagaId,
+    },
+    RecoveryCommit {
+        source_surface: crate::ids::SurfaceId,
+        obligation: SurfaceRecoveryObligationId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum PreparedCloseOperation {
+    Content(PreparedContentClose),
+    SurfaceRetain {
+        roster: SurfaceRosterDisposition,
+        recovery_focus: PaneFocusDisposition,
+    },
+    SurfaceRehome {
+        roster: SurfaceRosterDisposition,
+        transaction: SurfaceRecoveryTransaction,
+        recovery_focus: PaneFocusDisposition,
+    },
+    SurfaceContent {
+        roster: SurfaceRosterDisposition,
+        prepared: PreparedSurfaceContentClose,
+        recovery_focus: PaneFocusDisposition,
+    },
+}
+
+/// Opaque surface-close facts frozen at the exact native close edge.
+///
+/// The public request is intentionally descriptive only. This capture is the
+/// actual authority used after native destruction: it contains every source
+/// root, item sequence, presentation identity, target program, and recorded
+/// focus disposition needed to apply without re-reading mutable UI state.
+#[derive(Debug, Clone, PartialEq)]
+struct SurfaceCloseCapture {
+    requirements: Vec<CloseItemRequirement>,
+    prepared: PreparedCloseOperation,
+}
+
+/// One fully staged post-destruction publication. The workspace candidate is
+/// built before the close coordinator advances to `Applied`, so a malformed
+/// payload can never consume a native proof and then fail halfway through its
+/// topology commit.
+#[derive(Debug)]
+struct PreparedSurfaceCloseCommit {
+    candidate: Workspace,
+    events: Vec<WorkspaceEventKind>,
+    focus_target: Option<crate::ids::SurfaceId>,
+    recovery_focus: PaneFocusDisposition,
 }
 
 #[derive(Debug, Clone)]
 struct SurfaceRecoveryBatchContext {
     active_rosters: BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
-    targets: BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryTargetFacts>,
+    targets: BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryHostFacts>,
 }
 
 #[derive(Clone, Copy)]
 struct SurfaceRecoveryTargetContext<'a> {
     action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
-    target_facts: Option<&'a SurfaceRecoveryTargetFacts>,
+    target_facts: Option<&'a SurfaceRecoveryHostFacts>,
 }
 
 impl<'a> SurfaceRecoveryTargetContext<'a> {
     const fn new(
         action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
-        target_facts: Option<&'a SurfaceRecoveryTargetFacts>,
+        target_facts: Option<&'a SurfaceRecoveryHostFacts>,
     ) -> Self {
         Self {
             action_barrier,
@@ -371,7 +1899,7 @@ impl<'a> SurfaceRecoveryTargetContext<'a> {
 struct DestroyedSurfaceContext<'a> {
     roster: Option<&'a SurfaceRosterDisposition>,
     action_barrier: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
-    recovery_targets: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryTargetFacts>,
+    recovery_targets: &'a BTreeMap<crate::ids::SurfaceId, SurfaceRecoveryHostFacts>,
     events: &'a mut Vec<WorkspaceEvent>,
 }
 
@@ -382,17 +1910,9 @@ struct PlatformSnapshotReductionContext<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct MergeBackIntent<'a> {
-    request: ViewportCloseRequestId,
-    plan: &'a crate::frame::ViewportMergeBackPlan,
-    dependency: crate::surface_recovery::SurfaceRecoveryTargetDependency,
-    focus: PanelFocus,
-}
-
-struct MergeBackApplicationContext<'facts, 'output> {
-    target: SurfaceRecoveryTargetContext<'facts>,
-    activations: &'output mut Vec<ActivationStart>,
-    events: &'output mut Vec<WorkspaceEvent>,
+struct TickStartAuthority<'a> {
+    policy: &'a DockPolicySnapshot,
+    semantic_presentations: Option<&'a BTreeMap<SurfaceId, JournalSurfacePresentation>>,
 }
 
 #[derive(Clone, Copy)]
@@ -401,47 +1921,10 @@ struct CandidatePaneSelection {
     item: crate::ids::ItemId,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PaneRevealDisposition {
-    Pending,
-    AppliedInCandidate,
-}
-
-enum MergeBackFreeze {
-    Frozen {
-        roster: Box<SurfaceRosterDisposition>,
-        dependency: crate::surface_recovery::SurfaceRecoveryTargetDependency,
-        focus: PanelFocus,
-    },
-    Rejected(ViewportCloseDecisionRejection),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SurfaceSceneCoordinateAuthority {
-    scene: SceneStamp,
-    coordinates: CoordinateSnapshot,
-}
-
-impl SurfaceSceneCoordinateAuthority {
-    const fn new(scene: SceneStamp, coordinates: CoordinateSnapshot) -> Self {
-        Self { scene, coordinates }
-    }
-
-    fn coordinates_match(captured: CoordinateSnapshot, current: CoordinateSnapshot) -> bool {
-        captured.binding() == current.binding()
-            && captured.coordinate_generation() == current.coordinate_generation()
-            && captured.content_bounds() == current.content_bounds()
-            && captured.scale_factor() == current.scale_factor()
-    }
-
-    fn matches(self, scene: SceneStamp, current: CoordinateSnapshot) -> bool {
-        self.scene == scene && Self::coordinates_match(self.coordinates, current)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum PreviewDecision {
     Publish {
+        scene: SurfaceSceneStamp,
         visual: PreviewVisual,
         proof: Box<PreviewProof>,
     },
@@ -450,9 +1933,44 @@ enum PreviewDecision {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+struct PendingDragRelease {
+    source_version: WorkspaceVersion,
+    policy_revision: PolicyRevision,
+    cause: ReductionCause,
+    focus_causal: FocusCausalStamp,
+    session: crate::interaction::DragSessionId,
+    drag: crate::interaction::ActiveDrag,
+    release_decision: PreviewDecision,
+    preview: crate::interaction::PreviewToken,
+    presentation_outputs: BTreeSet<HostFrameKey>,
+    presented_output: Option<HostFrameKey>,
+    presentation_failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingContainedTransformRelease {
+    source_version: WorkspaceVersion,
+    policy_revision: PolicyRevision,
+    cause: ReductionCause,
+    session: ContainedTransformSessionId,
+    transform: ActiveContainedTransform,
+    placement: ContainedTransformPlacement,
+    preview: crate::interaction::ContainedTransformPreviewToken,
+    presentation_outputs: BTreeSet<HostFrameKey>,
+    presented_output: Option<HostFrameKey>,
+    presentation_failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct PreviewEvaluation {
     decision: PreviewDecision,
     affordance: Option<DropAffordance>,
+}
+
+struct StagedJournalWorkspaceCommand {
+    publication: StagedWorkspacePublication,
+    outcome: CommandOutcome,
+    changed: bool,
 }
 
 impl PreviewEvaluation {
@@ -468,42 +1986,24 @@ impl PreviewEvaluation {
     }
 }
 
-enum ReleaseProofDecision {
-    Deliver(Box<PreviewProof>),
-    Reject(InteractionRejection),
-}
-
-#[derive(Clone, Copy)]
-struct DragReleaseInput<'a> {
-    session: crate::interaction::DragSessionId,
-    pointer: crate::intent::PointerId,
-    button: crate::intent::PointerButton,
-    button_state: &'a Authority<PointerButtonState>,
-    target: &'a TargetAuthority,
-    tear_off: Option<&'a TearOffRequest>,
-}
-
-#[derive(Clone, Copy)]
-struct ObservedDragReleaseInput<'a> {
-    session: crate::interaction::DragSessionId,
-    pointer: crate::intent::PointerId,
-    button: crate::intent::PointerButton,
-    button_state: &'a Authority<PointerButtonState>,
-    target: &'a TargetAuthority,
-    current_pointer: &'a Authority<SurfacePointer>,
-    contained_offer: Option<ContainedPresentationOffer>,
-}
-
 enum CoreContainedCandidate {
     None,
-    Request(TearOffRequest),
+    Proposal(crate::intent::ContainedTearOffProposal),
     Rejected,
     Cancel(InteractionCancelReason),
 }
 
 struct PreparedDragSource {
+    source_surface: crate::ids::SurfaceId,
     complete_root: Option<NodeSource>,
     partial_detachable: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JournalCaptureActionGate {
+    Authorized,
+    Unavailable,
+    Lost,
 }
 
 #[cfg(test)]
@@ -521,53 +2021,74 @@ struct ContainedPlacementInput {
     placement: ContainedPlacementProof,
 }
 
-#[derive(Clone, Copy)]
-struct ContainedTransformBeginInput {
+#[derive(Clone)]
+struct PreparedContainedGesture {
     surface: crate::ids::SurfaceId,
     root: crate::ids::RootId,
     floating: crate::ids::FloatingPresentationId,
-    pointer: crate::intent::PointerId,
     button: crate::intent::PointerButton,
     initial_pointer: crate::geometry::LogicalPoint,
-    kind: ContainedTransformKind,
     minimum_size: crate::geometry::LogicalSize,
+    source_rect: crate::geometry::LogicalRect,
+    source: NodeSource,
+    expected_roster: crate::command::ContainedRosterSource,
+    kind: ContainedGestureKind,
+    scene: SurfaceSceneStamp,
+    surface_bounds: crate::geometry::LogicalRect,
+    coordinate_capture: SurfaceCoordinateCapture,
+    presentation: FrozenPresentationAuthority,
 }
 
-#[derive(Clone, Copy)]
-struct ContainedTransformReleaseInput<'a> {
-    session: ContainedTransformSessionId,
-    pointer: crate::intent::PointerId,
-    button: crate::intent::PointerButton,
-    button_state: &'a Authority<PointerButtonState>,
+#[derive(Clone)]
+struct PreparedTabGesture {
+    source: TabGestureSource,
+    surface: crate::ids::SurfaceId,
+    root: crate::ids::RootId,
+    tabs: crate::ids::NodeId,
+    source_node: NodeSource,
+    source_geometry: JournalDragSourceGeometry,
+    contained: Option<PreparedContainedTabOrigin>,
+    initial_pointer: crate::geometry::LogicalPoint,
+    presentation: FrozenPresentationAuthority,
 }
 
-#[derive(Clone, Copy)]
-struct WorkspaceDeliveryTarget {
-    kind: WorkspaceDeliveryKind,
-    focus_surface: crate::ids::SurfaceId,
-    validation: WorkspaceDeliveryValidation,
-}
-
-#[derive(Clone, Copy)]
-struct WorkspaceDeliveryInput<'a> {
-    input: InputSequence,
-    session: crate::interaction::DragSessionId,
-    target: WorkspaceDeliveryTarget,
-    pane_focus: PanelFocus,
-    command: &'a WorkspaceCommand,
-}
-
-#[derive(Clone, Copy)]
-enum WorkspaceDeliveryValidation {
-    Policy,
-    ExistingContainedRect,
+#[derive(Clone)]
+struct PreparedContainedTabOrigin {
+    surface: crate::ids::SurfaceId,
+    floating: crate::ids::FloatingPresentationId,
+    source_rect: crate::geometry::LogicalRect,
+    minimum_size: crate::geometry::LogicalSize,
+    expected_roster: crate::command::ContainedRosterSource,
 }
 
 #[derive(Default)]
 struct PlatformInteractionDependencies {
-    surfaces: BTreeSet<crate::ids::SurfaceId>,
+    owner_bindings: BTreeSet<crate::viewport::ViewportBinding>,
+    target_bindings: BTreeSet<crate::viewport::ViewportBinding>,
     routed: bool,
     native: bool,
+}
+
+#[derive(Default)]
+struct InvalidatedSurfaceSceneAuthorities {
+    surfaces: BTreeSet<crate::ids::SurfaceId>,
+    bindings: BTreeSet<crate::viewport::ViewportBinding>,
+}
+
+enum PlatformInteractionReconciliation {
+    Preserve,
+    ClearDragTarget {
+        workspace_changed: bool,
+        end_routing: bool,
+    },
+    Cancel(InteractionCancelReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentationHostRetirementInteractionImpact {
+    None,
+    ClearTarget { end_routing: bool },
+    CancelOwner,
 }
 
 enum CommandApplication {
@@ -578,184 +2099,27 @@ enum CommandApplication {
     Rejected(crate::error::CommandError),
 }
 
-fn clamp_contained_rect(
-    surface: crate::ids::SurfaceId,
-    bounds: crate::geometry::LogicalRect,
-    requested: crate::geometry::LogicalRect,
-    minimum: crate::geometry::LogicalSize,
-) -> Result<crate::geometry::LogicalRect, ContainedPlacementUnavailable> {
-    let bounds_width = bounds.width();
-    let bounds_height = bounds.height();
-    let requested_width = requested.width();
-    let requested_height = requested.height();
-    if !bounds_width.is_finite()
-        || !bounds_height.is_finite()
-        || !requested_width.is_finite()
-        || !requested_height.is_finite()
-    {
-        return Err(ContainedPlacementUnavailable::UnrepresentableGeometry { surface });
-    }
-
-    let width = requested_width.max(minimum.width()).min(bounds_width);
-    let height = requested_height.max(minimum.height()).min(bounds_height);
-    let (min_x, max_x) = clamp_axis(bounds.x(), bounds.max().x(), requested.x(), width)
-        .ok_or(ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
-    let (min_y, max_y) = clamp_axis(bounds.y(), bounds.max().y(), requested.y(), height)
-        .ok_or(ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
-    let min = crate::geometry::LogicalPoint::new(min_x, min_y)
-        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
-    let max = crate::geometry::LogicalPoint::new(max_x, max_y)
-        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })?;
-    crate::geometry::LogicalRect::from_min_max(min, max)
-        .map_err(|_| ContainedPlacementUnavailable::UnrepresentableGeometry { surface })
+enum DestroyedSurfaceRecoveryApplication {
+    Applied,
+    Blocked(SurfaceRecoveryBlockedReason),
 }
 
-fn clamp_axis(
-    bounds_min: f64,
-    bounds_max: f64,
-    requested_min: f64,
-    extent: f64,
-) -> Option<(f64, f64)> {
-    let latest_min = bounds_max - extent;
-    let (minimum, maximum) = if requested_min <= bounds_min {
-        (bounds_min, bounds_min + extent)
-    } else if requested_min >= latest_min {
-        (latest_min, bounds_max)
-    } else {
-        (requested_min, requested_min + extent)
-    };
-    minimum
-        .is_finite()
-        .then_some(())
-        .filter(|()| maximum.is_finite() && minimum <= maximum)
-        .map(|()| (minimum, maximum))
+enum ContentCloseApplication {
+    Applied {
+        outcome: CloseCommitOutcome,
+        changed: bool,
+    },
+    Rejected(CommandError),
 }
 
-fn translated_contained_rect(
-    source: crate::geometry::LogicalRect,
-    initial_pointer: crate::geometry::LogicalPoint,
-    current_pointer: crate::geometry::LogicalPoint,
-) -> Result<crate::geometry::LogicalRect, ()> {
-    let delta_x = current_pointer.x() - initial_pointer.x();
-    let delta_y = current_pointer.y() - initial_pointer.y();
-    if !delta_x.is_finite() || !delta_y.is_finite() {
-        return Err(());
-    }
-    crate::geometry::LogicalRect::new(
-        source.x() + delta_x,
-        source.y() + delta_y,
-        source.width(),
-        source.height(),
-    )
-    .map_err(|_| ())
-}
-
-#[derive(Clone, Copy)]
-enum TransformAxisEdge {
-    Minimum,
-    Maximum,
-}
-
-fn contained_transform_requested_rect(
-    transform: &ActiveContainedTransform,
-    current_pointer: crate::geometry::LogicalPoint,
-    bounds: crate::geometry::LogicalRect,
-) -> Result<crate::geometry::LogicalRect, ()> {
-    let delta_x = current_pointer.x() - transform.initial_pointer.x();
-    let delta_y = current_pointer.y() - transform.initial_pointer.y();
-    if !delta_x.is_finite() || !delta_y.is_finite() {
-        return Err(());
-    }
-    match transform.kind {
-        ContainedTransformKind::Move => crate::geometry::LogicalRect::new(
-            transform.source_rect.x() + delta_x,
-            transform.source_rect.y() + delta_y,
-            transform.source_rect.width(),
-            transform.source_rect.height(),
-        )
-        .map_err(|_| ()),
-        ContainedTransformKind::Resize(edges) => {
-            let horizontal = match edges.horizontal_edge() {
-                Some(ContainedHorizontalResizeEdge::Left) => Some(TransformAxisEdge::Minimum),
-                Some(ContainedHorizontalResizeEdge::Right) => Some(TransformAxisEdge::Maximum),
-                None => None,
-            };
-            let vertical = match edges.vertical_edge() {
-                Some(ContainedVerticalResizeEdge::Top) => Some(TransformAxisEdge::Minimum),
-                Some(ContainedVerticalResizeEdge::Bottom) => Some(TransformAxisEdge::Maximum),
-                None => None,
-            };
-            let (min_x, max_x) = contained_resize_axis(
-                transform.source_rect.x(),
-                transform.source_rect.max().x(),
-                bounds.x(),
-                bounds.max().x(),
-                transform.minimum_size.width(),
-                delta_x,
-                horizontal,
-            )
-            .ok_or(())?;
-            let (min_y, max_y) = contained_resize_axis(
-                transform.source_rect.y(),
-                transform.source_rect.max().y(),
-                bounds.y(),
-                bounds.max().y(),
-                transform.minimum_size.height(),
-                delta_y,
-                vertical,
-            )
-            .ok_or(())?;
-            let min = crate::geometry::LogicalPoint::new(min_x, min_y).map_err(|_| ())?;
-            let max = crate::geometry::LogicalPoint::new(max_x, max_y).map_err(|_| ())?;
-            crate::geometry::LogicalRect::from_min_max(min, max).map_err(|_| ())
-        }
-    }
-}
-
-fn contained_resize_axis(
-    source_min: f64,
-    source_max: f64,
-    bounds_min: f64,
-    bounds_max: f64,
-    minimum_extent: f64,
-    delta: f64,
-    moving_edge: Option<TransformAxisEdge>,
-) -> Option<(f64, f64)> {
-    if !source_min.is_finite()
-        || !source_max.is_finite()
-        || !bounds_min.is_finite()
-        || !bounds_max.is_finite()
-        || !minimum_extent.is_finite()
-        || !delta.is_finite()
-    {
-        return None;
-    }
-    match moving_edge {
-        None => (source_min >= bounds_min && source_max <= bounds_max)
-            .then_some((source_min, source_max)),
-        Some(TransformAxisEdge::Minimum) => {
-            let latest_min = source_max - minimum_extent;
-            if source_max > bounds_max || bounds_min > latest_min {
-                return None;
-            }
-            let requested = source_min + delta;
-            requested
-                .is_finite()
-                .then(|| requested.clamp(bounds_min, latest_min))
-                .map(|minimum| (minimum, source_max))
-        }
-        Some(TransformAxisEdge::Maximum) => {
-            let earliest_max = source_min + minimum_extent;
-            if source_min < bounds_min || earliest_max > bounds_max {
-                return None;
-            }
-            let requested = source_max + delta;
-            requested
-                .is_finite()
-                .then(|| requested.clamp(earliest_max, bounds_max))
-                .map(|maximum| (source_min, maximum))
-        }
-    }
+enum JournalClickDelivery<'snapshot> {
+    Dock(
+        PresentationHitRegionId,
+        &'snapshot JournalSurfacePresentation,
+    ),
+    KnownMismatch,
+    Blocked,
+    Unknown,
 }
 
 impl DockEngine {
@@ -765,23 +2129,153 @@ impl DockEngine {
     ///
     /// Returns [`EngineError::InvalidWorkspace`] if `workspace` is corrupted.
     pub fn new(workspace: Workspace, policy: DockPolicy) -> Result<Self, EngineError> {
+        Self::new_with_presentation_state(
+            workspace,
+            policy,
+            DockPresentationConfig::default(),
+            PresentationIdentityFrontier::empty(),
+        )
+    }
+
+    /// Creates an engine from one atomic, document-validated restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidWorkspace`] if the restored workspace is corrupted.
+    pub fn from_validated_restore(
+        restore: ValidatedWorkspaceRestore,
+        policy: DockPolicy,
+    ) -> Result<Self, EngineError> {
+        let (workspace, presentation_identity_frontier) = restore.into_parts();
+        Self::new_with_presentation_state(
+            workspace,
+            policy,
+            DockPresentationConfig::default(),
+            presentation_identity_frontier,
+        )
+    }
+
+    /// Creates an engine with explicit validated renderer-neutral presentation geometry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::InvalidWorkspace`] if `workspace` is corrupted,
+    /// or an invariant error if its exact semantic requirements cannot be derived.
+    pub fn new_with_presentation_config(
+        workspace: Workspace,
+        policy: DockPolicy,
+        presentation_config: DockPresentationConfig,
+    ) -> Result<Self, EngineError> {
+        Self::new_with_presentation_state(
+            workspace,
+            policy,
+            presentation_config,
+            PresentationIdentityFrontier::empty(),
+        )
+    }
+
+    fn new_with_presentation_state(
+        workspace: Workspace,
+        policy: DockPolicy,
+        presentation_config: DockPresentationConfig,
+        presentation_identity_frontier: PresentationIdentityFrontier,
+    ) -> Result<Self, EngineError> {
         workspace
             .validate()
             .map_err(EngineError::InvalidWorkspace)?;
+        let presentation_identity =
+            PresentationIdentityAuthority::new(&workspace, presentation_identity_frontier);
+        let authority_domain =
+            EngineAuthorityDomainId::mint().ok_or(EngineError::EngineAuthorityDomainExhausted)?;
+        let version = WorkspaceVersion::default();
+        let presentation_config_revision = PresentationConfigRevision::default();
+        let policy = policy.snapshot(PolicyRevision::default());
+        let requirement_revision = RequirementRevision::default();
+        let interaction = InteractionState::default();
+        let surface_semantic_snapshots = Self::capture_surface_semantic_snapshots(&workspace)
+            .map_err(|source| EngineError::PresentationRequirementInvariant {
+                input: None,
+                detail: format!("{source:?}"),
+            })?;
+        let surface_requirement_revisions = workspace
+            .surfaces()
+            .map(|(surface, _)| (surface, SurfaceRequirementRevision::default()))
+            .collect::<BTreeMap<_, _>>();
+        let mut tab_strip_states = TabStripStateStore::default();
+        let requirement_draft = derive_scene_requirement_draft(
+            authority_domain,
+            &workspace,
+            version,
+            presentation_config_revision,
+            &policy,
+            requirement_revision,
+            &surface_requirement_revisions,
+        )
+        .map_err(|source| EngineError::PresentationRequirementInvariant {
+            input: None,
+            detail: source.to_string(),
+        })?;
+        Self::reconcile_tab_strip_state_store(
+            &workspace,
+            &requirement_draft,
+            &mut tab_strip_states,
+            false,
+        )
+        .map_err(|source| EngineError::PresentationRequirementInvariant {
+            input: None,
+            detail: source.to_string(),
+        })?;
+        let presentation_requirements = requirement_draft
+            .finalize(tab_strip_states.popup_requirement())
+            .map_err(|source| EngineError::PresentationRequirementInvariant {
+                input: None,
+                detail: source.to_string(),
+            })?;
+        let scene = SurfaceSceneSet::new(&presentation_requirements).map_err(|source| {
+            EngineError::PresentationRequirementInvariant {
+                input: None,
+                detail: source.to_string(),
+            }
+        })?;
         Ok(Self {
+            authority_domain,
             workspace,
+            presentation_identity,
             policy,
-            version: WorkspaceVersion::default(),
-            scene: None,
-            scene_coordinate_authority: BTreeMap::new(),
-            last_scene_generation: SceneGeneration::default(),
-            interaction: InteractionState::default(),
-            viewport: ViewportCoordinator::default(),
+            version,
+            presentation_authority: PresentationAuthorityState::new(
+                authority_domain,
+                presentation_config,
+                presentation_config_revision,
+                presentation_requirements,
+                tab_strip_states,
+                surface_semantic_snapshots,
+                surface_requirement_revisions,
+                scene,
+                PresentationLedger::new(authority_domain),
+            ),
+            pointer_journal: PointerJournalLedger::new(authority_domain),
+            backend_ingress: BackendIngressAuthority::new(authority_domain),
+            pointer_receiver_attempt_issuer: Arc::new(PointerReceiverAttemptIssuer::new(
+                authority_domain,
+            )),
+            scroll_interaction: scroll_interaction::ScrollInteractionState::default(),
+            interaction,
+            pending_drag_release: None,
+            pending_contained_transform_release: None,
+            close: CloseCoordinator::new(authority_domain),
+            viewport: ViewportCoordinator::new(authority_domain),
             viewport_focus: ViewportFocusCoordinator::default(),
             last_focus_reducer_generation: PaneFocusIntentGeneration::default(),
             surface_recovery: SurfaceRecoveryState::default(),
+            last_root_recovery_anchor: RootRecoveryAnchorId::default(),
+            root_recovery_anchors: BTreeMap::new(),
+            last_surface_recovery_obligation: SurfaceRecoveryObligationId::default(),
+            bound_surface_recoveries: BTreeMap::new(),
+            native_admission: NativeAdmissionState::default(),
+            last_reducer_tick: ReducerTickId::default(),
+            source_watermarks: BTreeMap::new(),
             last_input: InputSequence::default(),
-            pending: Vec::new(),
         })
     }
 
@@ -791,9 +2285,21 @@ impl DockEngine {
         &self.workspace
     }
 
+    /// Returns the durable frontier required for an atomic dockspace document capture.
+    #[must_use]
+    pub const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
+        self.presentation_identity.frontier()
+    }
+
     /// Returns current application policy.
     #[must_use]
     pub const fn policy(&self) -> &DockPolicy {
+        self.policy.policy()
+    }
+
+    /// Returns the exact immutable policy revision used by semantic consumers.
+    #[must_use]
+    pub const fn policy_snapshot(&self) -> &DockPolicySnapshot {
         &self.policy
     }
 
@@ -803,16 +2309,666 @@ impl DockEngine {
         self.version
     }
 
-    /// Returns the current immutable scene eligible for painting.
+    /// Returns the validated renderer-neutral geometry used by scene compilation.
     #[must_use]
-    pub const fn scene(&self) -> Option<&SealedScene> {
-        self.scene.as_ref()
+    pub const fn presentation_config(&self) -> &DockPresentationConfig {
+        &self.presentation_authority.presentation_config
+    }
+
+    /// Returns the current complete core-derived semantic measurement inventory.
+    #[must_use]
+    pub const fn presentation_requirements(&self) -> &SceneRequirementManifest {
+        &self.presentation_authority.presentation_requirements
+    }
+
+    /// Returns the complete independently revisioned presentation roster.
+    #[must_use]
+    pub const fn scene(&self) -> &SurfaceSceneSet {
+        &self.presentation_authority.scene
+    }
+
+    /// Returns one exact interaction projection after the workspace-global
+    /// popup presentation gate authorizes the complete surface roster.
+    #[must_use]
+    pub fn interaction_projection(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<SurfaceInteractionProjection<'_>> {
+        self.presentation_authority
+            .scene
+            .interaction_projection(surface)
+    }
+
+    /// Returns one exact final-presentation authority after the global gate.
+    #[must_use]
+    pub fn interaction_authority(&self, surface: SurfaceId) -> Option<PresentedSurfaceAuthority> {
+        self.presentation_authority
+            .scene
+            .interaction_authority(surface)
+    }
+
+    /// Captures one legacy local target observation against the exact current
+    /// gate-authorized presentation projection.
+    ///
+    /// This is a migration-only adapter API and will be removed with
+    /// [`TargetAuthority`]. A returned value without a valid current proof stays
+    /// fail-closed when reduced; the target point is never reinterpreted against
+    /// a later projection.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn capture_local_target_observation(
+        &self,
+        observer: SurfaceId,
+        target: Authority<SurfacePointer>,
+    ) -> TargetAuthority {
+        let target_matches_observer = !matches!(
+            &target,
+            Authority::Known(pointer) if pointer.surface() != observer
+        );
+        let proof = if target_matches_observer {
+            self.presentation_authority
+                .scene
+                .interaction_projection(observer)
+                .filter(|projection| {
+                    Self::coordinate_capture_matches_current(
+                        projection.output().coordinate_capture(),
+                        self.viewport.viewport(observer),
+                        self.viewport.surface_coordinate_authority(observer),
+                    )
+                })
+                .map(|projection| LocalTargetAuthorityProof::capture(observer, projection))
+        } else {
+            None
+        };
+        TargetAuthority::Local(LocalTargetObservation::captured(observer, target, proof))
+    }
+
+    fn freeze_interaction_projection(
+        projection: SurfaceInteractionProjection<'_>,
+    ) -> FrozenPresentationAuthority {
+        FrozenPresentationAuthority::new(projection.authority(), projection.popup_gate_revision())
+    }
+
+    fn freeze_journal_presentation(
+        presentation: &JournalSurfacePresentation,
+    ) -> FrozenPresentationAuthority {
+        FrozenPresentationAuthority::new(
+            presentation.authority(),
+            presentation.popup_gate_revision(),
+        )
+    }
+
+    fn presentation_authority_is_current(&self, frozen: FrozenPresentationAuthority) -> bool {
+        self.presentation_authority
+            .scene
+            .interaction_projection(frozen.surface())
+            .is_some_and(|current| {
+                current.popup_gate_revision() == frozen.popup_gate_revision
+                    && current
+                        .authority()
+                        .same_interaction_semantics(frozen.presented)
+            })
+    }
+
+    fn resize_continuation_is_current(&self, frozen: FrozenPresentationAuthority) -> bool {
+        let InteractionStatus::Resizing { session } = self.interaction.status() else {
+            return false;
+        };
+        let Ok(resize) = self.interaction.active_resize(session) else {
+            return false;
+        };
+        if resize.presentation != frozen
+            || resize.surface != frozen.surface()
+            || self
+                .presentation_authority
+                .presentation_requirements
+                .surface(resize.surface)
+                .is_none_or(|requirements| requirements.ticket() != resize.scene.requirement())
+            || !Self::coordinate_capture_matches_current(
+                resize.coordinate_capture,
+                self.viewport.viewport(resize.surface),
+                self.viewport.surface_coordinate_authority(resize.surface),
+            )
+        {
+            return false;
+        }
+
+        resize.axis_groups.iter().all(|group| {
+            group.handles.iter().all(|handle| {
+                self.workspace
+                    .capture_node_source(handle.source.root(), handle.source.node())
+                    .is_ok_and(|current| current == handle.source)
+                    && matches!(
+                        self.workspace.presentation_for_root(handle.source.root()),
+                        Some(crate::RootPresentationOwner::Main { surface })
+                            | Some(crate::RootPresentationOwner::Contained { surface, .. })
+                            if surface == resize.surface
+                    )
+            })
+        })
+    }
+
+    fn scene_gesture_continuation_draft(
+        &self,
+        activation: ReductionCause,
+        owner: GestureOwner,
+        origin: FrozenPresentationAuthority,
+        source: SceneGestureContinuationSource,
+    ) -> Option<SceneGestureContinuationDraft> {
+        Some(SceneGestureContinuationDraft {
+            activation,
+            owner,
+            origin,
+            workspace: self.version,
+            policy: self.policy.revision(),
+            config: self.presentation_authority.presentation_config_revision,
+            requirements: self
+                .presentation_authority
+                .presentation_requirements
+                .revision(),
+            popup_routing: self
+                .presentation_authority
+                .presentation_requirements
+                .popup()
+                .revision(),
+            source,
+        })
+    }
+
+    fn scene_gesture_continuation_is_current(
+        &self,
+        continuation: &SceneGestureContinuation,
+    ) -> bool {
+        let draft = &continuation.draft;
+        if self.version != draft.workspace
+            || self.policy.revision() != draft.policy
+            || self.presentation_authority.presentation_config_revision != draft.config
+            || self
+                .presentation_authority
+                .presentation_requirements
+                .revision()
+                != draft.requirements
+            || self
+                .presentation_authority
+                .presentation_requirements
+                .popup()
+                .revision()
+                != draft.popup_routing
+            || self.interaction.active_owner() != Some(draft.owner)
+        {
+            return false;
+        }
+
+        match (&continuation.session, &draft.source) {
+            (
+                SceneGestureSession::Drag(session),
+                SceneGestureContinuationSource::Drag {
+                    payload,
+                    source_surface,
+                    complete_root,
+                    origin,
+                    coordinates,
+                },
+            ) => {
+                let active_source_matches = match self.interaction.status() {
+                    InteractionStatus::Armed { session: active } if active == *session => {
+                        self.interaction.armed_drag(*session).is_ok_and(|drag| {
+                            drag.payload == *payload
+                                && drag.source_surface == *source_surface
+                                && drag.complete_root == *complete_root
+                                && drag.origin == *origin
+                                && drag.presentation == draft.origin
+                        })
+                    }
+                    InteractionStatus::Dragging { session: active } if active == *session => {
+                        self.interaction.active_drag(*session).is_ok_and(|drag| {
+                            drag.payload == *payload
+                                && drag.source_surface == *source_surface
+                                && drag.complete_root == *complete_root
+                                && drag.origin == *origin
+                                && drag.presentation == draft.origin
+                        })
+                    }
+                    InteractionStatus::Idle
+                    | InteractionStatus::Pressed { .. }
+                    | InteractionStatus::Armed { .. }
+                    | InteractionStatus::Dragging { .. }
+                    | InteractionStatus::Resizing { .. }
+                    | InteractionStatus::ContainedTransforming { .. } => false,
+                };
+                let source_coordinates_are_current = match (self.interaction.status(), origin) {
+                    (
+                        InteractionStatus::Dragging { session: active },
+                        FrozenDragOrigin::Workspace,
+                    ) if active == *session => Self::coordinate_capture_incarnation_is_current(
+                        *coordinates,
+                        self.viewport.viewport(*source_surface),
+                        self.viewport.surface_coordinate_authority(*source_surface),
+                    ),
+                    _ => Self::coordinate_capture_matches_current(
+                        *coordinates,
+                        self.viewport.viewport(*source_surface),
+                        self.viewport.surface_coordinate_authority(*source_surface),
+                    ),
+                };
+                if draft.origin.surface() != *source_surface
+                    || !active_source_matches
+                    || !source_coordinates_are_current
+                {
+                    return false;
+                }
+                let Ok(prepared) = self.prepare_drag_source(payload) else {
+                    return false;
+                };
+                if prepared.source_surface != *source_surface
+                    || prepared.complete_root != *complete_root
+                    || !self.frozen_drag_origin_is_current(origin.clone())
+                {
+                    return false;
+                }
+                match origin {
+                    FrozenDragOrigin::Workspace => true,
+                    FrozenDragOrigin::Contained(origin) => self
+                        .workspace
+                        .capture_contained_roster(origin.surface)
+                        .is_ok_and(|current| current == origin.source_roster),
+                }
+            }
+            (
+                SceneGestureSession::ContainedTransform(session),
+                SceneGestureContinuationSource::ContainedTransform {
+                    source,
+                    surface,
+                    root,
+                    floating,
+                    source_rect,
+                    expected_roster,
+                    coordinates,
+                },
+            ) => {
+                let Ok(transform) = self.interaction.active_contained_transform(*session) else {
+                    return false;
+                };
+                draft.origin.surface() == *surface
+                    && transform.presentation == draft.origin
+                    && transform.surface == *surface
+                    && transform.root == *root
+                    && transform.floating == *floating
+                    && transform.source_rect == *source_rect
+                    && Self::coordinate_capture_matches_current(
+                        *coordinates,
+                        self.viewport.viewport(*surface),
+                        self.viewport.surface_coordinate_authority(*surface),
+                    )
+                    && self
+                        .workspace
+                        .capture_node_source(*root, source.node())
+                        .is_ok_and(|current| current == *source)
+                    && self.workspace.presentation_for_root(*root)
+                        == Some(crate::RootPresentationOwner::Contained {
+                            surface: *surface,
+                            floating: *floating,
+                        })
+                    && self
+                        .workspace
+                        .contained_floating(*floating)
+                        .is_some_and(|record| record.root == *root && record.rect == *source_rect)
+                    && self
+                        .workspace
+                        .capture_contained_roster(*surface)
+                        .is_ok_and(|current| current == *expected_roster)
+            }
+            (
+                SceneGestureSession::Drag(_),
+                SceneGestureContinuationSource::ContainedTransform { .. },
+            )
+            | (
+                SceneGestureSession::ContainedTransform(_),
+                SceneGestureContinuationSource::Drag { .. },
+            ) => false,
+        }
+    }
+
+    fn cancel_active_if_presentation_revoked(
+        &mut self,
+        input_for_error: InputSequence,
+    ) -> Result<Option<InteractionStatus>, EngineError> {
+        let Some(frozen) = self.interaction.active_presentation_authority() else {
+            return Ok(None);
+        };
+        if self.presentation_authority_is_current(frozen)
+            || self.resize_continuation_is_current(frozen)
+            || self
+                .interaction
+                .active_scene_gesture_continuation()
+                .is_some_and(|continuation| {
+                    self.scene_gesture_continuation_is_current(continuation)
+                })
+        {
+            return Ok(None);
+        }
+        self.viewport
+            .end_all_drag_routing()
+            .map_err(|source| EngineError::Viewport {
+                input: input_for_error,
+                source,
+            })?;
+        Ok(self.interaction.cancel_active())
+    }
+
+    fn cancel_revoked_presentation_caused(
+        &mut self,
+        cause: ReductionCause,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        let Some(status) = self.cancel_active_if_presentation_revoked(self.last_input)? else {
+            return Ok(None);
+        };
+        let reason = InteractionCancelReason::SceneUnavailable;
+        interaction_events.push(InteractionEvent::new_caused(
+            cause,
+            self.version,
+            InteractionEventKind::Cancelled { status, reason },
+        ));
+        Ok(Some(InteractionOutcome::Cancelled { status, reason }))
+    }
+
+    fn cancel_revoked_presentation_input(
+        &mut self,
+        input: InputSequence,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        let Some(status) = self.cancel_active_if_presentation_revoked(input)? else {
+            return Ok(None);
+        };
+        let reason = InteractionCancelReason::SceneUnavailable;
+        interaction_events.push(InteractionEvent::new(
+            input,
+            self.version,
+            InteractionEventKind::Cancelled { status, reason },
+        ));
+        Ok(Some(InteractionOutcome::Cancelled { status, reason }))
+    }
+
+    /// Returns count-only presentation-ledger diagnostics for conformance tests.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn presentation_ledger_diagnostics(&self) -> PresentationLedgerDiagnostics {
+        self.presentation_authority.presentation.diagnostics()
+    }
+
+    /// Derives the exact concrete presentation emissions whose adapter resources remain live.
+    ///
+    /// This is the sole reclamation authority for renderer receiver sidecars. In particular, a
+    /// frame age, a newer semantic ticket, or a viewport callback disappearing does not make an
+    /// older emission reclaimable while core still retains it for settlement or interaction.
+    #[must_use]
+    pub fn presentation_retention_manifest(&self) -> PresentationRetentionManifest {
+        PresentationRetentionManifest::from_resources(
+            self.retained_presentation_emissions(),
+            self.presentation_authority
+                .presentation
+                .retained_stream_ids(),
+        )
+    }
+
+    /// Returns complete core-owned accounting for resources retained across host frames.
+    ///
+    /// The presentation subset is an executable adapter reclamation allow-list. The remaining
+    /// subsets expose every retained structure and the protocol barrier which still prevents its
+    /// safe compaction; no entry is hidden behind frame age or a fixed cache capacity.
+    #[must_use]
+    pub fn runtime_retention_manifest(&self) -> RuntimeRetentionManifest {
+        RuntimeRetentionManifest::new(
+            self.presentation_retention_manifest(),
+            self.presentation_authority
+                .presentation
+                .retention_manifest(),
+            self.viewport.effect_retention_manifest(),
+            self.close.retention_manifest(),
+            self.pointer_journal.retention_manifest(),
+            self.viewport.binding_retention_manifest(),
+            InputSourceRetentionManifest::new(self.source_watermarks.len()),
+            self.scroll_interaction.retention_manifest(),
+        )
+    }
+
+    /// Permanently retires one presentation host and all streams it ever owned.
+    ///
+    /// The core enumerates the host's complete stream roster, discards every
+    /// pending output without promotion, releases only active ownership still
+    /// pointing at those streams, and revokes matching scene interaction
+    /// authority atomically. No rendering host or contribution roster is
+    /// required because this is a terminal control boundary rather than a host
+    /// frame.
+    ///
+    /// Repeating retirement is explicitly idempotent: the original tombstone is
+    /// returned and the reducer tick does not advance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed ledger or reducer error when the lease is foreign,
+    /// unknown, or the atomic candidate cannot be published.
+    pub fn retire_presentation_host(
+        &mut self,
+        host: PresentationHostLease,
+        reason: PresentationHostRetirementReason,
+    ) -> Result<PresentationHostRetirementOutcome, EngineError> {
+        match self
+            .presentation_authority
+            .presentation
+            .retirement_status(host)
+            .map_err(presentation_ledger_error)?
+        {
+            PresentationHostRetirementStatus::Detailed(tombstone) => {
+                return Ok(PresentationHostRetirementOutcome::AlreadyRetired { host, tombstone });
+            }
+            PresentationHostRetirementStatus::Compacted => {
+                return Ok(PresentationHostRetirementOutcome::Compacted { host });
+            }
+            PresentationHostRetirementStatus::Live => {}
+        }
+
+        let before = self.version;
+        let before_scene = self.presentation_authority.scene.clone();
+        let before_viewport = self.viewport.clone();
+        let before_viewport_focus = self.viewport_focus.clone();
+        let effect_boundary = before_viewport.latest_effect_id();
+        let mut candidate = self.candidate();
+        let tick = candidate
+            .last_reducer_tick
+            .checked_next()
+            .ok_or(EngineError::ReducerTickExhausted)?;
+        candidate.last_reducer_tick = tick;
+
+        let retirement = candidate
+            .presentation_authority
+            .presentation
+            .retire_host(host, tick, reason)
+            .map_err(presentation_ledger_error)?;
+        candidate.observe_pending_release_host_retirement(retirement.retired_outputs());
+        let retired_pointer_provider =
+            candidate.pointer_journal.active_lease().filter(|provider| {
+                provider
+                    .scope()
+                    .surface_local()
+                    .is_some_and(|scope| scope.host() == host)
+            });
+        if let Some(provider) = retired_pointer_provider {
+            candidate
+                .pointer_journal
+                .retire_provider(provider)
+                .map_err(|source| EngineError::PointerJournal { source })?;
+        }
+        let affected_surfaces = candidate
+            .presentation_authority
+            .scene
+            .revoke_interaction_authority_for_streams(retirement.streams());
+        let mut interaction_events = Vec::new();
+        candidate.reconcile_interaction_after_host_retirement(
+            tick,
+            host,
+            &affected_surfaces,
+            &mut interaction_events,
+        )?;
+        if let Some(provider) = retired_pointer_provider {
+            candidate.cancel_retired_pointer_owner(
+                ReductionCause::PresentationHostRetirement { tick, host },
+                provider,
+                InteractionCancelReason::SceneUnavailable,
+                &mut interaction_events,
+            )?;
+        }
+        let mut events = Vec::new();
+        let drag_release_settled = candidate
+            .settle_presented_pending_drag_release(&mut events, &mut interaction_events)?;
+        let contained_release_settled = candidate
+            .settle_presented_pending_contained_transform_release(
+                &mut events,
+                &mut interaction_events,
+            )?;
+        if drag_release_settled || contained_release_settled {
+            candidate.rebuild_presentation_requirements(candidate.last_input)?;
+        }
+        candidate.settle_retired_presentation_hosts()?;
+
+        let platform_effects = candidate
+            .viewport
+            .try_take_new_effects_after(effect_boundary)
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
+        candidate
+            .record_emitted_native_surface_close_effects(candidate.last_input, &platform_effects)?;
+        let focus_delta = FocusDelta::between(
+            &before_viewport_focus,
+            &candidate.viewport_focus,
+            before_viewport.effects(),
+            candidate.viewport.effects(),
+            &[],
+        );
+        let surface_scene_deltas =
+            Self::surface_scene_deltas(&before_scene, &candidate.presentation_authority.scene);
+        // The durable host tombstone always changes published core state, even
+        // when the host never emitted a stream and no scene delta is visible.
+        let published_state_changed = true;
+        let transition = EngineTransition::new(EngineTransitionParts {
+            tick,
+            before,
+            after: candidate.version,
+            reduced: Vec::new(),
+            reduced_pointer_edges: Vec::new(),
+            events,
+            interaction_events,
+            platform_effects,
+            focus_delta,
+            presentation_observations: Vec::new(),
+            presentation_emissions: Vec::new(),
+            presentation_dispositions: Vec::new(),
+            surface_contributions: Vec::new(),
+            surface_scene_deltas,
+            published_state_changed,
+        });
+        let outcome = PresentationHostRetirementOutcome::Retired {
+            host: retirement.host(),
+            reason: retirement.tombstone().reason(),
+            retired_stream_count: retirement.streams().len(),
+            retired_output_count: retirement.retired_output_count(),
+            released_active_surfaces: retirement
+                .released_active_surfaces()
+                .iter()
+                .copied()
+                .collect(),
+            affected_surfaces: affected_surfaces.iter().copied().collect(),
+            transition,
+        };
+        self.publish_candidate(candidate);
+        Ok(outcome)
     }
 
     /// Returns the published transient interaction state.
     #[must_use]
     pub const fn interaction(&self) -> &InteractionState {
         &self.interaction
+    }
+
+    /// Returns the exact release preview retained until the host proves that it
+    /// was presented.
+    #[must_use]
+    pub fn pending_release_preview(
+        &self,
+    ) -> Option<(
+        crate::interaction::DragSessionId,
+        crate::interaction::PreviewToken,
+    )> {
+        self.pending_drag_release
+            .as_ref()
+            .map(|pending| (pending.session, pending.preview))
+    }
+
+    /// Returns the exact contained-transform release preview retained until the
+    /// host proves that it was presented.
+    #[must_use]
+    pub fn pending_contained_transform_release_preview(
+        &self,
+    ) -> Option<(
+        ContainedTransformSessionId,
+        crate::interaction::ContainedTransformPreviewToken,
+    )> {
+        self.pending_contained_transform_release
+            .as_ref()
+            .map(|pending| (pending.session, pending.preview))
+    }
+
+    /// Returns the drag preview which must be represented by the next host
+    /// presentation, including a release preview whose gesture is already idle.
+    #[must_use]
+    pub fn presentation_preview(&self) -> Option<&crate::interaction::InteractionPreview> {
+        self.interaction.preview().or_else(|| {
+            self.pending_drag_release
+                .as_ref()
+                .and_then(|pending| pending.drag.preview.as_ref())
+                .map(crate::interaction::PublishedPreview::public)
+        })
+    }
+
+    /// Returns the contained-transform preview which must be represented by the
+    /// next host presentation, including a release preview after gesture end.
+    #[must_use]
+    pub fn presentation_contained_transform_preview(&self) -> Option<&ContainedTransformPreview> {
+        self.interaction.contained_transform_preview().or_else(|| {
+            self.pending_contained_transform_release
+                .as_ref()
+                .and_then(|pending| pending.transform.preview.as_ref())
+                .map(crate::interaction::PublishedContainedTransformPreview::public)
+        })
+    }
+
+    /// Returns the latest public state of one exact close request.
+    #[must_use]
+    pub fn close_plan(&self, request: CloseRequestId) -> Option<&ClosePlan> {
+        self.close.plan(request)
+    }
+
+    /// Classifies a close request without retaining every terminal payload indefinitely.
+    #[must_use]
+    pub fn lookup_close_plan(&self, request: CloseRequestId) -> ClosePlanLookup<'_> {
+        self.close.lookup(request)
+    }
+
+    /// Returns every retained close-plan snapshot in stable request order.
+    ///
+    /// Terminal plans remain visible through the boundary which publishes their final state.
+    /// Later mutations may compact them; use [`Self::lookup_close_plan`] to distinguish a retired
+    /// terminal identity from an identity this engine never allocated.
+    pub fn close_plans(&self) -> impl Iterator<Item = &ClosePlan> {
+        self.close.plans()
+    }
+
+    /// Returns every currently non-terminal close-plan snapshot.
+    pub fn active_close_plans(&self) -> impl Iterator<Item = &ClosePlan> {
+        self.close.active_plans()
     }
 
     /// Returns the core-owned platform, binding, route, and effect coordinator.
@@ -833,11 +2989,45 @@ impl DockEngine {
         &self,
         surface: crate::ids::SurfaceId,
     ) -> Option<crate::viewport::ViewportBinding> {
+        self.workspace.surface(surface)?;
         self.viewport
             .registry()
             .record(surface)
-            .filter(|record| record.is_focusable())
+            .filter(|record| record.can_observe_focus())
             .map(crate::viewport_registry::ViewportRecord::binding)
+    }
+
+    /// Returns the current engine-issued recovery anchor for one registered Root surface.
+    #[must_use]
+    pub fn root_recovery_anchor(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Option<RootRecoveryAnchor> {
+        self.root_recovery_anchors.get(&surface).copied()
+    }
+
+    /// Returns the durable recovery target authorized for one live or retained Child surface.
+    ///
+    /// A retained recovery remains queryable while its original binding is destroyed and until a
+    /// replacement is visible and admitted. The target itself is not an admission proof; the
+    /// engine still validates the exact obligation at every registration and lifecycle edge.
+    #[must_use]
+    pub fn surface_recovery_target(
+        &self,
+        surface: crate::ids::SurfaceId,
+    ) -> Option<SurfaceRecoveryTarget> {
+        let bound = self.bound_surface_recoveries.get(&surface)?;
+        let live = self.viewport.viewport(surface).is_some_and(|record| {
+            record.binding() == bound.binding && record.admission() == ViewportAdmission::Admitted
+        });
+        let retained = self
+            .viewport
+            .recovery_pending(surface)
+            .is_some_and(|pending| {
+                pending.destroyed_binding() == bound.binding
+                    && pending.recovery_obligation() == bound.obligation.id()
+            });
+        (live || retained).then(|| bound.obligation.target())
     }
 
     /// Returns the complete roster retained for one unresolved destroyed surface.
@@ -849,204 +3039,31 @@ impl DockEngine {
         self.surface_recovery.pending(surface)
     }
 
-    /// Returns queued inputs in writer order.
+    /// Returns why one destroyed child surface is retained for a later exact retry.
     #[must_use]
-    pub fn pending_inputs(&self) -> &[SequencedInput] {
-        &self.pending
-    }
-
-    /// Assigns the next monotonic sequence and queues an input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue(&mut self, input: EngineInput) -> Result<InputSequence, EngineError> {
-        let sequence = self
-            .last_input
-            .checked_next()
-            .ok_or(EngineError::InputSequenceExhausted)?;
-        let scene_coordinate_proofs = if matches!(&input, EngineInput::PublishScene { .. }) {
-            self.viewport
-                .registry()
-                .records()
-                .filter_map(|(surface, record)| {
-                    record
-                        .coordinates()
-                        .map(|coordinates| (surface, coordinates))
-                })
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
-        self.last_input = sequence;
-        self.pending.push(SequencedInput {
-            sequence,
-            input,
-            scene_coordinate_proofs,
-        });
-        Ok(sequence)
-    }
-
-    /// Queues a command against the currently published state version.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_command(
-        &mut self,
-        command: WorkspaceCommand,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::WorkspaceCommand {
-            expected: self.version,
-            command,
-        })
-    }
-
-    /// Queues a complete authoritative workspace replacement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_workspace_replacement(
-        &mut self,
-        workspace: Workspace,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::ReplaceWorkspace(workspace))
-    }
-
-    /// Queues registration of one existing native adapter window.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_viewport_registration(
-        &mut self,
+    pub fn blocked_surface_recovery(
+        &self,
         surface: crate::ids::SurfaceId,
-        token: WindowToken,
-        role: ViewportRole,
-        recovery: Option<crate::intent::ContainedTearOffProposal>,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::RegisterViewport {
-            expected: self.version,
-            surface,
-            token,
-            role,
-            recovery,
-        })
+    ) -> Option<&SurfaceRecoveryBlockedReason> {
+        self.surface_recovery.blocked(surface)
     }
 
-    /// Queues one complete frame-before-paint platform fact snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_platform_snapshot(
-        &mut self,
-        snapshot: PlatformSnapshot,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::PublishPlatformSnapshot {
-            expected_epoch: self.version.epoch(),
-            snapshot,
-        })
+    /// Returns the last successfully committed reducer tick.
+    #[must_use]
+    pub const fn last_reducer_tick(&self) -> ReducerTickId {
+        self.last_reducer_tick
     }
 
-    /// Queues one correlated platform effect dispatch result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_platform_effect_result(
-        &mut self,
-        result: EffectResult,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::ReportPlatformEffect {
-            expected_epoch: self.version.epoch(),
-            result,
-        })
+    /// Returns the last globally assigned input sequence.
+    #[must_use]
+    pub const fn last_input_sequence(&self) -> InputSequence {
+        self.last_input
     }
 
-    /// Queues explicit native activation and item-or-none pane focus for one exact binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_viewport_activation(
-        &mut self,
-        target: crate::viewport::ViewportBinding,
-        focus: PanelFocus,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::ActivateViewport {
-            expected: self.version,
-            request: ViewportActivationRequest::explicit(target, focus),
-        })
-    }
-
-    /// Queues one exact adapter-observed pane-focus fact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_pane_focus_observation(
-        &mut self,
-        observation: PaneFocusObservation,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::PublishPaneFocusObservation {
-            expected_epoch: self.version.epoch(),
-            observation,
-        })
-    }
-
-    /// Queues an application decision for one exact native close-request edge.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_viewport_close_decision(
-        &mut self,
-        request: ViewportCloseRequestId,
-        decision: ViewportCloseDecision,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::DecideViewportClose {
-            expected: self.version,
-            request,
-            decision,
-        })
-    }
-
-    /// Queues an explicit cancellation for one unresolved native-create saga.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_native_create_cancellation(
-        &mut self,
-        saga: NativeCreateSagaId,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::CancelNativeCreate {
-            expected: self.version,
-            saga,
-        })
-    }
-
-    /// Queues one explicit phase-qualified cleanup retry.
-    ///
-    /// A destructive cleanup is eligible only after a definitive dispatch failure and retains
-    /// its existing cleanup-specific retry rules. An observation-only cleanup is eligible after
-    /// `ObservationDispatchFailed` or `ObservationUnsupported`; its retry is another
-    /// `ContinueCleanup` with the same original destructive predecessor and never re-executes
-    /// that predecessor. Indeterminate and terminal effects are not retryable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_viewport_cleanup_retry(
-        &mut self,
-        failed_effect: crate::effect::EffectId,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::RetryViewportCleanup {
-            expected: self.version,
-            failed_effect,
-        })
+    /// Returns the last successfully committed sequence for one stable source.
+    #[must_use]
+    pub fn source_watermark(&self, source: StableInputSourceId) -> Option<SourceSequence> {
+        self.source_watermarks.get(&source).copied()
     }
 
     /// Produces a native placement proof from current acknowledged platform facts.
@@ -1065,28 +3082,18 @@ impl DockEngine {
         self.viewport.placement(surface, rect, work_area)
     }
 
-    /// Produces a native tear-off placement from the current authoritative
-    /// desktop pointer route and an explicitly selected work area.
-    ///
-    /// The cursor offset, preferred size, and minimum size are logical values
-    /// for the selected work area. They are scaled exactly once and the result
-    /// is clamped without monitor-selection heuristics.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed viewport-coordinate error when the pointer route, work
-    /// area, or placement facts are unavailable or stale.
-    pub fn tear_off_placement(
-        &self,
-        pointer: crate::intent::PointerId,
-        request: crate::coordinates::TearOffPlacementRequest,
-    ) -> Result<crate::coordinates::TearOffPlacementProof, ViewportCoordinatorError> {
-        self.viewport.tear_off_placement(pointer, request)
-    }
-
     #[must_use]
     pub fn native_placement_is_current(&self, proof: &crate::intent::NativePlacementProof) -> bool {
-        self.viewport.native_placement_is_current(proof)
+        match proof {
+            NativePlacementProof::TearOff(proof) => {
+                self.pointer_provider() == Some(proof.pointer_provider())
+                    && self.platform_provider() == Some(proof.platform_provider())
+                    && self.viewport.work_area_generation() == proof.work_area_generation()
+                    && self.viewport.work_area(proof.work_area()).is_some()
+                    && self.viewport.native_tear_off_capability().is_supported()
+            }
+            NativePlacementProof::Surface(_) => self.viewport.native_placement_is_current(proof),
+        }
     }
 
     /// Produces a deterministic contained placement from current ready surface bounds.
@@ -1097,15 +3104,31 @@ impl DockEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`ContainedPlacementUnavailable`] when no current ready scene exists or finite
-    /// corners cannot represent a finite clamp.
+    /// Returns [`ContainedPlacementUnavailable`] when no current ready scene exists, the surface
+    /// has no usable area, or finite corners cannot represent a strictly positive finite clamp.
     pub fn contained_placement(
         &self,
         surface: crate::ids::SurfaceId,
         requested_rect: crate::geometry::LogicalRect,
         minimum_size: crate::geometry::LogicalSize,
     ) -> Result<ContainedPlacementProof, ContainedPlacementUnavailable> {
-        let (stamp, bounds) = self.current_ready_surface_bounds(surface)?;
+        Self::contained_placement_from_scene(
+            &self.presentation_authority.scene,
+            self.version,
+            surface,
+            requested_rect,
+            minimum_size,
+        )
+    }
+
+    fn contained_placement_from_scene(
+        scene: &SurfaceSceneSet,
+        workspace: WorkspaceVersion,
+        surface: crate::ids::SurfaceId,
+        requested_rect: crate::geometry::LogicalRect,
+        minimum_size: crate::geometry::LogicalSize,
+    ) -> Result<ContainedPlacementProof, ContainedPlacementUnavailable> {
+        let (stamp, bounds) = Self::ready_surface_bounds(scene, workspace, surface)?;
         let clamped_rect = clamp_contained_rect(surface, bounds, requested_rect, minimum_size)?;
         Ok(ContainedPlacementProof::new(
             stamp,
@@ -1117,46 +3140,64 @@ impl DockEngine {
         ))
     }
 
-    fn current_ready_surface_bounds(
-        &self,
+    fn ready_surface_bounds(
+        scene: &SurfaceSceneSet,
+        workspace: WorkspaceVersion,
         surface: crate::ids::SurfaceId,
-    ) -> Result<(SceneStamp, crate::geometry::LogicalRect), ContainedPlacementUnavailable> {
-        let scene = self
-            .scene
-            .as_ref()
-            .ok_or(ContainedPlacementUnavailable::SceneUnavailable)?;
-        if scene.stamp().workspace() != self.version {
-            return Err(ContainedPlacementUnavailable::SceneUnavailable);
-        }
-        let bounds = match scene.surface(surface) {
-            Some(SurfaceScene::Ready(ready)) => ready.bounds(),
-            Some(SurfaceScene::Bootstrap(_)) => {
+    ) -> Result<(SurfaceSceneStamp, crate::geometry::LogicalRect), ContainedPlacementUnavailable>
+    {
+        let ready = match scene.ready_surface(surface) {
+            Some(ready) => ready,
+            None if matches!(scene.surface(surface), Some(SurfaceScene::Ready(_))) => {
+                return Err(ContainedPlacementUnavailable::PendingPaintSurface { surface });
+            }
+            None if matches!(scene.surface(surface), Some(SurfaceScene::Stale(_))) => {
+                return Err(ContainedPlacementUnavailable::StaleSurface { surface });
+            }
+            None if matches!(scene.surface(surface), Some(SurfaceScene::Bootstrap(_))) => {
                 return Err(ContainedPlacementUnavailable::BootstrapSurface { surface });
             }
             None => return Err(ContainedPlacementUnavailable::MissingSurface { surface }),
         };
-        Ok((scene.stamp(), bounds))
+        if ready.stamp().requirement().workspace_epoch() != workspace.epoch() {
+            return Err(ContainedPlacementUnavailable::SceneUnavailable);
+        }
+        Ok((ready.stamp(), ready.plan().bounds()))
     }
 
     fn validate_contained_placement(
         &self,
         proof: ContainedPlacementProof,
     ) -> Result<(), ContainedPlacementUnavailable> {
-        let Some(scene) = self.scene.as_ref() else {
+        let scene = &self.presentation_authority.scene;
+        let current = scene
+            .ready_surface(proof.surface())
+            .map(|ready| ready.stamp());
+        if current != Some(proof.scene())
+            || proof.scene().requirement().workspace_epoch() != self.version.epoch()
+        {
             return Err(ContainedPlacementUnavailable::StaleScene {
                 expected: proof.scene(),
-                current: None,
-            });
-        };
-        if scene.stamp() != proof.scene() || scene.stamp().workspace() != self.version {
-            return Err(ContainedPlacementUnavailable::StaleScene {
-                expected: proof.scene(),
-                current: Some(scene.stamp()),
+                current,
             });
         }
-        let ready = match scene.surface(proof.surface()) {
-            Some(SurfaceScene::Ready(ready)) => ready,
-            Some(SurfaceScene::Bootstrap(_)) => {
+        let ready = match scene.ready_surface(proof.surface()) {
+            Some(ready) => ready,
+            None if matches!(scene.surface(proof.surface()), Some(SurfaceScene::Ready(_))) => {
+                return Err(ContainedPlacementUnavailable::PendingPaintSurface {
+                    surface: proof.surface(),
+                });
+            }
+            None if matches!(scene.surface(proof.surface()), Some(SurfaceScene::Stale(_))) => {
+                return Err(ContainedPlacementUnavailable::StaleSurface {
+                    surface: proof.surface(),
+                });
+            }
+            None if matches!(
+                scene.surface(proof.surface()),
+                Some(SurfaceScene::Bootstrap(_))
+            ) =>
+            {
                 return Err(ContainedPlacementUnavailable::BootstrapSurface {
                     surface: proof.surface(),
                 });
@@ -1167,14 +3208,14 @@ impl DockEngine {
                 });
             }
         };
-        if ready.bounds() != proof.surface_bounds() {
+        if ready.plan().bounds() != proof.surface_bounds() {
             return Err(ContainedPlacementUnavailable::ProofMismatch {
                 surface: proof.surface(),
             });
         }
         let reproduced = clamp_contained_rect(
             proof.surface(),
-            ready.bounds(),
+            ready.plan().bounds(),
             proof.requested_rect(),
             proof.minimum_size(),
         )?;
@@ -1186,1830 +3227,510 @@ impl DockEngine {
         Ok(())
     }
 
-    /// Queues complete scene facts against the currently published state.
+    /// Begins one surface measurement callback against exact current authority.
+    ///
+    /// The token freezes the entry stamp, requirement ticket, and native
+    /// coordinate association. It remains deliberately usable after this method
+    /// returns so a late callback can be deterministically rejected by
+    /// [`Self::prepare_surface_contribution`] without replacing newer Ready
+    /// facts. Once prepared, the contribution retains the same authority for
+    /// final validation by [`CoreHostFrame::finish`].
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_scene(&mut self, scene: BuildingScene) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::PublishScene {
-            expected: self.version,
-            scene,
-        })
-    }
-
-    /// Queues one renderer intent against the currently published state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::InputSequenceExhausted`] instead of wrapping.
-    pub fn enqueue_renderer_intent(
-        &mut self,
-        intent: RendererIntent,
-    ) -> Result<InputSequence, EngineError> {
-        self.enqueue(EngineInput::RendererIntent {
-            expected: self.version,
-            intent: Box::new(intent),
-        })
-    }
-
-    /// Discards all queued inputs without changing published state.
-    pub fn discard_pending(&mut self) -> Vec<SequencedInput> {
-        std::mem::take(&mut self.pending)
-    }
-
-    /// Reduces queued inputs into one candidate and publishes it atomically.
-    ///
-    /// Inputs are ordered by [`InputPriority`] and then writer sequence. Events
-    /// are returned only if the complete candidate commits. Expected command
-    /// rejections are consumed and recorded in the transition. A fatal internal
-    /// transaction error leaves the engine, including its pending queue, unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError`] on counter exhaustion, invalid replacement state,
-    /// or an internal transaction failure. No engine state is changed on failure.
-    pub fn reduce_pending(&mut self) -> Result<EngineTransition, EngineError> {
-        let before = self.version;
-        let before_scene = self.scene.clone();
-        let before_interaction = self.interaction.clone();
-        let before_viewport = self.viewport.clone();
-        let before_viewport_focus = self.viewport_focus.clone();
-        let mut candidate = self.candidate();
-        let mut inputs = std::mem::take(&mut candidate.pending);
-        inputs.sort_by_key(|input| {
-            (
-                input.input.priority(),
-                input.input.reduction_rank(),
-                input.sequence,
-            )
-        });
-
-        let mut reduced = Vec::with_capacity(inputs.len());
-        let mut events = Vec::new();
-        let mut interaction_events = Vec::new();
-        let mut application_base = before;
-        let mut scene_published = false;
-        for input in inputs {
-            let priority = input.input.priority();
-            let outcome = candidate.reduce_one(
-                &input,
-                &mut application_base,
-                &mut scene_published,
-                &mut events,
-                &mut interaction_events,
-            )?;
-            reduced.push(ReducedInput::new(input.sequence, priority, outcome));
-        }
-
-        let platform_effects = candidate.viewport.take_new_effects();
-        let observed_focus_effects = Self::observed_focus_effects(&reduced);
-        let focus_delta = FocusDelta::between(
-            &before_viewport_focus,
-            &candidate.viewport_focus,
-            before_viewport.effects(),
-            candidate.viewport.effects(),
-            &observed_focus_effects,
-        );
-        let published_state_changed = before != candidate.version
-            || before_scene != candidate.scene
-            || before_interaction != candidate.interaction
-            || before_viewport != candidate.viewport
-            || !focus_delta.is_empty();
-        let transition = EngineTransition::new(EngineTransitionParts {
-            before,
-            after: candidate.version,
-            reduced,
-            events,
-            interaction_events,
-            platform_effects,
-            focus_delta,
-            published_state_changed,
-        });
-        *self = candidate;
-        Ok(transition)
-    }
-
-    fn observed_focus_effects(reduced: &[ReducedInput]) -> Vec<ObservedPlatformFocusEffect> {
-        reduced
-            .iter()
-            .flat_map(|input| {
-                let observed = match input.outcome() {
-                    InputOutcome::PlatformSnapshotPublished {
-                        focus: FocusObservationTransition::Applied(applied),
-                        ..
-                    } => [
-                        applied.observed_effect(),
-                        applied.acknowledged_effect_settlement(),
-                    ],
-                    InputOutcome::ViewportRegistered { .. }
-                    | InputOutcome::ViewportRegistrationRejected { .. }
-                    | InputOutcome::PlatformSnapshotPublished { .. }
-                    | InputOutcome::PlatformSnapshotStale { .. }
-                    | InputOutcome::PlatformEffectReported { .. }
-                    | InputOutcome::ViewportActivationRequested { .. }
-                    | InputOutcome::ViewportActivationRejected { .. }
-                    | InputOutcome::PaneFocusObservationPublished { .. }
-                    | InputOutcome::PaneFocusObservationStale { .. }
-                    | InputOutcome::ViewportCloseDecided { .. }
-                    | InputOutcome::ViewportCloseDecisionRejected { .. }
-                    | InputOutcome::NativeCreateCancelled { .. }
-                    | InputOutcome::ViewportCleanupRetried { .. }
-                    | InputOutcome::WorkspaceReplaced { .. }
-                    | InputOutcome::CommandProcessed { .. }
-                    | InputOutcome::CommandRejected { .. }
-                    | InputOutcome::PolicyReplaced { .. }
-                    | InputOutcome::ScenePublished { .. }
-                    | InputOutcome::SceneRejected { .. }
-                    | InputOutcome::InteractionProcessed { .. }
-                    | InputOutcome::WorkspaceValidated { .. }
-                    | InputOutcome::StaleRejected { .. } => [None, None],
-                };
-                observed.into_iter().flatten()
-            })
-            .collect()
-    }
-
-    // This is the sole sorted-input dispatch table; keeping every input variant visible here
-    // makes reducer ordering auditable and prevents hidden secondary dispatch.
-    #[allow(clippy::too_many_lines)]
-    fn reduce_one(
-        &mut self,
-        input: &SequencedInput,
-        application_base: &mut WorkspaceVersion,
-        scene_published: &mut bool,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InputOutcome, EngineError> {
-        let focus_generation = self.last_focus_reducer_generation.checked_next().ok_or(
-            EngineError::ViewportFocus {
-                input: input.sequence,
-                source: ViewportFocusError::ReducerGenerationExhausted,
-            },
-        )?;
-        self.last_focus_reducer_generation = focus_generation;
-        match &input.input {
-            EngineInput::RegisterViewport {
-                expected,
-                surface,
-                token,
-                role,
-                recovery,
-            } => self.reduce_viewport_registration(
-                input.sequence,
-                *expected,
-                *surface,
-                *token,
-                *role,
-                *recovery,
-            ),
-            EngineInput::PublishPlatformSnapshot {
-                expected_epoch,
-                snapshot,
-            } => self.reduce_platform_snapshot(
-                input.sequence,
-                *expected_epoch,
-                snapshot,
-                focus_generation,
-                PlatformSnapshotReductionContext {
-                    application_base,
-                    events,
-                    interaction_events,
-                },
-            ),
-            EngineInput::ReportPlatformEffect {
-                expected_epoch,
-                result,
-            } => self.reduce_platform_effect(input.sequence, *expected_epoch, *result),
-            EngineInput::ActivateViewport { expected, request } => self.reduce_viewport_activation(
-                input.sequence,
-                *expected,
-                *request,
-                focus_generation,
-                *application_base,
-                events,
-            ),
-            EngineInput::PublishPaneFocusObservation {
-                expected_epoch,
-                observation,
-            } => Ok(self.reduce_pane_focus_observation(*expected_epoch, *observation)),
-            EngineInput::DecideViewportClose {
-                expected,
-                request,
-                decision,
-            } => self.reduce_viewport_close_decision(
-                input.sequence,
-                *expected,
-                *request,
-                decision.clone(),
-            ),
-            EngineInput::CancelNativeCreate { expected, saga } => {
-                self.reduce_native_create_cancellation(input.sequence, *expected, *saga)
-            }
-            EngineInput::RetryViewportCleanup {
-                expected,
-                failed_effect,
-            } => self.reduce_viewport_cleanup_retry(input.sequence, *expected, *failed_effect),
-            EngineInput::ReplaceWorkspace(workspace) => self.reduce_workspace_replacement(
-                input.sequence,
-                workspace,
-                application_base,
-                events,
-                interaction_events,
-            ),
-            EngineInput::WorkspaceCommand { expected, command } => self.reduce_workspace_command(
-                input.sequence,
-                *expected,
-                *application_base,
-                command,
-                events,
-                interaction_events,
-            ),
-            EngineInput::ReplacePolicy { expected, policy } => self.reduce_policy_replacement(
-                input.sequence,
-                *expected,
-                *application_base,
-                policy,
-                events,
-                interaction_events,
-            ),
-            EngineInput::PublishScene { expected, scene } => self.reduce_scene(
-                input.sequence,
-                *expected,
-                scene,
-                &input.scene_coordinate_proofs,
-                scene_published,
-                interaction_events,
-            ),
-            EngineInput::RendererIntent { expected, intent } => self.reduce_renderer_input(
-                input.sequence,
-                *expected,
-                intent,
-                events,
-                interaction_events,
-            ),
-            EngineInput::ValidateWorkspace => {
-                self.workspace
-                    .validate()
-                    .map_err(EngineError::InvalidWorkspace)?;
-                Ok(InputOutcome::WorkspaceValidated {
-                    version: self.version,
-                })
-            }
-        }
-    }
-
-    fn reduce_viewport_registration(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        surface: crate::ids::SurfaceId,
-        token: WindowToken,
-        role: ViewportRole,
-        recovery: Option<crate::intent::ContainedTearOffProposal>,
-    ) -> Result<InputOutcome, EngineError> {
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
-            });
-        }
-        let Some(presentation) = self.workspace.surface(surface) else {
-            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
-        };
-        if role == ViewportRole::Child && recovery.is_none() {
-            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
-        }
-        let recovery_plan = recovery.map(crate::intent::ContainedRecoveryPlan::from_proposal);
-        let exact_pending_adoption =
-            self.viewport
-                .recovery_pending(surface)
-                .is_some_and(|pending| {
-                    pending.replacement_binding().is_none()
-                        && pending.role() == role
-                        && recovery_plan.is_some_and(|candidate| {
-                            pending.recovery().matches_registration(candidate)
-                        })
-                });
-        if !exact_pending_adoption
-            && recovery_plan.is_some_and(|recovery| {
-                self.contained_placement(
-                    recovery.surface(),
-                    recovery.requested_rect(),
-                    recovery.minimum_size(),
-                )
-                .is_err()
-            })
-        {
-            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
-        }
-        if let Some(recovery) = recovery_plan
-            && (presentation.main_root != recovery.root()
-                || recovery.surface() == surface
-                || self.workspace.surface(recovery.surface()).is_none())
-        {
-            return Ok(InputOutcome::ViewportRegistrationRejected { surface });
-        }
-        let binding = match self.viewport.register_existing(
-            self.version.epoch(),
-            surface,
-            token,
-            role,
-            recovery_plan,
-        ) {
-            Ok(binding) => binding,
-            Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { .. }) => {
-                return Ok(InputOutcome::ViewportRegistrationRejected { surface });
-            }
-            Err(source) => return Err(EngineError::Viewport { input, source }),
-        };
-        Ok(InputOutcome::ViewportRegistered { binding })
-    }
-
-    fn reduce_platform_snapshot(
-        &mut self,
-        input: InputSequence,
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        snapshot: &PlatformSnapshot,
-        focus_generation: PaneFocusIntentGeneration,
-        context: PlatformSnapshotReductionContext<'_>,
-    ) -> Result<InputOutcome, EngineError> {
-        let PlatformSnapshotReductionContext {
-            application_base,
-            events,
-            interaction_events,
-        } = context;
-        if expected_epoch != self.version.epoch() {
-            return Ok(InputOutcome::PlatformSnapshotStale {
-                expected_epoch,
-                current_epoch: self.version.epoch(),
-            });
-        }
-        let previous_native = self.viewport.native_tear_off_capability();
-        let previous_routing = self.viewport.capabilities().cross_surface_routing();
-        let previous_release = self.viewport.capabilities().authoritative_release();
-        let interaction_dependencies = self.platform_interaction_dependencies();
-        let version_before_actions = self.version;
-        let transition = self
-            .viewport
-            .publish_snapshot(snapshot)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        for event in transition.registry_events() {
-            if let crate::viewport_registry::RegistryEvent::Destroyed { binding } = event {
-                let _ = self.viewport_focus.observe_destroyed_binding(*binding);
-            }
-        }
-        self.reconcile_viewport_focus_authority();
-        let focus = self.reduce_global_focus_observation(
-            input,
-            snapshot.focus(),
-            focus_generation,
-            Self::platform_focus_restore_gate(snapshot),
-            events,
-        )?;
-        self.freeze_close_focus_edges(transition.close_requests());
-        self.invalidate_changed_surface_scene_authority();
-        let actions = transition.actions().to_vec();
-        let recovery_batch = self.freeze_surface_recovery_batch(input, &actions)?;
-        let mut activations = Vec::new();
-        self.reduce_viewport_actions(
-            input,
-            focus_generation,
-            &actions,
-            &recovery_batch,
-            &mut activations,
-            events,
-        )?;
-        let viewport = &self.viewport;
-        self.surface_recovery.retain_accepted_closes(|request| {
-            viewport
-                .viewport_close_request(request)
-                .is_some_and(|request| {
-                    matches!(
-                        request.status(),
-                        ViewportCloseStatus::AwaitingDestroyed { .. }
-                            | ViewportCloseStatus::EffectFailed { .. }
-                            | ViewportCloseStatus::Indeterminate { .. }
-                    )
-                })
-        });
-        self.surface_recovery.retain_close_focus(|request| {
-            viewport
-                .viewport_close_request(request)
-                .is_some_and(|request| !matches!(request.status(), ViewportCloseStatus::Cleared))
-        });
-        self.surface_recovery
-            .retain_pending(|surface| viewport.recovery_pending(surface).is_some());
-        *application_base = self.version;
-        if let Some(reason) = self.platform_interaction_cancel_reason(
-            &interaction_dependencies,
-            version_before_actions,
-            &transition,
-            previous_native,
-            previous_routing,
-            previous_release,
-        ) {
-            self.invalidate_transient(input, reason, interaction_events)?;
-        }
-        Ok(InputOutcome::PlatformSnapshotPublished {
-            transition,
-            focus,
-            activations,
-        })
-    }
-
-    fn freeze_close_focus_edges(&mut self, requests: &[ViewportCloseRequestId]) {
-        for request in requests {
-            let Some(surface) = self
-                .viewport
-                .viewport_close_request(*request)
-                .map(|request| request.binding().surface())
-            else {
-                continue;
-            };
-            let focus = match self.viewport_focus.panel_focus(surface) {
-                PanelFocusRecord::Item(item) if self.surface_items(surface).contains(&item) => {
-                    PanelFocus::Item(item)
-                }
-                PanelFocusRecord::NoHistory
-                | PanelFocusRecord::Item(_)
-                | PanelFocusRecord::None => PanelFocus::None,
-            };
-            self.surface_recovery.freeze_close_focus(*request, focus);
-        }
-    }
-
-    fn reduce_global_focus_observation(
-        &mut self,
-        input: InputSequence,
-        observation: crate::viewport_focus::FocusObservationEnvelope,
-        focus_generation: PaneFocusIntentGeneration,
-        restore_gate: PlatformFocusRestoreGate,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<FocusObservationTransition, EngineError> {
-        let (bindings, items) = self.focus_validation_snapshot();
-        let mut transition = self
-            .viewport_focus
-            .publish_platform_focus_observation(
-                observation,
-                focus_generation,
-                restore_gate,
-                |binding| bindings.contains(&binding),
-                |surface, item| {
-                    items
-                        .get(&surface)
-                        .is_some_and(|surface_items| surface_items.contains(&item))
-                },
-            )
-            .map_err(|source| EngineError::ViewportFocus { input, source })?;
-        if let FocusObservationTransition::Applied(applied) = &mut transition
-            && let Some(intent) = applied.pane_intent()
-            && let Some(reason) = self.reveal_pane_focus_intent(input, intent, events)?
-        {
-            applied.reject_pane_reveal(intent, reason);
-        }
-        if let FocusObservationTransition::Applied(applied) = &mut transition {
-            if let Some(observed) = applied.observed_effect()
-                && !self.settle_observed_focus_effect(observed)
-            {
-                applied.discard_observed_effect(observed.effect());
-            }
-            if let Some(observed) = self.settle_acknowledged_focus_effect(observation) {
-                applied.record_acknowledged_effect_settlement(observed);
-            }
-        }
-        Ok(transition)
-    }
-
-    fn settle_acknowledged_focus_effect(
-        &mut self,
-        observation: crate::viewport_focus::FocusObservationEnvelope,
-    ) -> Option<ObservedPlatformFocusEffect> {
-        let Authority::Known(Some(effect)) = *observation.acknowledged_effect() else {
-            return None;
-        };
-        let binding = self.focus_effect_binding(effect)?;
-        let observed = ObservedPlatformFocusEffect::new(
-            effect,
-            binding,
-            observation.generation(),
-            PlatformFocusEvidence::ExactEffectAcknowledgement,
-        );
-        self.settle_observed_focus_effect(observed)
-            .then_some(observed)
-    }
-
-    fn settle_observed_focus_effect(&mut self, observed: ObservedPlatformFocusEffect) -> bool {
-        let Some(binding) = self.focus_effect_binding(observed.effect()) else {
-            return false;
-        };
-        if binding != observed.binding()
-            || self
-                .viewport
-                .viewport(binding.surface())
-                .filter(|record| record.is_focusable())
-                .map(crate::viewport_registry::ViewportRecord::binding)
-                != Some(binding)
-        {
-            return false;
-        }
-        self.viewport
-            .observe_focus_effect(observed.effect(), binding)
-            == EffectTransition::Applied
-    }
-
-    fn focus_effect_binding(
+    /// Returns [`SurfaceContributionBeginError`] outside the current roster.
+    pub fn begin_surface_contribution(
         &self,
-        effect: crate::effect::EffectId,
-    ) -> Option<crate::viewport::ViewportBinding> {
-        let record = self.viewport.effects().record(effect)?;
-        match record.request().effect() {
-            crate::effect::PlatformEffect::RequestFocus { binding, .. } => Some(*binding),
-            _ => None,
-        }
+        surface: crate::ids::SurfaceId,
+    ) -> Result<SurfaceContributionToken, SurfaceContributionBeginError> {
+        let state = self
+            .presentation_authority
+            .scene
+            .surface(surface)
+            .ok_or(SurfaceContributionBeginError::SurfaceOutsideRoster { surface })?;
+        Ok(SurfaceContributionToken {
+            base: state.stamp(),
+            coordinates: self.capture_surface_coordinates(surface),
+        })
     }
 
-    fn platform_focus_restore_gate(snapshot: &PlatformSnapshot) -> PlatformFocusRestoreGate {
-        let authoritative_mouse_down = snapshot
-            .capabilities()
-            .authoritative_button_state()
-            .is_supported()
-            && snapshot.pointers().iter().any(|pointer| {
-                matches!(
-                    pointer.button_states(),
-                    Authority::Known(states)
-                        if states
-                            .iter()
-                            .any(|state| state.state() == PointerButtonState::Pressed)
+    /// Compiles and validates one exact measurement answer without mutating the engine.
+    ///
+    /// The returned capability contains either the exact plan an adapter may
+    /// paint or an explicit unavailable result. Structural, exact-set, ticket,
+    /// and final-plan failures are returned here rather than being deferred to
+    /// reducer outcomes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceContributionPrepareError`] when the token is already
+    /// stale, no longer has coordinate or policy authority, the measurements do
+    /// not answer its exact ticket, or compilation/final validation fails.
+    pub fn prepare_surface_contribution(
+        &self,
+        token: SurfaceContributionToken,
+        measurements: SurfaceMeasurements,
+    ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        let surface = token.surface();
+        let current = self
+            .presentation_authority
+            .scene
+            .surface(surface)
+            .map(SurfaceScene::stamp);
+        if current != Some(token.base()) {
+            return Err(SurfaceContributionPrepareError::StaleBase {
+                surface,
+                submitted: token.base(),
+                current,
+            });
+        }
+        if measurements.ticket() != token.ticket() {
+            return Err(SurfaceContributionPrepareError::TicketMismatch {
+                surface,
+                expected: token.ticket(),
+                actual: measurements.ticket(),
+            });
+        }
+        let policy_revision = self.policy.revision();
+        if token.ticket().policy() != policy_revision {
+            return Err(SurfaceContributionPrepareError::PolicyAuthorityChanged {
+                surface,
+                submitted: token.ticket().policy(),
+                current: policy_revision,
+            });
+        }
+        if !Self::coordinate_capture_matches_current(
+            token.coordinates,
+            self.viewport.viewport(surface),
+            self.viewport.surface_coordinate_authority(surface),
+        ) {
+            return Err(SurfaceContributionPrepareError::CoordinateAuthorityChanged { surface });
+        }
+
+        let resize_overrides = self.surface_resize_overrides(surface);
+        let state = match compile_surface_measurements(
+            &self.workspace,
+            self.version,
+            &self.policy,
+            &self.presentation_authority.presentation_config,
+            &self.presentation_authority.presentation_requirements,
+            &measurements,
+            &self.presentation_authority.tab_strip_states,
+            &resize_overrides,
+        ) {
+            Ok(plan) => {
+                let validator = PresentationPlanValidator::new(&self.workspace, &self.policy)
+                    .map_err(SurfaceContributionPrepareError::Validation)?;
+                let plan = validator
+                    .validate_and_canonicalize(plan)
+                    .map_err(SurfaceContributionPrepareError::Validation)?;
+                if matches!(
+                    token.coordinates,
+                    SurfaceCoordinateCapture::NativeUnavailable { .. }
+                ) {
+                    PreparedSurfaceContributionState::Unavailable(
+                        SurfaceContributionUnavailableReason::CoordinateAuthorityUnavailable,
+                    )
+                } else {
+                    PreparedSurfaceContributionState::Ready { plan }
+                }
+            }
+            Err(PresentationCompilationError::Authority(authority)) => {
+                PreparedSurfaceContributionState::Unavailable(
+                    SurfaceContributionUnavailableReason::MeasurementsUnavailable(authority),
                 )
-            });
-        if authoritative_mouse_down {
-            PlatformFocusRestoreGate::AuthoritativeMouseDown
-        } else {
-            PlatformFocusRestoreGate::NoAuthoritativeMouseDown
-        }
+            }
+            Err(PresentationCompilationError::Scene(
+                crate::scene_compiler::SceneCompilationError::EmptySurfaceBounds { .. },
+            )) => PreparedSurfaceContributionState::Unavailable(
+                SurfaceContributionUnavailableReason::EmptyBounds,
+            ),
+            Err(error) => match self.popup_geometry_unavailable(surface, &error) {
+                Some(reason) => PreparedSurfaceContributionState::Unavailable(reason),
+                None => return Err(SurfaceContributionPrepareError::Compilation(error)),
+            },
+        };
+
+        Ok(PreparedSurfaceContribution {
+            token,
+            policy_revision,
+            state,
+        })
     }
 
-    fn reduce_viewport_activation(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        request: ViewportActivationRequest,
-        focus_generation: PaneFocusIntentGeneration,
-        application_base: WorkspaceVersion,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: application_base,
-            });
-        }
-        if request.cause() != crate::viewport_focus::ViewportActivationCause::Explicit {
-            return Ok(InputOutcome::ViewportActivationRejected { request });
-        }
-        let activation =
-            self.start_viewport_activation(input, request, focus_generation, events)?;
-        Ok(InputOutcome::ViewportActivationRequested { activation })
+    fn popup_geometry_unavailable(
+        &self,
+        surface: SurfaceId,
+        error: &PresentationCompilationError,
+    ) -> Option<SurfaceContributionUnavailableReason> {
+        let popup = self
+            .presentation_authority
+            .presentation_requirements
+            .popup();
+        let session = popup.session()?;
+        let owner = popup.owner()?;
+        let reason = match error {
+            PresentationCompilationError::Scene(
+                crate::scene_compiler::SceneCompilationError::EmptyPopupPlaneBounds {
+                    surface: actual,
+                },
+            ) if *actual == surface => PopupGeometryUnavailableReason::EmptyPlane,
+            PresentationCompilationError::Scene(
+                crate::scene_compiler::SceneCompilationError::TabListMenuAnchorOutsidePopupPlane {
+                    key,
+                },
+            ) if *key == owner && owner.surface() == surface => {
+                PopupGeometryUnavailableReason::AnchorOutsidePlane
+            }
+            PresentationCompilationError::Scene(
+                crate::scene_compiler::SceneCompilationError::TabListMenuPopupSpaceUnavailable {
+                    key,
+                },
+            ) if *key == owner && owner.surface() == surface => {
+                PopupGeometryUnavailableReason::NoSpace
+            }
+            PresentationCompilationError::Scene(
+                crate::scene_compiler::SceneCompilationError::ActiveTabListMenuProjectionUnavailable {
+                    session: actual,
+                },
+            ) if *actual == session && owner.surface() == surface => {
+                PopupGeometryUnavailableReason::ProjectionUnavailable
+            }
+            _ => return None,
+        };
+        Some(SurfaceContributionUnavailableReason::PopupGeometryUnavailable { session, reason })
     }
 
-    fn start_viewport_activation(
-        &mut self,
-        input: InputSequence,
-        request: ViewportActivationRequest,
-        focus_generation: PaneFocusIntentGeneration,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<ActivationStart, EngineError> {
-        self.start_viewport_activation_with_reveal(
-            input,
-            request,
-            focus_generation,
-            PaneRevealDisposition::Pending,
-            events,
+    /// Prepares one exact, explicit unavailable answer for a rostered surface.
+    ///
+    /// A host frame cannot omit a surface because one callback did not run.
+    /// Hosts that cannot measure a core-frozen surface must submit this
+    /// contribution instead, preserving the complete roster while keeping the
+    /// resulting scene non-authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same stale-authority errors as
+    /// [`Self::prepare_surface_contribution`] when `token` no longer names the
+    /// current exact surface authority.
+    pub fn prepare_surface_unavailable_contribution(
+        &self,
+        token: SurfaceContributionToken,
+        reason: MeasurementUnavailableReason,
+    ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        let surface = token.surface();
+        let current = self
+            .presentation_authority
+            .scene
+            .surface(surface)
+            .map(SurfaceScene::stamp);
+        if current != Some(token.base()) {
+            return Err(SurfaceContributionPrepareError::StaleBase {
+                surface,
+                submitted: token.base(),
+                current,
+            });
+        }
+        let Some(requirements) = self
+            .presentation_authority
+            .presentation_requirements
+            .surface(surface)
+        else {
+            return Err(SurfaceContributionPrepareError::StaleBase {
+                surface,
+                submitted: token.base(),
+                current: None,
+            });
+        };
+        self.prepare_surface_contribution(
+            token,
+            SurfaceMeasurements::unavailable(requirements, reason),
         )
     }
 
-    fn start_viewport_activation_with_reveal(
-        &mut self,
-        input: InputSequence,
-        request: ViewportActivationRequest,
-        focus_generation: PaneFocusIntentGeneration,
-        reveal: PaneRevealDisposition,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<ActivationStart, EngineError> {
-        let (bindings, items) = self.focus_validation_snapshot();
-        let control_supported = self
-            .viewport
-            .capabilities()
-            .window_activation_control()
-            .is_supported();
-        let mut activation = self
-            .viewport_focus
-            .request_activation(
-                request,
-                focus_generation,
-                control_supported,
-                |binding| bindings.contains(&binding),
-                |surface, item| {
-                    items
-                        .get(&surface)
-                        .is_some_and(|surface_items| surface_items.contains(&item))
-                },
-            )
-            .map_err(|source| EngineError::ViewportFocus { input, source })?;
-        if let ActivationStartOutcome::RequestPlatformFocus { target } = activation.outcome() {
-            let effect = self
-                .viewport
-                .request_focus_binding(target)
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            if self
-                .viewport_focus
-                .attach_platform_focus_effect(activation.generation(), effect)
-                != crate::viewport_focus::FocusEffectAttachment::Applied
-            {
-                return Err(EngineError::ViewportFocus {
-                    input,
-                    source: ViewportFocusError::EffectAttachmentInvariant,
-                });
-            }
-        }
-        if reveal == PaneRevealDisposition::Pending
-            && let ActivationStartOutcome::PaneFocusReady { intent } = activation.outcome()
-            && let Some(reason) = self.reveal_pane_focus_intent(input, intent, events)?
-        {
-            activation = activation.reject_pane_reveal(intent, reason);
-        }
-        Ok(activation)
-    }
-
-    fn reveal_pane_focus_intent(
-        &mut self,
-        input: InputSequence,
-        intent: PaneFocusIntent,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<Option<PaneFocusRevealRejection>, EngineError> {
-        let PanelFocus::Item(item) = intent.focus() else {
-            return Ok(None);
-        };
-        let Some(source) =
-            Self::capture_surface_item_source(&self.workspace, intent.target().surface(), item)
-        else {
-            return self.reject_pane_focus_reveal(
-                input,
-                intent,
-                PaneFocusRevealRejection::ItemUnavailable { item },
-            );
-        };
-        let application =
-            self.apply_interaction_command(input, &WorkspaceCommand::Select { source }, events)?;
-        match application {
-            CommandApplication::Applied { .. } => Ok(None),
-            CommandApplication::Rejected(error) => {
-                let reason = match error {
-                    crate::error::CommandError::SurfaceLifecycleFrozen { surface } => {
-                        PaneFocusRevealRejection::SurfaceLifecycleFrozen { surface }
-                    }
-                    crate::error::CommandError::Policy(_) => {
-                        PaneFocusRevealRejection::PolicyRejected
-                    }
-                    crate::error::CommandError::MissingRoot { .. }
-                    | crate::error::CommandError::MissingNode { .. }
-                    | crate::error::CommandError::NodeOutsideRoot { .. }
-                    | crate::error::CommandError::StaleNode { .. }
-                    | crate::error::CommandError::NodeIsNotTabs { .. }
-                    | crate::error::CommandError::ItemNotInTabs { .. } => {
-                        PaneFocusRevealRejection::ItemUnavailable { item }
-                    }
-                    _ => PaneFocusRevealRejection::WorkspaceRejected,
-                };
-                self.reject_pane_focus_reveal(input, intent, reason)
-            }
-        }
-    }
-
-    fn reject_pane_focus_reveal(
-        &mut self,
-        input: InputSequence,
-        intent: PaneFocusIntent,
-        reason: PaneFocusRevealRejection,
-    ) -> Result<Option<PaneFocusRevealRejection>, EngineError> {
-        if !self.viewport_focus.reject_pane_reveal(intent.id()) {
-            return Err(EngineError::ViewportFocus {
-                input,
-                source: ViewportFocusError::PaneRevealInvariant,
-            });
-        }
-        Ok(Some(reason))
-    }
-
-    fn capture_surface_item_source(
-        workspace: &Workspace,
-        surface: crate::ids::SurfaceId,
-        item: crate::ids::ItemId,
-    ) -> Option<crate::command::ItemSource> {
-        let presentation = workspace.surface(surface)?;
-        let mut roots = Vec::with_capacity(presentation.contained.len().saturating_add(1));
-        roots.push(presentation.main_root);
-        roots.extend(presentation.contained.iter().filter_map(|floating| {
-            workspace
-                .contained_floating(*floating)
-                .map(|record| record.root)
-        }));
-        for root in roots {
-            for (tabs, node) in workspace.nodes() {
-                if !matches!(node, Node::Tabs { items, .. } if items.contains(&item)) {
-                    continue;
-                }
-                if let Ok(source) = workspace.capture_item_source(root, tabs, item) {
-                    return Some(source);
-                }
-            }
-        }
-        None
-    }
-
-    fn reduce_pane_focus_observation(
-        &mut self,
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        observation: PaneFocusObservation,
-    ) -> InputOutcome {
-        if expected_epoch != self.version.epoch() {
-            return InputOutcome::PaneFocusObservationStale {
-                expected_epoch,
-                current_epoch: self.version.epoch(),
-            };
-        }
-        let (bindings, items) = self.focus_validation_snapshot();
-        let transition = self.viewport_focus.publish_pane_focus_observation(
-            observation,
-            |binding| bindings.contains(&binding),
-            |surface, item| {
-                items
-                    .get(&surface)
-                    .is_some_and(|surface_items| surface_items.contains(&item))
-            },
-        );
-        InputOutcome::PaneFocusObservationPublished { transition }
-    }
-
-    fn focus_validation_snapshot(
+    /// Prepares a non-emitting contribution which retains the exact current
+    /// Ready candidate.
+    ///
+    /// This is appropriate for host boundaries that process input but do not
+    /// perform a paint pass. Unlike recording a painted surface contribution,
+    /// this capability does not stage a concrete presentation output and
+    /// therefore cannot take stream ownership or grant interaction authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed stale, policy, coordinate, or candidate error when the
+    /// supplied token no longer identifies the exact current Ready candidate.
+    pub fn prepare_surface_retained_contribution(
         &self,
-    ) -> (
-        BTreeSet<crate::viewport::ViewportBinding>,
-        BTreeMap<crate::ids::SurfaceId, BTreeSet<crate::ids::ItemId>>,
-    ) {
-        let bindings = self
-            .viewport
-            .registry()
-            .records()
-            .filter_map(|(_, record)| record.is_focusable().then_some(record.binding()))
-            .collect();
-        let items = self
-            .workspace
-            .surfaces()
-            .map(|(surface, _)| (surface, self.surface_items(surface)))
-            .collect();
-        (bindings, items)
-    }
-
-    fn reconcile_viewport_focus_authority(&mut self) {
-        let (bindings, items) = self.focus_validation_snapshot();
-        let _ = self.viewport_focus.reconcile_authority(
-            |surface| items.contains_key(&surface),
-            |binding| bindings.contains(&binding),
-            |surface, item| {
-                items
-                    .get(&surface)
-                    .is_some_and(|surface_items| surface_items.contains(&item))
-            },
-        );
-    }
-
-    fn surface_items(&self, surface: crate::ids::SurfaceId) -> BTreeSet<crate::ids::ItemId> {
-        let Some(presentation) = self.workspace.surface(surface) else {
-            return BTreeSet::new();
-        };
-        std::iter::once(presentation.main_root)
-            .chain(presentation.contained.iter().filter_map(|floating| {
-                self.workspace
-                    .contained_floating(*floating)
-                    .map(|floating| floating.root)
-            }))
-            .filter_map(|root| self.workspace.root(root).map(|record| record.node))
-            .flat_map(|node| self.workspace.collect_items_in_subtree(node))
-            .collect()
-    }
-
-    fn reduce_platform_effect(
-        &mut self,
-        input: InputSequence,
-        expected_epoch: crate::ids::WorkspaceEpoch,
-        result: EffectResult,
-    ) -> Result<InputOutcome, EngineError> {
-        let is_focus_effect =
-            self.viewport
-                .effects()
-                .record(result.effect())
-                .is_some_and(|record| {
-                    matches!(
-                        record.request().effect(),
-                        crate::effect::PlatformEffect::RequestFocus { .. }
-                    )
-                });
-        let transition = if expected_epoch == self.version.epoch() {
-            self.viewport
-                .report_effect(expected_epoch, result)
-                .map_err(|source| EngineError::Viewport { input, source })?
-        } else {
-            EffectTransition::StaleEpoch
-        };
-        let focus = (transition == EffectTransition::Applied && is_focus_effect).then(|| {
-            self.viewport_focus
-                .report_platform_focus_effect(result.effect(), result.result())
-        });
-        Ok(InputOutcome::PlatformEffectReported {
-            effect: result.effect(),
-            transition,
-            focus,
-        })
-    }
-
-    fn reduce_viewport_close_decision(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        request: ViewportCloseRequestId,
-        decision: ViewportCloseDecision,
-    ) -> Result<InputOutcome, EngineError> {
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
+        token: SurfaceContributionToken,
+    ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        let surface = token.surface();
+        let current = self
+            .presentation_authority
+            .scene
+            .surface(surface)
+            .map(SurfaceScene::stamp);
+        if current != Some(token.base()) {
+            return Err(SurfaceContributionPrepareError::StaleBase {
+                surface,
+                submitted: token.base(),
+                current,
             });
         }
-        let mut accepted_merge = None;
-        if let ViewportCloseDecision::Accept(plan) = &decision {
-            let capability = self.viewport.capabilities().authoritative_inventory();
-            if !capability.is_supported() {
-                return self.reject_viewport_close_decision(
-                    input,
-                    request,
-                    ViewportCloseDecisionRejection::DestructionAuthorityUnavailable { capability },
+        let policy_revision = self.policy.revision();
+        if token.ticket().policy() != policy_revision {
+            return Err(SurfaceContributionPrepareError::PolicyAuthorityChanged {
+                surface,
+                submitted: token.ticket().policy(),
+                current: policy_revision,
+            });
+        }
+        if !Self::coordinate_capture_matches_current(
+            token.coordinates,
+            self.viewport.viewport(surface),
+            self.viewport.surface_coordinate_authority(surface),
+        ) {
+            return Err(SurfaceContributionPrepareError::CoordinateAuthorityChanged { surface });
+        }
+        let ticket = match self.presentation_authority.scene.surface(surface) {
+            Some(SurfaceScene::Ready(ready)) => ready.output_ticket(),
+            Some(SurfaceScene::Stale(_)) | Some(SurfaceScene::Bootstrap(_)) | None => {
+                return Err(
+                    SurfaceContributionPrepareError::RetainedCandidateUnavailable { surface },
                 );
             }
-            if let (ViewportClosePlan::MergeBack(merge), Some(close_request)) =
-                (plan, self.viewport.viewport_close_request(request))
-            {
-                let focus = self
-                    .surface_recovery
-                    .close_focus(request)
-                    .unwrap_or(PanelFocus::None);
-                match self.freeze_accepted_merge_back(
-                    input,
-                    close_request.binding().surface(),
-                    close_request.recovery(),
-                    merge,
-                    focus,
-                )? {
-                    MergeBackFreeze::Frozen {
-                        roster,
-                        dependency,
-                        focus,
-                    } => {
-                        accepted_merge = Some((*roster, dependency, focus));
-                    }
-                    MergeBackFreeze::Rejected(reason) => {
-                        return self.reject_viewport_close_decision(input, request, reason);
-                    }
-                }
-            }
-        }
-        let effect = self
-            .viewport
-            .decide_viewport_close(request, decision)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        if let Some((roster, dependency, focus)) = accepted_merge {
-            self.surface_recovery
-                .freeze_accepted_close(request, roster, dependency, focus);
-            self.surface_recovery.remove_close_focus(request);
-        } else {
-            self.surface_recovery.remove_accepted_close(request);
-            self.surface_recovery.remove_close_focus(request);
-            let _ = self.viewport_focus.clear_close_request(request);
-        }
-        Ok(InputOutcome::ViewportCloseDecided { request, effect })
-    }
-
-    fn freeze_accepted_merge_back(
-        &self,
-        input: InputSequence,
-        source_surface: crate::ids::SurfaceId,
-        source_recovery: Option<crate::intent::ContainedRecoveryPlan>,
-        plan: &crate::frame::ViewportMergeBackPlan,
-        focus: PanelFocus,
-    ) -> Result<MergeBackFreeze, EngineError> {
-        let target_surface = plan.target_surface();
-        let target_is_closing = self
-            .viewport
-            .viewport(target_surface)
-            .is_some_and(|record| {
-                matches!(
-                    record.lifecycle(),
-                    crate::viewport_registry::ViewportLifecycle::CloseRequested
-                        | crate::viewport_registry::ViewportLifecycle::AwaitingDestroyed
-                )
-            });
-        if target_surface == source_surface || target_is_closing {
-            return Ok(MergeBackFreeze::Rejected(
-                ViewportCloseDecisionRejection::MergeBackTargetsClosingSurface {
-                    surface: target_surface,
-                },
-            ));
-        }
-        if let Some(recovery) = source_recovery
-            && recovery.surface() != target_surface
-        {
-            return Ok(MergeBackFreeze::Rejected(
-                ViewportCloseDecisionRejection::MergeBackRecoveryTargetMismatch {
-                    expected: recovery.surface(),
-                    actual: target_surface,
-                },
-            ));
-        }
-        let roster = self
-            .capture_surface_roster(source_surface)
-            .map_err(|source| EngineError::SurfaceRoster { input, source })?;
-        let focus = match focus {
-            PanelFocus::Item(item) if roster.contains_item(&self.workspace, item) => {
-                PanelFocus::Item(item)
-            }
-            PanelFocus::Item(_) | PanelFocus::None => PanelFocus::None,
         };
-        if !roster.contained().is_empty() && roster.source_coordinates().is_none() {
-            return Ok(MergeBackFreeze::Rejected(
-                ViewportCloseDecisionRejection::SourceGeometryUnavailable,
-            ));
-        }
-        let main_root = roster.main_root();
-        let source_main = self
-            .workspace
-            .root(main_root)
-            .and_then(|root| self.workspace.node(root.node));
-        if !matches!(source_main, Some(Node::Tabs { .. })) {
-            return Ok(MergeBackFreeze::Rejected(
-                ViewportCloseDecisionRejection::MergeBackSourceNotTabs { root: main_root },
-            ));
-        }
-        let target_is_current = self.workspace.presentation_for_root(plan.target().root())
-            == Some(crate::RootPresentationOwner::Main {
-                surface: target_surface,
-            })
-            && self
-                .workspace
-                .capture_tab_target(plan.target().root(), plan.target().tabs())
-                .is_ok_and(|target| &target == plan.target());
-        let Some(target_facts) = target_is_current
-            .then(|| self.freeze_surface_recovery_target(target_surface))
-            .flatten()
-        else {
-            return Ok(MergeBackFreeze::Rejected(
-                ViewportCloseDecisionRejection::MergeBackTargetUnavailable {
-                    surface: target_surface,
-                },
-            ));
-        };
-        Ok(MergeBackFreeze::Frozen {
-            roster: Box::new(roster),
-            dependency: target_facts.dependency(),
-            focus,
+        Ok(PreparedSurfaceContribution {
+            token,
+            policy_revision,
+            state: PreparedSurfaceContributionState::Retained { ticket },
         })
     }
 
-    fn reject_viewport_close_decision(
-        &mut self,
-        input: InputSequence,
-        request: ViewportCloseRequestId,
-        reason: ViewportCloseDecisionRejection,
-    ) -> Result<InputOutcome, EngineError> {
-        let hold_effect = self
-            .viewport
-            .decide_viewport_close(request, ViewportCloseDecision::Prevent)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        self.surface_recovery.remove_accepted_close(request);
-        self.surface_recovery.remove_close_focus(request);
-        let _ = self.viewport_focus.clear_close_request(request);
-        Ok(InputOutcome::ViewportCloseDecisionRejected {
-            request,
-            reason,
-            hold_effect,
-        })
-    }
-
-    fn reduce_native_create_cancellation(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        saga: NativeCreateSagaId,
-    ) -> Result<InputOutcome, EngineError> {
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
-            });
-        }
-        let compensation = self
-            .viewport
-            .cancel_native_create(saga)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        Ok(InputOutcome::NativeCreateCancelled { saga, compensation })
-    }
-
-    fn reduce_viewport_cleanup_retry(
-        &mut self,
-        input: InputSequence,
-        expected: WorkspaceVersion,
-        failed_effect: crate::effect::EffectId,
-    ) -> Result<InputOutcome, EngineError> {
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
-            });
-        }
-        let retry = self
-            .viewport
-            .retry_cleanup(failed_effect)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        Ok(InputOutcome::ViewportCleanupRetried {
-            failed_effect,
-            retry,
-        })
-    }
-
-    // Lifecycle actions share one batch-frozen roster/scene barrier and must remain visibly
-    // ordered in a single reduction loop.
-    #[allow(clippy::too_many_lines)]
-    fn reduce_viewport_actions(
-        &mut self,
-        input: InputSequence,
-        focus_generation: PaneFocusIntentGeneration,
-        actions: &[crate::frame::ViewportLifecycleAction],
-        recovery_batch: &SurfaceRecoveryBatchContext,
-        activations: &mut Vec<ActivationStart>,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<(), EngineError> {
-        let mut active_barrier = recovery_batch.active_rosters.clone();
-        for action in actions {
-            match action {
-                crate::frame::ViewportLifecycleAction::CreateReady { saga, prepared } => match self
-                    .apply_interaction_command_with_barrier(
-                        input,
-                        prepared.command(),
-                        Some(&active_barrier),
-                        events,
-                    )? {
-                    CommandApplication::Applied { .. } => {
-                        self.viewport
-                            .complete_native_create(*saga)
-                            .map_err(|source| EngineError::Viewport { input, source })?;
-                        if let Some(binding) = self
-                            .viewport
-                            .native_create_saga(*saga)
-                            .filter(|saga| {
-                                matches!(
-                                    saga.status(),
-                                    crate::frame::NativeCreateStatus::Committed { .. }
-                                )
-                            })
-                            .map(crate::frame::NativeCreateSaga::binding)
-                        {
-                            activations.push(self.start_viewport_activation(
-                                input,
-                                ViewportActivationRequest::tear_off_committed(
-                                    binding,
-                                    prepared.focus(),
-                                ),
-                                focus_generation,
-                                events,
-                            )?);
-                        }
-                    }
-                    CommandApplication::Rejected(_) => {
-                        self.viewport
-                            .reject_native_create(*saga)
-                            .map_err(|source| EngineError::Viewport { input, source })?;
-                    }
-                },
-                crate::frame::ViewportLifecycleAction::CreateVisible { saga, binding } => {
-                    let focus = self
-                        .viewport
-                        .native_create_saga(*saga)
-                        .ok_or(EngineError::Viewport {
-                            input,
-                            source: ViewportCoordinatorError::MissingCreateSaga { saga: *saga },
-                        })?
-                        .prepared()
-                        .focus();
-                    activations.push(self.start_viewport_activation(
-                        input,
-                        ViewportActivationRequest::tear_off_committed(*binding, focus),
-                        focus_generation,
-                        events,
-                    )?);
-                }
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
-                    binding,
-                    resolution,
-                } => {
-                    let mut context = DestroyedSurfaceContext {
-                        roster: active_barrier.get(&binding.surface()),
-                        action_barrier: &active_barrier,
-                        recovery_targets: &recovery_batch.targets,
-                        events,
-                    };
-                    self.reduce_destroyed_surface(
-                        input,
-                        focus_generation,
-                        *binding,
-                        resolution,
-                        activations,
-                        &mut context,
-                    )?;
-                    active_barrier.remove(&binding.surface());
-                }
-                crate::frame::ViewportLifecycleAction::RetryRecovery {
-                    destroyed_binding,
-                    recovery,
-                } => {
-                    let surface = destroyed_binding.surface();
-                    let roster = self
-                        .surface_recovery
-                        .pending(surface)
-                        .cloned()
-                        .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
-                    let disposition = self
-                        .surface_recovery
-                        .pending_disposition(surface)
-                        .cloned()
-                        .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
-                    let resolved = match &disposition {
-                        PendingSurfaceRecoveryDisposition::Contained => self
-                            .apply_destroyed_surface_recovery(
-                                input,
-                                &roster,
-                                *recovery,
-                                SurfaceRecoveryTargetContext::new(
-                                    &active_barrier,
-                                    recovery_batch.targets.get(&recovery.surface()),
-                                ),
-                                events,
-                            )?,
-                        PendingSurfaceRecoveryDisposition::MergeBack {
-                            request,
-                            plan,
-                            dependency,
-                            focus,
-                        } => self.apply_merge_back(
-                            input,
-                            focus_generation,
-                            &roster,
-                            MergeBackIntent {
-                                request: *request,
-                                plan,
-                                dependency: *dependency,
-                                focus: *focus,
-                            },
-                            MergeBackApplicationContext {
-                                target: SurfaceRecoveryTargetContext::new(
-                                    &active_barrier,
-                                    recovery_batch.targets.get(&plan.target_surface()),
-                                ),
-                                activations,
-                                events,
-                            },
-                        )?,
-                    };
-                    if resolved {
-                        self.viewport
-                            .complete_pending_recovery(surface)
-                            .map_err(|source| EngineError::Viewport { input, source })?;
-                        self.surface_recovery.complete_pending(surface);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn freeze_surface_recovery_batch(
+    fn surface_resize_overrides(
         &self,
-        input: InputSequence,
-        actions: &[crate::frame::ViewportLifecycleAction],
-    ) -> Result<SurfaceRecoveryBatchContext, EngineError> {
-        let active_rosters = self.freeze_destroyed_surface_rosters(input, actions)?;
-        let mut targets = BTreeMap::new();
-        for action in actions {
-            let target_surface = match action {
-                crate::frame::ViewportLifecycleAction::CreateReady { .. }
-                | crate::frame::ViewportLifecycleAction::CreateVisible { .. } => None,
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { resolution, .. } => {
-                    match resolution {
-                        crate::frame::ViewportDestructionResolution::Accepted { plan, .. } => {
-                            match plan {
-                                ViewportClosePlan::RetainLayout => None,
-                                ViewportClosePlan::MergeBack(plan) => Some(plan.target_surface()),
-                            }
-                        }
-                        crate::frame::ViewportDestructionResolution::Recover { recovery } => {
-                            Some(recovery.surface())
-                        }
-                        crate::frame::ViewportDestructionResolution::Unplanned => None,
-                    }
-                }
-                crate::frame::ViewportLifecycleAction::RetryRecovery {
-                    destroyed_binding,
-                    recovery,
-                } => match self
-                    .surface_recovery
-                    .pending_disposition(destroyed_binding.surface())
-                {
-                    Some(PendingSurfaceRecoveryDisposition::Contained) => Some(recovery.surface()),
-                    Some(PendingSurfaceRecoveryDisposition::MergeBack { plan, .. }) => {
-                        Some(plan.target_surface())
-                    }
-                    None => None,
-                },
-            };
-            let Some(target_surface) = target_surface else {
-                continue;
-            };
-            if targets.contains_key(&target_surface) {
-                continue;
-            }
-            if let Some(facts) = self.freeze_surface_recovery_target(target_surface) {
-                targets.insert(target_surface, facts);
-            }
-        }
-        Ok(SurfaceRecoveryBatchContext {
-            active_rosters,
-            targets,
-        })
-    }
-
-    fn freeze_surface_recovery_target(
-        &self,
-        surface: crate::ids::SurfaceId,
-    ) -> Option<SurfaceRecoveryTargetFacts> {
-        let coordinates = self
-            .viewport
-            .viewport(surface)
-            .filter(|record| record.is_ready())?
-            .coordinates()?;
-        let (scene, bounds) = self.current_ready_surface_bounds(surface).ok()?;
-        if !self
-            .scene_coordinate_authority
-            .get(&surface)
-            .is_some_and(|authority| authority.matches(scene, coordinates))
-        {
-            return None;
-        }
-        Some(SurfaceRecoveryTargetFacts::new(
-            surface,
-            scene,
-            coordinates,
-            bounds,
-        ))
-    }
-
-    fn invalidate_changed_surface_scene_authority(&mut self) {
-        let viewport = &self.viewport;
-        self.scene_coordinate_authority
-            .retain(|surface, authority| {
-                viewport
-                    .viewport(*surface)
-                    .and_then(crate::viewport_registry::ViewportRecord::coordinates)
-                    .is_some_and(|current| {
-                        SurfaceSceneCoordinateAuthority::coordinates_match(
-                            authority.coordinates,
-                            current,
+        surface: SurfaceId,
+    ) -> Vec<crate::layout::SplitWeightOverride<'_>> {
+        self.interaction
+            .resize_overrides()
+            .map(|(_, updates)| {
+                updates
+                    .iter()
+                    .filter(|update| {
+                        matches!(
+                            self.workspace.presentation_for_root(update.split().root()),
+                            Some(crate::RootPresentationOwner::Main { surface: owner })
+                                | Some(crate::RootPresentationOwner::Contained {
+                                    surface: owner,
+                                    ..
+                                }) if owner == surface
                         )
                     })
-            });
+                    .map(|update| {
+                        crate::layout::SplitWeightOverride::new(update.split(), update.weights())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    fn freeze_destroyed_surface_rosters(
-        &self,
-        input: InputSequence,
-        actions: &[crate::frame::ViewportLifecycleAction],
-    ) -> Result<BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>, EngineError> {
-        let mut rosters = BTreeMap::new();
-        for action in actions {
-            let crate::frame::ViewportLifecycleAction::SurfaceDestroyed {
-                binding,
-                resolution,
-            } = action
-            else {
-                continue;
-            };
-            let surface = binding.surface();
-            if self.workspace.surface(surface).is_none() {
-                continue;
-            }
-            let roster = match resolution {
-                crate::frame::ViewportDestructionResolution::Accepted {
-                    request,
-                    plan: ViewportClosePlan::MergeBack(_),
-                    ..
-                } => self
-                    .surface_recovery
-                    .accepted_close(*request)
-                    .map(|accepted| accepted.roster().clone())
-                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?,
-                crate::frame::ViewportDestructionResolution::Accepted {
-                    plan: ViewportClosePlan::RetainLayout,
-                    ..
-                }
-                | crate::frame::ViewportDestructionResolution::Unplanned => continue,
-                crate::frame::ViewportDestructionResolution::Recover { .. } => self
-                    .capture_surface_roster(surface)
-                    .map_err(|source| EngineError::SurfaceRoster { input, source })?,
-            };
-            rosters.insert(surface, roster);
+    fn apply_journal_workspace_command(
+        &mut self,
+        cause: ReductionCause,
+        command: &WorkspaceCommand,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<Result<(CommandOutcome, bool), CommandError>, EngineError> {
+        let staged = match self.stage_journal_workspace_command(cause, command, policy)? {
+            Ok(staged) => staged,
+            Err(source) => return Ok(Err(source)),
+        };
+        self.publish_workspace(staged.publication);
+        self.reconcile_viewport_focus_authority();
+        if staged.changed {
+            self.advance_revision_caused(cause)?;
+            events.push(WorkspaceEvent::new_caused(
+                cause,
+                self.version,
+                WorkspaceEventKind::CommandCommitted(staged.outcome.clone()),
+            ));
         }
-        Ok(rosters)
+        Ok(Ok((staged.outcome, staged.changed)))
     }
 
-    fn capture_surface_roster(
+    fn stage_journal_workspace_command(
+        &self,
+        cause: ReductionCause,
+        command: &WorkspaceCommand,
+        policy: &DockPolicySnapshot,
+    ) -> Result<Result<StagedJournalWorkspaceCommand, CommandError>, EngineError> {
+        let mut workspace = self.clone_workspace_candidate();
+        let report = match WorkspaceTransaction::from_commands([command.clone()])
+            .apply(&mut workspace, policy)
+        {
+            Ok(report) => report,
+            Err(TransactionError::Command { index: 0, source })
+                if source.is_expected_rejection() =>
+            {
+                return Ok(Err(source));
+            }
+            Err(source) => {
+                return Err(EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: source.to_string(),
+                });
+            }
+        };
+        if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None) {
+            return Ok(Err(CommandError::SurfaceLifecycleFrozen { surface }));
+        }
+        let changed = report.changed();
+        let mut outcomes = report.into_outcomes();
+        if outcomes.len() != 1 {
+            return Err(EngineError::PointerInteractionInvariant {
+                cause,
+                detail: "one journal drop command produced a non-unit outcome roster".to_owned(),
+            });
+        }
+        let outcome = outcomes
+            .pop()
+            .expect("unit outcome roster was checked before extraction");
+        let publication = match self.stage_workspace_publication(workspace, policy) {
+            Ok(publication) => publication,
+            Err(source) if source.is_expected_rejection() => return Ok(Err(source)),
+            Err(source) => {
+                return Err(EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: source.to_string(),
+                });
+            }
+        };
+        Ok(Ok(StagedJournalWorkspaceCommand {
+            publication,
+            outcome,
+            changed,
+        }))
+    }
+
+    fn capture_surface_coordinates(
         &self,
         surface: crate::ids::SurfaceId,
-    ) -> Result<SurfaceRosterDisposition, SurfaceRosterCaptureError> {
-        let source_coordinates = self
-            .viewport
-            .viewport(surface)
-            .and_then(crate::viewport_registry::ViewportRecord::coordinates);
-        SurfaceRosterDisposition::capture(&self.workspace, surface, source_coordinates)
+    ) -> SurfaceCoordinateCapture {
+        let authority_generation = self.viewport.surface_coordinate_authority(surface);
+        match self.viewport.viewport(surface) {
+            None => SurfaceCoordinateCapture::Headless {
+                authority_generation,
+            },
+            Some(record) if record.has_coordinate_authority() => match record.coordinates() {
+                Some(coordinates) => SurfaceCoordinateCapture::NativeReady {
+                    coordinates,
+                    authority_generation,
+                },
+                None => SurfaceCoordinateCapture::NativeUnavailable {
+                    binding: record.binding(),
+                    lifecycle: record.lifecycle(),
+                    authority_generation,
+                },
+            },
+            Some(record) => SurfaceCoordinateCapture::NativeUnavailable {
+                binding: record.binding(),
+                lifecycle: record.lifecycle(),
+                authority_generation,
+            },
+        }
     }
 
-    // Destruction, merge-back, and deferred recovery form one atomic state transition; splitting
-    // the branches would obscure which paths may complete or retain the logical surface.
-    #[allow(clippy::too_many_lines)]
-    fn reduce_destroyed_surface(
-        &mut self,
-        input: InputSequence,
-        focus_generation: PaneFocusIntentGeneration,
-        binding: crate::viewport::ViewportBinding,
-        resolution: &crate::frame::ViewportDestructionResolution,
-        activations: &mut Vec<ActivationStart>,
-        context: &mut DestroyedSurfaceContext<'_>,
-    ) -> Result<(), EngineError> {
-        let surface = binding.surface();
-        if self.workspace.surface(surface).is_none() {
-            self.complete_destroyed_surface(input, binding)?;
-            if let crate::frame::ViewportDestructionResolution::Accepted { request, .. } =
-                resolution
-            {
-                self.surface_recovery.remove_accepted_close(*request);
-            }
-            self.surface_recovery.complete_pending(surface);
-            return Ok(());
-        }
-
-        if matches!(
-            resolution,
-            crate::frame::ViewportDestructionResolution::Unplanned
-        ) {
-            self.complete_destroyed_surface(input, binding)?;
-            return Ok(());
-        }
-
-        if let crate::frame::ViewportDestructionResolution::Accepted {
-            request,
-            plan: ViewportClosePlan::RetainLayout,
-            ..
-        } = resolution
-        {
-            self.complete_destroyed_surface(input, binding)?;
-            self.surface_recovery.remove_accepted_close(*request);
-            return Ok(());
-        }
-
-        let roster = context
-            .roster
-            .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
-        let (resolved, pending) = match resolution {
-            crate::frame::ViewportDestructionResolution::Accepted {
-                request,
-                plan: ViewportClosePlan::MergeBack(plan),
-                recovery,
+    fn coordinate_capture_matches_current(
+        capture: SurfaceCoordinateCapture,
+        current: Option<&crate::viewport_registry::ViewportRecord>,
+        current_authority: crate::viewport::CoordinateGeneration,
+    ) -> bool {
+        match capture {
+            SurfaceCoordinateCapture::Headless {
+                authority_generation,
+            } => current.is_none() && authority_generation == current_authority,
+            SurfaceCoordinateCapture::NativeUnavailable {
+                binding,
+                lifecycle,
+                authority_generation,
             } => {
-                let dependency = self
-                    .surface_recovery
-                    .accepted_close(*request)
-                    .map(crate::surface_recovery::AcceptedSurfaceMergeBack::dependency)
-                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
-                let focus = self
-                    .surface_recovery
-                    .accepted_close(*request)
-                    .map(crate::surface_recovery::AcceptedSurfaceMergeBack::focus)
-                    .ok_or(EngineError::MissingSurfaceRoster { input, surface })?;
-                let resolved = self.apply_merge_back(
-                    input,
-                    focus_generation,
-                    roster,
-                    MergeBackIntent {
-                        request: *request,
-                        plan,
-                        dependency,
-                        focus,
-                    },
-                    MergeBackApplicationContext {
-                        target: SurfaceRecoveryTargetContext::new(
-                            context.action_barrier,
-                            context.recovery_targets.get(&plan.target_surface()),
-                        ),
-                        activations,
-                        events: context.events,
-                    },
-                )?;
-                let pending = recovery.map(|recovery| {
-                    (
-                        recovery,
-                        PendingSurfaceRecoveryDisposition::MergeBack {
-                            request: *request,
-                            plan: plan.clone(),
-                            dependency,
-                            focus,
-                        },
-                    )
-                });
-                (resolved, pending)
+                authority_generation == current_authority
+                    && current.is_some_and(|record| {
+                        !record.has_coordinate_authority()
+                            && record.binding() == binding
+                            && record.lifecycle() == lifecycle
+                            && record.coordinate_generation() == authority_generation
+                    })
             }
-            crate::frame::ViewportDestructionResolution::Recover { recovery } => (
-                self.apply_destroyed_surface_recovery(
-                    input,
-                    roster,
-                    *recovery,
-                    SurfaceRecoveryTargetContext::new(
-                        context.action_barrier,
-                        context.recovery_targets.get(&recovery.surface()),
-                    ),
-                    context.events,
-                )?,
-                Some((*recovery, PendingSurfaceRecoveryDisposition::Contained)),
-            ),
-            crate::frame::ViewportDestructionResolution::Accepted {
-                plan: ViewportClosePlan::RetainLayout,
-                ..
+            SurfaceCoordinateCapture::NativeReady {
+                coordinates,
+                authority_generation,
+            } => {
+                authority_generation == current_authority
+                    && current.is_some_and(|record| {
+                        record.has_coordinate_authority()
+                            && record.coordinate_generation() == authority_generation
+                            && record.coordinates().is_some_and(|current| {
+                                current.binding() == coordinates.binding()
+                                    && current.coordinate_generation()
+                                        == coordinates.coordinate_generation()
+                                    && current.content_bounds() == coordinates.content_bounds()
+                                    && current.native_scale_factor()
+                                        == coordinates.native_scale_factor()
+                                    && current.presentation_scale_factor()
+                                        == coordinates.presentation_scale_factor()
+                            })
+                    })
             }
-            | crate::frame::ViewportDestructionResolution::Unplanned => unreachable!(),
-        };
-        if resolved && self.workspace.surface(surface).is_none() {
-            self.complete_destroyed_surface(input, binding)?;
-            self.surface_recovery.complete_pending(surface);
-        } else if !resolved && let Some((recovery, disposition)) = pending {
-            self.viewport
-                .defer_destroyed_surface_recovery(binding, recovery)
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            if !self.surface_recovery.defer(roster.clone(), disposition) {
-                return Err(EngineError::ConflictingSurfaceRecovery { input, surface });
-            }
-        } else if !resolved {
-            self.complete_destroyed_surface(input, binding)?;
         }
-        if let crate::frame::ViewportDestructionResolution::Accepted { request, .. } = resolution {
-            self.surface_recovery.remove_accepted_close(*request);
-        }
-        Ok(())
     }
 
-    fn complete_destroyed_surface(
-        &mut self,
-        input: InputSequence,
-        binding: crate::viewport::ViewportBinding,
-    ) -> Result<(), EngineError> {
+    fn coordinate_capture_incarnation_is_current(
+        capture: SurfaceCoordinateCapture,
+        current: Option<&crate::viewport_registry::ViewportRecord>,
+        current_authority: crate::viewport::CoordinateGeneration,
+    ) -> bool {
+        match Self::coordinate_capture_binding(capture) {
+            Some(binding) => current.is_some_and(|record| record.binding() == binding),
+            None => Self::coordinate_capture_matches_current(capture, current, current_authority),
+        }
+    }
+
+    const fn coordinate_capture_binding(
+        capture: SurfaceCoordinateCapture,
+    ) -> Option<crate::viewport::ViewportBinding> {
+        match capture {
+            SurfaceCoordinateCapture::Headless { .. } => None,
+            SurfaceCoordinateCapture::NativeUnavailable { binding, .. } => Some(binding),
+            SurfaceCoordinateCapture::NativeReady { coordinates, .. } => {
+                Some(coordinates.binding())
+            }
+        }
+    }
+
+    /// Finishes one sealed core-minted host frame and publishes it atomically.
+    ///
+    /// The capability must come from [`Self::begin_host_frame`] on this exact
+    /// engine. Its frozen domain, authority frontiers, workspace version,
+    /// requirement revision, and complete roster are revalidated before any
+    /// tick or source watermark can advance. Semantic input then reduces
+    /// strictly in append order; only the separately explicit configuration
+    /// phase follows surface contributions.
+    fn platform_provider_rejection(
+        &self,
+        provider: PlatformObservationLease,
+    ) -> Option<InputOutcome> {
         self.viewport
-            .complete_destroyed_surface(binding)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        let _ = self.viewport_focus.clear_binding(binding);
-        if self.workspace.surface(binding.surface()).is_none() {
-            let _ = self.viewport_focus.clear_surface(binding.surface());
-        }
-        Ok(())
-    }
-
-    fn apply_merge_back(
-        &mut self,
-        input: InputSequence,
-        focus_generation: PaneFocusIntentGeneration,
-        roster: &SurfaceRosterDisposition,
-        intent: MergeBackIntent<'_>,
-        context: MergeBackApplicationContext<'_, '_>,
-    ) -> Result<bool, EngineError> {
-        let MergeBackApplicationContext {
-            target,
-            activations,
-            events,
-        } = context;
-        let Some(target_facts) = target.target_facts else {
-            return Ok(false);
-        };
-        if !target_facts.satisfies(intent.dependency) {
-            return Ok(false);
-        }
-        let Some(placement) = self.surface_forest_placement(roster, intent.plan, target_facts)
-        else {
-            return Ok(false);
-        };
-        let Some(transaction) =
-            roster.compile_merge_back_transaction(&self.workspace, &placement, intent.plan)
-        else {
-            return Ok(false);
-        };
-        let target_binding = target_facts.coordinates().binding();
-        let target_is_focused =
-            self.viewport_focus
-                .focus_observation()
-                .is_some_and(|observation| {
-                    matches!(
-                        observation.focused(),
-                        Authority::Known(crate::viewport_focus::GlobalFocusedWindow::Dock(focused))
-                            if *focused == target_binding
-                    )
-                });
-        let selection = match (target_is_focused, intent.focus) {
-            (true, PanelFocus::Item(item)) => Some(CandidatePaneSelection {
-                surface: intent.plan.target_surface(),
-                item,
-            }),
-            (true, PanelFocus::None) | (false, _) => None,
-        };
-        let applied = self.apply_surface_roster_transaction(
-            input,
-            roster,
-            &transaction,
-            selection,
-            target.action_barrier,
-            events,
-        )?;
-        if applied {
-            let reveal = selection.map_or(PaneRevealDisposition::Pending, |_| {
-                PaneRevealDisposition::AppliedInCandidate
-            });
-            let activation = self.start_viewport_activation_with_reveal(
-                input,
-                ViewportActivationRequest::close_recovery(
-                    target_binding,
-                    intent.focus,
-                    intent.request,
-                ),
-                focus_generation,
-                reveal,
-                events,
-            )?;
-            activations.push(activation);
-        }
-        Ok(applied)
-    }
-
-    fn apply_destroyed_surface_recovery(
-        &mut self,
-        input: InputSequence,
-        roster: &SurfaceRosterDisposition,
-        recovery: crate::intent::ContainedRecoveryPlan,
-        context: SurfaceRecoveryTargetContext<'_>,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<bool, EngineError> {
-        let Some(target_facts) = context.target_facts else {
-            return Ok(false);
-        };
-        let Some(placement) = self.surface_roster_placement(roster, recovery, target_facts) else {
-            return Ok(false);
-        };
-        let target = RootPresentationTarget::Contained {
-            surface: placement.target_surface(),
-            floating: recovery.floating(),
-            rect: placement.main_rect(),
-            z_order: placement.main_z_order(),
-        };
-        let Some(transaction) =
-            roster.compile_recovery_transaction(&self.workspace, &placement, target)
-        else {
-            return Ok(false);
-        };
-        self.apply_surface_roster_transaction(
-            input,
-            roster,
-            &transaction,
-            None,
-            context.action_barrier,
-            events,
-        )
-    }
-
-    fn surface_roster_placement(
-        &self,
-        roster: &SurfaceRosterDisposition,
-        recovery: crate::intent::ContainedRecoveryPlan,
-        target_facts: &SurfaceRecoveryTargetFacts,
-    ) -> Option<SurfaceRosterPlacement> {
-        if roster.main_root() != recovery.root() {
-            return None;
-        }
-        let target_coordinates = target_facts.coordinates();
-        let source_coordinates = roster.source_coordinates()?;
-        let target_bounds = target_facts.scene_bounds();
-        let main_desktop = source_coordinates
-            .outer_bounds()
-            .unwrap_or_else(|| source_coordinates.content_bounds());
-        let main_requested = target_coordinates
-            .desktop_rect_to_surface(main_desktop)
-            .ok()?;
-        let main_rect = clamp_contained_rect(
-            recovery.surface(),
-            target_bounds,
-            main_requested,
-            recovery.minimum_size(),
-        )
-        .ok()?;
-        let target_presentation = self.workspace.surface(recovery.surface())?;
-        let existing_maximum = target_presentation
-            .contained
-            .iter()
-            .filter_map(|floating| self.workspace.contained_floating(*floating))
-            .map(|floating| floating.z_order)
-            .max();
-        let main_z_order = match existing_maximum {
-            Some(existing) => recovery.z_order().max(existing.checked_add(1)?),
-            None => recovery.z_order(),
-        };
-        let first_sibling_z = if roster.contained().is_empty() {
-            main_z_order
-        } else {
-            main_z_order.checked_add(1)?
-        };
-        let contained = Self::contained_roster_placements(
-            roster,
-            recovery.surface(),
-            target_facts,
-            first_sibling_z,
-        )?;
-        Some(SurfaceRosterPlacement::new(
-            recovery.surface(),
-            main_rect,
-            main_z_order,
-            contained,
-        ))
-    }
-
-    fn surface_forest_placement(
-        &self,
-        roster: &SurfaceRosterDisposition,
-        plan: &crate::frame::ViewportMergeBackPlan,
-        target_facts: &SurfaceRecoveryTargetFacts,
-    ) -> Option<SurfaceForestPlacement> {
-        let target = self.workspace.surface(plan.target_surface())?;
-        let first_z_order = match target
-            .contained
-            .iter()
-            .filter_map(|floating| self.workspace.contained_floating(*floating))
-            .map(|floating| floating.z_order)
-            .max()
-        {
-            Some(maximum) => maximum.checked_add(1)?,
-            None => 0,
-        };
-        let contained = Self::contained_roster_placements(
-            roster,
-            plan.target_surface(),
-            target_facts,
-            first_z_order,
-        )?;
-        Some(SurfaceForestPlacement::new(
-            plan.target_surface(),
-            contained,
-        ))
-    }
-
-    fn contained_roster_placements(
-        roster: &SurfaceRosterDisposition,
-        target_surface: crate::ids::SurfaceId,
-        target_facts: &SurfaceRecoveryTargetFacts,
-        first_z_order: u64,
-    ) -> Option<Vec<ContainedRootPlacement>> {
-        if roster.contained().is_empty() {
-            return Some(Vec::new());
-        }
-        let source_coordinates = roster.source_coordinates()?;
-        let target_coordinates = target_facts.coordinates();
-        let target_bounds = target_facts.scene_bounds();
-        let last_offset = u64::try_from(roster.contained().len().checked_sub(1)?).ok()?;
-        first_z_order.checked_add(last_offset)?;
-
-        let mut stack_order: Vec<_> = (0..roster.contained().len()).collect();
-        stack_order.sort_by_key(|index| {
-            let sibling = &roster.contained()[*index];
-            ContainedStackKey::new(sibling.z_order(), sibling.floating())
-        });
-        let mut remapped_z = vec![0; roster.contained().len()];
-        for (offset, index) in stack_order.into_iter().enumerate() {
-            remapped_z[index] = first_z_order.checked_add(u64::try_from(offset).ok()?)?;
-        }
-
-        let minimum = crate::geometry::LogicalSize::new(0.0, 0.0).ok()?;
-        roster
-            .contained()
-            .iter()
-            .enumerate()
-            .map(|(index, sibling)| {
-                let desktop = source_coordinates
-                    .surface_rect_to_desktop(sibling.rect())
-                    .ok()?;
-                let target_local = target_coordinates.desktop_rect_to_surface(desktop).ok()?;
-                let rect =
-                    clamp_contained_rect(target_surface, target_bounds, target_local, minimum)
-                        .ok()?;
-                Some(ContainedRootPlacement::new(
-                    sibling.floating(),
-                    sibling.root(),
-                    rect,
-                    remapped_z[index],
-                ))
-            })
-            .collect()
-    }
-
-    fn apply_surface_roster_transaction(
-        &mut self,
-        input: InputSequence,
-        roster: &SurfaceRosterDisposition,
-        transaction: &WorkspaceTransaction,
-        selection: Option<CandidatePaneSelection>,
-        action_barrier: &BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>,
-        events: &mut Vec<WorkspaceEvent>,
-    ) -> Result<bool, EngineError> {
-        let mut candidate = self.workspace.clone();
-        let report = match transaction.apply(&mut candidate, &self.policy) {
-            Ok(report) => report,
-            Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
-                return Ok(false);
-            }
-            Err(source) => return Err(EngineError::Command { input, source }),
-        };
-        let mut changed = report.changed();
-        let mut outcomes = report.into_outcomes();
-        if let Some(selection) = selection {
-            let Some(source) =
-                Self::capture_surface_item_source(&candidate, selection.surface, selection.item)
-            else {
-                return Ok(false);
-            };
-            let selection_report =
-                match WorkspaceTransaction::from_commands([WorkspaceCommand::Select { source }])
-                    .apply(&mut candidate, &self.policy)
-                {
-                    Ok(report) => report,
-                    Err(TransactionError::Command { source, .. })
-                        if source.is_expected_rejection() =>
-                    {
-                        return Ok(false);
-                    }
-                    Err(source) => return Err(EngineError::Command { input, source }),
-                };
-            changed |= selection_report.changed();
-            outcomes.extend(selection_report.into_outcomes());
-        }
-        if candidate.surface(roster.surface()).is_some()
-            || self
-                .first_workspace_publication_mismatch(
-                    &candidate,
-                    Some(action_barrier),
-                    Some(roster.surface()),
-                )
-                .is_some()
-        {
-            return Ok(false);
-        }
-
-        self.workspace = candidate;
-        self.reconcile_viewport_focus_authority();
-        if changed {
-            self.advance_revision(input)?;
-            self.invalidate_scene();
-            events.extend(outcomes.into_iter().map(|outcome| {
-                WorkspaceEvent::new(
-                    input,
-                    self.version,
-                    WorkspaceEventKind::CommandCommitted(outcome),
-                )
-            }));
-        }
-        Ok(true)
+            .require_platform_provider(provider)
+            .err()
+            .map(|error| InputOutcome::PlatformProviderRejected { provider, error })
     }
 
     fn reduce_workspace_replacement(
         &mut self,
         input: InputSequence,
         workspace: &Workspace,
+        restored_identity_frontier: Option<PresentationIdentityFrontier>,
         application_base: &mut WorkspaceVersion,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -3017,6 +3738,8 @@ impl DockEngine {
         workspace
             .validate()
             .map_err(EngineError::InvalidWorkspace)?;
+        self.validate_workspace_replacement_identity_freshness(workspace)
+            .map_err(|source| EngineError::WorkspaceReplacementIdentityRetired { input, source })?;
         let before = self.version;
         let epoch = before
             .epoch()
@@ -3030,10 +3753,34 @@ impl DockEngine {
             .viewport
             .reconcile_workspace_epoch(epoch, &desired_surfaces)
             .map_err(|source| EngineError::Viewport { input, source })?;
+        let rebound_root_surfaces = reconciliation
+            .rebound()
+            .iter()
+            .filter_map(|(_, binding)| {
+                self.viewport
+                    .viewport(binding.surface())
+                    .filter(|record| {
+                        record.binding() == *binding && record.role() == ViewportRole::Root
+                    })
+                    .map(|_| binding.surface())
+            })
+            .collect::<BTreeSet<_>>();
+        match restored_identity_frontier {
+            Some(restored) => self
+                .presentation_identity
+                .merge_restored(workspace, restored),
+            None => self.presentation_identity.observe_workspace(workspace),
+        }
         self.workspace = workspace.clone();
         self.surface_recovery.clear();
+        self.root_recovery_anchors.clear();
+        self.bound_surface_recoveries.clear();
+        self.native_admission.clear();
+        self.issue_root_recovery_anchors(input, rebound_root_surfaces)?;
         self.viewport_focus.reconcile_workspace_replacement();
         self.version = WorkspaceVersion::new(epoch, WorkspaceRevision::default());
+        self.close.invalidate_stale(self.close_authority());
+        self.rebuild_presentation_requirements(input)?;
         *application_base = self.version;
         self.invalidate_transient(
             input,
@@ -3048,6 +3795,7 @@ impl DockEngine {
         Ok(InputOutcome::WorkspaceReplaced {
             before,
             after: self.version,
+            restored_identity_frontier,
             reconciliation,
         })
     }
@@ -3068,9 +3816,14 @@ impl DockEngine {
                 accepted_base,
             });
         }
-        let changed = self.policy != *policy;
+        let changed = !self.policy.has_same_rules(policy);
         if changed {
-            self.policy = policy.clone();
+            let policy_revision = self
+                .policy
+                .revision()
+                .checked_next()
+                .ok_or(EngineError::PolicyRevisionExhausted { input })?;
+            self.policy = policy.snapshot(policy_revision);
             self.advance_revision(input)?;
             self.invalidate_transient(
                 input,
@@ -3089,13 +3842,51 @@ impl DockEngine {
         })
     }
 
-    fn reduce_renderer_input(
+    fn reduce_presentation_config_replacement(
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        intent: &RendererIntent,
-        events: &mut Vec<WorkspaceEvent>,
+        accepted_base: WorkspaceVersion,
+        config: &DockPresentationConfig,
         interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != accepted_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base,
+            });
+        }
+        let changed = self.presentation_authority.presentation_config != *config;
+        if changed {
+            let revision = self
+                .presentation_authority
+                .presentation_config_revision
+                .checked_next()
+                .ok_or(EngineError::PresentationConfigRevisionExhausted { input })?;
+            self.presentation_authority.presentation_config = config.clone();
+            self.presentation_authority.presentation_config_revision = revision;
+            self.rebuild_presentation_requirements(input)?;
+            self.terminate_all_scroll_sessions_input(
+                input,
+                ScrollTerminationReason::PresentationConfigChanged,
+                interaction_events,
+            );
+            self.invalidate_transient(
+                input,
+                InteractionCancelReason::SceneUnavailable,
+                interaction_events,
+            )?;
+        }
+        Ok(InputOutcome::PresentationConfigReplaced {
+            changed,
+            revision: self.presentation_authority.presentation_config_revision,
+        })
+    }
+
+    fn reduce_versioned_interaction(
+        &mut self,
+        expected: WorkspaceVersion,
+        reduce: impl FnOnce(&mut Self) -> Result<InteractionOutcome, EngineError>,
     ) -> Result<InputOutcome, EngineError> {
         if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
@@ -3103,549 +3894,110 @@ impl DockEngine {
                 accepted_base: self.version,
             });
         }
-        let outcome = self.reduce_renderer_intent(input, intent, events, interaction_events)?;
+        let outcome = reduce(self)?;
         Ok(InputOutcome::InteractionProcessed {
             outcome,
             version: self.version,
         })
     }
 
-    fn advance_revision(&mut self, input: InputSequence) -> Result<(), EngineError> {
-        let revision = self
-            .version
-            .revision()
-            .checked_next()
-            .ok_or(EngineError::WorkspaceRevisionExhausted { input })?;
-        self.version = WorkspaceVersion::new(self.version.epoch(), revision);
-        Ok(())
-    }
-
-    fn invalidate_transient(
-        &mut self,
-        input: InputSequence,
-        reason: InteractionCancelReason,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<(), EngineError> {
-        self.viewport
-            .end_all_drag_routing()
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        self.invalidate_scene();
-        if let Some(status) = self.interaction.cancel_active() {
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::Cancelled { status, reason },
-            ));
-        }
-        Ok(())
-    }
-
-    fn platform_interaction_dependencies(&self) -> PlatformInteractionDependencies {
-        let mut dependencies = PlatformInteractionDependencies::default();
-        match self.interaction.status() {
-            InteractionStatus::Idle => {}
-            InteractionStatus::Armed { session } => {
-                if let Ok(drag) = self.interaction.armed_drag(session)
-                    && let Some(surface) = self.payload_surface(&drag.payload)
-                {
-                    dependencies.surfaces.insert(surface);
-                }
-                if let Ok(drag) = self.interaction.armed_drag(session)
-                    && let FrozenDragOrigin::Contained(origin) = drag.origin
-                {
-                    dependencies.surfaces.insert(origin.surface);
-                }
-            }
-            InteractionStatus::Dragging { session } => {
-                let Ok(drag) = self.interaction.active_drag(session) else {
-                    return dependencies;
-                };
-                if let Some(surface) = self.payload_surface(&drag.payload) {
-                    dependencies.surfaces.insert(surface);
-                }
-                if let Some(target) = &drag.target {
-                    match target {
-                        TargetAuthority::Local(local) => {
-                            dependencies.surfaces.insert(local.observer());
-                            if let Authority::Known(Some(target)) = local.target() {
-                                dependencies.surfaces.insert(target.surface());
-                            }
-                        }
-                        TargetAuthority::Routed(route) => {
-                            dependencies.routed = true;
-                            if let Authority::Known(Some(target)) = route.target() {
-                                dependencies.surfaces.insert(target.surface());
-                            }
-                        }
-                    }
-                } else if self.viewport.drag_source(drag.pointer).is_some() {
-                    dependencies.routed = true;
-                }
-                if let Some(Authority::Known(pointer)) = &drag.current_pointer {
-                    dependencies.surfaces.insert(pointer.surface());
-                }
-                if let Some(offer) = drag.contained_offer {
-                    dependencies.surfaces.insert(offer.anchor().surface());
-                }
-                if let Some(preview) = &drag.preview {
-                    match preview.public().visual() {
-                        PreviewVisual::Dock { surface, .. }
-                        | PreviewVisual::Contained { surface, .. } => {
-                            dependencies.surfaces.insert(*surface);
-                        }
-                        PreviewVisual::Native { .. } => dependencies.native = true,
-                    }
-                } else if matches!(drag.tear_off, Some(TearOffRequest::Native { .. }))
-                    && self.viewport.native_tear_off_capability().is_supported()
-                {
-                    dependencies.native = true;
-                }
-            }
-            InteractionStatus::Resizing { session } => {
-                if let Ok(resize) = self.interaction.active_resize(session)
-                    && let Some(surface) = self.root_surface(resize.split.root())
-                {
-                    dependencies.surfaces.insert(surface);
-                }
-            }
-            InteractionStatus::ContainedTransforming { session } => {
-                if let Ok(transform) = self.interaction.active_contained_transform(session) {
-                    dependencies.surfaces.insert(transform.surface);
-                }
-            }
-        }
-        dependencies
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn platform_interaction_cancel_reason(
-        &self,
-        dependencies: &PlatformInteractionDependencies,
-        version_before_actions: WorkspaceVersion,
-        transition: &crate::frame::ViewportFrameTransition,
-        previous_native: PlatformCapability,
-        previous_routing: PlatformCapability,
-        previous_release: PlatformCapability,
-    ) -> Option<InteractionCancelReason> {
-        if self.version != version_before_actions {
-            return Some(InteractionCancelReason::WorkspaceChanged);
-        }
-        for event in transition.registry_events() {
-            let (binding, destroyed) = match event {
-                crate::viewport_registry::RegistryEvent::Destroyed { binding } => (*binding, true),
-                crate::viewport_registry::RegistryEvent::FactsUnavailable { binding } => {
-                    (*binding, false)
-                }
-                crate::viewport_registry::RegistryEvent::Ready { .. }
-                | crate::viewport_registry::RegistryEvent::CloseRequested { .. }
-                | crate::viewport_registry::RegistryEvent::CloseRequestCleared { .. } => continue,
-            };
-            if !dependencies.surfaces.contains(&binding.surface()) {
-                continue;
-            }
-            if destroyed {
-                return Some(InteractionCancelReason::SurfaceClosed);
-            }
-            if dependencies.native {
-                return Some(InteractionCancelReason::NativePlacementUnavailable);
-            }
-            if dependencies.routed {
-                return Some(InteractionCancelReason::UnknownTargetAuthority);
-            }
-        }
-        let current_native = self.viewport.native_tear_off_capability();
-        if dependencies.native && previous_native.is_supported() && !current_native.is_supported() {
-            return Some(match current_native {
-                PlatformCapability::Unknown(_) => InteractionCancelReason::NativeCapabilityUnknown,
-                PlatformCapability::Unsupported(_) => {
-                    InteractionCancelReason::NativeCapabilityUnavailable
-                }
-                PlatformCapability::Supported => return None,
-            });
-        }
-        if dependencies.native && transition.work_areas_changed() {
-            return Some(InteractionCancelReason::NativePlacementUnavailable);
-        }
-        let current_routing = self.viewport.capabilities().cross_surface_routing();
-        if dependencies.routed && previous_routing.is_supported() && !current_routing.is_supported()
-        {
-            return Some(InteractionCancelReason::UnknownTargetAuthority);
-        }
-        let current_release = self.viewport.capabilities().authoritative_release();
-        if dependencies.routed && previous_release.is_supported() && !current_release.is_supported()
-        {
-            return Some(InteractionCancelReason::UnknownButtonState);
-        }
-        None
-    }
-
-    fn reduce_scene(
+    fn reduce_scene_close_input(
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        building: &BuildingScene,
-        coordinate_proofs: &BTreeMap<crate::ids::SurfaceId, CoordinateSnapshot>,
-        scene_published: &mut bool,
-        interaction_events: &mut Vec<InteractionEvent>,
+        scene: SurfaceSceneStamp,
+        target: CloseSceneTarget,
+        policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != self.version {
-            return Ok(InputOutcome::StaleRejected {
-                expected,
-                accepted_base: self.version,
-            });
-        }
-        if *scene_published {
-            return Ok(InputOutcome::SceneRejected {
-                error: SceneBuildError::AlreadyPublishedInBoundary,
-            });
-        }
-        let generation = self
-            .last_scene_generation
-            .checked_next()
-            .ok_or(EngineError::SceneGenerationExhausted { input })?;
-        let stamp = SceneStamp::new(self.version, generation);
-        let sealed = match building.clone().seal(stamp, &self.workspace, &self.policy) {
-            Ok(scene) => scene,
-            Err(error) => {
-                self.invalidate_transient(
-                    input,
-                    InteractionCancelReason::SceneUnavailable,
-                    interaction_events,
-                )?;
-                return Ok(InputOutcome::SceneRejected { error });
-            }
-        };
-        let (ready_surfaces, bootstrap_surfaces) =
-            sealed
-                .surfaces()
-                .fold(
-                    (0_usize, 0_usize),
-                    |(ready, bootstrap), (_, surface)| match surface {
-                        SurfaceScene::Ready(_) => (ready + 1, bootstrap),
-                        SurfaceScene::Bootstrap(_) => (ready, bootstrap + 1),
-                    },
-                );
-        self.scene_coordinate_authority = sealed
-            .surfaces()
-            .filter_map(|(surface, state)| {
-                matches!(state, SurfaceScene::Ready(_))
-                    .then(|| {
-                        let captured = coordinate_proofs.get(surface).copied()?;
-                        let current = self
-                            .viewport
-                            .viewport(*surface)
-                            .and_then(crate::viewport_registry::ViewportRecord::coordinates)?;
-                        SurfaceSceneCoordinateAuthority::coordinates_match(captured, current)
-                            .then_some((
-                                *surface,
-                                SurfaceSceneCoordinateAuthority::new(stamp, captured),
-                            ))
-                    })
-                    .flatten()
-            })
-            .collect();
-        self.scene = Some(sealed);
-        self.last_scene_generation = generation;
-        *scene_published = true;
-        self.refresh_drag_preview(input, interaction_events)?;
-        self.refresh_contained_transform_preview(input, interaction_events)?;
-        Ok(InputOutcome::ScenePublished {
-            stamp,
-            ready_surfaces,
-            bootstrap_surfaces,
+        self.reduce_versioned_interaction(expected, |engine| {
+            engine.request_close_plan(input, scene, target, CloseActivation::Semantic, policy)
         })
     }
 
-    fn reduce_renderer_intent(
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_splitter_adjustment_input(
         &mut self,
         input: InputSequence,
-        intent: &RendererIntent,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+        policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        match intent {
-            RendererIntent::ArmDragFrom { .. }
-            | RendererIntent::UpdateDragObservation { .. }
-            | RendererIntent::ReleaseDragObservation { .. } => {
-                self.reduce_core_drag_renderer_intent(input, intent, events, interaction_events)
-            }
-            RendererIntent::ArmDrag {
-                pointer,
-                button,
-                payload,
-            } => self.arm_drag(input, *pointer, *button, payload, interaction_events),
-            RendererIntent::BeginDrag {
-                session,
-                pointer,
-                button,
-            } => self.begin_drag(input, *session, *pointer, *button),
-            RendererIntent::UpdateDrag {
-                session,
-                target,
-                tear_off,
-            } => self.update_drag(
+    ) -> Result<InputOutcome, EngineError> {
+        self.reduce_versioned_interaction(expected, |engine| {
+            engine.adjust_splitter_resize(
                 input,
-                *session,
-                target,
-                tear_off.as_ref(),
+                scene,
+                splitter,
+                delta,
+                policy,
+                events,
                 interaction_events,
-            ),
-            RendererIntent::AcknowledgePreview(acknowledgement) => {
-                match self.interaction.acknowledge_preview(acknowledgement) {
+            )
+        })
+    }
+
+    fn reduce_contained_placement_input(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        placement: ContainedPlacementInput,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        self.reduce_versioned_interaction(expected, |engine| {
+            engine.apply_contained_placement(input, placement, policy, events, interaction_events)
+        })
+    }
+
+    fn reduce_preview_acknowledgement(
+        &mut self,
+        expected: WorkspaceVersion,
+        acknowledgement: &PaintAcknowledgement,
+    ) -> Result<InputOutcome, EngineError> {
+        self.reduce_versioned_interaction(expected, |engine| {
+            Ok(
+                match engine.interaction.acknowledge_preview(acknowledgement) {
                     Ok((session, changed)) => {
-                        Ok(InteractionOutcome::PreviewAcknowledged { session, changed })
+                        InteractionOutcome::PreviewAcknowledged { session, changed }
                     }
-                    Err(error) => Ok(InteractionOutcome::Rejected(error)),
-                }
-            }
-            RendererIntent::ReleaseDrag {
-                session,
-                pointer,
-                button,
-                button_state,
-                target,
-                tear_off,
-            } => self.release_drag(
-                input,
-                DragReleaseInput {
-                    session: *session,
-                    pointer: *pointer,
-                    button: *button,
-                    button_state,
-                    target,
-                    tear_off: tear_off.as_ref(),
+                    Err(error) => InteractionOutcome::Rejected(error),
                 },
-                events,
-                interaction_events,
-            ),
-            RendererIntent::CancelDrag { session, reason } => {
-                self.cancel_drag(input, *session, *reason, interaction_events)
-            }
-            RendererIntent::BeginResize {
-                pointer,
-                button,
-                split,
-            } => self.begin_resize(input, *pointer, *button, split, interaction_events),
-            RendererIntent::UpdateResize { session, weights } => {
-                self.update_resize(input, *session, weights)
-            }
-            RendererIntent::ReleaseResize {
-                session,
-                pointer,
-                button,
-                button_state,
-            } => self.release_resize(
-                input,
-                *session,
-                *pointer,
-                *button,
-                *button_state,
-                events,
-                interaction_events,
-            ),
-            RendererIntent::CancelResize { session, reason } => {
-                Ok(self.cancel_resize(input, *session, *reason, interaction_events))
-            }
-            RendererIntent::ApplyContainedPlacement { .. }
-            | RendererIntent::BeginContainedTransform { .. }
-            | RendererIntent::UpdateContainedTransform { .. }
-            | RendererIntent::AcknowledgeContainedTransformPreview(_)
-            | RendererIntent::ReleaseContainedTransform { .. }
-            | RendererIntent::CancelContainedTransform { .. } => {
-                self.reduce_contained_renderer_intent(input, intent, events, interaction_events)
-            }
-        }
+            )
+        })
     }
 
-    fn reduce_core_drag_renderer_intent(
+    fn reduce_contained_transform_preview_acknowledgement(
         &mut self,
-        input: InputSequence,
-        intent: &RendererIntent,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        match intent {
-            RendererIntent::ArmDragFrom {
-                pointer,
-                button,
-                payload,
-                origin,
-            } => self.arm_drag_from(
-                input,
-                *pointer,
-                *button,
-                payload,
-                *origin,
-                interaction_events,
-            ),
-            RendererIntent::UpdateDragObservation {
-                session,
-                target,
-                current_pointer,
-                contained_offer,
-            } => self.update_drag_observation(
-                input,
-                *session,
-                target,
-                current_pointer,
-                *contained_offer,
-                interaction_events,
-            ),
-            RendererIntent::ReleaseDragObservation {
-                session,
-                pointer,
-                button,
-                button_state,
-                target,
-                current_pointer,
-                contained_offer,
-            } => self.release_drag_observation(
-                input,
-                ObservedDragReleaseInput {
-                    session: *session,
-                    pointer: *pointer,
-                    button: *button,
-                    button_state,
-                    target,
-                    current_pointer,
-                    contained_offer: *contained_offer,
-                },
-                events,
-                interaction_events,
-            ),
-            RendererIntent::ArmDrag { .. }
-            | RendererIntent::BeginDrag { .. }
-            | RendererIntent::UpdateDrag { .. }
-            | RendererIntent::AcknowledgePreview(_)
-            | RendererIntent::ReleaseDrag { .. }
-            | RendererIntent::CancelDrag { .. }
-            | RendererIntent::BeginResize { .. }
-            | RendererIntent::UpdateResize { .. }
-            | RendererIntent::ReleaseResize { .. }
-            | RendererIntent::CancelResize { .. }
-            | RendererIntent::ApplyContainedPlacement { .. }
-            | RendererIntent::BeginContainedTransform { .. }
-            | RendererIntent::UpdateContainedTransform { .. }
-            | RendererIntent::AcknowledgeContainedTransformPreview(_)
-            | RendererIntent::ReleaseContainedTransform { .. }
-            | RendererIntent::CancelContainedTransform { .. } => Err(EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            }),
-        }
-    }
-
-    fn reduce_contained_renderer_intent(
-        &mut self,
-        input: InputSequence,
-        intent: &RendererIntent,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        match intent {
-            RendererIntent::ApplyContainedPlacement {
-                root,
-                floating,
-                expected_rect,
-                placement,
-            } => self.apply_contained_placement(
-                input,
-                ContainedPlacementInput {
-                    root: *root,
-                    floating: *floating,
-                    expected_rect: *expected_rect,
-                    placement: *placement,
-                },
-                events,
-                interaction_events,
-            ),
-            RendererIntent::BeginContainedTransform {
-                surface,
-                root,
-                floating,
-                pointer,
-                button,
-                initial_pointer,
-                kind,
-                minimum_size,
-            } => self.begin_contained_transform(
-                input,
-                ContainedTransformBeginInput {
-                    surface: *surface,
-                    root: *root,
-                    floating: *floating,
-                    pointer: *pointer,
-                    button: *button,
-                    initial_pointer: *initial_pointer,
-                    kind: *kind,
-                    minimum_size: *minimum_size,
-                },
-                interaction_events,
-            ),
-            RendererIntent::UpdateContainedTransform {
-                session,
-                current_pointer,
-            } => self.update_contained_transform(
-                input,
-                *session,
-                *current_pointer,
-                interaction_events,
-            ),
-            RendererIntent::AcknowledgeContainedTransformPreview(acknowledgement) => {
-                match self
+        expected: WorkspaceVersion,
+        acknowledgement: ContainedTransformPaintAcknowledgement,
+    ) -> Result<InputOutcome, EngineError> {
+        self.reduce_versioned_interaction(expected, |engine| {
+            Ok(
+                match engine
                     .interaction
-                    .acknowledge_contained_transform_preview(*acknowledgement)
+                    .acknowledge_contained_transform_preview(acknowledgement)
                 {
                     Ok((session, changed)) => {
-                        Ok(InteractionOutcome::ContainedTransformPreviewAcknowledged {
+                        InteractionOutcome::ContainedTransformPreviewAcknowledged {
                             session,
                             changed,
-                        })
+                        }
                     }
-                    Err(error) => Ok(InteractionOutcome::Rejected(error)),
-                }
-            }
-            RendererIntent::ReleaseContainedTransform {
-                session,
-                pointer,
-                button,
-                button_state,
-            } => self.release_contained_transform(
-                input,
-                ContainedTransformReleaseInput {
-                    session: *session,
-                    pointer: *pointer,
-                    button: *button,
-                    button_state,
+                    Err(error) => InteractionOutcome::Rejected(error),
                 },
-                events,
-                interaction_events,
-            ),
-            RendererIntent::CancelContainedTransform { session, reason } => {
-                Ok(self.cancel_contained_transform(input, *session, *reason, interaction_events))
-            }
-            RendererIntent::ArmDragFrom { .. }
-            | RendererIntent::ArmDrag { .. }
-            | RendererIntent::BeginDrag { .. }
-            | RendererIntent::UpdateDrag { .. }
-            | RendererIntent::UpdateDragObservation { .. }
-            | RendererIntent::AcknowledgePreview(_)
-            | RendererIntent::ReleaseDrag { .. }
-            | RendererIntent::ReleaseDragObservation { .. }
-            | RendererIntent::CancelDrag { .. }
-            | RendererIntent::BeginResize { .. }
-            | RendererIntent::UpdateResize { .. }
-            | RendererIntent::ReleaseResize { .. }
-            | RendererIntent::CancelResize { .. } => {
-                unreachable!("non-contained renderer intent reached the contained intent reducer")
-            }
-        }
+            )
+        })
     }
 
     fn apply_contained_placement(
         &mut self,
         input: InputSequence,
         update: ContainedPlacementInput,
+        policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
@@ -3653,7 +4005,7 @@ impl DockEngine {
             Ok(command) => command,
             Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
-        match self.apply_interaction_command(input, &command, events)? {
+        match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
             CommandApplication::Applied { outcome, changed } => {
                 if changed {
                     self.invalidate_transient(
@@ -3691,233 +4043,6 @@ impl DockEngine {
         })
     }
 
-    fn begin_contained_transform(
-        &mut self,
-        input: InputSequence,
-        begin: ContainedTransformBeginInput,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let Some(record) = self.workspace.contained_floating(begin.floating).copied() else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(
-                    crate::error::CommandError::MissingFloating {
-                        floating: begin.floating,
-                    },
-                ),
-            ));
-        };
-        let validation = WorkspaceCommand::UpdateContainedRect {
-            surface: begin.surface,
-            root: begin.root,
-            floating: begin.floating,
-            expected_rect: record.rect,
-            rect: record.rect,
-        };
-        if let CommandApplication::Rejected(error) = self.preflight_command(input, &validation)? {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(error),
-            ));
-        }
-        let placement =
-            match self.contained_placement(begin.surface, record.rect, begin.minimum_size) {
-                Ok(placement) => placement,
-                Err(error) => {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::ContainedPlacementUnavailable(error),
-                    ));
-                }
-            };
-        if placement.clamped_rect() != record.rect {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ContainedTransformInitialRectUnavailable,
-            ));
-        }
-        let (session, replaced) = self
-            .interaction
-            .begin_contained_transform(
-                self.version.epoch(),
-                ContainedTransformStart {
-                    pointer: begin.pointer,
-                    button: begin.button,
-                    surface: begin.surface,
-                    root: begin.root,
-                    floating: begin.floating,
-                    source_rect: record.rect,
-                    initial_pointer: begin.initial_pointer,
-                    kind: begin.kind,
-                    minimum_size: begin.minimum_size,
-                },
-            )
-            .map_err(|source| EngineError::Interaction { input, source })?;
-        if let Some(status) = replaced {
-            self.viewport
-                .end_all_drag_routing()
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::Cancelled {
-                    status,
-                    reason: InteractionCancelReason::ReplacedByNewGesture,
-                },
-            ));
-        }
-        Ok(InteractionOutcome::ContainedTransformBegan { session, replaced })
-    }
-
-    fn update_contained_transform(
-        &mut self,
-        input: InputSequence,
-        session: ContainedTransformSessionId,
-        current_pointer: crate::geometry::LogicalPoint,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let transform = match self.interaction.active_contained_transform(session) {
-            Ok(transform) => transform.clone(),
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        let placement =
-            match self.resolve_contained_transform_placement(&transform, current_pointer) {
-                Ok(placement) => placement,
-                Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-            };
-        self.interaction
-            .set_contained_transform_pointer(session, current_pointer)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?;
-        let (preview, changed) = self
-            .interaction
-            .publish_contained_transform_preview(session, placement.scene(), placement)
-            .map_err(|source| EngineError::Interaction { input, source })?;
-        if changed {
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::ContainedTransformPreviewPublished { preview },
-            ));
-        }
-        Ok(InteractionOutcome::ContainedTransformPreviewUpdated { session, preview })
-    }
-
-    fn release_contained_transform(
-        &mut self,
-        input: InputSequence,
-        release: ContainedTransformReleaseInput<'_>,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.validate_contained_transform_release_binding(
-            release.session,
-            release.pointer,
-            release.button,
-        ) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        match release.button_state {
-            Authority::Known(PointerButtonState::Pressed) => {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::ButtonStillPressed,
-                ));
-            }
-            Authority::Unknown(_) => {
-                return Ok(self.cancel_contained_transform(
-                    input,
-                    release.session,
-                    InteractionCancelReason::UnknownButtonState,
-                    interaction_events,
-                ));
-            }
-            Authority::Known(PointerButtonState::Released) => {}
-        }
-        let transform = match self.interaction.take_contained_transform_for_release(
-            release.session,
-            release.pointer,
-            release.button,
-        ) {
-            Ok(transform) => transform,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        let Some(preview) = transform.preview.as_ref() else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PreviewMissing,
-            ));
-        };
-        if !preview.painted() {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PreviewNotPainted,
-            ));
-        }
-        let placement = match self
-            .resolve_contained_transform_placement(&transform, transform.current_pointer)
-        {
-            Ok(placement) => placement,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        if preview.placement() != placement || preview.public().rect() != placement.clamped_rect() {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ContainedTransformChanged,
-            ));
-        }
-        let command = match self.checked_contained_placement_command(ContainedPlacementInput {
-            root: transform.root,
-            floating: transform.floating,
-            expected_rect: transform.source_rect,
-            placement,
-        }) {
-            Ok(command) => command,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        match self.apply_interaction_command(input, &command, events)? {
-            CommandApplication::Applied { outcome, changed } => {
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::ContainedTransformDelivered {
-                        session: release.session,
-                    },
-                ));
-                Ok(InteractionOutcome::ContainedTransformDelivered {
-                    session: release.session,
-                    outcome,
-                    changed,
-                })
-            }
-            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(error),
-            )),
-        }
-    }
-
-    fn validate_contained_transform_release_binding(
-        &self,
-        session: ContainedTransformSessionId,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-    ) -> Result<(), InteractionRejection> {
-        let transform = self
-            .interaction
-            .active_contained_transform(session)
-            .map_err(|error| {
-                if matches!(
-                    error,
-                    InteractionRejection::ContainedTransformSessionConsumed { .. }
-                ) {
-                    InteractionRejection::DuplicateContainedTransformRelease { session }
-                } else {
-                    error
-                }
-            })?;
-        if transform.pointer != pointer {
-            return Err(InteractionRejection::PointerMismatch);
-        }
-        if transform.button != button {
-            return Err(InteractionRejection::ButtonMismatch);
-        }
-        Ok(())
-    }
-
     fn cancel_contained_transform(
         &mut self,
         input: InputSequence,
@@ -3938,101 +4063,6 @@ impl DockEngine {
         }
     }
 
-    fn arm_drag(
-        &mut self,
-        input: InputSequence,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        payload: &MovePayload,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let prepared = match self.prepare_drag_source(payload) {
-            Ok(prepared) => prepared,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        self.arm_validated_drag(
-            input,
-            pointer,
-            button,
-            payload,
-            prepared,
-            DragObservationProtocol::Legacy,
-            FrozenDragOrigin::Workspace,
-            interaction_events,
-        )
-    }
-
-    fn arm_drag_from(
-        &mut self,
-        input: InputSequence,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        payload: &MovePayload,
-        origin: DragOrigin,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let prepared = match self.prepare_drag_source(payload) {
-            Ok(prepared) => prepared,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        let origin = match self.freeze_drag_origin(origin, prepared.complete_root.as_ref()) {
-            Ok(origin) => origin,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        self.arm_validated_drag(
-            input,
-            pointer,
-            button,
-            payload,
-            prepared,
-            DragObservationProtocol::CoreOwned,
-            origin,
-            interaction_events,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn arm_validated_drag(
-        &mut self,
-        input: InputSequence,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        payload: &MovePayload,
-        prepared: PreparedDragSource,
-        protocol: DragObservationProtocol,
-        origin: FrozenDragOrigin,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let (session, replaced) = self
-            .interaction
-            .arm_drag(DragArmStart {
-                epoch: self.version.epoch(),
-                pointer,
-                button,
-                payload: payload.clone(),
-                complete_root: prepared.complete_root,
-                partial_detachable: prepared.partial_detachable,
-                protocol,
-                origin,
-                source_validated_at: self.version,
-            })
-            .map_err(|source| EngineError::Interaction { input, source })?;
-        if let Some(status) = replaced {
-            self.viewport
-                .end_all_drag_routing()
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::Cancelled {
-                    status,
-                    reason: InteractionCancelReason::ReplacedByNewGesture,
-                },
-            ));
-        }
-        Ok(InteractionOutcome::DragArmed { session, replaced })
-    }
-
     fn prepare_drag_source(
         &self,
         payload: &MovePayload,
@@ -4044,150 +4074,37 @@ impl DockEngine {
             .map_err(InteractionRejection::CommandRejected)?;
         let partial_detachable =
             complete_root.is_some() || self.partial_payload_is_detachable(payload);
+        let source_surface =
+            self.payload_surface(payload)
+                .ok_or(InteractionRejection::CommandRejected(
+                    CommandError::Invariant {
+                        stage: "freeze drag source surface",
+                    },
+                ))?;
         Ok(PreparedDragSource {
+            source_surface,
             complete_root,
             partial_detachable,
         })
     }
 
-    fn freeze_drag_origin(
+    #[cfg(test)]
+    fn native_create_reserves_root(&self, root: crate::ids::RootId) -> bool {
+        self.viewport
+            .native_create_sagas()
+            .any(|(_, saga)| saga.prepared().proposal().root() == root)
+    }
+
+    fn native_create_reserves_floating(
         &self,
-        origin: DragOrigin,
-        complete_root: Option<&NodeSource>,
-    ) -> Result<FrozenDragOrigin, InteractionRejection> {
-        let DragOrigin::Contained(origin) = origin else {
-            return Ok(FrozenDragOrigin::Workspace);
-        };
-        let Some(source) = complete_root else {
-            return Err(InteractionRejection::ContainedDragOriginMismatch);
-        };
-        let surface = origin.initial_pointer().surface();
-        if source.root() != origin.root()
-            || self.workspace.presentation_for_root(origin.root())
-                != Some(crate::RootPresentationOwner::Contained {
-                    surface,
-                    floating: origin.floating(),
-                })
-        {
-            return Err(InteractionRejection::ContainedDragOriginMismatch);
-        }
-        let Some(record) = self.workspace.contained_floating(origin.floating()) else {
-            return Err(InteractionRejection::ContainedDragOriginMismatch);
-        };
-        if record.root != origin.root() || record.surface != surface {
-            return Err(InteractionRejection::ContainedDragOriginMismatch);
-        }
-        let placement = self
-            .contained_placement(surface, record.rect, origin.minimum_size())
-            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
-        if placement.clamped_rect() != record.rect {
-            return Err(InteractionRejection::ContainedDragOriginMismatch);
-        }
-        Ok(FrozenDragOrigin::Contained(FrozenContainedDragOrigin {
-            surface,
-            root: origin.root(),
-            floating: origin.floating(),
-            source_rect: record.rect,
-            initial_pointer: origin.initial_pointer().position(),
-            minimum_size: origin.minimum_size(),
-        }))
+        floating: crate::ids::FloatingPresentationId,
+    ) -> bool {
+        self.viewport
+            .native_create_sagas()
+            .any(|(_, saga)| saga.prepared().proposal().converted_main().floating() == floating)
     }
 
-    fn begin_drag(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.interaction.begin_drag(session, pointer, button) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        let payload = self
-            .interaction
-            .active_drag(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?
-            .payload
-            .clone();
-        if let Some(surface) = self.payload_surface(&payload) {
-            let _ = self
-                .viewport
-                .begin_drag_routing(pointer, surface)
-                .map_err(|source| EngineError::Viewport { input, source })?;
-        }
-        Ok(InteractionOutcome::DragBegan { session })
-    }
-
-    fn update_drag(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        target: &TargetAuthority,
-        tear_off: Option<&TearOffRequest>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) =
-            self.interaction
-                .set_drag_observation(session, target.clone(), tear_off.cloned())
-        {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        let (payload, pointer) = {
-            let drag =
-                self.interaction
-                    .active_drag(session)
-                    .map_err(|_| EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    })?;
-            (drag.payload.clone(), drag.pointer)
-        };
-        let evaluation =
-            self.resolve_preview_evaluation(input, session, pointer, &payload, target, tear_off)?;
-        self.apply_preview_evaluation(input, session, evaluation, interaction_events)
-    }
-
-    fn update_drag_observation(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        target: &TargetAuthority,
-        current_pointer: &Authority<SurfacePointer>,
-        contained_offer: Option<ContainedPresentationOffer>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.interaction.set_core_drag_observation(
-            session,
-            target.clone(),
-            *current_pointer,
-            contained_offer,
-        ) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        if !self.core_drag_source_is_current(session, input)? {
-            return self.cancel_drag(
-                input,
-                session,
-                InteractionCancelReason::SourceVanished,
-                interaction_events,
-            );
-        }
-        let drag = self
-            .interaction
-            .active_drag(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?;
-        let evaluation =
-            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
-        self.apply_preview_evaluation(input, session, evaluation, interaction_events)
-    }
-
-    fn core_drag_source_is_current(
+    fn drag_source_is_current(
         &mut self,
         session: crate::interaction::DragSessionId,
         input: InputSequence,
@@ -4206,7 +4123,7 @@ impl DockEngine {
             (
                 drag.payload.clone(),
                 drag.complete_root.clone(),
-                drag.origin,
+                drag.origin.clone(),
             )
         };
         let Ok(prepared) = self.prepare_drag_source(&payload) else {
@@ -4227,6 +4144,48 @@ impl DockEngine {
         Ok(valid)
     }
 
+    fn drag_source_presentation_allows_targeting(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+    ) -> bool {
+        if !matches!(drag.origin, FrozenDragOrigin::Workspace) {
+            return true;
+        }
+        let surface = drag.source_surface;
+        let captured_coordinates = drag.continuation.as_ref().and_then(|continuation| {
+            match (&continuation.session, &continuation.draft.source) {
+                (
+                    SceneGestureSession::Drag(session),
+                    SceneGestureContinuationSource::Drag {
+                        source_surface,
+                        coordinates,
+                        ..
+                    },
+                ) if *session == drag.session && *source_surface == surface => Some(*coordinates),
+                _ => None,
+            }
+        });
+        if captured_coordinates.is_some_and(|coordinates| {
+            Self::coordinate_capture_matches_current(
+                coordinates,
+                self.viewport.viewport(surface),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+        }) {
+            return true;
+        }
+        self.presentation_authority
+            .scene
+            .interaction_projection(surface)
+            .is_some_and(|projection| {
+                Self::coordinate_capture_matches_current(
+                    projection.output().coordinate_capture(),
+                    self.viewport.viewport(surface),
+                    self.viewport.surface_coordinate_authority(surface),
+                )
+            })
+    }
+
     fn frozen_drag_origin_is_current(&self, origin: FrozenDragOrigin) -> bool {
         let FrozenDragOrigin::Contained(origin) = origin else {
             return true;
@@ -4240,71 +4199,8 @@ impl DockEngine {
                 .workspace
                 .contained_floating(origin.floating)
                 .is_some_and(|record| {
-                    record.root == origin.root
-                        && record.surface == origin.surface
-                        && record.rect == origin.source_rect
+                    record.root == origin.root && record.rect == origin.source_rect
                 })
-    }
-
-    fn resolve_core_preview_evaluation(
-        &self,
-        input: InputSequence,
-        drag: &crate::interaction::ActiveDrag,
-        target: &TargetAuthority,
-        current_pointer: &Authority<SurfacePointer>,
-    ) -> Result<PreviewEvaluation, EngineError> {
-        let (target, current_pointer, local) =
-            match self.normalize_core_drag_observation(drag.pointer, target, current_pointer) {
-                Ok(observation) => observation,
-                Err(reason) => {
-                    return Ok(PreviewEvaluation::without_affordance(
-                        PreviewDecision::Cancel(reason),
-                    ));
-                }
-            };
-        let mut evaluation = self.resolve_preview_evaluation(
-            input,
-            drag.session,
-            drag.pointer,
-            &drag.payload,
-            &target,
-            None,
-        )?;
-        if !local
-            || !matches!(
-                evaluation.decision,
-                PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
-            )
-        {
-            return Ok(evaluation);
-        }
-        evaluation.decision = match self.core_contained_candidate(drag, current_pointer) {
-            CoreContainedCandidate::None => evaluation.decision,
-            CoreContainedCandidate::Request(request) => {
-                let TearOffRequest::Contained(proposal) = &request else {
-                    return Err(EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    });
-                };
-                let command = self.contained_presentation_command(
-                    &drag.payload,
-                    *proposal,
-                    drag.complete_root.clone(),
-                );
-                if let Some(mutation) = self.valid_core_contained_command(drag, *proposal, &command)
-                {
-                    Self::contained_preview_decision(*proposal, &request, false, command, mutation)
-                } else {
-                    PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
-                }
-            }
-            CoreContainedCandidate::Rejected => {
-                PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
-            }
-            CoreContainedCandidate::Cancel(reason) => PreviewDecision::Cancel(reason),
-        };
-        Ok(evaluation)
     }
 
     fn valid_core_contained_command(
@@ -4312,23 +4208,24 @@ impl DockEngine {
         drag: &crate::interaction::ActiveDrag,
         proposal: crate::intent::ContainedTearOffProposal,
         command: &WorkspaceCommand,
-    ) -> Option<ContainedMutationKind> {
+    ) -> bool {
         if self
             .validate_contained_placement(proposal.placement())
             .is_err()
         {
-            return None;
+            return false;
         }
         match command {
-            WorkspaceCommand::UpdateContainedRect {
-                surface,
-                root,
+            WorkspaceCommand::UpdateContainedPresentation {
+                source,
                 floating,
                 expected_rect,
+                expected_roster,
                 rect,
+                position,
             } => {
-                let FrozenDragOrigin::Contained(origin) = drag.origin else {
-                    return None;
+                let FrozenDragOrigin::Contained(origin) = &drag.origin else {
+                    return false;
                 };
                 let source_matches = drag.complete_root.as_ref().is_some_and(|source| {
                     source.root() == origin.root
@@ -4350,63 +4247,58 @@ impl DockEngine {
                     .workspace
                     .contained_floating(origin.floating)
                     .is_some_and(|record| {
-                        record.root == origin.root
-                            && record.surface == origin.surface
-                            && record.rect == origin.source_rect
-                            && record.z_order == proposal.z_order()
+                        record.root == origin.root && record.rect == origin.source_rect
                     });
-                (drag.source_validated_at == self.version
+                drag.source_validated_at == self.version
                     && source_matches
                     && owner_matches
                     && record_matches
                     && proposal.surface() == origin.surface
                     && proposal.root() == origin.root
                     && proposal.floating() == origin.floating
-                    && *surface == origin.surface
-                    && *root == origin.root
+                    && drag.complete_root.as_ref() == Some(source)
                     && *floating == origin.floating
                     && *expected_rect == origin.source_rect
-                    && *rect == proposal.rect())
-                .then_some(ContainedMutationKind::ExistingRectUpdate)
+                    && expected_roster == &origin.source_roster
+                    && *rect == proposal.rect()
+                    && *position == proposal.position()
             }
             WorkspaceCommand::CreateContainedRoot {
                 surface,
                 root,
                 floating,
+                rect,
+                position,
                 content: RootContent::Move(payload),
-                ..
-            } => (self
-                .policy
-                .check_tear_off(TearOffPresentation::Contained)
-                .is_ok()
-                && drag.complete_root.is_none()
-                && payload == &drag.payload
-                && *surface == proposal.surface()
-                && *root == proposal.root()
-                && *floating == proposal.floating()
-                && self.workspace.surface(*surface).is_some()
-                && self.workspace.root(*root).is_none()
-                && self.workspace.contained_floating(*floating).is_none()
-                && drag.partial_detachable)
-                .then_some(ContainedMutationKind::PresentationChange),
-            WorkspaceCommand::RehomeRoot { source, target } => (self
-                .policy
-                .check_tear_off(TearOffPresentation::Contained)
-                .is_ok()
-                && drag.complete_root.as_ref() == Some(source)
-                && self.core_contained_rehome_is_valid(source, *target, proposal))
-            .then_some(ContainedMutationKind::PresentationChange),
+            } => {
+                drag.complete_root.is_none()
+                    && payload == &drag.payload
+                    && *surface == proposal.surface()
+                    && *root == proposal.root()
+                    && *floating == proposal.floating()
+                    && *rect == proposal.rect()
+                    && *position == proposal.position()
+                    && self.workspace.surface(*surface).is_some()
+                    && self.workspace.root(*root).is_none()
+                    && self.workspace.contained_floating(*floating).is_none()
+                    && drag.partial_detachable
+            }
+            WorkspaceCommand::RehomeRoot { source, target } => {
+                drag.complete_root.as_ref() == Some(source)
+                    && self.core_contained_rehome_is_valid(source, *target, proposal)
+            }
             WorkspaceCommand::CreateContainedRoot { .. }
+            | WorkspaceCommand::UpdateContainedRect { .. }
             | WorkspaceCommand::Select { .. }
             | WorkspaceCommand::Reorder { .. }
             | WorkspaceCommand::Open { .. }
-            | WorkspaceCommand::Close { .. }
-            | WorkspaceCommand::CloseRoot { .. }
             | WorkspaceCommand::Move { .. }
-            | WorkspaceCommand::ResizeSplit { .. }
+            | WorkspaceCommand::ResizeSplits { .. }
             | WorkspaceCommand::CreateSurfaceRoot { .. }
+            | WorkspaceCommand::InstallMainRoot { .. }
+            | WorkspaceCommand::PromoteContained { .. }
             | WorkspaceCommand::RaiseContained { .. }
-            | WorkspaceCommand::RemoveEmptyRoot { .. } => None,
+            | WorkspaceCommand::RemoveEmptyRoot { .. } => false,
         }
     }
 
@@ -4435,7 +4327,7 @@ impl DockEngine {
             surface,
             floating,
             rect,
-            z_order,
+            position,
         } = target
         else {
             return false;
@@ -4444,7 +4336,7 @@ impl DockEngine {
             || surface != proposal.surface()
             || floating != proposal.floating()
             || rect != proposal.rect()
-            || z_order != proposal.z_order()
+            || position != proposal.position()
             || self.workspace.surface(surface).is_none()
         {
             return false;
@@ -4453,11 +4345,7 @@ impl DockEngine {
             Some(crate::RootPresentationOwner::Main {
                 surface: source_surface,
             }) => {
-                source_surface != surface
-                    && self
-                        .workspace
-                        .surface(source_surface)
-                        .is_some_and(|presentation| presentation.contained.is_empty())
+                self.workspace.surface(source_surface).is_some()
                     && self.workspace.contained_floating(floating).is_none()
             }
             Some(crate::RootPresentationOwner::Contained {
@@ -4469,41 +4357,9 @@ impl DockEngine {
                         || self
                             .workspace
                             .contained_floating(floating)
-                            .is_some_and(|record| record.rect == rect && record.z_order == z_order))
+                            .is_some_and(|record| record.rect == rect))
             }
             None => false,
-        }
-    }
-
-    fn normalize_core_drag_observation(
-        &self,
-        pointer: crate::intent::PointerId,
-        target: &TargetAuthority,
-        current_pointer: &Authority<SurfacePointer>,
-    ) -> Result<(TargetAuthority, SurfacePointer, bool), InteractionCancelReason> {
-        let Authority::Known(current_pointer) = current_pointer else {
-            return Err(InteractionCancelReason::UnknownTargetAuthority);
-        };
-        if self.workspace.surface(current_pointer.surface()).is_none() {
-            return Err(InteractionCancelReason::UnknownTargetAuthority);
-        }
-        let (observed_target, routed) = self.target_observation(pointer, target)?;
-        match observed_target {
-            Authority::Unknown(_) => Err(InteractionCancelReason::UnknownTargetAuthority),
-            Authority::Known(Some(observed)) if observed != current_pointer => {
-                Err(InteractionCancelReason::UnknownTargetAuthority)
-            }
-            Authority::Known(Some(_) | None) => match target {
-                TargetAuthority::Local(local) if current_pointer.surface() == local.observer() => {
-                    Ok((target.clone(), *current_pointer, true))
-                }
-                TargetAuthority::Routed(_) if routed => {
-                    Ok((target.clone(), *current_pointer, false))
-                }
-                TargetAuthority::Local(_) | TargetAuthority::Routed(_) => {
-                    Err(InteractionCancelReason::UnknownTargetAuthority)
-                }
-            },
         }
     }
 
@@ -4512,8 +4368,8 @@ impl DockEngine {
         drag: &crate::interaction::ActiveDrag,
         current_pointer: SurfacePointer,
     ) -> CoreContainedCandidate {
-        let (root, floating, source_rect, initial_pointer, minimum_size, z_order) =
-            match drag.origin {
+        let (root, floating, source_rect, initial_pointer, minimum_size, position) =
+            match &drag.origin {
                 FrozenDragOrigin::Contained(origin) => {
                     if current_pointer.surface() != origin.surface {
                         return CoreContainedCandidate::None;
@@ -4521,10 +4377,7 @@ impl DockEngine {
                     let Some(record) = self.workspace.contained_floating(origin.floating) else {
                         return CoreContainedCandidate::Rejected;
                     };
-                    if record.root != origin.root
-                        || record.surface != origin.surface
-                        || record.rect != origin.source_rect
-                    {
+                    if record.root != origin.root || record.rect != origin.source_rect {
                         return CoreContainedCandidate::Rejected;
                     }
                     (
@@ -4533,7 +4386,7 @@ impl DockEngine {
                         origin.source_rect,
                         origin.initial_pointer,
                         origin.minimum_size,
-                        record.z_order,
+                        ContainedPosition::Front,
                     )
                 }
                 FrozenDragOrigin::Workspace => {
@@ -4543,23 +4396,13 @@ impl DockEngine {
                     if current_pointer.surface() != offer.anchor().surface() {
                         return CoreContainedCandidate::None;
                     }
-                    let z_order = match offer.stacking() {
-                        ContainedStackPlacement::Front => {
-                            let Some(z_order) =
-                                self.next_contained_front_z_order(current_pointer.surface())
-                            else {
-                                return CoreContainedCandidate::Rejected;
-                            };
-                            z_order
-                        }
-                    };
                     (
                         offer.root(),
                         offer.floating(),
                         offer.requested_rect(),
                         offer.anchor().position(),
                         offer.minimum_size(),
-                        z_order,
+                        offer.position(),
                     )
                 }
             };
@@ -4588,17 +4431,16 @@ impl DockEngine {
                         InteractionCancelReason::SceneUnavailable,
                     );
                 }
+                Err(
+                    ContainedPlacementUnavailable::StaleSurface { .. }
+                    | ContainedPlacementUnavailable::PendingPaintSurface { .. },
+                ) => {
+                    return CoreContainedCandidate::None;
+                }
             };
-        CoreContainedCandidate::Request(TearOffRequest::Contained(
-            crate::intent::ContainedTearOffProposal::new(root, floating, placement, z_order),
+        CoreContainedCandidate::Proposal(crate::intent::ContainedTearOffProposal::new(
+            root, floating, placement, position,
         ))
-    }
-
-    fn next_contained_front_z_order(&self, surface: crate::ids::SurfaceId) -> Option<u64> {
-        match self.workspace.contained_frontmost(surface).ok()? {
-            Some(frontmost) => frontmost.z_order().checked_add(1),
-            None => Some(1),
-        }
     }
 
     fn cancel_drag(
@@ -4612,7 +4454,7 @@ impl DockEngine {
             .interaction
             .active_drag(session)
             .ok()
-            .map(|drag| drag.pointer);
+            .map(|drag| drag.owner.pointer());
         match self.interaction.cancel_drag(session) {
             Ok(status) => {
                 if let Some(pointer) = pointer {
@@ -4632,65 +4474,145 @@ impl DockEngine {
         }
     }
 
-    fn begin_resize(
+    fn cancel_click(
         &mut self,
         input: InputSequence,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        split: &crate::command::NodeSource,
+        session: ClickSessionId,
+        reason: InteractionCancelReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> InteractionOutcome {
+        match self.interaction.cancel_click(session) {
+            Ok(status) => {
+                interaction_events.push(InteractionEvent::new(
+                    input,
+                    self.version,
+                    InteractionEventKind::Cancelled { status, reason },
+                ));
+                InteractionOutcome::Cancelled { status, reason }
+            }
+            Err(error) => InteractionOutcome::Rejected(error),
+        }
+    }
+
+    fn check_resize_policy(
+        &self,
+        split: &NodeSource,
+        policy: &DockPolicySnapshot,
+    ) -> Result<(), CommandError> {
+        self.validate_node_source(split)?;
+        let axis = match self.workspace.node(split.node()) {
+            Some(Node::Split { axis, .. }) => *axis,
+            Some(Node::Tabs { .. }) => {
+                return Err(CommandError::NodeIsNotSplit { node: split.node() });
+            }
+            None => {
+                return Err(CommandError::MissingNode {
+                    role: ReferenceRole::Source,
+                    node: split.node(),
+                });
+            }
+        };
+        let surface = self.root_surface(split.root());
+        match policy.evaluate(&DockPolicyRequest::Resize(DockResizePolicyRequest::new(
+            axis, surface,
+        ))) {
+            PolicyDecision::Allow => Ok(()),
+            PolicyDecision::Reject(reason) => Err(reason.into()),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn adjust_splitter_resize(
+        &mut self,
+        input: InputSequence,
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.validate_node_source(split) {
+        let surface = scene.surface();
+        let painted = self
+            .presentation_authority
+            .scene
+            .ready_surface(surface)
+            .filter(|painted| {
+                painted.stamp() == scene
+                    && scene.requirement().workspace_epoch() == self.version.epoch()
+            })
+            .ok_or(InteractionRejection::StaleScene);
+        let painted = match painted {
+            Ok(painted) => painted,
+            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
+        };
+        if !Self::coordinate_capture_matches_current(
+            painted.coordinate_capture(),
+            self.viewport.viewport(surface),
+            self.viewport.surface_coordinate_authority(surface),
+        ) {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable { surface },
+            ));
+        }
+        let record = match painted.plan().splitter_record(splitter).cloned() {
+            Some(record) if record.operable() => record,
+            None => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+            Some(_) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::SplitterGestureHitUnavailable { surface },
+                ));
+            }
+        };
+        let source = match self
+            .workspace
+            .capture_node_source(splitter.root, splitter.split)
+        {
+            Ok(source) => source,
+            Err(error) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::ResizeRejected(error),
+                ));
+            }
+        };
+        if let Err(error) = self.check_resize_policy(&source, policy) {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::ResizeRejected(error),
             ));
         }
-        let (session, replaced) = self
-            .interaction
-            .begin_resize(self.version.epoch(), pointer, button, split.clone())
-            .map_err(|source| EngineError::Interaction { input, source })?;
-        if let Some(status) = replaced {
-            self.viewport
-                .end_all_drag_routing()
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::Cancelled {
-                    status,
-                    reason: InteractionCancelReason::ReplacedByNewGesture,
-                },
+        let Some(allowed_delta) = resize_delta_interval(&record) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
             ));
-        }
-        Ok(InteractionOutcome::ResizeBegan { session, replaced })
-    }
-
-    fn update_resize(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::ResizeSessionId,
-        weights: &[crate::graph::SplitWeight],
-    ) -> Result<InteractionOutcome, EngineError> {
-        let split = match self.interaction.active_resize(session) {
-            Ok(resize) => resize.split.clone(),
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
-        let command = WorkspaceCommand::ResizeSplit {
-            split,
-            weights: weights.to_vec(),
+        let clamped_delta = delta.clamp(allowed_delta.minimum, allowed_delta.maximum);
+        let handle = FrozenResizeHandle {
+            source,
+            record,
+            allowed_delta,
         };
-        match self.preflight_command(input, &command)? {
-            CommandApplication::Applied { .. } => {
-                self.interaction
-                    .set_resize_weights(session, weights.to_vec())
-                    .map_err(|_| EngineError::Interaction {
+        let Some(update) = split_resize_update(&handle, clamped_delta) else {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SplitterResizeGeometryUnavailable,
+            ));
+        };
+        let command = WorkspaceCommand::ResizeSplits {
+            splits: vec![update],
+        };
+        match self.apply_interaction_command_with_policy(input, policy, &command, events)? {
+            CommandApplication::Applied { outcome, changed } => {
+                if changed {
+                    self.invalidate_transient(
                         input,
-                        source: InteractionCounterError::StateInvariant,
-                    })?;
-                Ok(InteractionOutcome::ResizeUpdated {
-                    session,
-                    weights: weights.to_vec(),
-                })
+                        InteractionCancelReason::WorkspaceChanged,
+                        interaction_events,
+                    )?;
+                }
+                Ok(InteractionOutcome::SplitterAdjusted { outcome, changed })
             }
             CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
                 InteractionRejection::ResizeRejected(error),
@@ -4718,1193 +4640,19 @@ impl DockEngine {
         }
     }
 
-    fn apply_preview_evaluation(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        evaluation: PreviewEvaluation,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        self.interaction
-            .set_drop_affordance(session, evaluation.affordance)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?;
-        match evaluation.decision {
-            PreviewDecision::Publish { visual, proof } => {
-                let stamp = self.scene.as_ref().map(SealedScene::stamp).ok_or(
-                    EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    },
-                )?;
-                let (preview, changed) = self
-                    .interaction
-                    .publish_preview(session, stamp, visual, *proof)
-                    .map_err(|source| EngineError::Interaction { input, source })?;
-                if changed {
-                    interaction_events.push(InteractionEvent::new(
-                        input,
-                        self.version,
-                        InteractionEventKind::PreviewPublished {
-                            preview: preview.clone(),
-                        },
-                    ));
-                }
-                Ok(InteractionOutcome::PreviewUpdated {
-                    session,
-                    preview: Some(preview),
-                    status: PreviewResolutionStatus::Resolved,
-                })
-            }
-            PreviewDecision::Clear(status) => {
-                self.interaction
-                    .clear_preview(session)
-                    .map_err(|_| EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    })?;
-                Ok(InteractionOutcome::PreviewUpdated {
-                    session,
-                    preview: None,
-                    status,
-                })
-            }
-            PreviewDecision::Cancel(reason) => {
-                self.cancel_drag(input, session, reason, interaction_events)
-            }
-        }
-    }
-
-    fn resolve_preview_evaluation(
+    fn freeze_payload_focus(
         &self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        pointer: crate::intent::PointerId,
         payload: &MovePayload,
-        target: &TargetAuthority,
-        tear_off: Option<&TearOffRequest>,
-    ) -> Result<PreviewEvaluation, EngineError> {
-        let Some(scene) = self.scene.as_ref() else {
-            return Ok(PreviewEvaluation::without_affordance(
-                PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable),
-            ));
-        };
-        if scene.stamp().workspace() != self.version {
-            return Ok(PreviewEvaluation::without_affordance(
-                PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable),
-            ));
-        }
-        let (target, routed) = match self.target_observation(pointer, target) {
-            Ok(target) => target,
-            Err(reason) => {
-                return Ok(PreviewEvaluation::without_affordance(
-                    PreviewDecision::Cancel(reason),
-                ));
-            }
-        };
-        match target {
-            Authority::Unknown(_) => Ok(PreviewEvaluation::without_affordance(
-                PreviewDecision::Cancel(InteractionCancelReason::UnknownTargetAuthority),
-            )),
-            Authority::Known(Some(pointer)) => {
-                let query = query_drop(
-                    scene,
-                    &self.workspace,
-                    &self.policy,
-                    session,
-                    payload.clone(),
-                    pointer.surface(),
-                    pointer.position(),
-                )
-                .map_err(|source| EngineError::DropResolution { input, source })?;
-                let (resolution, affordance) = query.into_parts();
-                let decision = match resolution {
-                    DropResolution::Resolved(resolved) => {
-                        if resolved.scene_stamp() != scene.stamp()
-                            || resolved.session() != session
-                            || resolved.source() != payload
-                        {
-                            return Err(EngineError::Interaction {
-                                input,
-                                source: InteractionCounterError::StateInvariant,
-                            });
-                        }
-                        let target = resolved.target_id();
-                        let visual = PreviewVisual::Dock {
-                            surface: pointer.surface(),
-                            target,
-                            rect: resolved.visual().rect(),
-                        };
-                        PreviewDecision::Publish {
-                            visual,
-                            proof: Box::new(PreviewProof::Dock {
-                                target,
-                                command: resolved.into_command(),
-                            }),
-                        }
-                    }
-                    DropResolution::KnownNone(_) => match tear_off {
-                        Some(request @ TearOffRequest::Contained(proposal)) => self
-                            .resolve_contained_tear_off(
-                                input, payload, *proposal, request, false,
-                            )?,
-                        None | Some(TearOffRequest::Native { .. }) => {
-                            PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
-                        }
-                    },
-                    DropResolution::Rejected(_) => {
-                        PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
-                    }
-                    DropResolution::Unavailable(_) => {
-                        PreviewDecision::Cancel(InteractionCancelReason::SceneUnavailable)
-                    }
-                };
-                Ok(PreviewEvaluation::new(decision, affordance))
-            }
-            Authority::Known(None) => self
-                .resolve_tear_off_decision(input, payload, tear_off, routed)
-                .map(PreviewEvaluation::without_affordance),
-        }
-    }
-
-    fn target_observation<'a>(
-        &self,
-        pointer: crate::intent::PointerId,
-        target: &'a TargetAuthority,
-    ) -> Result<(&'a Authority<Option<crate::intent::SurfacePointer>>, bool), InteractionCancelReason>
-    {
-        match target {
-            TargetAuthority::Local(local) => {
-                if self.workspace.surface(local.observer()).is_none()
-                    || matches!(
-                        local.target(),
-                        Authority::Known(Some(target))
-                            if target.surface() != local.observer()
-                    )
-                {
-                    return Err(InteractionCancelReason::UnknownTargetAuthority);
-                }
-                Ok((local.target(), false))
-            }
-            TargetAuthority::Routed(proof) => {
-                if proof.pointer() != pointer || !self.viewport.route_is_current(proof) {
-                    return Err(InteractionCancelReason::UnknownTargetAuthority);
-                }
-                Ok((proof.target(), true))
-            }
-        }
-    }
-
-    fn resolve_tear_off_decision(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        request: Option<&TearOffRequest>,
-        routed: bool,
-    ) -> Result<PreviewDecision, EngineError> {
-        let Some(request) = request else {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone));
-        };
-        match request {
-            TearOffRequest::Contained(proposal) => {
-                self.resolve_contained_tear_off(input, payload, *proposal, request, false)
-            }
-            TearOffRequest::Native {
-                proposal,
-                contained_fallback,
-            } => self.resolve_native_tear_off(
-                input,
-                payload,
-                proposal.as_ref().clone(),
-                *contained_fallback,
-                request,
-                routed,
-            ),
-        }
-    }
-
-    fn resolve_contained_tear_off(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        proposal: crate::intent::ContainedTearOffProposal,
-        request: &TearOffRequest,
-        fallback: bool,
-    ) -> Result<PreviewDecision, EngineError> {
-        // Lifecycle commands can advance the revision without cancelling an
-        // unrelated gesture, so the frozen source must be checked every frame.
-        if self.validate_payload(payload).is_err() {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        }
-        let complete_root =
-            self.complete_root_source(payload)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
+    ) -> Result<PaneFocusDisposition, crate::error::CommandError> {
+        self.validate_payload(payload)?;
+        let surface =
+            self.payload_surface(payload)
+                .ok_or(crate::error::CommandError::Invariant {
+                    stage: "freezing pane focus for an unpresented payload",
                 })?;
-        self.resolve_validated_contained_tear_off(
-            input,
-            payload,
-            proposal,
-            request,
-            fallback,
-            complete_root,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_validated_contained_tear_off(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        proposal: crate::intent::ContainedTearOffProposal,
-        request: &TearOffRequest,
-        fallback: bool,
-        complete_root: Option<NodeSource>,
-    ) -> Result<PreviewDecision, EngineError> {
-        if self
-            .validate_contained_placement(proposal.placement())
-            .is_err()
-            || self
-                .policy
-                .check_tear_off(TearOffPresentation::Contained)
-                .is_err()
-        {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        }
-        if let Some(command) = self.same_contained_move_command_for_valid_payload(payload, proposal)
-        {
-            return Ok(Self::contained_preview_decision(
-                proposal,
-                request,
-                fallback,
-                command,
-                ContainedMutationKind::PresentationChange,
-            ));
-        }
-        if complete_root
-            .as_ref()
-            .is_some_and(|source| source.root() != proposal.root())
-        {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        }
-        let command = self.contained_presentation_command(payload, proposal, complete_root);
-        match self.preflight_command(input, &command)? {
-            CommandApplication::Applied { .. } => Ok(Self::contained_preview_decision(
-                proposal,
-                request,
-                fallback,
-                command,
-                ContainedMutationKind::PresentationChange,
-            )),
-            CommandApplication::Rejected(_) => {
-                Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
-            }
-        }
-    }
-
-    fn contained_preview_decision(
-        proposal: crate::intent::ContainedTearOffProposal,
-        request: &TearOffRequest,
-        fallback: bool,
-        command: WorkspaceCommand,
-        mutation: ContainedMutationKind,
-    ) -> PreviewDecision {
-        PreviewDecision::Publish {
-            visual: PreviewVisual::Contained {
-                surface: proposal.surface(),
-                rect: proposal.rect(),
-                fallback,
-            },
-            proof: Box::new(PreviewProof::Contained {
-                command,
-                request: request.clone(),
-                fallback,
-                mutation,
-            }),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_native_tear_off(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        proposal: crate::intent::NativeTearOffProposal,
-        contained_fallback: Option<crate::intent::ContainedTearOffProposal>,
-        request: &TearOffRequest,
-        routed: bool,
-    ) -> Result<PreviewDecision, EngineError> {
-        if self
-            .validate_contained_placement(proposal.recovery().placement())
-            .is_err()
-            || self
-                .policy
-                .check_tear_off(TearOffPresentation::Native)
-                .is_err()
-        {
-            return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-        }
-        match self.viewport.native_tear_off_capability() {
-            PlatformCapability::Supported => {
-                if !routed {
-                    return Ok(PreviewDecision::Cancel(
-                        InteractionCancelReason::UnknownTargetAuthority,
-                    ));
-                }
-                if !self
-                    .viewport
-                    .native_placement_is_current(proposal.placement())
-                {
-                    return Ok(PreviewDecision::Cancel(
-                        InteractionCancelReason::NativePlacementUnavailable,
-                    ));
-                }
-                if self.workspace.surface(proposal.surface()).is_some() {
-                    return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-                }
-                if !self.tear_off_root_identity_matches(input, payload, proposal.root())? {
-                    return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-                }
-                let command = self.tear_off_command(
-                    input,
-                    payload,
-                    RootPresentationTarget::Surface {
-                        surface: proposal.surface(),
-                    },
-                    proposal.root(),
-                )?;
-                match self.preflight_command(input, &command)? {
-                    CommandApplication::Applied { .. } => Ok(PreviewDecision::Publish {
-                        visual: PreviewVisual::Native {
-                            surface: proposal.surface(),
-                            placement: proposal.physical_placement(),
-                        },
-                        proof: Box::new(PreviewProof::Native {
-                            command,
-                            request: request.clone(),
-                            proposal: Box::new(proposal),
-                        }),
-                    }),
-                    CommandApplication::Rejected(_) => {
-                        Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected))
-                    }
-                }
-            }
-            PlatformCapability::Unsupported(_) => {
-                if self.policy.native_unavailable_fallback().is_err() {
-                    return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-                }
-                let Some(proposal) = contained_fallback else {
-                    return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
-                };
-                self.resolve_contained_tear_off(input, payload, proposal, request, true)
-            }
-            PlatformCapability::Unknown(_) => Ok(PreviewDecision::Cancel(
-                InteractionCancelReason::NativeCapabilityUnknown,
-            )),
-        }
-    }
-
-    fn release_drag(
-        &mut self,
-        input: InputSequence,
-        release: DragReleaseInput<'_>,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.validate_drag_release_binding(
-            release.session,
-            release.pointer,
-            release.button,
-            DragObservationProtocol::Legacy,
-        ) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        let target_unknown = match self.target_observation(release.pointer, release.target) {
-            Ok((target, _)) => matches!(target, Authority::Unknown(_)),
-            Err(reason) => {
-                return self.cancel_drag(input, release.session, reason, interaction_events);
-            }
-        };
-        let button_state = match release.target {
-            TargetAuthority::Local(_) => *release.button_state,
-            TargetAuthority::Routed(proof) => proof.button_state(release.button),
-        };
-        if let Some(outcome) =
-            self.require_released_button(input, release.session, button_state, interaction_events)?
-        {
-            return Ok(outcome);
-        }
-        let drag = match self.interaction.take_drag_for_release(
-            release.session,
-            release.pointer,
-            release.button,
-        ) {
-            Ok(drag) => drag,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        if target_unknown {
-            let _ = self
-                .viewport
-                .end_drag_routing(drag.pointer)
-                .map_err(|source| EngineError::Viewport { input, source })?;
-            return Ok(self.cancel_consumed_drag(
-                input,
-                release.session,
-                InteractionCancelReason::UnknownTargetAuthority,
-                interaction_events,
-            ));
-        }
-        let proof = match self.resolve_release_proof(
-            input,
-            release.session,
-            &drag,
-            release.target,
-            release.tear_off,
-        )? {
-            ReleaseProofDecision::Deliver(proof) => proof,
-            ReleaseProofDecision::Reject(error) => {
-                let _ = self
-                    .viewport
-                    .end_drag_routing(drag.pointer)
-                    .map_err(|source| EngineError::Viewport { input, source })?;
-                return Ok(InteractionOutcome::Rejected(error));
-            }
-        };
-        let pane_focus = self.freeze_payload_focus(&drag.payload);
-        let _ = self
-            .viewport
-            .end_drag_routing(drag.pointer)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        self.finish_drag_delivery(
-            input,
-            release.session,
-            pane_focus,
-            *proof,
-            events,
-            interaction_events,
-        )
-    }
-
-    fn release_drag_observation(
-        &mut self,
-        input: InputSequence,
-        release: ObservedDragReleaseInput<'_>,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        if let Err(error) = self.validate_drag_release_binding(
-            release.session,
-            release.pointer,
-            release.button,
-            DragObservationProtocol::CoreOwned,
-        ) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        if let Err(error) = self.interaction.set_core_drag_observation(
-            release.session,
-            release.target.clone(),
-            *release.current_pointer,
-            release.contained_offer,
-        ) {
-            return Ok(InteractionOutcome::Rejected(error));
-        }
-        if !self.core_drag_source_is_current(release.session, input)? {
-            return self.cancel_drag(
-                input,
-                release.session,
-                InteractionCancelReason::SourceVanished,
-                interaction_events,
-            );
-        }
-        if let Err(reason) = self.normalize_core_drag_observation(
-            release.pointer,
-            release.target,
-            release.current_pointer,
-        ) {
-            return self.cancel_drag(input, release.session, reason, interaction_events);
-        }
-        let button_state = match release.target {
-            TargetAuthority::Local(_) => *release.button_state,
-            TargetAuthority::Routed(proof) => proof.button_state(release.button),
-        };
-        if let Some(outcome) =
-            self.require_released_button(input, release.session, button_state, interaction_events)?
-        {
-            return Ok(outcome);
-        }
-        let drag = match self.interaction.take_drag_for_release(
-            release.session,
-            release.pointer,
-            release.button,
-        ) {
-            Ok(drag) => drag,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        let proof = match self.resolve_core_release_proof(
-            input,
-            &drag,
-            release.target,
-            release.current_pointer,
-        )? {
-            ReleaseProofDecision::Deliver(proof) => proof,
-            ReleaseProofDecision::Reject(error) => {
-                let _ = self
-                    .viewport
-                    .end_drag_routing(drag.pointer)
-                    .map_err(|source| EngineError::Viewport { input, source })?;
-                return Ok(InteractionOutcome::Rejected(error));
-            }
-        };
-        let pane_focus = self.freeze_payload_focus(&drag.payload);
-        let _ = self
-            .viewport
-            .end_drag_routing(drag.pointer)
-            .map_err(|source| EngineError::Viewport { input, source })?;
-        self.finish_drag_delivery(
-            input,
-            release.session,
-            pane_focus,
-            *proof,
-            events,
-            interaction_events,
-        )
-    }
-
-    fn validate_drag_release_binding(
-        &self,
-        session: crate::interaction::DragSessionId,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        expected_protocol: DragObservationProtocol,
-    ) -> Result<(), InteractionRejection> {
-        let drag = self.interaction.active_drag(session).map_err(|error| {
-            if matches!(error, InteractionRejection::SessionConsumed { .. }) {
-                InteractionRejection::DuplicateRelease { session }
-            } else {
-                error
-            }
-        })?;
-        if drag.pointer != pointer {
-            return Err(InteractionRejection::PointerMismatch);
-        }
-        if drag.button != button {
-            return Err(InteractionRejection::ButtonMismatch);
-        }
-        if drag.protocol != expected_protocol {
-            return Err(InteractionRejection::DragObservationProtocolMismatch);
-        }
-        Ok(())
-    }
-
-    fn require_released_button(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        button_state: Authority<PointerButtonState>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<Option<InteractionOutcome>, EngineError> {
-        match button_state {
-            Authority::Known(PointerButtonState::Released) => Ok(None),
-            Authority::Known(PointerButtonState::Pressed) => Ok(Some(
-                InteractionOutcome::Rejected(InteractionRejection::ButtonStillPressed),
-            )),
-            Authority::Unknown(_) => {
-                let reason = InteractionCancelReason::UnknownButtonState;
-                self.cancel_drag(input, session, reason, interaction_events)
-                    .map(Some)
-            }
-        }
-    }
-
-    fn cancel_consumed_drag(
-        &self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        reason: InteractionCancelReason,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> InteractionOutcome {
-        let status = InteractionStatus::Dragging { session };
-        interaction_events.push(InteractionEvent::new(
-            input,
-            self.version,
-            InteractionEventKind::Cancelled { status, reason },
-        ));
-        InteractionOutcome::Cancelled { status, reason }
-    }
-
-    fn resolve_release_proof(
-        &self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        drag: &crate::interaction::ActiveDrag,
-        target: &TargetAuthority,
-        tear_off: Option<&TearOffRequest>,
-    ) -> Result<ReleaseProofDecision, EngineError> {
-        let Some(preview) = drag.preview.as_ref() else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::PreviewMissing,
-            ));
-        };
-        if !preview.painted() {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::PreviewNotPainted,
-            ));
-        }
-        let Some(scene) = self.scene.as_ref() else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::StaleScene,
-            ));
-        };
-        if scene.stamp() != preview.public().token().scene()
-            || scene.stamp().workspace() != self.version
-        {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::StaleScene,
-            ));
-        }
-        let evaluation = self.resolve_preview_evaluation(
-            input,
-            session,
-            drag.pointer,
-            &drag.payload,
-            target,
-            tear_off,
-        )?;
-        let PreviewDecision::Publish { visual, proof } = evaluation.decision else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::TargetChanged,
-            ));
-        };
-        if preview.public().visual() != &visual || preview.proof() != proof.as_ref() {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::TargetChanged,
-            ));
-        }
-        Ok(ReleaseProofDecision::Deliver(proof))
-    }
-
-    fn resolve_core_release_proof(
-        &self,
-        input: InputSequence,
-        drag: &crate::interaction::ActiveDrag,
-        target: &TargetAuthority,
-        current_pointer: &Authority<SurfacePointer>,
-    ) -> Result<ReleaseProofDecision, EngineError> {
-        let Some(preview) = drag.preview.as_ref() else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::PreviewMissing,
-            ));
-        };
-        if !preview.painted() {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::PreviewNotPainted,
-            ));
-        }
-        let Some(scene) = self.scene.as_ref() else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::StaleScene,
-            ));
-        };
-        if scene.stamp() != preview.public().token().scene()
-            || scene.stamp().workspace() != self.version
-        {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::StaleScene,
-            ));
-        }
-        let evaluation =
-            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
-        let PreviewDecision::Publish { visual, proof } = evaluation.decision else {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::TargetChanged,
-            ));
-        };
-        if preview.public().visual() != &visual || preview.proof() != proof.as_ref() {
-            return Ok(ReleaseProofDecision::Reject(
-                InteractionRejection::TargetChanged,
-            ));
-        }
-        Ok(ReleaseProofDecision::Deliver(proof))
-    }
-
-    fn finish_drag_delivery(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        pane_focus: PanelFocus,
-        proof: PreviewProof,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        match proof {
-            PreviewProof::Dock { target, command } => self.finish_workspace_delivery(
-                WorkspaceDeliveryInput {
-                    input,
-                    session,
-                    target: WorkspaceDeliveryTarget {
-                        kind: WorkspaceDeliveryKind::Dock,
-                        focus_surface: target.surface(),
-                        validation: WorkspaceDeliveryValidation::Policy,
-                    },
-                    pane_focus,
-                    command: &command,
-                },
-                events,
-                interaction_events,
-            ),
-            PreviewProof::Contained {
-                command,
-                request,
-                fallback,
-                mutation,
-            } => {
-                let kind = if fallback {
-                    WorkspaceDeliveryKind::ContainedFallback
-                } else {
-                    WorkspaceDeliveryKind::Contained
-                };
-                let focus_surface = match request {
-                    TearOffRequest::Contained(proposal)
-                    | TearOffRequest::Native {
-                        contained_fallback: Some(proposal),
-                        ..
-                    } => proposal.surface(),
-                    TearOffRequest::Native {
-                        contained_fallback: None,
-                        ..
-                    } => {
-                        return Err(EngineError::Interaction {
-                            input,
-                            source: InteractionCounterError::StateInvariant,
-                        });
-                    }
-                };
-                self.finish_workspace_delivery(
-                    WorkspaceDeliveryInput {
-                        input,
-                        session,
-                        target: WorkspaceDeliveryTarget {
-                            kind,
-                            focus_surface,
-                            validation: match mutation {
-                                ContainedMutationKind::ExistingRectUpdate => {
-                                    WorkspaceDeliveryValidation::ExistingContainedRect
-                                }
-                                ContainedMutationKind::PresentationChange => {
-                                    WorkspaceDeliveryValidation::Policy
-                                }
-                            },
-                        },
-                        pane_focus,
-                        command: &command,
-                    },
-                    events,
-                    interaction_events,
-                )
-            }
-            PreviewProof::Native {
-                command, proposal, ..
-            } => {
-                let prepared = PreparedNativeTearOff::new(
-                    session,
-                    self.version,
-                    command,
-                    *proposal,
-                    pane_focus,
-                );
-                let request = self
-                    .viewport
-                    .start_native_create(prepared)
-                    .map_err(|source| EngineError::Viewport { input, source })?;
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::NativeTearOffRequested(request),
-                ));
-                Ok(InteractionOutcome::DragDelivered {
-                    session,
-                    delivery: InteractionDelivery::NativeRequested(request),
-                })
-            }
-        }
-    }
-
-    fn finish_workspace_delivery(
-        &mut self,
-        delivery: WorkspaceDeliveryInput<'_>,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let application = match delivery.target.validation {
-            WorkspaceDeliveryValidation::Policy => {
-                self.apply_interaction_command(delivery.input, delivery.command, events)?
-            }
-            WorkspaceDeliveryValidation::ExistingContainedRect => {
-                self.apply_existing_contained_rect_update(delivery.input, delivery.command, events)?
-            }
-        };
-        match application {
-            CommandApplication::Applied { outcome, changed } => {
-                if let Some(binding) = self
-                    .viewport
-                    .viewport(delivery.target.focus_surface)
-                    .filter(|record| record.is_focusable())
-                    .map(crate::viewport_registry::ViewportRecord::binding)
-                {
-                    let _ = self.start_viewport_activation(
-                        delivery.input,
-                        ViewportActivationRequest::drop_committed(binding, delivery.pane_focus),
-                        self.last_focus_reducer_generation,
-                        events,
-                    )?;
-                }
-                interaction_events.push(InteractionEvent::new(
-                    delivery.input,
-                    self.version,
-                    InteractionEventKind::Delivered {
-                        session: delivery.session,
-                        kind: delivery.target.kind,
-                    },
-                ));
-                Ok(InteractionOutcome::DragDelivered {
-                    session: delivery.session,
-                    delivery: InteractionDelivery::Workspace {
-                        kind: delivery.target.kind,
-                        outcome,
-                        changed,
-                    },
-                })
-            }
-            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(error),
-            )),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn release_resize(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::ResizeSessionId,
-        pointer: crate::intent::PointerId,
-        button: crate::intent::PointerButton,
-        button_state: Authority<PointerButtonState>,
-        events: &mut Vec<WorkspaceEvent>,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<InteractionOutcome, EngineError> {
-        let binding = match self.interaction.active_resize(session) {
-            Ok(resize) => (resize.pointer, resize.button),
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        if binding.0 != pointer {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PointerMismatch,
-            ));
-        }
-        if binding.1 != button {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ButtonMismatch,
-            ));
-        }
-        match button_state {
-            Authority::Unknown(_) => {
-                let status = self.interaction.cancel_resize(session).map_err(|_| {
-                    EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    }
-                })?;
-                let reason = InteractionCancelReason::UnknownButtonState;
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::Cancelled { status, reason },
-                ));
-                return Ok(InteractionOutcome::Cancelled { status, reason });
-            }
-            Authority::Known(PointerButtonState::Pressed) => {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::ButtonStillPressed,
-                ));
-            }
-            Authority::Known(PointerButtonState::Released) => {}
-        }
-        let resize = match self
-            .interaction
-            .take_resize_for_release(session, pointer, button)
-        {
-            Ok(resize) => resize,
-            Err(error) => return Ok(InteractionOutcome::Rejected(error)),
-        };
-        let Some(weights) = resize.weights else {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ResizeProposalMissing,
-            ));
-        };
-        let command = WorkspaceCommand::ResizeSplit {
-            split: resize.split,
-            weights,
-        };
-        match self.apply_interaction_command(input, &command, events)? {
-            CommandApplication::Applied { outcome, changed } => {
-                interaction_events.push(InteractionEvent::new(
-                    input,
-                    self.version,
-                    InteractionEventKind::ResizeDelivered { session },
-                ));
-                Ok(InteractionOutcome::ResizeDelivered {
-                    session,
-                    outcome,
-                    changed,
-                })
-            }
-            CommandApplication::Rejected(error) => Ok(InteractionOutcome::Rejected(
-                InteractionRejection::ResizeRejected(error),
-            )),
-        }
-    }
-
-    fn resolve_contained_transform_placement(
-        &self,
-        transform: &ActiveContainedTransform,
-        current_pointer: crate::geometry::LogicalPoint,
-    ) -> Result<ContainedPlacementProof, InteractionRejection> {
-        let (_, bounds) = self
-            .current_ready_surface_bounds(transform.surface)
-            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
-        let requested = contained_transform_requested_rect(transform, current_pointer, bounds)
-            .map_err(|()| InteractionRejection::ContainedTransformGeometryUnavailable)?;
-        let placement = self
-            .contained_placement(transform.surface, requested, transform.minimum_size)
-            .map_err(InteractionRejection::ContainedPlacementUnavailable)?;
-        if matches!(transform.kind, ContainedTransformKind::Resize(_))
-            && placement.clamped_rect() != requested
-        {
-            return Err(InteractionRejection::ContainedTransformGeometryUnavailable);
-        }
-        Ok(placement)
-    }
-
-    fn refresh_contained_transform_preview(
-        &mut self,
-        input: InputSequence,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<(), EngineError> {
-        let InteractionStatus::ContainedTransforming { session } = self.interaction.status() else {
-            return Ok(());
-        };
-        let transform = self
-            .interaction
-            .active_contained_transform(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?
-            .clone();
-        if transform.preview.is_none() {
-            return Ok(());
-        }
-        let Ok(placement) =
-            self.resolve_contained_transform_placement(&transform, transform.current_pointer)
-        else {
-            let _ = self.cancel_contained_transform(
-                input,
-                session,
-                InteractionCancelReason::SceneUnavailable,
-                interaction_events,
-            );
-            return Ok(());
-        };
-        let (preview, changed) = self
-            .interaction
-            .publish_contained_transform_preview(session, placement.scene(), placement)
-            .map_err(|source| EngineError::Interaction { input, source })?;
-        if changed {
-            interaction_events.push(InteractionEvent::new(
-                input,
-                self.version,
-                InteractionEventKind::ContainedTransformPreviewPublished { preview },
-            ));
-        }
-        Ok(())
-    }
-
-    fn refresh_drag_preview(
-        &mut self,
-        input: InputSequence,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<(), EngineError> {
-        let InteractionStatus::Dragging { session } = self.interaction.status() else {
-            return Ok(());
-        };
-        let protocol = self
-            .interaction
-            .active_drag(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?
-            .protocol;
-        if protocol == DragObservationProtocol::CoreOwned {
-            return self.refresh_core_drag_preview(input, session, interaction_events);
-        }
-        let (pointer, payload, target, tear_off) = {
-            let drag =
-                self.interaction
-                    .active_drag(session)
-                    .map_err(|_| EngineError::Interaction {
-                        input,
-                        source: InteractionCounterError::StateInvariant,
-                    })?;
-            (
-                drag.pointer,
-                drag.payload.clone(),
-                drag.target.clone(),
-                drag.tear_off.clone(),
-            )
-        };
-        let Some(target) = target else {
-            self.interaction
-                .clear_preview(session)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
-            self.interaction
-                .set_drop_affordance(session, None)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
-            return Ok(());
-        };
-        let tear_off = tear_off.map(|request| {
-            self.refresh_scene_bound_tear_off(&request)
-                .unwrap_or(request)
-        });
-        self.interaction
-            .set_drag_observation(session, target.clone(), tear_off.clone())
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?;
-        let evaluation = self.resolve_preview_evaluation(
-            input,
-            session,
-            pointer,
-            &payload,
-            &target,
-            tear_off.as_ref(),
-        )?;
-        let _ = self.apply_preview_evaluation(input, session, evaluation, interaction_events)?;
-        Ok(())
-    }
-
-    fn refresh_core_drag_preview(
-        &mut self,
-        input: InputSequence,
-        session: crate::interaction::DragSessionId,
-        interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Result<(), EngineError> {
-        if !self.core_drag_source_is_current(session, input)? {
-            let _ = self.cancel_drag(
-                input,
-                session,
-                InteractionCancelReason::SourceVanished,
-                interaction_events,
-            )?;
-            return Ok(());
-        }
-        let drag = self
-            .interaction
-            .active_drag(session)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?;
-        let (Some(target), Some(current_pointer)) =
-            (drag.target.as_ref(), drag.current_pointer.as_ref())
-        else {
-            self.interaction
-                .clear_preview(session)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
-            self.interaction
-                .set_drop_affordance(session, None)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
-            return Ok(());
-        };
-        let evaluation =
-            self.resolve_core_preview_evaluation(input, drag, target, current_pointer)?;
-        let _ = self.apply_preview_evaluation(input, session, evaluation, interaction_events)?;
-        Ok(())
-    }
-
-    fn refresh_scene_bound_tear_off(&self, request: &TearOffRequest) -> Option<TearOffRequest> {
-        match request {
-            TearOffRequest::Contained(proposal) => self
-                .refresh_contained_proposal(*proposal)
-                .map(TearOffRequest::Contained),
-            TearOffRequest::Native {
-                proposal,
-                contained_fallback,
-            } => {
-                let recovery = self.refresh_contained_proposal(proposal.recovery())?;
-                let contained_fallback = match contained_fallback {
-                    Some(fallback) => Some(self.refresh_contained_proposal(*fallback)?),
-                    None => None,
-                };
-                Some(TearOffRequest::native(
-                    crate::intent::NativeTearOffProposal::new(
-                        proposal.surface(),
-                        proposal.root(),
-                        *proposal.placement(),
-                        recovery,
-                    ),
-                    contained_fallback,
-                ))
-            }
-        }
-    }
-
-    fn refresh_contained_proposal(
-        &self,
-        proposal: crate::intent::ContainedTearOffProposal,
-    ) -> Option<crate::intent::ContainedTearOffProposal> {
-        let prior = proposal.placement();
-        let placement = self
-            .contained_placement(
-                proposal.surface(),
-                prior.requested_rect(),
-                prior.minimum_size(),
-            )
-            .ok()?;
-        Some(crate::intent::ContainedTearOffProposal::new(
-            proposal.root(),
-            proposal.floating(),
-            placement,
-            proposal.z_order(),
-        ))
-    }
-
-    fn freeze_payload_focus(&self, payload: &MovePayload) -> PanelFocus {
-        if self.validate_payload(payload).is_err() {
-            return PanelFocus::None;
-        }
-        let Some(surface) = self.payload_surface(payload) else {
-            return PanelFocus::None;
-        };
-        let PanelFocusRecord::Item(item) = self.viewport_focus.panel_focus(surface) else {
-            return PanelFocus::None;
+        let record = self.viewport_focus.panel_focus(surface);
+        let PanelFocusRecord::Item(item) = record else {
+            return Ok(PaneFocusDisposition::from_record(record));
         };
         let payload_contains_item = match payload {
             MovePayload::Item(source) => source.item() == item,
@@ -5914,9 +4662,9 @@ impl DockEngine {
                 .contains(&item),
         };
         if payload_contains_item {
-            PanelFocus::Item(item)
+            Ok(PaneFocusDisposition::Set(item))
         } else {
-            PanelFocus::None
+            Ok(PaneFocusDisposition::Clear)
         }
     }
 
@@ -5986,27 +4734,6 @@ impl DockEngine {
         )
     }
 
-    fn tear_off_command(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        target: RootPresentationTarget,
-        new_root: crate::ids::RootId,
-    ) -> Result<WorkspaceCommand, EngineError> {
-        let complete_root =
-            self.complete_root_source(payload)
-                .map_err(|_| EngineError::Interaction {
-                    input,
-                    source: InteractionCounterError::StateInvariant,
-                })?;
-        Ok(Self::tear_off_command_from_complete_root(
-            payload,
-            target,
-            new_root,
-            complete_root,
-        ))
-    }
-
     fn tear_off_command_from_complete_root(
         payload: &MovePayload,
         target: RootPresentationTarget,
@@ -6015,27 +4742,32 @@ impl DockEngine {
     ) -> WorkspaceCommand {
         match (complete_root, target) {
             (Some(source), target) => WorkspaceCommand::RehomeRoot { source, target },
-            (None, RootPresentationTarget::Surface { surface }) => {
+            (None, RootPresentationTarget::NewSurface { surface }) => {
                 WorkspaceCommand::CreateSurfaceRoot {
                     surface,
                     root: new_root,
                     content: RootContent::Move(payload.clone()),
                 }
             }
+            (None, RootPresentationTarget::Main { surface }) => WorkspaceCommand::InstallMainRoot {
+                surface,
+                root: new_root,
+                content: RootContent::Move(payload.clone()),
+            },
             (
                 None,
                 RootPresentationTarget::Contained {
                     surface,
                     floating,
                     rect,
-                    z_order,
+                    position,
                 },
             ) => WorkspaceCommand::CreateContainedRoot {
                 surface,
                 root: new_root,
                 floating,
                 rect,
-                z_order,
+                position,
                 content: RootContent::Move(payload.clone()),
             },
         }
@@ -6046,77 +4778,53 @@ impl DockEngine {
         payload: &MovePayload,
         proposal: crate::intent::ContainedTearOffProposal,
         complete_root: Option<NodeSource>,
-    ) -> WorkspaceCommand {
+        frozen_origin: Option<&FrozenContainedDragOrigin>,
+    ) -> Option<WorkspaceCommand> {
         if let Some(source) = complete_root.as_ref()
             && let Some(current) = self.workspace.contained_floating(proposal.floating())
             && current.root == source.root()
-            && current.surface == proposal.surface()
-            && current.z_order == proposal.z_order()
+            && self.workspace.presentation_for_root(source.root())
+                == Some(crate::RootPresentationOwner::Contained {
+                    surface: proposal.surface(),
+                    floating: proposal.floating(),
+                })
         {
-            return WorkspaceCommand::UpdateContainedRect {
-                surface: current.surface,
-                root: current.root,
-                floating: current.id,
-                expected_rect: current.rect,
-                rect: proposal.rect(),
+            let expected_roster = match frozen_origin {
+                Some(origin)
+                    if origin.surface == proposal.surface()
+                        && origin.root == source.root()
+                        && origin.floating == proposal.floating()
+                        && origin.source_rect == current.rect =>
+                {
+                    origin.source_roster.clone()
+                }
+                Some(_) => return None,
+                None => self
+                    .workspace
+                    .capture_contained_roster(proposal.surface())
+                    .ok()?,
             };
+            return Some(WorkspaceCommand::UpdateContainedPresentation {
+                source: source.clone(),
+                floating: proposal.floating(),
+                expected_rect: current.rect,
+                expected_roster,
+                rect: proposal.rect(),
+                position: proposal.position(),
+            });
         }
 
-        Self::tear_off_command_from_complete_root(
+        Some(Self::tear_off_command_from_complete_root(
             payload,
             RootPresentationTarget::Contained {
                 surface: proposal.surface(),
                 floating: proposal.floating(),
                 rect: proposal.rect(),
-                z_order: proposal.z_order(),
+                position: proposal.position(),
             },
             proposal.root(),
             complete_root,
-        )
-    }
-
-    fn same_contained_move_command_for_valid_payload(
-        &self,
-        payload: &MovePayload,
-        proposal: crate::intent::ContainedTearOffProposal,
-    ) -> Option<WorkspaceCommand> {
-        let source = match payload {
-            MovePayload::Tabs(source) | MovePayload::Subtree(source) => source,
-            MovePayload::Item(_) => return None,
-        };
-        let root = self.workspace.root(source.root())?;
-        if source.node() != root.node || source.root() != proposal.root() {
-            return None;
-        }
-        let current = self.workspace.contained_floating(proposal.floating())?;
-        if current.root != source.root()
-            || current.surface != proposal.surface()
-            || current.z_order != proposal.z_order()
-        {
-            return None;
-        }
-        Some(WorkspaceCommand::UpdateContainedRect {
-            surface: current.surface,
-            root: current.root,
-            floating: current.id,
-            expected_rect: current.rect,
-            rect: proposal.rect(),
-        })
-    }
-
-    fn tear_off_root_identity_matches(
-        &self,
-        input: InputSequence,
-        payload: &MovePayload,
-        requested: crate::ids::RootId,
-    ) -> Result<bool, EngineError> {
-        Ok(self
-            .complete_root_source(payload)
-            .map_err(|_| EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            })?
-            .is_none_or(|source| source.root() == requested))
+        ))
     }
 
     fn complete_root_source(
@@ -6164,24 +4872,27 @@ impl DockEngine {
         }
     }
 
-    fn preflight_command(
-        &self,
-        input: InputSequence,
-        command: &WorkspaceCommand,
-    ) -> Result<CommandApplication, EngineError> {
-        self.stage_workspace_command(input, &self.policy, command, None)
-            .map(|(_, application)| application)
-    }
-
     fn apply_interaction_command(
         &mut self,
         input: InputSequence,
         command: &WorkspaceCommand,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<CommandApplication, EngineError> {
-        self.apply_interaction_command_with_barrier(input, command, None, events)
+        let policy = self.policy.clone();
+        self.apply_interaction_command_with_policy(input, &policy, command, events)
     }
 
+    fn apply_interaction_command_with_policy(
+        &mut self,
+        input: InputSequence,
+        policy: &DockPolicySnapshot,
+        command: &WorkspaceCommand,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<CommandApplication, EngineError> {
+        self.apply_interaction_command_with_policy_and_barrier(input, policy, command, None, events)
+    }
+
+    #[cfg(test)]
     fn apply_interaction_command_with_barrier(
         &mut self,
         input: InputSequence,
@@ -6189,33 +4900,29 @@ impl DockEngine {
         action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<CommandApplication, EngineError> {
-        let (candidate, application) =
-            self.stage_workspace_command(input, &self.policy, command, action_barrier)?;
-        if let Some(candidate) = candidate {
-            self.workspace = candidate;
-            self.reconcile_viewport_focus_authority();
-        }
-        self.record_interaction_command_application(input, application, events)
+        let policy = self.policy.clone();
+        self.apply_interaction_command_with_policy_and_barrier(
+            input,
+            &policy,
+            command,
+            action_barrier,
+            events,
+        )
     }
 
-    fn apply_existing_contained_rect_update(
+    fn apply_interaction_command_with_policy_and_barrier(
         &mut self,
         input: InputSequence,
+        policy: &DockPolicySnapshot,
         command: &WorkspaceCommand,
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<CommandApplication, EngineError> {
-        if !matches!(command, WorkspaceCommand::UpdateContainedRect { .. }) {
-            return Err(EngineError::Interaction {
-                input,
-                source: InteractionCounterError::StateInvariant,
-            });
-        }
-        let mut policy = self.policy.clone();
-        policy.set_allow_contained_floating(true);
         let (candidate, application) =
-            self.stage_workspace_command(input, &policy, command, None)?;
+            self.stage_workspace_command(input, policy, command, action_barrier)?;
         if let Some(candidate) = candidate {
-            self.workspace = candidate;
+            self.publish_workspace(candidate);
+            self.reconcile_viewport_focus_authority();
         }
         self.record_interaction_command_application(input, application, events)
     }
@@ -6230,7 +4937,6 @@ impl DockEngine {
             && *changed
         {
             self.advance_revision(input)?;
-            self.invalidate_scene();
             events.push(WorkspaceEvent::new(
                 input,
                 self.version,
@@ -6240,19 +4946,323 @@ impl DockEngine {
         Ok(application)
     }
 
-    fn invalidate_scene(&mut self) {
-        self.scene = None;
-        self.scene_coordinate_authority.clear();
+    fn recovery_policy_request(
+        workspace: &Workspace,
+        source_surface: crate::ids::SurfaceId,
+        host_surface: crate::ids::SurfaceId,
+    ) -> Result<DockSurfaceRecoveryPolicyRequest, CommandError> {
+        let presentation =
+            workspace
+                .surface(source_surface)
+                .ok_or(CommandError::MissingSurface {
+                    surface: source_surface,
+                })?;
+        let mut roots = BTreeMap::new();
+        if let Some(root) = presentation.main_root {
+            Self::insert_recovery_root_facts(
+                workspace,
+                &mut roots,
+                root,
+                DockPresentationMode::Native,
+            )?;
+        }
+        for floating in &presentation.contained {
+            let contained =
+                workspace
+                    .contained_floating(*floating)
+                    .ok_or(CommandError::MissingFloating {
+                        floating: *floating,
+                    })?;
+            Self::insert_recovery_root_facts(
+                workspace,
+                &mut roots,
+                contained.root,
+                DockPresentationMode::Contained,
+            )?;
+        }
+        Ok(DockSurfaceRecoveryPolicyRequest::new(
+            source_surface,
+            host_surface,
+            roots,
+        ))
+    }
+
+    fn insert_recovery_root_facts(
+        workspace: &Workspace,
+        roots: &mut BTreeMap<crate::ids::RootId, DockSurfaceRecoveryRootFacts>,
+        root: crate::ids::RootId,
+        presentation: DockPresentationMode,
+    ) -> Result<(), CommandError> {
+        let record = workspace
+            .root(root)
+            .ok_or(CommandError::MissingRoot { root })?;
+        let facts = DockSurfaceRecoveryRootFacts::new(
+            presentation,
+            workspace.collect_items_in_subtree(record.node),
+        );
+        if roots.insert(root, facts).is_some() {
+            return Err(CommandError::Invariant {
+                stage: "normalize surface recovery roots",
+            });
+        }
+        Ok(())
+    }
+
+    fn next_surface_recovery_obligation_id(
+        &self,
+        input: InputSequence,
+    ) -> Result<SurfaceRecoveryObligationId, EngineError> {
+        self.last_surface_recovery_obligation
+            .checked_next()
+            .ok_or(EngineError::SurfaceRecoveryObligationExhausted { input })
+    }
+
+    fn authorize_surface_recovery_obligation(
+        &self,
+        input: InputSequence,
+        id: SurfaceRecoveryObligationId,
+        workspace: &Workspace,
+        source_surface: crate::ids::SurfaceId,
+        target: SurfaceRecoveryTarget,
+        policy: &DockPolicySnapshot,
+    ) -> Result<SurfaceRecoveryObligation, CommandError> {
+        if workspace.surface(target.host_surface()).is_none() {
+            return Err(CommandError::SurfaceLifecycleFrozen {
+                surface: target.host_surface(),
+            });
+        }
+        let request =
+            Self::recovery_policy_request(workspace, source_surface, target.host_surface())?;
+        self.authorize_surface_recovery_obligation_for_request(input, id, request, target, policy)
+    }
+
+    fn authorize_surface_recovery_obligation_for_request(
+        &self,
+        _input: InputSequence,
+        id: SurfaceRecoveryObligationId,
+        request: DockSurfaceRecoveryPolicyRequest,
+        target: SurfaceRecoveryTarget,
+        policy: &DockPolicySnapshot,
+    ) -> Result<SurfaceRecoveryObligation, CommandError> {
+        if let PolicyDecision::Reject(reason) =
+            policy.evaluate(&DockPolicyRequest::RecoverSurface(request.clone()))
+        {
+            return Err(CommandError::Policy(reason));
+        }
+        SurfaceRecoveryObligation::new(
+            id,
+            self.authority_domain,
+            request,
+            target,
+            policy.revision(),
+        )
+        .map_err(|_| CommandError::SurfaceLifecycleFrozen {
+            surface: target.host_surface(),
+        })
+    }
+
+    fn stage_workspace_publication(
+        &self,
+        candidate: Workspace,
+        policy: &DockPolicySnapshot,
+    ) -> Result<StagedWorkspacePublication, CommandError> {
+        self.stage_workspace_publication_with_authority(
+            candidate,
+            policy,
+            WorkspacePublicationAuthority::Ordinary,
+        )
+    }
+
+    fn stage_workspace_publication_with_authority(
+        &self,
+        candidate: Workspace,
+        policy: &DockPolicySnapshot,
+        authority: WorkspacePublicationAuthority,
+    ) -> Result<StagedWorkspacePublication, CommandError> {
+        let anchors = self.root_recovery_anchors.clone();
+        let mut recoveries = self.bound_surface_recoveries.clone();
+        let recovery_commit = match authority {
+            WorkspacePublicationAuthority::RecoveryCommit {
+                source_surface,
+                obligation,
+            } => Some((source_surface, obligation)),
+            WorkspacePublicationAuthority::Ordinary
+            | WorkspacePublicationAuthority::NativeCommit { .. } => None,
+        };
+        if let Some((source_surface, obligation)) = recovery_commit
+            && !recoveries
+                .get(&source_surface)
+                .is_some_and(|current| current.obligation.id() == obligation)
+        {
+            return Err(CommandError::SurfaceLifecycleFrozen {
+                surface: source_surface,
+            });
+        }
+        let live_surfaces = recoveries.keys().copied().collect::<Vec<_>>();
+        for surface in live_surfaces {
+            let bound = recoveries
+                .get(&surface)
+                .cloned()
+                .ok_or(CommandError::Invariant {
+                    stage: "load recovery obligation",
+                })?;
+            if candidate.surface(surface).is_none() {
+                continue;
+            }
+            let obligation = &bound.obligation;
+            let host = obligation.request().host_surface();
+            if candidate.surface(host).is_none()
+                || anchors.get(&host) != Some(&obligation.target().anchor())
+            {
+                return Err(CommandError::SurfaceLifecycleFrozen { surface: host });
+            }
+            let request = Self::recovery_policy_request(&candidate, surface, host)?;
+            if request != *obligation.request() {
+                if let PolicyDecision::Reject(reason) =
+                    policy.evaluate(&DockPolicyRequest::RecoverSurface(request.clone()))
+                {
+                    return Err(CommandError::Policy(reason));
+                }
+                let next = obligation
+                    .reauthorized_for(request, policy.revision())
+                    .map_err(|_| CommandError::SurfaceLifecycleFrozen { surface })?;
+                recoveries.insert(surface, bound.reauthorize(next));
+            }
+        }
+
+        for (surface, bound) in &recoveries {
+            let obligation = &bound.obligation;
+            if let Some(converted) = obligation.target().converted_main()
+                && candidate.contained_floating(converted.floating()).is_some()
+            {
+                let exact_recovery_consumption = matches!(
+                    authority,
+                    WorkspacePublicationAuthority::RecoveryCommit {
+                        source_surface,
+                        obligation: obligation_id,
+                    } if source_surface == *surface && obligation_id == obligation.id()
+                ) && candidate
+                    .presentation_for_root(converted.source_root())
+                    == Some(crate::RootPresentationOwner::Contained {
+                        surface: obligation.target().host_surface(),
+                        floating: converted.floating(),
+                    });
+                if !exact_recovery_consumption {
+                    return Err(CommandError::SurfaceLifecycleFrozen { surface: *surface });
+                }
+            }
+        }
+
+        if let Some((source_surface, obligation)) = recovery_commit {
+            if candidate.surface(source_surface).is_some() {
+                return Err(CommandError::SurfaceLifecycleFrozen {
+                    surface: source_surface,
+                });
+            }
+            let removed =
+                recoveries
+                    .remove(&source_surface)
+                    .ok_or(CommandError::SurfaceLifecycleFrozen {
+                        surface: source_surface,
+                    })?;
+            if removed.obligation.id() != obligation {
+                return Err(CommandError::SurfaceLifecycleFrozen {
+                    surface: source_surface,
+                });
+            }
+        }
+        for (saga_id, saga) in self.viewport.native_create_sagas() {
+            let prepared = saga.prepared();
+            let obligation = prepared.recovery_obligation();
+            let surface = obligation.request().source_surface();
+            if let Some(converted) = obligation.target().converted_main()
+                && candidate.contained_floating(converted.floating()).is_some()
+            {
+                return Err(CommandError::SurfaceLifecycleFrozen { surface });
+            }
+            if candidate.surface(surface).is_some() {
+                if !matches!(
+                    authority,
+                    WorkspacePublicationAuthority::NativeCommit { saga } if saga == saga_id
+                ) || Self::recovery_policy_request(
+                    &candidate,
+                    surface,
+                    obligation.request().host_surface(),
+                )? != *obligation.request()
+                {
+                    return Err(CommandError::SurfaceLifecycleFrozen { surface });
+                }
+            }
+        }
+
+        let referenced_anchors = recoveries
+            .iter()
+            .filter(|(surface, _)| candidate.surface(**surface).is_some())
+            .map(|(_, bound)| bound.obligation.target().anchor())
+            .chain(
+                self.viewport
+                    .native_create_sagas()
+                    .map(|(_, saga)| saga.prepared().recovery_obligation().target().anchor()),
+            )
+            .collect::<BTreeSet<_>>();
+        for anchor in &referenced_anchors {
+            if anchors.get(&anchor.surface()) != Some(anchor)
+                || candidate.surface(anchor.surface()).is_none()
+            {
+                return Err(CommandError::SurfaceLifecycleFrozen {
+                    surface: anchor.surface(),
+                });
+            }
+        }
+        Ok(StagedWorkspacePublication {
+            workspace: candidate,
+            root_recovery_anchors: anchors,
+            bound_surface_recoveries: recoveries,
+        })
     }
 
     fn stage_workspace_command(
         &self,
         input: InputSequence,
-        policy: &DockPolicy,
+        policy: &DockPolicySnapshot,
         command: &WorkspaceCommand,
         action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
-    ) -> Result<(Option<Workspace>, CommandApplication), EngineError> {
-        let mut candidate = self.workspace.clone();
+    ) -> Result<(Option<StagedWorkspacePublication>, CommandApplication), EngineError> {
+        self.stage_workspace_command_with_authority(
+            input,
+            policy,
+            command,
+            action_barrier,
+            WorkspacePublicationAuthority::Ordinary,
+        )
+    }
+
+    fn stage_workspace_command_for_native_commit(
+        &self,
+        input: InputSequence,
+        policy: &DockPolicySnapshot,
+        command: &WorkspaceCommand,
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
+        saga: NativeCreateSagaId,
+    ) -> Result<(Option<StagedWorkspacePublication>, CommandApplication), EngineError> {
+        self.stage_workspace_command_with_authority(
+            input,
+            policy,
+            command,
+            action_barrier,
+            WorkspacePublicationAuthority::NativeCommit { saga },
+        )
+    }
+
+    fn stage_workspace_command_with_authority(
+        &self,
+        input: InputSequence,
+        policy: &DockPolicySnapshot,
+        command: &WorkspaceCommand,
+        action_barrier: Option<&BTreeMap<crate::ids::SurfaceId, SurfaceRosterDisposition>>,
+        authority: WorkspacePublicationAuthority,
+    ) -> Result<(Option<StagedWorkspacePublication>, CommandApplication), EngineError> {
+        let mut candidate = self.clone_workspace_candidate();
         let report = match WorkspaceTransaction::from_commands([command.clone()])
             .apply(&mut candidate, policy)
         {
@@ -6275,7 +5285,20 @@ impl DockEngine {
             ));
         }
         let application = Self::command_application_from_report(input, report)?;
-        Ok((Some(candidate), application))
+        let publication =
+            match self.stage_workspace_publication_with_authority(candidate, policy, authority) {
+                Ok(publication) => publication,
+                Err(source) if source.is_expected_rejection() => {
+                    return Ok((None, CommandApplication::Rejected(source)));
+                }
+                Err(source) => {
+                    return Err(EngineError::Command {
+                        input,
+                        source: TransactionError::Command { index: 0, source },
+                    });
+                }
+            };
+        Ok((Some(publication), application))
     }
 
     fn first_workspace_publication_mismatch(
@@ -6290,12 +5313,269 @@ impl DockEngine {
                 .first_workspace_mismatch_excluding(candidate, surface),
             None => self.surface_recovery.first_workspace_mismatch(candidate),
         };
-        persistent.or_else(|| {
-            action_barrier?.values().find_map(|roster| {
+        let transient = action_barrier.and_then(|barrier| {
+            barrier.values().find_map(|roster| {
                 (Some(roster.surface()) != excluded && !roster.matches_workspace(candidate))
                     .then_some(roster.surface())
             })
-        })
+        });
+        persistent.or(transient)
+    }
+
+    fn validate_fresh_surface_identity(&self, surface: SurfaceId) -> Result<(), CommandError> {
+        self.presentation_identity.validate_fresh_surface(surface)
+    }
+
+    fn validate_fresh_or_continuing_surface_identity(
+        &self,
+        surface: SurfaceId,
+    ) -> Result<(), CommandError> {
+        // A host frame may vacate and repopulate one still-bound surface before
+        // publication. The binding gives that exact surface continuity through
+        // the atomic tick; a pending native proposal never receives this escape
+        // hatch because its tuple is a distinct, already-retired reservation.
+        let continuing = self.workspace.surface(surface).is_none()
+            && self.viewport.viewport(surface).is_some()
+            && !self
+                .viewport
+                .native_create_sagas()
+                .any(|(_, saga)| saga.prepared().proposal().surface() == surface);
+        self.presentation_identity
+            .validate_fresh_or_continuing_surface(surface, continuing)
+    }
+
+    fn validate_fresh_root_identity(&self, root: RootId) -> Result<(), CommandError> {
+        self.presentation_identity.validate_fresh_root(root)
+    }
+
+    fn validate_fresh_floating_identity(
+        &self,
+        floating: FloatingPresentationId,
+    ) -> Result<(), CommandError> {
+        self.presentation_identity.validate_fresh_floating(floating)
+    }
+
+    fn validate_application_command_identity_freshness(
+        &self,
+        command: &WorkspaceCommand,
+    ) -> Result<(), CommandError> {
+        match command {
+            WorkspaceCommand::CreateSurfaceRoot { surface, root, .. } => {
+                self.validate_fresh_or_continuing_surface_identity(*surface)?;
+                self.validate_fresh_root_identity(*root)
+            }
+            WorkspaceCommand::CreateContainedRoot { root, floating, .. } => {
+                self.validate_fresh_root_identity(*root)?;
+                self.validate_fresh_floating_identity(*floating)
+            }
+            WorkspaceCommand::InstallMainRoot { root, .. } => {
+                self.validate_fresh_root_identity(*root)
+            }
+            WorkspaceCommand::RehomeRoot { source, target } => match target {
+                RootPresentationTarget::NewSurface { surface } => {
+                    self.validate_fresh_or_continuing_surface_identity(*surface)
+                }
+                RootPresentationTarget::Contained { floating, .. }
+                    if !matches!(
+                        self.workspace.presentation_for_root(source.root()),
+                        Some(crate::RootPresentationOwner::Contained { .. })
+                    ) =>
+                {
+                    self.validate_fresh_floating_identity(*floating)
+                }
+                RootPresentationTarget::Main { .. } | RootPresentationTarget::Contained { .. } => {
+                    Ok(())
+                }
+            },
+            WorkspaceCommand::Select { .. }
+            | WorkspaceCommand::Reorder { .. }
+            | WorkspaceCommand::Open { .. }
+            | WorkspaceCommand::Move { .. }
+            | WorkspaceCommand::ResizeSplits { .. }
+            | WorkspaceCommand::PromoteContained { .. }
+            | WorkspaceCommand::UpdateContainedRect { .. }
+            | WorkspaceCommand::UpdateContainedPresentation { .. }
+            | WorkspaceCommand::RaiseContained { .. }
+            | WorkspaceCommand::RemoveEmptyRoot { .. } => Ok(()),
+        }
+    }
+
+    fn adopt_application_command_identities(&mut self, command: &WorkspaceCommand) {
+        match command {
+            WorkspaceCommand::CreateSurfaceRoot { surface, root, .. } => {
+                self.presentation_identity.observe_surface(*surface);
+                self.presentation_identity.observe_root(*root);
+            }
+            WorkspaceCommand::CreateContainedRoot { root, floating, .. } => {
+                self.presentation_identity.observe_root(*root);
+                self.presentation_identity.observe_floating(*floating);
+            }
+            WorkspaceCommand::InstallMainRoot { root, .. } => {
+                self.presentation_identity.observe_root(*root);
+            }
+            WorkspaceCommand::RehomeRoot { source, target } => match target {
+                RootPresentationTarget::NewSurface { surface } => {
+                    self.presentation_identity.observe_surface(*surface);
+                }
+                RootPresentationTarget::Contained { floating, .. }
+                    if !matches!(
+                        self.workspace.presentation_for_root(source.root()),
+                        Some(crate::RootPresentationOwner::Contained { .. })
+                    ) =>
+                {
+                    self.presentation_identity.observe_floating(*floating);
+                }
+                RootPresentationTarget::Main { .. } | RootPresentationTarget::Contained { .. } => {}
+            },
+            WorkspaceCommand::Select { .. }
+            | WorkspaceCommand::Reorder { .. }
+            | WorkspaceCommand::Open { .. }
+            | WorkspaceCommand::Move { .. }
+            | WorkspaceCommand::ResizeSplits { .. }
+            | WorkspaceCommand::PromoteContained { .. }
+            | WorkspaceCommand::UpdateContainedRect { .. }
+            | WorkspaceCommand::UpdateContainedPresentation { .. }
+            | WorkspaceCommand::RaiseContained { .. }
+            | WorkspaceCommand::RemoveEmptyRoot { .. } => {}
+        }
+    }
+
+    fn validate_workspace_replacement_identity_freshness(
+        &self,
+        replacement: &Workspace,
+    ) -> Result<(), CommandError> {
+        for (surface, _) in replacement.surfaces() {
+            if self.workspace.surface(surface).is_none() {
+                self.validate_fresh_surface_identity(surface)?;
+            }
+        }
+        for (root, _) in replacement.roots() {
+            if self.workspace.root(root).is_none() {
+                self.validate_fresh_root_identity(root)?;
+            }
+        }
+        for (floating, _) in replacement.contained_floatings() {
+            if self.workspace.contained_floating(floating).is_none() {
+                self.validate_fresh_floating_identity(floating)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn observe_pending_native_identity_reservations(&mut self) {
+        let reservations = self
+            .viewport
+            .native_create_sagas()
+            .map(|(_, saga)| {
+                (
+                    saga.prepared().proposal().surface(),
+                    saga.prepared().proposal().root(),
+                    saga.prepared().proposal().converted_main().floating(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.presentation_identity
+            .observe_native_reservations(reservations);
+    }
+
+    #[cfg(test)]
+    fn reserve_presentation_root_identity(&mut self) -> Result<RootId, EngineError> {
+        self.observe_pending_native_identity_reservations();
+        self.presentation_identity
+            .observe_workspace(&self.workspace);
+        self.presentation_identity.reserve_root()
+    }
+
+    #[cfg(test)]
+    fn reserve_presentation_surface_identity(
+        &mut self,
+    ) -> Result<crate::ids::SurfaceId, EngineError> {
+        self.observe_pending_native_identity_reservations();
+        self.presentation_identity
+            .observe_workspace(&self.workspace);
+        self.presentation_identity.reserve_surface()
+    }
+
+    fn reserve_presentation_floating_identity(
+        &mut self,
+    ) -> Result<FloatingPresentationId, EngineError> {
+        self.observe_pending_native_identity_reservations();
+        self.presentation_identity
+            .observe_workspace(&self.workspace);
+        self.presentation_identity.reserve_floating()
+    }
+
+    fn reserve_drag_presentation_identities(
+        &mut self,
+        reserve_root: bool,
+        reserve_floating: bool,
+    ) -> Result<DragPresentationIdentityReservation, EngineError> {
+        self.observe_pending_native_identity_reservations();
+        self.presentation_identity
+            .observe_workspace(&self.workspace);
+        self.presentation_identity
+            .reserve_drag_presentation(reserve_root, reserve_floating)
+    }
+
+    fn publish_workspace(&mut self, publication: StagedWorkspacePublication) {
+        self.presentation_identity
+            .observe_workspace(&publication.workspace);
+        self.workspace = publication.workspace;
+        self.root_recovery_anchors = publication.root_recovery_anchors;
+        self.bound_surface_recoveries = publication.bound_surface_recoveries;
+    }
+
+    fn settle_semantic_surface_vacancies(
+        &mut self,
+        _input: InputSequence,
+        authorities: &[SurfaceVacancyAuthority],
+    ) -> Result<(), EngineError> {
+        for authority in authorities {
+            let surface = authority.surface();
+            if self
+                .bound_surface_recoveries
+                .get(&surface)
+                .is_some_and(|bound| Some(bound.binding) == authority.binding())
+            {
+                if let Some(bound) = self.bound_surface_recoveries.remove(&surface)
+                    && let Some(resource) = bound.retained_staging_resource
+                {
+                    self.viewport
+                        .settle_vacated_native_staging_resource(
+                            resource,
+                            bound.binding,
+                            bound.obligation.id(),
+                        )
+                        .map_err(|source| EngineError::Viewport {
+                            input: self.last_input,
+                            source,
+                        })?;
+                }
+            }
+        }
+        let referenced_anchors = self
+            .bound_surface_recoveries
+            .values()
+            .map(|bound| bound.obligation.target().anchor())
+            .chain(
+                self.viewport
+                    .native_create_sagas()
+                    .map(|(_, saga)| saga.prepared().recovery_obligation().target().anchor()),
+            )
+            .collect::<BTreeSet<_>>();
+        for authority in authorities {
+            let surface = authority.surface();
+            let Some(anchor) = self.root_recovery_anchors.get(&surface).copied() else {
+                continue;
+            };
+            if referenced_anchors.contains(&anchor) {
+                return Err(EngineError::ReductionCauseInvariant {
+                    detail: "tick-final vacancy retained a referenced root recovery anchor",
+                });
+            }
+            self.root_recovery_anchors.remove(&surface);
+        }
+        Ok(())
     }
 
     fn command_application_from_report(
@@ -6317,6 +5597,7 @@ impl DockEngine {
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
         command: &WorkspaceCommand,
+        policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
@@ -6328,7 +5609,7 @@ impl DockEngine {
         }
 
         let (candidate, application) =
-            self.stage_workspace_command(input, &self.policy, command, None)?;
+            self.stage_workspace_command(input, policy, command, None)?;
         let CommandApplication::Applied { outcome, changed } = application else {
             let CommandApplication::Rejected(error) = application else {
                 unreachable!("command application variants are exhaustive")
@@ -6338,7 +5619,14 @@ impl DockEngine {
                 version: self.version,
             });
         };
-        self.workspace = candidate.ok_or(EngineError::MissingCommandOutcome { input })?;
+        if let Err(error) = self.validate_application_command_identity_freshness(command) {
+            return Ok(InputOutcome::CommandRejected {
+                error,
+                version: self.version,
+            });
+        }
+        self.adopt_application_command_identities(command);
+        self.publish_workspace(candidate.ok_or(EngineError::MissingCommandOutcome { input })?);
         self.reconcile_viewport_focus_authority();
         if changed {
             self.advance_revision(input)?;
@@ -6362,1452 +5650,102 @@ impl DockEngine {
         })
     }
 
+    #[inline]
+    fn clone_workspace_candidate(&self) -> Workspace {
+        #[cfg(test)]
+        crate::drop_resolver::structural_work::record_engine_workspace_candidate_clone(
+            &self.workspace,
+        );
+        self.workspace.clone()
+    }
+
     fn candidate(&self) -> Self {
-        Self {
+        #[cfg(test)]
+        {
+            let presentation = self.presentation_authority.presentation.diagnostics();
+            let scene_surfaces = self.presentation_authority.scene.surfaces().len();
+            let scene_retained_plans = self
+                .presentation_authority
+                .scene
+                .surfaces()
+                .map(|(_, scene)| scene.retained_plan_stamps().unique().count())
+                .sum();
+            let scene_paint_hit_regions = self
+                .presentation_authority
+                .scene
+                .surfaces()
+                .filter_map(|(_, scene)| scene.paint_projection())
+                .map(|projection| projection.hit_manifest().regions().len())
+                .sum();
+            crate::drop_resolver::structural_work::record_engine_atomic_candidate_clone(
+                &self.workspace,
+                crate::drop_resolver::structural_work::EngineCloneVolume {
+                    scene_surfaces,
+                    scene_retained_plans,
+                    scene_paint_hit_regions,
+                    presentation_hosts: presentation.retained_host_states(),
+                    presentation_streams: presentation.retained_stream_states(),
+                    presentation_pending_outputs: presentation.pending_outputs(),
+                    live_pointer_providers: usize::from(self.pointer_provider().is_some()),
+                    source_watermarks: self.source_watermarks.len(),
+                },
+            );
+        }
+        let mut candidate = Self {
+            authority_domain: self.authority_domain,
             workspace: self.workspace.clone(),
+            presentation_identity: self.presentation_identity,
             policy: self.policy.clone(),
             version: self.version,
-            scene: self.scene.clone(),
-            scene_coordinate_authority: self.scene_coordinate_authority.clone(),
-            last_scene_generation: self.last_scene_generation,
+            presentation_authority: self.presentation_authority.clone(),
+            pointer_journal: self.pointer_journal.clone(),
+            backend_ingress: self.backend_ingress.clone(),
+            pointer_receiver_attempt_issuer: Arc::clone(&self.pointer_receiver_attempt_issuer),
+            scroll_interaction: self.scroll_interaction.clone(),
             interaction: self.interaction.clone(),
+            pending_drag_release: self.pending_drag_release.clone(),
+            pending_contained_transform_release: self.pending_contained_transform_release.clone(),
+            close: self.close.clone(),
             viewport: self.viewport.clone(),
             viewport_focus: self.viewport_focus.clone(),
             last_focus_reducer_generation: self.last_focus_reducer_generation,
             surface_recovery: self.surface_recovery.clone(),
+            last_root_recovery_anchor: self.last_root_recovery_anchor,
+            root_recovery_anchors: self.root_recovery_anchors.clone(),
+            last_surface_recovery_obligation: self.last_surface_recovery_obligation,
+            bound_surface_recoveries: self.bound_surface_recoveries.clone(),
+            native_admission: self.native_admission.clone(),
+            last_reducer_tick: self.last_reducer_tick,
+            source_watermarks: self.source_watermarks.clone(),
             last_input: self.last_input,
-            pending: self.pending.clone(),
-        }
+        };
+        candidate.close.compact_published_terminal();
+        let mut retained_effects = BTreeSet::new();
+        candidate
+            .close
+            .extend_referenced_effects(&mut retained_effects);
+        candidate
+            .viewport_focus
+            .extend_referenced_effects(&mut retained_effects);
+        candidate
+            .viewport
+            .extend_referenced_effects(&mut retained_effects);
+        candidate
+            .viewport
+            .compact_published_terminal_effects(&retained_effects);
+        candidate
+    }
+
+    fn mark_runtime_boundary_published(&mut self) {
+        self.close.mark_boundary_published();
+        self.viewport.mark_effect_boundary_published();
+    }
+
+    fn publish_candidate(&mut self, mut candidate: Self) {
+        candidate.mark_runtime_boundary_published();
+        *self = candidate;
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::command::DockTarget;
-    use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual};
-    use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-    use crate::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation};
-    use crate::hit_region::HitRegion;
-    use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId, WorkspaceEpoch};
-    use crate::intent::{
-        Authority, ContainedTearOffProposal, DragOrigin, PointerButton, PointerId, RendererIntent,
-        SurfacePointer,
-    };
-    use crate::interaction::{DragSessionId, InteractionOutcome, InteractionStatus};
-    use crate::platform::{
-        ObservedWindow, PlatformCapabilities, PlatformCapability, WindowPresentationState,
-    };
-    use crate::scene::{NodeSceneId, ReadySurfaceScene, SceneLayerKey, SemanticRect};
-    use crate::transition::InputOutcome;
-    use crate::viewport::{ViewportBinding, ViewportRole, WindowIncarnation, WindowToken};
-    use crate::viewport_focus::{
-        FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
-        PaneFocusIntentGeneration, PaneFocusObservationGeneration, PaneFocusObservationTransition,
-        PanelFocusRecord, ViewportActivationRequest,
-    };
-
-    const SOURCE_ROOT: RootId = RootId::new(1);
-    const TARGET_ROOT: RootId = RootId::new(2);
-    const SOURCE_SURFACE: SurfaceId = SurfaceId::new(1);
-    const TARGET_SURFACE: SurfaceId = SurfaceId::new(2);
-    const TEST_POINTER: PointerId = PointerId::new(1);
-
-    struct CounterFixture {
-        engine: DockEngine,
-        source_tabs: crate::ids::NodeId,
-        target_tabs: crate::ids::NodeId,
-    }
-
-    fn test_rect() -> LogicalRect {
-        LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("test rectangle must be valid")
-    }
-
-    fn counter_fixture() -> CounterFixture {
-        let mut builder = Workspace::builder();
-        let source_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
-        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(source_tabs));
-        builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
-        let workspace = builder.build().expect("counter workspace must be valid");
-        CounterFixture {
-            engine: DockEngine::new(workspace, DockPolicy::default())
-                .expect("counter engine must be valid"),
-            source_tabs,
-            target_tabs,
-        }
-    }
-
-    #[test]
-    fn stale_cleanup_retry_version_is_rejected_without_effects_or_state_change() {
-        let mut fixture = counter_fixture();
-        let stale = fixture.engine.version();
-        fixture
-            .engine
-            .enqueue_workspace_replacement(fixture.engine.workspace().clone())
-            .expect("workspace replacement must enqueue");
-        fixture
-            .engine
-            .reduce_pending()
-            .expect("workspace replacement must advance the epoch");
-        assert_ne!(fixture.engine.version(), stale);
-
-        let before = fixture.engine.candidate();
-        let effect_count = fixture.engine.viewport.effects().records().count();
-        let outcome = fixture
-            .engine
-            .reduce_viewport_cleanup_retry(
-                InputSequence::new(900),
-                stale,
-                crate::effect::EffectId::new(901),
-            )
-            .expect("stale retry must be a typed nonfatal rejection");
-
-        assert_eq!(
-            outcome,
-            InputOutcome::StaleRejected {
-                expected: stale,
-                accepted_base: fixture.engine.version(),
-            }
-        );
-        assert_eq!(fixture.engine, before);
-        assert_eq!(
-            fixture.engine.viewport.effects().records().count(),
-            effect_count
-        );
-    }
-
-    struct FocusRevealFixture {
-        engine: DockEngine,
-        tabs: crate::ids::NodeId,
-        binding: ViewportBinding,
-        focus_generation: u64,
-    }
-
-    fn focus_reveal_fixture() -> FocusRevealFixture {
-        let mut builder = Workspace::builder();
-        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        let workspace = builder
-            .build()
-            .expect("focus reveal workspace must be valid");
-        let mut engine =
-            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
-        let token = WindowToken::new(1);
-        engine
-            .enqueue_viewport_registration(SOURCE_SURFACE, token, ViewportRole::Root, None)
-            .expect("viewport registration must enqueue");
-        let registered = engine
-            .reduce_pending()
-            .expect("viewport registration must reduce");
-        let InputOutcome::ViewportRegistered { binding } = registered.reduced_inputs()[0].outcome()
-        else {
-            panic!("viewport registration must publish its exact binding");
-        };
-        let binding = *binding;
-        let mut fixture = FocusRevealFixture {
-            engine,
-            tabs,
-            binding,
-            focus_generation: 0,
-        };
-        publish_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Dock(binding)),
-        );
-        fixture
-    }
-
-    fn publish_focus_snapshot(
-        fixture: &mut FocusRevealFixture,
-        focused: Authority<GlobalFocusedWindow>,
-    ) -> EngineTransition {
-        fixture.focus_generation += 1;
-        let mut capabilities = PlatformCapabilities::default();
-        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        capabilities.set_global_focus_observation(PlatformCapability::Supported);
-        capabilities.set_window_activation_control(PlatformCapability::Supported);
-        let snapshot = PlatformSnapshot::new(
-            capabilities,
-            FocusObservationEnvelope::new(
-                FocusObservationGeneration::new(fixture.focus_generation),
-                focused,
-                Authority::Known(None),
-            ),
-            vec![
-                ObservedWindow::new(fixture.binding.token())
-                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
-            ],
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("focus snapshot must be canonical");
-        fixture
-            .engine
-            .enqueue_platform_snapshot(snapshot)
-            .expect("focus snapshot must enqueue");
-        fixture
-            .engine
-            .reduce_pending()
-            .expect("focus snapshot must reduce")
-    }
-
-    fn selected_item(fixture: &FocusRevealFixture) -> Option<ItemId> {
-        let Node::Tabs { selected, .. } = fixture
-            .engine
-            .workspace()
-            .node(fixture.tabs)
-            .expect("focus tabs must remain current")
-        else {
-            panic!("focus fixture node must remain tabs");
-        };
-        *selected
-    }
-
-    struct FocusEffectFixture {
-        engine: DockEngine,
-        binding_a: ViewportBinding,
-        binding_b: ViewportBinding,
-        focus_generation: u64,
-    }
-
-    fn focus_effect_fixture() -> FocusEffectFixture {
-        let mut builder = Workspace::builder();
-        let tabs_a = builder.insert_node(Node::tabs([ItemId::new(1)]));
-        let tabs_b = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(tabs_a));
-        builder.set_root(TARGET_ROOT, RootRecord::new(tabs_b));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
-        let workspace = builder
-            .build()
-            .expect("focus effect workspace must be valid");
-        let mut engine =
-            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
-        engine
-            .enqueue_viewport_registration(
-                SOURCE_SURFACE,
-                WindowToken::new(1),
-                ViewportRole::Root,
-                None,
-            )
-            .expect("first viewport registration must enqueue");
-        engine
-            .enqueue_viewport_registration(
-                TARGET_SURFACE,
-                WindowToken::new(2),
-                ViewportRole::Root,
-                None,
-            )
-            .expect("second viewport registration must enqueue");
-        engine
-            .reduce_pending()
-            .expect("viewport registrations must reduce");
-        let binding_a = engine
-            .viewport()
-            .viewport(SOURCE_SURFACE)
-            .expect("first viewport must be current")
-            .binding();
-        let binding_b = engine
-            .viewport()
-            .viewport(TARGET_SURFACE)
-            .expect("second viewport must be current")
-            .binding();
-        let mut fixture = FocusEffectFixture {
-            engine,
-            binding_a,
-            binding_b,
-            focus_generation: 0,
-        };
-        publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(None),
-        );
-        fixture
-    }
-
-    fn publish_effect_focus_snapshot(
-        fixture: &mut FocusEffectFixture,
-        focused: Authority<GlobalFocusedWindow>,
-        acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
-    ) -> EngineTransition {
-        fixture.focus_generation += 1;
-        publish_effect_focus_snapshot_at(
-            fixture,
-            fixture.focus_generation,
-            focused,
-            acknowledged_effect,
-        )
-    }
-
-    fn publish_effect_focus_snapshot_at(
-        fixture: &mut FocusEffectFixture,
-        generation: u64,
-        focused: Authority<GlobalFocusedWindow>,
-        acknowledged_effect: Authority<Option<crate::effect::EffectId>>,
-    ) -> EngineTransition {
-        let mut capabilities = PlatformCapabilities::default();
-        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-        capabilities.set_global_focus_observation(PlatformCapability::Supported);
-        capabilities.set_window_activation_control(PlatformCapability::Supported);
-        let snapshot = PlatformSnapshot::new(
-            capabilities,
-            FocusObservationEnvelope::new(
-                FocusObservationGeneration::new(generation),
-                focused,
-                acknowledged_effect,
-            ),
-            vec![
-                ObservedWindow::new(fixture.binding_a.token())
-                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
-                ObservedWindow::new(fixture.binding_b.token())
-                    .with_presentation(Authority::Known(WindowPresentationState::Visible)),
-            ],
-            Vec::new(),
-            Vec::new(),
-        )
-        .expect("focus effect snapshot must be canonical");
-        fixture
-            .engine
-            .enqueue_platform_snapshot(snapshot)
-            .expect("focus effect snapshot must enqueue");
-        fixture
-            .engine
-            .reduce_pending()
-            .expect("focus effect snapshot must reduce")
-    }
-
-    fn request_focus_effect(
-        fixture: &mut FocusEffectFixture,
-        binding: ViewportBinding,
-        focus: PanelFocus,
-    ) -> (
-        crate::effect::EffectId,
-        crate::viewport_focus::ActivationGeneration,
-    ) {
-        fixture
-            .engine
-            .enqueue_viewport_activation(binding, focus)
-            .expect("activation must enqueue");
-        let transition = fixture
-            .engine
-            .reduce_pending()
-            .expect("activation must reduce");
-        let activation = transition
-            .reduced_inputs()
-            .iter()
-            .find_map(|input| match input.outcome() {
-                InputOutcome::ViewportActivationRequested { activation } => Some(*activation),
-                _ => None,
-            })
-            .expect("activation input must publish its generation");
-        let effect = transition
-            .platform_effects()
-            .iter()
-            .find_map(|request| match request.effect() {
-                crate::effect::PlatformEffect::RequestFocus {
-                    binding: requested, ..
-                } if *requested == binding => Some(request.id()),
-                _ => None,
-            })
-            .expect("activation must emit one exact focus effect");
-        (effect, activation.generation())
-    }
-
-    fn observed_focus_effect_ids(transition: &EngineTransition) -> Vec<crate::effect::EffectId> {
-        transition
-            .focus_delta()
-            .effects()
-            .iter()
-            .filter_map(|change| {
-                change
-                    .observed()
-                    .map(crate::viewport_focus::ObservedPlatformFocusEffect::effect)
-            })
-            .collect()
-    }
-
-    fn assert_focus_effect_observed(engine: &DockEngine, effect: crate::effect::EffectId) {
-        assert!(matches!(
-            engine
-                .viewport()
-                .effects()
-                .record(effect)
-                .map(crate::effect::EffectRecord::phase),
-            Some(crate::effect::EffectPhase::ObservedApplied { .. })
-        ));
-    }
-
-    #[test]
-    fn late_superseded_focus_ack_settles_only_its_effect_before_successor_completion() {
-        let mut fixture = focus_effect_fixture();
-        let binding_a = fixture.binding_a;
-        let binding_b = fixture.binding_b;
-        let (effect_a, activation_a) =
-            request_focus_effect(&mut fixture, binding_a, PanelFocus::Item(ItemId::new(1)));
-        let (effect_b, activation_b) =
-            request_focus_effect(&mut fixture, binding_b, PanelFocus::Item(ItemId::new(2)));
-
-        let late_a = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(effect_a)),
-        );
-        assert_eq!(observed_focus_effect_ids(&late_a), vec![effect_a]);
-        assert_focus_effect_observed(&fixture.engine, effect_a);
-        assert_eq!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_activation()
-                .map(crate::viewport_focus::PendingViewportActivation::generation),
-            Some(activation_b),
-            "late predecessor acknowledgement must not complete or cancel the successor"
-        );
-        assert!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_pane_intent()
-                .is_none()
-        );
-
-        let completed_b = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
-            Authority::Known(Some(effect_b)),
-        );
-        assert_eq!(observed_focus_effect_ids(&completed_b), vec![effect_b]);
-        assert_focus_effect_observed(&fixture.engine, effect_b);
-        assert!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_activation()
-                .is_none()
-        );
-        let intent = fixture
-            .engine
-            .viewport_focus()
-            .pending_pane_intent()
-            .expect("successor target observation must install its pane intent");
-        assert_eq!(intent.activation(), Some(activation_b));
-        assert_eq!(intent.target(), binding_b);
-        assert_eq!(intent.focus(), PanelFocus::Item(ItemId::new(2)));
-        assert_ne!(intent.activation(), Some(activation_a));
-    }
-
-    #[test]
-    fn one_envelope_can_settle_late_predecessor_and_complete_current_target() {
-        let mut fixture = focus_effect_fixture();
-        let binding_a = fixture.binding_a;
-        let binding_b = fixture.binding_b;
-        let (effect_a, _) =
-            request_focus_effect(&mut fixture, binding_a, PanelFocus::Item(ItemId::new(1)));
-        let (effect_b, activation_b) =
-            request_focus_effect(&mut fixture, binding_b, PanelFocus::Item(ItemId::new(2)));
-
-        let transition = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Dock(binding_b)),
-            Authority::Known(Some(effect_a)),
-        );
-        assert_eq!(
-            observed_focus_effect_ids(&transition),
-            vec![effect_a, effect_b],
-            "FocusDelta must retain both exact-A and target-B settlements in effect order"
-        );
-        assert_focus_effect_observed(&fixture.engine, effect_a);
-        assert_focus_effect_observed(&fixture.engine, effect_b);
-        assert_eq!(
-            transition.focus_delta().effects()[0]
-                .observed()
-                .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
-            Some(crate::viewport_focus::PlatformFocusEvidence::ExactEffectAcknowledgement)
-        );
-        assert_eq!(
-            transition.focus_delta().effects()[1]
-                .observed()
-                .map(crate::viewport_focus::ObservedPlatformFocusEffect::evidence),
-            Some(crate::viewport_focus::PlatformFocusEvidence::NewerMatchingObservation)
-        );
-        let intent = fixture
-            .engine
-            .viewport_focus()
-            .pending_pane_intent()
-            .expect("current target evidence must complete the successor");
-        assert_eq!(intent.activation(), Some(activation_b));
-        assert_eq!(intent.target(), binding_b);
-    }
-
-    #[test]
-    fn wrong_stale_incarnation_and_duplicate_focus_acks_do_not_settle_again() {
-        let mut fixture = focus_effect_fixture();
-        let binding_a = fixture.binding_a;
-        let binding_b = fixture.binding_b;
-        let (effect_a, _) = request_focus_effect(&mut fixture, binding_a, PanelFocus::None);
-        let (_, activation_b) = request_focus_effect(&mut fixture, binding_b, PanelFocus::None);
-
-        let wrong = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(crate::effect::EffectId::new(9_999))),
-        );
-        assert!(observed_focus_effect_ids(&wrong).is_empty());
-        assert_eq!(
-            fixture
-                .engine
-                .viewport()
-                .effects()
-                .record(effect_a)
-                .map(crate::effect::EffectRecord::phase),
-            Some(crate::effect::EffectPhase::Requested)
-        );
-
-        let stale_generation = fixture.focus_generation;
-        let stale = publish_effect_focus_snapshot_at(
-            &mut fixture,
-            stale_generation,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(effect_a)),
-        );
-        assert!(observed_focus_effect_ids(&stale).is_empty());
-        assert_eq!(
-            fixture
-                .engine
-                .viewport()
-                .effects()
-                .record(effect_a)
-                .map(crate::effect::EffectRecord::phase),
-            Some(crate::effect::EffectPhase::Requested)
-        );
-
-        let first = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(effect_a)),
-        );
-        assert_eq!(observed_focus_effect_ids(&first), vec![effect_a]);
-        let duplicate = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(effect_a)),
-        );
-        assert!(observed_focus_effect_ids(&duplicate).is_empty());
-        assert_eq!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_activation()
-                .map(crate::viewport_focus::PendingViewportActivation::generation),
-            Some(activation_b)
-        );
-
-        let stale_binding = ViewportBinding::new(
-            binding_a.epoch(),
-            binding_a.surface(),
-            binding_a.token(),
-            WindowIncarnation::new(binding_a.incarnation().get() + 1),
-        );
-        let stale_effect = fixture
-            .engine
-            .viewport
-            .request_focus_binding(stale_binding)
-            .expect("stale-incarnation effect must allocate for the invariant test");
-        let stale_incarnation = publish_effect_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-            Authority::Known(Some(stale_effect)),
-        );
-        assert!(observed_focus_effect_ids(&stale_incarnation).is_empty());
-        assert_eq!(
-            fixture
-                .engine
-                .viewport()
-                .effects()
-                .record(stale_effect)
-                .map(crate::effect::EffectRecord::phase),
-            Some(crate::effect::EffectPhase::Requested)
-        );
-    }
-
-    #[test]
-    fn explicit_focus_atomically_reveals_hidden_item_without_acknowledging_it() {
-        let mut fixture = focus_reveal_fixture();
-        assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
-
-        fixture
-            .engine
-            .enqueue_viewport_activation(fixture.binding, PanelFocus::Item(ItemId::new(2)))
-            .expect("explicit activation must enqueue");
-        let transition = fixture
-            .engine
-            .reduce_pending()
-            .expect("explicit activation must reduce");
-
-        assert_eq!(selected_item(&fixture), Some(ItemId::new(2)));
-        assert!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_pane_intent()
-                .is_some()
-        );
-        assert_eq!(
-            fixture.engine.viewport_focus().panel_focus(SOURCE_SURFACE),
-            PanelFocusRecord::NoHistory,
-            "selection and pane rendering cannot acknowledge focus"
-        );
-        assert!(transition.focus_delta().pane_intent().is_some());
-    }
-
-    #[test]
-    fn platform_restore_reveals_the_exact_hidden_focus_history_item() {
-        let mut fixture = focus_reveal_fixture();
-        fixture
-            .engine
-            .enqueue_pane_focus_observation(PaneFocusObservation::new(
-                PaneFocusObservationGeneration::new(1),
-                fixture.binding,
-                PanelFocus::Item(ItemId::new(2)),
-            ))
-            .expect("pane focus history must enqueue");
-        fixture
-            .engine
-            .reduce_pending()
-            .expect("pane focus history must reduce");
-        let source = fixture
-            .engine
-            .workspace()
-            .capture_item_source(SOURCE_ROOT, fixture.tabs, ItemId::new(1))
-            .expect("first item source must be current");
-        fixture
-            .engine
-            .enqueue_command(WorkspaceCommand::Select { source })
-            .expect("selection must enqueue");
-        fixture
-            .engine
-            .reduce_pending()
-            .expect("selection must reduce");
-        assert_eq!(selected_item(&fixture), Some(ItemId::new(1)));
-
-        publish_focus_snapshot(&mut fixture, Authority::Known(GlobalFocusedWindow::Foreign));
-        let binding = fixture.binding;
-        let restored = publish_focus_snapshot(
-            &mut fixture,
-            Authority::Known(GlobalFocusedWindow::Dock(binding)),
-        );
-
-        assert_eq!(selected_item(&fixture), Some(ItemId::new(2)));
-        assert!(
-            fixture
-                .engine
-                .viewport_focus()
-                .pending_pane_intent()
-                .is_some()
-        );
-        assert!(restored.focus_delta().pane_intent().is_some());
-    }
-
-    #[test]
-    fn close_recovery_reveals_only_when_its_target_is_already_focused() {
-        let mut focused = focus_reveal_fixture();
-        let mut events = Vec::new();
-        let activation = focused
-            .engine
-            .start_viewport_activation(
-                InputSequence::new(100),
-                ViewportActivationRequest::close_recovery(
-                    focused.binding,
-                    PanelFocus::Item(ItemId::new(2)),
-                    ViewportCloseRequestId::new(1),
-                ),
-                PaneFocusIntentGeneration::new(100),
-                &mut events,
-            )
-            .expect("focused close recovery must reduce");
-        assert!(matches!(
-            activation.outcome(),
-            ActivationStartOutcome::PaneFocusReady { .. }
-        ));
-        assert_eq!(selected_item(&focused), Some(ItemId::new(2)));
-
-        let mut unfocused = focus_reveal_fixture();
-        publish_focus_snapshot(
-            &mut unfocused,
-            Authority::Known(GlobalFocusedWindow::Foreign),
-        );
-        let activation = unfocused
-            .engine
-            .start_viewport_activation(
-                InputSequence::new(101),
-                ViewportActivationRequest::close_recovery(
-                    unfocused.binding,
-                    PanelFocus::Item(ItemId::new(2)),
-                    ViewportCloseRequestId::new(2),
-                ),
-                PaneFocusIntentGeneration::new(101),
-                &mut events,
-            )
-            .expect("unfocused close recovery must remain observable");
-        assert!(matches!(
-            activation.outcome(),
-            ActivationStartOutcome::ObserveOnlyRecorded { .. }
-        ));
-        assert_eq!(selected_item(&unfocused), Some(ItemId::new(1)));
-    }
-
-    struct PayloadFocusFixture {
-        engine: DockEngine,
-        binding: ViewportBinding,
-        item_payload: MovePayload,
-        stale_item_payload: MovePayload,
-        tabs_payload: MovePayload,
-        subtree_payload: MovePayload,
-    }
-
-    fn payload_focus_fixture() -> PayloadFocusFixture {
-        let mut builder = Workspace::builder();
-        let left_tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(3)]));
-        let right_tabs = builder.insert_node(Node::tabs([ItemId::new(4)]));
-        let source_split = builder.insert_node(
-            Node::split(
-                crate::graph::Axis::Horizontal,
-                [left_tabs, right_tabs],
-                [0.5, 0.5],
-            )
-            .expect("source split must be valid"),
-        );
-        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(source_split));
-        builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
-        let workspace = builder
-            .build()
-            .expect("payload focus workspace must be valid");
-        let item_payload = MovePayload::Item(
-            workspace
-                .capture_item_source(SOURCE_ROOT, left_tabs, ItemId::new(1))
-                .expect("item payload must be current"),
-        );
-        let tabs_payload = MovePayload::Tabs(
-            workspace
-                .capture_node_source(SOURCE_ROOT, left_tabs)
-                .expect("tabs payload must be current"),
-        );
-        let subtree_payload = MovePayload::Subtree(
-            workspace
-                .capture_node_source(SOURCE_ROOT, source_split)
-                .expect("subtree payload must be current"),
-        );
-        let mut stale_item_payload = item_payload.clone();
-        let wrong_fingerprint = workspace
-            .capture_node_source(TARGET_ROOT, target_tabs)
-            .expect("target source must be current")
-            .fingerprint()
-            .clone();
-        let MovePayload::Item(stale_source) = &mut stale_item_payload else {
-            unreachable!("fixture creates an item payload");
-        };
-        stale_source.fingerprint = wrong_fingerprint;
-
-        PayloadFocusFixture {
-            engine: DockEngine::new(workspace, DockPolicy::default())
-                .expect("engine must be valid"),
-            binding: ViewportBinding::new(
-                WorkspaceEpoch::new(0),
-                SOURCE_SURFACE,
-                WindowToken::new(1),
-                WindowIncarnation::new(1),
-            ),
-            item_payload,
-            stale_item_payload,
-            tabs_payload,
-            subtree_payload,
-        }
-    }
-
-    fn record_payload_focus(
-        engine: &mut DockEngine,
-        binding: ViewportBinding,
-        observation_generation: &mut u64,
-        focus: PanelFocus,
-    ) {
-        *observation_generation += 1;
-        assert!(matches!(
-            engine.viewport_focus.publish_pane_focus_observation(
-                PaneFocusObservation::new(
-                    PaneFocusObservationGeneration::new(*observation_generation),
-                    binding,
-                    focus,
-                ),
-                |candidate| candidate == binding,
-                |surface, item| {
-                    surface == SOURCE_SURFACE
-                        && [ItemId::new(1), ItemId::new(3), ItemId::new(4)].contains(&item)
-                },
-            ),
-            PaneFocusObservationTransition::Applied { .. }
-        ));
-    }
-
-    #[test]
-    fn payload_focus_is_frozen_only_for_an_exact_payload_member() {
-        let PayloadFocusFixture {
-            mut engine,
-            binding,
-            item_payload,
-            stale_item_payload,
-            tabs_payload,
-            subtree_payload,
-        } = payload_focus_fixture();
-        let mut observation_generation = 0_u64;
-
-        record_payload_focus(
-            &mut engine,
-            binding,
-            &mut observation_generation,
-            PanelFocus::Item(ItemId::new(1)),
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&item_payload),
-            PanelFocus::Item(ItemId::new(1))
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&stale_item_payload),
-            PanelFocus::None
-        );
-
-        record_payload_focus(
-            &mut engine,
-            binding,
-            &mut observation_generation,
-            PanelFocus::Item(ItemId::new(3)),
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&item_payload),
-            PanelFocus::None,
-            "an inactive item drag must not invent pane focus"
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&tabs_payload),
-            PanelFocus::Item(ItemId::new(3))
-        );
-
-        record_payload_focus(
-            &mut engine,
-            binding,
-            &mut observation_generation,
-            PanelFocus::Item(ItemId::new(4)),
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&tabs_payload),
-            PanelFocus::None,
-            "a sibling item on the same surface is outside the exact tabs payload"
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&subtree_payload),
-            PanelFocus::Item(ItemId::new(4))
-        );
-
-        record_payload_focus(
-            &mut engine,
-            binding,
-            &mut observation_generation,
-            PanelFocus::None,
-        );
-        assert_eq!(
-            engine.freeze_payload_focus(&subtree_payload),
-            PanelFocus::None
-        );
-    }
-
-    #[test]
-    fn private_focus_generations_do_not_publish_state_or_focus_delta() {
-        let mut fixture = counter_fixture();
-        let stale_binding = ViewportBinding::new(
-            WorkspaceEpoch::new(0),
-            SOURCE_SURFACE,
-            WindowToken::new(99),
-            WindowIncarnation::new(99),
-        );
-        fixture
-            .engine
-            .enqueue_viewport_activation(stale_binding, PanelFocus::None)
-            .expect("suppressed activation must enqueue");
-        let transition = fixture
-            .engine
-            .reduce_pending()
-            .expect("suppressed activation must reduce");
-        let InputOutcome::ViewportActivationRequested { activation } =
-            transition.reduced_inputs()[0].outcome()
-        else {
-            panic!("explicit activation must produce an activation outcome");
-        };
-        assert_eq!(
-            activation.outcome(),
-            ActivationStartOutcome::Suppressed(
-                crate::viewport_focus::ActivationSuppression::StaleBinding
-            )
-        );
-        assert!(transition.focus_delta().is_empty());
-        assert!(!transition.published_state_changed());
-
-        fixture
-            .engine
-            .enqueue(EngineInput::ValidateWorkspace)
-            .expect("maintenance input must enqueue");
-        let maintenance = fixture
-            .engine
-            .reduce_pending()
-            .expect("maintenance input must reduce");
-        assert!(maintenance.focus_delta().is_empty());
-        assert!(!maintenance.published_state_changed());
-    }
-
-    #[test]
-    fn action_batch_barrier_rejects_a_create_ready_mutation_of_a_destroyed_source() {
-        let mut fixture = counter_fixture();
-        let before = fixture.engine.workspace().clone();
-        let roster =
-            SurfaceRosterDisposition::capture(fixture.engine.workspace(), SOURCE_SURFACE, None)
-                .expect("direct edge roster must freeze without coordinate authority");
-        let barrier = BTreeMap::from([(SOURCE_SURFACE, roster)]);
-        let source = fixture
-            .engine
-            .workspace()
-            .capture_node_source(SOURCE_ROOT, fixture.source_tabs)
-            .expect("source root must be current");
-        let mut events = Vec::new();
-
-        let application = fixture
-            .engine
-            .apply_interaction_command_with_barrier(
-                InputSequence::new(1),
-                &WorkspaceCommand::CloseRoot { source },
-                Some(&barrier),
-                &mut events,
-            )
-            .expect("same-edge action must reduce as an expected rejection");
-
-        assert!(matches!(
-            application,
-            CommandApplication::Rejected(crate::error::CommandError::SurfaceLifecycleFrozen {
-                surface: SOURCE_SURFACE
-            })
-        ));
-        assert_eq!(fixture.engine.workspace(), &before);
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn roster_merge_selection_failure_does_not_publish_the_candidate() {
-        let mut fixture = counter_fixture();
-        let before_workspace = fixture.engine.workspace().clone();
-        let before_version = fixture.engine.version();
-        let roster =
-            SurfaceRosterDisposition::capture(fixture.engine.workspace(), SOURCE_SURFACE, None)
-                .expect("source roster must freeze");
-        let source = fixture
-            .engine
-            .workspace()
-            .capture_node_source(SOURCE_ROOT, fixture.source_tabs)
-            .expect("source root must be current");
-        let target = fixture
-            .engine
-            .workspace()
-            .capture_tab_target(TARGET_ROOT, fixture.target_tabs)
-            .expect("target tabs must be current");
-        let transaction = WorkspaceTransaction::from_commands([WorkspaceCommand::Move {
-            payload: MovePayload::Tabs(source),
-            target: crate::command::DockTarget::Center(target),
-        }]);
-        let barrier = BTreeMap::from([(SOURCE_SURFACE, roster.clone())]);
-        let mut events = Vec::new();
-
-        let applied = fixture
-            .engine
-            .apply_surface_roster_transaction(
-                InputSequence::new(1),
-                &roster,
-                &transaction,
-                Some(CandidatePaneSelection {
-                    surface: TARGET_SURFACE,
-                    item: ItemId::new(999),
-                }),
-                &barrier,
-                &mut events,
-            )
-            .expect("missing candidate selection is an expected rejection");
-
-        assert!(!applied);
-        assert_eq!(fixture.engine.workspace(), &before_workspace);
-        assert_eq!(fixture.engine.version(), before_version);
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn core_drag_reuses_partial_detachability_until_workspace_version_changes() {
-        let mut builder = Workspace::builder();
-        let central = builder.insert_node(Node::tabs([ItemId::new(1)]));
-        let movable = builder.insert_node(Node::tabs([ItemId::new(2)]));
-        let root_node = builder.insert_node(
-            Node::equal_split(Axis::Horizontal, [central, movable]).expect("split must be valid"),
-        );
-        builder.set_root(
-            SOURCE_ROOT,
-            RootRecord::new(root_node).with_central(central),
-        );
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        let workspace = builder.build().expect("cache workspace must be valid");
-        let mut engine =
-            DockEngine::new(workspace, DockPolicy::default()).expect("cache engine must be valid");
-        let payload = MovePayload::Subtree(
-            engine
-                .workspace()
-                .capture_node_source(SOURCE_ROOT, movable)
-                .expect("partial source must be current"),
-        );
-        PARTIAL_DETACHABILITY_EVALUATIONS.with(|evaluations| evaluations.set(0));
-
-        engine
-            .enqueue_renderer_intent(RendererIntent::ArmDragFrom {
-                pointer: TEST_POINTER,
-                button: PointerButton::Primary,
-                payload,
-                origin: DragOrigin::Workspace,
-            })
-            .expect("arm sequence must be available");
-        let armed = engine.reduce_pending().expect("arm must reduce");
-        let session = match armed.reduced_inputs()[0].outcome() {
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::DragArmed { session, .. },
-                ..
-            } => *session,
-            outcome => panic!("unexpected arm outcome: {outcome:?}"),
-        };
-        engine
-            .enqueue_renderer_intent(RendererIntent::BeginDrag {
-                session,
-                pointer: TEST_POINTER,
-                button: PointerButton::Primary,
-            })
-            .expect("begin sequence must be available");
-        engine.reduce_pending().expect("begin must reduce");
-        assert_eq!(
-            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
-            1
-        );
-
-        assert!(
-            engine
-                .core_drag_source_is_current(session, InputSequence::new(100))
-                .expect("same-version source check must succeed")
-        );
-        assert!(
-            engine
-                .core_drag_source_is_current(session, InputSequence::new(101))
-                .expect("second same-version source check must succeed")
-        );
-        assert_eq!(
-            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
-            1
-        );
-
-        engine.version = WorkspaceVersion::new(
-            engine.version.epoch(),
-            engine
-                .version
-                .revision()
-                .checked_next()
-                .expect("test revision must advance"),
-        );
-        assert!(
-            engine
-                .core_drag_source_is_current(session, InputSequence::new(102))
-                .expect("new-version source check must succeed")
-        );
-        assert_eq!(
-            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
-            2
-        );
-        assert!(
-            engine
-                .core_drag_source_is_current(session, InputSequence::new(103))
-                .expect("cached new-version source check must succeed")
-        );
-        assert_eq!(
-            PARTIAL_DETACHABILITY_EVALUATIONS.with(std::cell::Cell::get),
-            2
-        );
-    }
-
-    #[test]
-    fn contained_preview_resolution_rejects_a_stale_source_fingerprint() {
-        let floating = FloatingPresentationId::new(1);
-        let mut builder = Workspace::builder();
-        let host_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
-        let floating_tabs = builder.insert_node(Node::tabs([ItemId::new(2), ItemId::new(3)]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(host_tabs));
-        builder.set_root(TARGET_ROOT, RootRecord::new(floating_tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        builder.set_contained_floating(ContainedFloating::new(
-            floating,
-            TARGET_ROOT,
-            SOURCE_SURFACE,
-            test_rect(),
-            7,
-        ));
-        builder
-            .attach_contained(SOURCE_SURFACE, floating)
-            .expect("host surface must exist");
-        let workspace = builder.build().expect("workspace must be valid");
-        let mut engine =
-            DockEngine::new(workspace, DockPolicy::default()).expect("engine must be valid");
-        let payload = MovePayload::Subtree(
-            engine
-                .workspace()
-                .capture_node_source(TARGET_ROOT, floating_tabs)
-                .expect("source must be current"),
-        );
-        let mut scene = BuildingScene::new([SOURCE_SURFACE]).expect("roster must be unique");
-        scene
-            .insert_ready(ReadySurfaceScene::new(
-                SOURCE_SURFACE,
-                LogicalRect::new(0.0, 0.0, 400.0, 300.0).expect("scene rectangle must be valid"),
-            ))
-            .expect("surface facts must be unique");
-        engine
-            .enqueue_scene(scene)
-            .expect("scene sequence must be available");
-        engine.reduce_pending().expect("scene must publish");
-        let placement = engine
-            .contained_placement(
-                SOURCE_SURFACE,
-                LogicalRect::new(40.0, 30.0, 100.0, 100.0)
-                    .expect("requested rectangle must be valid"),
-                LogicalSize::new(0.0, 0.0).expect("minimum size must be valid"),
-            )
-            .expect("contained placement must be available");
-        let proposal = ContainedTearOffProposal::new(TARGET_ROOT, floating, placement, 7);
-        let session = begin_drag(&mut engine, payload);
-        let Some(Node::Tabs { selected, .. }) = engine.workspace.nodes.get_mut(floating_tabs)
-        else {
-            panic!("floating source must remain tabs");
-        };
-        *selected = Some(ItemId::new(3));
-        engine
-            .workspace
-            .validate()
-            .expect("selection mutation must keep the workspace valid");
-        engine
-            .enqueue_renderer_intent(RendererIntent::UpdateDrag {
-                session,
-                target: TargetAuthority::local(
-                    SOURCE_SURFACE,
-                    Authority::Known(Some(SurfacePointer::new(
-                        SOURCE_SURFACE,
-                        LogicalPoint::new(200.0, 150.0).expect("pointer must be valid"),
-                    ))),
-                ),
-                tear_off: Some(TearOffRequest::Contained(proposal)),
-            })
-            .expect("update sequence must be available");
-
-        let update = engine.reduce_pending().expect("update must reduce");
-        assert!(matches!(
-            update.reduced_inputs()[0].outcome(),
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::PreviewUpdated {
-                    preview: None,
-                    status: PreviewResolutionStatus::Rejected,
-                    ..
-                },
-                ..
-            }
-        ));
-    }
-
-    fn ready_counter_scene(fixture: &CounterFixture) -> BuildingScene {
-        let mut building = BuildingScene::new([SOURCE_SURFACE, TARGET_SURFACE])
-            .expect("counter roster must be unique");
-        building
-            .insert_ready(ReadySurfaceScene::new(SOURCE_SURFACE, test_rect()))
-            .expect("source facts must be unique");
-        let target = fixture
-            .engine
-            .workspace()
-            .capture_tab_target(TARGET_ROOT, fixture.target_tabs)
-            .expect("target must be current");
-        let mut target_scene = ReadySurfaceScene::new(TARGET_SURFACE, test_rect());
-        target_scene.push_drop_target(DropTargetRecord::new(
-            DropTargetId::Center {
-                surface: TARGET_SURFACE,
-                root: TARGET_ROOT,
-                tabs: fixture.target_tabs,
-            },
-            DockTarget::Center(target),
-            DropTargetAvailability::Available,
-            HitRegion::new(test_rect()),
-            SceneLayerKey::new(0),
-            DropVisual::new(test_rect()),
-        ));
-        building
-            .insert_ready(target_scene)
-            .expect("target facts must be unique");
-        building
-    }
-
-    fn begin_counter_drag(fixture: &mut CounterFixture) -> DragSessionId {
-        let payload = MovePayload::Item(
-            fixture
-                .engine
-                .workspace()
-                .capture_item_source(SOURCE_ROOT, fixture.source_tabs, ItemId::new(1))
-                .expect("source must be current"),
-        );
-        begin_drag(&mut fixture.engine, payload)
-    }
-
-    fn begin_drag(engine: &mut DockEngine, payload: MovePayload) -> DragSessionId {
-        engine
-            .enqueue_renderer_intent(RendererIntent::ArmDrag {
-                pointer: TEST_POINTER,
-                button: PointerButton::Primary,
-                payload,
-            })
-            .expect("arm sequence must be available");
-        let armed = engine.reduce_pending().expect("arm must reduce");
-        let session = match armed.reduced_inputs()[0].outcome() {
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::DragArmed { session, .. },
-                ..
-            } => *session,
-            outcome => panic!("unexpected arm outcome: {outcome:?}"),
-        };
-        engine
-            .enqueue_renderer_intent(RendererIntent::BeginDrag {
-                session,
-                pointer: TEST_POINTER,
-                button: PointerButton::Primary,
-            })
-            .expect("begin sequence must be available");
-        engine.reduce_pending().expect("begin must reduce");
-        session
-    }
-
-    #[test]
-    fn fatal_counter_exhaustion_rolls_back_the_complete_boundary() {
-        let root = RootId::new(1);
-        let surface = SurfaceId::new(1);
-        let mut builder = Workspace::builder();
-        let tabs = builder.insert_node(Node::tabs([ItemId::new(1), ItemId::new(2)]));
-        builder.set_root(root, RootRecord::new(tabs));
-        builder.set_surface(surface, SurfacePresentation::new(root));
-        let workspace = builder.build().expect("test workspace must be valid");
-        let command = WorkspaceCommand::Select {
-            source: workspace
-                .capture_item_source(root, tabs, ItemId::new(2))
-                .expect("source must be capturable"),
-        };
-        let mut engine = DockEngine::new(workspace.clone(), DockPolicy::default())
-            .expect("engine must be valid");
-        engine.version = WorkspaceVersion::new(
-            WorkspaceEpoch::default(),
-            WorkspaceRevision::new(u64::MAX - 1),
-        );
-        let expected = engine.version;
-        let mut policy = engine.policy.clone();
-        policy.set_allow_native_surfaces(true);
-        engine
-            .enqueue(EngineInput::ReplacePolicy { expected, policy })
-            .expect("first sequence must be available");
-        engine
-            .enqueue(EngineInput::WorkspaceCommand { expected, command })
-            .expect("second sequence must be available");
-        let pending = engine.pending.clone();
-
-        assert!(matches!(
-            engine.reduce_pending(),
-            Err(EngineError::WorkspaceRevisionExhausted { .. })
-        ));
-        assert_eq!(engine.workspace, workspace);
-        assert!(!engine.policy.allows_native_surfaces());
-        assert_eq!(engine.version, expected);
-        assert_eq!(engine.pending, pending);
-    }
-
-    #[test]
-    fn scene_generation_exhaustion_rolls_back_scene_and_pending_inputs() {
-        let mut fixture = counter_fixture();
-        fixture.engine.last_scene_generation = SceneGeneration::new(u64::MAX);
-        fixture
-            .engine
-            .enqueue_scene(ready_counter_scene(&fixture))
-            .expect("scene sequence must be available");
-        let before = fixture.engine.candidate();
-
-        assert!(matches!(
-            fixture.engine.reduce_pending(),
-            Err(EngineError::SceneGenerationExhausted { .. })
-        ));
-        assert_eq!(fixture.engine, before);
-    }
-
-    #[test]
-    fn drag_generation_exhaustion_rolls_back_gesture_and_pending_inputs() {
-        let mut fixture = counter_fixture();
-        fixture.engine.interaction.exhaust_drag_generation();
-        let payload = MovePayload::Item(
-            fixture
-                .engine
-                .workspace()
-                .capture_item_source(SOURCE_ROOT, fixture.source_tabs, ItemId::new(1))
-                .expect("source must be current"),
-        );
-        fixture
-            .engine
-            .enqueue_renderer_intent(RendererIntent::ArmDrag {
-                pointer: TEST_POINTER,
-                button: PointerButton::Primary,
-                payload,
-            })
-            .expect("arm sequence must be available");
-        let before = fixture.engine.candidate();
-
-        assert!(matches!(
-            fixture.engine.reduce_pending(),
-            Err(EngineError::Interaction {
-                source: InteractionCounterError::DragGenerationExhausted,
-                ..
-            })
-        ));
-        assert_eq!(fixture.engine, before);
-        assert_eq!(
-            fixture.engine.interaction().status(),
-            InteractionStatus::Idle
-        );
-    }
-
-    #[test]
-    fn preview_sequence_exhaustion_rolls_back_observation_and_pending_inputs() {
-        let mut fixture = counter_fixture();
-        fixture
-            .engine
-            .enqueue_scene(ready_counter_scene(&fixture))
-            .expect("scene sequence must be available");
-        fixture.engine.reduce_pending().expect("scene must publish");
-        let session = begin_counter_drag(&mut fixture);
-        fixture.engine.interaction.exhaust_preview_sequence();
-        fixture
-            .engine
-            .enqueue_renderer_intent(RendererIntent::UpdateDrag {
-                session,
-                target: TargetAuthority::local(
-                    TARGET_SURFACE,
-                    Authority::Known(Some(SurfacePointer::new(
-                        TARGET_SURFACE,
-                        LogicalPoint::new(50.0, 50.0).expect("test point must be valid"),
-                    ))),
-                ),
-                tear_off: None,
-            })
-            .expect("update sequence must be available");
-        let before = fixture.engine.candidate();
-
-        assert!(matches!(
-            fixture.engine.reduce_pending(),
-            Err(EngineError::Interaction {
-                source: InteractionCounterError::PreviewSequenceExhausted,
-                ..
-            })
-        ));
-        assert_eq!(fixture.engine, before);
-        assert!(fixture.engine.interaction().preview().is_none());
-    }
-
-    #[test]
-    fn malformed_scene_does_not_consume_the_boundary_publication_slot() {
-        let mut fixture = counter_fixture();
-        let mut malformed = BuildingScene::new([SOURCE_SURFACE, TARGET_SURFACE])
-            .expect("malformed roster must be unique");
-        let mut source = ReadySurfaceScene::new(SOURCE_SURFACE, test_rect());
-        source.push_node(SemanticRect::new(
-            NodeSceneId {
-                root: TARGET_ROOT,
-                node: fixture.target_tabs,
-            },
-            test_rect(),
-            SceneLayerKey::new(0),
-        ));
-        malformed
-            .insert_ready(source)
-            .expect("malformed facts are structurally unique");
-        fixture
-            .engine
-            .enqueue_scene(malformed)
-            .expect("malformed scene sequence must be available");
-        fixture
-            .engine
-            .enqueue_scene(ready_counter_scene(&fixture))
-            .expect("valid scene sequence must be available");
-
-        let transition = fixture
-            .engine
-            .reduce_pending()
-            .expect("malformed scene is a nonfatal rejection");
-        assert!(matches!(
-            transition.reduced_inputs()[0].outcome(),
-            InputOutcome::SceneRejected {
-                error: SceneBuildError::InvalidNodeSemantic { .. }
-            }
-        ));
-        assert!(matches!(
-            transition.reduced_inputs()[1].outcome(),
-            InputOutcome::ScenePublished { stamp, .. }
-                if stamp.generation() == SceneGeneration::new(1)
-        ));
-    }
-
-    #[test]
-    fn only_one_valid_scene_can_publish_in_a_boundary() {
-        let mut fixture = counter_fixture();
-        fixture
-            .engine
-            .enqueue_scene(ready_counter_scene(&fixture))
-            .expect("first scene sequence must be available");
-        fixture
-            .engine
-            .enqueue_scene(ready_counter_scene(&fixture))
-            .expect("second scene sequence must be available");
-
-        let transition = fixture
-            .engine
-            .reduce_pending()
-            .expect("duplicate publication is a nonfatal rejection");
-        assert!(matches!(
-            transition.reduced_inputs()[0].outcome(),
-            InputOutcome::ScenePublished { .. }
-        ));
-        assert!(matches!(
-            transition.reduced_inputs()[1].outcome(),
-            InputOutcome::SceneRejected {
-                error: SceneBuildError::AlreadyPublishedInBoundary
-            }
-        ));
-        assert_eq!(
-            fixture
-                .engine
-                .scene()
-                .expect("first scene must remain published")
-                .stamp()
-                .generation(),
-            SceneGeneration::new(1)
-        );
-    }
-}
+mod tests;

@@ -1,8 +1,15 @@
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
+use dockspace::intent::PointerButton as DockPointerButton;
+use dockspace::interaction::InteractionOutcome;
+use dockspace::pointer_journal::PointerEdgeKind;
+use dockspace::transition::{
+    InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
+};
+use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
-use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, PaneView};
+use egui::{Context, Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
+use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -11,6 +18,12 @@ const ITEM_B: ItemId = ItemId::new(11);
 const ITEM_C: ItemId = ItemId::new(12);
 
 struct TestPanes;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ObservedReducerAction {
+    Keyboard,
+    Pointer,
+}
 
 impl PaneView for TestPanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
@@ -30,13 +43,15 @@ struct FrameObservation {
     weights: Vec<f32>,
     interactions_current: bool,
     saw_stale_pass: bool,
+    close_requests: Vec<ClosePlan>,
+    contribution_rejections: Vec<SurfaceContributionRejection>,
 }
 
 fn tabs_workspace() -> (Workspace, NodeId) {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM_A, ITEM_B, ITEM_C]));
     builder.set_root(ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     (builder.build().expect("tabs fixture must be valid"), tabs)
 }
 
@@ -48,14 +63,14 @@ fn split_workspace() -> (Workspace, NodeId) {
         Node::equal_split(Axis::Horizontal, [left, right]).expect("two children form a split"),
     );
     builder.set_root(ROOT, RootRecord::new(split));
-    builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     (builder.build().expect("split fixture must be valid"), split)
 }
 
 fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0))),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         ..RawInput::default()
     }
 }
@@ -71,6 +86,37 @@ fn key_press(key: Key) -> Vec<Event> {
             modifiers: Modifiers::NONE,
         })
         .collect()
+}
+
+fn pointer_button(position: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos: position,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "finite scene coordinates intentionally become egui f32 input coordinates"
+)]
+fn splitter_pointer_position(dockspace: &Dockspace, split: NodeId) -> Pos2 {
+    let rect = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .map(dockspace::scene::SurfaceInteractionProjection::plan)
+        .expect("the warmed surface has an acknowledged interaction plan")
+        .splitter_records()
+        .iter()
+        .find(|splitter| splitter.id().split == split)
+        .expect("the requested splitter is present in the interaction plan")
+        .hit()
+        .rect();
+    Pos2::new(
+        ((rect.min().x() + rect.max().x()) * 0.5) as f32,
+        ((rect.min().y() + rect.max().y()) * 0.5) as f32,
+    )
 }
 
 fn accesskit_action(id: Id, action: Action) -> Event {
@@ -93,7 +139,9 @@ fn run_frame(
 ) -> FrameObservation {
     let mut observation = None;
     let mut saw_stale_pass = false;
-    let _ = context.run_ui(input(events), |ui| {
+    let mut close_requests = Vec::new();
+    let mut contribution_rejections = Vec::new();
+    let _ = crate::test_support::run_ui(context, input(events), |ui| {
         let instance_id = Id::new(("egui_dockspace", salt));
         let (tab_ids, close_ids) = tabs.map_or(([Id::NULL; 3], [Id::NULL; 3]), |tabs| {
             let list_id = ui.id().with(egui::IdSalt::new((
@@ -122,8 +170,12 @@ fn run_frame(
         });
 
         let response = dockspace
-            .show(SURFACE, ui, panes)
+            .show_single_surface(SURFACE, ui, panes)
             .expect("fixture frame must advance");
+        close_requests.extend(response.close_requests().cloned());
+        if let SurfaceContributionOutcome::Rejected { reason, .. } = response.contribution() {
+            contribution_rejections.push(reason.clone());
+        }
         saw_stale_pass |= !response.interactions_current();
         let root_node = dockspace
             .engine()
@@ -146,9 +198,67 @@ fn run_frame(
             weights,
             interactions_current: response.interactions_current(),
             saw_stale_pass,
+            close_requests: Vec::new(),
+            contribution_rejections: Vec::new(),
         });
     });
-    observation.expect("run_ui must paint one pass")
+    let mut observation = observation.expect("run_ui must paint one pass");
+    observation.close_requests = close_requests;
+    observation.contribution_rejections = contribution_rejections;
+    observation
+}
+
+fn run_outer_frame_actions(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut TestPanes,
+    events: Vec<Event>,
+) -> Vec<ObservedReducerAction> {
+    let sequence = dockspace.last_egui_frame_schedule_key().map_or(1, |key| {
+        key.sequence()
+            .checked_add(1)
+            .expect("test host sequence must remain representable")
+    });
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("outer frame must begin");
+    frame
+        .run_surface(SURFACE, context, input(events), panes)
+        .expect("outer host must paint the surface");
+    let (host, outputs) = frame
+        .finish()
+        .expect("outer frame must commit atomically")
+        .into_parts();
+    let transition = host.transition();
+    let mut causal_actions = transition
+        .reduced_inputs()
+        .iter()
+        .filter_map(|input| match input.outcome() {
+            InputOutcome::InteractionProcessed {
+                outcome: InteractionOutcome::SplitterAdjusted { .. },
+                ..
+            } => Some((input.causal_ordinal(), ObservedReducerAction::Keyboard)),
+            _ => None,
+        })
+        .chain(
+            transition
+                .reduced_pointer_edges()
+                .iter()
+                .filter_map(|edge| {
+                    (edge.edge().kind()
+                        == PointerEdgeKind::ButtonPressed(DockPointerButton::Primary))
+                    .then_some((edge.causal_ordinal(), ObservedReducerAction::Pointer))
+                }),
+        )
+        .collect::<Vec<_>>();
+    causal_actions.sort_by_key(|(ordinal, _)| *ordinal);
+    for output in outputs {
+        output.settle_with(|_, _| EguiPresentationResult::Presented);
+    }
+    causal_actions
+        .into_iter()
+        .map(|(_, action)| action)
+        .collect()
 }
 
 fn warm_tabs(
@@ -240,9 +350,9 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         key_press(Key::ArrowRight),
     );
-    assert_eq!(arrow.selected, Some(ITEM_A));
+    assert_eq!(arrow.selected, Some(ITEM_B));
     assert_eq!(arrow.focused, Some(arrow.tab_ids[1]));
-    let arrow_committed = run_frame(
+    let arrow_projection_painted = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -251,8 +361,27 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         Vec::new(),
     );
-    assert_eq!(arrow_committed.selected, Some(ITEM_B));
-    assert_eq!(arrow_committed.focused, Some(arrow_committed.tab_ids[1]));
+    assert_eq!(arrow_projection_painted.selected, Some(ITEM_B));
+    assert_eq!(
+        arrow_projection_painted.focused,
+        Some(arrow_projection_painted.tab_ids[1])
+    );
+    assert!(!arrow_projection_painted.interactions_current);
+    let arrow_acknowledged = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        Some(tabs),
+        None,
+        Vec::new(),
+    );
+    assert_eq!(arrow_acknowledged.selected, Some(ITEM_B));
+    assert_eq!(
+        arrow_acknowledged.focused,
+        Some(arrow_acknowledged.tab_ids[1])
+    );
+    assert!(arrow_acknowledged.interactions_current);
 
     let home = run_frame(
         &context,
@@ -263,9 +392,9 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         key_press(Key::Home),
     );
-    assert_eq!(home.selected, Some(ITEM_B));
+    assert_eq!(home.selected, Some(ITEM_A));
     assert_eq!(home.focused, Some(home.tab_ids[0]));
-    let home_committed = run_frame(
+    let home_projection_painted = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -274,8 +403,27 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         Vec::new(),
     );
-    assert_eq!(home_committed.selected, Some(ITEM_A));
-    assert_eq!(home_committed.focused, Some(home_committed.tab_ids[0]));
+    assert_eq!(home_projection_painted.selected, Some(ITEM_A));
+    assert_eq!(
+        home_projection_painted.focused,
+        Some(home_projection_painted.tab_ids[0])
+    );
+    assert!(!home_projection_painted.interactions_current);
+    let home_acknowledged = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        Some(tabs),
+        None,
+        Vec::new(),
+    );
+    assert_eq!(home_acknowledged.selected, Some(ITEM_A));
+    assert_eq!(
+        home_acknowledged.focused,
+        Some(home_acknowledged.tab_ids[0])
+    );
+    assert!(home_acknowledged.interactions_current);
 
     let end = run_frame(
         &context,
@@ -286,9 +434,9 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         key_press(Key::End),
     );
-    assert_eq!(end.selected, Some(ITEM_A));
+    assert_eq!(end.selected, Some(ITEM_C));
     assert_eq!(end.focused, Some(end.tab_ids[2]));
-    let end_committed = run_frame(
+    let end_stable = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -297,8 +445,80 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         None,
         Vec::new(),
     );
-    assert_eq!(end_committed.selected, Some(ITEM_C));
-    assert_eq!(end_committed.focused, Some(end_committed.tab_ids[2]));
+    assert_eq!(end_stable.selected, Some(ITEM_C));
+    assert_eq!(end_stable.focused, Some(end_stable.tab_ids[2]));
+}
+
+#[derive(Clone, Copy)]
+enum KeyboardPointerOrder {
+    KeyboardThenPointer,
+    PointerThenKeyboard,
+}
+
+fn splitter_state_after_keyboard_pointer_batch(
+    salt: &'static str,
+    order: KeyboardPointerOrder,
+) -> Vec<ObservedReducerAction> {
+    let context = Context::default();
+    let (workspace, split) = split_workspace();
+    let mut dockspace = Dockspace::builder(salt, workspace)
+        .build()
+        .expect("fixture facade must build");
+    let mut panes = TestPanes;
+    let stable = warm_split(&context, &mut dockspace, &mut panes, salt, split);
+    context.memory_mut(|memory| memory.request_focus(stable.splitter_id));
+    let focused = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        None,
+        Some(split),
+        Vec::new(),
+    );
+    assert_eq!(focused.focused, Some(focused.splitter_id));
+
+    let pointer = splitter_pointer_position(&dockspace, split);
+    let pointer_events = [Event::PointerMoved(pointer), pointer_button(pointer, true)];
+    let mut events = Vec::new();
+    match order {
+        KeyboardPointerOrder::KeyboardThenPointer => {
+            events.extend(key_press(Key::ArrowRight));
+            events.extend(pointer_events);
+        }
+        KeyboardPointerOrder::PointerThenKeyboard => {
+            events.extend(pointer_events);
+            events.extend(key_press(Key::ArrowRight));
+        }
+    }
+    run_outer_frame_actions(&context, &mut dockspace, &mut panes, events)
+}
+
+#[test]
+fn keyboard_and_pointer_batches_reduce_in_raw_event_order() {
+    let keyboard_first = splitter_state_after_keyboard_pointer_batch(
+        "keyboard-before-pointer-splitter",
+        KeyboardPointerOrder::KeyboardThenPointer,
+    );
+    let pointer_first = splitter_state_after_keyboard_pointer_batch(
+        "pointer-before-keyboard-splitter",
+        KeyboardPointerOrder::PointerThenKeyboard,
+    );
+
+    assert_eq!(
+        keyboard_first,
+        [
+            ObservedReducerAction::Keyboard,
+            ObservedReducerAction::Pointer
+        ]
+    );
+    assert_eq!(
+        pointer_first,
+        [
+            ObservedReducerAction::Pointer,
+            ObservedReducerAction::Keyboard
+        ]
+    );
 }
 
 #[test]
@@ -327,7 +547,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
         );
         assert_eq!(focused.focused, Some(focused.close_ids[1]));
 
-        run_frame(
+        let requested = run_frame(
             &context,
             &mut dockspace,
             &mut panes,
@@ -343,8 +563,27 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
                 .item_multiset()
                 .contains_key(&ITEM_B)
         );
+        let [plan] = requested.close_requests.as_slice() else {
+            panic!("one keyboard activation must publish exactly one close plan");
+        };
+        assert_eq!(plan.target(), ClosePlanTarget::Item { item: ITEM_B });
+        let [item] = plan.items() else {
+            panic!("an item close plan must contain exactly one decision token");
+        };
+        assert_eq!(item.item(), ITEM_B);
 
-        run_frame(
+        dockspace
+            .resolve_close(plan.request(), item.token(), CloseDecision::Allow)
+            .expect("the exact keyboard close decision must commit immediately");
+        assert!(
+            !dockspace
+                .engine()
+                .workspace()
+                .item_multiset()
+                .contains_key(&ITEM_B)
+        );
+
+        let committed = run_frame(
             &context,
             &mut dockspace,
             &mut panes,
@@ -353,6 +592,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
             None,
             Vec::new(),
         );
+        assert!(committed.close_requests.is_empty());
         assert!(
             !dockspace
                 .engine()
@@ -393,8 +633,39 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
         Some(split),
         key_press(Key::ArrowRight),
     );
-    assert_eq!(first_input.weights, stable.weights);
+    assert!(first_input.weights[0] > stable.weights[0]);
     assert_eq!(first_input.focused, Some(first_input.splitter_id));
+    assert!(!first_input.interactions_current);
+    assert!(first_input.saw_stale_pass);
+
+    let first_projection_painted = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        None,
+        Some(split),
+        Vec::new(),
+    );
+    assert_eq!(first_projection_painted.weights, first_input.weights);
+    assert!(!first_projection_painted.interactions_current);
+    assert!(first_projection_painted.saw_stale_pass);
+
+    let first_projection_acknowledged = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        None,
+        Some(split),
+        Vec::new(),
+    );
+    assert_eq!(first_projection_acknowledged.weights, first_input.weights);
+    assert_eq!(
+        first_projection_acknowledged.focused,
+        Some(first_projection_acknowledged.splitter_id)
+    );
+    assert!(first_projection_acknowledged.interactions_current);
 
     let second_input = run_frame(
         &context,
@@ -407,10 +678,10 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
     );
     assert!(second_input.weights[0] > first_input.weights[0]);
     assert_eq!(second_input.focused, Some(second_input.splitter_id));
-    assert!(second_input.interactions_current);
+    assert!(!second_input.interactions_current);
     assert!(second_input.saw_stale_pass);
 
-    let second_committed = run_frame(
+    let second_projection_painted = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -419,8 +690,22 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
         Some(split),
         Vec::new(),
     );
-    assert!(second_committed.weights[0] > second_input.weights[0]);
-    assert_eq!(second_committed.focused, Some(second_committed.splitter_id));
+    assert_eq!(second_projection_painted.weights, second_input.weights);
+    assert!(!second_projection_painted.interactions_current);
+    assert!(second_projection_painted.saw_stale_pass);
+
+    let second_stable = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        None,
+        Some(split),
+        Vec::new(),
+    );
+    assert_eq!(second_stable.weights, second_projection_painted.weights);
+    assert_eq!(second_stable.focused, Some(second_stable.splitter_id));
+    assert!(second_stable.interactions_current);
 }
 
 #[derive(Clone, Copy)]
@@ -464,8 +749,8 @@ fn committed_adjustment(salt: &'static str, event: AdjustmentEvent) -> Vec<f32> 
         Some(split),
         events,
     );
-    assert_eq!(input_frame.weights, stable.weights);
-    run_frame(
+    assert_ne!(input_frame.weights, stable.weights);
+    let stable_frame = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -473,13 +758,15 @@ fn committed_adjustment(salt: &'static str, event: AdjustmentEvent) -> Vec<f32> 
         None,
         Some(split),
         Vec::new(),
-    )
-    .weights
+    );
+    assert_eq!(stable_frame.weights, input_frame.weights);
+    input_frame.weights
 }
 
 #[test]
 fn accesskit_increment_and_decrement_match_keyboard_commit_semantics() {
     let right = committed_adjustment("splitter-key-right", AdjustmentEvent::Key(Key::ArrowRight));
+    assert!(right[0] > 0.5);
     let increment = committed_adjustment(
         "splitter-accesskit-increment",
         AdjustmentEvent::AccessKit(Action::Increment),
@@ -487,6 +774,7 @@ fn accesskit_increment_and_decrement_match_keyboard_commit_semantics() {
     assert_eq!(increment, right);
 
     let left = committed_adjustment("splitter-key-left", AdjustmentEvent::Key(Key::ArrowLeft));
+    assert!(left[0] < 0.5);
     let decrement = committed_adjustment(
         "splitter-accesskit-decrement",
         AdjustmentEvent::AccessKit(Action::Decrement),
@@ -497,14 +785,23 @@ fn accesskit_increment_and_decrement_match_keyboard_commit_semantics() {
 #[derive(Clone, Copy)]
 enum StableTabActivation {
     Enter,
+    Space,
     AccessKitClick,
+    AccessKitFocus,
+    ArrowRight,
 }
 
 #[test]
-fn stable_tab_activation_survives_a_stale_projection_pass() {
+fn tab_activation_requires_an_acknowledged_projection_after_external_selection() {
     for (salt, activation) in [
         ("stale-tab-enter", StableTabActivation::Enter),
+        ("stale-tab-space", StableTabActivation::Space),
         ("stale-tab-accesskit", StableTabActivation::AccessKitClick),
+        (
+            "stale-tab-accesskit-focus",
+            StableTabActivation::AccessKitFocus,
+        ),
+        ("stale-tab-arrow-right", StableTabActivation::ArrowRight),
     ] {
         let context = Context::default();
         let mut builder = Workspace::builder();
@@ -513,7 +810,7 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             selected: Some(ITEM_B),
         });
         builder.set_root(ROOT, RootRecord::new(tabs));
-        builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("tabs fixture must be valid");
         let mut dockspace = Dockspace::builder(salt, workspace)
             .build()
@@ -539,16 +836,32 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             .capture_item_source(ROOT, tabs, ITEM_A)
             .expect("selection source must capture");
         dockspace
-            .enqueue_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
-            .expect("selection command must enqueue");
+            .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+            .expect("selection command must commit immediately");
+        assert_eq!(
+            dockspace
+                .engine()
+                .workspace()
+                .node(tabs)
+                .and_then(|node| match node {
+                    Node::Tabs { selected, .. } => *selected,
+                    Node::Split { .. } => None,
+                }),
+            Some(ITEM_A)
+        );
         context.options_mut(|options| {
             options.max_passes = 1.try_into().expect("one is non-zero");
         });
         let events = match activation {
             StableTabActivation::Enter => key_press(Key::Enter),
+            StableTabActivation::Space => key_press(Key::Space),
             StableTabActivation::AccessKitClick => {
                 vec![accesskit_action(focused.tab_ids[1], Action::Click)]
             }
+            StableTabActivation::AccessKitFocus => {
+                vec![accesskit_action(focused.tab_ids[1], Action::Focus)]
+            }
+            StableTabActivation::ArrowRight => key_press(Key::ArrowRight),
         };
 
         let stale_frame = run_frame(
@@ -562,8 +875,14 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
         );
         assert!(!stale_frame.interactions_current);
         assert_eq!(stale_frame.selected, Some(ITEM_A));
+        if matches!(activation, StableTabActivation::ArrowRight) {
+            assert_eq!(stale_frame.focused, Some(stale_frame.tab_ids[1]));
+        }
 
-        let committed = run_frame(
+        context.options_mut(|options| {
+            options.max_passes = 2.try_into().expect("two is non-zero");
+        });
+        let projection_painted = run_frame(
             &context,
             &mut dockspace,
             &mut panes,
@@ -572,6 +891,179 @@ fn stable_tab_activation_survives_a_stale_projection_pass() {
             None,
             Vec::new(),
         );
-        assert_eq!(committed.selected, Some(ITEM_B));
+        assert!(!projection_painted.interactions_current);
+        assert_eq!(projection_painted.selected, Some(ITEM_A));
+
+        let projection_acknowledged = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            Some(tabs),
+            None,
+            Vec::new(),
+        );
+        assert!(projection_acknowledged.interactions_current);
+        assert_eq!(projection_acknowledged.selected, Some(ITEM_A));
+
+        let activation_events = match activation {
+            StableTabActivation::Enter => key_press(Key::Enter),
+            StableTabActivation::Space => key_press(Key::Space),
+            StableTabActivation::AccessKitClick => {
+                vec![accesskit_action(focused.tab_ids[1], Action::Click)]
+            }
+            StableTabActivation::AccessKitFocus => {
+                vec![accesskit_action(focused.tab_ids[1], Action::Focus)]
+            }
+            StableTabActivation::ArrowRight => key_press(Key::ArrowRight),
+        };
+        let committed = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            Some(tabs),
+            None,
+            activation_events,
+        );
+        let expected = if matches!(activation, StableTabActivation::ArrowRight) {
+            ITEM_C
+        } else {
+            ITEM_B
+        };
+        assert_eq!(committed.selected, Some(expected));
     }
+}
+
+#[test]
+fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
+    for (salt, events) in [
+        ("stale-close-enter", key_press(Key::Enter)),
+        ("stale-close-space", key_press(Key::Space)),
+    ] {
+        let context = Context::default();
+        let (workspace, tabs) = tabs_workspace();
+        let mut dockspace = Dockspace::builder(salt, workspace)
+            .build()
+            .expect("fixture facade must build");
+        let mut panes = TestPanes;
+        let stable = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
+        context.memory_mut(|memory| memory.request_focus(stable.close_ids[1]));
+        let focused = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            Some(tabs),
+            None,
+            Vec::new(),
+        );
+        assert_eq!(focused.focused, Some(focused.close_ids[1]));
+
+        let select_a = dockspace
+            .engine()
+            .workspace()
+            .capture_item_source(ROOT, tabs, ITEM_A)
+            .expect("selection source must capture");
+        dockspace
+            .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+            .expect("external selection invalidates the presented tab projection");
+        context.options_mut(|options| {
+            options.max_passes = 1.try_into().expect("one is non-zero");
+        });
+
+        let stale = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            Some(tabs),
+            None,
+            events,
+        );
+        assert!(!stale.interactions_current);
+        assert!(stale.close_requests.is_empty());
+        assert_eq!(stale.selected, Some(ITEM_A));
+        assert!(
+            dockspace
+                .engine()
+                .workspace()
+                .item_multiset()
+                .contains_key(&ITEM_B)
+        );
+    }
+
+    let context = Context::default();
+    let (workspace, tabs) = tabs_workspace();
+    let salt = "stale-close-accesskit";
+    let mut dockspace = Dockspace::builder(salt, workspace)
+        .build()
+        .expect("fixture facade must build");
+    let mut panes = TestPanes;
+    let stable = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
+    let select_a = dockspace
+        .engine()
+        .workspace()
+        .capture_item_source(ROOT, tabs, ITEM_A)
+        .expect("selection source must capture");
+    dockspace
+        .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+        .expect("external selection invalidates the presented tab projection");
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let stale = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        Some(tabs),
+        None,
+        vec![accesskit_action(stable.close_ids[1], Action::Click)],
+    );
+    assert!(!stale.interactions_current);
+    assert!(stale.close_requests.is_empty());
+    assert_eq!(stale.selected, Some(ITEM_A));
+}
+
+#[test]
+fn same_tick_selection_supersedes_before_submission_and_disables_the_painted_response() {
+    let context = Context::default();
+    let (workspace, tabs) = tabs_workspace();
+    let salt = "same-tick-selection-supersedes-contribution";
+    let mut dockspace = Dockspace::builder(salt, workspace)
+        .build()
+        .expect("fixture facade must build");
+    let mut panes = TestPanes;
+    let stable = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
+    context.memory_mut(|memory| memory.request_focus(stable.tab_ids[0]));
+    let focused = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        Some(tabs),
+        None,
+        Vec::new(),
+    );
+    assert_eq!(focused.focused, Some(focused.tab_ids[0]));
+    context.options_mut(|options| {
+        options.max_passes = 1.try_into().expect("one is non-zero");
+    });
+
+    let selected = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        salt,
+        Some(tabs),
+        None,
+        key_press(Key::ArrowRight),
+    );
+
+    assert_eq!(selected.selected, Some(ITEM_B));
+    assert!(!selected.interactions_current);
+    assert!(selected.saw_stale_pass);
+    assert!(selected.contribution_rejections.is_empty());
 }

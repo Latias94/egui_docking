@@ -1,14 +1,16 @@
 #![cfg(feature = "serde")]
 
+mod support;
+
 use std::cell::{Cell, RefCell};
 
-use dockspace::engine::DockEngine;
+use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::event::WorkspaceEventKind;
 use dockspace::geometry::{GeometryError, LogicalRect};
 use dockspace::graph::{
     Axis, ContainedFloating, InvalidSplitWeight, Node, RootRecord, SurfacePresentation, Workspace,
 };
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::ids::{FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId};
 use dockspace::persistence::{
     SnapshotAxis, SnapshotEntityKind, SnapshotNode, SnapshotNodeRecord, SnapshotReferenceOwner,
     SnapshotRestoreError, SnapshotRootRecord, SnapshotSurfaceRecord, WORKSPACE_SNAPSHOT_VERSION,
@@ -16,11 +18,13 @@ use dockspace::persistence::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::validation::WorkspaceValidationError;
+use support::{TestPresentationHost, submit_input};
 
 const MAIN_ROOT: RootId = RootId::new(10);
 const FLOATING_ROOT: RootId = RootId::new(11);
 const SURFACE: SurfaceId = SurfaceId::new(20);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(30);
+const SNAPSHOT_INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(0x5045_5253);
 
 fn sample_workspace() -> Workspace {
     let mut builder = Workspace::builder();
@@ -37,14 +41,14 @@ fn sample_workspace() -> Workspace {
 
     builder.set_root(MAIN_ROOT, RootRecord::new(main).with_central(central));
     builder.set_root(FLOATING_ROOT, RootRecord::new(floating_node));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(
         FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        LogicalRect::new(12.5, 24.0, 640.0, 360.0).expect("sample geometry must be valid"),
-        7,
-    ));
+        ContainedFloating::new(
+            FLOATING_ROOT,
+            LogicalRect::new(12.5, 24.0, 640.0, 360.0).expect("sample geometry must be valid"),
+        ),
+    );
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("sample surface must exist");
@@ -88,10 +92,69 @@ fn split_weights(snapshot: &mut WorkspaceSnapshot) -> &mut Vec<f32> {
         .expect("sample must contain a split")
 }
 
+fn tab_state(
+    snapshot: &mut WorkspaceSnapshot,
+    contains: u64,
+) -> (&mut Vec<u64>, &mut Option<u64>, &mut Vec<u64>) {
+    snapshot
+        .nodes
+        .iter_mut()
+        .find_map(|record| match &mut record.node {
+            SnapshotNode::Tabs {
+                items,
+                selected,
+                mru,
+            } if items.contains(&contains) => Some((items, selected, mru)),
+            SnapshotNode::Tabs { .. } | SnapshotNode::Split { .. } => None,
+        })
+        .expect("sample must contain requested tabs")
+}
+
+fn assert_zero_sized_contained_rect_is_rejected_without_mutation(
+    snapshot: &WorkspaceSnapshot,
+    expected_width: f64,
+    expected_height: f64,
+) {
+    let json = serde_json::to_vec(snapshot).expect("zero-sized V1 geometry must serialize");
+    let decoded = serde_json::from_slice::<WorkspaceSnapshotEnvelope>(&json)
+        .expect("zero is a representable V1 scalar")
+        .into_snapshot()
+        .expect("the V1 envelope must decode before workspace validation");
+    let decoded_rect = decoded.contained_floatings[0].rect;
+    assert_float_eq(decoded_rect.width, expected_width);
+    assert_float_eq(decoded_rect.height, expected_height);
+
+    let expected = WorkspaceValidationError::NonPositiveContainedRect {
+        floating: FLOATING,
+        width: expected_width,
+        height: expected_height,
+    };
+    let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&decoded) else {
+        panic!("zero-sized geometry must reach strict workspace validation")
+    };
+    assert_eq!(errors.errors(), std::slice::from_ref(&expected));
+
+    let engine = DockEngine::new(sample_workspace(), DockPolicy::default())
+        .expect("sample engine must be valid");
+    let untouched = format!("{engine:#?}");
+    let SnapshotRestoreError::InvalidWorkspace(errors) = decoded
+        .build_candidate(|_| true)
+        .expect_err("invalid candidate must not be submitted")
+    else {
+        panic!("candidate construction must preserve the typed validation error")
+    };
+    assert_eq!(errors.errors(), std::slice::from_ref(&expected));
+    assert_eq!(
+        format!("{engine:#?}"),
+        untouched,
+        "failed restoration must leave all live engine state unchanged"
+    );
+}
+
 #[test]
 fn json_round_trip_preserves_the_complete_workspace_contract() {
     let snapshot = sample_snapshot();
-    assert_eq!(snapshot.version, WORKSPACE_SNAPSHOT_VERSION);
+    assert_eq!(snapshot.version(), WORKSPACE_SNAPSHOT_VERSION);
 
     let json = serde_json::to_string_pretty(&snapshot).expect("snapshot JSON must encode");
     let wire: serde_json::Value =
@@ -130,16 +193,18 @@ fn json_round_trip_preserves_the_complete_workspace_contract() {
             selected: Some(selected),
         }) if items == &[ItemId::new(1), ItemId::new(2)] && *selected == ItemId::new(2)
     ));
+    assert_eq!(
+        restored.tab_mru(central),
+        Some([ItemId::new(2), ItemId::new(1)].as_slice())
+    );
     let floating = restored
         .contained_floating(FLOATING)
         .expect("floating presentation must survive");
     assert_eq!(floating.root, FLOATING_ROOT);
-    assert_eq!(floating.surface, SURFACE);
     assert_float_eq(floating.rect.x(), 12.5);
     assert_float_eq(floating.rect.y(), 24.0);
     assert_float_eq(floating.rect.width(), 640.0);
     assert_float_eq(floating.rect.height(), 360.0);
-    assert_eq!(floating.z_order, 7);
     assert_eq!(
         restored
             .surface(SURFACE)
@@ -150,17 +215,75 @@ fn json_round_trip_preserves_the_complete_workspace_contract() {
 }
 
 #[test]
-fn unsupported_versions_and_duplicate_record_identities_are_typed() {
-    let mut unsupported = sample_snapshot();
-    unsupported.version += 1;
-    assert_eq!(
-        candidate_error(&unsupported),
-        SnapshotRestoreError::UnsupportedVersion {
-            found: WORKSPACE_SNAPSHOT_VERSION + 1,
-            supported: WORKSPACE_SNAPSHOT_VERSION,
-        }
-    );
+fn malformed_or_missing_persisted_mru_is_rejected() {
+    let mut duplicate = sample_snapshot();
+    *tab_state(&mut duplicate, 1).2 = vec![2, 2];
+    let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&duplicate) else {
+        panic!("duplicate MRU must reach strict workspace validation")
+    };
+    assert!(errors.errors().iter().any(|error| matches!(
+        error,
+        WorkspaceValidationError::DuplicateTabMruItem { item, .. }
+            if *item == ItemId::new(2)
+    )));
 
+    let mut missing = sample_snapshot();
+    *tab_state(&mut missing, 1).2 = vec![2];
+    let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&missing) else {
+        panic!("incomplete MRU must reach strict workspace validation")
+    };
+    assert!(errors.errors().iter().any(|error| matches!(
+        error,
+        WorkspaceValidationError::TabItemMissingFromMru { item, .. }
+            if *item == ItemId::new(1)
+    )));
+
+    let mut foreign = sample_snapshot();
+    *tab_state(&mut foreign, 1).2 = vec![2, 99];
+    let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&foreign) else {
+        panic!("foreign MRU item must reach strict workspace validation")
+    };
+    assert!(errors.errors().iter().any(|error| matches!(
+        error,
+        WorkspaceValidationError::TabMruItemNotInTabs { item, .. }
+            if *item == ItemId::new(99)
+    )));
+
+    let mut selected_not_first = sample_snapshot();
+    *tab_state(&mut selected_not_first, 1).2 = vec![1, 2];
+    let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&selected_not_first)
+    else {
+        panic!("selected-not-first MRU must reach strict workspace validation")
+    };
+    assert!(errors.errors().iter().any(|error| matches!(
+        error,
+        WorkspaceValidationError::SelectedTabNotMostRecent {
+            selected: Some(selected),
+            most_recent: Some(most_recent),
+            ..
+        } if *selected == ItemId::new(2) && *most_recent == ItemId::new(1)
+    )));
+
+    let snapshot = sample_snapshot();
+    let mut wire = serde_json::to_value(&snapshot).expect("snapshot must serialize");
+    let nodes = wire[1]["nodes"]
+        .as_array_mut()
+        .expect("snapshot payload must contain nodes");
+    let tabs = nodes
+        .iter_mut()
+        .find(|record| record["node"]["kind"] == "tabs")
+        .expect("sample must contain tabs");
+    tabs["node"]
+        .as_object_mut()
+        .expect("tabs payload must be an object")
+        .remove("mru");
+    let error = serde_json::from_value::<WorkspaceSnapshotEnvelope>(wire)
+        .expect_err("V1 MRU field must be required");
+    assert!(error.to_string().contains("missing field `mru`"));
+}
+
+#[test]
+fn duplicate_record_identities_are_typed() {
     let mut duplicate_node = sample_snapshot();
     duplicate_node.nodes.push(duplicate_node.nodes[0].clone());
     assert!(matches!(
@@ -204,6 +327,109 @@ fn unsupported_versions_and_duplicate_record_identities_are_typed() {
             ..
         }
     ));
+}
+
+#[test]
+fn rootless_v1_round_trip_uses_roster_as_the_only_owner_and_order() {
+    let mut builder = Workspace::builder();
+    let root_a = RootId::new(41);
+    let root_b = RootId::new(42);
+    let floating_a = FloatingPresentationId::new(51);
+    let floating_b = FloatingPresentationId::new(52);
+    let node_a = builder.insert_node(Node::tabs([ItemId::new(41)]));
+    let node_b = builder.insert_node(Node::tabs([ItemId::new(42)]));
+    builder.set_root(root_a, RootRecord::new(node_a));
+    builder.set_root(root_b, RootRecord::new(node_b));
+    builder.set_surface(
+        SURFACE,
+        SurfacePresentation {
+            main_root: None,
+            contained: vec![floating_a, floating_b],
+        },
+    );
+    builder.set_contained_floating(
+        floating_a,
+        ContainedFloating::new(
+            root_a,
+            LogicalRect::new(1.0, 2.0, 30.0, 40.0).expect("valid geometry"),
+        ),
+    );
+    builder.set_contained_floating(
+        floating_b,
+        ContainedFloating::new(
+            root_b,
+            LogicalRect::new(5.0, 6.0, 70.0, 80.0).expect("valid geometry"),
+        ),
+    );
+    let workspace = builder.build().expect("rootless workspace must be valid");
+
+    let snapshot = WorkspaceSnapshot::capture(&workspace).expect("capture must succeed");
+    assert_eq!(snapshot.version(), WORKSPACE_SNAPSHOT_VERSION);
+    assert_eq!(snapshot.surfaces[0].main_root, None);
+    assert_eq!(snapshot.surfaces[0].contained, [51, 52]);
+    let wire = serde_json::to_value(&snapshot).expect("V1 must serialize");
+    for floating in wire[1]["contained_floatings"]
+        .as_array()
+        .expect("floating records must be an array")
+    {
+        assert!(floating.get("surface").is_none());
+        assert!(floating.get("z_order").is_none());
+    }
+
+    let restored = snapshot
+        .build_candidate(|_| true)
+        .expect("V1 rootless snapshot must restore");
+    assert_eq!(
+        restored.surface(SURFACE),
+        Some(&SurfacePresentation {
+            main_root: None,
+            contained: vec![floating_a, floating_b],
+        })
+    );
+    assert_eq!(
+        WorkspaceSnapshot::capture(&restored).expect("restored workspace must recapture"),
+        snapshot
+    );
+}
+
+#[test]
+fn legacy_contained_fields_are_rejected_independently() {
+    let snapshot = serde_json::to_value(sample_snapshot()).expect("V1 must encode");
+    for (field, value) in [
+        ("z_order", serde_json::json!(99)),
+        ("surface", serde_json::json!(SURFACE.get())),
+    ] {
+        let mut legacy = snapshot.clone();
+        legacy[1]["contained_floatings"][0]
+            .as_object_mut()
+            .expect("contained floating must be an object")
+            .insert(field.into(), value);
+        assert!(
+            serde_json::from_value::<WorkspaceSnapshotEnvelope>(legacy).is_err(),
+            "legacy {field} must not be accepted or guessed into V1"
+        );
+    }
+}
+
+#[test]
+fn v1_surface_requires_main_root_field_but_accepts_explicit_null() {
+    let mut explicit_null = serde_json::to_value(sample_snapshot()).expect("snapshot must encode");
+    explicit_null[1]["surfaces"][0]["main_root"] = serde_json::Value::Null;
+    let snapshot = serde_json::from_value::<WorkspaceSnapshotEnvelope>(explicit_null.clone())
+        .expect("an explicit null main root must decode")
+        .into_snapshot()
+        .expect("V1 must be supported");
+    assert_eq!(snapshot.surfaces[0].main_root, None);
+
+    explicit_null[1]["surfaces"][0]
+        .as_object_mut()
+        .expect("surface record must be an object")
+        .remove("main_root")
+        .expect("main_root must be present before removal");
+    assert!(
+        serde_json::from_value::<WorkspaceSnapshotEnvelope>(explicit_null).is_err(),
+        "a missing main_root field must not be interpreted as an intentional rootless surface"
+    );
 }
 
 #[test]
@@ -289,17 +515,21 @@ fn json_rejects_repeated_struct_fields() {
 
 #[test]
 fn version_first_envelope_types_unsupported_documents_before_body_schema() {
-    for (version, body) in [
-        (2, r#"[2,{"nodes":{"future":"shape"}}]"#),
-        (0, r"[0,[1,2,3]]"),
+    let future = WORKSPACE_SNAPSHOT_VERSION + 1;
+    for (version, document) in [
+        (
+            future,
+            serde_json::json!([future, {"nodes": {"future": "shape"}}]),
+        ),
+        (0, serde_json::json!([0, [1, 2, 3]])),
     ] {
-        let envelope = serde_json::from_str::<WorkspaceSnapshotEnvelope>(body)
+        let envelope = serde_json::from_value::<WorkspaceSnapshotEnvelope>(document)
             .expect("unsupported document envelope must still decode");
         assert_eq!(envelope.version(), version);
         assert_eq!(
             envelope
                 .into_snapshot()
-                .expect_err("unsupported version must not produce a V1 snapshot"),
+                .expect_err("unsupported version must not produce a supported snapshot"),
             SnapshotRestoreError::UnsupportedVersion {
                 found: version,
                 supported: WORKSPACE_SNAPSHOT_VERSION,
@@ -364,7 +594,7 @@ fn every_unknown_reference_category_is_rejected_before_assembly() {
 
     let mut main_root = sample_snapshot();
     let surface_id = main_root.surfaces[0].id;
-    main_root.surfaces[0].main_root = 903;
+    main_root.surfaces[0].main_root = Some(903);
     assert_unknown_reference(
         &candidate_error(&main_root),
         SnapshotReferenceOwner::Surface(surface_id),
@@ -390,16 +620,6 @@ fn every_unknown_reference_category_is_rejected_before_assembly() {
         SnapshotReferenceOwner::ContainedFloating(floating_id),
         SnapshotEntityKind::Root,
         905,
-    );
-
-    let mut floating_surface = sample_snapshot();
-    let floating_id = floating_surface.contained_floatings[0].id;
-    floating_surface.contained_floatings[0].surface = 906;
-    assert_unknown_reference(
-        &candidate_error(&floating_surface),
-        SnapshotReferenceOwner::ContainedFloating(floating_id),
-        SnapshotEntityKind::Surface,
-        906,
     );
 }
 
@@ -474,6 +694,22 @@ fn unknown_items_and_invalid_scalar_data_are_typed() {
         error,
         WorkspaceValidationError::SplitWeightCountMismatch { .. }
     )));
+}
+
+#[test]
+fn v1_restore_rejects_zero_width_contained_rect_without_mutating_live_state() {
+    let mut snapshot = sample_snapshot();
+    snapshot.contained_floatings[0].rect.width = 0.0;
+
+    assert_zero_sized_contained_rect_is_rejected_without_mutation(&snapshot, 0.0, 360.0);
+}
+
+#[test]
+fn v1_restore_rejects_zero_height_contained_rect_without_mutating_live_state() {
+    let mut snapshot = sample_snapshot();
+    snapshot.contained_floatings[0].rect.height = 0.0;
+
+    assert_zero_sized_contained_rect_is_rejected_without_mutation(&snapshot, 640.0, 0.0);
 }
 
 #[test]
@@ -566,6 +802,7 @@ fn cycle_shared_node_and_orphan_corruption_reach_strict_validation() {
         node: SnapshotNode::Tabs {
             items: vec![99],
             selected: Some(99),
+            mru: vec![99],
         },
     });
     let SnapshotRestoreError::InvalidWorkspace(errors) = candidate_error(&orphan) else {
@@ -583,7 +820,9 @@ fn cycle_shared_node_and_orphan_corruption_reach_strict_validation() {
         .nodes
         .iter_mut()
         .find_map(|record| match &mut record.node {
-            SnapshotNode::Tabs { items, selected } if items.contains(&3) => Some((items, selected)),
+            SnapshotNode::Tabs {
+                items, selected, ..
+            } if items.contains(&3) => Some((items, selected)),
             _ => None,
         })
         .expect("sample must contain the side tab");
@@ -604,7 +843,9 @@ fn cycle_shared_node_and_orphan_corruption_reach_strict_validation() {
         .nodes
         .iter_mut()
         .find_map(|record| match &mut record.node {
-            SnapshotNode::Tabs { items, selected } if items.contains(&1) => Some(selected),
+            SnapshotNode::Tabs {
+                items, selected, ..
+            } if items.contains(&1) => Some(selected),
             _ => None,
         })
         .expect("sample must contain the central tabs");
@@ -624,6 +865,7 @@ fn cycle_shared_node_and_orphan_corruption_reach_strict_validation() {
 fn restored_candidates_publish_only_through_an_epoch_advancing_engine_replacement() {
     let mut engine = DockEngine::new(sample_workspace(), DockPolicy::default())
         .expect("sample engine must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
     let before_workspace = engine.workspace().clone();
     let before_policy = engine.policy().clone();
     let before_version = engine.version();
@@ -639,23 +881,20 @@ fn restored_candidates_publish_only_through_an_epoch_advancing_engine_replacemen
     };
     children[0] = split_id;
 
-    assert!(
-        engine
-            .enqueue_snapshot_replacement(&corrupted, |_| true)
-            .is_err()
-    );
+    assert!(corrupted.build_candidate(|_| true).is_err());
     assert_eq!(engine.workspace(), &before_workspace);
     assert_eq!(engine.policy(), &before_policy);
     assert_eq!(engine.version(), before_version);
-    assert!(engine.pending_inputs().is_empty());
-
-    let replacement = engine
-        .enqueue_snapshot_replacement(&sample_snapshot(), |_| true)
-        .expect("replacement input must be queued");
-    assert_eq!(replacement.get(), 1);
-    let transition = engine
-        .reduce_pending()
-        .expect("valid candidate must publish through the engine");
+    let replacement = sample_snapshot()
+        .build_candidate(|_| true)
+        .expect("replacement candidate must build");
+    let transition = submit_input(
+        &mut engine,
+        &mut host,
+        SNAPSHOT_INPUT_SOURCE,
+        EngineInput::ReplaceWorkspace(replacement),
+    )
+    .expect("valid candidate must publish through the engine");
     assert_eq!(engine.version().epoch().get(), 1);
     assert!(matches!(
         transition.events(),
@@ -676,6 +915,7 @@ fn deep_chain_restore_is_iterative() {
         node: SnapshotNode::Tabs {
             items: vec![1],
             selected: Some(1),
+            mru: vec![1],
         },
     }];
     let mut subtree = 0;
@@ -687,6 +927,7 @@ fn deep_chain_restore_is_iterative() {
             node: SnapshotNode::Tabs {
                 items: vec![level + 2],
                 selected: Some(level + 2),
+                mru: vec![level + 2],
             },
         });
         nodes.push(SnapshotNodeRecord {
@@ -705,7 +946,6 @@ fn deep_chain_restore_is_iterative() {
     }
 
     let snapshot = WorkspaceSnapshot {
-        version: WORKSPACE_SNAPSHOT_VERSION,
         nodes,
         roots: vec![SnapshotRootRecord {
             id: 1,
@@ -714,7 +954,7 @@ fn deep_chain_restore_is_iterative() {
         }],
         surfaces: vec![SnapshotSurfaceRecord {
             id: 1,
-            main_root: 1,
+            main_root: Some(1),
             contained: Vec::new(),
         }],
         contained_floatings: Vec::new(),

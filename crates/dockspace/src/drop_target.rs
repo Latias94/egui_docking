@@ -7,10 +7,11 @@ use crate::geometry::LogicalRect;
 use crate::hit_region::HitRegion;
 use crate::ids::{FloatingPresentationId, NodeId, RootId, SurfaceId};
 
-/// Stable front-to-back layer key supplied explicitly by a renderer adapter.
+/// Stable front-to-back presentation layer key validated by the core.
 ///
 /// Larger values are frontmost. The resolver never derives this value from
-/// traversal order, focus, geometry, or time.
+/// focus, geometry, or time. Contained-presentation and surface-background
+/// layers come only from the workspace's structural roster order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct SceneLayerKey(u64);
@@ -27,14 +28,60 @@ impl SceneLayerKey {
     pub const fn get(self) -> u64 {
         self.0
     }
+
+    pub(crate) const fn surface_base() -> Self {
+        Self(1)
+    }
+
+    pub(crate) fn contained(index: usize) -> Option<Self> {
+        u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(2))
+            .map(Self)
+    }
 }
 
-/// Exact scene region in which one contained floating blocks lower layers.
+/// Typed destination representing the empty main area of one rootless surface.
 ///
-/// Adapters publish the complete painted outer rectangle, including title bar
-/// and border chrome. A target on the same layer remains eligible so the
-/// floating's own content can receive drops; targets on lower layers are not
-/// candidates anywhere inside this region.
+/// This identity is authored by the core scene protocol. It is not inferred
+/// from unused window geometry and does not imply whole-window pointer
+/// pass-through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SurfaceBackground {
+    surface: SurfaceId,
+}
+
+impl SurfaceBackground {
+    /// Creates the exact background destination for one logical surface.
+    #[must_use]
+    pub const fn new(surface: SurfaceId) -> Self {
+        Self { surface }
+    }
+
+    /// Returns the rootless logical surface which can receive a main root.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+}
+
+/// Typed structural destination carried by one scene drop record.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DropDestination {
+    /// Move content into existing docking topology.
+    Topology(DockTarget),
+    /// Install content as the main root of an existing rootless surface.
+    SurfaceBackground(SurfaceBackground),
+}
+
+/// Core-owned, unclipped outer rectangle in which one contained floating blocks lower layers.
+///
+/// Adapters publish the exact durable [`crate::graph::ContainedFloating`] rectangle,
+/// including title bar and border chrome, even when a surface resize temporarily
+/// leaves part or all of it outside the ready surface bounds. The effective hit
+/// domain is this region intersected with [`crate::scene::PresentationPlan::bounds`].
+/// A target on the same layer remains eligible so the floating's own content can
+/// receive drops; targets on lower layers are not candidates in that effective domain.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DropOcclusionRecord {
     floating: FloatingPresentationId,
@@ -63,7 +110,9 @@ impl DropOcclusionRecord {
         self.floating
     }
 
-    /// Returns the exact blocking region.
+    /// Returns the exact unclipped, core-owned blocking region.
+    ///
+    /// Resolution intersects this region with the ready surface bounds.
     #[must_use]
     pub const fn region(self) -> HitRegion {
         self.region
@@ -87,6 +136,8 @@ pub enum DropTargetKind {
     InnerEdge,
     /// An edge of the complete docking root.
     OuterEdge,
+    /// The empty main area of an existing rootless surface.
+    SurfaceBackground,
 }
 
 impl DropTargetKind {
@@ -96,6 +147,7 @@ impl DropTargetKind {
             Self::Center => 3,
             Self::InnerEdge => 2,
             Self::OuterEdge => 1,
+            Self::SurfaceBackground => 0,
         }
     }
 }
@@ -147,6 +199,11 @@ pub enum DropTargetId {
         /// Physical insertion edge.
         edge: Edge,
     },
+    /// Empty main area of one rootless logical surface.
+    SurfaceBackground {
+        /// Rootless logical surface.
+        surface: SurfaceId,
+    },
 }
 
 impl DropTargetId {
@@ -158,6 +215,7 @@ impl DropTargetId {
             Self::Center { .. } => DropTargetKind::Center,
             Self::InnerEdge { .. } => DropTargetKind::InnerEdge,
             Self::OuterEdge { .. } => DropTargetKind::OuterEdge,
+            Self::SurfaceBackground { .. } => DropTargetKind::SurfaceBackground,
         }
     }
 
@@ -168,7 +226,8 @@ impl DropTargetId {
             Self::TabGap { surface, .. }
             | Self::Center { surface, .. }
             | Self::InnerEdge { surface, .. }
-            | Self::OuterEdge { surface, .. } => surface,
+            | Self::OuterEdge { surface, .. }
+            | Self::SurfaceBackground { surface } => surface,
         }
     }
 
@@ -178,6 +237,7 @@ impl DropTargetId {
             Self::Center { .. } => 1,
             Self::InnerEdge { .. } => 2,
             Self::OuterEdge { .. } => 3,
+            Self::SurfaceBackground { .. } => 4,
         }
     }
 }
@@ -258,6 +318,14 @@ impl Ord for DropTargetId {
                     .then(left_root.cmp(&right_root))
                     .then(left_node.cmp(&right_node))
                     .then(edge_order(left_edge).cmp(&edge_order(right_edge))),
+                (
+                    Self::SurfaceBackground {
+                        surface: left_surface,
+                    },
+                    Self::SurfaceBackground {
+                        surface: right_surface,
+                    },
+                ) => left_surface.cmp(&right_surface),
                 _ => Ordering::Equal,
             })
     }
@@ -324,7 +392,7 @@ impl DropVisual {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropTargetRecord {
     id: DropTargetId,
-    target: DockTarget,
+    destination: DropDestination,
     availability: DropTargetAvailability,
     region: HitRegion,
     layer: SceneLayerKey,
@@ -347,10 +415,33 @@ impl DropTargetRecord {
     ) -> Self {
         Self {
             id,
-            target,
+            destination: DropDestination::Topology(target),
             availability,
             region,
             layer,
+            visual,
+        }
+    }
+
+    /// Creates the one explicit rootless-surface background record.
+    ///
+    /// Its layer is core-owned and always below every contained presentation.
+    /// Its availability is also core-owned and always starts available. The
+    /// adapter supplies only measured hit and preview geometry.
+    #[must_use]
+    pub const fn surface_background(
+        destination: SurfaceBackground,
+        region: HitRegion,
+        visual: DropVisual,
+    ) -> Self {
+        Self {
+            id: DropTargetId::SurfaceBackground {
+                surface: destination.surface(),
+            },
+            destination: DropDestination::SurfaceBackground(destination),
+            availability: DropTargetAvailability::Available,
+            region,
+            layer: SceneLayerKey::surface_base(),
             visual,
         }
     }
@@ -361,10 +452,10 @@ impl DropTargetRecord {
         self.id
     }
 
-    /// Returns the exact checked topology target captured for this scene.
+    /// Returns the exact typed destination captured for this scene.
     #[must_use]
-    pub const fn target(&self) -> &DockTarget {
-        &self.target
+    pub const fn destination(&self) -> &DropDestination {
+        &self.destination
     }
 
     /// Returns explicit scene-time availability.
@@ -392,28 +483,36 @@ impl DropTargetRecord {
     }
 
     pub(crate) fn semantics_match(&self) -> bool {
-        match (&self.id, &self.target) {
+        match (&self.id, &self.destination) {
             (
                 DropTargetId::TabGap {
                     root, tabs, index, ..
                 },
-                DockTarget::TabGap {
+                DropDestination::Topology(DockTarget::TabGap {
                     target,
                     index: target_index,
-                },
+                }),
             ) => *root == target.root() && *tabs == target.tabs() && *index == *target_index,
-            (DropTargetId::Center { root, tabs, .. }, DockTarget::Center(target)) => {
-                *root == target.root() && *tabs == target.tabs()
-            }
+            (
+                DropTargetId::Center { root, tabs, .. },
+                DropDestination::Topology(DockTarget::Center(target)),
+            ) => *root == target.root() && *tabs == target.tabs(),
             (
                 DropTargetId::InnerEdge {
                     root, node, edge, ..
-                }
-                | DropTargetId::OuterEdge {
+                },
+                DropDestination::Topology(DockTarget::InnerEdge(target)),
+            ) => *root == target.root() && *node == target.node() && *edge == target.edge(),
+            (
+                DropTargetId::OuterEdge {
                     root, node, edge, ..
                 },
-                DockTarget::Edge(target),
+                DropDestination::Topology(DockTarget::OuterEdge(target)),
             ) => *root == target.root() && *node == target.node() && *edge == target.edge(),
+            (
+                DropTargetId::SurfaceBackground { surface },
+                DropDestination::SurfaceBackground(destination),
+            ) => *surface == destination.surface(),
             _ => false,
         }
     }

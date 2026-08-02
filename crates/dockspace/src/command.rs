@@ -4,8 +4,35 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::geometry::LogicalRect;
-use crate::graph::{Axis, ContainedStackKey, SplitWeight};
+use crate::graph::{Axis, SplitWeight};
 use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
+use crate::policy::DockTargetRuleKey;
+
+/// Programmatic request to close one item or one complete root.
+///
+/// The target carries only stable identity. The core captures all graph,
+/// presentation, and policy facts when it accepts the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContentCloseTarget {
+    /// Close one item in its current tabs node.
+    Item(ItemId),
+    /// Close every item in one complete root.
+    Root(RootId),
+}
+
+/// Durable result of an approved content-close transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloseCommitOutcome {
+    /// One item was removed from its root.
+    ItemClosed { item: ItemId, root: RootId },
+    /// One complete root and all of its items were removed atomically.
+    RootClosed { root: RootId, items: Vec<ItemId> },
+    /// One complete surface roster and all of its items were removed atomically.
+    SurfaceClosed {
+        surface: SurfaceId,
+        items: Vec<ItemId>,
+    },
+}
 
 /// Opaque, collision-free snapshot of a root and its presentation owner.
 ///
@@ -18,6 +45,55 @@ impl NodeFingerprint {
     /// Returns the stable root identity captured by this snapshot.
     pub fn root(&self) -> RootId {
         self.0.root
+    }
+
+    /// Compares durable topology and tab membership while deliberately ignoring
+    /// selection and MRU state.
+    ///
+    /// Pointer-journal press handling may select a tab before a later edge from
+    /// the same actually presented output resolves a drop. That mutation must
+    /// refresh command preconditions without authorizing a changed graph, tab
+    /// order, split ratio, central node, or presentation owner.
+    pub(crate) fn presentation_structure_eq(&self, other: &Self) -> bool {
+        self.0.root == other.0.root
+            && self.0.root_node == other.0.root_node
+            && self.0.central == other.0.central
+            && self.0.presentation == other.0.presentation
+            && self.0.nodes.len() == other.0.nodes.len()
+            && self
+                .0
+                .nodes
+                .iter()
+                .zip(&other.0.nodes)
+                .all(|(left, right)| {
+                    left.id == right.id
+                        && match (&left.node, &right.node) {
+                            (
+                                FingerprintNode::Tabs { items: left, .. },
+                                FingerprintNode::Tabs { items: right, .. },
+                            ) => left == right,
+                            (
+                                FingerprintNode::Split {
+                                    axis: left_axis,
+                                    children: left_children,
+                                    weight_bits: left_weights,
+                                },
+                                FingerprintNode::Split {
+                                    axis: right_axis,
+                                    children: right_children,
+                                    weight_bits: right_weights,
+                                },
+                            ) => {
+                                left_axis == right_axis
+                                    && left_children == right_children
+                                    && left_weights == right_weights
+                            }
+                            (FingerprintNode::Tabs { .. }, FingerprintNode::Split { .. })
+                            | (FingerprintNode::Split { .. }, FingerprintNode::Tabs { .. }) => {
+                                false
+                            }
+                        }
+                })
     }
 }
 
@@ -52,6 +128,7 @@ pub(crate) enum FingerprintNode {
     Tabs {
         items: Vec<ItemId>,
         selected: Option<ItemId>,
+        mru: Vec<ItemId>,
     },
     Split {
         axis: Axis,
@@ -110,6 +187,35 @@ pub struct NodeSource {
     pub(crate) fingerprint: NodeFingerprint,
 }
 
+/// One exact split-weight replacement inside an atomic resize batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitResize {
+    split: NodeSource,
+    weights: Vec<SplitWeight>,
+}
+
+impl SplitResize {
+    /// Creates one resize update from a frozen split source and normalized weights.
+    ///
+    /// Validation against the current workspace is deferred to command execution.
+    #[must_use]
+    pub fn new(split: NodeSource, weights: Vec<SplitWeight>) -> Self {
+        Self { split, weights }
+    }
+
+    /// Returns the frozen split source.
+    #[must_use]
+    pub const fn split(&self) -> &NodeSource {
+        &self.split
+    }
+
+    /// Returns the complete proposed split weights.
+    #[must_use]
+    pub fn weights(&self) -> &[SplitWeight] {
+        &self.weights
+    }
+}
+
 impl NodeSource {
     /// Returns the source root.
     pub const fn root(&self) -> RootId {
@@ -127,12 +233,103 @@ impl NodeSource {
     }
 }
 
+/// Exact source facts for one contained root in a frozen surface roster.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainedRootSource {
+    floating: FloatingPresentationId,
+    source: NodeSource,
+    rect: LogicalRect,
+}
+
+impl ContainedRootSource {
+    pub(crate) const fn new(
+        floating: FloatingPresentationId,
+        source: NodeSource,
+        rect: LogicalRect,
+    ) -> Self {
+        Self {
+            floating,
+            source,
+            rect,
+        }
+    }
+
+    /// Returns the stable contained-presentation identity.
+    #[must_use]
+    pub const fn floating(&self) -> FloatingPresentationId {
+        self.floating
+    }
+
+    /// Returns the stable root presented by the contained window.
+    #[must_use]
+    pub fn root(&self) -> RootId {
+        self.source.root()
+    }
+
+    /// Returns the source-local rectangle frozen with the roster.
+    #[must_use]
+    pub const fn rect(&self) -> LogicalRect {
+        self.rect
+    }
+
+    pub(crate) const fn source(&self) -> &NodeSource {
+        &self.source
+    }
+}
+
+/// Exact optional-main plus ordered contained ownership frozen from one surface.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SurfaceRosterSource {
+    surface: SurfaceId,
+    main: Option<NodeSource>,
+    contained: Arc<[ContainedRootSource]>,
+}
+
+impl SurfaceRosterSource {
+    pub(crate) fn new(
+        surface: SurfaceId,
+        main: Option<NodeSource>,
+        contained: Vec<ContainedRootSource>,
+    ) -> Self {
+        Self {
+            surface,
+            main,
+            contained: Arc::from(contained),
+        }
+    }
+
+    /// Returns the surface whose complete roster was frozen.
+    #[must_use]
+    pub(crate) const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the stable main root frozen for the surface, when present.
+    #[must_use]
+    pub(crate) fn main_root(&self) -> Option<RootId> {
+        self.main.as_ref().map(NodeSource::root)
+    }
+
+    /// Returns contained roots in normative back-to-front order.
+    #[must_use]
+    pub(crate) fn contained(&self) -> &[ContainedRootSource] {
+        &self.contained
+    }
+
+    pub(crate) const fn main_source(&self) -> Option<&NodeSource> {
+        self.main.as_ref()
+    }
+}
+
 /// A tabs target frozen against one workspace state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabTarget {
     pub(crate) root: RootId,
     pub(crate) tabs: NodeId,
     pub(crate) fingerprint: NodeFingerprint,
+    pub(crate) surface: SurfaceId,
+    pub(crate) central: bool,
+    pub(crate) rule: DockTargetRuleKey,
 }
 
 impl TabTarget {
@@ -149,6 +346,21 @@ impl TabTarget {
     /// Returns the target subtree fingerprint.
     pub const fn fingerprint(&self) -> &NodeFingerprint {
         &self.fingerprint
+    }
+
+    /// Returns the logical surface that owned this target when it was captured.
+    pub const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns whether this tabs leaf was the root's declared central node.
+    pub const fn is_central(&self) -> bool {
+        self.central
+    }
+
+    /// Returns the selected item that represented this pane-local target.
+    pub const fn rule(&self) -> DockTargetRuleKey {
+        self.rule
     }
 }
 
@@ -198,6 +410,15 @@ pub enum Edge {
     Bottom,
 }
 
+/// Semantic extent of one frozen edge target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeTargetScope {
+    /// Split one selected tabs leaf at a branch-local edge.
+    Inner,
+    /// Split the complete docking root at its outer boundary.
+    Outer,
+}
+
 /// An edge target frozen against one workspace state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeTarget {
@@ -206,6 +427,10 @@ pub struct EdgeTarget {
     pub(crate) fingerprint: NodeFingerprint,
     pub(crate) edge: Edge,
     pub(crate) fraction: DockFraction,
+    pub(crate) surface: SurfaceId,
+    pub(crate) central: bool,
+    pub(crate) rule: DockTargetRuleKey,
+    pub(crate) scope: EdgeTargetScope,
 }
 
 impl EdgeTarget {
@@ -233,6 +458,26 @@ impl EdgeTarget {
     pub const fn fraction(&self) -> DockFraction {
         self.fraction
     }
+
+    /// Returns the logical surface that owned this target when it was captured.
+    pub const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns whether this branch was the root's declared central node.
+    pub const fn is_central(&self) -> bool {
+        self.central
+    }
+
+    /// Returns the exact semantic rule represented by this edge.
+    pub const fn rule(&self) -> DockTargetRuleKey {
+        self.rule
+    }
+
+    /// Returns whether this proof names an inner or outer edge.
+    pub const fn scope(&self) -> EdgeTargetScope {
+        self.scope
+    }
 }
 
 /// Existing topology location receiving an opened or moved payload.
@@ -247,8 +492,36 @@ pub enum DockTarget {
         /// Gap index in the target's current tab sequence.
         index: usize,
     },
-    /// Split an existing target branch at an explicit edge and fraction.
-    Edge(EdgeTarget),
+    /// Split a selected tabs leaf at an explicit branch-local edge and fraction.
+    InnerEdge(EdgeTarget),
+    /// Split the complete target root at an explicit outer edge and fraction.
+    OuterEdge(EdgeTarget),
+}
+
+impl DockTarget {
+    /// Returns the frozen logical target surface.
+    pub const fn surface(&self) -> SurfaceId {
+        match self {
+            Self::Center(target) | Self::TabGap { target, .. } => target.surface(),
+            Self::InnerEdge(target) | Self::OuterEdge(target) => target.surface(),
+        }
+    }
+
+    /// Returns whether the exact target is the root's central node.
+    pub const fn is_central(&self) -> bool {
+        match self {
+            Self::Center(target) | Self::TabGap { target, .. } => target.is_central(),
+            Self::InnerEdge(target) | Self::OuterEdge(target) => target.is_central(),
+        }
+    }
+
+    /// Returns the core-minted semantic policy rule for this target.
+    pub const fn rule(&self) -> DockTargetRuleKey {
+        match self {
+            Self::Center(target) | Self::TabGap { target, .. } => target.rule(),
+            Self::InnerEdge(target) | Self::OuterEdge(target) => target.rule(),
+        }
+    }
 }
 
 /// Application content detached by a move command.
@@ -271,6 +544,39 @@ pub enum RootContent {
     Move(MovePayload),
 }
 
+/// Structural insertion position in one surface's contained roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainedPosition {
+    /// Insert at the roster end, which is the frontmost presentation.
+    Front,
+    /// Insert immediately behind the named presentation.
+    Before(FloatingPresentationId),
+    /// Insert immediately in front of the named presentation.
+    After(FloatingPresentationId),
+}
+
+/// Opaque snapshot of one complete contained roster used as a command precondition.
+///
+/// Capturing the whole back-to-front sequence prevents delayed focus input from recomputing a
+/// raise against peer presentations that changed in the meantime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainedRosterSource {
+    pub(crate) surface: SurfaceId,
+    pub(crate) contained: Arc<[FloatingPresentationId]>,
+}
+
+impl ContainedRosterSource {
+    /// Returns the surface whose roster was captured.
+    pub const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the captured contained identities in back-to-front order.
+    pub fn contained(&self) -> &[FloatingPresentationId] {
+        &self.contained
+    }
+}
+
 /// Explicit presentation destination for an existing complete root.
 ///
 /// Rehoming preserves the root and topology identities. Moving between two
@@ -278,14 +584,16 @@ pub enum RootContent {
 /// identity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RootPresentationTarget {
-    /// Present the root as the main dock area of a logical surface.
-    Surface { surface: SurfaceId },
+    /// Present the root as the main dock area of a newly created logical surface.
+    NewSurface { surface: SurfaceId },
+    /// Install the root into an existing rootless surface's main dock area.
+    Main { surface: SurfaceId },
     /// Present the root as a contained floating on an existing surface.
     Contained {
         surface: SurfaceId,
         floating: FloatingPresentationId,
         rect: LogicalRect,
-        z_order: u64,
+        position: ContainedPosition,
     },
 }
 
@@ -301,30 +609,13 @@ pub enum WorkspaceCommand {
     },
     /// Open one not-yet-owned item into existing topology.
     Open { item: ItemId, target: DockTarget },
-    /// Close one existing item.
-    ///
-    /// Closing the selected item selects its successor at the same index, or
-    /// the previous item when the closed item was last. Closing an inactive
-    /// item preserves the current selection. This order rule is normative and
-    /// never depends on focus history or renderer state.
-    Close { source: ItemSource },
-    /// Close every application item in one complete, non-empty root.
-    ///
-    /// The source must name the root node itself. Its fingerprint freezes the
-    /// complete topology and presentation owner, so this command never closes
-    /// content that changed after capture. Empty roots remain the responsibility
-    /// of [`WorkspaceCommand::RemoveEmptyRoot`].
-    CloseRoot { source: NodeSource },
     /// Move an item, tabs stack, or complete subtree into existing topology.
     Move {
         payload: MovePayload,
         target: DockTarget,
     },
-    /// Replace every weight of one split with caller-supplied normalized weights.
-    ResizeSplit {
-        split: NodeSource,
-        weights: Vec<SplitWeight>,
-    },
+    /// Atomically replace every weight for one or more distinct splits.
+    ResizeSplits { splits: Vec<SplitResize> },
     /// Create a new logical surface and its main root atomically.
     CreateSurfaceRoot {
         surface: SurfaceId,
@@ -337,7 +628,17 @@ pub enum WorkspaceCommand {
         root: RootId,
         floating: FloatingPresentationId,
         rect: LogicalRect,
-        z_order: u64,
+        position: ContainedPosition,
+        content: RootContent,
+    },
+    /// Install a newly created root into an existing rootless surface.
+    ///
+    /// `root` is a caller-supplied fresh identity. Complete existing roots use
+    /// [`WorkspaceCommand::RehomeRoot`], except that a contained root becoming main on its current
+    /// surface uses [`WorkspaceCommand::PromoteContained`]. Neither path replaces the root identity.
+    InstallMainRoot {
+        surface: SurfaceId,
+        root: RootId,
         content: RootContent,
     },
     /// Transfer an existing complete root to another presentation owner.
@@ -348,13 +649,18 @@ pub enum WorkspaceCommand {
         source: NodeSource,
         target: RootPresentationTarget,
     },
+    /// Promote one exact contained root to the main slot of its current rootless surface.
+    PromoteContained {
+        source: NodeSource,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
     /// Replace a contained rectangle only when its exact previous value still matches.
     ///
-    /// This command is intended for application or offline mutation. Renderer
-    /// adapters must not guess its geometry: they use the scene-proof-bearing
-    /// [`crate::intent::RendererIntent::ApplyContainedPlacement`] one-shot path,
-    /// the contained transform session protocol, or the ordinary drag protocol
-    /// whose contained preview proof freezes this command internally.
+    /// This command is intended for application/offline mutation and scene-proven
+    /// resize sessions that do not alter stacking. A contained title drag must use
+    /// [`WorkspaceCommand::UpdateContainedPresentation`] so geometry and roster
+    /// position share one exact transaction boundary.
     UpdateContainedRect {
         surface: SurfaceId,
         root: RootId,
@@ -362,20 +668,77 @@ pub enum WorkspaceCommand {
         expected_rect: LogicalRect,
         rect: LogicalRect,
     },
+    /// Atomically update one existing contained presentation's rectangle and roster position.
+    ///
+    /// The complete root source, previous rectangle, and full surface roster are
+    /// exact preconditions. Position is resolved only after removing `floating`
+    /// from that frozen roster, so self anchors reject and peer anchors cannot
+    /// be reinterpreted after concurrent changes.
+    UpdateContainedPresentation {
+        source: NodeSource,
+        floating: FloatingPresentationId,
+        expected_rect: LogicalRect,
+        expected_roster: ContainedRosterSource,
+        rect: LogicalRect,
+        position: ContainedPosition,
+    },
     /// Raise a contained presentation after explicit focus input.
     ///
-    /// Both the presentation's own z-order and the surface's deterministic
-    /// frontmost key are exact preconditions, so an old focus command never
+    /// The complete captured roster is an exact precondition, so an old focus command never
     /// recomputes itself against newer peer state.
     RaiseContained {
-        surface: SurfaceId,
-        root: RootId,
+        source: NodeSource,
         floating: FloatingPresentationId,
-        expected_z_order: u64,
-        expected_frontmost: ContainedStackKey,
+        expected_roster: ContainedRosterSource,
     },
     /// Remove a root whose topology contains no application item.
     RemoveEmptyRoot { source: NodeSource },
+}
+
+impl WorkspaceCommand {
+    /// Returns the application item introduced by this command, if any.
+    ///
+    /// Move commands only transfer content already owned by the workspace. The
+    /// four opening forms are therefore the complete identity-admission surface.
+    pub(crate) const fn opened_item(&self) -> Option<ItemId> {
+        match self {
+            Self::Open { item, .. } => Some(*item),
+            Self::CreateSurfaceRoot {
+                content: RootContent::OpenItem(item),
+                ..
+            }
+            | Self::CreateContainedRoot {
+                content: RootContent::OpenItem(item),
+                ..
+            }
+            | Self::InstallMainRoot {
+                content: RootContent::OpenItem(item),
+                ..
+            } => Some(*item),
+            Self::Select { .. }
+            | Self::Reorder { .. }
+            | Self::Move { .. }
+            | Self::ResizeSplits { .. }
+            | Self::CreateSurfaceRoot {
+                content: RootContent::Move(_),
+                ..
+            }
+            | Self::CreateContainedRoot {
+                content: RootContent::Move(_),
+                ..
+            }
+            | Self::InstallMainRoot {
+                content: RootContent::Move(_),
+                ..
+            }
+            | Self::RehomeRoot { .. }
+            | Self::PromoteContained { .. }
+            | Self::UpdateContainedRect { .. }
+            | Self::UpdateContainedPresentation { .. }
+            | Self::RaiseContained { .. }
+            | Self::RemoveEmptyRoot { .. } => None,
+        }
+    }
 }
 
 /// Structured result of one successfully staged command.
@@ -397,10 +760,6 @@ pub enum CommandOutcome {
     },
     /// One new item was opened.
     Opened { item: ItemId, root: RootId },
-    /// One item was closed.
-    Closed { item: ItemId, root: RootId },
-    /// One complete root, all of its items, and its presentation were closed.
-    RootClosed { root: RootId, items: Vec<ItemId> },
     /// Existing items were moved without changing ownership.
     Moved {
         items: Vec<ItemId>,
@@ -408,8 +767,8 @@ pub enum CommandOutcome {
         target_root: RootId,
         changed: bool,
     },
-    /// Caller-supplied split weights were checked and optionally stored.
-    SplitResized { split: NodeId, changed: bool },
+    /// One atomic split-resize batch was checked and optionally stored.
+    SplitsResized { splits: Vec<NodeId>, changed: bool },
     /// A new surface and main root were created.
     SurfaceRootCreated {
         surface: SurfaceId,
@@ -423,6 +782,12 @@ pub enum CommandOutcome {
         floating: FloatingPresentationId,
         items: Vec<ItemId>,
     },
+    /// A new main root was installed into an existing rootless surface.
+    MainRootInstalled {
+        surface: SurfaceId,
+        root: RootId,
+        items: Vec<ItemId>,
+    },
     /// An existing root was transferred without changing topology identity.
     RootRehomed {
         root: RootId,
@@ -430,16 +795,30 @@ pub enum CommandOutcome {
         floating: Option<FloatingPresentationId>,
         changed: bool,
     },
+    /// One exact contained presentation became its surface's main root.
+    ContainedPromoted {
+        surface: SurfaceId,
+        root: RootId,
+        floating: FloatingPresentationId,
+    },
     /// A contained rectangle was checked and optionally updated.
     ContainedRectUpdated {
         floating: FloatingPresentationId,
         changed: bool,
     },
-    /// A contained z-order was checked and optionally raised.
+    /// An existing contained presentation's rectangle and roster position were checked together.
+    ContainedPresentationUpdated {
+        floating: FloatingPresentationId,
+        from: usize,
+        to: usize,
+        rect_changed: bool,
+        order_changed: bool,
+    },
+    /// A contained roster position was checked and optionally raised.
     ContainedRaised {
         floating: FloatingPresentationId,
-        previous: u64,
-        current: u64,
+        from: usize,
+        to: usize,
         changed: bool,
     },
     /// An empty root and its presentation were removed.

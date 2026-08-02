@@ -1,6 +1,7 @@
 [package]
 name = "egui_dockspace"
-description = "Deterministic docking and multi-viewport adapter for egui"
+description = "Deterministic single-surface docking adapter for egui"
+autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,21 +11,38 @@ repository.workspace = true
 
 [features]
 default = []
-native = []
+example-app = ["dep:eframe"]
 serde = ["dockspace/serde", "dep:serde_json"]
 
 [dependencies]
 dockspace.workspace = true
+eframe = { workspace = true, optional = true, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui.workspace = true
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-eframe = { workspace = true, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { workspace = true, features = ["default_fonts"] }
+
+[[example]]
+name = "basic"
+required-features = ["example-app"]
 
 [[example]]
 name = "workspace_persistence"
-required-features = ["serde"]
+required-features = ["example-app", "serde"]
+
+[[test]]
+name = "contained_occlusion"
+
+[[test]]
+name = "backend_frame"
+
+[[test]]
+name = "multi_surface_frame"
+
+[[test]]
+name = "tear_off_mode"
 
 [lints]
 workspace = true

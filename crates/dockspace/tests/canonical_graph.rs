@@ -26,7 +26,7 @@ fn draft_split(axis: Axis, children: Vec<NodeId>, weights: Vec<f32>) -> Node {
 
 fn present_main(builder: &mut WorkspaceBuilder, root: RootRecord) {
     builder.set_root(ROOT, root);
-    builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
 }
 
 fn split_parts(workspace: &Workspace, node: NodeId) -> (&[NodeId], Vec<f32>) {

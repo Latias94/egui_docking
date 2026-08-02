@@ -2,15 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use eframe::egui;
-use egui_dockspace::dockspace::geometry::LogicalRect;
-use egui_dockspace::dockspace::graph::{
-    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
-};
-use egui_dockspace::dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use egui_dockspace::{
-    ContainedPresentationIds, Dockspace, PaneView, PresentationIdSource, TearOffMode,
-};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -44,8 +40,6 @@ impl DockspaceApp {
     fn new() -> Self {
         let workspace = example_workspace();
         let dockspace = Dockspace::builder("basic", workspace)
-            .tear_off_mode(TearOffMode::Contained)
-            .presentation_ids(SequentialPresentationIds::new(100))
             .build()
             .expect("the static example workspace is valid");
         Self {
@@ -64,7 +58,10 @@ impl eframe::App for DockspaceApp {
             });
         }
         egui::CentralPanel::default().show(ui, |ui| {
-            match self.dockspace.show(SURFACE, ui, &mut self.panes) {
+            match self
+                .dockspace
+                .show_single_surface(SURFACE, ui, &mut self.panes)
+            {
                 Ok(_) => self.error = None,
                 Err(error) => self.error = Some(error.to_string()),
             }
@@ -84,39 +81,18 @@ fn example_workspace() -> Workspace {
 
     builder.set_root(MAIN_ROOT, RootRecord::new(main).with_central(editors));
     builder.set_root(FLOATING_ROOT, RootRecord::new(inspector));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(
         FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        LogicalRect::new(690.0, 90.0, 310.0, 300.0).expect("the static rect is valid"),
-        1,
-    ));
+        ContainedFloating::new(
+            FLOATING_ROOT,
+            LogicalRect::new(690.0, 90.0, 310.0, 300.0).expect("the static rect is valid"),
+        ),
+    );
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("the example surface exists");
     builder.build().expect("the example workspace is valid")
-}
-
-struct SequentialPresentationIds {
-    next: u64,
-}
-
-impl SequentialPresentationIds {
-    const fn new(first: u64) -> Self {
-        Self { next: first }
-    }
-}
-
-impl PresentationIdSource for SequentialPresentationIds {
-    fn next_contained(&mut self) -> Option<ContainedPresentationIds> {
-        let value = self.next;
-        self.next = self.next.checked_add(1)?;
-        Some(ContainedPresentationIds::new(
-            RootId::new(value),
-            FloatingPresentationId::new(value),
-        ))
-    }
 }
 
 struct ExamplePane {

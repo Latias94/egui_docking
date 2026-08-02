@@ -5,11 +5,14 @@ use dockspace::drop_guide::{DropGuideClusterId, DropGuideSlot};
 use dockspace::drop_target::DropTargetId;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
-use dockspace::scene::SurfaceScene;
+use dockspace::interaction::{
+    InteractionDelivery, InteractionOutcome, InteractionStatus, PreviewVisual,
+    WorkspaceDeliveryKind,
+};
+use dockspace::scene::PresentationPlan;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -42,6 +45,7 @@ struct Fixture {
     dockspace: Dockspace,
     panes: TestPanes,
     left_tabs: NodeId,
+    next_frame_sequence: u64,
 }
 
 impl Fixture {
@@ -54,7 +58,7 @@ impl Fixture {
                 .expect("fixture split is valid"),
         );
         builder.set_root(ROOT, RootRecord::new(split));
-        builder.set_surface(SURFACE, SurfacePresentation::new(ROOT));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("guide fixture is valid");
         let dockspace = Dockspace::builder(("docking-guide", slot), workspace)
             .build()
@@ -64,33 +68,56 @@ impl Fixture {
             dockspace,
             panes: TestPanes,
             left_tabs,
+            next_frame_sequence: 1,
         }
     }
 
     fn run_frame(&mut self, events: Vec<Event>) -> Vec<EngineTransition> {
-        let mut transitions = Vec::new();
-        let _ = self.context.run_ui(input(events), |ui| {
-            let response = self
-                .dockspace
-                .show(SURFACE, ui, &mut self.panes)
-                .expect("guide frame advances");
-            transitions.extend_from_slice(response.transitions());
-        });
-        transitions
+        let key = EguiFrameScheduleKey::new(self.next_frame_sequence, 0);
+        self.next_frame_sequence = self
+            .next_frame_sequence
+            .checked_add(1)
+            .expect("guide fixture frame sequence must not overflow");
+        let mut host = self
+            .dockspace
+            .begin_outer_frame(key)
+            .expect("outer guide frame begins");
+        host.run_surface(SURFACE, &self.context, input(events), &mut self.panes)
+            .expect("outer guide host owns the complete surface run");
+        let (response, outputs) = host
+            .finish()
+            .expect("outer guide frame commits")
+            .into_parts();
+        for output in outputs {
+            output.settle_with(|surface, _| {
+                assert_eq!(surface, SURFACE);
+                EguiPresentationResult::Presented
+            });
+        }
+        vec![response.transition().clone()]
     }
 
     fn warm(&mut self) {
         self.run_frame(Vec::new());
         self.run_frame(Vec::new());
+        self.run_frame(Vec::new());
+        assert!(
+            self.dockspace
+                .engine()
+                .interaction_projection(SURFACE)
+                .is_some(),
+            "a presented outer-host frame must authorize the guide fixture"
+        );
     }
 
     fn source_tab_point(&self) -> Pos2 {
-        let ready = self.ready_scene();
+        let ready = self.painted_plan();
         let rect = ready
-            .tabs()
+            .tab_records()
             .iter()
             .find(|tab| tab.id().item == ITEM_B)
             .expect("right item tab is painted")
+            .drag_hit()
             .rect();
         logical_point(
             rect.min().x() + 8.0,
@@ -100,7 +127,7 @@ impl Fixture {
 
     fn guide_target(&self, slot: DropGuideSlot) -> (DropGuideClusterId, DropTargetId, Pos2) {
         let cluster = self
-            .ready_scene()
+            .painted_plan()
             .drop_guide_clusters()
             .iter()
             .find(|cluster| {
@@ -129,24 +156,19 @@ impl Fixture {
         )
     }
 
-    fn ready_scene(&self) -> &dockspace::scene::ReadySurfaceScene {
-        let SurfaceScene::Ready(ready) = self
-            .dockspace
+    fn painted_plan(&self) -> &PresentationPlan {
+        self.dockspace
             .engine()
-            .scene()
-            .and_then(|scene| scene.surface(SURFACE))
-            .expect("fixture surface scene exists")
-        else {
-            panic!("fixture surface scene is ready");
-        };
-        ready
+            .interaction_projection(SURFACE)
+            .map(dockspace::scene::SurfaceInteractionProjection::plan)
+            .expect("fixture surface has an acknowledged painted plan")
     }
 }
 
 fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 500.0))),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         ..RawInput::default()
     }
 }
@@ -168,18 +190,24 @@ fn logical_point(x: f64, y: f64) -> Pos2 {
     Pos2::new(x as f32, y as f32)
 }
 
-fn contains_outcome(
-    transitions: &[EngineTransition],
-    predicate: impl Fn(&InteractionOutcome) -> bool,
-) -> bool {
-    transitions.iter().any(|transition| {
-        transition.reduced_inputs().iter().any(|input| {
-            matches!(
-                input.outcome(),
-                InputOutcome::InteractionProcessed { outcome, .. } if predicate(outcome)
-            )
-        })
-    })
+fn ordered_interaction_outcomes(transitions: &[EngineTransition]) -> Vec<&InteractionOutcome> {
+    let mut ordered = Vec::new();
+    for transition in transitions {
+        let mut tick = Vec::new();
+        for input in transition.reduced_inputs() {
+            if let InputOutcome::InteractionProcessed { outcome, .. } = input.outcome() {
+                tick.push((input.causal_ordinal(), outcome));
+            }
+        }
+        for edge in transition.reduced_pointer_edges() {
+            for outcome in edge.interaction_outcomes() {
+                tick.push((edge.causal_ordinal(), outcome));
+            }
+        }
+        tick.sort_by_key(|(ordinal, _)| *ordinal);
+        ordered.extend(tick.into_iter().map(|(_, outcome)| outcome));
+    }
+    ordered
 }
 
 fn run_guide_case(slot: DropGuideSlot) {
@@ -190,12 +218,12 @@ fn run_guide_case(slot: DropGuideSlot) {
     let original = fixture.dockspace.engine().workspace().clone();
     let expected_items = BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)]);
 
-    fixture.run_frame(vec![
+    let mut gesture = fixture.run_frame(vec![
         Event::PointerMoved(source),
         pointer_button(source, true),
     ]);
     for _ in 0..4 {
-        fixture.run_frame(vec![Event::PointerMoved(target_point)]);
+        gesture.extend(fixture.run_frame(vec![Event::PointerMoved(target_point)]));
     }
 
     assert!(matches!(
@@ -239,30 +267,40 @@ fn run_guide_case(slot: DropGuideSlot) {
             .visual(),
         PreviewVisual::Dock { target, .. } if *target == target_id
     ));
+    let preview_session = fixture
+        .dockspace
+        .engine()
+        .interaction()
+        .preview()
+        .expect("eligible exact guide retains its preview until release")
+        .token()
+        .session();
     assert_eq!(fixture.dockspace.engine().workspace(), &original);
 
-    let release = fixture.run_frame(vec![
+    gesture.extend(fixture.run_frame(vec![
         Event::PointerMoved(target_point),
         pointer_button(target_point, false),
-    ]);
+    ]));
+    let protocol = ordered_interaction_outcomes(&gesture)
+        .into_iter()
+        .filter(|outcome| matches!(outcome, InteractionOutcome::DragDelivered { .. }))
+        .collect::<Vec<_>>();
     assert!(
-        !contains_outcome(&release, |outcome| matches!(
-            outcome,
-            InteractionOutcome::DragDelivered { .. }
-        )),
-        "release painted this frame must not reduce immediately"
+        matches!(
+            protocol.as_slice(),
+            [
+                InteractionOutcome::DragDelivered {
+                    session: delivered,
+                    delivery: InteractionDelivery::Workspace {
+                        kind: WorkspaceDeliveryKind::Dock,
+                        changed: true,
+                        ..
+                    },
+                },
+            ] if *delivered == preview_session
+        ),
+        "unexpected gesture protocol: {protocol:?}"
     );
-    assert_eq!(fixture.dockspace.engine().workspace(), &original);
-
-    let delivery = fixture.run_frame(Vec::new());
-    assert!(contains_outcome(&delivery, |outcome| matches!(
-        outcome,
-        InteractionOutcome::PreviewAcknowledged { .. }
-    )));
-    assert!(contains_outcome(&delivery, |outcome| matches!(
-        outcome,
-        InteractionOutcome::DragDelivered { .. }
-    )));
     assert_eq!(
         fixture.dockspace.engine().workspace().item_multiset(),
         expected_items

@@ -17,13 +17,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 use crate::canonical::CanonicalizationError;
-use crate::engine::{DockEngine, EngineError};
 use crate::geometry::{GeometryError, LogicalRect};
 use crate::graph::{
     Axis, ContainedFloating, InvalidSplitWeight, Node, RootRecord, SplitWeight,
     SurfacePresentation, Workspace, WorkspaceBuildError, WorkspaceBuilder,
 };
-use crate::ids::{FloatingPresentationId, InputSequence, ItemId, NodeId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
 
 /// The snapshot schema version emitted and accepted by this crate release.
@@ -32,8 +31,6 @@ pub const WORKSPACE_SNAPSHOT_VERSION: u32 = 1;
 /// A complete renderer-neutral workspace snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceSnapshot {
-    /// Snapshot schema version.
-    pub version: u32,
     /// Flat node arena with snapshot-local integer identities.
     pub nodes: Vec<SnapshotNodeRecord>,
     /// Stable docking roots.
@@ -58,7 +55,7 @@ impl Serialize for WorkspaceSnapshot {
         S: Serializer,
     {
         let mut document = serializer.serialize_tuple(2)?;
-        document.serialize_element(&self.version)?;
+        document.serialize_element(&WORKSPACE_SNAPSHOT_VERSION)?;
         document.serialize_element(&WorkspaceSnapshotPayloadRef {
             nodes: &self.nodes,
             roots: &self.roots,
@@ -117,7 +114,6 @@ struct WorkspaceSnapshotV1 {
 impl WorkspaceSnapshotV1 {
     fn into_snapshot(self) -> WorkspaceSnapshot {
         WorkspaceSnapshot {
-            version: WORKSPACE_SNAPSHOT_VERSION,
             nodes: self.nodes,
             roots: self.roots,
             surfaces: self.surfaces,
@@ -189,6 +185,8 @@ pub enum SnapshotNode {
         items: Vec<u64>,
         /// Selected stable item identity.
         selected: Option<u64>,
+        /// Complete stable item permutation in most-recent-first order.
+        mru: Vec<u64>,
     },
     /// Ordered N-ary split children.
     Split {
@@ -229,10 +227,19 @@ pub struct SnapshotRootRecord {
 pub struct SnapshotSurfaceRecord {
     /// Stable surface identity.
     pub id: u64,
-    /// Stable root occupying the main dock area.
-    pub main_root: u64,
+    /// Stable root occupying the main dock area, when present.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub main_root: Option<u64>,
     /// Stable contained-floating identities in roster order.
     pub contained: Vec<u64>,
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 /// Persisted contained-floating presentation.
@@ -243,12 +250,8 @@ pub struct SnapshotContainedFloatingRecord {
     pub id: u64,
     /// Stable presented root identity.
     pub root: u64,
-    /// Stable owning surface identity.
-    pub surface: u64,
     /// Logical bounds relative to the owning surface.
     pub rect: SnapshotLogicalRect,
-    /// Explicit stacking order within the surface.
-    pub z_order: u64,
 }
 
 /// Persisted logical rectangle represented by scalar components.
@@ -304,6 +307,12 @@ pub enum SnapshotCaptureError {
     #[error("runtime record references unindexed node {node:?}")]
     UnindexedRuntimeNode {
         /// Runtime identity absent from the capture index.
+        node: NodeId,
+    },
+    /// A validated runtime tabs node unexpectedly had no durable MRU state.
+    #[error("runtime tabs node {node:?} has no MRU permutation")]
+    MissingRuntimeTabMru {
+        /// Tabs node without history.
         node: NodeId,
     },
 }
@@ -372,18 +381,13 @@ pub enum SnapshotRestoreError {
     Build(#[source] CanonicalizationError),
 }
 
-/// Failure to validate and queue a snapshot replacement through the authoritative engine.
-#[derive(Debug, Clone, PartialEq, Error)]
-pub enum SnapshotReplacementError {
-    /// The snapshot could not produce a complete validated candidate.
-    #[error(transparent)]
-    Candidate(#[from] SnapshotRestoreError),
-    /// The engine could not assign an input sequence to the replacement.
-    #[error(transparent)]
-    Enqueue(#[from] EngineError),
-}
-
 impl WorkspaceSnapshot {
+    /// Returns the schema version emitted for this normalized snapshot.
+    #[must_use]
+    pub const fn version(&self) -> u32 {
+        WORKSPACE_SNAPSHOT_VERSION
+    }
+
     /// Captures a validated runtime workspace as a deterministic flat snapshot.
     ///
     /// Runtime [`NodeId`] values are remapped to contiguous snapshot-local integers. Stable item,
@@ -401,7 +405,7 @@ impl WorkspaceSnapshot {
         let node_ids = capture_node_ids(workspace)?;
         let nodes = workspace
             .nodes()
-            .map(|(id, node)| capture_node(id, node, &node_ids))
+            .map(|(id, node)| capture_node(workspace, id, node, &node_ids))
             .collect::<Result<Vec<_>, _>>()?;
         let roots = workspace
             .roots()
@@ -420,23 +424,19 @@ impl WorkspaceSnapshot {
             .surfaces()
             .map(|(id, surface)| SnapshotSurfaceRecord {
                 id: id.get(),
-                main_root: surface.main_root.get(),
+                main_root: surface.main_root.map(RootId::get),
                 contained: surface.contained.iter().map(|id| id.get()).collect(),
             })
             .collect();
         let contained_floatings = workspace
             .contained_floatings()
-            .map(|(_, floating)| SnapshotContainedFloatingRecord {
-                id: floating.id.get(),
+            .map(|(id, floating)| SnapshotContainedFloatingRecord {
+                id: id.get(),
                 root: floating.root.get(),
-                surface: floating.surface.get(),
                 rect: SnapshotLogicalRect::from(floating.rect),
-                z_order: floating.z_order,
             })
             .collect();
-
         Ok(Self {
-            version: WORKSPACE_SNAPSHOT_VERSION,
             nodes,
             roots,
             surfaces,
@@ -450,9 +450,10 @@ impl WorkspaceSnapshot {
     /// distinct item identity, after all graph and presentation validation succeeds.
     /// Every identity is queried even when an earlier one is missing. Returning
     /// `false` rejects the snapshot as stale application state.
-    /// Prefer [`DockEngine::enqueue_snapshot_replacement`] when publishing into
-    /// an existing engine so the workspace epoch advances and every old runtime
-    /// [`NodeId`] becomes stale.
+    /// Submit the resulting candidate through an explicit
+    /// [`crate::engine::EngineInput::ReplaceWorkspace`] reducer tick when
+    /// publishing into an existing engine. The replacement advances the workspace
+    /// epoch and makes every old runtime [`NodeId`] stale.
     ///
     /// # Errors
     ///
@@ -478,28 +479,6 @@ impl WorkspaceSnapshot {
         let candidate = builder.build().map_err(SnapshotRestoreError::Build)?;
         validate_registered_items(self, contains_item)?;
         Ok(candidate)
-    }
-}
-
-impl DockEngine {
-    /// Validates a snapshot and queues it as an epoch-advancing replacement.
-    ///
-    /// The engine remains completely unchanged when candidate construction or
-    /// input sequencing fails. A successful call only queues the replacement;
-    /// [`DockEngine::reduce_pending`] publishes it at the next engine boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SnapshotReplacementError`] when the snapshot is invalid, an
-    /// item is absent from the registry, or the engine input sequence is exhausted.
-    pub fn enqueue_snapshot_replacement(
-        &mut self,
-        snapshot: &WorkspaceSnapshot,
-        contains_item: impl Fn(ItemId) -> bool,
-    ) -> Result<InputSequence, SnapshotReplacementError> {
-        let candidate = snapshot.build_candidate(contains_item)?;
-        self.enqueue_workspace_replacement(candidate)
-            .map_err(SnapshotReplacementError::Enqueue)
     }
 }
 
@@ -536,18 +515,15 @@ impl From<LogicalRect> for SnapshotLogicalRect {
 struct SnapshotIndex {
     nodes: HashSet<u64>,
     roots: HashSet<u64>,
-    surfaces: HashSet<u64>,
     contained_floatings: HashSet<u64>,
 }
 
 impl SnapshotIndex {
     fn new(snapshot: &WorkspaceSnapshot) -> Result<Self, SnapshotRestoreError> {
-        if snapshot.version != WORKSPACE_SNAPSHOT_VERSION {
-            return Err(SnapshotRestoreError::UnsupportedVersion {
-                found: snapshot.version,
-                supported: WORKSPACE_SNAPSHOT_VERSION,
-            });
-        }
+        unique_ids(
+            snapshot.surfaces.iter().map(|record| record.id),
+            SnapshotEntityKind::Surface,
+        )?;
 
         Ok(Self {
             nodes: unique_ids(
@@ -557,10 +533,6 @@ impl SnapshotIndex {
             roots: unique_ids(
                 snapshot.roots.iter().map(|record| record.id),
                 SnapshotEntityKind::Root,
-            )?,
-            surfaces: unique_ids(
-                snapshot.surfaces.iter().map(|record| record.id),
-                SnapshotEntityKind::Surface,
             )?,
             contained_floatings: unique_ids(
                 snapshot.contained_floatings.iter().map(|record| record.id),
@@ -601,6 +573,7 @@ fn captured_id(node_ids: &HashMap<NodeId, u64>, node: NodeId) -> Result<u64, Sna
 }
 
 fn capture_node(
+    workspace: &Workspace,
     id: NodeId,
     node: &Node,
     node_ids: &HashMap<NodeId, u64>,
@@ -609,6 +582,12 @@ fn capture_node(
         Node::Tabs { items, selected } => SnapshotNode::Tabs {
             items: items.iter().map(|item| item.get()).collect(),
             selected: selected.map(ItemId::get),
+            mru: workspace
+                .tab_mru(id)
+                .ok_or(SnapshotCaptureError::MissingRuntimeTabMru { node: id })?
+                .iter()
+                .map(|item| item.get())
+                .collect(),
         },
         Node::Split {
             axis,
@@ -668,12 +647,9 @@ fn preflight_references_and_scalars(
 
     for surface in &snapshot.surfaces {
         let owner = SnapshotReferenceOwner::Surface(surface.id);
-        require_reference(
-            &index.roots,
-            owner,
-            SnapshotEntityKind::Root,
-            surface.main_root,
-        )?;
+        if let Some(main_root) = surface.main_root {
+            require_reference(&index.roots, owner, SnapshotEntityKind::Root, main_root)?;
+        }
         for floating in &surface.contained {
             require_reference(
                 &index.contained_floatings,
@@ -687,12 +663,6 @@ fn preflight_references_and_scalars(
     for floating in &snapshot.contained_floatings {
         let owner = SnapshotReferenceOwner::ContainedFloating(floating.id);
         require_reference(&index.roots, owner, SnapshotEntityKind::Root, floating.root)?;
-        require_reference(
-            &index.surfaces,
-            owner,
-            SnapshotEntityKind::Surface,
-            floating.surface,
-        )?;
         restore_rect(floating)?;
     }
     Ok(())
@@ -720,10 +690,12 @@ fn validate_registered_items(
         if let SnapshotNode::Tabs {
             items: tab_items,
             selected,
+            mru,
         } = &record.node
         {
             items.extend(tab_items.iter().copied());
             items.extend(selected.iter().copied());
+            items.extend(mru.iter().copied());
         }
     }
 
@@ -770,6 +742,11 @@ fn populate_runtime_nodes(
         builder
             .replace_node(runtime, node)
             .map_err(SnapshotRestoreError::Assembly)?;
+        if let SnapshotNode::Tabs { mru, .. } = &record.node {
+            builder
+                .set_tab_mru(runtime, mru.iter().copied().map(ItemId::new))
+                .map_err(SnapshotRestoreError::Assembly)?;
+        }
     }
     Ok(())
 }
@@ -779,7 +756,9 @@ fn restore_node(
     runtime_nodes: &HashMap<u64, NodeId>,
 ) -> Result<Node, SnapshotRestoreError> {
     match &record.node {
-        SnapshotNode::Tabs { items, selected } => Ok(Node::tabs_with_selection(
+        SnapshotNode::Tabs {
+            items, selected, ..
+        } => Ok(Node::tabs_with_selection(
             items.iter().copied().map(ItemId::new),
             selected.map(ItemId::new),
         )),
@@ -844,7 +823,7 @@ fn populate_surfaces(snapshot: &WorkspaceSnapshot, builder: &mut WorkspaceBuilde
         builder.set_surface(
             SurfaceId::new(surface.id),
             SurfacePresentation {
-                main_root: RootId::new(surface.main_root),
+                main_root: surface.main_root.map(RootId::new),
                 contained: surface
                     .contained
                     .iter()
@@ -861,13 +840,10 @@ fn populate_contained_floatings(
     builder: &mut WorkspaceBuilder,
 ) -> Result<(), SnapshotRestoreError> {
     for floating in &snapshot.contained_floatings {
-        builder.set_contained_floating(ContainedFloating::new(
+        builder.set_contained_floating(
             FloatingPresentationId::new(floating.id),
-            RootId::new(floating.root),
-            SurfaceId::new(floating.surface),
-            restore_rect(floating)?,
-            floating.z_order,
-        ));
+            ContainedFloating::new(RootId::new(floating.root), restore_rect(floating)?),
+        );
     }
     Ok(())
 }

@@ -3,6 +3,12 @@
 use egui::accesskit::Action;
 use egui::{Key, PointerButton, Pos2, Rect, Response, Ui, pos2};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SemanticActivation {
+    Pointer(Pos2),
+    Semantic,
+}
+
 /// Tests one point using the same half-open maximum edges as `dockspace`.
 pub(crate) fn contains_half_open(rect: Rect, point: Pos2) -> bool {
     rect.is_positive()
@@ -28,20 +34,35 @@ pub(crate) fn interact_rect(rect: Rect) -> Rect {
 }
 
 /// Separates geometry-derived pointer activation from stable widget identity input.
-pub(crate) fn semantic_activation(
+pub(crate) fn semantic_activation_fact(
     ui: &Ui,
     response: &Response,
     rect: Rect,
-    interactions_current: bool,
-) -> bool {
-    interactions_current
+    pointer_interactions_current: bool,
+    semantic_interactions_current: bool,
+) -> Option<SemanticActivation> {
+    if !semantic_interactions_current {
+        return None;
+    }
+
+    if pointer_interactions_current
         && response.clicked_by(PointerButton::Primary)
-        && response
+        && let Some(point) = response
             .interact_pointer_pos()
-            .is_some_and(|point| contains_half_open(rect, point))
-        || response.has_focus()
-            && ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space))
+            .filter(|point| contains_half_open(rect, *point))
+    {
+        return Some(SemanticActivation::Pointer(point));
+    }
+    // Keyboard and accessibility requests target an egui-stable widget identity,
+    // rather than a pointer hit rectangle. They still require current core scene
+    // authority: a retained widget identity must never authorize a graph mutation.
+    if response.has_focus()
+        && ui.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::Space))
         || ui.input(|input| input.has_accesskit_action_request(response.id, Action::Click))
+    {
+        return Some(SemanticActivation::Semantic);
+    }
+    None
 }
 
 /// Accepts an exact accessibility focus request independently of stale geometry.
@@ -52,6 +73,23 @@ pub(crate) fn accesskit_focus_requested(ui: &Ui, response: &Response) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::{Event, Id, RawInput, vec2};
+
+    fn accesskit_click_input(id: Id) -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(120.0, 90.0))),
+            events: vec![
+                Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+                    action: Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: id.accesskit_id(),
+                    data: None,
+                })
+                .into(),
+            ],
+            ..RawInput::default()
+        }
+    }
 
     #[test]
     fn half_open_membership_includes_minimum_and_excludes_maximum() {
@@ -77,5 +115,25 @@ mod tests {
         assert_eq!(hit.max.y.to_bits(), rect.max.y.next_down().to_bits());
         assert!(hit.contains(hit.max));
         assert!(!hit.contains(rect.max));
+    }
+
+    #[test]
+    fn accesskit_click_requires_current_interaction_authority() {
+        let context = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(80.0, 24.0));
+        let id = Id::new("stale-semantic-activation");
+        let mut current = None;
+        let _ = crate::test_support::run_ui(&context, accesskit_click_input(id), |ui| {
+            let response = ui.interact(interact_rect(rect), id, egui::Sense::click());
+            current = semantic_activation_fact(ui, &response, rect, true, true);
+        });
+        assert_eq!(current, Some(SemanticActivation::Semantic));
+
+        let mut stale = None;
+        let _ = crate::test_support::run_ui(&context, accesskit_click_input(id), |ui| {
+            let response = ui.interact(interact_rect(rect), id, egui::Sense::click());
+            stale = semantic_activation_fact(ui, &response, rect, false, false);
+        });
+        assert_eq!(stale, None);
     }
 }

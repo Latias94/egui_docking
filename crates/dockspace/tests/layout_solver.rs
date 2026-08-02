@@ -287,7 +287,7 @@ fn three_leaf_workspace() -> (Workspace, RootId, [NodeId; 3], NodeId) {
     );
     let root = RootId::new(1);
     builder.set_root(root, RootRecord::new(split).with_central(central));
-    builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
     (
         builder.build().expect("valid workspace"),
         root,
@@ -311,7 +311,7 @@ fn nested_split_workspace(
     );
     let root = RootId::new(40);
     builder.set_root(root, RootRecord::new(outer));
-    builder.set_surface(SurfaceId::new(40), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(40), SurfacePresentation::with_main(root));
     (
         builder.build().expect("valid nested workspace"),
         root,
@@ -364,6 +364,105 @@ fn projects_workspace_nodes_and_splitter_rectangles() {
     assert_projection_close(assigned_width, 1_000.0);
     assert_projection_close(projection.splits[&split].overflow, 0.0);
     assert_projection_close(projection.splits[&split].unallocated, 0.0);
+}
+
+#[test]
+fn split_projection_exposes_ordered_direct_child_bounds_and_unallocated_extent() {
+    let (workspace, root, leaves, split) = three_leaf_workspace();
+    let leaf_constraints = [
+        (leaves[0], (10.0, 100.0)),
+        (leaves[1], (20.0, 200.0)),
+        (leaves[2], (30.0, 300.0)),
+    ]
+    .into_iter()
+    .map(|(leaf, (minimum, maximum))| {
+        (
+            leaf,
+            Constraints::new(
+                LogicalSize::new(minimum, 0.0).expect("valid minimum"),
+                LogicalSize::new(maximum, 1_000.0).expect("valid maximum"),
+            )
+            .expect("valid constraints"),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+
+    let projection = project_root(
+        &workspace,
+        root,
+        LogicalRect::new(0.0, 0.0, 800.0, 200.0).expect("valid bounds"),
+        &leaf_constraints,
+        layout_metrics(10.0),
+    )
+    .expect("finite child maxima should project");
+    let projected_split = &projection.splits[&split];
+
+    assert_eq!(
+        projected_split.child_minimum_extents,
+        vec![10.0, 20.0, 30.0]
+    );
+    assert_eq!(
+        projected_split.child_maximum_extents,
+        vec![100.0, 200.0, 300.0]
+    );
+    assert_eq!(projected_split.child_extents, vec![100.0, 200.0, 300.0]);
+    assert_eq!(projected_split.central_index, Some(1));
+    assert_projection_close(projected_split.overflow, 0.0);
+    assert_projection_close(projected_split.unallocated, 180.0);
+}
+
+#[test]
+fn split_projection_uses_each_direct_subtree_axis_maximum() {
+    let mut builder = Workspace::builder();
+    let top = builder.insert_node(Node::tabs([ItemId::new(60)]));
+    let bottom = builder.insert_node(Node::tabs([ItemId::new(61)]));
+    let right = builder.insert_node(Node::tabs([ItemId::new(62)]));
+    let nested = builder
+        .insert_node(Node::equal_split(Axis::Vertical, [top, bottom]).expect("valid nested split"));
+    let outer = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [nested, right]).expect("valid outer split"),
+    );
+    let root = RootId::new(60);
+    builder.set_root(root, RootRecord::new(outer));
+    builder.set_surface(SurfaceId::new(60), SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("valid nested workspace");
+    let leaf_constraints = [
+        (top, (80.0, 90.0)),
+        (bottom, (120.0, 110.0)),
+        (right, (150.0, 400.0)),
+    ]
+    .into_iter()
+    .map(|(leaf, (maximum_width, maximum_height))| {
+        (
+            leaf,
+            Constraints::new(
+                LogicalSize::new(0.0, 0.0).expect("valid minimum"),
+                LogicalSize::new(maximum_width, maximum_height).expect("valid maximum"),
+            )
+            .expect("valid constraints"),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+
+    let projection = project_root(
+        &workspace,
+        root,
+        LogicalRect::new(0.0, 0.0, 500.0, 300.0).expect("valid bounds"),
+        &leaf_constraints,
+        layout_metrics(10.0),
+    )
+    .expect("nested direct-child maxima should project");
+
+    assert_eq!(
+        projection.splits[&outer].child_maximum_extents,
+        vec![80.0, 150.0],
+        "a perpendicular subtree's axis maximum is the intersection of its children"
+    );
+    assert_eq!(
+        projection.splits[&nested].child_maximum_extents,
+        vec![90.0, 110.0],
+        "the nested split exposes maxima along its own axis"
+    );
 }
 
 #[test]
@@ -444,8 +543,14 @@ fn split_override_must_belong_to_the_projected_root() {
     let second_root = RootId::new(51);
     builder.set_root(first_root, RootRecord::new(first_split));
     builder.set_root(second_root, RootRecord::new(second_split));
-    builder.set_surface(SurfaceId::new(50), SurfacePresentation::new(first_root));
-    builder.set_surface(SurfaceId::new(51), SurfacePresentation::new(second_root));
+    builder.set_surface(
+        SurfaceId::new(50),
+        SurfacePresentation::with_main(first_root),
+    );
+    builder.set_surface(
+        SurfaceId::new(51),
+        SurfacePresentation::with_main(second_root),
+    );
     let workspace = builder.build().expect("valid multi-root workspace");
     let source = workspace
         .capture_node_source(second_root, second_split)
@@ -610,7 +715,7 @@ fn central_leaf_semantics_propagate_through_ancestor_splits() {
     );
     let root = RootId::new(2);
     builder.set_root(root, RootRecord::new(horizontal).with_central(central));
-    builder.set_surface(SurfaceId::new(2), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(2), SurfacePresentation::with_main(root));
     let workspace = builder.build().expect("valid workspace");
     let leaf_constraints = [left, central, bottom]
         .into_iter()
@@ -672,7 +777,7 @@ fn nested_splitter_thickness_contributes_to_ancestor_constraints() {
         .insert_node(Node::equal_split(Axis::Horizontal, [middle, fourth]).expect("valid split"));
     let root = RootId::new(3);
     builder.set_root(root, RootRecord::new(outer));
-    builder.set_surface(SurfaceId::new(3), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(3), SurfacePresentation::with_main(root));
     let workspace = builder.build().expect("valid workspace");
     let constrained = Constraints::new(
         LogicalSize::new(60.0, 0.0).expect("valid minimum"),
@@ -726,7 +831,7 @@ fn projects_ten_thousand_nested_splits_without_call_stack_growth() {
 
     let root = RootId::new(4);
     builder.set_root(root, RootRecord::new(subtree).with_central(central));
-    builder.set_surface(SurfaceId::new(4), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(4), SurfacePresentation::with_main(root));
     let workspace = builder.build().expect("valid deep workspace");
 
     let projection = project_root(

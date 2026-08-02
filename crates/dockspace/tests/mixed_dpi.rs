@@ -1,16 +1,22 @@
-use dockspace::coordinates::TearOffPlacementRequest;
-use dockspace::engine::DockEngine;
-use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
+mod support;
+
+use dockspace::engine::{DockEngine, EngineInput};
+use dockspace::geometry::{LogicalRect, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, NativePlacementProof, PointerId};
+use dockspace::ids::{ItemId, RootId, StableInputSourceId, SurfaceId};
+use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::platform::{
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
-    PointerObservation, PointerWindow, WindowInputState, WindowPresentationState,
+    PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowPresentationObservation,
+    WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::viewport::{ViewportRole, WindowToken, WorkAreaToken};
+use dockspace::viewport::{
+    CoordinateObservationGeneration, PresentationObservationGeneration, ViewportBinding,
+    ViewportRole, WindowToken, WorkAreaToken,
+};
 use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
+use support::{TestPresentationHost, submit_input, submit_inputs};
 
 const SURFACE_ONE: SurfaceId = SurfaceId::new(1);
 const SURFACE_ONE_AND_HALF: SurfaceId = SurfaceId::new(2);
@@ -23,13 +29,10 @@ const WINDOW_TWO: WindowToken = WindowToken::new(13);
 const WORK_AREA_LEFT: WorkAreaToken = WorkAreaToken::new(21);
 const WORK_AREA_CENTER: WorkAreaToken = WorkAreaToken::new(22);
 const WORK_AREA_RIGHT: WorkAreaToken = WorkAreaToken::new(23);
+const MIXED_DPI_INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(0xD911);
 
 fn logical_rect(x: f64, y: f64, width: f64, height: f64) -> LogicalRect {
     LogicalRect::new(x, y, width, height).expect("test logical rectangle must be valid")
-}
-
-fn physical_point(x: f64, y: f64) -> PhysicalPoint {
-    PhysicalPoint::new(x, y).expect("test physical point must be valid")
 }
 
 fn physical_rect(x: f64, y: f64, width: f64, height: f64) -> PhysicalRect {
@@ -42,7 +45,7 @@ fn workspace(surfaces: &[SurfaceId]) -> Workspace {
         let id = u64::try_from(index + 1).expect("test surface count must fit u64");
         let node = builder.insert_node(Node::tabs([ItemId::new(id)]));
         builder.set_root(RootId::new(id), RootRecord::new(node));
-        builder.set_surface(surface, SurfacePresentation::new(RootId::new(id)));
+        builder.set_surface(surface, SurfacePresentation::with_main(RootId::new(id)));
     }
     builder.build().expect("test workspace must be valid")
 }
@@ -51,26 +54,25 @@ fn supported_capabilities() -> PlatformCapabilities {
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-    capabilities.set_hovered_window(PlatformCapability::Supported);
-    capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
-    capabilities.set_authoritative_button_state(PlatformCapability::Supported);
     capabilities.set_global_window_placement(PlatformCapability::Supported);
     capabilities.set_work_area(PlatformCapability::Supported);
-    capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
-    capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
     capabilities
 }
 
-fn observed_window(token: WindowToken, content_bounds: PhysicalRect, scale: f64) -> ObservedWindow {
-    ObservedWindow::new(token)
-        .with_content_bounds(Authority::Known(content_bounds))
-        .with_outer_bounds(Authority::Known(content_bounds))
-        .with_scale_factor(Authority::Known(
-            ScaleFactor::new(scale).expect("test scale factor must be valid"),
-        ))
-        .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
-        .with_presentation(Authority::Known(WindowPresentationState::Visible))
-        .with_close_requested(Authority::Known(false))
+fn observed_window(
+    binding: ViewportBinding,
+    generation: CoordinateObservationGeneration,
+    content_bounds: PhysicalRect,
+    scale: f64,
+) -> ObservedWindow {
+    ObservedWindow::new(binding).with_coordinate_observation(WindowCoordinateObservation::new(
+        binding,
+        generation,
+        Authority::Known(content_bounds),
+        Authority::Known(content_bounds),
+        Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
+        Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
+    ))
 }
 
 fn observed_work_area(token: WorkAreaToken, bounds: PhysicalRect, scale: f64) -> ObservedWorkArea {
@@ -101,149 +103,108 @@ fn monitor_roster() -> Vec<ObservedWorkArea> {
     ]
 }
 
-fn register_viewports(engine: &mut DockEngine, registrations: &[(SurfaceId, WindowToken)]) {
-    for &(surface, token) in registrations {
-        engine
-            .enqueue_viewport_registration(surface, token, ViewportRole::Root, None)
-            .expect("viewport registration sequence must be available");
-    }
+fn register_viewports(
+    engine: &mut DockEngine,
+    presentation_host: &mut TestPresentationHost,
+    registrations: &[(SurfaceId, WindowToken)],
+) {
+    let expected = engine.version();
+    let provider = presentation_host.platform_provider();
+    submit_inputs(
+        engine,
+        presentation_host,
+        MIXED_DPI_INPUT_SOURCE,
+        registrations
+            .iter()
+            .map(|&(surface, token)| EngineInput::RegisterViewport {
+                provider,
+                expected,
+                surface,
+                token,
+                role: ViewportRole::Root,
+                recovery_target: None,
+            }),
+    )
+    .expect("viewport registrations must reduce atomically");
+}
+
+fn viewport_binding(engine: &DockEngine, surface: SurfaceId) -> ViewportBinding {
     engine
-        .reduce_pending()
-        .expect("viewport registrations must reduce atomically");
+        .viewport()
+        .viewport(surface)
+        .expect("registered test viewport must remain present")
+        .binding()
 }
 
 fn publish_snapshot(
     engine: &mut DockEngine,
-    windows: Vec<ObservedWindow>,
-    pointers: Vec<PointerObservation>,
+    presentation_host: &mut TestPresentationHost,
+    mut windows: Vec<ObservedWindow>,
     work_areas: Vec<ObservedWorkArea>,
 ) {
-    let focus_generation = engine
-        .viewport()
-        .registry()
-        .inventory_generation()
-        .checked_next()
-        .expect("test focus observation generation must not exhaust");
+    let observation_generation = presentation_host.next_platform_observation_generation();
+    for window in &mut windows {
+        let binding = window.binding();
+        *window = window
+            .clone()
+            .with_presentation_observation(WindowPresentationObservation::new(
+                binding,
+                PresentationObservationGeneration::new(observation_generation),
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ));
+    }
+    let inventory_observation =
+        support::known_inventory_observation(observation_generation, &windows);
     let snapshot = PlatformSnapshot::new(
-        supported_capabilities(),
+        dockspace::viewport::PlatformSnapshotGeneration::new(observation_generation),
+        support::known_capability_observation(observation_generation, supported_capabilities()),
         unknown_focus_observation(
-            FocusObservationGeneration::new(focus_generation.get()),
+            FocusObservationGeneration::new(observation_generation),
             AuthorityUnavailableReason::NotReported,
         ),
+        inventory_observation,
         windows,
-        pointers,
-        work_areas,
+        Vec::new(),
+        support::known_work_area_observation(observation_generation, work_areas),
     )
     .expect("test platform snapshot must be valid");
-    engine
-        .enqueue_platform_snapshot(snapshot)
-        .expect("platform snapshot sequence must be available");
-    engine
-        .reduce_pending()
-        .expect("platform snapshot must publish");
-}
-
-fn assert_near(actual: f64, expected: f64) {
-    assert!(
-        (actual - expected).abs() <= 1.0e-9,
-        "expected {expected}, got {actual}"
-    );
-}
-
-#[test]
-fn routes_desktop_physical_points_with_each_target_scale_exactly_once() {
-    let surfaces = [SURFACE_ONE, SURFACE_ONE_AND_HALF, SURFACE_TWO];
-    let mut engine = DockEngine::new(workspace(&surfaces), DockPolicy::default())
-        .expect("test engine must be valid");
-    register_viewports(
-        &mut engine,
-        &[
-            (SURFACE_ONE, WINDOW_ONE),
-            (SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF),
-            (SURFACE_TWO, WINDOW_TWO),
-        ],
-    );
-
-    let windows = vec![
-        observed_window(
-            WINDOW_ONE,
-            physical_rect(-1920.0, -100.0, 1000.0, 800.0),
-            1.0,
-        ),
-        observed_window(
-            WINDOW_ONE_AND_HALF,
-            physical_rect(0.0, 200.0, 1500.0, 1200.0),
-            1.5,
-        ),
-        observed_window(
-            WINDOW_TWO,
-            physical_rect(2560.0, -400.0, 2000.0, 1600.0),
-            2.0,
-        ),
-    ];
-    let route_cases = [
-        (
-            PointerId::new(1),
-            WINDOW_ONE,
-            SURFACE_ONE,
-            physical_point(-1800.0, -20.0),
-        ),
-        (
-            PointerId::new(2),
-            WINDOW_ONE_AND_HALF,
-            SURFACE_ONE_AND_HALF,
-            physical_point(180.0, 320.0),
-        ),
-        (
-            PointerId::new(3),
-            WINDOW_TWO,
-            SURFACE_TWO,
-            physical_point(2800.0, -240.0),
-        ),
-    ];
-    let pointers = route_cases
-        .iter()
-        .map(|&(pointer, window, _, desktop_position)| {
-            PointerObservation::new(
-                pointer,
-                Authority::Known(PointerWindow::Dock(window)),
-                Authority::Known(desktop_position),
-                Authority::Known(Vec::new()),
-            )
-            .expect("test pointer observation must be valid")
-        })
-        .collect();
-    publish_snapshot(&mut engine, windows, pointers, monitor_roster());
-
-    for (pointer, _, expected_surface, _) in route_cases {
-        let proof = engine
-            .viewport()
-            .route(pointer)
-            .expect("each pointer must have a route proof");
-        let target = match proof.target() {
-            Authority::Known(Some(target)) => *target,
-            target => panic!("expected an authoritative dock target, got {target:?}"),
-        };
-        assert_eq!(target.surface(), expected_surface);
-        assert_near(target.position().x(), 120.0);
-        assert_near(target.position().y(), 80.0);
-    }
+    let expected_epoch = engine.version().epoch();
+    let provider = presentation_host.platform_provider();
+    submit_input(
+        engine,
+        presentation_host,
+        MIXED_DPI_INPUT_SOURCE,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("platform snapshot must publish");
 }
 
 #[test]
 fn placement_requires_an_explicit_noncontiguous_target_work_area() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_TWO]), DockPolicy::default())
         .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_TWO, WINDOW_TWO)]);
+    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    register_viewports(
+        &mut engine,
+        &mut presentation_host,
+        &[(SURFACE_TWO, WINDOW_TWO)],
+    );
+    let binding = viewport_binding(&engine, SURFACE_TWO);
 
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![observed_window(
-            WINDOW_TWO,
+            binding,
+            CoordinateObservationGeneration::new(1),
             physical_rect(-1600.0, -300.0, 2000.0, 1600.0),
             2.0,
         )],
-        Vec::new(),
         monitor_roster(),
     );
 
@@ -282,18 +243,25 @@ fn placement_requires_an_explicit_noncontiguous_target_work_area() {
 fn identical_inventory_facts_keep_an_existing_placement_proof_current() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_ONE_AND_HALF]), DockPolicy::default())
         .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
+    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    register_viewports(
+        &mut engine,
+        &mut presentation_host,
+        &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)],
+    );
+    let binding = viewport_binding(&engine, SURFACE_ONE_AND_HALF);
 
     let first_window = observed_window(
-        WINDOW_ONE_AND_HALF,
+        binding,
+        CoordinateObservationGeneration::new(1),
         physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
         1.5,
     );
     let roster = monitor_roster();
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![first_window.clone()],
-        Vec::new(),
         roster.clone(),
     );
     let old_proof = engine
@@ -305,7 +273,12 @@ fn identical_inventory_facts_keep_an_existing_placement_proof_current() {
         .expect("first snapshot must produce a placement proof");
     let old_generation = old_proof.coordinate_generation();
 
-    publish_snapshot(&mut engine, vec![first_window], Vec::new(), roster);
+    publish_snapshot(
+        &mut engine,
+        &mut presentation_host,
+        vec![first_window],
+        roster,
+    );
     let current_proof = engine
         .viewport_placement(
             SURFACE_ONE_AND_HALF,
@@ -327,16 +300,23 @@ fn identical_inventory_facts_keep_an_existing_placement_proof_current() {
 fn changed_placement_facts_advance_the_coordinate_generation() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_ONE_AND_HALF]), DockPolicy::default())
         .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
+    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    register_viewports(
+        &mut engine,
+        &mut presentation_host,
+        &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)],
+    );
+    let binding = viewport_binding(&engine, SURFACE_ONE_AND_HALF);
 
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![observed_window(
-            WINDOW_ONE_AND_HALF,
+            binding,
+            CoordinateObservationGeneration::new(1),
             physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
             1.5,
         )],
-        Vec::new(),
         monitor_roster(),
     );
     let old_proof = engine
@@ -349,12 +329,13 @@ fn changed_placement_facts_advance_the_coordinate_generation() {
 
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![observed_window(
-            WINDOW_ONE_AND_HALF,
+            binding,
+            CoordinateObservationGeneration::new(2),
             physical_rect(-900.0, -200.0, 1500.0, 1200.0),
             1.5,
         )],
-        Vec::new(),
         monitor_roster(),
     );
     let current_proof = engine
@@ -376,16 +357,23 @@ fn changed_placement_facts_advance_the_coordinate_generation() {
 fn changed_work_area_roster_invalidates_only_the_work_area_proof_generation() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_ONE_AND_HALF]), DockPolicy::default())
         .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)]);
+    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    register_viewports(
+        &mut engine,
+        &mut presentation_host,
+        &[(SURFACE_ONE_AND_HALF, WINDOW_ONE_AND_HALF)],
+    );
+    let binding = viewport_binding(&engine, SURFACE_ONE_AND_HALF);
     let window = observed_window(
-        WINDOW_ONE_AND_HALF,
+        binding,
+        CoordinateObservationGeneration::new(1),
         physical_rect(-1200.0, -200.0, 1500.0, 1200.0),
         1.5,
     );
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![window.clone()],
-        Vec::new(),
         monitor_roster(),
     );
     let old = engine
@@ -402,7 +390,12 @@ fn changed_work_area_roster_invalidates_only_the_work_area_proof_generation() {
         physical_rect(100.0, 200.0, 1800.0, 1080.0),
         1.5,
     );
-    publish_snapshot(&mut engine, vec![window], Vec::new(), changed_roster);
+    publish_snapshot(
+        &mut engine,
+        &mut presentation_host,
+        vec![window],
+        changed_roster,
+    );
     let current = engine
         .viewport_placement(
             SURFACE_ONE_AND_HALF,
@@ -419,15 +412,22 @@ fn changed_work_area_roster_invalidates_only_the_work_area_proof_generation() {
 fn unknown_work_area_token_fails_closed() {
     let mut engine = DockEngine::new(workspace(&[SURFACE_ONE]), DockPolicy::default())
         .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_ONE, WINDOW_ONE)]);
+    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    register_viewports(
+        &mut engine,
+        &mut presentation_host,
+        &[(SURFACE_ONE, WINDOW_ONE)],
+    );
+    let binding = viewport_binding(&engine, SURFACE_ONE);
     publish_snapshot(
         &mut engine,
+        &mut presentation_host,
         vec![observed_window(
-            WINDOW_ONE,
+            binding,
+            CoordinateObservationGeneration::new(1),
             physical_rect(-1920.0, 0.0, 1000.0, 800.0),
             1.0,
         )],
-        Vec::new(),
         monitor_roster(),
     );
 
@@ -439,81 +439,4 @@ fn unknown_work_area_token_fails_closed() {
         ),
         Err(dockspace::coordinates::CoordinateUnavailable::UnknownWorkArea { .. })
     ));
-}
-
-#[test]
-fn tear_off_placement_uses_the_explicit_release_anchor_and_target_scale() {
-    let mut engine = DockEngine::new(workspace(&[SURFACE_ONE]), DockPolicy::default())
-        .expect("test engine must be valid");
-    register_viewports(&mut engine, &[(SURFACE_ONE, WINDOW_ONE)]);
-    let pointer = PointerId::new(9);
-    publish_snapshot(
-        &mut engine,
-        vec![observed_window(
-            WINDOW_ONE,
-            physical_rect(0.0, 0.0, 1000.0, 800.0),
-            1.0,
-        )],
-        vec![
-            PointerObservation::new(
-                pointer,
-                Authority::Known(PointerWindow::None),
-                Authority::Known(physical_point(100.0, 200.0)),
-                Authority::Known(Vec::new()),
-            )
-            .expect("test pointer observation must be valid"),
-        ],
-        vec![observed_work_area(
-            WORK_AREA_RIGHT,
-            physical_rect(0.0, 0.0, 2000.0, 1600.0),
-            2.0,
-        )],
-    );
-
-    let proof = engine
-        .tear_off_placement(
-            pointer,
-            TearOffPlacementRequest::new(
-                LogicalSize::new(10.0, 20.0).expect("offset must be valid"),
-                LogicalSize::new(300.0, 200.0).expect("preferred size must be valid"),
-                LogicalSize::new(400.0, 250.0).expect("minimum size must be valid"),
-                WORK_AREA_RIGHT,
-            ),
-        )
-        .expect("authoritative route and work area must solve placement");
-    assert_eq!(proof.pointer(), pointer);
-    assert_eq!(
-        proof.physical_rect(),
-        physical_rect(80.0, 160.0, 800.0, 500.0)
-    );
-    assert_eq!(
-        proof.requested_rect(),
-        logical_rect(40.0, 80.0, 400.0, 250.0)
-    );
-    let native_proof = NativePlacementProof::from(proof);
-    assert!(engine.native_placement_is_current(&native_proof));
-
-    publish_snapshot(
-        &mut engine,
-        vec![observed_window(
-            WINDOW_ONE,
-            physical_rect(0.0, 0.0, 1000.0, 800.0),
-            1.0,
-        )],
-        vec![
-            PointerObservation::new(
-                pointer,
-                Authority::Known(PointerWindow::None),
-                Authority::Known(physical_point(101.0, 200.0)),
-                Authority::Known(Vec::new()),
-            )
-            .expect("test pointer observation must be valid"),
-        ],
-        vec![observed_work_area(
-            WORK_AREA_RIGHT,
-            physical_rect(0.0, 0.0, 2000.0, 1600.0),
-            2.0,
-        )],
-    );
-    assert!(!engine.native_placement_is_current(&native_proof));
 }

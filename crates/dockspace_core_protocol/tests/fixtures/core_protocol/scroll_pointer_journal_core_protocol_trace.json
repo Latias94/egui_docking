@@ -1,0 +1,1177 @@
+{
+  "schema": "dockspace.core-protocol-trace/1",
+  "source_baselines": [
+    {
+      "id": "open-gpui",
+      "project": "open-gpui",
+      "repository": "repo-ref/open-gpui",
+      "revision": "56604588ee0a047c59e9ef6a2346f4c5839d90de",
+      "license": {
+        "expression": "Apache-2.0",
+        "file": "repo-ref/open-gpui/LICENSE-APACHE"
+      }
+    }
+  ],
+  "traces": [
+    {
+      "id": "ordered-scroll-journal",
+      "provenance": {
+        "baseline": "open-gpui",
+        "path": "docs/knowledge/pointer-scroll-journal-contract.md",
+        "test": "PEJ-03, PEJ-06; scroll smooth FSM, lifecycle ABA, rollback",
+        "retained_behavior": "A phaseful scroll sequence locks one explicit tab strip, preserves its owner through Unknown receiver authority, and terminates exactly once.",
+        "deliberate_strengthening": "The fixture supplies the structural receiver receipt and every raw device, unit, phase, modifier, momentum, endpoint, and token fact."
+      },
+      "initial_workspace": {
+        "roots": [
+          {
+            "id": 1,
+            "central_path": [],
+            "node": {
+              "kind": "tabs",
+              "items": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ],
+              "selected": 1,
+              "mru": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12
+              ]
+            }
+          }
+        ],
+        "surfaces": [
+          {
+            "id": 1,
+            "main_root": 1,
+            "contained": []
+          }
+        ]
+      },
+      "boundaries": [
+        {
+          "id": "bootstrap",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "unavailable",
+                "reason": {
+                  "kind": "output_not_produced"
+                }
+              }
+            }
+          ],
+          "events": [],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "complete",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 640.0,
+                  "height": 480.0
+                }
+              }
+            }
+          ],
+          "expected": {
+            "tick": 1,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [],
+            "presentation_observations": [],
+            "presentation_emissions": 0,
+            "surface_contributions": [
+              {
+                "kind": "ready",
+                "surface": 1
+              }
+            ],
+            "surface_scene_deltas": [
+              {
+                "surface": 1,
+                "before": {
+                  "state": {
+                    "kind": "bootstrap"
+                  },
+                  "presented": null
+                },
+                "after": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": null
+                }
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [],
+            "published_state_changed": true
+          }
+        },
+        {
+          "id": "paint",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "retained"
+              }
+            }
+          ],
+          "expected": {
+            "tick": 2,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [],
+            "presentation_observations": [],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "retained",
+                "surface": 1
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [],
+            "published_state_changed": false
+          }
+        },
+        {
+          "id": "settle-paint",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "batch",
+            "observations": [
+              {
+                "stream": {
+                  "surface": 1,
+                  "endpoint": {
+                    "kind": "headless"
+                  },
+                  "sequence": 1
+                },
+                "observation": {
+                  "kind": "retired",
+                  "generation": 1,
+                  "settled_through": 1,
+                  "presented": {
+                    "kind": "presented",
+                    "emission": 1
+                  }
+                }
+              }
+            ]
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "retained"
+              }
+            }
+          ],
+          "expected": {
+            "tick": 3,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [],
+            "presentation_observations": [
+              {
+                "kind": "presented",
+                "stream": {
+                  "surface": 1,
+                  "endpoint": {
+                    "kind": "headless"
+                  },
+                  "sequence": 1
+                },
+                "generation": 1,
+                "settled_through": 1,
+                "presented": 1,
+                "retired_output_count": 1,
+                "promotion_eligible": true
+              }
+            ],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "retained",
+                "surface": 1
+              }
+            ],
+            "surface_scene_deltas": [
+              {
+                "surface": 1,
+                "before": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": null
+                },
+                "after": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": {
+                    "stream": {
+                      "surface": 1,
+                      "endpoint": {
+                        "kind": "headless"
+                      },
+                      "sequence": 1
+                    },
+                    "emission": 1,
+                    "coordinate_generation": 0
+                  }
+                }
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [
+              1
+            ],
+            "published_state_changed": true
+          }
+        },
+        {
+          "id": "scroll-begin",
+          "provider": {
+            "kind": "activate",
+            "scope": {
+              "kind": "surface_local",
+              "surface": 1
+            },
+            "committed_through": 0
+          },
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [
+            {
+              "kind": "pointer_journal",
+              "previous": 0,
+              "through": 1,
+              "edges": [
+                {
+                  "sequence": 1,
+                  "pointer": 7,
+                  "kind": {
+                    "kind": "scrolled",
+                    "scroll": {
+                      "device": 9,
+                      "sequence": 41,
+                      "phase": {
+                        "kind": "begin"
+                      },
+                      "delta": null,
+                      "momentum": {
+                        "kind": "known",
+                        "momentum": {
+                          "kind": "direct"
+                        }
+                      },
+                      "modifiers": {
+                        "kind": "known",
+                        "shift": true,
+                        "control": false,
+                        "alt": false,
+                        "command": false
+                      },
+                      "delivery": {
+                        "kind": "headless",
+                        "surface": 1,
+                        "coordinate_generation": {
+                          "kind": "current"
+                        }
+                      }
+                    }
+                  },
+                  "location": {
+                    "kind": "surface_local",
+                    "position": {
+                      "kind": "known",
+                      "point": {
+                        "x": 320.0,
+                        "y": 14.0
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "kind": "provider_endpoint"
+                  },
+                  "capture": {
+                    "kind": "none"
+                  },
+                  "receiver": {
+                    "kind": "presented",
+                    "delivery": {
+                      "kind": "tab_strip_scroll",
+                      "root": 1,
+                      "path": []
+                    },
+                    "hover": null
+                  }
+                }
+              ]
+            }
+          ],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "retained"
+              }
+            }
+          ],
+          "expected": {
+            "tick": 4,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [
+              {
+                "cause": {
+                  "kind": "pointer_edge"
+                },
+                "provider_incarnation": 1,
+                "stream_incarnation": 1,
+                "sequence": 1,
+                "outcomes": [
+                  {
+                    "kind": "scroll_began",
+                    "receiver": {
+                      "kind": "tab_strip",
+                      "surface": 1,
+                      "root": 1,
+                      "path": []
+                    }
+                  }
+                ]
+              }
+            ],
+            "presentation_observations": [],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "retained",
+                "surface": 1
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [
+              1
+            ],
+            "published_state_changed": false
+          }
+        },
+        {
+          "id": "scroll-update-receiver-unknown",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [
+            {
+              "kind": "pointer_journal",
+              "previous": 1,
+              "through": 2,
+              "edges": [
+                {
+                  "sequence": 2,
+                  "pointer": 7,
+                  "kind": {
+                    "kind": "scrolled",
+                    "scroll": {
+                      "device": 9,
+                      "sequence": 41,
+                      "phase": {
+                        "kind": "update"
+                      },
+                      "delta": {
+                        "kind": "lines",
+                        "delta": {
+                          "x": -1.0,
+                          "y": 7.0
+                        }
+                      },
+                      "momentum": {
+                        "kind": "known",
+                        "momentum": {
+                          "kind": "momentum"
+                        }
+                      },
+                      "modifiers": {
+                        "kind": "unknown",
+                        "reason": {
+                          "kind": "not_reported"
+                        }
+                      },
+                      "delivery": {
+                        "kind": "headless",
+                        "surface": 1,
+                        "coordinate_generation": {
+                          "kind": "current"
+                        }
+                      }
+                    }
+                  },
+                  "location": {
+                    "kind": "surface_local",
+                    "position": {
+                      "kind": "known",
+                      "point": {
+                        "x": 320.0,
+                        "y": 14.0
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "kind": "provider_endpoint"
+                  },
+                  "capture": {
+                    "kind": "none"
+                  },
+                  "receiver": {
+                    "kind": "unknown",
+                    "reason": {
+                      "kind": "event_correlation_unavailable"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "retained"
+              }
+            }
+          ],
+          "expected": {
+            "tick": 5,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [
+              {
+                "cause": {
+                  "kind": "pointer_edge"
+                },
+                "provider_incarnation": 1,
+                "stream_incarnation": 1,
+                "sequence": 2,
+                "outcomes": [
+                  {
+                    "kind": "scroll_suppressed",
+                    "session": true,
+                    "sequence": 41,
+                    "phase": {
+                      "kind": "update"
+                    },
+                    "reason": {
+                      "kind": "receiver_unknown"
+                    }
+                  }
+                ]
+              }
+            ],
+            "presentation_observations": [],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "retained",
+                "surface": 1
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [
+              1
+            ],
+            "published_state_changed": false
+          }
+        },
+        {
+          "id": "scroll-update-applied",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [
+            {
+              "kind": "pointer_journal",
+              "previous": 2,
+              "through": 3,
+              "edges": [
+                {
+                  "sequence": 3,
+                  "pointer": 7,
+                  "kind": {
+                    "kind": "scrolled",
+                    "scroll": {
+                      "device": 9,
+                      "sequence": 41,
+                      "phase": {
+                        "kind": "update"
+                      },
+                      "delta": {
+                        "kind": "lines",
+                        "delta": {
+                          "x": -1.0,
+                          "y": 7.0
+                        }
+                      },
+                      "momentum": {
+                        "kind": "known",
+                        "momentum": {
+                          "kind": "momentum"
+                        }
+                      },
+                      "modifiers": {
+                        "kind": "known",
+                        "shift": false,
+                        "control": true,
+                        "alt": true,
+                        "command": false
+                      },
+                      "delivery": {
+                        "kind": "headless",
+                        "surface": 1,
+                        "coordinate_generation": {
+                          "kind": "current"
+                        }
+                      }
+                    }
+                  },
+                  "location": {
+                    "kind": "surface_local",
+                    "position": {
+                      "kind": "known",
+                      "point": {
+                        "x": 320.0,
+                        "y": 14.0
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "kind": "provider_endpoint"
+                  },
+                  "capture": {
+                    "kind": "none"
+                  },
+                  "receiver": {
+                    "kind": "presented",
+                    "delivery": {
+                      "kind": "tab_strip_scroll",
+                      "root": 1,
+                      "path": []
+                    },
+                    "hover": null
+                  }
+                }
+              ]
+            }
+          ],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "complete",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 640.0,
+                  "height": 480.0
+                }
+              }
+            }
+          ],
+          "expected": {
+            "tick": 6,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [
+              {
+                "cause": {
+                  "kind": "pointer_edge"
+                },
+                "provider_incarnation": 1,
+                "stream_incarnation": 1,
+                "sequence": 3,
+                "outcomes": [
+                  {
+                    "kind": "scroll_applied",
+                    "session": true,
+                    "receiver": {
+                      "kind": "tab_strip",
+                      "surface": 1,
+                      "root": 1,
+                      "path": []
+                    },
+                    "phase": {
+                      "kind": "update"
+                    },
+                    "requested_delta": 40.0,
+                    "applied_delta": 40.0,
+                    "unapplied_delta": 0.0,
+                    "offset": 40.0
+                  }
+                ]
+              }
+            ],
+            "presentation_observations": [],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "ready",
+                "surface": 1
+              }
+            ],
+            "surface_scene_deltas": [
+              {
+                "surface": 1,
+                "before": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": {
+                    "stream": {
+                      "surface": 1,
+                      "endpoint": {
+                        "kind": "headless"
+                      },
+                      "sequence": 1
+                    },
+                    "emission": 1,
+                    "coordinate_generation": 0
+                  }
+                },
+                "after": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": null
+                }
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [],
+            "published_state_changed": true
+          }
+        },
+        {
+          "id": "scroll-end-with-unknown-receiver",
+          "provider": null,
+          "presentation_observation": {
+            "kind": "no_update"
+          },
+          "presentation_dispositions": [
+            {
+              "slot": "surface",
+              "surface": 1,
+              "disposition": {
+                "kind": "painted"
+              }
+            }
+          ],
+          "events": [
+            {
+              "kind": "pointer_journal",
+              "previous": 3,
+              "through": 4,
+              "edges": [
+                {
+                  "sequence": 4,
+                  "pointer": 7,
+                  "kind": {
+                    "kind": "scrolled",
+                    "scroll": {
+                      "device": 9,
+                      "sequence": 41,
+                      "phase": {
+                        "kind": "end"
+                      },
+                      "delta": null,
+                      "momentum": {
+                        "kind": "unknown",
+                        "reason": {
+                          "kind": "not_reported"
+                        }
+                      },
+                      "modifiers": {
+                        "kind": "known",
+                        "shift": false,
+                        "control": false,
+                        "alt": false,
+                        "command": false
+                      },
+                      "delivery": {
+                        "kind": "unknown",
+                        "reason": {
+                          "kind": "not_reported"
+                        }
+                      }
+                    }
+                  },
+                  "location": {
+                    "kind": "surface_local",
+                    "position": {
+                      "kind": "known",
+                      "point": {
+                        "x": 320.0,
+                        "y": 14.0
+                      }
+                    }
+                  },
+                  "delivery": {
+                    "kind": "provider_endpoint"
+                  },
+                  "capture": {
+                    "kind": "none"
+                  },
+                  "receiver": {
+                    "kind": "unknown",
+                    "reason": {
+                      "kind": "not_reported"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "surface_contributions": [
+            {
+              "surface": 1,
+              "measurements": {
+                "kind": "complete",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 640.0,
+                  "height": 480.0
+                }
+              }
+            }
+          ],
+          "expected": {
+            "tick": 7,
+            "before": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "after": {
+              "epoch": 0,
+              "revision": 0
+            },
+            "reduced": [],
+            "reduced_pointer_edges": [
+              {
+                "cause": {
+                  "kind": "pointer_edge"
+                },
+                "provider_incarnation": 1,
+                "stream_incarnation": 1,
+                "sequence": 4,
+                "outcomes": [
+                  {
+                    "kind": "scroll_terminated",
+                    "receiver": {
+                      "kind": "tab_strip",
+                      "surface": 1,
+                      "root": 1,
+                      "path": []
+                    },
+                    "reason": {
+                      "kind": "completed"
+                    }
+                  }
+                ]
+              }
+            ],
+            "presentation_observations": [],
+            "presentation_emissions": 1,
+            "surface_contributions": [
+              {
+                "kind": "ready",
+                "surface": 1
+              }
+            ],
+            "surface_scene_deltas": [
+              {
+                "surface": 1,
+                "before": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": null
+                },
+                "after": {
+                  "state": {
+                    "kind": "ready"
+                  },
+                  "presented": null
+                }
+              }
+            ],
+            "interaction": {
+              "kind": "idle"
+            },
+            "interactive_surface_roster": [],
+            "published_state_changed": true
+          }
+        }
+      ],
+      "expected_final": {
+        "workspace": {
+          "version": {
+            "epoch": 0,
+            "revision": 0
+          },
+          "roots": [
+            {
+              "id": 1,
+              "central_path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              },
+              "node": {
+                "kind": "tabs",
+                "items": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12
+                ],
+                "selected": 1,
+                "mru": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12
+                ]
+              }
+            }
+          ],
+          "surfaces": [
+            {
+              "id": 1,
+              "main_root": 1,
+              "contained": []
+            }
+          ],
+          "item_multiset": [
+            {
+              "item": 1,
+              "count": 1
+            },
+            {
+              "item": 2,
+              "count": 1
+            },
+            {
+              "item": 3,
+              "count": 1
+            },
+            {
+              "item": 4,
+              "count": 1
+            },
+            {
+              "item": 5,
+              "count": 1
+            },
+            {
+              "item": 6,
+              "count": 1
+            },
+            {
+              "item": 7,
+              "count": 1
+            },
+            {
+              "item": 8,
+              "count": 1
+            },
+            {
+              "item": 9,
+              "count": 1
+            },
+            {
+              "item": 10,
+              "count": 1
+            },
+            {
+              "item": 11,
+              "count": 1
+            },
+            {
+              "item": 12,
+              "count": 1
+            }
+          ],
+          "item_owners": [
+            {
+              "item": 1,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 2,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 3,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 4,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 5,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 6,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 7,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 8,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 9,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 10,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 11,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            },
+            {
+              "item": 12,
+              "root": 1,
+              "path": [],
+              "owner": {
+                "kind": "main",
+                "surface": 1
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

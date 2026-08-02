@@ -75,6 +75,64 @@ pub enum WorkspaceValidationError {
         /// Invalid selected item, or `None` when a populated node has no selection.
         selected: Option<ItemId>,
     },
+    /// A tabs node has no durable MRU permutation.
+    #[error("tabs node {tabs:?} has no MRU permutation")]
+    MissingTabMru {
+        /// Tabs node without history.
+        tabs: NodeId,
+    },
+    /// A tabs MRU permutation has a different length from its visual item order.
+    #[error("tabs node {tabs:?} has {items} items but {mru} MRU entries")]
+    TabMruLengthMismatch {
+        /// Tabs node with invalid history.
+        tabs: NodeId,
+        /// Visual item count.
+        items: usize,
+        /// MRU entry count.
+        mru: usize,
+    },
+    /// A tabs MRU permutation contains the same item more than once.
+    #[error("tabs node {tabs:?} repeats item {item} in its MRU permutation")]
+    DuplicateTabMruItem {
+        /// Tabs node with invalid history.
+        tabs: NodeId,
+        /// Repeated item identity.
+        item: ItemId,
+    },
+    /// A tabs MRU permutation contains an item outside its visual item order.
+    #[error("tabs node {tabs:?} MRU permutation contains foreign item {item}")]
+    TabMruItemNotInTabs {
+        /// Tabs node with invalid history.
+        tabs: NodeId,
+        /// Foreign item identity.
+        item: ItemId,
+    },
+    /// A visual tab item is absent from its MRU permutation.
+    #[error("tabs node {tabs:?} item {item} is missing from its MRU permutation")]
+    TabItemMissingFromMru {
+        /// Tabs node with invalid history.
+        tabs: NodeId,
+        /// Missing item identity.
+        item: ItemId,
+    },
+    /// The selected tab is not the most-recent MRU entry.
+    #[error(
+        "tabs node {tabs:?} selects {selected:?}, but its most-recent MRU entry is {most_recent:?}"
+    )]
+    SelectedTabNotMostRecent {
+        /// Tabs node with invalid history.
+        tabs: NodeId,
+        /// Current selected item.
+        selected: Option<ItemId>,
+        /// First MRU entry.
+        most_recent: Option<ItemId>,
+    },
+    /// Durable MRU state is attached to a missing node or split node.
+    #[error("MRU state is attached to non-tabs node {node:?}")]
+    UnexpectedTabMru {
+        /// Missing or non-tabs runtime node identity.
+        node: NodeId,
+    },
     /// An item occurs more than once in the workspace forest.
     #[error(
         "item {item} appears in both tabs node {first_tabs:?} and tabs node {duplicate_tabs:?}"
@@ -165,6 +223,12 @@ pub enum WorkspaceValidationError {
         /// Missing stable root identity.
         root: RootId,
     },
+    /// A logical surface has neither a main root nor a contained presentation.
+    #[error("surface {surface} has no main root or contained presentation")]
+    EmptySurfacePresentation {
+        /// Empty logical surface identity.
+        surface: SurfaceId,
+    },
     /// A surface roster contains the same floating identity more than once.
     #[error("surface {surface} contains duplicate floating presentation {floating}")]
     DuplicateContainedBacklink {
@@ -181,14 +245,6 @@ pub enum WorkspaceValidationError {
         /// Missing floating identity.
         floating: FloatingPresentationId,
     },
-    /// A floating map key differs from the record's stable identity.
-    #[error("floating map key {key} does not match record id {record}")]
-    FloatingIdentityMismatch {
-        /// Map key.
-        key: FloatingPresentationId,
-        /// Identity stored in the value.
-        record: FloatingPresentationId,
-    },
     /// A contained-floating record references a missing root.
     #[error("floating presentation {floating} references missing root {root}")]
     MissingFloatingRoot {
@@ -197,33 +253,33 @@ pub enum WorkspaceValidationError {
         /// Missing stable root identity.
         root: RootId,
     },
-    /// A contained-floating record references a missing surface.
-    #[error("floating presentation {floating} references missing surface {surface}")]
-    MissingFloatingSurface {
+    /// A durable contained-floating rectangle has no usable logical area.
+    #[error("floating presentation {floating} has non-positive durable bounds {width} x {height}")]
+    NonPositiveContainedRect {
         /// Floating presentation identity.
         floating: FloatingPresentationId,
-        /// Missing stable surface identity.
-        surface: SurfaceId,
+        /// Invalid logical width.
+        width: f64,
+        /// Invalid logical height.
+        height: f64,
     },
-    /// A surface roster and floating record disagree about ownership.
+    /// A contained identity appears in more than one surface roster.
     #[error(
-        "surface {roster_surface} lists floating {floating}, but its record names surface {record_surface}"
+        "floating presentation {floating} is owned by both surfaces {first_surface} and {duplicate_surface}"
     )]
-    FloatingSurfaceMismatch {
-        /// Surface whose roster contains the floating identity.
-        roster_surface: SurfaceId,
-        /// Floating presentation identity.
+    ContainedPresentedMoreThanOnce {
+        /// Multiply owned contained presentation.
         floating: FloatingPresentationId,
-        /// Surface stored in the floating record.
-        record_surface: SurfaceId,
+        /// First owning surface.
+        first_surface: SurfaceId,
+        /// Duplicate owning surface.
+        duplicate_surface: SurfaceId,
     },
-    /// A floating record is absent from its owning surface roster.
-    #[error("floating presentation {floating} has no backlink from surface {surface}")]
-    MissingFloatingBacklink {
-        /// Floating presentation identity.
+    /// A contained record is absent from every surface roster.
+    #[error("floating presentation {floating} has no surface roster owner")]
+    ContainedNotPresented {
+        /// Unowned contained presentation.
         floating: FloatingPresentationId,
-        /// Claimed owning surface.
-        surface: SurfaceId,
     },
     /// A root is presented by more than one owner.
     #[error("root {root} is presented by both {first:?} and {duplicate:?}")]
@@ -418,6 +474,13 @@ impl<'workspace> Validator<'workspace> {
                 self.walk(orphan, None);
             }
         }
+
+        for &node in self.workspace.tab_mru.keys() {
+            if !matches!(self.workspace.nodes.get(node), Some(Node::Tabs { .. })) {
+                self.errors
+                    .push(WorkspaceValidationError::UnexpectedTabMru { node });
+            }
+        }
     }
 
     fn walk(&mut self, root: NodeId, owner: Option<RootId>) {
@@ -524,6 +587,8 @@ impl<'workspace> Validator<'workspace> {
                 .push(WorkspaceValidationError::InvalidSelection { tabs, selected });
         }
 
+        self.validate_tab_mru(tabs, items, selected);
+
         for item in items {
             if let Some(first_tabs) = self.items.insert(*item, tabs) {
                 self.errors.push(WorkspaceValidationError::DuplicateItem {
@@ -532,6 +597,51 @@ impl<'workspace> Validator<'workspace> {
                     duplicate_tabs: tabs,
                 });
             }
+        }
+    }
+
+    fn validate_tab_mru(&mut self, tabs: NodeId, items: &[ItemId], selected: Option<ItemId>) {
+        let Some(mru) = self.workspace.tab_mru.get(&tabs) else {
+            self.errors
+                .push(WorkspaceValidationError::MissingTabMru { tabs });
+            return;
+        };
+        if mru.len() != items.len() {
+            self.errors
+                .push(WorkspaceValidationError::TabMruLengthMismatch {
+                    tabs,
+                    items: items.len(),
+                    mru: mru.len(),
+                });
+        }
+
+        let item_set: HashSet<_> = items.iter().copied().collect();
+        let mut seen = HashSet::with_capacity(mru.len());
+        for &item in mru {
+            if !seen.insert(item) {
+                self.errors
+                    .push(WorkspaceValidationError::DuplicateTabMruItem { tabs, item });
+            }
+            if !item_set.contains(&item) {
+                self.errors
+                    .push(WorkspaceValidationError::TabMruItemNotInTabs { tabs, item });
+            }
+        }
+        for &item in items {
+            if !seen.contains(&item) {
+                self.errors
+                    .push(WorkspaceValidationError::TabItemMissingFromMru { tabs, item });
+            }
+        }
+
+        let most_recent = mru.first().copied();
+        if selected != most_recent {
+            self.errors
+                .push(WorkspaceValidationError::SelectedTabNotMostRecent {
+                    tabs,
+                    selected,
+                    most_recent,
+                });
         }
     }
 
@@ -610,22 +720,30 @@ impl<'workspace> Validator<'workspace> {
 
     fn validate_presentations(&mut self) {
         let mut presented: HashMap<RootId, PresentationLocation> = HashMap::new();
-        let mut surface_rosters: HashMap<SurfaceId, HashSet<FloatingPresentationId>> =
-            HashMap::with_capacity(self.workspace.surfaces.len());
+        let mut floating_owners: HashMap<FloatingPresentationId, SurfaceId> =
+            HashMap::with_capacity(self.workspace.contained_floatings.len());
 
         for (&surface_id, surface) in &self.workspace.surfaces {
-            if self.workspace.roots.contains_key(&surface.main_root) {
-                self.record_presentation(
-                    &mut presented,
-                    surface.main_root,
-                    PresentationLocation::Main(surface_id),
-                );
-            } else {
+            if surface.main_root.is_none() && surface.contained.is_empty() {
                 self.errors
-                    .push(WorkspaceValidationError::MissingSurfaceMainRoot {
+                    .push(WorkspaceValidationError::EmptySurfacePresentation {
                         surface: surface_id,
-                        root: surface.main_root,
                     });
+            }
+            if let Some(main_root) = surface.main_root {
+                if self.workspace.roots.contains_key(&main_root) {
+                    self.record_presentation(
+                        &mut presented,
+                        main_root,
+                        PresentationLocation::Main(surface_id),
+                    );
+                } else {
+                    self.errors
+                        .push(WorkspaceValidationError::MissingSurfaceMainRoot {
+                            surface: surface_id,
+                            root: main_root,
+                        });
+                }
             }
 
             let mut roster = HashSet::new();
@@ -638,6 +756,16 @@ impl<'workspace> Validator<'workspace> {
                         });
                     continue;
                 }
+                if let Some(&first_surface) = floating_owners.get(&floating_id) {
+                    self.errors
+                        .push(WorkspaceValidationError::ContainedPresentedMoreThanOnce {
+                            floating: floating_id,
+                            first_surface,
+                            duplicate_surface: surface_id,
+                        });
+                } else {
+                    floating_owners.insert(floating_id, surface_id);
+                }
                 let Some(floating) = self.workspace.contained_floatings.get(&floating_id) else {
                     self.errors
                         .push(WorkspaceValidationError::MissingContainedFloating {
@@ -646,60 +774,37 @@ impl<'workspace> Validator<'workspace> {
                         });
                     continue;
                 };
-                if floating.surface != surface_id {
-                    self.errors
-                        .push(WorkspaceValidationError::FloatingSurfaceMismatch {
-                            roster_surface: surface_id,
-                            floating: floating_id,
-                            record_surface: floating.surface,
-                        });
-                }
                 if self.workspace.roots.contains_key(&floating.root) {
                     self.record_presentation(
                         &mut presented,
                         floating.root,
                         PresentationLocation::Contained(floating_id),
                     );
-                } else {
-                    self.errors
-                        .push(WorkspaceValidationError::MissingFloatingRoot {
-                            floating: floating_id,
-                            root: floating.root,
-                        });
                 }
             }
-            surface_rosters.insert(surface_id, roster);
         }
 
-        for (&key, floating) in &self.workspace.contained_floatings {
-            if key != floating.id {
+        for (&floating_id, floating) in &self.workspace.contained_floatings {
+            let width = floating.rect.width();
+            let height = floating.rect.height();
+            if width <= 0.0 || height <= 0.0 {
                 self.errors
-                    .push(WorkspaceValidationError::FloatingIdentityMismatch {
-                        key,
-                        record: floating.id,
+                    .push(WorkspaceValidationError::NonPositiveContainedRect {
+                        floating: floating_id,
+                        width,
+                        height,
                     });
             }
-            match surface_rosters.get(&floating.surface) {
-                Some(roster) if !roster.contains(&key) => {
-                    self.errors
-                        .push(WorkspaceValidationError::MissingFloatingBacklink {
-                            floating: key,
-                            surface: floating.surface,
-                        });
-                }
-                Some(_) => {}
-                None => {
-                    self.errors
-                        .push(WorkspaceValidationError::MissingFloatingSurface {
-                            floating: key,
-                            surface: floating.surface,
-                        });
-                }
+            if !floating_owners.contains_key(&floating_id) {
+                self.errors
+                    .push(WorkspaceValidationError::ContainedNotPresented {
+                        floating: floating_id,
+                    });
             }
             if !self.workspace.roots.contains_key(&floating.root) {
                 self.errors
                     .push(WorkspaceValidationError::MissingFloatingRoot {
-                        floating: key,
+                        floating: floating_id,
                         root: floating.root,
                     });
             }
@@ -719,13 +824,15 @@ impl<'workspace> Validator<'workspace> {
         root: RootId,
         location: PresentationLocation,
     ) {
-        if let Some(first) = presented.insert(root, location) {
+        if let Some(&first) = presented.get(&root) {
             self.errors
                 .push(WorkspaceValidationError::RootPresentedMoreThanOnce {
                     root,
                     first,
                     duplicate: location,
                 });
+        } else {
+            presented.insert(root, location);
         }
     }
 }
@@ -763,7 +870,10 @@ mod tests {
             )
             .expect("test node exists");
         builder.set_root(RootId::new(1), RootRecord::new(split));
-        builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(RootId::new(1)));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(RootId::new(1)),
+        );
 
         let errors = errors(&builder);
         assert!(
@@ -789,7 +899,10 @@ mod tests {
             weights: vec![SplitWeight(f32::NAN), SplitWeight(0.5)],
         });
         builder.set_root(RootId::new(1), RootRecord::new(split));
-        builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(RootId::new(1)));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(RootId::new(1)),
+        );
 
         assert!(errors(&builder).iter().any(|error| matches!(
             error,
@@ -808,7 +921,10 @@ mod tests {
                 .expect("valid orphan split"),
         );
         builder.set_root(RootId::new(1), RootRecord::new(live));
-        builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(RootId::new(1)));
+        builder.set_surface(
+            SurfaceId::new(1),
+            SurfacePresentation::with_main(RootId::new(1)),
+        );
 
         let errors = errors(&builder);
         let orphan_count = errors

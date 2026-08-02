@@ -1,32 +1,36 @@
-use dockspace::command::{DockFraction, DockTarget, Edge, MovePayload};
-use dockspace::drop_guide::{
-    DropGuideClusterRecord, DropGuideEdgeSet, DropGuideScope, DropGuideSlot, DropGuideTargetRecord,
-};
+mod support;
+
+use dockspace::command::Edge;
+use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::drop_resolver::DropGuideEligibility;
-use dockspace::drop_target::{
-    DropTargetAvailability, DropTargetId, DropTargetRecord, DropVisual, SceneLayerKey,
-};
-use dockspace::engine::DockEngine;
+use dockspace::drop_target::DropTargetId;
+use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::hit_region::HitRegion;
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::intent::{
-    Authority, PointerButton, PointerButtonState, PointerId, RendererIntent, SurfacePointer,
-    TargetAuthority,
-};
+use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::interaction::{
-    DragSessionId, InteractionCancelReason, InteractionOutcome, InteractionStatus,
-    PreviewResolutionStatus, PreviewVisual,
+    InteractionCancelReason, InteractionOutcome, InteractionStatus, PreviewResolutionStatus,
+    PreviewVisual,
+};
+use dockspace::pointer_journal::{
+    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    SurfaceLocalPointerScope,
+};
+use dockspace::pointer_receiver::{
+    PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
+    PointerReceiverHoverHit, PointerReceiverObservation, PointerReceiverProbe,
+    PointerReceiverProbeReceipt, PointerReceiverProbeRequest, PointerReceiverReceipt,
+    PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::scene::{BuildingScene, ReadySurfaceScene, SceneStamp};
-use dockspace::transition::{EngineTransition, InputOutcome};
+use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use dockspace::scene::PresentationPlan;
+use dockspace::transition::EngineTransition;
 
-const SOURCE_ROOT: RootId = RootId::new(1);
-const TARGET_ROOT: RootId = RootId::new(2);
-const SOURCE_SURFACE: SurfaceId = SurfaceId::new(1);
-const TARGET_SURFACE: SurfaceId = SurfaceId::new(2);
+const ROOT: RootId = RootId::new(1);
+const SURFACE: SurfaceId = SurfaceId::new(1);
 const POINTER: PointerId = PointerId::new(1);
 const MOVED_ITEM: ItemId = ItemId::new(1);
 const SOURCE_REMAINDER: ItemId = ItemId::new(2);
@@ -34,35 +38,43 @@ const TARGET_ITEM: ItemId = ItemId::new(10);
 
 struct Fixture {
     engine: DockEngine,
-    source_tabs: NodeId,
-    target_tabs: NodeId,
+    host: support::TestPresentationHost,
+    tabs: NodeId,
+    provider: PointerInputLease,
+    watermark: u64,
 }
 
 impl Fixture {
     fn new(policy: DockPolicy) -> Self {
         let mut builder = Workspace::builder();
-        let source_tabs = builder.insert_node(Node::tabs([MOVED_ITEM, SOURCE_REMAINDER]));
-        let target_tabs = builder.insert_node(Node::tabs([TARGET_ITEM]));
-        builder.set_root(SOURCE_ROOT, RootRecord::new(source_tabs));
-        builder.set_root(TARGET_ROOT, RootRecord::new(target_tabs));
-        builder.set_surface(SOURCE_SURFACE, SurfacePresentation::new(SOURCE_ROOT));
-        builder.set_surface(TARGET_SURFACE, SurfacePresentation::new(TARGET_ROOT));
+        let tabs = builder.insert_node(Node::tabs([MOVED_ITEM, SOURCE_REMAINDER, TARGET_ITEM]));
+        builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("guide fixture must be valid");
-        let engine = DockEngine::new(workspace, policy).expect("guide engine must be valid");
+        let mut engine = DockEngine::new(workspace, policy).expect("guide engine must be valid");
+        let mut host = support::TestPresentationHost::new(&mut engine);
+        support::publish_surface(
+            &mut engine,
+            &mut host,
+            SURFACE,
+            rect(0.0, 0.0, 400.0, 300.0),
+        );
+        let provider = engine
+            .create_pointer_provider(
+                PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+                    host.lease(),
+                    SurfaceLocalPointerEndpoint::Logical(SURFACE),
+                )),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("surface-local pointer provider must be admitted");
         Self {
             engine,
-            source_tabs,
-            target_tabs,
+            host,
+            tabs,
+            provider,
+            watermark: 0,
         }
-    }
-
-    fn payload(&self) -> MovePayload {
-        MovePayload::Item(
-            self.engine
-                .workspace()
-                .capture_item_source(SOURCE_ROOT, self.source_tabs, MOVED_ITEM)
-                .expect("source item must be current"),
-        )
     }
 }
 
@@ -74,245 +86,280 @@ fn point(x: f64, y: f64) -> LogicalPoint {
     LogicalPoint::new(x, y).expect("guide point must be valid")
 }
 
-fn activation_rect() -> LogicalRect {
-    rect(20.0, 20.0, 60.0, 60.0)
+fn midpoint(bounds: LogicalRect) -> LogicalPoint {
+    point(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
 }
 
-fn slot_hit(slot: DropGuideSlot) -> LogicalRect {
-    match slot {
-        DropGuideSlot::Center => rect(46.0, 46.0, 8.0, 8.0),
-        DropGuideSlot::Edge(Edge::Left) => rect(34.0, 46.0, 8.0, 8.0),
-        DropGuideSlot::Edge(Edge::Right) => rect(58.0, 46.0, 8.0, 8.0),
-        DropGuideSlot::Edge(Edge::Top) => rect(46.0, 34.0, 8.0, 8.0),
-        DropGuideSlot::Edge(Edge::Bottom) => rect(46.0, 58.0, 8.0, 8.0),
+fn target_plan(fixture: &Fixture) -> &PresentationPlan {
+    support::painted_plan(&fixture.engine, SURFACE)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GuideFact {
+    target: DropTargetId,
+    hit_point: LogicalPoint,
+    preview: LogicalRect,
+}
+
+fn outer_edge_guide(fixture: &Fixture, edge: Edge) -> GuideFact {
+    let guide = target_plan(fixture)
+        .drop_guide_clusters()
+        .iter()
+        .find(|cluster| cluster.id().root == ROOT && cluster.id().scope == DropGuideScope::Outer)
+        .and_then(|cluster| cluster.target(DropGuideSlot::Edge(edge)))
+        .expect("compiled target plan must expose every outer edge guide");
+    GuideFact {
+        target: guide.id(),
+        hit_point: midpoint(guide.target().region().rect()),
+        preview: guide.target().visual().rect(),
     }
 }
 
-fn slot_preview(slot: DropGuideSlot) -> LogicalRect {
-    match slot {
-        DropGuideSlot::Center => activation_rect(),
-        DropGuideSlot::Edge(Edge::Left) => rect(20.0, 20.0, 20.0, 60.0),
-        DropGuideSlot::Edge(Edge::Right) => rect(60.0, 20.0, 20.0, 60.0),
-        DropGuideSlot::Edge(Edge::Top) => rect(20.0, 20.0, 60.0, 20.0),
-        DropGuideSlot::Edge(Edge::Bottom) => rect(20.0, 60.0, 60.0, 20.0),
-    }
-}
-
-fn edge_target_id(fixture: &Fixture, edge: Edge) -> DropTargetId {
-    DropTargetId::OuterEdge {
-        surface: TARGET_SURFACE,
-        root: TARGET_ROOT,
-        node: fixture.target_tabs,
-        edge,
-    }
-}
-
-fn center_guide(fixture: &Fixture, layer: SceneLayerKey) -> DropGuideTargetRecord {
-    let slot = DropGuideSlot::Center;
-    guide_target(
-        DropTargetId::Center {
-            surface: TARGET_SURFACE,
-            root: TARGET_ROOT,
-            tabs: fixture.target_tabs,
-        },
-        DockTarget::Center(
-            fixture
-                .engine
-                .workspace()
-                .capture_tab_target(TARGET_ROOT, fixture.target_tabs)
-                .expect("center target must be current"),
-        ),
-        slot,
-        layer,
-    )
-}
-
-fn edge_guide(fixture: &Fixture, edge: Edge, layer: SceneLayerKey) -> DropGuideTargetRecord {
-    let slot = DropGuideSlot::Edge(edge);
-    guide_target(
-        edge_target_id(fixture, edge),
-        DockTarget::Edge(
-            fixture
-                .engine
-                .workspace()
-                .capture_edge_target(
-                    TARGET_ROOT,
-                    fixture.target_tabs,
-                    edge,
-                    DockFraction::new(0.35).expect("dock fraction must be valid"),
-                )
-                .expect("edge target must be current"),
-        ),
-        slot,
-        layer,
-    )
-}
-
-fn guide_target(
-    id: DropTargetId,
-    target: DockTarget,
-    slot: DropGuideSlot,
-    layer: SceneLayerKey,
-) -> DropGuideTargetRecord {
-    let hit = slot_hit(slot);
-    DropGuideTargetRecord::new(
-        DropTargetRecord::new(
-            id,
-            target,
-            DropTargetAvailability::Available,
-            HitRegion::new(hit),
-            layer,
-            DropVisual::new(slot_preview(slot)),
-        ),
-        hit,
-    )
-}
-
-fn inner_five_cluster(fixture: &Fixture) -> DropGuideClusterRecord {
-    let layer = SceneLayerKey::new(1);
-    DropGuideClusterRecord::inner(
-        TARGET_SURFACE,
-        TARGET_ROOT,
-        fixture.target_tabs,
-        HitRegion::new(activation_rect()),
-        layer,
-        center_guide(fixture, layer),
-        DropGuideEdgeSet::new(
-            edge_guide(fixture, Edge::Left, layer),
-            edge_guide(fixture, Edge::Right, layer),
-            edge_guide(fixture, Edge::Top, layer),
-            edge_guide(fixture, Edge::Bottom, layer),
-        ),
-    )
-}
-
-fn guide_scene(fixture: &Fixture) -> BuildingScene {
-    let mut building =
-        BuildingScene::new([SOURCE_SURFACE, TARGET_SURFACE]).expect("scene roster must be valid");
-    building
-        .insert_ready(ReadySurfaceScene::new(
-            SOURCE_SURFACE,
-            rect(0.0, 0.0, 100.0, 100.0),
-        ))
-        .expect("source scene must be unique");
-    let mut target = ReadySurfaceScene::new(TARGET_SURFACE, rect(0.0, 0.0, 100.0, 100.0));
-    target.push_drop_guide_cluster(inner_five_cluster(fixture));
-    building
-        .insert_ready(target)
-        .expect("target scene must be unique");
-    building
-}
-
-fn publish_scene(fixture: &mut Fixture) -> SceneStamp {
-    let scene = guide_scene(fixture);
-    fixture
-        .engine
-        .enqueue_scene(scene)
-        .expect("scene publication must enqueue");
-    let transition = fixture
-        .engine
-        .reduce_pending()
-        .expect("guide scene must publish");
-    assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::ScenePublished {
-            ready_surfaces: 2,
-            bootstrap_surfaces: 0,
-            ..
+fn activation_without_button_hit(fixture: &Fixture) -> LogicalPoint {
+    let plan = target_plan(fixture);
+    let activation = plan
+        .drop_guide_clusters()
+        .iter()
+        .find(|cluster| matches!(cluster.id().scope, DropGuideScope::Inner(_)))
+        .expect("compiled target plan must expose an inner activation")
+        .activation();
+    for row in 0..16 {
+        for column in 0..16 {
+            let candidate = point(
+                activation.rect().x()
+                    + activation.rect().width() * (f64::from(column) + 0.5) / 16.0,
+                activation.rect().y() + activation.rect().height() * (f64::from(row) + 0.5) / 16.0,
+            );
+            let hits_guide = plan
+                .drop_guide_clusters()
+                .iter()
+                .flat_map(|cluster| cluster.targets())
+                .any(|(_, guide)| guide.target().region().contains(candidate));
+            let hits_structural = plan
+                .drop_targets()
+                .iter()
+                .any(|target| target.region().contains(candidate));
+            if !hits_guide && !hits_structural {
+                return candidate;
+            }
         }
-    ));
-    fixture
-        .engine
-        .scene()
-        .expect("sealed guide scene must exist")
-        .stamp()
+    }
+    panic!("compiled activation must contain a passive guide location")
 }
 
-fn arm_and_begin(fixture: &mut Fixture) -> DragSessionId {
-    fixture
+fn outside_surface(fixture: &Fixture) -> LogicalPoint {
+    let bounds = target_plan(fixture).bounds();
+    point(bounds.max().x() + 1.0, bounds.max().y() + 1.0)
+}
+
+fn source_tab(fixture: &Fixture) -> (PresentationHitRegionId, LogicalPoint) {
+    let region = fixture
         .engine
-        .enqueue_renderer_intent(RendererIntent::ArmDrag {
-            pointer: POINTER,
-            button: PointerButton::Primary,
-            payload: fixture.payload(),
+        .interaction_projection(SURFACE)
+        .expect("surface is interactive")
+        .hit_manifest()
+        .regions()
+        .iter()
+        .find(|region| {
+            matches!(
+                region.id().kind(),
+                PresentationHitRegionKind::TabBody(tab) if tab.item == MOVED_ITEM
+            )
         })
-        .expect("arm must enqueue");
-    let armed = fixture.engine.reduce_pending().expect("arm must reduce");
-    let session = match armed.reduced_inputs()[0].outcome() {
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::DragArmed { session, .. },
-            ..
-        } => *session,
-        outcome => panic!("unexpected arm outcome: {outcome:?}"),
+        .copied()
+        .expect("moved item has a tab receiver");
+    (region.id(), midpoint(region.hit().rect()))
+}
+
+fn edge_journal(
+    previous: u64,
+    kind: PointerEdgeKind,
+    position: LogicalPoint,
+    capture: PointerCaptureOwner,
+) -> PointerEdgeJournal {
+    let sequence = PointerEdgeSequence::new(previous + 1);
+    PointerEdgeJournal::new(
+        PointerEdgeSequence::new(previous),
+        sequence,
+        vec![PointerEdge::new(
+            sequence,
+            POINTER,
+            kind,
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Known(position),
+            },
+            Authority::Known(capture),
+        )],
+    )
+    .expect("single pointer edge journal must be contiguous")
+}
+
+fn exact_observation(
+    candidate: &PointerReceiverCandidate,
+    delivery: Option<PointerReceiverDelivery>,
+    hover: Option<PointerReceiverHoverHit>,
+) -> PointerReceiverObservation {
+    let probes = match candidate.probes() {
+        PointerReceiverProbeRequest::NotApplicable => {
+            return PointerReceiverObservation::NotApplicable;
+        }
+        PointerReceiverProbeRequest::Delivery => vec![PointerReceiverProbeReceipt::Delivery(
+            delivery.expect("candidate requires delivery"),
+        )],
+        PointerReceiverProbeRequest::HoverHit => vec![PointerReceiverProbeReceipt::HoverHit(
+            hover.expect("candidate requires hover"),
+        )],
+        PointerReceiverProbeRequest::DeliveryAndHoverHit => vec![
+            PointerReceiverProbeReceipt::Delivery(delivery.expect("candidate requires delivery")),
+            PointerReceiverProbeReceipt::HoverHit(hover.expect("candidate requires hover")),
+        ],
     };
-    fixture
-        .engine
-        .enqueue_renderer_intent(RendererIntent::BeginDrag {
-            session,
-            pointer: POINTER,
-            button: PointerButton::Primary,
-        })
-        .expect("begin must enqueue");
-    let begun = fixture.engine.reduce_pending().expect("begin must reduce");
-    assert!(matches!(
-        begun.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::DragBegan { session: current },
-            ..
-        } if *current == session
-    ));
-    session
-}
-
-fn observe(fixture: &mut Fixture, session: DragSessionId, at: LogicalPoint) -> EngineTransition {
-    fixture
-        .engine
-        .enqueue_renderer_intent(RendererIntent::UpdateDrag {
-            session,
-            target: target_at(at),
-            tear_off: None,
-        })
-        .expect("guide observation must enqueue");
-    fixture
-        .engine
-        .reduce_pending()
-        .expect("guide observation must reduce")
-}
-
-fn target_at(at: LogicalPoint) -> TargetAuthority {
-    TargetAuthority::local(
-        TARGET_SURFACE,
-        Authority::Known(Some(SurfacePointer::new(TARGET_SURFACE, at))),
+    PointerReceiverObservation::Presented(
+        PresentedPointerReceiverObservation::new(probes)
+            .expect("candidate observation answers its exact probe roster"),
     )
 }
 
-fn point_for_edge(edge: Edge) -> LogicalPoint {
-    match edge {
-        Edge::Top => point(50.0, 38.0),
-        Edge::Bottom => point(50.0, 62.0),
-        Edge::Left | Edge::Right => panic!("test requires a vertical edge"),
-    }
+fn complete(fixture: &Fixture, frame: &mut CoreHostFrame) {
+    support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, frame);
+}
+
+fn submit_edge(
+    fixture: &mut Fixture,
+    kind: PointerEdgeKind,
+    position: LogicalPoint,
+    capture: PointerCaptureOwner,
+    delivery_region: Option<PresentationHitRegionId>,
+) -> EngineTransition {
+    let mut frame = fixture.host.begin(&fixture.engine);
+    frame
+        .submit_pointer_journal(
+            fixture.provider,
+            edge_journal(fixture.watermark, kind, position, capture),
+        )
+        .expect("pointer edge must stage");
+    let candidate = frame
+        .pointer_receiver_candidates()
+        .expect("pointer edge freezes a candidate roster")
+        .candidates()[0]
+        .clone();
+    let projection = frame
+        .view()
+        .interaction_projection(SURFACE)
+        .expect("sealed frame retains surface authority");
+    let delivery = candidate
+        .probes()
+        .requires(PointerReceiverProbe::Delivery)
+        .then(|| {
+            PointerReceiverDelivery::new(
+                projection,
+                delivery_region.map_or(
+                    PointerReceiverDeliveryDisposition::NoReceiver,
+                    PointerReceiverDeliveryDisposition::Dock,
+                ),
+            )
+            .expect("delivery observation is output-bound")
+        });
+    let hover = candidate
+        .probes()
+        .requires(PointerReceiverProbe::HoverHit)
+        .then(|| {
+            frame
+                .view()
+                .resolve_hover_drop_receiver(SURFACE, position)
+                .expect("core resolves the exact hover receiver")
+        });
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([
+                candidate.receipt(exact_observation(&candidate, delivery, hover))
+            ])
+            .expect("pointer receipt batch is exact"),
+        )
+        .expect("pointer receipt must stage");
+    complete(fixture, &mut frame);
+    fixture.watermark += 1;
+    fixture.host.finish(frame, &mut fixture.engine)
+}
+
+fn begin_and_observe(fixture: &mut Fixture, at: LogicalPoint) -> EngineTransition {
+    let (source, press) = source_tab(fixture);
+    let armed = submit_edge(
+        fixture,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        press,
+        PointerCaptureOwner::ProviderEndpoint,
+        Some(source),
+    );
+    assert!(matches!(
+        armed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragArmed { .. }]
+    ));
+    submit_edge(
+        fixture,
+        PointerEdgeKind::Moved,
+        at,
+        PointerCaptureOwner::ProviderEndpoint,
+        None,
+    )
+}
+
+fn observe(fixture: &mut Fixture, at: LogicalPoint) -> EngineTransition {
+    submit_edge(
+        fixture,
+        PointerEdgeKind::Moved,
+        at,
+        PointerCaptureOwner::ProviderEndpoint,
+        None,
+    )
+}
+
+fn paint_active_drag(fixture: &mut Fixture) {
+    let watermark = PointerEdgeSequence::new(fixture.watermark);
+    let mut frame = fixture.host.begin(&fixture.engine);
+    frame
+        .submit_pointer_journal(
+            fixture.provider,
+            PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                .expect("empty journal preserves the watermark"),
+        )
+        .expect("paint frame retains the active provider watermark");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("empty journal has an exact empty receipt set"),
+        )
+        .expect("empty receipt set stages");
+    let frame = support::complete_host_frame_with_current_outputs(&fixture.engine, frame);
+    fixture.host.finish_presentation(frame, &mut fixture.engine);
 }
 
 #[test]
-fn activation_without_button_hit_publishes_complete_inner_five_affordance() {
+fn activation_without_button_hit_publishes_center_and_outer_four_affordance() {
     let mut fixture = Fixture::new(DockPolicy::default());
-    let scene = publish_scene(&mut fixture);
-    let session = arm_and_begin(&mut fixture);
-    let transition = observe(&mut fixture, session, point(30.0, 30.0));
+    let scene = fixture
+        .engine
+        .scene()
+        .ready_surface(SURFACE)
+        .expect("surface has acknowledged paint authority")
+        .stamp();
+    let passive = activation_without_button_hit(&fixture);
+    let transition = begin_and_observe(&mut fixture, passive);
 
-    assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::PreviewUpdated {
-                preview: None,
-                status: PreviewResolutionStatus::KnownNone,
-                ..
-            },
-            ..
-        }
-    ));
-    assert!(fixture.engine.interaction().preview().is_none());
+    let outcomes = transition.reduced_pointer_edges()[0].interaction_outcomes();
+    assert!(
+        matches!(
+            outcomes,
+            [
+                InteractionOutcome::DragBegan { .. },
+                InteractionOutcome::PreviewUpdated { .. }
+            ]
+        ),
+        "unexpected passive activation outcomes: {outcomes:#?}"
+    );
     let affordance = fixture
         .engine
         .interaction()
@@ -320,21 +367,36 @@ fn activation_without_button_hit_publishes_complete_inner_five_affordance() {
         .expect("activation must publish guide affordance");
     assert_eq!(affordance.scene(), scene);
     assert!(affordance.active_target().is_none());
-    assert_eq!(affordance.clusters().len(), 1);
-    let cluster = &affordance.clusters()[0];
+    assert_eq!(affordance.clusters().len(), 2);
+    let inner = affordance
+        .clusters()
+        .iter()
+        .find(|cluster| matches!(cluster.id().scope, DropGuideScope::Inner(_)))
+        .expect("central target must publish its inner center guide");
     assert!(matches!(
-        cluster.id().scope,
-        DropGuideScope::Inner(node) if node == fixture.target_tabs
+        inner.id().scope,
+        DropGuideScope::Inner(node) if node == fixture.tabs
     ));
-    assert_eq!(cluster.targets().len(), 5);
     assert_eq!(
-        cluster
+        inner
+            .targets()
+            .iter()
+            .map(dockspace::drop_resolver::DropAffordanceTarget::slot)
+            .collect::<Vec<_>>(),
+        vec![DropGuideSlot::Center]
+    );
+    let outer = affordance
+        .clusters()
+        .iter()
+        .find(|cluster| cluster.id().scope == DropGuideScope::Outer)
+        .expect("central target must publish its separate outer guide");
+    assert_eq!(
+        outer
             .targets()
             .iter()
             .map(dockspace::drop_resolver::DropAffordanceTarget::slot)
             .collect::<Vec<_>>(),
         vec![
-            DropGuideSlot::Center,
             DropGuideSlot::Edge(Edge::Left),
             DropGuideSlot::Edge(Edge::Right),
             DropGuideSlot::Edge(Edge::Top),
@@ -347,19 +409,18 @@ fn activation_without_button_hit_publishes_complete_inner_five_affordance() {
 fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
     for edge in [Edge::Top, Edge::Bottom] {
         let mut fixture = Fixture::new(DockPolicy::default());
-        publish_scene(&mut fixture);
-        let session = arm_and_begin(&mut fixture);
-        let transition = observe(&mut fixture, session, point_for_edge(edge));
+        let expected = outer_edge_guide(&fixture, edge);
+        let transition = begin_and_observe(&mut fixture, expected.hit_point);
         assert!(matches!(
-            transition.reduced_inputs()[0].outcome(),
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::PreviewUpdated {
+            transition.reduced_pointer_edges()[0].interaction_outcomes(),
+            [
+                InteractionOutcome::DragBegan { .. },
+                InteractionOutcome::PreviewUpdated {
                     preview: Some(_),
                     status: PreviewResolutionStatus::Resolved,
                     ..
-                },
-                ..
-            }
+                }
+            ]
         ));
         let active = fixture
             .engine
@@ -369,8 +430,7 @@ fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
             .expect("edge button must be active");
         assert_eq!(active.slot(), DropGuideSlot::Edge(edge));
         assert!(active.eligibility().is_eligible());
-        let expected_target = edge_target_id(&fixture, edge);
-        assert_eq!(active.target_id(), expected_target);
+        assert_eq!(active.target_id(), expected.target);
         assert!(matches!(
             fixture
                 .engine
@@ -379,7 +439,7 @@ fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
                 .expect("edge preview must exist")
                 .visual(),
             PreviewVisual::Dock { target, rect, .. }
-                if *target == expected_target && *rect == slot_preview(DropGuideSlot::Edge(edge))
+                if *target == expected.target && *rect == expected.preview
         ));
     }
 }
@@ -389,20 +449,19 @@ fn rejected_active_guide_remains_visible_without_a_preview() {
     let mut policy = DockPolicy::default();
     policy.set_allow_edge_split(false);
     let mut fixture = Fixture::new(policy);
-    publish_scene(&mut fixture);
-    let session = arm_and_begin(&mut fixture);
-    let transition = observe(&mut fixture, session, point_for_edge(Edge::Top));
+    let top = outer_edge_guide(&fixture, Edge::Top);
+    let transition = begin_and_observe(&mut fixture, top.hit_point);
 
     assert!(matches!(
-        transition.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::PreviewUpdated {
+        transition.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::DragBegan { .. },
+            InteractionOutcome::PreviewUpdated {
                 preview: None,
                 status: PreviewResolutionStatus::Rejected,
                 ..
-            },
-            ..
-        }
+            }
+        ]
     ));
     assert!(fixture.engine.interaction().preview().is_none());
     let active = fixture
@@ -419,46 +478,38 @@ fn rejected_active_guide_remains_visible_without_a_preview() {
 }
 
 #[test]
-fn leaving_the_activation_and_cancelling_clear_the_affordance() {
+fn leaving_the_activation_and_stream_cancellation_clear_the_affordance() {
     let mut fixture = Fixture::new(DockPolicy::default());
-    publish_scene(&mut fixture);
-    let session = arm_and_begin(&mut fixture);
-    observe(&mut fixture, session, point(30.0, 30.0));
+    let passive = activation_without_button_hit(&fixture);
+    let outside = outside_surface(&fixture);
+    begin_and_observe(&mut fixture, passive);
     assert!(fixture.engine.interaction().drop_affordance().is_some());
 
-    let left = observe(&mut fixture, session, point(90.0, 90.0));
-    assert!(matches!(
-        left.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::PreviewUpdated {
-                preview: None,
-                status: PreviewResolutionStatus::KnownNone,
-                ..
-            },
-            ..
-        }
-    ));
+    let left = observe(&mut fixture, outside);
+    let outcomes = left.reduced_pointer_edges()[0].interaction_outcomes();
+    assert!(
+        matches!(outcomes, [InteractionOutcome::PreviewUpdated { .. }]),
+        "unexpected leave outcomes: {outcomes:#?}"
+    );
     assert!(fixture.engine.interaction().drop_affordance().is_none());
 
-    observe(&mut fixture, session, point(30.0, 30.0));
+    observe(&mut fixture, passive);
     assert!(fixture.engine.interaction().drop_affordance().is_some());
-    fixture
-        .engine
-        .enqueue_renderer_intent(RendererIntent::CancelDrag {
-            session,
-            reason: InteractionCancelReason::Escape,
-        })
-        .expect("cancel must enqueue");
-    let cancelled = fixture.engine.reduce_pending().expect("cancel must reduce");
+    let cancelled = submit_edge(
+        &mut fixture,
+        PointerEdgeKind::StreamCancelled(
+            dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation,
+        ),
+        passive,
+        PointerCaptureOwner::None,
+        None,
+    );
     assert!(matches!(
-        cancelled.reduced_inputs()[0].outcome(),
-        InputOutcome::InteractionProcessed {
-            outcome: InteractionOutcome::Cancelled {
-                reason: InteractionCancelReason::Escape,
-                ..
-            },
+        cancelled.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Cancelled {
+            reason: InteractionCancelReason::PointerStreamCancelled,
             ..
-        }
+        }]
     ));
     assert_eq!(
         fixture.engine.interaction().status(),
@@ -469,105 +520,37 @@ fn leaving_the_activation_and_cancelling_clear_the_affordance() {
 }
 
 #[test]
-fn scene_refresh_rebuilds_affordance_and_preview_stamps() {
-    let mut fixture = Fixture::new(DockPolicy::default());
-    let first_scene = publish_scene(&mut fixture);
-    let session = arm_and_begin(&mut fixture);
-    observe(&mut fixture, session, point_for_edge(Edge::Top));
-    let first_affordance_scene = fixture
-        .engine
-        .interaction()
-        .drop_affordance()
-        .expect("first affordance must exist")
-        .scene();
-    let first_preview = fixture
-        .engine
-        .interaction()
-        .preview()
-        .expect("first preview must exist")
-        .token();
-    assert_eq!(first_affordance_scene, first_scene);
-    assert_eq!(first_preview.scene(), first_scene);
-
-    let refreshed_scene = publish_scene(&mut fixture);
-    assert_ne!(refreshed_scene, first_scene);
-    let refreshed_affordance = fixture
-        .engine
-        .interaction()
-        .drop_affordance()
-        .expect("refresh must rebuild affordance");
-    let refreshed_preview = fixture
-        .engine
-        .interaction()
-        .preview()
-        .expect("refresh must rebuild preview")
-        .token();
-    assert_eq!(refreshed_affordance.scene(), refreshed_scene);
-    assert_eq!(refreshed_preview.scene(), refreshed_scene);
-    assert_ne!(refreshed_preview, first_preview);
-}
-
-#[test]
-fn top_and_bottom_acknowledged_releases_commit_the_painted_target_and_conserve_items() {
+fn top_and_bottom_presented_releases_commit_the_exact_target_and_conserve_items() {
     for edge in [Edge::Top, Edge::Bottom] {
         let mut fixture = Fixture::new(DockPolicy::default());
-        publish_scene(&mut fixture);
         let before_items = fixture.engine.workspace().item_multiset();
-        let session = arm_and_begin(&mut fixture);
-        let at = point_for_edge(edge);
-        observe(&mut fixture, session, at);
-        let active_target = fixture
-            .engine
-            .interaction()
-            .drop_affordance()
-            .and_then(dockspace::drop_resolver::DropAffordance::active_target)
-            .expect("delivery guide must be active")
-            .target_id();
-        let preview = fixture
-            .engine
-            .interaction()
-            .preview()
-            .expect("delivery preview must exist");
+        let guide = outer_edge_guide(&fixture, edge);
+        begin_and_observe(&mut fixture, guide.hit_point);
         assert!(matches!(
-            preview.visual(),
-            PreviewVisual::Dock { target, .. } if *target == active_target
+            fixture
+                .engine
+                .interaction()
+                .preview()
+                .expect("delivery preview must exist")
+                .visual(),
+            PreviewVisual::Dock { target, .. } if *target == guide.target
         ));
-        let acknowledgement = preview.acknowledgement();
+        paint_active_drag(&mut fixture);
 
-        fixture
-            .engine
-            .enqueue_renderer_intent(RendererIntent::ReleaseDrag {
-                session,
-                pointer: POINTER,
-                button: PointerButton::Primary,
-                button_state: Authority::Known(PointerButtonState::Released),
-                target: target_at(at),
-                tear_off: None,
-            })
-            .expect("release must enqueue");
-        fixture
-            .engine
-            .enqueue_renderer_intent(RendererIntent::AcknowledgePreview(acknowledgement))
-            .expect("acknowledgement must enqueue");
-        let delivered = fixture
-            .engine
-            .reduce_pending()
-            .expect("acknowledged guide release must reduce");
+        let delivered = submit_edge(
+            &mut fixture,
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            guide.hit_point,
+            PointerCaptureOwner::None,
+            None,
+        );
         assert!(matches!(
-            delivered.reduced_inputs()[0].outcome(),
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::PreviewAcknowledged { .. },
-                ..
-            }
+            delivered.reduced_pointer_edges()[0].interaction_outcomes(),
+            [
+                InteractionOutcome::PreviewUpdated { .. },
+                InteractionOutcome::DragDelivered { .. }
+            ]
         ));
-        assert!(matches!(
-            delivered.reduced_inputs()[1].outcome(),
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::DragDelivered { .. },
-                ..
-            }
-        ));
-        assert!(delivered.changed());
         assert_eq!(fixture.engine.workspace().item_multiset(), before_items);
         assert_eq!(
             fixture.engine.interaction().status(),
@@ -575,14 +558,14 @@ fn top_and_bottom_acknowledged_releases_commit_the_painted_target_and_conserve_i
         );
         assert!(fixture.engine.interaction().drop_affordance().is_none());
 
-        let target_root = fixture
+        let root = fixture
             .engine
             .workspace()
-            .root(TARGET_ROOT)
-            .expect("target root must remain present");
-        let (axis, children) = match fixture.engine.workspace().node(target_root.node) {
+            .root(ROOT)
+            .expect("root must remain present");
+        let (axis, children) = match fixture.engine.workspace().node(root.node) {
             Some(Node::Split { axis, children, .. }) => (*axis, children),
-            node => panic!("target root must become a split, got {node:?}"),
+            node => panic!("root must become a split, got {node:?}"),
         };
         assert_eq!(axis, Axis::Vertical);
         let moved_index = children

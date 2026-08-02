@@ -2,8 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate self as egui_dockspace;
+
 pub mod pane;
-pub mod presentation;
 pub mod style;
 
 mod builder;
@@ -15,29 +17,45 @@ mod floating;
 mod hit;
 #[cfg(feature = "serde")]
 mod persistence;
-#[cfg(feature = "native")]
-#[allow(
-    dead_code,
-    reason = "the crate-private provider boundary is consumed by the next U7 native runtime unit"
-)]
-mod platform_adapter;
+mod pointer_input;
+mod presentation_settlement;
 mod projection;
+mod receiver;
+mod render;
 mod renderer;
 mod response;
 mod splits;
 mod tabs;
 
-pub use ::dockspace;
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod behavior_tests;
+
 pub use builder::DockspaceBuilder;
 pub use error::DockspaceError;
-pub use facade::Dockspace;
-pub use pane::{PaneCloseResponse, PaneFocusState, PaneView};
+pub use facade::{
+    Dockspace, DockspaceHostFrame, EguiFrameScheduleKey, EguiNativeConfigurationSession,
+    EguiNativeInputSession, EguiNativePresentationSession, EguiOuterFrameCommit,
+    EguiOuterHostFrame, ExactNativeViewport, NativeBindingError, NativeBindingRoster,
+    NativeCoreRoute, NativeViewportIncarnation, PreparedEguiOuterFrameCommit,
+};
+pub use pane::{PaneFocusState, PaneView};
 #[cfg(feature = "serde")]
-pub use persistence::DockspacePersistenceError;
-pub use presentation::{ContainedPresentationIds, PresentationIdSource, TearOffMode};
+pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
+pub use presentation_settlement::{
+    EguiNativePresentationSettlementError, EguiOuterSurfaceOutput, EguiPresentationResult,
+    EguiPresentationSettlement,
+};
 pub use projection::ProjectionError;
+pub use receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
+pub use render::{
+    EguiDockRenderer, EguiFrameAcceptance, EguiRendererError, EguiSurfaceDraft,
+    EguiSurfacePublicationMode,
+};
 pub use response::{
-    DockspaceCapability, DockspaceInputRejection, DockspaceResponse, DockspaceSurfaceStatus,
-    DockspaceUnavailableReason,
+    DockspaceCapability, DockspaceResponse, DockspaceSurfaceStatus, DockspaceUnavailableReason,
+    HostFrameResponse, SurfaceCommitResponse, SurfaceFrameDisposition, SurfacePaintResponse,
 };
 pub use style::{DockStyle, DockStyleError};

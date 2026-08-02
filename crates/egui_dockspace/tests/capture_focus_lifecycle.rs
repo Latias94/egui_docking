@@ -1,15 +1,19 @@
+use std::collections::BTreeSet;
+
 use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::interaction::{
-    InteractionCancelReason, InteractionEventKind, InteractionOutcome, InteractionRejection,
+    InteractionCancelReason, InteractionDelivery, InteractionEventKind, InteractionOutcome,
     InteractionStatus,
 };
-use dockspace::scene::SurfaceScene;
-use dockspace::transition::{InputOutcome, WorkspaceVersion};
+use dockspace::scene::PresentationPlan;
+use dockspace::transition::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{
+    Dockspace, EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse, PaneView,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -28,11 +32,30 @@ impl PaneView for TestPanes {
     fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
 }
 
+#[derive(Default)]
+struct DiscardingPanes {
+    passes: BTreeSet<usize>,
+}
+
+impl PaneView for DiscardingPanes {
+    fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
+        matches!(item, ITEM_A | ITEM_B).then(|| format!("Pane {}", item.get()).into())
+    }
+
+    fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
+        self.passes.insert(ui.ctx().current_pass_index());
+        if ui.ctx().current_pass_index() == 0 {
+            ui.ctx()
+                .request_discard("exercise terminal action normalization");
+        }
+    }
+}
+
 fn single_workspace() -> Workspace {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM_A]));
     builder.set_root(MAIN_ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
     builder.build().expect("single surface fixture is valid")
 }
 
@@ -44,7 +67,7 @@ fn split_workspace() -> Workspace {
         Node::equal_split(Axis::Horizontal, [left, right]).expect("two children form a split"),
     );
     builder.set_root(MAIN_ROOT, RootRecord::new(split));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
     builder.build().expect("split fixture is valid")
 }
 
@@ -54,14 +77,8 @@ fn contained_workspace(rect: LogicalRect) -> Workspace {
     let floating = builder.insert_node(Node::tabs([ITEM_B]));
     builder.set_root(MAIN_ROOT, RootRecord::new(main));
     builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::new(MAIN_ROOT));
-    builder.set_contained_floating(ContainedFloating::new(
-        FLOATING,
-        FLOATING_ROOT,
-        SURFACE,
-        rect,
-        1,
-    ));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
+    builder.set_contained_floating(FLOATING, ContainedFloating::new(FLOATING_ROOT, rect));
     builder
         .attach_contained(SURFACE, FLOATING)
         .expect("surface exists");
@@ -71,7 +88,7 @@ fn contained_workspace(rect: LogicalRect) -> Workspace {
 fn raw_input(events: Vec<Event>, focused: bool) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 400.0))),
-        events,
+        events: events.into_iter().map(Into::into).collect(),
         focused,
         ..RawInput::default()
     }
@@ -80,7 +97,7 @@ fn raw_input(events: Vec<Event>, focused: bool) -> RawInput {
 fn run_frame(
     context: &Context,
     dockspace: &mut Dockspace,
-    panes: &mut TestPanes,
+    panes: &mut dyn PaneView,
     events: Vec<Event>,
 ) -> Vec<InteractionCancelReason> {
     run_input(context, dockspace, panes, raw_input(events, true))
@@ -89,30 +106,55 @@ fn run_frame(
 fn run_input(
     context: &Context,
     dockspace: &mut Dockspace,
-    panes: &mut TestPanes,
+    panes: &mut dyn PaneView,
     input: RawInput,
 ) -> Vec<InteractionCancelReason> {
-    let mut reasons = Vec::new();
-    let _ = context.run_ui(input, |ui| {
-        let response = dockspace
-            .show(SURFACE, ui, panes)
-            .expect("egui frame advances");
-        reasons.extend(response.transitions().iter().flat_map(|transition| {
-            transition
-                .interaction_events()
-                .iter()
-                .filter_map(|event| match event.kind() {
-                    InteractionEventKind::Cancelled { reason, .. } => Some(*reason),
-                    _ => None,
-                })
-        }));
-    });
-    reasons
+    let sequence = context
+        .cumulative_frame_nr()
+        .checked_add(1)
+        .expect("fixture frame sequence remains representable");
+    let mut host = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("outer host frame begins");
+    host.run_surface(SURFACE, context, input, panes)
+        .expect("outer host owns the complete egui surface pass");
+    let (response, outputs) = host
+        .finish()
+        .expect("outer host frame commits")
+        .into_parts();
+    for output in outputs {
+        output.settle_with(|surface, _| {
+            assert_eq!(surface, SURFACE);
+            EguiPresentationResult::Presented
+        });
+    }
+    cancellation_reasons(&response)
 }
 
-fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) {
+fn cancellation_reasons(response: &HostFrameResponse) -> Vec<InteractionCancelReason> {
+    response
+        .transition()
+        .interaction_events()
+        .iter()
+        .filter_map(|event| match event.kind() {
+            InteractionEventKind::Cancelled { reason, .. } => Some(*reason),
+            _ => None,
+        })
+        .collect()
+}
+
+fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut dyn PaneView) {
     run_frame(context, dockspace, panes, Vec::new());
     run_frame(context, dockspace, panes, Vec::new());
+    run_frame(context, dockspace, panes, Vec::new());
+}
+
+fn painted_plan(dockspace: &Dockspace) -> &PresentationPlan {
+    dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .map(dockspace::scene::SurfaceInteractionProjection::plan)
+        .expect("surface has an acknowledged painted plan")
 }
 
 fn pointer_button(position: Pos2, pressed: bool) -> Event {
@@ -139,19 +181,12 @@ fn escape_pressed() -> Event {
     reason = "finite scene coordinates intentionally become egui f32 input coordinates"
 )]
 fn tab_point(dockspace: &Dockspace, item: ItemId) -> Pos2 {
-    let SurfaceScene::Ready(ready) = dockspace
-        .engine()
-        .scene()
-        .and_then(|scene| scene.surface(SURFACE))
-        .expect("surface scene exists")
-    else {
-        panic!("surface scene is ready");
-    };
-    let rect = ready
-        .tabs()
+    let rect = painted_plan(dockspace)
+        .tab_records()
         .iter()
         .find(|tab| tab.id().item == item)
         .expect("requested tab is painted")
+        .drag_hit()
         .rect();
     Pos2::new(
         (rect.min().x() + 8.0) as f32,
@@ -164,16 +199,9 @@ fn tab_point(dockspace: &Dockspace, item: ItemId) -> Pos2 {
     reason = "finite scene coordinates intentionally become egui f32 input coordinates"
 )]
 fn inner_guide_point(dockspace: &Dockspace, item: ItemId, slot: DropGuideSlot) -> Pos2 {
-    let SurfaceScene::Ready(ready) = dockspace
-        .engine()
-        .scene()
-        .and_then(|scene| scene.surface(SURFACE))
-        .expect("surface scene exists")
-    else {
-        panic!("surface scene is ready");
-    };
+    let ready = painted_plan(dockspace);
     let tabs = ready
-        .tabs()
+        .tab_records()
         .iter()
         .find(|tab| tab.id().item == item)
         .expect("requested tab is painted")
@@ -199,18 +227,11 @@ fn inner_guide_point(dockspace: &Dockspace, item: ItemId, slot: DropGuideSlot) -
     reason = "finite scene coordinates intentionally become egui f32 input coordinates"
 )]
 fn splitter_point(dockspace: &Dockspace) -> Pos2 {
-    let SurfaceScene::Ready(ready) = dockspace
-        .engine()
-        .scene()
-        .and_then(|scene| scene.surface(SURFACE))
-        .expect("surface scene exists")
-    else {
-        panic!("surface scene is ready");
-    };
-    let rect = ready
-        .splitters()
+    let rect = painted_plan(dockspace)
+        .splitter_records()
         .first()
         .expect("split fixture paints one splitter")
+        .hit()
         .rect();
     Pos2::new(
         ((rect.min().x() + rect.max().x()) * 0.5) as f32,
@@ -264,7 +285,7 @@ fn assert_cancelled_without_commit(
 }
 
 #[test]
-fn armed_drag_cancels_on_focus_loss_without_moving_the_item() {
+fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
     let context = Context::default();
     let original = single_workspace();
     let mut dockspace = Dockspace::builder("armed-focus-loss", original.clone())
@@ -291,34 +312,56 @@ fn armed_drag_cancels_on_focus_loss_without_moving_the_item() {
         InteractionStatus::Armed { .. }
     ));
 
-    run_input(
+    let reasons = run_input(
         &context,
         &mut dockspace,
         &mut panes,
         raw_input(vec![Event::WindowFocused(false)], false),
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Armed { .. }
+    ));
+    assert_eq!(dockspace.engine().workspace(), &original);
+    assert!(reasons.is_empty());
+
+    let reasons = run_input(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        raw_input(
+            vec![
+                Event::WindowFocused(true),
+                Event::PointerMoved(source),
+                pointer_button(source, false),
+            ],
+            true,
+        ),
+    );
     assert_cancelled_without_commit(
         &dockspace,
         &original,
         &reasons,
-        InteractionCancelReason::FocusLost,
+        InteractionCancelReason::ReleasedBeforeDrag,
     );
 }
 
 #[test]
-fn active_drag_cancels_on_pointer_gone_without_delivering_a_drop() {
+fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
     let context = Context::default();
-    let original = single_workspace();
+    let original = split_workspace();
     let mut dockspace = Dockspace::builder("drag-pointer-gone", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
     warm(&context, &mut dockspace, &mut panes);
     let source = tab_point(&dockspace, ITEM_A);
-    let moved = source + vec2(60.0, 30.0);
+    let moved = inner_guide_point(
+        &dockspace,
+        ITEM_B,
+        DropGuideSlot::Edge(dockspace::command::Edge::Right),
+    );
 
     run_frame(
         &context,
@@ -342,26 +385,48 @@ fn active_drag_cancels_on_pointer_gone_without_delivering_a_drop() {
         dockspace.engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
+    let preview = dockspace
+        .engine()
+        .interaction()
+        .preview()
+        .cloned()
+        .expect("the target preview is published");
 
-    run_frame(
+    let mut reasons = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerGone],
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
+    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
+    assert!(
+        matches!(
+            dockspace.engine().interaction().status(),
+            InteractionStatus::Dragging { .. }
+        ),
+        "one surface's local pointer loss is not global capture authority: status={:?}, reasons={reasons:?}",
+        dockspace.engine().interaction().status()
+    );
+    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
 
+    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
     assert_cancelled_without_commit(
         &dockspace,
         &original,
         &reasons,
-        InteractionCancelReason::CaptureLost,
+        InteractionCancelReason::Escape,
     );
 }
 
 #[test]
-fn active_resize_cancels_when_the_button_is_no_longer_down_without_a_release_edge() {
+fn active_resize_survives_local_button_state_without_a_release_edge() {
     let context = Context::default();
     let original = split_workspace();
     let mut dockspace = Dockspace::builder("resize-capture-loss", original.clone())
@@ -396,19 +461,26 @@ fn active_resize_cancels_when_the_button_is_no_longer_down_without_a_release_edg
         ),
         |_ui| {},
     );
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Resizing { .. }
+    ));
+    assert_eq!(dockspace.engine().workspace(), &original);
+    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
+
+    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
     assert_cancelled_without_commit(
         &dockspace,
         &original,
         &reasons,
-        InteractionCancelReason::CaptureLost,
+        InteractionCancelReason::Escape,
     );
 }
 
 #[test]
-fn contained_title_drag_cancels_on_focus_loss_without_committing_the_preview() {
+fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview() {
     let context = Context::default();
     let rect = LogicalRect::new(140.0, 90.0, 220.0, 160.0).expect("finite rect");
     let original = contained_workspace(rect);
@@ -442,21 +514,42 @@ fn contained_title_drag_cancels_on_focus_loss_without_committing_the_preview() {
         dockspace.engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
+    let preview = dockspace
+        .engine()
+        .interaction()
+        .preview()
+        .cloned()
+        .expect("the contained docking preview is published");
 
-    run_input(
+    let mut reasons = run_input(
         &context,
         &mut dockspace,
         &mut panes,
         raw_input(vec![Event::WindowFocused(false)], false),
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(matches!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Dragging { .. }
+    ));
+    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
+    assert!(
+        matches!(
+            dockspace.engine().interaction().status(),
+            InteractionStatus::Dragging { .. }
+        ),
+        "one surface's local focus loss is not global capture authority"
+    );
+    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert!(reasons.is_empty());
 
+    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
     assert_cancelled_without_commit(
         &dockspace,
         &original,
         &reasons,
-        InteractionCancelReason::FocusLost,
+        InteractionCancelReason::Escape,
     );
 }
 
@@ -488,7 +581,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
         InteractionStatus::Armed { .. }
     ));
 
-    run_input(
+    let reasons = run_input(
         &context,
         &mut dockspace,
         &mut panes,
@@ -501,7 +594,6 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
             false,
         ),
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert_cancelled_without_commit(
         &dockspace,
@@ -509,7 +601,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
         &reasons,
         InteractionCancelReason::ReleasedBeforeDrag,
     );
-    assert!(!reasons.contains(&InteractionCancelReason::FocusLost));
+    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
 }
 
 #[test]
@@ -547,13 +639,12 @@ fn escape_keeps_priority_when_pointer_capture_is_lost() {
         InteractionStatus::Dragging { .. }
     ));
 
-    run_frame(
+    let reasons = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerGone, escape_pressed()],
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert_cancelled_without_commit(
         &dockspace,
@@ -564,11 +655,10 @@ fn escape_keeps_priority_when_pointer_capture_is_lost() {
     assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
 }
 
-#[test]
-fn multipass_escape_suppresses_release_and_preview_acknowledgement_for_the_same_drag() {
+fn prepare_multipass_drag(name: &'static str) -> (Context, Workspace, Dockspace, Pos2) {
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder("multipass-terminal-priority", original.clone())
+    let mut dockspace = Dockspace::builder(name, original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -595,59 +685,89 @@ fn multipass_escape_suppresses_release_and_preview_acknowledgement_for_the_same_
         InteractionStatus::Dragging { .. }
     ));
     assert!(dockspace.engine().interaction().preview().is_some());
+    (context, original, dockspace, moved)
+}
 
-    let mut passes = 0;
-    let _ = context.run_ui(
-        raw_input(
-            vec![
-                Event::PointerMoved(moved),
-                pointer_button(moved, false),
-                escape_pressed(),
-            ],
-            true,
-        ),
-        |ui| {
-            dockspace
-                .show(SURFACE, ui, &mut panes)
-                .expect("multipass terminal frame advances");
-            passes += 1;
-            if ui.ctx().current_pass_index() == 0 {
-                ui.ctx()
-                    .request_discard("exercise terminal action normalization");
-            }
-        },
+fn finish_multipass_terminal_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    events: Vec<Event>,
+) -> (HostFrameResponse, DiscardingPanes) {
+    let sequence = context
+        .cumulative_frame_nr()
+        .checked_add(1)
+        .expect("fixture frame sequence remains representable");
+    let mut host = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
+        .expect("outer host frame begins");
+    let mut panes = DiscardingPanes::default();
+    host.run_surface(SURFACE, context, raw_input(events, true), &mut panes)
+        .expect("outer host owns the multipass surface run");
+    let (response, outputs) = host
+        .finish()
+        .expect("outer host frame commits")
+        .into_parts();
+    for output in outputs {
+        output.settle_with(|_, _| EguiPresentationResult::Presented);
+    }
+    assert_eq!(panes.passes, BTreeSet::from([0, 1]));
+    (response, panes)
+}
+
+#[test]
+fn multipass_release_before_escape_commits_the_painted_drop() {
+    let (context, original, mut dockspace, moved) =
+        prepare_multipass_drag("multipass-release-before-escape");
+    let (response, _) = finish_multipass_terminal_frame(
+        &context,
+        &mut dockspace,
+        vec![
+            Event::PointerMoved(moved),
+            pointer_button(moved, false),
+            escape_pressed(),
+        ],
     );
-    assert_eq!(passes, 2);
 
-    let mut reasons = Vec::new();
-    let mut rejections = Vec::<InteractionRejection>::new();
-    let _ = context.run_ui(raw_input(Vec::new(), true), |ui| {
-        let response = dockspace
-            .show(SURFACE, ui, &mut panes)
-            .expect("normalized actions reduce");
-        for transition in response.transitions() {
-            reasons.extend(transition.interaction_events().iter().filter_map(|event| {
-                match event.kind() {
-                    InteractionEventKind::Cancelled { reason, .. } => Some(*reason),
-                    _ => None,
-                }
-            }));
-            rejections.extend(transition.reduced_inputs().iter().filter_map(|input| {
-                match input.outcome() {
-                    InputOutcome::InteractionProcessed {
-                        outcome: InteractionOutcome::Rejected(rejection),
-                        ..
-                    } => Some(rejection.clone()),
-                    _ => None,
-                }
-            }));
-        }
-    });
-
-    assert_eq!(reasons, [InteractionCancelReason::Escape]);
+    let reasons = cancellation_reasons(&response);
     assert!(
-        rejections.is_empty(),
-        "unexpected rejections: {rejections:?}"
+        crate::test_support::ordered_interaction_outcomes(std::slice::from_ref(
+            response.transition(),
+        ))
+        .iter()
+        .any(|outcome| matches!(
+            outcome,
+            InteractionOutcome::DragDelivered {
+                delivery: InteractionDelivery::Workspace { changed: true, .. },
+                ..
+            }
+        )),
+        "the physical release must commit before the later Escape",
+    );
+    assert!(reasons.is_empty());
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle
+    );
+    assert_ne!(dockspace.engine().workspace(), &original);
+}
+
+#[test]
+fn multipass_escape_before_release_cancels_the_painted_drop() {
+    let (context, original, mut dockspace, moved) =
+        prepare_multipass_drag("multipass-escape-before-release");
+    let (response, _) = finish_multipass_terminal_frame(
+        &context,
+        &mut dockspace,
+        vec![
+            Event::PointerMoved(moved),
+            escape_pressed(),
+            pointer_button(moved, false),
+        ],
+    );
+
+    assert_eq!(
+        cancellation_reasons(&response),
+        [InteractionCancelReason::Escape]
     );
     assert_eq!(
         dockspace.engine().interaction().status(),

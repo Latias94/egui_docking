@@ -4,17 +4,16 @@
 //! The core never derives button releases, hovered surfaces, drag thresholds, or
 //! presentation fallback from timing or geometry history.
 
-use crate::command::{MovePayload, NodeSource};
+use crate::command::ContainedPosition;
 use crate::coordinates::{TearOffPlacementProof, ViewportPlacementProof};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
-use crate::graph::SplitWeight;
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
-use crate::interaction::{
-    ContainedTransformPaintAcknowledgement, ContainedTransformSessionId, DragSessionId,
-    InteractionCancelReason, PaintAcknowledgement, ResizeSessionId,
+use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
+use crate::scene::{
+    ContainedResizeDirection, PopupInteractionGateRevision, SurfaceCoordinateCapture,
+    SurfaceInteractionProjection, SurfaceSceneStamp, TabBarSceneId, TabSceneId,
 };
-use crate::scene::SceneStamp;
-use crate::viewport_route::ViewportRouteProof;
+use crate::surface_recovery::ConvertedMainRecovery;
 
 /// Authority attached to a provider observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +172,53 @@ pub enum ContainedTransformKind {
     Resize(ContainedResizeEdges),
 }
 
+/// Exact contained-floating chrome gesture authorized by one painted scene.
+///
+/// The adapter reports only the semantic chrome region it observed. The core
+/// derives the root, payload, durable rectangle, minimum size, and structural
+/// roster from the exact painted scene and current workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ContainedGestureKind {
+    /// Press the whole-root title drag region and arm a docking drag.
+    TitleDrag,
+    /// Press one exact directional resize region and begin a transform.
+    Resize(ContainedResizeDirection),
+}
+
+/// Exact painted tab source claimed by a renderer gesture.
+///
+/// The identity carries no workspace snapshot or payload. The core resolves
+/// those facts from the matching last-painted scene before arming the drag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabGestureSource {
+    /// Drag one visible item from its exact painted tab record.
+    Item(TabSceneId),
+    /// Drag the whole exact painted tab stack from its grip region.
+    Group(TabBarSceneId),
+}
+
+/// Exact painted close control claimed by a renderer activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CloseSceneTarget {
+    /// Close one item through its exact painted tab control.
+    Tab(TabSceneId),
+    /// Close every item in one exact contained-root presentation.
+    Contained(FloatingPresentationId),
+}
+
+/// Device-independent activation fact for one painted close control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CloseActivation {
+    /// A concrete pointer and button activated the control at this position.
+    Pointer {
+        pointer: PointerId,
+        button: PointerButton,
+        position: SurfacePointer,
+    },
+    /// Keyboard or accessibility activation targeted the control's stable identity.
+    Semantic,
+}
+
 /// A point already converted into one logical surface's coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfacePointer {
@@ -200,79 +246,6 @@ impl SurfacePointer {
     }
 }
 
-/// Renderer-observed origin of one whole contained-presentation title drag.
-///
-/// The adapter supplies only stable identity, the absolute press location, and
-/// its measured minimum size. The core validates that the payload is the exact
-/// complete root owned by this presentation and freezes the durable source
-/// rectangle itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ContainedDragOrigin {
-    root: RootId,
-    floating: FloatingPresentationId,
-    initial_pointer: SurfacePointer,
-    minimum_size: LogicalSize,
-}
-
-impl ContainedDragOrigin {
-    /// Creates explicit contained-presentation origin facts.
-    #[must_use]
-    pub const fn new(
-        root: RootId,
-        floating: FloatingPresentationId,
-        initial_pointer: SurfacePointer,
-        minimum_size: LogicalSize,
-    ) -> Self {
-        Self {
-            root,
-            floating,
-            initial_pointer,
-            minimum_size,
-        }
-    }
-
-    /// Returns the complete source root claimed by the title interaction.
-    #[must_use]
-    pub const fn root(self) -> RootId {
-        self.root
-    }
-
-    /// Returns the contained presentation claimed by the title interaction.
-    #[must_use]
-    pub const fn floating(self) -> FloatingPresentationId {
-        self.floating
-    }
-
-    /// Returns the authoritative press location in the host surface.
-    #[must_use]
-    pub const fn initial_pointer(self) -> SurfacePointer {
-        self.initial_pointer
-    }
-
-    /// Returns the renderer-measured minimum size frozen for the drag.
-    #[must_use]
-    pub const fn minimum_size(self) -> LogicalSize {
-        self.minimum_size
-    }
-}
-
-/// Typed source semantics for the canonical core-owned drag protocol.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub enum DragOrigin {
-    /// A tab, tabs stack, subtree, or main-surface root without contained move semantics.
-    #[default]
-    Workspace,
-    /// The title of one existing contained presentation.
-    Contained(ContainedDragOrigin),
-}
-
-/// Core-owned stacking request for a newly created contained presentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ContainedStackPlacement {
-    /// Place the new presentation in front of every current peer on its surface.
-    Front,
-}
-
 /// One application-owned identity and geometry offer for a new contained presentation.
 ///
 /// The first offer is frozen for the drag session. Later observations may omit
@@ -286,7 +259,7 @@ pub struct ContainedPresentationOffer {
     anchor: SurfacePointer,
     requested_rect: LogicalRect,
     minimum_size: LogicalSize,
-    stacking: ContainedStackPlacement,
+    position: ContainedPosition,
 }
 
 impl ContainedPresentationOffer {
@@ -305,7 +278,7 @@ impl ContainedPresentationOffer {
             anchor,
             requested_rect,
             minimum_size,
-            stacking: ContainedStackPlacement::Front,
+            position: ContainedPosition::Front,
         }
     }
 
@@ -339,59 +312,110 @@ impl ContainedPresentationOffer {
         self.minimum_size
     }
 
-    /// Returns the core-owned stacking semantic for this offer.
+    /// Returns the core-owned structural roster position for this offer.
     #[must_use]
-    pub const fn stacking(self) -> ContainedStackPlacement {
-        self.stacking
+    pub const fn position(self) -> ContainedPosition {
+        self.position
     }
 }
 
-/// Authoritative hovered-target observation and its provenance.
+/// Application-owned identity offer for a new main root on a rootless surface.
 ///
-/// Local facts are valid only for one renderer callback surface. Cross-native-window facts must
-/// use an opaque core-produced route proof whose generations are revalidated at delivery.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TargetAuthority {
-    Local(LocalTargetObservation),
-    Routed(ViewportRouteProof),
+/// The value is only a proposal until the core proves that the root identity is
+/// fresh. The drag state freezes the first supplied offer, so preview and
+/// release cannot silently allocate or substitute a different root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SurfaceBackgroundRootOffer {
+    root: RootId,
 }
 
-/// Renderer-local target facts bound to the exact callback surface that observed them.
+impl SurfaceBackgroundRootOffer {
+    /// Offers one stable root identity for partial content delivered to a surface background.
+    #[must_use]
+    pub const fn new(root: RootId) -> Self {
+        Self { root }
+    }
+
+    /// Returns the proposed fresh root identity.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+}
+
+/// Legacy renderer-local target observation and its provenance.
 #[derive(Debug, Clone, PartialEq)]
+pub enum TargetAuthority {
+    /// Legacy migration-only local authority. Instances can only be captured by
+    /// [`crate::engine::DockEngine::capture_local_target_observation`], and this
+    /// variant will be removed with the legacy target protocol.
+    #[doc(hidden)]
+    Local(LocalTargetObservation),
+}
+
+/// Core-minted proof that binds one legacy local target observation to an exact
+/// gate-authorized presentation projection.
+///
+/// This is intentionally an internal migration detail. It must disappear with
+/// [`TargetAuthority`] rather than becoming a stable adapter capability.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalTargetAuthorityProof {
+    observer: SurfaceId,
+    scene: SurfaceSceneStamp,
+    output: SurfacePresentationOutputTicket,
+    presentation: PresentedSurfaceAuthority,
+    popup_gate_revision: PopupInteractionGateRevision,
+    coordinates: SurfaceCoordinateCapture,
+}
+
+impl LocalTargetAuthorityProof {
+    pub(crate) fn capture(
+        observer: SurfaceId,
+        projection: SurfaceInteractionProjection<'_>,
+    ) -> Self {
+        Self {
+            observer,
+            scene: projection.plan_stamp(),
+            output: projection.output_ticket(),
+            presentation: projection.authority(),
+            popup_gate_revision: projection.popup_gate_revision(),
+            coordinates: projection.output().coordinate_capture(),
+        }
+    }
+}
+
+/// Renderer-local target facts bound to one exact callback surface.
+///
+/// This legacy migration type has no public constructor. Adapters must obtain
+/// it through [`crate::engine::DockEngine::capture_local_target_observation`]
+/// and must not retain it across presentation callbacks.
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
 pub struct LocalTargetObservation {
     observer: SurfaceId,
-    target: Authority<Option<SurfacePointer>>,
+    target: Authority<SurfacePointer>,
+    proof: Option<LocalTargetAuthorityProof>,
 }
 
 impl LocalTargetObservation {
-    #[must_use]
-    pub const fn observer(&self) -> SurfaceId {
+    pub(crate) const fn captured(
+        observer: SurfaceId,
+        target: Authority<SurfacePointer>,
+        proof: Option<LocalTargetAuthorityProof>,
+    ) -> Self {
+        Self {
+            observer,
+            target,
+            proof,
+        }
+    }
+
+    pub(crate) const fn observer(&self) -> SurfaceId {
         self.observer
     }
 
-    #[must_use]
-    pub const fn target(&self) -> &Authority<Option<SurfacePointer>> {
+    pub(crate) const fn target(&self) -> &Authority<SurfacePointer> {
         &self.target
-    }
-}
-
-impl TargetAuthority {
-    #[must_use]
-    pub const fn local(observer: SurfaceId, target: Authority<Option<SurfacePointer>>) -> Self {
-        Self::Local(LocalTargetObservation { observer, target })
-    }
-
-    #[must_use]
-    pub const fn routed(proof: ViewportRouteProof) -> Self {
-        Self::Routed(proof)
-    }
-
-    #[must_use]
-    pub const fn route_proof(&self) -> Option<&ViewportRouteProof> {
-        match self {
-            Self::Local(_) => None,
-            Self::Routed(proof) => Some(proof),
-        }
     }
 }
 
@@ -405,9 +429,9 @@ pub enum ContainedPlacementUnavailable {
     #[error("contained placement scene {expected:?} is stale; current scene is {current:?}")]
     StaleScene {
         /// Scene generation which authorized the placement.
-        expected: SceneStamp,
+        expected: SurfaceSceneStamp,
         /// Currently published scene, when one exists.
-        current: Option<SceneStamp>,
+        current: Option<SurfaceSceneStamp>,
     },
     /// The surface is absent from the sealed scene roster.
     #[error("surface {surface} is absent from the sealed scene")]
@@ -418,6 +442,18 @@ pub enum ContainedPlacementUnavailable {
     /// The surface exists but has not published authoritative bounds.
     #[error("surface {surface} is still in bootstrap scene state")]
     BootstrapSurface {
+        /// Requested logical surface.
+        surface: SurfaceId,
+    },
+    /// A projection exists but its prepared candidate was not confirmed painted.
+    #[error("surface {surface} projection has no painted interaction authority")]
+    PendingPaintSurface {
+        /// Surface without painted hit authority.
+        surface: SurfaceId,
+    },
+    /// The surface retains a paint fallback but has no current input authority.
+    #[error("surface {surface} has stale presentation authority")]
+    StaleSurface {
         /// Requested logical surface.
         surface: SurfaceId,
     },
@@ -441,7 +477,7 @@ pub enum ContainedPlacementUnavailable {
 /// exact clamped geometry to one ready surface in one sealed scene generation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContainedPlacementProof {
-    scene: SceneStamp,
+    scene: SurfaceSceneStamp,
     surface: SurfaceId,
     requested_rect: LogicalRect,
     minimum_size: LogicalSize,
@@ -451,7 +487,7 @@ pub struct ContainedPlacementProof {
 
 impl ContainedPlacementProof {
     pub(crate) const fn new(
-        scene: SceneStamp,
+        scene: SurfaceSceneStamp,
         surface: SurfaceId,
         requested_rect: LogicalRect,
         minimum_size: LogicalSize,
@@ -470,7 +506,7 @@ impl ContainedPlacementProof {
 
     /// Returns the exact sealed scene generation which authorized this placement.
     #[must_use]
-    pub const fn scene(self) -> SceneStamp {
+    pub const fn scene(self) -> SurfaceSceneStamp {
         self.scene
     }
 
@@ -511,7 +547,7 @@ pub struct ContainedTearOffProposal {
     root: RootId,
     floating: FloatingPresentationId,
     placement: ContainedPlacementProof,
-    z_order: u64,
+    position: ContainedPosition,
 }
 
 impl ContainedTearOffProposal {
@@ -521,13 +557,13 @@ impl ContainedTearOffProposal {
         root: RootId,
         floating: FloatingPresentationId,
         placement: ContainedPlacementProof,
-        z_order: u64,
+        position: ContainedPosition,
     ) -> Self {
         Self {
             root,
             floating,
             placement,
-            z_order,
+            position,
         }
     }
 
@@ -561,120 +597,10 @@ impl ContainedTearOffProposal {
         self.placement
     }
 
-    /// Returns the explicit contained stacking order.
+    /// Returns the structural position in the destination contained roster.
     #[must_use]
-    pub const fn z_order(self) -> u64 {
-        self.z_order
-    }
-}
-
-/// Durable recovery intent for a native surface.
-///
-/// Unlike [`ContainedTearOffProposal`], this value deliberately carries no scene
-/// generation or clamping proof. The engine re-authorizes it against the current
-/// sealed scene when recovery is actually committed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ContainedRecoveryPlan {
-    root: RootId,
-    floating: FloatingPresentationId,
-    surface: SurfaceId,
-    requested_rect: LogicalRect,
-    minimum_size: LogicalSize,
-    z_order: u64,
-}
-
-impl ContainedRecoveryPlan {
-    /// Creates a durable recovery intent from explicit logical geometry.
-    #[must_use]
-    pub const fn new(
-        root: RootId,
-        floating: FloatingPresentationId,
-        surface: SurfaceId,
-        requested_rect: LogicalRect,
-        minimum_size: LogicalSize,
-        z_order: u64,
-    ) -> Self {
-        Self {
-            root,
-            floating,
-            surface,
-            requested_rect,
-            minimum_size,
-            z_order,
-        }
-    }
-
-    /// Copies the durable fields from a scene-bound proposal.
-    #[must_use]
-    pub const fn from_proposal(proposal: ContainedTearOffProposal) -> Self {
-        let placement = proposal.placement();
-        Self::new(
-            proposal.root(),
-            proposal.floating(),
-            proposal.surface(),
-            placement.requested_rect(),
-            placement.minimum_size(),
-            proposal.z_order(),
-        )
-    }
-
-    #[must_use]
-    pub const fn root(self) -> RootId {
-        self.root
-    }
-
-    #[must_use]
-    pub const fn floating(self) -> FloatingPresentationId {
-        self.floating
-    }
-
-    #[must_use]
-    pub const fn surface(self) -> SurfaceId {
-        self.surface
-    }
-
-    #[must_use]
-    pub const fn requested_rect(self) -> LogicalRect {
-        self.requested_rect
-    }
-
-    #[must_use]
-    pub const fn minimum_size(self) -> LogicalSize {
-        self.minimum_size
-    }
-
-    #[must_use]
-    pub const fn z_order(self) -> u64 {
-        self.z_order
-    }
-
-    /// Returns a copy with a newer authoritative requested rectangle.
-    #[must_use]
-    pub const fn with_requested_rect(self, requested_rect: LogicalRect) -> Self {
-        Self {
-            requested_rect,
-            ..self
-        }
-    }
-
-    /// Returns whether two plans identify the same replacement-registration contract.
-    ///
-    /// The core may reproject `requested_rect` from newer authoritative native
-    /// geometry while a surface is awaiting replacement. All other durable
-    /// fields must still match before the replacement may adopt that pending
-    /// recovery.
-    pub(crate) fn matches_registration(self, candidate: Self) -> bool {
-        self.root == candidate.root
-            && self.floating == candidate.floating
-            && self.surface == candidate.surface
-            && self.minimum_size == candidate.minimum_size
-            && self.z_order == candidate.z_order
-    }
-}
-
-impl From<ContainedTearOffProposal> for ContainedRecoveryPlan {
-    fn from(proposal: ContainedTearOffProposal) -> Self {
-        Self::from_proposal(proposal)
+    pub const fn position(self) -> ContainedPosition {
+        self.position
     }
 }
 
@@ -713,24 +639,37 @@ pub struct NativeTearOffProposal {
     surface: SurfaceId,
     root: RootId,
     placement: NativePlacementProof,
-    recovery: ContainedTearOffProposal,
+    converted_main: ConvertedMainRecovery,
+}
+
+/// Why a native proposal does not form one exact lifecycle contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum NativeTearOffProposalError {
+    /// The recovery reservation names a different source root.
+    #[error("native root {root:?} does not match recovery root {recovery_root:?}")]
+    RecoveryRootMismatch { root: RootId, recovery_root: RootId },
 }
 
 impl NativeTearOffProposal {
     /// Creates an explicit native-surface proposal with authoritative placement.
-    #[must_use]
     pub fn new(
         surface: SurfaceId,
         root: RootId,
         placement: impl Into<NativePlacementProof>,
-        recovery: ContainedTearOffProposal,
-    ) -> Self {
-        Self {
+        converted_main: ConvertedMainRecovery,
+    ) -> Result<Self, NativeTearOffProposalError> {
+        if converted_main.source_root() != root {
+            return Err(NativeTearOffProposalError::RecoveryRootMismatch {
+                root,
+                recovery_root: converted_main.source_root(),
+            });
+        }
+        Ok(Self {
             surface,
             root,
             placement: placement.into(),
-            recovery,
-        }
+            converted_main,
+        })
     }
 
     /// Returns the logical surface identity to create.
@@ -757,319 +696,48 @@ impl NativeTearOffProposal {
         self.placement.physical_rect()
     }
 
-    /// Returns the whole-root contained recovery plan used after destruction.
+    /// Returns the exact lifecycle recovery target reserved for this surface.
     #[must_use]
-    pub const fn recovery(&self) -> ContainedTearOffProposal {
-        self.recovery
+    pub const fn converted_main(&self) -> ConvertedMainRecovery {
+        self.converted_main
     }
 }
 
-/// Explicit non-docking presentation request and all facts required to preview it.
+/// Application-owned identities and exact placement for native presentation.
 ///
-/// With an authoritative surface-local pointer, a contained request is considered
-/// only after exact drop resolution proves [`crate::drop_resolver::DropResolution::KnownNone`].
-/// A resolved or rejected exact target always wins, and unavailable authority never
-/// falls back. With authoritative `Known(None)`, the request retains its direct
-/// tear-off semantics.
+/// The first offer is frozen for the drag session. Later observations may omit
+/// it, but an explicit replacement must be exactly equal. Native presentation
+/// is considered only when a routed observation proves the pointer is outside
+/// every surface. The contained fallback is used only when policy explicitly
+/// permits fallback from an authoritatively unsupported native capability.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TearOffRequest {
-    /// Request an immediate contained creation, rehome, or same-presentation move.
-    Contained(ContainedTearOffProposal),
-    /// Request a native lifecycle saga, with an independently explicit fallback.
-    Native {
-        /// Native destination and placement.
-        proposal: Box<NativeTearOffProposal>,
-        /// Optional contained proposal used only when policy enables fallback.
-        contained_fallback: Option<ContainedTearOffProposal>,
-    },
+pub struct NativePresentationOffer {
+    proposal: Box<NativeTearOffProposal>,
+    contained_fallback: Option<ContainedTearOffProposal>,
 }
 
-impl TearOffRequest {
-    /// Creates a native tear-off request without inflating every request to the native payload
-    /// size.
+impl NativePresentationOffer {
+    /// Creates an exact native presentation offer and optional explicit fallback.
     #[must_use]
-    pub fn native(
+    pub fn new(
         proposal: NativeTearOffProposal,
         contained_fallback: Option<ContainedTearOffProposal>,
     ) -> Self {
-        Self::Native {
+        Self {
             proposal: Box::new(proposal),
             contained_fallback,
         }
     }
-}
 
-/// Semantic interaction input queued by a renderer callback.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RendererIntent {
-    /// Arm the canonical core-owned drag protocol from typed source semantics.
-    ArmDragFrom {
-        /// Pointer which pressed the source.
-        pointer: PointerId,
-        /// Button which pressed the source.
-        button: PointerButton,
-        /// Frozen workspace payload.
-        payload: MovePayload,
-        /// Explicit source presentation semantics validated by the core.
-        origin: DragOrigin,
-    },
-    /// Arm a drag without inferring a movement threshold.
-    ArmDrag {
-        /// Pointer which pressed the source.
-        pointer: PointerId,
-        /// Button which pressed the source.
-        button: PointerButton,
-        /// Frozen workspace payload.
-        payload: MovePayload,
-    },
-    /// Explicitly cross the renderer-owned drag threshold.
-    BeginDrag {
-        /// Armed drag generation.
-        session: DragSessionId,
-        /// Matching pointer.
-        pointer: PointerId,
-        /// Matching button.
-        button: PointerButton,
-    },
-    /// Replace the authoritative target observation for an active drag.
-    UpdateDrag {
-        /// Active drag generation.
-        session: DragSessionId,
-        /// Authoritative target surface and location, known none, or unknown.
-        target: TargetAuthority,
-        /// Explicit non-docking request for `Known(None)`, or a contained
-        /// alternative used only when exact surface resolution is known none.
-        tear_off: Option<TearOffRequest>,
-    },
-    /// Replace one canonical drag's independent pointer and target observations.
-    UpdateDragObservation {
-        /// Active drag generation.
-        session: DragSessionId,
-        /// Authoritative target-surface observation, independent from pointer position.
-        target: TargetAuthority,
-        /// Current absolute pointer position or an explicit lack of authority.
-        current_pointer: Authority<SurfacePointer>,
-        /// Optional first offer for a newly contained presentation.
-        contained_offer: Option<ContainedPresentationOffer>,
-    },
-    /// Confirm that the exact published preview was painted.
-    AcknowledgePreview(PaintAcknowledgement),
-    /// Attempt one authoritative matching release.
-    ReleaseDrag {
-        /// Active drag generation.
-        session: DragSessionId,
-        /// Matching pointer.
-        pointer: PointerId,
-        /// Matching button.
-        button: PointerButton,
-        /// Authoritative state of that exact button.
-        button_state: Authority<PointerButtonState>,
-        /// Authoritative release target and location.
-        target: TargetAuthority,
-        /// Exact non-docking request which participated in the painted preview.
-        tear_off: Option<TearOffRequest>,
-    },
-    /// Attempt canonical release using an independent current pointer observation.
-    ReleaseDragObservation {
-        /// Active drag generation.
-        session: DragSessionId,
-        /// Matching pointer.
-        pointer: PointerId,
-        /// Matching button.
-        button: PointerButton,
-        /// Authoritative state of that exact button.
-        button_state: Authority<PointerButtonState>,
-        /// Authoritative release target, independent from pointer position.
-        target: TargetAuthority,
-        /// Current absolute pointer position or an explicit lack of authority.
-        current_pointer: Authority<SurfacePointer>,
-        /// Optional first offer, or an exact repeat of the session's frozen offer.
-        contained_offer: Option<ContainedPresentationOffer>,
-    },
-    /// Cancel an active drag for an explicit reason.
-    CancelDrag {
-        /// Drag generation being cancelled.
-        session: DragSessionId,
-        /// Explicit cancellation cause.
-        reason: InteractionCancelReason,
-    },
-    /// Begin a mutually exclusive splitter-resize gesture.
-    BeginResize {
-        /// Pointer which pressed the splitter.
-        pointer: PointerId,
-        /// Button which pressed the splitter.
-        button: PointerButton,
-        /// Frozen split source.
-        split: NodeSource,
-    },
-    /// Replace the exact proposed split weights.
-    UpdateResize {
-        /// Active resize generation.
-        session: ResizeSessionId,
-        /// Already normalized exact weights.
-        weights: Vec<SplitWeight>,
-    },
-    /// Commit the last validated resize proposal on authoritative release.
-    ReleaseResize {
-        /// Active resize generation.
-        session: ResizeSessionId,
-        /// Matching pointer.
-        pointer: PointerId,
-        /// Matching button.
-        button: PointerButton,
-        /// Authoritative state of that exact button.
-        button_state: Authority<PointerButtonState>,
-    },
-    /// Cancel an active resize for an explicit reason.
-    CancelResize {
-        /// Resize generation being cancelled.
-        session: ResizeSessionId,
-        /// Explicit cancellation cause.
-        reason: InteractionCancelReason,
-    },
-    /// Apply one exact programmatic placement using a current core proof.
-    ///
-    /// This one-shot path is intended for scene-bound reconciliation and
-    /// keyboard or programmatic movement. Continuous pointer gestures use the
-    /// contained transform session protocol below.
-    ApplyContainedPlacement {
-        /// Root presented by the contained floating.
-        root: RootId,
-        /// Exact contained presentation identity.
-        floating: FloatingPresentationId,
-        /// Exact previous rectangle captured from the workspace.
-        expected_rect: LogicalRect,
-        /// Current scene-bound placement authorization.
-        placement: ContainedPlacementProof,
-    },
-    /// Begin a mutually exclusive core-owned contained move or resize.
-    BeginContainedTransform {
-        /// Ready surface which owns the contained floating.
-        surface: SurfaceId,
-        /// Root presented by the contained floating.
-        root: RootId,
-        /// Exact contained presentation identity.
-        floating: FloatingPresentationId,
-        /// Pointer which pressed the move or resize affordance.
-        pointer: PointerId,
-        /// Button which owns the gesture.
-        button: PointerButton,
-        /// Absolute pointer location in the host surface's logical coordinates.
-        initial_pointer: LogicalPoint,
-        /// Explicit move or edge-resize operation.
-        kind: ContainedTransformKind,
-        /// Minimum contained size enforced by the core.
-        minimum_size: LogicalSize,
-    },
-    /// Recompute one contained transform from the frozen rectangle and absolute pointer.
-    UpdateContainedTransform {
-        /// Active transform generation.
-        session: ContainedTransformSessionId,
-        /// Current absolute pointer location in the frozen host surface.
-        current_pointer: LogicalPoint,
-    },
-    /// Confirm that the exact contained transform preview was painted.
-    AcknowledgeContainedTransformPreview(ContainedTransformPaintAcknowledgement),
-    /// Commit the exact painted transform preview on authoritative release.
-    ReleaseContainedTransform {
-        /// Active transform generation.
-        session: ContainedTransformSessionId,
-        /// Matching pointer.
-        pointer: PointerId,
-        /// Matching button.
-        button: PointerButton,
-        /// Authoritative state of that exact button.
-        button_state: Authority<PointerButtonState>,
-    },
-    /// Cancel an active contained transform for an explicit reason.
-    CancelContainedTransform {
-        /// Transform generation being cancelled.
-        session: ContainedTransformSessionId,
-        /// Explicit cancellation cause.
-        reason: InteractionCancelReason,
-    },
-}
-
-impl RendererIntent {
-    /// Returns the deterministic sub-order inside renderer inputs.
-    ///
-    /// Paint acknowledgements are reduced before release intents from the same
-    /// complete render boundary, removing viewport callback ordering from the
-    /// delivery protocol.
+    /// Returns the exact native destination and placement proposal.
     #[must_use]
-    pub(crate) const fn reduction_rank(&self) -> u8 {
-        match self {
-            Self::AcknowledgePreview(_) | Self::AcknowledgeContainedTransformPreview(_) => 0,
-            _ => 1,
-        }
+    pub const fn proposal(&self) -> &NativeTearOffProposal {
+        &self.proposal
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replacement_registration_ignores_only_reprojected_rect() {
-        let original = ContainedRecoveryPlan::new(
-            RootId::new(1),
-            FloatingPresentationId::new(2),
-            SurfaceId::new(3),
-            LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("original rect must be valid"),
-            LogicalSize::new(80.0, 60.0).expect("minimum size must be valid"),
-            4,
-        );
-        let reprojected = original.with_requested_rect(
-            LogicalRect::new(40.0, 50.0, 320.0, 240.0).expect("reprojected rect must be valid"),
-        );
-
-        assert!(original.matches_registration(reprojected));
-
-        let mismatches = [
-            ContainedRecoveryPlan::new(
-                RootId::new(9),
-                original.floating(),
-                original.surface(),
-                original.requested_rect(),
-                original.minimum_size(),
-                original.z_order(),
-            ),
-            ContainedRecoveryPlan::new(
-                original.root(),
-                FloatingPresentationId::new(9),
-                original.surface(),
-                original.requested_rect(),
-                original.minimum_size(),
-                original.z_order(),
-            ),
-            ContainedRecoveryPlan::new(
-                original.root(),
-                original.floating(),
-                SurfaceId::new(9),
-                original.requested_rect(),
-                original.minimum_size(),
-                original.z_order(),
-            ),
-            ContainedRecoveryPlan::new(
-                original.root(),
-                original.floating(),
-                original.surface(),
-                original.requested_rect(),
-                LogicalSize::new(81.0, 60.0).expect("different minimum size must be valid"),
-                original.z_order(),
-            ),
-            ContainedRecoveryPlan::new(
-                original.root(),
-                original.floating(),
-                original.surface(),
-                original.requested_rect(),
-                original.minimum_size(),
-                5,
-            ),
-        ];
-
-        for mismatch in mismatches {
-            assert!(!original.matches_registration(mismatch));
-        }
+    /// Returns the explicit contained fallback, when one was offered.
+    #[must_use]
+    pub const fn contained_fallback(&self) -> Option<ContainedTearOffProposal> {
+        self.contained_fallback
     }
 }

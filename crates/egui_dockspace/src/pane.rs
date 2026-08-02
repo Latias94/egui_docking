@@ -14,15 +14,6 @@ pub enum PaneFocusState {
     Unfocused,
 }
 
-/// The application's decision for a requested pane close.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaneCloseResponse {
-    /// The adapter may submit the close command to the docking engine.
-    Allow,
-    /// The pane remains open and no close command is submitted.
-    Veto,
-}
-
 /// Resolves and renders application-owned panes by stable item identity.
 ///
 /// The adapter borrows this object only while painting a frame. Implementors
@@ -37,11 +28,15 @@ pub trait PaneView {
 
     /// Renders the application content associated with `item`.
     ///
-    /// The adapter calls this method on every painted pass so pane content stays
-    /// visually continuous while the projection changes. When the prior egui
-    /// hit graph no longer matches the current projection, `ui` is disabled:
-    /// normal widgets still render but cannot accept pointer or accessibility
-    /// activation until a current pass publishes the authoritative hit graph.
+    /// The adapter calls this method only for the pane selected by the current
+    /// semantic workspace and proven to occupy the retained semantic content
+    /// slot. Bootstrap, stale, and projection-changing content may use retained
+    /// geometry and a disabled child UI, but [`Ui::is_enabled`] only describes
+    /// egui widget input; it does not isolate arbitrary application mutations in
+    /// this callback. A superseded, relocated, or replacement-epoch pane is
+    /// therefore never invoked through unrelated retained chrome. Once the pane
+    /// projection is current, the child UI remains enabled even when docking
+    /// presentation authority is unavailable.
     fn ui(&mut self, item: ItemId, ui: &mut Ui);
 
     /// Returns the stable egui focus identity registered by `item`'s pane UI.
@@ -71,29 +66,6 @@ pub trait PaneView {
         }
     }
 
-    /// Returns whether the pane exposes a close action.
-    fn closeable(&self, _item: ItemId) -> bool {
-        true
-    }
-
-    /// Handles a close request before the adapter submits a workspace command.
-    ///
-    /// By default, closeable panes allow the request and non-closeable panes
-    /// veto it. Treat this callback as a decision only: pane ownership must be
-    /// released after the resulting engine transition confirms the close.
-    ///
-    /// A complete-root close calls this method exactly once for every pane in
-    /// stable tree order, even when another pane vetoes the same atomic close.
-    /// Implementors may override it for application-specific save prompts or
-    /// lifecycle policy.
-    fn close(&mut self, item: ItemId) -> PaneCloseResponse {
-        if self.closeable(item) {
-            PaneCloseResponse::Allow
-        } else {
-            PaneCloseResponse::Veto
-        }
-    }
-
     /// Returns the pane-specific minimum content size in egui points.
     ///
     /// The default delegates the minimum floor entirely to
@@ -117,10 +89,6 @@ mod tests {
         }
 
         fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
-
-        fn closeable(&self, item: ItemId) -> bool {
-            item != self.locked
-        }
     }
 
     fn accepts_trait_object(_panes: &mut dyn PaneView) {}
@@ -133,15 +101,6 @@ mod tests {
         accepts_trait_object(&mut panes);
         assert!(panes.title(locked).is_none());
         assert!(panes.title(ItemId::new(8)).is_some());
-    }
-
-    #[test]
-    fn default_close_respects_closeability() {
-        let locked = ItemId::new(7);
-        let mut panes = TestPanes { locked };
-
-        assert_eq!(panes.close(locked), PaneCloseResponse::Veto);
-        assert_eq!(panes.close(ItemId::new(8)), PaneCloseResponse::Allow);
     }
 
     #[test]

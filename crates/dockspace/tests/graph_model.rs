@@ -5,7 +5,7 @@ use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
 };
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::validation::WorkspaceValidationError;
+use dockspace::validation::{PresentationLocation, WorkspaceValidationError};
 
 fn logical_rect() -> LogicalRect {
     LogicalRect::new(12.0, 18.0, 320.0, 240.0).expect("test rectangle is finite and non-negative")
@@ -33,14 +33,8 @@ fn valid_workspace_preserves_items_and_unique_presentations() {
     let floating = FloatingPresentationId::new(30);
     builder.set_root(main_root, RootRecord::new(main_node).with_central(central));
     builder.set_root(tools_root, RootRecord::new(tools_node));
-    builder.set_surface(surface, SurfacePresentation::new(main_root));
-    builder.set_contained_floating(ContainedFloating::new(
-        floating,
-        tools_root,
-        surface,
-        logical_rect(),
-        7,
-    ));
+    builder.set_surface(surface, SurfacePresentation::with_main(main_root));
+    builder.set_contained_floating(floating, ContainedFloating::new(tools_root, logical_rect()));
     builder
         .attach_contained(surface, floating)
         .expect("surface exists");
@@ -63,6 +57,43 @@ fn valid_workspace_preserves_items_and_unique_presentations() {
 }
 
 #[test]
+fn strict_validation_rejects_non_positive_contained_geometry() {
+    let mut builder = Workspace::builder();
+    let floating_node = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    let floating_root = RootId::new(1);
+    let surface = SurfaceId::new(1);
+    let floating = FloatingPresentationId::new(1);
+    builder.set_root(floating_root, RootRecord::new(floating_node));
+    builder.set_surface(surface, SurfacePresentation::rootless());
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            floating_root,
+            LogicalRect::new(12.0, 18.0, 0.0, 240.0)
+                .expect("zero-width logical rectangles are representable drafts"),
+        ),
+    );
+    builder
+        .attach_contained(surface, floating)
+        .expect("surface exists");
+
+    let errors = builder
+        .validate()
+        .expect_err("zero-area contained geometry must fail strict validation")
+        .into_errors();
+    assert!(contains_error(&errors, |error| matches!(
+        error,
+        WorkspaceValidationError::NonPositiveContainedRect {
+            floating: id,
+            width,
+            height,
+        } if *id == floating
+            && width.to_bits() == 0.0_f64.to_bits()
+            && height.to_bits() == 240.0_f64.to_bits()
+    )));
+}
+
+#[test]
 fn strict_validation_reports_cycle_shared_node_and_orphan() {
     let mut builder = Workspace::builder();
     let cycle_entry = builder.insert_node(Node::tabs([ItemId::new(1)]));
@@ -81,7 +112,7 @@ fn strict_validation_reports_cycle_shared_node_and_orphan() {
     let orphan = builder.insert_node(Node::tabs_with_selection([], None));
     let root = RootId::new(1);
     builder.set_root(root, RootRecord::new(split));
-    builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
 
     let errors = builder
         .validate()
@@ -120,7 +151,7 @@ fn strict_validation_rejects_weight_and_canonical_shape_corruption() {
     );
     let root = RootId::new(1);
     builder.set_root(root, RootRecord::new(root_node));
-    builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
 
     let errors = builder
         .validate()
@@ -155,7 +186,7 @@ fn strict_validation_rejects_duplicate_items_and_invalid_selection() {
     );
     let root = RootId::new(1);
     builder.set_root(root, RootRecord::new(root_node));
-    builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
 
     let errors = builder
         .validate()
@@ -183,15 +214,12 @@ fn strict_validation_enforces_root_presentation_and_backlinks() {
     let floating = FloatingPresentationId::new(1);
     builder.set_root(main_root, RootRecord::new(main_node));
     builder.set_root(floating_root, RootRecord::new(floating_node));
-    builder.set_surface(first_surface, SurfacePresentation::new(main_root));
-    builder.set_surface(second_surface, SurfacePresentation::new(main_root));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(first_surface, SurfacePresentation::with_main(main_root));
+    builder.set_surface(second_surface, SurfacePresentation::with_main(main_root));
+    builder.set_contained_floating(
         floating,
-        floating_root,
-        first_surface,
-        logical_rect(),
-        1,
-    ));
+        ContainedFloating::new(floating_root, logical_rect()),
+    );
 
     let errors = builder
         .validate()
@@ -203,12 +231,86 @@ fn strict_validation_enforces_root_presentation_and_backlinks() {
     )));
     assert!(contains_error(&errors, |error| matches!(
         error,
-        WorkspaceValidationError::MissingFloatingBacklink { floating: id, .. } if *id == floating
+        WorkspaceValidationError::ContainedNotPresented { floating: id } if *id == floating
     )));
     assert!(contains_error(&errors, |error| matches!(
         error,
         WorkspaceValidationError::RootNotPresented { root } if *root == floating_root
     )));
+}
+
+#[test]
+fn strict_validation_preserves_the_first_owner_across_three_presentations() {
+    let mut builder = Workspace::builder();
+    let main_node = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    let floating_node = builder.insert_node(Node::tabs([ItemId::new(2)]));
+    let main_root = RootId::new(1);
+    let floating_root = RootId::new(2);
+    let floating = FloatingPresentationId::new(10);
+    builder.set_root(main_root, RootRecord::new(main_node));
+    builder.set_root(floating_root, RootRecord::new(floating_node));
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(floating_root, logical_rect()),
+    );
+
+    for surface in [SurfaceId::new(1), SurfaceId::new(2), SurfaceId::new(3)] {
+        builder.set_surface(
+            surface,
+            SurfacePresentation {
+                main_root: Some(main_root),
+                contained: vec![floating],
+            },
+        );
+    }
+
+    let errors = builder
+        .validate()
+        .expect_err("three presentation owners must fail")
+        .into_errors();
+    let duplicate_main_owners: Vec<_> = errors
+        .iter()
+        .filter_map(|error| match error {
+            WorkspaceValidationError::RootPresentedMoreThanOnce {
+                root,
+                first,
+                duplicate,
+            } if *root == main_root => Some((*first, *duplicate)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        duplicate_main_owners,
+        [
+            (
+                PresentationLocation::Main(SurfaceId::new(1)),
+                PresentationLocation::Main(SurfaceId::new(2)),
+            ),
+            (
+                PresentationLocation::Main(SurfaceId::new(1)),
+                PresentationLocation::Main(SurfaceId::new(3)),
+            ),
+        ]
+    );
+
+    let duplicate_floating_owners: Vec<_> = errors
+        .iter()
+        .filter_map(|error| match error {
+            WorkspaceValidationError::ContainedPresentedMoreThanOnce {
+                floating: id,
+                first_surface,
+                duplicate_surface,
+            } if *id == floating => Some((*first_surface, *duplicate_surface)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        duplicate_floating_owners,
+        [
+            (SurfaceId::new(1), SurfaceId::new(2)),
+            (SurfaceId::new(1), SurfaceId::new(3)),
+        ]
+    );
 }
 
 #[test]
@@ -220,7 +322,7 @@ fn central_region_must_be_a_reachable_tabs_leaf() {
         .insert_node(Node::equal_split(Axis::Horizontal, [left, right]).expect("valid split"));
     let root = RootId::new(1);
     builder.set_root(root, RootRecord::new(split).with_central(split));
-    builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+    builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
 
     let errors = builder
         .validate()

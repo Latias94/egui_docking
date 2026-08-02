@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "egui_dockspace_native"
+description = "Unpublished fork-backed native runtime for egui_dockspace"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Latias94/egui_docking"
+publish = false
+
+[dependencies]
+dockspace = { path = "../dockspace", default-features = false }
+eframe = { version = "=0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
+egui = { version = "=0.35.0", default-features = false }
+egui_dockspace = { path = "../egui_dockspace", features = ["serde"] }
+thiserror = "2.0.18"
+
+[patch.crates-io]
+ecolor = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+egui = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+emath = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "54305278b061ff90e061d7b889a7d457d5eed882" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[[example]]
+name = "native_multiview"
+path = "examples/native_multiview.rs"

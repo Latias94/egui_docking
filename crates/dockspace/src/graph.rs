@@ -1,6 +1,6 @@
 //! Durable, renderer-neutral docking topology.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use slotmap::SlotMap;
 use thiserror::Error;
@@ -11,6 +11,22 @@ use crate::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
 use crate::validation::WorkspaceValidationErrors;
 
 pub(crate) const NORMALIZED_WEIGHT_TOLERANCE: f64 = 1.0e-5;
+
+pub(crate) fn is_exact_tab_mru(
+    items: &[ItemId],
+    selected: Option<ItemId>,
+    mru: Option<&[ItemId]>,
+) -> bool {
+    let Some(mru) = mru else {
+        return false;
+    };
+    let mru_items: BTreeSet<_> = mru.iter().copied().collect();
+    let visual_items: BTreeSet<_> = items.iter().copied().collect();
+    mru.len() == items.len()
+        && mru.first().copied() == selected
+        && mru_items.len() == mru.len()
+        && mru_items == visual_items
+}
 
 /// Direction in which the children of a split are laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -284,17 +300,29 @@ impl RootRecord {
 /// Presentation roster for one logical surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfacePresentation {
-    /// Root occupying the surface's main dock area.
-    pub main_root: RootId,
-    /// Contained-floating presentation identities owned by this surface.
+    /// Root occupying the surface's main dock area, when present.
+    pub main_root: Option<RootId>,
+    /// Contained-floating presentation identities owned by this surface in back-to-front order.
     pub contained: Vec<FloatingPresentationId>,
 }
 
 impl SurfacePresentation {
-    /// Creates a surface with no contained-floating roots.
-    pub fn new(main_root: RootId) -> Self {
+    /// Creates a rooted surface with no contained-floating presentations.
+    pub fn with_main(main_root: RootId) -> Self {
         Self {
-            main_root,
+            main_root: Some(main_root),
+            contained: Vec::new(),
+        }
+    }
+
+    /// Creates a rootless surface draft.
+    ///
+    /// A rootless surface becomes valid only after at least one contained presentation is attached.
+    /// Transaction execution may use the empty form as intermediate state, but strict builder and
+    /// persistence validation reject it.
+    pub fn rootless() -> Self {
+        Self {
+            main_root: None,
             contained: Vec::new(),
         }
     }
@@ -303,72 +331,21 @@ impl SurfacePresentation {
 /// A root presented as an in-surface floating container.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContainedFloating {
-    /// Stable presentation identity.
-    pub id: FloatingPresentationId,
     /// Presented dock-space root.
     pub root: RootId,
-    /// Owning logical surface.
-    pub surface: SurfaceId,
-    /// Logical bounds relative to the owning surface.
-    pub rect: LogicalRect,
-    /// Explicit stacking order within the surface.
+    /// Durable logical bounds relative to the owning surface.
     ///
-    /// Larger values are frontmost. Equal values are ordered by
-    /// [`FloatingPresentationId`], also with the larger identity frontmost.
-    pub z_order: u64,
-}
-
-/// Deterministic stacking key for one contained-floating presentation.
-///
-/// Keys compare back-to-front: a larger z-order is frontmost, with the larger
-/// stable presentation identity breaking equal-z ties.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ContainedStackKey {
-    z_order: u64,
-    floating: FloatingPresentationId,
-}
-
-impl ContainedStackKey {
-    /// Creates a stacking key from explicit presentation state.
-    pub const fn new(z_order: u64, floating: FloatingPresentationId) -> Self {
-        Self { z_order, floating }
-    }
-
-    /// Returns the explicit z-order.
-    pub const fn z_order(self) -> u64 {
-        self.z_order
-    }
-
-    /// Returns the stable presentation identity used for tie-breaking.
-    pub const fn floating(self) -> FloatingPresentationId {
-        self.floating
-    }
+    /// A validated workspace requires both dimensions to be strictly positive.
+    pub rect: LogicalRect,
 }
 
 impl ContainedFloating {
-    /// Creates contained-floating presentation metadata.
-    pub fn new(
-        id: FloatingPresentationId,
-        root: RootId,
-        surface: SurfaceId,
-        rect: LogicalRect,
-        z_order: u64,
-    ) -> Self {
-        Self {
-            id,
-            root,
-            surface,
-            rect,
-            z_order,
-        }
-    }
-
-    /// Returns the deterministic back-to-front stacking key.
+    /// Creates contained-floating presentation metadata for a workspace draft.
     ///
-    /// Comparing these keys directly makes the larger key frontmost and gives
-    /// equal z-orders a stable identity tie-break.
-    pub const fn stacking_key(self) -> ContainedStackKey {
-        ContainedStackKey::new(self.z_order, self.id)
+    /// [`WorkspaceBuilder::build`] and [`Workspace::validate`] reject a rectangle
+    /// without strictly positive area.
+    pub const fn new(root: RootId, rect: LogicalRect) -> Self {
+        Self { root, rect }
     }
 }
 
@@ -379,6 +356,7 @@ impl ContainedFloating {
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
     pub(crate) nodes: SlotMap<NodeId, Node>,
+    pub(crate) tab_mru: BTreeMap<NodeId, Vec<ItemId>>,
     pub(crate) roots: BTreeMap<RootId, RootRecord>,
     pub(crate) surfaces: BTreeMap<SurfaceId, SurfacePresentation>,
     pub(crate) contained_floatings: BTreeMap<FloatingPresentationId, ContainedFloating>,
@@ -389,6 +367,7 @@ impl PartialEq for Workspace {
         self.roots == other.roots
             && self.surfaces == other.surfaces
             && self.contained_floatings == other.contained_floatings
+            && self.tab_mru == other.tab_mru
             && self.nodes.len() == other.nodes.len()
             && self
                 .nodes
@@ -416,6 +395,18 @@ impl Workspace {
     /// Iterates runtime nodes in deterministic arena order.
     pub fn nodes(&self) -> impl Iterator<Item = (NodeId, &Node)> {
         self.nodes.iter()
+    }
+
+    /// Returns one tabs stack's complete most-recent-first item permutation.
+    ///
+    /// A valid populated tabs node has exactly one occurrence of every visual
+    /// item here, with its selected item first. `None` means `tabs` is absent
+    /// or is not a tabs node.
+    pub fn tab_mru(&self, tabs: NodeId) -> Option<&[ItemId]> {
+        if !matches!(self.nodes.get(tabs), Some(Node::Tabs { .. })) {
+            return None;
+        }
+        self.tab_mru.get(&tabs).map(Vec::as_slice)
     }
 
     /// Returns a root record by stable identity.
@@ -468,14 +459,19 @@ impl Workspace {
         items
     }
 
-    #[allow(dead_code, reason = "used by later transactional workspace commands")]
-    pub(crate) fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        self.nodes.get_mut(id)
+    pub(crate) fn insert_runtime_node(&mut self, node: Node) -> NodeId {
+        let initial_mru = initial_tab_mru(&node);
+        let id = self.nodes.insert(node);
+        if let Some(mru) = initial_mru {
+            self.tab_mru.insert(id, mru);
+        }
+        id
     }
 
-    #[allow(dead_code, reason = "used by later transactional workspace commands")]
-    pub(crate) fn nodes_mut(&mut self) -> &mut SlotMap<NodeId, Node> {
-        &mut self.nodes
+    pub(crate) fn remove_runtime_node(&mut self, id: NodeId) -> Option<Node> {
+        let node = self.nodes.remove(id)?;
+        self.tab_mru.remove(&id);
+        Some(node)
     }
 
     #[allow(dead_code, reason = "used by later transactional workspace commands")]
@@ -514,7 +510,7 @@ impl WorkspaceBuilder {
 
     /// Inserts a runtime node and returns its generational identity.
     pub fn insert_node(&mut self, node: Node) -> NodeId {
-        self.workspace.nodes.insert(node)
+        self.workspace.insert_runtime_node(node)
     }
 
     /// Replaces an existing node in the draft.
@@ -528,7 +524,41 @@ impl WorkspaceBuilder {
             .nodes
             .get_mut(id)
             .ok_or(WorkspaceBuildError::MissingNode { node: id })?;
-        Ok(std::mem::replace(slot, node))
+        let initial_mru = initial_tab_mru(&node);
+        let previous = std::mem::replace(slot, node);
+        if let Some(mru) = initial_mru {
+            self.workspace.tab_mru.insert(id, mru);
+        } else {
+            self.workspace.tab_mru.remove(&id);
+        }
+        Ok(previous)
+    }
+
+    /// Replaces a tabs stack's complete most-recent-first item permutation.
+    ///
+    /// This draft API deliberately accepts malformed permutations so callers
+    /// can decode untrusted state before one complete validation pass.
+    /// [`Self::validate`] and [`Self::build`] reject missing, duplicate, foreign,
+    /// or incorrectly ordered entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceBuildError`] when `tabs` is absent or is not a tabs node.
+    pub fn set_tab_mru(
+        &mut self,
+        tabs: NodeId,
+        mru: impl IntoIterator<Item = ItemId>,
+    ) -> Result<(), WorkspaceBuildError> {
+        match self.workspace.nodes.get(tabs) {
+            Some(Node::Tabs { .. }) => {}
+            Some(Node::Split { .. }) => {
+                return Err(WorkspaceBuildError::NodeIsNotTabs { node: tabs });
+            }
+            None => return Err(WorkspaceBuildError::MissingNode { node: tabs }),
+        }
+        let mru = mru.into_iter().collect();
+        self.workspace.tab_mru.insert(tabs, mru);
+        Ok(())
     }
 
     /// Inserts or replaces a stable root record.
@@ -548,11 +578,10 @@ impl WorkspaceBuilder {
     /// Inserts or replaces a contained-floating record.
     pub fn set_contained_floating(
         &mut self,
+        id: FloatingPresentationId,
         floating: ContainedFloating,
     ) -> Option<ContainedFloating> {
-        self.workspace
-            .contained_floatings
-            .insert(floating.id, floating)
+        self.workspace.contained_floatings.insert(id, floating)
     }
 
     /// Adds one floating identity to its owning surface's roster.
@@ -604,10 +633,33 @@ pub enum WorkspaceBuildError {
         /// Missing runtime node identity.
         node: NodeId,
     },
+    /// A tabs-only draft edit named a split node.
+    #[error("workspace draft node {node:?} is not a tabs node")]
+    NodeIsNotTabs {
+        /// Incorrect runtime node identity.
+        node: NodeId,
+    },
     /// A contained presentation was attached to a missing surface.
     #[error("workspace draft does not contain surface {surface}")]
     MissingSurface {
         /// Missing stable surface identity.
         surface: SurfaceId,
     },
+}
+
+fn initial_tab_mru(node: &Node) -> Option<Vec<ItemId>> {
+    let Node::Tabs { items, selected } = node else {
+        return None;
+    };
+    let mut mru = Vec::with_capacity(items.len());
+    if let Some(selected) = selected.filter(|selected| items.contains(selected)) {
+        mru.push(selected);
+    }
+    mru.extend(
+        items
+            .iter()
+            .copied()
+            .filter(|item| Some(*item) != *selected),
+    );
+    Some(mru)
 }

@@ -10,10 +10,12 @@ repository.workspace = true
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:blake3", "dep:serde", "dep:serde_json"]
 
 [dependencies]
+blake3 = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 slotmap.workspace = true
 thiserror.workspace = true
 

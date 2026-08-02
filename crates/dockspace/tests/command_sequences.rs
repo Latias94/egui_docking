@@ -1,24 +1,31 @@
+mod support;
+
 use std::collections::BTreeMap;
 
 use dockspace::command::{
-    DockFraction, DockTarget, Edge, MovePayload, RootContent, RootPresentationTarget,
-    WorkspaceCommand,
+    CloseCommitOutcome, ContentCloseTarget, DockFraction, DockTarget, Edge, MovePayload,
+    RootContent, RootPresentationTarget, SplitResize, WorkspaceCommand,
 };
+use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::error::{CommandError, ReferenceRole, TransactionError};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{
     Axis, ContainedFloating, Node, RootRecord, SplitWeight, SurfacePresentation, Workspace,
     WorkspaceBuilder,
 };
-use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
-use dockspace::policy::{DockPolicy, PolicyRejection};
+use dockspace::ids::{
+    FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
+};
+use dockspace::policy::{DockPolicy, DockPolicySnapshot, PolicyRejection, PolicyRevision};
 use dockspace::transaction::WorkspaceTransaction;
+use support::{TestPresentationHost, submit_input};
 
 const ROOT_A: RootId = RootId::new(1);
 const ROOT_B: RootId = RootId::new(2);
 const SURFACE_A: SurfaceId = SurfaceId::new(1);
 const SURFACE_B: SurfaceId = SurfaceId::new(2);
 const FLOATING_B: FloatingPresentationId = FloatingPresentationId::new(2);
+const CLOSE_INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(0xC001);
 
 fn item(value: u64) -> ItemId {
     ItemId::new(value)
@@ -26,12 +33,66 @@ fn item(value: u64) -> ItemId {
 
 fn apply(
     workspace: &mut Workspace,
-    policy: &DockPolicy,
+    policy: &DockPolicySnapshot,
     command: WorkspaceCommand,
 ) -> Result<(), TransactionError> {
     WorkspaceTransaction::from_commands([command])
         .apply(workspace, policy)
         .map(|_| ())
+}
+
+fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOutcome {
+    let mut engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+        .expect("close fixture must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let expected = engine.version();
+    let request = submit_input(
+        &mut engine,
+        &mut host,
+        CLOSE_INPUT_SOURCE,
+        EngineInput::RequestContentClose { expected, target },
+    )
+    .expect("close request must reduce");
+    let dockspace::transition::InputOutcome::ContentCloseRequested { plan, .. } =
+        request.reduced_inputs()[0].outcome()
+    else {
+        panic!("close target must open a plan");
+    };
+    let plan = plan.clone();
+    let mut committed = None;
+    for requirement in plan.items() {
+        let transition = submit_input(
+            &mut engine,
+            &mut host,
+            CLOSE_INPUT_SOURCE,
+            EngineInput::ResolveClose {
+                request: plan.request(),
+                token: requirement.token(),
+                decision: dockspace::CloseDecision::Allow,
+            },
+        )
+        .expect("close decision must reduce");
+        if let dockspace::transition::InputOutcome::CloseDecisionProcessed {
+            application: Some(Ok(outcome)),
+            ..
+        } = transition.reduced_inputs()[0].outcome()
+        {
+            assert!(transition.events().iter().any(|event| {
+                matches!(
+                    event.kind(),
+                    dockspace::event::WorkspaceEventKind::CloseCommitted(committed)
+                        if committed == outcome
+                )
+            }));
+            assert!(transition.events().iter().all(|event| !matches!(
+                event.kind(),
+                dockspace::event::WorkspaceEventKind::CommandCommitted(_)
+            )));
+            committed = Some(outcome.clone());
+        }
+    }
+    *workspace = engine.workspace().clone();
+    committed.expect("final close decision must commit")
 }
 
 fn two_roots() -> (Workspace, NodeId, NodeId) {
@@ -40,8 +101,8 @@ fn two_roots() -> (Workspace, NodeId, NodeId) {
     let tabs_b = builder.insert_node(Node::tabs([item(4), item(5)]));
     builder.set_root(ROOT_A, RootRecord::new(tabs_a));
     builder.set_root(ROOT_B, RootRecord::new(tabs_b));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
-    builder.set_surface(SURFACE_B, SurfacePresentation::new(ROOT_B));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+    builder.set_surface(SURFACE_B, SurfacePresentation::with_main(ROOT_B));
     (
         builder.build().expect("two roots are valid"),
         tabs_a,
@@ -63,16 +124,6 @@ fn selected_item(workspace: &Workspace, tabs: NodeId) -> Option<ItemId> {
     *selected
 }
 
-fn tabs_containing(workspace: &Workspace, needle: ItemId) -> NodeId {
-    workspace
-        .nodes()
-        .find_map(|(node, value)| match value {
-            Node::Tabs { items, .. } if items.contains(&needle) => Some(node),
-            Node::Tabs { .. } | Node::Split { .. } => None,
-        })
-        .expect("item must remain reachable")
-}
-
 #[test]
 fn same_stack_reorder_uses_pre_removal_gap_indices() {
     let (mut workspace, tabs, _) = two_roots();
@@ -83,7 +134,7 @@ fn same_stack_reorder_uses_pre_removal_gap_indices() {
         source,
         insertion_index: 3,
     }])
-    .apply(&mut workspace, &DockPolicy::default())
+    .apply(&mut workspace, &DockPolicySnapshot::default())
     .expect("reorder succeeds");
 
     assert_eq!(tabs_items(&workspace, tabs), [item(2), item(3), item(1)]);
@@ -104,7 +155,7 @@ fn same_stack_reorder_uses_pre_removal_gap_indices() {
         source,
         insertion_index: 3,
     }])
-    .apply(&mut workspace, &DockPolicy::default())
+    .apply(&mut workspace, &DockPolicySnapshot::default())
     .expect("same gap is a checked no-op");
     assert!(matches!(
         report.outcomes(),
@@ -121,6 +172,7 @@ fn reorder_is_rejected_when_tab_merge_policy_is_disabled() {
     let before = workspace.clone();
     let mut policy = DockPolicy::default();
     policy.set_allow_tab_merge(false);
+    let policy = policy.snapshot(PolicyRevision::default());
 
     let error = apply(
         &mut workspace,
@@ -151,13 +203,13 @@ fn equivalent_edge_move_reports_no_change() {
         Node::split(Axis::Horizontal, [left, right], [0.25, 0.75]).expect("split is valid"),
     );
     builder.set_root(ROOT_A, RootRecord::new(split));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
     let source = workspace
         .capture_node_source(ROOT_A, left)
         .expect("source exists");
     let target = workspace
-        .capture_edge_target(
+        .capture_inner_edge_target(
             ROOT_A,
             right,
             Edge::Left,
@@ -168,9 +220,9 @@ fn equivalent_edge_move_reports_no_change() {
 
     let report = WorkspaceTransaction::from_commands([WorkspaceCommand::Move {
         payload: MovePayload::Tabs(source),
-        target: DockTarget::Edge(target),
+        target: DockTarget::InnerEdge(target),
     }])
-    .apply(&mut workspace, &DockPolicy::default())
+    .apply(&mut workspace, &DockPolicySnapshot::default())
     .expect("equivalent edge move is valid");
 
     assert_eq!(workspace, before);
@@ -192,7 +244,7 @@ fn center_then_edge_moves_cross_roots_without_changing_items() {
         .expect("target exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Move {
             payload: MovePayload::Item(source),
             target: DockTarget::Center(target),
@@ -206,7 +258,7 @@ fn center_then_edge_moves_cross_roots_without_changing_items() {
         .capture_node_source(ROOT_A, tabs_a)
         .expect("remaining tabs exist");
     let target = workspace
-        .capture_edge_target(
+        .capture_inner_edge_target(
             ROOT_B,
             tabs_b,
             Edge::Left,
@@ -215,10 +267,10 @@ fn center_then_edge_moves_cross_roots_without_changing_items() {
         .expect("edge target exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Move {
             payload: MovePayload::Tabs(source),
-            target: DockTarget::Edge(target),
+            target: DockTarget::InnerEdge(target),
         },
     )
     .expect("edge move succeeds");
@@ -243,7 +295,7 @@ fn open_edge_and_close_restore_the_original_item_multiset() {
     let (mut workspace, _, tabs_b) = two_roots();
     let expected = workspace.item_multiset();
     let target = workspace
-        .capture_edge_target(
+        .capture_inner_edge_target(
             ROOT_B,
             tabs_b,
             Edge::Bottom,
@@ -252,25 +304,16 @@ fn open_edge_and_close_restore_the_original_item_multiset() {
         .expect("target exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Open {
             item: item(99),
-            target: DockTarget::Edge(target),
+            target: DockTarget::InnerEdge(target),
         },
     )
     .expect("open succeeds");
     assert_eq!(workspace.item_multiset().get(&item(99)), Some(&1));
 
-    let opened_tabs = tabs_containing(&workspace, item(99));
-    let source = workspace
-        .capture_item_source(ROOT_B, opened_tabs, item(99))
-        .expect("opened item has a source");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close { source },
-    )
-    .expect("close succeeds");
+    close(&mut workspace, ContentCloseTarget::Item(item(99)));
     assert_eq!(workspace.item_multiset(), expected);
     workspace.validate().expect("cleanup is canonical");
 }
@@ -278,40 +321,22 @@ fn open_edge_and_close_restore_the_original_item_multiset() {
 #[test]
 fn stale_source_and_target_snapshots_fail_closed() {
     let (mut workspace, tabs_a, tabs_b) = two_roots();
-    let stale_source = workspace
-        .capture_item_source(ROOT_A, tabs_a, item(1))
-        .expect("source exists");
     let changing_source = workspace
         .capture_item_source(ROOT_A, tabs_a, item(2))
         .expect("source exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Select {
             source: changing_source,
         },
     )
     .expect("selection changes the source root snapshot");
     let before = workspace.clone();
-    let error = apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close {
-            source: stale_source,
-        },
-    )
-    .expect_err("stale source must fail");
-    assert!(matches!(
-        error,
-        TransactionError::Command {
-            index: 0,
-            source: CommandError::StaleNode {
-                role: ReferenceRole::Source,
-                ..
-            }
-        }
-    ));
-    assert_eq!(workspace, before);
+    // Programmatic close carries only stable identity, so it never accepts a
+    // caller-supplied stale graph source.
+    close(&mut workspace, ContentCloseTarget::Item(item(1)));
+    assert_ne!(workspace, before);
 
     let stale_target = workspace
         .capture_tab_target(ROOT_B, tabs_b)
@@ -321,7 +346,7 @@ fn stale_source_and_target_snapshots_fail_closed() {
         .expect("target exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Open {
             item: item(100),
             target: DockTarget::Center(current_target),
@@ -331,7 +356,7 @@ fn stale_source_and_target_snapshots_fail_closed() {
     let before = workspace.clone();
     let error = apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Open {
             item: item(101),
             target: DockTarget::Center(stale_target),
@@ -359,7 +384,7 @@ fn resize_requires_a_complete_positive_normalized_vector() {
     let split = builder
         .insert_node(Node::equal_split(Axis::Horizontal, [left, right]).expect("valid split"));
     builder.set_root(ROOT_A, RootRecord::new(split));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
 
     let source = workspace
@@ -368,10 +393,12 @@ fn resize_requires_a_complete_positive_normalized_vector() {
     let before = workspace.clone();
     let error = apply(
         &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::ResizeSplit {
-            split: source,
-            weights: vec![SplitWeight::new(0.2).expect("positive")],
+        &DockPolicySnapshot::default(),
+        WorkspaceCommand::ResizeSplits {
+            splits: vec![SplitResize::new(
+                source,
+                vec![SplitWeight::new(0.2).expect("positive")],
+            )],
         },
     )
     .expect_err("incomplete vector fails");
@@ -389,13 +416,15 @@ fn resize_requires_a_complete_positive_normalized_vector() {
         .expect("split exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::ResizeSplit {
-            split: source,
-            weights: vec![
-                SplitWeight::new(0.25).expect("positive"),
-                SplitWeight::new(0.75).expect("positive"),
-            ],
+        &DockPolicySnapshot::default(),
+        WorkspaceCommand::ResizeSplits {
+            splits: vec![SplitResize::new(
+                source,
+                vec![
+                    SplitWeight::new(0.25).expect("positive"),
+                    SplitWeight::new(0.75).expect("positive"),
+                ],
+            )],
         },
     )
     .expect("normalized resize succeeds");
@@ -411,17 +440,16 @@ fn closing_last_noncentral_item_removes_root_and_surface_atomically() {
     let mut builder = WorkspaceBuilder::new();
     let tabs = builder.insert_node(Node::tabs([item(1)]));
     builder.set_root(ROOT_A, RootRecord::new(tabs));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
-    let source = workspace
-        .capture_item_source(ROOT_A, tabs, item(1))
-        .expect("source exists");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close { source },
-    )
-    .expect("last close succeeds");
+    let outcome = close(&mut workspace, ContentCloseTarget::Item(item(1)));
+    assert_eq!(
+        outcome,
+        CloseCommitOutcome::ItemClosed {
+            item: item(1),
+            root: ROOT_A,
+        }
+    );
     assert_eq!(workspace, Workspace::new());
 }
 
@@ -430,17 +458,16 @@ fn closing_last_central_item_preserves_the_empty_central_leaf() {
     let mut builder = WorkspaceBuilder::new();
     let central = builder.insert_node(Node::tabs([item(1)]));
     builder.set_root(ROOT_A, RootRecord::new(central).with_central(central));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
-    let source = workspace
-        .capture_item_source(ROOT_A, central, item(1))
-        .expect("source exists");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close { source },
-    )
-    .expect("central close succeeds");
+    let outcome = close(&mut workspace, ContentCloseTarget::Item(item(1)));
+    assert_eq!(
+        outcome,
+        CloseCommitOutcome::ItemClosed {
+            item: item(1),
+            root: ROOT_A,
+        }
+    );
     assert_eq!(workspace.item_multiset(), BTreeMap::new());
     assert_eq!(
         workspace.root(ROOT_A),
@@ -453,38 +480,35 @@ fn closing_last_central_item_preserves_the_empty_central_leaf() {
 }
 
 #[test]
-fn close_selection_follows_the_normative_visual_neighbor_rule() {
+fn close_selection_follows_the_durable_mru_order() {
     let (mut workspace, tabs, _) = two_roots();
     let select_two = workspace
         .capture_item_source(ROOT_A, tabs, item(2))
         .expect("source exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Select { source: select_two },
     )
     .expect("selection succeeds");
 
-    let close_middle = workspace
-        .capture_item_source(ROOT_A, tabs, item(2))
-        .expect("source exists");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close {
-            source: close_middle,
-        },
-    )
-    .expect("closing selected middle item succeeds");
+    assert_eq!(
+        close(&mut workspace, ContentCloseTarget::Item(item(2))),
+        CloseCommitOutcome::ItemClosed {
+            item: item(2),
+            root: ROOT_A,
+        }
+    );
     assert_eq!(tabs_items(&workspace, tabs), [item(1), item(3)]);
-    assert_eq!(selected_item(&workspace, tabs), Some(item(3)));
+    assert_eq!(selected_item(&workspace, tabs), Some(item(1)));
+    assert_eq!(workspace.tab_mru(tabs), Some([item(1), item(3)].as_slice()));
 
     let open_target = workspace
         .capture_tab_target(ROOT_A, tabs)
         .expect("target exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Open {
             item: item(9),
             target: DockTarget::Center(open_target),
@@ -496,24 +520,20 @@ fn close_selection_follows_the_normative_visual_neighbor_rule() {
         .expect("source exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Select {
             source: select_three,
         },
     )
     .expect("selection succeeds");
 
-    let close_inactive = workspace
-        .capture_item_source(ROOT_A, tabs, item(1))
-        .expect("source exists");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close {
-            source: close_inactive,
-        },
-    )
-    .expect("closing inactive item succeeds");
+    assert_eq!(
+        close(&mut workspace, ContentCloseTarget::Item(item(1))),
+        CloseCommitOutcome::ItemClosed {
+            item: item(1),
+            root: ROOT_A,
+        }
+    );
     assert_eq!(selected_item(&workspace, tabs), Some(item(3)));
 
     let select_last = workspace
@@ -521,23 +541,19 @@ fn close_selection_follows_the_normative_visual_neighbor_rule() {
         .expect("source exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Select {
             source: select_last,
         },
     )
     .expect("last item selection succeeds");
-    let close_selected_last = workspace
-        .capture_item_source(ROOT_A, tabs, item(9))
-        .expect("refreshed source exists");
-    apply(
-        &mut workspace,
-        &DockPolicy::default(),
-        WorkspaceCommand::Close {
-            source: close_selected_last,
-        },
-    )
-    .expect("closing selected last item succeeds");
+    assert_eq!(
+        close(&mut workspace, ContentCloseTarget::Item(item(9))),
+        CloseCommitOutcome::ItemClosed {
+            item: item(9),
+            root: ROOT_A,
+        }
+    );
     assert_eq!(tabs_items(&workspace, tabs), [item(3)]);
     assert_eq!(selected_item(&workspace, tabs), Some(item(3)));
 }
@@ -547,13 +563,14 @@ fn moving_a_whole_root_to_a_new_surface_preserves_its_central_identity() {
     let mut builder = WorkspaceBuilder::new();
     let central = builder.insert_node(Node::tabs([item(1), item(2)]));
     builder.set_root(ROOT_A, RootRecord::new(central).with_central(central));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
     let source = workspace
         .capture_node_source(ROOT_A, central)
         .expect("source root exists");
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
+    let policy = policy.snapshot(PolicyRevision::default());
     let before = workspace.clone();
     let error = apply(
         &mut workspace,
@@ -579,7 +596,7 @@ fn moving_a_whole_root_to_a_new_surface_preserves_its_central_identity() {
         &policy,
         WorkspaceCommand::RehomeRoot {
             source,
-            target: RootPresentationTarget::Surface { surface: SURFACE_B },
+            target: RootPresentationTarget::NewSurface { surface: SURFACE_B },
         },
     )
     .expect("surface move succeeds");
@@ -590,7 +607,7 @@ fn moving_a_whole_root_to_a_new_surface_preserves_its_central_identity() {
     );
     assert_eq!(
         workspace.surface(SURFACE_B),
-        Some(&SurfacePresentation::new(ROOT_A))
+        Some(&SurfacePresentation::with_main(ROOT_A))
     );
     assert_eq!(
         workspace.item_multiset(),
@@ -603,14 +620,14 @@ fn remove_empty_root_removes_its_complete_presentation() {
     let mut builder = WorkspaceBuilder::new();
     let central = builder.insert_node(Node::tabs([]));
     builder.set_root(ROOT_A, RootRecord::new(central).with_central(central));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("empty central root is valid");
     let source = workspace
         .capture_node_source(ROOT_A, central)
         .expect("empty root exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::RemoveEmptyRoot { source },
     )
     .expect("empty root removal succeeds");
@@ -627,23 +644,15 @@ fn close_root_removes_main_surface_and_complete_topology() {
     let survivor = builder.insert_node(Node::tabs([item(4), item(5)]));
     builder.set_root(ROOT_A, RootRecord::new(split));
     builder.set_root(ROOT_B, RootRecord::new(survivor));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
-    builder.set_surface(SURFACE_B, SurfacePresentation::new(ROOT_B));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+    builder.set_surface(SURFACE_B, SurfacePresentation::with_main(ROOT_B));
     let mut workspace = builder.build().expect("workspace is valid");
-    let source = workspace
-        .capture_node_source(ROOT_A, split)
-        .expect("main root source exists");
-
-    let report = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
-        .apply(&mut workspace, &DockPolicy::default())
-        .expect("main root closes");
-
     assert_eq!(
-        report.outcomes(),
-        [dockspace::command::CommandOutcome::RootClosed {
+        close(&mut workspace, ContentCloseTarget::Root(ROOT_A)),
+        CloseCommitOutcome::RootClosed {
             root: ROOT_A,
             items: vec![item(1), item(2), item(3)],
-        }]
+        }
     );
     assert!(workspace.root(ROOT_A).is_none());
     assert!(workspace.surface(SURFACE_A).is_none());
@@ -665,181 +674,187 @@ fn close_root_removes_only_the_contained_presentation() {
     let contained = builder.insert_node(Node::tabs([item(4), item(5)]));
     builder.set_root(ROOT_A, RootRecord::new(main));
     builder.set_root(ROOT_B, RootRecord::new(contained));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+    builder.set_contained_floating(
         FLOATING_B,
-        ROOT_B,
-        SURFACE_A,
-        LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
-        7,
-    ));
+        ContainedFloating::new(
+            ROOT_B,
+            LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
+        ),
+    );
     builder
         .attach_contained(SURFACE_A, FLOATING_B)
         .expect("surface exists");
     let mut workspace = builder.build().expect("workspace is valid");
-    let source = workspace
-        .capture_node_source(ROOT_B, contained)
-        .expect("contained root source exists");
-
-    let report = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
-        .apply(&mut workspace, &DockPolicy::default())
-        .expect("contained root closes");
-
     assert_eq!(
-        report.outcomes(),
-        [dockspace::command::CommandOutcome::RootClosed {
+        close(&mut workspace, ContentCloseTarget::Root(ROOT_B)),
+        CloseCommitOutcome::RootClosed {
             root: ROOT_B,
             items: vec![item(4), item(5)],
-        }]
+        }
     );
     assert!(workspace.root(ROOT_B).is_none());
     assert!(workspace.node(contained).is_none());
     assert!(workspace.contained_floating(FLOATING_B).is_none());
     assert_eq!(
         workspace.surface(SURFACE_A),
-        Some(&SurfacePresentation::new(ROOT_A))
+        Some(&SurfacePresentation::with_main(ROOT_A))
     );
     assert_eq!(workspace.item_multiset(), BTreeMap::from([(item(1), 1)]));
     workspace.validate().expect("remaining workspace is valid");
 }
 
 #[test]
-fn close_root_rejects_a_main_surface_that_still_hosts_contained_roots() {
+fn close_root_leaves_a_rootless_surface_when_contained_roots_survive() {
     let mut builder = WorkspaceBuilder::new();
     let main = builder.insert_node(Node::tabs([item(1)]));
     let contained = builder.insert_node(Node::tabs([item(2)]));
     builder.set_root(ROOT_A, RootRecord::new(main));
     builder.set_root(ROOT_B, RootRecord::new(contained));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
-    builder.set_contained_floating(ContainedFloating::new(
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+    builder.set_contained_floating(
         FLOATING_B,
-        ROOT_B,
-        SURFACE_A,
-        LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
-        7,
-    ));
+        ContainedFloating::new(
+            ROOT_B,
+            LogicalRect::new(10.0, 20.0, 300.0, 200.0).expect("rectangle is valid"),
+        ),
+    );
     builder
         .attach_contained(SURFACE_A, FLOATING_B)
         .expect("surface exists");
     let mut workspace = builder.build().expect("workspace is valid");
-    let source = workspace
-        .capture_node_source(ROOT_A, main)
-        .expect("main root source exists");
-    let before = workspace.clone();
-
-    let error = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source }])
-        .apply(&mut workspace, &DockPolicy::default())
-        .expect_err("closing the host main root must be rejected");
-
-    assert!(matches!(
-        error,
-        TransactionError::Command {
-            source: CommandError::SurfaceHasContainedRoots { surface: SURFACE_A },
-            ..
+    assert_eq!(
+        close(&mut workspace, ContentCloseTarget::Root(ROOT_A)),
+        CloseCommitOutcome::RootClosed {
+            root: ROOT_A,
+            items: vec![item(1)],
         }
-    ));
-    assert_eq!(workspace, before);
+    );
+    assert!(workspace.root(ROOT_A).is_none());
+    assert!(workspace.node(main).is_none());
+    assert_eq!(workspace.root(ROOT_B), Some(&RootRecord::new(contained)));
+    assert_eq!(
+        workspace.surface(SURFACE_A),
+        Some(&SurfacePresentation {
+            main_root: None,
+            contained: vec![FLOATING_B],
+        })
+    );
+    assert_eq!(
+        workspace.presentation_for_root(ROOT_B),
+        Some(dockspace::RootPresentationOwner::Contained {
+            surface: SURFACE_A,
+            floating: FLOATING_B,
+        })
+    );
+    workspace.validate().expect("rootless survivor is valid");
 }
 
 #[test]
-fn close_root_rejects_stale_and_non_root_sources_atomically() {
+fn root_close_recaptures_current_graph_from_stable_identity() {
     let mut builder = WorkspaceBuilder::new();
     let first = builder.insert_node(Node::tabs([item(1), item(2)]));
     let second = builder.insert_node(Node::tabs([item(3)]));
     let split = builder
         .insert_node(Node::equal_split(Axis::Horizontal, [first, second]).expect("split is valid"));
     builder.set_root(ROOT_A, RootRecord::new(split));
-    builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
+    builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
     let mut workspace = builder.build().expect("workspace is valid");
-    let stale_root = workspace
-        .capture_node_source(ROOT_A, split)
-        .expect("root source exists");
     let reorder = workspace
         .capture_item_source(ROOT_A, first, item(1))
         .expect("item source exists");
     apply(
         &mut workspace,
-        &DockPolicy::default(),
+        &DockPolicySnapshot::default(),
         WorkspaceCommand::Reorder {
             source: reorder,
             insertion_index: 2,
         },
     )
     .expect("reorder succeeds");
-    let before_stale_close = workspace.clone();
-
-    let stale_error =
-        WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source: stale_root }])
-            .apply(&mut workspace, &DockPolicy::default())
-            .expect_err("stale root source must fail");
-    assert!(matches!(
-        stale_error,
-        TransactionError::Command {
-            source: CommandError::StaleNode { .. },
-            ..
+    assert_eq!(
+        close(&mut workspace, ContentCloseTarget::Root(ROOT_A)),
+        CloseCommitOutcome::RootClosed {
+            root: ROOT_A,
+            items: vec![item(2), item(1), item(3)],
         }
-    ));
-    assert_eq!(workspace, before_stale_close);
-
-    let inner = workspace
-        .capture_node_source(ROOT_A, first)
-        .expect("inner source exists");
-    let inner_error =
-        WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot { source: inner }])
-            .apply(&mut workspace, &DockPolicy::default())
-            .expect_err("inner node cannot close a root");
-    assert!(matches!(
-        inner_error,
-        TransactionError::Command {
-            source: CommandError::NodeIsNotRoot {
-                root: ROOT_A,
-                node,
-            },
-            ..
-        } if node == first
-    ));
-    assert_eq!(workspace, before_stale_close);
+    );
+    assert_eq!(workspace, Workspace::new());
 }
 
 #[test]
-fn close_root_rejects_empty_roots_and_batches_roll_back_later_failures() {
+fn content_close_rejects_empty_and_missing_roots_without_mutation() {
     let mut empty_builder = WorkspaceBuilder::new();
     let empty = empty_builder.insert_node(Node::tabs([]));
     empty_builder.set_root(ROOT_A, RootRecord::new(empty).with_central(empty));
-    empty_builder.set_surface(SURFACE_A, SurfacePresentation::new(ROOT_A));
-    let mut empty_workspace = empty_builder.build().expect("empty central root is valid");
-    let empty_source = empty_workspace
-        .capture_node_source(ROOT_A, empty)
-        .expect("empty root source exists");
-    let empty_before = empty_workspace.clone();
-    let empty_error = WorkspaceTransaction::from_commands([WorkspaceCommand::CloseRoot {
-        source: empty_source,
-    }])
-    .apply(&mut empty_workspace, &DockPolicy::default())
-    .expect_err("CloseRoot does not replace RemoveEmptyRoot");
+    empty_builder.set_surface(SURFACE_A, SurfacePresentation::with_main(ROOT_A));
+    let empty_workspace = empty_builder.build().expect("empty central root is valid");
+    let mut engine = DockEngine::new(empty_workspace.clone(), DockPolicy::default())
+        .expect("empty close fixture is valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let expected = engine.version();
+    let empty_rejection = submit_input(
+        &mut engine,
+        &mut host,
+        CLOSE_INPUT_SOURCE,
+        EngineInput::RequestContentClose {
+            expected,
+            target: ContentCloseTarget::Root(ROOT_A),
+        },
+    )
+    .expect("empty root close request reduces");
     assert!(matches!(
-        empty_error,
-        TransactionError::Command {
-            source: CommandError::RootEmpty { root: ROOT_A },
+        empty_rejection.reduced_inputs()[0].outcome(),
+        dockspace::transition::InputOutcome::ContentCloseRejected {
+            target: ContentCloseTarget::Root(ROOT_A),
+            reason: dockspace::transition::ContentCloseRequestRejection::RootEmpty { root: ROOT_A },
             ..
         }
     ));
-    assert_eq!(empty_workspace, empty_before);
+    assert_eq!(engine.workspace(), &empty_workspace);
+    assert!(empty_rejection.events().is_empty());
 
+    let expected = engine.version();
+    let missing_rejection = submit_input(
+        &mut engine,
+        &mut host,
+        CLOSE_INPUT_SOURCE,
+        EngineInput::RequestContentClose {
+            expected,
+            target: ContentCloseTarget::Root(ROOT_B),
+        },
+    )
+    .expect("missing root close request reduces");
+    assert!(matches!(
+        missing_rejection.reduced_inputs()[0].outcome(),
+        dockspace::transition::InputOutcome::ContentCloseRejected {
+            target: ContentCloseTarget::Root(ROOT_B),
+            reason: dockspace::transition::ContentCloseRequestRejection::RootUnavailable {
+                root: ROOT_B,
+            },
+            ..
+        }
+    ));
+    assert_eq!(engine.workspace(), &empty_workspace);
+    assert!(missing_rejection.events().is_empty());
+}
+
+#[test]
+fn ordinary_workspace_transactions_roll_back_without_a_close_command() {
     let (mut workspace, closing_node, failing_node) = two_roots();
-    let close_a = workspace
-        .capture_node_source(ROOT_A, closing_node)
-        .expect("first root source exists");
+    let selection = workspace
+        .capture_item_source(ROOT_A, closing_node, item(2))
+        .expect("selection source exists");
     let nonempty_b = workspace
         .capture_node_source(ROOT_B, failing_node)
         .expect("second root source exists");
     let before_batch = workspace.clone();
     let batch_error = WorkspaceTransaction::from_commands([
-        WorkspaceCommand::CloseRoot { source: close_a },
+        WorkspaceCommand::Select { source: selection },
         WorkspaceCommand::RemoveEmptyRoot { source: nonempty_b },
     ])
-    .apply(&mut workspace, &DockPolicy::default())
-    .expect_err("a later command failure rolls back the root close");
+    .apply(&mut workspace, &DockPolicySnapshot::default())
+    .expect_err("a later command failure rolls back ordinary topology mutation");
     assert!(matches!(
         batch_error,
         TransactionError::Command {

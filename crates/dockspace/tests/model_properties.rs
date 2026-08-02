@@ -84,7 +84,7 @@ proptest! {
 
         let root = RootId::new(1);
         builder.set_root(root, RootRecord::new(subtree).with_central(central));
-        builder.set_surface(SurfaceId::new(1), SurfacePresentation::new(root));
+        builder.set_surface(SurfaceId::new(1), SurfacePresentation::with_main(root));
         let workspace = builder.build().expect("generated workspace canonicalizes");
         workspace.validate().expect("published workspace is strict");
 

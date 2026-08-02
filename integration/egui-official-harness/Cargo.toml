@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "egui-dockspace-official-harness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+dockspace = { path = "../../crates/dockspace" }
+eframe = { version = "=0.35.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { version = "=0.35.0", default-features = false, features = ["default_fonts"] }
+egui_dockspace = { path = "../../crates/egui_dockspace" }
+
+[lints.rust]
+unsafe_code = "forbid"

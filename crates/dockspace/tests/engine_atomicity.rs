@@ -1,10 +1,18 @@
+mod support;
+
 use dockspace::command::{CommandOutcome, WorkspaceCommand};
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::error::CommandError;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId, WorkspaceEpoch, WorkspaceRevision};
+use dockspace::ids::{
+    ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId, WorkspaceEpoch,
+    WorkspaceRevision,
+};
 use dockspace::policy::DockPolicy;
 use dockspace::transition::{InputOutcome, InputPriority, WorkspaceVersion};
+use support::{TestInputStream, TestPresentationHost};
+
+const TEST_SOURCE: StableInputSourceId = StableInputSourceId::new(0xA701);
 
 fn workspace_with_roots(roots: &[(u64, u64, &[u64])]) -> (Workspace, Vec<dockspace::ids::NodeId>) {
     let mut builder = Workspace::builder();
@@ -15,7 +23,7 @@ fn workspace_with_roots(roots: &[(u64, u64, &[u64])]) -> (Workspace, Vec<dockspa
         builder.set_root(RootId::new(root), RootRecord::new(tabs_node));
         builder.set_surface(
             SurfaceId::new(surface),
-            SurfacePresentation::new(RootId::new(root)),
+            SurfacePresentation::with_main(RootId::new(root)),
         );
         tabs.push(tabs_node);
     }
@@ -37,41 +45,45 @@ fn select_command(
 }
 
 #[test]
-fn reduction_uses_source_priority_then_writer_sequence() {
+fn reduction_preserves_host_append_order_without_priority_sorting() {
     let (initial, tabs) = workspace_with_roots(&[(1, 1, &[1, 2])]);
     let mut engine = DockEngine::new(initial.clone(), DockPolicy::default())
         .expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
     let old_version = engine.version();
     let command = select_command(&initial, 1, tabs[0], 2);
 
-    let maintenance = engine
-        .enqueue(EngineInput::ValidateWorkspace)
-        .expect("sequence is available");
-    let application = engine
-        .enqueue(EngineInput::WorkspaceCommand {
-            expected: old_version,
-            command,
-        })
-        .expect("sequence is available");
-    let lifecycle = engine
-        .enqueue_workspace_replacement(initial.clone())
-        .expect("sequence is available");
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(&mut frame, EngineInput::ValidateWorkspace)
+        .expect("maintenance input fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected: old_version,
+                command,
+            },
+        )
+        .expect("application input fits the semantic host-frame phase");
+    inputs
+        .append(&mut frame, EngineInput::ReplaceWorkspace(initial.clone()))
+        .expect("lifecycle input fits the semantic host-frame phase");
 
-    let transition = engine.reduce_pending().expect("reduction must commit");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     let reduced = transition.reduced_inputs();
     assert_eq!(reduced.len(), 3);
-    assert_eq!(reduced[0].sequence(), lifecycle);
-    assert_eq!(reduced[0].priority(), InputPriority::LifecycleControl);
-    assert_eq!(reduced[1].sequence(), application);
+    assert_eq!(reduced[0].source_sequence(), SourceSequence::new(1));
+    assert_eq!(reduced[0].priority(), InputPriority::Maintenance);
+    assert_eq!(reduced[1].source_sequence(), SourceSequence::new(2));
     assert_eq!(reduced[1].priority(), InputPriority::ApplicationCommand);
-    assert_eq!(reduced[2].sequence(), maintenance);
-    assert_eq!(reduced[2].priority(), InputPriority::Maintenance);
+    assert_eq!(reduced[2].source_sequence(), SourceSequence::new(3));
+    assert_eq!(reduced[2].priority(), InputPriority::LifecycleControl);
     assert!(matches!(
         reduced[1].outcome(),
-        InputOutcome::StaleRejected {
-            expected,
-            accepted_base,
-        } if *expected == old_version && *accepted_base == engine.version()
+        InputOutcome::CommandProcessed { changed: true, .. }
     ));
     assert_eq!(engine.version().epoch().get(), 1);
     assert_eq!(engine.version().revision().get(), 0);
@@ -83,22 +95,35 @@ fn replacement_invalidates_old_references_even_when_workspace_is_identical() {
     let (workspace, tabs) = workspace_with_roots(&[(1, 1, &[1, 2])]);
     let mut engine = DockEngine::new(workspace.clone(), DockPolicy::default())
         .expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
     let version_before = engine.version();
     let command = select_command(&workspace, 1, tabs[0], 2);
 
-    let command_sequence = engine
-        .enqueue_command(command)
-        .expect("sequence is available");
-    let replacement_sequence = engine
-        .enqueue_workspace_replacement(workspace.clone())
-        .expect("sequence is available");
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(&mut frame, EngineInput::ReplaceWorkspace(workspace.clone()))
+        .expect("replacement fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected: version_before,
+                command,
+            },
+        )
+        .expect("command fits the semantic host-frame phase");
 
-    let transition = engine.reduce_pending().expect("replacement must commit");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     assert_eq!(
-        transition.reduced_inputs()[0].sequence(),
-        replacement_sequence
+        transition.reduced_inputs()[0].source_sequence(),
+        SourceSequence::new(1)
     );
-    assert_eq!(transition.reduced_inputs()[1].sequence(), command_sequence);
+    assert_eq!(
+        transition.reduced_inputs()[1].source_sequence(),
+        SourceSequence::new(2)
+    );
     assert!(matches!(
         transition.reduced_inputs()[1].outcome(),
         InputOutcome::StaleRejected {
@@ -119,15 +144,32 @@ fn independent_commands_from_one_published_version_commit_in_one_boundary() {
     let second = select_command(&workspace, 2, tabs[1], 4);
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
 
-    engine
-        .enqueue_command(first)
-        .expect("sequence is available");
-    engine
-        .enqueue_command(second)
-        .expect("sequence is available");
+    let expected = engine.version();
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
 
-    let transition = engine.reduce_pending().expect("both commands must commit");
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: first,
+            },
+        )
+        .expect("first command fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: second,
+            },
+        )
+        .expect("second command fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     assert_eq!(engine.version().revision().get(), 2);
     assert_eq!(transition.events().len(), 2);
     for reduced in transition.reduced_inputs() {
@@ -162,11 +204,15 @@ fn valid_no_op_does_not_advance_revision_or_emit_event() {
     let command = select_command(&workspace, 1, tabs[0], 1);
     let mut engine = DockEngine::new(workspace.clone(), DockPolicy::default())
         .expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let expected = engine.version();
 
-    engine
-        .enqueue_command(command)
-        .expect("sequence is available");
-    let transition = engine.reduce_pending().expect("no-op must be valid");
+    let transition = inputs_submit(
+        &mut engine,
+        &mut host,
+        EngineInput::WorkspaceCommand { expected, command },
+    )
+    .expect("no-op must be valid");
 
     assert_eq!(transition.before(), transition.after());
     assert!(transition.events().is_empty());
@@ -189,18 +235,22 @@ fn expected_command_rejection_is_consumed_without_mutation() {
         .expect("test target must be capturable");
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
-    engine
-        .enqueue_command(WorkspaceCommand::Open {
-            item: ItemId::new(1),
-            target: dockspace::command::DockTarget::Center(target),
-        })
-        .expect("sequence is available");
+    let mut host = TestPresentationHost::new(&mut engine);
     let before = engine.workspace().clone();
     let before_version = engine.version();
 
-    let transition = engine
-        .reduce_pending()
-        .expect("duplicate ownership is an expected consumed rejection");
+    let transition = inputs_submit(
+        &mut engine,
+        &mut host,
+        EngineInput::WorkspaceCommand {
+            expected: before_version,
+            command: WorkspaceCommand::Open {
+                item: ItemId::new(1),
+                target: dockspace::command::DockTarget::Center(target),
+            },
+        },
+    )
+    .expect("duplicate ownership is an expected consumed rejection");
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
         InputOutcome::CommandRejected {
@@ -210,7 +260,6 @@ fn expected_command_rejection_is_consumed_without_mutation() {
     ));
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.version(), before_version);
-    assert!(engine.pending_inputs().is_empty());
     assert!(transition.events().is_empty());
 }
 
@@ -223,19 +272,33 @@ fn expected_rejection_does_not_block_a_later_valid_command() {
     let select = select_command(&workspace, 1, tabs[0], 2);
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
-    engine
-        .enqueue_command(WorkspaceCommand::Open {
-            item: ItemId::new(1),
-            target: dockspace::command::DockTarget::Center(target),
-        })
-        .expect("sequence is available");
-    engine
-        .enqueue_command(select)
-        .expect("sequence is available");
-
-    let transition = engine
-        .reduce_pending()
-        .expect("expected rejection must not block the valid command");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let expected = engine.version();
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: WorkspaceCommand::Open {
+                    item: ItemId::new(1),
+                    target: dockspace::command::DockTarget::Center(target),
+                },
+            },
+        )
+        .expect("rejected command fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: select,
+            },
+        )
+        .expect("valid command fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     assert!(matches!(
         transition.reduced_inputs()[0].outcome(),
         InputOutcome::CommandRejected {
@@ -266,39 +329,50 @@ fn later_command_rejection_preserves_an_earlier_policy_change() {
         .expect("test target must be capturable");
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
     let expected = engine.version();
     let mut changed_policy = engine.policy().clone();
     changed_policy.set_allow_native_surfaces(true);
 
-    engine
-        .enqueue(EngineInput::ReplacePolicy {
-            expected,
-            policy: changed_policy,
-        })
-        .expect("sequence is available");
-    engine
-        .enqueue(EngineInput::WorkspaceCommand {
-            expected,
-            command: WorkspaceCommand::Open {
-                item: ItemId::new(1),
-                target: dockspace::command::DockTarget::Center(target),
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: WorkspaceCommand::Open {
+                    item: ItemId::new(1),
+                    target: dockspace::command::DockTarget::Center(target),
+                },
             },
-        })
-        .expect("sequence is available");
-    let transition = engine
-        .reduce_pending()
-        .expect("policy change and expected rejection must publish");
+        )
+        .expect("application command fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::ReplacePolicy {
+                expected,
+                policy: changed_policy,
+            },
+        )
+        .expect("policy replacement fits the terminal configuration phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     assert!(engine.policy().allows_native_surfaces());
     assert_eq!(engine.version().revision().get(), 1);
     assert_eq!(transition.events().len(), 1);
     assert!(matches!(
-        transition.reduced_inputs()[1].outcome(),
+        transition.reduced_inputs()[0].outcome(),
         InputOutcome::CommandRejected {
             error: CommandError::ItemAlreadyOpen { item },
             ..
         } if *item == ItemId::new(1)
     ));
-    assert!(engine.pending_inputs().is_empty());
+    assert!(matches!(
+        transition.reduced_inputs()[1].outcome(),
+        InputOutcome::PolicyReplaced { changed: true, .. }
+    ));
 }
 
 #[test]
@@ -310,21 +384,29 @@ fn later_command_rejection_preserves_an_earlier_workspace_replacement() {
         .expect("replacement target must be capturable");
     let mut engine =
         DockEngine::new(initial, DockPolicy::default()).expect("initial workspace must be valid");
-    engine
-        .enqueue_workspace_replacement(replacement)
-        .expect("sequence is available");
-    engine
-        .enqueue(EngineInput::WorkspaceCommand {
-            expected: WorkspaceVersion::new(WorkspaceEpoch::new(1), WorkspaceRevision::default()),
-            command: WorkspaceCommand::Open {
-                item: ItemId::new(2),
-                target: dockspace::command::DockTarget::Center(target),
+    let mut host = TestPresentationHost::new(&mut engine);
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(&mut frame, EngineInput::ReplaceWorkspace(replacement))
+        .expect("replacement fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected: WorkspaceVersion::new(
+                    WorkspaceEpoch::new(1),
+                    WorkspaceRevision::default(),
+                ),
+                command: WorkspaceCommand::Open {
+                    item: ItemId::new(2),
+                    target: dockspace::command::DockTarget::Center(target),
+                },
             },
-        })
-        .expect("sequence is available");
-    let transition = engine
-        .reduce_pending()
-        .expect("replacement and expected rejection must publish");
+        )
+        .expect("application command fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
     assert_eq!(
         engine.version(),
         WorkspaceVersion::new(WorkspaceEpoch::new(1), WorkspaceRevision::default())
@@ -341,7 +423,6 @@ fn later_command_rejection_preserves_an_earlier_workspace_replacement() {
             ..
         } if *item == ItemId::new(2)
     ));
-    assert!(engine.pending_inputs().is_empty());
 }
 
 #[test]
@@ -351,16 +432,31 @@ fn same_root_commands_from_one_version_commit_then_reject_stale_source() {
     let select_three = select_command(&workspace, 1, tabs[0], 3);
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
 
-    engine
-        .enqueue_command(select_two)
-        .expect("sequence is available");
-    engine
-        .enqueue_command(select_three)
-        .expect("sequence is available");
-    let transition = engine
-        .reduce_pending()
-        .expect("stale second command must not poison the boundary");
+    let expected = engine.version();
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
+    let mut frame = host.begin(&engine);
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: select_two,
+            },
+        )
+        .expect("first command fits the semantic host-frame phase");
+    inputs
+        .append(
+            &mut frame,
+            EngineInput::WorkspaceCommand {
+                expected,
+                command: select_three,
+            },
+        )
+        .expect("second command fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
 
     assert_eq!(engine.version().revision().get(), 1);
     assert_eq!(transition.events().len(), 1);
@@ -382,33 +478,45 @@ fn same_root_commands_from_one_version_commit_then_reject_stale_source() {
             ..
         }) if *selected == ItemId::new(2)
     ));
-    assert!(engine.pending_inputs().is_empty());
 }
 
 #[test]
-fn newly_enqueued_input_is_deferred_to_the_next_boundary() {
+fn separately_submitted_inputs_use_distinct_explicit_boundaries() {
     let (workspace, _) = workspace_with_roots(&[(1, 1, &[1])]);
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("initial workspace must be valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let mut inputs = TestInputStream::new(TEST_SOURCE);
 
-    let first = engine
-        .enqueue(EngineInput::ValidateWorkspace)
-        .expect("sequence is available");
-    let first_transition = engine.reduce_pending().expect("first boundary must commit");
-    assert_eq!(first_transition.reduced_inputs()[0].sequence(), first);
-
-    let second = engine
-        .enqueue(EngineInput::ValidateWorkspace)
-        .expect("sequence is available");
-    assert!(
-        engine
-            .pending_inputs()
-            .iter()
-            .any(|input| input.sequence() == second)
+    let mut first_frame = host.begin(&engine);
+    inputs
+        .append(&mut first_frame, EngineInput::ValidateWorkspace)
+        .expect("maintenance input fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut first_frame);
+    let first_transition = host.finish(first_frame, &mut engine);
+    assert_eq!(
+        first_transition.reduced_inputs()[0].source_sequence(),
+        SourceSequence::new(1)
     );
-    let second_transition = engine
-        .reduce_pending()
-        .expect("second boundary must commit");
+
+    let mut second_frame = host.begin(&engine);
+    inputs
+        .append(&mut second_frame, EngineInput::ValidateWorkspace)
+        .expect("maintenance input fits the semantic host-frame phase");
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut second_frame);
+    let second_transition = host.finish(second_frame, &mut engine);
     assert_eq!(second_transition.reduced_inputs().len(), 1);
-    assert_eq!(second_transition.reduced_inputs()[0].sequence(), second);
+    assert_eq!(
+        second_transition.reduced_inputs()[0].source_sequence(),
+        SourceSequence::new(2)
+    );
+}
+
+fn inputs_submit(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    input: EngineInput,
+) -> Result<dockspace::transition::EngineTransition, dockspace::engine::EngineError> {
+    let mut inputs = TestInputStream::resume(engine, TEST_SOURCE);
+    inputs.submit(engine, host, input)
 }

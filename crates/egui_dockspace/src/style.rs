@@ -2,6 +2,7 @@
 
 use std::{error::Error, fmt};
 
+use dockspace::presentation_config::{DockPresentationConfig, DockPresentationConfigError};
 use egui::{Color32, Vec2};
 
 /// Configurable geometry and colors used to paint a docking scene.
@@ -12,6 +13,8 @@ use egui::{Color32, Vec2};
 pub struct DockStyle {
     /// Height of every tab bar.
     pub tab_bar_height: f32,
+    /// Nominal square extent of the whole-tab-stack grip.
+    pub tab_group_grip_extent: f32,
     /// Horizontal padding on each side of tab content.
     pub tab_horizontal_padding: f32,
     /// Minimum width of a tab.
@@ -24,7 +27,7 @@ pub struct DockStyle {
     pub splitter_thickness: f32,
     /// Total interaction thickness centered on a splitter.
     pub splitter_hit_extent: f32,
-    /// Logical point step used by keyboard splitter adjustment.
+    /// Logical point step used by keyboard splitter and contained-edge adjustment.
     pub splitter_keyboard_step: f32,
     /// Width and height of one explicit docking guide button.
     pub drop_guide_extent: f32,
@@ -93,6 +96,38 @@ pub struct DockStyle {
 }
 
 impl DockStyle {
+    pub(crate) fn presentation_config(
+        &self,
+    ) -> Result<DockPresentationConfig, DockPresentationConfigError> {
+        DockPresentationConfig::builder()
+            .tab_bar_height(f64::from(self.tab_bar_height))
+            .tab_group_grip_extent(f64::from(self.tab_group_grip_extent))
+            .tab_horizontal_padding(f64::from(self.tab_horizontal_padding))
+            .tab_min_width(f64::from(self.tab_min_width))
+            .tab_max_width(f64::from(self.tab_max_width))
+            .tab_close_extent(f64::from(self.tab_close_size))
+            .splitter_thickness(f64::from(self.splitter_thickness))
+            .splitter_hit_extent(f64::from(self.splitter_hit_extent))
+            .splitter_keyboard_step(f64::from(self.splitter_keyboard_step))
+            .guide_extent(f64::from(self.drop_guide_extent))
+            .guide_gap(f64::from(self.drop_guide_gap))
+            .guide_hit_padding(f64::from(self.drop_guide_hit_padding))
+            .guide_outer_inset(f64::from(self.drop_guide_outer_inset))
+            .dock_fraction(f64::from(self.dock_fraction))
+            .floating_title_height(f64::from(self.floating_title_height))
+            .floating_border_width(f64::from(self.floating_border_width))
+            .floating_resize_extent(f64::from(self.floating_resize_extent))
+            .minimum_pane_size(
+                f64::from(self.minimum_pane_size.x),
+                f64::from(self.minimum_pane_size.y),
+            )
+            .minimum_floating_size(
+                f64::from(self.minimum_floating_size.x),
+                f64::from(self.minimum_floating_size.y),
+            )
+            .build()
+    }
+
     /// Validates every geometry metric and all cross-field invariants.
     ///
     /// Call this before publishing style metrics to the core scene. Validation
@@ -105,6 +140,7 @@ impl DockStyle {
     pub fn validate(&self) -> Result<(), DockStyleError> {
         for (field, value) in [
             ("tab_bar_height", self.tab_bar_height),
+            ("tab_group_grip_extent", self.tab_group_grip_extent),
             ("tab_min_width", self.tab_min_width),
             ("tab_max_width", self.tab_max_width),
             ("tab_close_size", self.tab_close_size),
@@ -156,6 +192,12 @@ impl DockStyle {
                 container: "tab_bar_height",
             });
         }
+        if self.tab_group_grip_extent > self.tab_bar_height {
+            return Err(DockStyleError::ExtentExceedsContainer {
+                extent: "tab_group_grip_extent",
+                container: "tab_bar_height",
+            });
+        }
         if self.splitter_hit_extent < self.splitter_thickness {
             return Err(DockStyleError::HitExtentSmallerThanVisible {
                 hit_extent: "splitter_hit_extent",
@@ -190,6 +232,7 @@ impl Default for DockStyle {
     fn default() -> Self {
         Self {
             tab_bar_height: 28.0,
+            tab_group_grip_extent: 28.0,
             tab_horizontal_padding: 10.0,
             tab_min_width: 72.0,
             tab_max_width: 220.0,

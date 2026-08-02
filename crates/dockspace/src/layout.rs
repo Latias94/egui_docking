@@ -141,6 +141,14 @@ pub struct SplitProjection {
     pub axis: Axis,
     /// Logical rectangles reserved between adjacent children.
     pub splitter_rects: Vec<LogicalRect>,
+    /// Minimum projected extent for each direct child along this split's axis.
+    pub child_minimum_extents: Vec<f64>,
+    /// Maximum projected extent for each direct child along this split's axis.
+    pub child_maximum_extents: Vec<f64>,
+    /// Actual projected extent for each direct child along this split's axis.
+    pub child_extents: Vec<f64>,
+    /// Direct child which contains the root's declared central leaf, when any.
+    pub central_index: Option<usize>,
     /// Extent by which child minima exceed the split bounds.
     pub overflow: f64,
     /// Extent left unused after every child reached its maximum.
@@ -737,6 +745,9 @@ struct SplitProjectionState<'workspace> {
     bounds: LogicalRect,
     cursor: f64,
     splitter_rects: Vec<LogicalRect>,
+    child_minimum_extents: Vec<f64>,
+    child_maximum_extents: Vec<f64>,
+    central_index: Option<usize>,
     overflow: f64,
     unallocated: f64,
     splitter_thickness: f64,
@@ -839,6 +850,14 @@ fn prepare_split_projection<'workspace>(
             },
         })
         .collect::<Vec<_>>();
+    let child_minimum_extents = axis_constraints
+        .iter()
+        .map(|constraint| constraint.min())
+        .collect();
+    let child_maximum_extents = axis_constraints
+        .iter()
+        .map(|constraint| constraint.max())
+        .collect();
     let axis_weights = weight_overrides.get(&node_id).cloned().unwrap_or_else(|| {
         weights
             .iter()
@@ -874,6 +893,9 @@ fn prepare_split_projection<'workspace>(
         bounds,
         cursor,
         splitter_rects: Vec::with_capacity(children.len().saturating_sub(1)),
+        child_minimum_extents,
+        child_maximum_extents,
+        central_index,
         overflow: solved.overflow,
         unallocated: solved.unallocated,
         splitter_thickness,
@@ -936,6 +958,10 @@ fn advance_split_projection<'workspace>(
             SplitProjection {
                 axis: state.axis,
                 splitter_rects: state.splitter_rects,
+                child_minimum_extents: state.child_minimum_extents,
+                child_maximum_extents: state.child_maximum_extents,
+                child_extents: state.sizes,
+                central_index: state.central_index,
                 overflow: state.overflow,
                 unallocated: state.unallocated,
             },

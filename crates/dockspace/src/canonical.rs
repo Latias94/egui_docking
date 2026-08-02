@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::graph::{
     InvalidSplitWeight, InvalidSplitWeights, NORMALIZED_WEIGHT_TOLERANCE, Node, SplitWeight,
-    Workspace, WorkspaceBuilder,
+    Workspace, WorkspaceBuilder, is_exact_tab_mru,
 };
 use crate::ids::{ItemId, NodeId, RootId};
 use crate::validation::WorkspaceValidationErrors;
@@ -120,6 +120,12 @@ pub enum CanonicalizationError {
         /// Selected item, when one was supplied.
         selected: Option<ItemId>,
     },
+    /// A tabs node does not carry one exact selected-first item permutation.
+    #[error("tabs node {node:?} has invalid MRU state")]
+    InvalidTabMru {
+        /// Tabs node with invalid or missing history.
+        node: NodeId,
+    },
     /// A central-region identity does not name a tabs leaf.
     #[error("root {root} central node {central:?} is not a tabs leaf")]
     CentralNotTabs {
@@ -203,6 +209,7 @@ pub fn canonicalize_workspace(
 
     let reachable = reachable_from_roots(&candidate)?;
     candidate.nodes.retain(|node, _| reachable.contains(&node));
+    candidate.tab_mru.retain(|node, _| reachable.contains(node));
 
     let candidate_items = candidate.item_multiset();
     if candidate_items != original_items {
@@ -390,6 +397,13 @@ fn validate_nodes(workspace: &Workspace) -> Result<HashMap<NodeId, NodeId>, Cano
                         selected: *selected,
                     });
                 }
+                if !is_exact_tab_mru(
+                    items,
+                    *selected,
+                    workspace.tab_mru.get(&node_id).map(Vec::as_slice),
+                ) {
+                    return Err(CanonicalizationError::InvalidTabMru { node: node_id });
+                }
 
                 for item in items {
                     if let Some(first) = item_owners.insert(*item, node_id) {
@@ -440,6 +454,14 @@ fn validate_nodes(workspace: &Workspace) -> Result<HashMap<NodeId, NodeId>, Cano
                 }
             }
         }
+    }
+
+    if let Some((&node, _)) = workspace
+        .tab_mru
+        .iter()
+        .find(|(node, _)| !matches!(workspace.nodes.get(**node), Some(Node::Tabs { .. })))
+    {
+        return Err(CanonicalizationError::InvalidTabMru { node });
     }
 
     Ok(parents)
