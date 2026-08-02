@@ -128,7 +128,16 @@ struct SuppressedScrollSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+struct AwaitingScrollReceiver {
+    endpoint: ScrollDeliveryEndpoint,
+    popup_routing: PopupRoutingRevision,
+    policy: PolicyRevision,
+    config: PresentationConfigRevision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ActiveScrollDisposition {
+    AwaitingFirstDelta(AwaitingScrollReceiver),
     Owned(ScrollOwner),
     Suppressed(SuppressedScrollSession),
 }
@@ -318,6 +327,9 @@ impl DockEngine {
             .active
             .iter()
             .filter_map(|(key, session)| match session.disposition {
+                ActiveScrollDisposition::AwaitingFirstDelta(awaiting) => self
+                    .awaiting_scroll_lifecycle_loss(awaiting)
+                    .map(|reason| (*key, reason)),
                 ActiveScrollDisposition::Owned(owner) => self
                     .scroll_owner_lifecycle_loss(owner)
                     .map(|reason| (*key, reason)),
@@ -381,6 +393,42 @@ impl DockEngine {
             .issue_session()
             .ok_or_else(|| scroll_invariant(cause, "scroll session identity space is exhausted"))?;
         self.scroll_interaction.advance_token_watermark(key);
+
+        if !has_directional_scroll_delta(scroll.delta()) {
+            let Authority::Known(endpoint) = scroll.delivery() else {
+                let reason = ScrollSuppressionReason::ReceiverUnknown;
+                let suppressed = self.capture_suppressed_scroll(edge, reason);
+                self.scroll_interaction.active.insert(
+                    key,
+                    ActiveScrollSession {
+                        id: session,
+                        disposition: ActiveScrollDisposition::Suppressed(suppressed),
+                    },
+                );
+                return Ok(vec![scroll_suppressed(
+                    Some(session),
+                    Some(token),
+                    scroll.phase(),
+                    reason,
+                )]);
+            };
+            self.scroll_interaction.active.insert(
+                key,
+                ActiveScrollSession {
+                    id: session,
+                    disposition: ActiveScrollDisposition::AwaitingFirstDelta(
+                        self.capture_awaiting_scroll(endpoint),
+                    ),
+                },
+            );
+            return Ok(vec![InteractionOutcome::Scroll(
+                ScrollReductionOutcome::AwaitingFirstDelta {
+                    session,
+                    sequence: token,
+                    phase: scroll.phase(),
+                },
+            )]);
+        }
 
         match self.resolve_initial_scroll_owner(cause, edge, observed)? {
             Ok(owner) => {
@@ -452,6 +500,10 @@ impl DockEngine {
             })?;
 
         match active.disposition {
+            ActiveScrollDisposition::AwaitingFirstDelta(awaiting) => self
+                .reduce_awaiting_scroll_continuation(
+                    cause, key, active.id, edge, scroll, observed, awaiting, terminal,
+                ),
             ActiveScrollDisposition::Suppressed(suppressed) => {
                 if terminal {
                     let retired = self
@@ -477,6 +529,127 @@ impl DockEngine {
                 cause, key, active.id, edge, scroll, observed, owner, terminal,
             ),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_awaiting_scroll_continuation(
+        &mut self,
+        cause: ReductionCause,
+        key: ScrollSequenceKey,
+        session: ScrollSessionId,
+        edge: &PointerEdge,
+        scroll: ScrollEdge,
+        observed: ObservedScrollReceiver<'_>,
+        awaiting: AwaitingScrollReceiver,
+        terminal: bool,
+    ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        if let Some(reason) = self.awaiting_scroll_lifecycle_loss(awaiting) {
+            return self.terminate_scroll_session(cause, key, reason);
+        }
+        if !has_directional_scroll_delta(scroll.delta()) {
+            if terminal {
+                return self.terminate_scroll_session(
+                    cause,
+                    key,
+                    ScrollTerminationReason::Completed,
+                );
+            }
+            return Ok(vec![InteractionOutcome::Scroll(
+                ScrollReductionOutcome::AwaitingFirstDelta {
+                    session,
+                    sequence: key.token,
+                    phase: scroll.phase(),
+                },
+            )]);
+        }
+        match scroll.delivery() {
+            Authority::Known(endpoint) if endpoint == awaiting.endpoint => {}
+            Authority::Known(_) => {
+                return self.terminate_scroll_session(
+                    cause,
+                    key,
+                    ScrollTerminationReason::DeliveryEndpointChanged,
+                );
+            }
+            Authority::Unknown(_) => {
+                if terminal {
+                    return self.terminate_scroll_session(
+                        cause,
+                        key,
+                        ScrollTerminationReason::Completed,
+                    );
+                }
+                return Ok(vec![scroll_suppressed(
+                    Some(session),
+                    Some(key.token),
+                    scroll.phase(),
+                    ScrollSuppressionReason::ReceiverUnknown,
+                )]);
+            }
+        }
+        if matches!(observed, ObservedScrollReceiver::Unknown) {
+            if terminal {
+                return self.terminate_scroll_session(
+                    cause,
+                    key,
+                    ScrollTerminationReason::Completed,
+                );
+            }
+            return Ok(vec![scroll_suppressed(
+                Some(session),
+                Some(key.token),
+                scroll.phase(),
+                ScrollSuppressionReason::ReceiverUnknown,
+            )]);
+        }
+
+        let owner = match self.resolve_initial_scroll_owner(cause, edge, observed)? {
+            Ok(owner) => owner,
+            Err(reason) => {
+                if terminal {
+                    return self.terminate_scroll_session(
+                        cause,
+                        key,
+                        ScrollTerminationReason::Completed,
+                    );
+                }
+                let suppressed = self.capture_suppressed_scroll(edge, reason);
+                self.scroll_interaction
+                    .active
+                    .get_mut(&key)
+                    .expect("the awaiting scroll session is still active")
+                    .disposition = ActiveScrollDisposition::Suppressed(suppressed);
+                return Ok(vec![scroll_suppressed(
+                    Some(session),
+                    Some(key.token),
+                    scroll.phase(),
+                    reason,
+                )]);
+            }
+        };
+        self.scroll_interaction
+            .active
+            .get_mut(&key)
+            .expect("the awaiting scroll session is still active")
+            .disposition = ActiveScrollDisposition::Owned(owner);
+
+        let mut outcomes = vec![InteractionOutcome::Scroll(ScrollReductionOutcome::Began {
+            session,
+            receiver: owner.receiver,
+        })];
+        if let Some(applied) =
+            self.apply_scroll_delta(cause, Some(session), owner, scroll.phase(), scroll.delta())?
+        {
+            outcomes.push(applied);
+        }
+        if terminal {
+            outcomes.extend(self.terminate_scroll_session(
+                cause,
+                key,
+                ScrollTerminationReason::Completed,
+            )?);
+        }
+        Ok(outcomes)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -702,6 +875,19 @@ impl DockEngine {
         };
         SuppressedScrollSession {
             reason,
+            endpoint,
+            popup_routing: self
+                .presentation_authority
+                .tab_strip_states
+                .popup_requirement()
+                .revision(),
+            policy: self.policy.revision(),
+            config: self.presentation_authority.presentation_config_revision,
+        }
+    }
+
+    fn capture_awaiting_scroll(&self, endpoint: ScrollDeliveryEndpoint) -> AwaitingScrollReceiver {
+        AwaitingScrollReceiver {
             endpoint,
             popup_routing: self
                 .presentation_authority
@@ -1001,13 +1187,8 @@ impl DockEngine {
         {
             return Some(ScrollTerminationReason::PopupRoutingChanged);
         }
-        if !matches!(
-            self.presentation_authority
-                .presentation
-                .retirement_status(owner.endpoint.host()),
-            Ok(PresentationHostRetirementStatus::Live)
-        ) {
-            return Some(ScrollTerminationReason::PresentationHostRetired);
+        if let Some(reason) = self.scroll_endpoint_lifecycle_loss(owner.endpoint) {
+            return Some(reason);
         }
         if let Some(projection) = self
             .presentation_authority
@@ -1052,24 +1233,29 @@ impl DockEngine {
                 }
             }
         }
-        match owner.endpoint.binding() {
-            Some(binding) => {
-                let current = self.viewport.viewport(binding.surface());
-                if !current.is_some_and(|record| {
-                    record.binding() == binding
-                        && record.coordinate_generation() == owner.endpoint.coordinate_generation()
-                        && record.has_coordinate_authority()
-                }) {
-                    return Some(ScrollTerminationReason::BindingRetired);
-                }
-            }
-            None => {
-                if self.viewport.viewport(owner.receiver.surface()).is_some() {
-                    return Some(ScrollTerminationReason::DeliveryEndpointChanged);
-                }
-            }
-        }
         None
+    }
+
+    fn awaiting_scroll_lifecycle_loss(
+        &self,
+        awaiting: AwaitingScrollReceiver,
+    ) -> Option<ScrollTerminationReason> {
+        if self.policy.revision() != awaiting.policy {
+            return Some(ScrollTerminationReason::PolicyChanged);
+        }
+        if self.presentation_authority.presentation_config_revision != awaiting.config {
+            return Some(ScrollTerminationReason::PresentationConfigChanged);
+        }
+        if self
+            .presentation_authority
+            .tab_strip_states
+            .popup_requirement()
+            .revision()
+            != awaiting.popup_routing
+        {
+            return Some(ScrollTerminationReason::PopupRoutingChanged);
+        }
+        self.scroll_endpoint_lifecycle_loss(awaiting.endpoint)
     }
 
     fn suppressed_scroll_lifecycle_loss(
@@ -1091,33 +1277,40 @@ impl DockEngine {
         {
             return Some(ScrollTerminationReason::PopupRoutingChanged);
         }
-        if let Some(endpoint) = suppressed.endpoint {
-            if self.workspace.surface(endpoint.surface()).is_none() {
-                return Some(ScrollTerminationReason::SurfaceRemoved);
-            }
-            if !matches!(
-                self.presentation_authority
-                    .presentation
-                    .retirement_status(endpoint.host()),
-                Ok(PresentationHostRetirementStatus::Live)
-            ) {
-                return Some(ScrollTerminationReason::PresentationHostRetired);
-            }
-            match endpoint.binding() {
-                Some(binding) => {
-                    let current = self.viewport.viewport(binding.surface());
-                    if !current.is_some_and(|record| {
-                        record.binding() == binding
-                            && record.coordinate_generation() == endpoint.coordinate_generation()
-                            && record.has_coordinate_authority()
-                    }) {
-                        return Some(ScrollTerminationReason::BindingRetired);
-                    }
+        suppressed
+            .endpoint
+            .and_then(|endpoint| self.scroll_endpoint_lifecycle_loss(endpoint))
+    }
+
+    fn scroll_endpoint_lifecycle_loss(
+        &self,
+        endpoint: ScrollDeliveryEndpoint,
+    ) -> Option<ScrollTerminationReason> {
+        if self.workspace.surface(endpoint.surface()).is_none() {
+            return Some(ScrollTerminationReason::SurfaceRemoved);
+        }
+        if !matches!(
+            self.presentation_authority
+                .presentation
+                .retirement_status(endpoint.host()),
+            Ok(PresentationHostRetirementStatus::Live)
+        ) {
+            return Some(ScrollTerminationReason::PresentationHostRetired);
+        }
+        match endpoint.binding() {
+            Some(binding) => {
+                let current = self.viewport.viewport(binding.surface());
+                if !current.is_some_and(|record| {
+                    record.binding() == binding
+                        && record.coordinate_generation() == endpoint.coordinate_generation()
+                        && record.has_coordinate_authority()
+                }) {
+                    return Some(ScrollTerminationReason::BindingRetired);
                 }
-                None => {
-                    if self.viewport.viewport(endpoint.surface()).is_some() {
-                        return Some(ScrollTerminationReason::DeliveryEndpointChanged);
-                    }
+            }
+            None => {
+                if self.viewport.viewport(endpoint.surface()).is_some() {
+                    return Some(ScrollTerminationReason::DeliveryEndpointChanged);
                 }
             }
         }
@@ -1139,8 +1332,17 @@ fn menu_line_extent(record: &crate::scene::TabListMenuRecord) -> Option<f64> {
     }
 }
 
+const fn has_directional_scroll_delta(delta: Option<ScrollDelta>) -> bool {
+    let Some(delta) = delta else {
+        return false;
+    };
+    let vector = delta.vector();
+    vector.x() != 0.0 || vector.y() != 0.0
+}
+
 const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<PresentationHitRegionId> {
     match session.disposition {
+        ActiveScrollDisposition::AwaitingFirstDelta(_) => None,
         ActiveScrollDisposition::Owned(owner) => Some(owner.receiver),
         ActiveScrollDisposition::Suppressed(_) => None,
     }

@@ -4321,6 +4321,12 @@ fn observe_scroll_outcome(
     outcome: ScrollReductionOutcome,
 ) -> Result<ExpectedInteractionOutcome, CoreProtocolTraceError> {
     match outcome {
+        ScrollReductionOutcome::AwaitingFirstDelta {
+            sequence, phase, ..
+        } => Ok(ExpectedInteractionOutcome::ScrollAwaitingFirstDelta {
+            sequence: sequence.get(),
+            phase: observe_scroll_phase(phase),
+        }),
         ScrollReductionOutcome::Began { receiver, .. } => {
             Ok(ExpectedInteractionOutcome::ScrollBegan {
                 receiver: observe_scroll_receiver(workspace, receiver)?,

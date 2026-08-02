@@ -1120,10 +1120,10 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     let first = begin.reduced_pointer_edges()[0].interaction_outcomes();
     assert!(matches!(
         first,
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began {
-            receiver,
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
+            sequence,
             ..
-        })] if *receiver == region_id
+        })] if *sequence == token
     ));
 
     let update = submit_exact_scroll_edge(
@@ -1143,8 +1143,13 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     );
     assert!(matches!(
         update.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
-            if application.requested_delta() == 40.0
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver, .. }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application)),
+        ]
+            if *receiver == region_id
+                && application.receiver() == region_id
+                && application.requested_delta() == 40.0
                 && application.applied_delta() == 40.0
                 && application.offset() == 40.0
     ));
@@ -1330,8 +1335,10 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
     );
     assert!(matches!(
         resumed.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
-            if application.offset() == 40.0
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver, .. }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application)),
+        ] if *receiver == region_id && application.offset() == 40.0
     ));
 }
 

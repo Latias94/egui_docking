@@ -1485,7 +1485,16 @@ pub enum ScrollTerminationReason {
 /// Canonical reduction result for one ordered scroll edge or lifecycle transition.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScrollReductionOutcome {
-    /// A smooth `Begin` edge minted and locked one core-owned session.
+    /// A smooth sequence has not supplied its first non-zero directional delta.
+    AwaitingFirstDelta {
+        /// Core-owned session identity.
+        session: ScrollSessionId,
+        /// Provider-owned sequence token awaiting its first directional sample.
+        sequence: ScrollSequenceToken,
+        /// Native phase carried by this still-directionless edge.
+        phase: ScrollPhase,
+    },
+    /// The first directional sample locked one exact core-owned receiver.
     Began {
         /// Core-owned session identity.
         session: ScrollSessionId,

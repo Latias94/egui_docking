@@ -353,12 +353,13 @@ fn scroll_terminal_reasons(
 fn exact_ready_output_without_the_locked_receiver_terminates_smooth_scroll() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
-    let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
+    let began = fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
     assert!(matches!(
         began.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::Scroll(
-            ScrollReductionOutcome::Began { .. }
-        )]
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { .. }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(_)),
+        ]
     ));
 
     let compiled = fixture.compile_surface(900.0);
@@ -400,7 +401,7 @@ fn exact_ready_output_without_the_locked_receiver_terminates_smooth_scroll() {
 fn semantically_identical_emission_refresh_preserves_smooth_scroll_owner() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
-    fixture.submit_known(ScrollPhase::Begin, Some(token), None);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
 
     let emitted = fixture.emit_current_surface();
     assert!(scroll_terminal_reasons(&emitted).is_empty());
@@ -445,8 +446,12 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     let token = ScrollSequenceToken::new(41);
     let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
     let first_session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
-        outcomes => panic!("smooth scroll must begin, got {outcomes:?}"),
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
+                session, ..
+            }),
+        ] => *session,
+        outcomes => panic!("smooth scroll must await its first delta, got {outcomes:?}"),
     };
     let second = fixture.submit_known_for_device(
         ScrollDeviceId::new(2),
@@ -455,8 +460,12 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         None,
     );
     let second_session = match second.reduced_pointer_edges()[0].interaction_outcomes() {
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
-        outcomes => panic!("second smooth scroll must begin, got {outcomes:?}"),
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
+                session, ..
+            }),
+        ] => *session,
+        outcomes => panic!("second smooth scroll must await its first delta, got {outcomes:?}"),
     };
 
     let terminal = fixture.end_pointer_stream();
@@ -477,7 +486,7 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     assert!(matches!(
         successor.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Scroll(
-            ScrollReductionOutcome::Began { session: actual, .. }
+            ScrollReductionOutcome::AwaitingFirstDelta { session: actual, .. }
         )] if *actual != first_session && *actual != second_session
     ));
 
@@ -489,4 +498,76 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         scroll_terminal_reasons(&retired),
         [ScrollTerminationReason::ProviderRetired]
     );
+}
+
+#[test]
+fn smooth_scroll_end_without_delta_terminates_an_awaiting_session() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
+    let session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
+                session, ..
+            }),
+        ] => *session,
+        outcomes => panic!("smooth scroll must await its first delta, got {outcomes:?}"),
+    };
+
+    let ended = fixture.submit_known(ScrollPhase::End, Some(token), None);
+    assert!(matches!(
+        ended.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                session: actual,
+                receiver: None,
+                reason: ScrollTerminationReason::Completed,
+            }
+        )] if *actual == session
+    ));
+}
+
+#[test]
+fn zero_deltas_do_not_lock_a_smooth_scroll_receiver() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    let began = fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(0.0, 0.0)));
+    let session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
+                session,
+                phase: ScrollPhase::Begin,
+                ..
+            }),
+        ] => *session,
+        outcomes => panic!("zero-delta begin must await direction, got {outcomes:?}"),
+    };
+
+    let update = fixture.submit_known(ScrollPhase::Update, Some(token), Some(line_delta(0.0, 0.0)));
+    assert!(matches!(
+        update.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::AwaitingFirstDelta {
+                session: actual,
+                phase: ScrollPhase::Update,
+                ..
+            }
+        )] if *actual == session
+    ));
+
+    let directional = fixture.submit_known(
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(-1.0, 0.0)),
+    );
+    assert!(matches!(
+        directional.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began {
+                session: actual,
+                ..
+            }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(_)),
+        ] if *actual == session
+    ));
 }

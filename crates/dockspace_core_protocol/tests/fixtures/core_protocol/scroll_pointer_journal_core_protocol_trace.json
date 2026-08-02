@@ -434,12 +434,10 @@
                 "sequence": 1,
                 "outcomes": [
                   {
-                    "kind": "scroll_began",
-                    "receiver": {
-                      "kind": "tab_strip",
-                      "surface": 1,
-                      "root": 1,
-                      "path": []
+                    "kind": "scroll_awaiting_first_delta",
+                    "sequence": 41,
+                    "phase": {
+                      "kind": "begin"
                     }
                   }
                 ]
@@ -731,6 +729,15 @@
                 "stream_incarnation": 1,
                 "sequence": 3,
                 "outcomes": [
+                  {
+                    "kind": "scroll_began",
+                    "receiver": {
+                      "kind": "tab_strip",
+                      "surface": 1,
+                      "root": 1,
+                      "path": []
+                    }
+                  },
                   {
                     "kind": "scroll_applied",
                     "session": true,
