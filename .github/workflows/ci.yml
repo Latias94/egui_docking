@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  workspace:
+    name: Workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Check all targets
+        run: cargo check --workspace --all-features --all-targets --locked
+      - name: Check correctness lints
+        run: >-
+          cargo clippy --workspace --all-features --all-targets --locked --
+          -A warnings -D clippy::correctness -D clippy::suspicious
+      - name: Build strict documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
+      - name: Run workspace tests
+        run: >-
+          cargo nextest run --workspace --all-features --all-targets
+          --no-fail-fast --locked
+      - name: Run documentation tests
+        run: cargo test --doc --workspace --all-features --locked
+
+  official-egui:
+    name: Official egui consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: official-egui
+
+      - name: Run downstream public API harness
+        run: >-
+          cargo nextest run
+          --manifest-path integration/egui-official-harness/Cargo.toml
+          --all-targets --no-fail-fast --locked
+
+  fork-native:
+    name: Pinned fork and native runtime
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-native
+
+      - name: Run fork and native protocol harnesses
+        run: python3 scripts/run_egui_fork_harness.py
+
+  native-e2e:
+    name: Native two-window E2E
+    needs: fork-native
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-native
+
+      - name: Run real-window tear-off and redock
+        run: python3 scripts/run_native_e2e.py --timeout 600
