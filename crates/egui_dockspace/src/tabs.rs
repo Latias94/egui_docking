@@ -15,8 +15,8 @@ use dockspace::scene::{
 use dockspace::tab_strip::TabStripControlId;
 use egui::accesskit::{Action, HasPopup, Orientation, Role};
 use egui::{
-    Area, CursorIcon, Event, EventFilter, FocusDirection, Id, Key, MouseWheelUnit, Order, Rect,
-    Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2,
+    Area, CursorIcon, EventFilter, FocusDirection, Id, Key, Order, Rect, Response, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, pos2,
 };
 
 use crate::hit::{
@@ -536,7 +536,7 @@ pub(crate) fn paint_authoritative_tab_list_menu(
             &menu_response,
             PresentationHitRegionKind::TabListMenuBlocker(menu.session()),
         );
-        capture_authoritative_menu_input(ui, surface, menu, viewport_rect, output);
+        capture_authoritative_menu_input(ui, surface, menu, output);
     }
 }
 
@@ -820,7 +820,6 @@ fn capture_authoritative_menu_input(
     ui: &Ui,
     surface: SurfaceId,
     menu: &dockspace::scene::TabListMenuRecord,
-    viewport: Rect,
     output: &mut RenderOutput,
 ) {
     if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape)) {
@@ -843,48 +842,6 @@ fn capture_authoritative_menu_input(
                 navigation,
             },
             key,
-        );
-    }
-    let owns_pointer = ui
-        .input(|input| input.pointer.hover_pos())
-        .is_some_and(|point| contains_half_open(viewport, point));
-    if !owns_pointer {
-        return;
-    }
-    let delta = ui.input_mut(|input| {
-        let mut delta = 0.0;
-        input.events.retain(|event| match event {
-            Event::MouseWheel {
-                unit,
-                delta: wheel,
-                modifiers,
-                ..
-            } if !modifiers.ctrl && !modifiers.command => {
-                let scale = match unit {
-                    MouseWheelUnit::Point => 1.0,
-                    MouseWheelUnit::Line => 24.0,
-                    MouseWheelUnit::Page => viewport.height(),
-                };
-                delta -= wheel_axis_delta(*wheel) * scale;
-                false
-            }
-            _ => true,
-        });
-        if delta != 0.0 {
-            input.smooth_scroll_delta = egui::Vec2::ZERO;
-        }
-        delta
-    });
-    if delta != 0.0
-        && let Ok(adjustment) = TabScrollAdjustment::scroll_by(f64::from(delta))
-    {
-        output.push_mouse_wheel(
-            ui,
-            RenderAction::AdjustTabListMenuScroll {
-                surface,
-                session: menu.session(),
-                adjustment,
-            },
         );
     }
 }
@@ -1025,48 +982,7 @@ fn update_tab_strip_scroll(
         return false;
     }
 
-    let wheel_delta = ui.input_mut(|input| {
-        let mut wheel_delta = 0.0;
-        input.events.retain(|event| match event {
-            Event::MouseWheel {
-                unit,
-                delta,
-                modifiers,
-                ..
-            } if !modifiers.ctrl && !modifiers.command => {
-                let points = match unit {
-                    MouseWheelUnit::Point => 1.0,
-                    MouseWheelUnit::Line => style.tab_min_width,
-                    MouseWheelUnit::Page => viewport.width(),
-                };
-                wheel_delta += wheel_axis_delta(*delta) * points;
-                false
-            }
-            _ => true,
-        });
-        if wheel_delta != 0.0 {
-            input.smooth_scroll_delta = egui::Vec2::ZERO;
-        }
-        wheel_delta
-    });
     let mut scrolled = false;
-    if wheel_delta != 0.0
-        && let Ok(adjustment) = TabScrollAdjustment::scroll_by_preserving(
-            f64::from(-wheel_delta),
-            reveal_identity.prioritized_items(),
-        )
-    {
-        output.push_mouse_wheel(
-            ui,
-            RenderAction::AdjustTabStripScroll {
-                surface,
-                bar: *bar.id(),
-                adjustment,
-            },
-        );
-        scrolled = true;
-    }
-
     let mut drag_adjustment = 0.0;
     if active_drag.is_some_and(|drag| drag.phase() == DragPhase::Dragging) {
         let scroll_back = controls.iter().find_map(|control| {
@@ -1100,10 +1016,6 @@ fn update_tab_strip_scroll(
         scrolled = true;
     }
     scrolled
-}
-
-fn wheel_axis_delta(delta: egui::Vec2) -> f32 {
-    if delta.x == 0.0 { delta.y } else { delta.x }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1631,12 +1543,5 @@ mod tests {
 
         assert!(drag.max.x <= close.min.x);
         assert!(!drag.intersect(close).is_positive());
-    }
-
-    #[test]
-    fn horizontal_wheel_axis_has_priority_and_vertical_is_the_fallback() {
-        assert!((wheel_axis_delta(egui::vec2(12.0, -30.0)) - 12.0).abs() < f32::EPSILON);
-        assert!((wheel_axis_delta(egui::vec2(-12.0, 30.0)) + 12.0).abs() < f32::EPSILON);
-        assert!((wheel_axis_delta(egui::vec2(0.0, -30.0)) + 30.0).abs() < f32::EPSILON);
     }
 }

@@ -1993,7 +1993,7 @@ fn official_egui_overflow_popup_owns_rows_and_frame_above_tiled_and_floating_pan
 }
 
 #[test]
-fn official_egui_overflow_pointer_scroll_reaches_and_activates_the_last_item() {
+fn official_egui_wheel_fails_closed_without_an_authoritative_provider() {
     let context = Context::default();
     let size = vec2(220.0, 220.0);
     let items = (0..64)
@@ -2017,6 +2017,13 @@ fn official_egui_overflow_pointer_scroll_reaches_and_activates_the_last_item() {
         ((menu_bounds.min().x() + menu_bounds.max().x()) * 0.5) as f32,
         ((menu_bounds.min().y() + menu_bounds.max().y()) * 0.5) as f32,
     );
+    let menu_offset_before = current_plan(&dockspace)
+        .tab_list_menu_records()
+        .first()
+        .expect("the presented menu is open")
+        .scroll_offset();
+    let version_before = dockspace.engine().version();
+    let selected_before = selected_item(&dockspace);
 
     let wheel_host = run_outer_frame_with_size(
         &mut dockspace,
@@ -2034,9 +2041,30 @@ fn official_egui_overflow_pointer_scroll_reaches_and_activates_the_last_item() {
             },
         ],
     );
-    let mut activation_sequence = None;
-    for sequence in (next + 1)..=(next + 8) {
-        let host = run_outer_frame_with_size(
+    assert!(
+        wheel_host
+            .transition()
+            .reduced_pointer_edges()
+            .iter()
+            .all(|edge| !matches!(
+                edge.edge().kind(),
+                dockspace::pointer_journal::PointerEdgeKind::Scrolled(_)
+            ))
+    );
+    assert!(wheel_host.transition().reduced_inputs().iter().all(|input| {
+        !matches!(
+            input.outcome(),
+            dockspace::transition::InputOutcome::InteractionProcessed {
+                outcome:
+                    dockspace::interaction::InteractionOutcome::Scroll(_)
+                    | dockspace::interaction::InteractionOutcome::TabStripScrolled { .. }
+                    | dockspace::interaction::InteractionOutcome::TabListMenuScrolled { .. },
+                ..
+            }
+        )
+    }));
+    for sequence in (next + 1)..=(next + 4) {
+        run_outer_frame_with_size(
             &mut dockspace,
             &context,
             &mut panes,
@@ -2044,90 +2072,21 @@ fn official_egui_overflow_pointer_scroll_reaches_and_activates_the_last_item() {
             size,
             Vec::new(),
         );
-        let interactions_current = host
-            .surface(SURFACE)
-            .and_then(|surface| surface.paint())
-            .is_some_and(|paint| paint.interactions_current());
-        let scrolled = dockspace
-            .engine()
-            .interaction_projection(SURFACE)
-            .and_then(|projection| projection.plan().tab_list_menu_records().first())
-            .is_some_and(|menu| menu.scroll_offset() == menu.maximum_scroll_offset());
-        if interactions_current && scrolled {
-            activation_sequence = Some(sequence + 1);
-            break;
-        }
     }
-    let activation_sequence = activation_sequence.unwrap_or_else(|| {
-        panic!(
-            "the committed menu scroll did not become authoritative: {:?}",
-            wheel_host.transition().reduced_inputs()
-        )
-    });
     let menu = current_plan(&dockspace)
         .tab_list_menu_records()
         .first()
         .expect("the menu remains open after scrolling");
-    let last_hit = menu
-        .rows()
-        .iter()
-        .find(|row| row.tab().item == last)
-        .and_then(|row| row.hit())
-        .map(|hit| hit.rect())
-        .unwrap_or_else(|| {
-            panic!(
-                "scrolling did not expose the last menu item: offset={} maximum={}; inputs={:?}",
-                menu.scroll_offset(),
-                menu.maximum_scroll_offset(),
-                wheel_host.transition().reduced_inputs()
-            )
-        });
-    let last_pointer = Pos2::new(
-        ((last_hit.min().x() + last_hit.max().x()) * 0.5) as f32,
-        ((last_hit.min().y() + last_hit.max().y()) * 0.5) as f32,
+    assert_eq!(menu.scroll_offset(), menu_offset_before);
+    assert!(
+        menu.rows()
+            .iter()
+            .find(|row| row.tab().item == last)
+            .is_some_and(|row| row.hit().is_none()),
+        "final-frame hover must not expose a hidden row by inventing wheel authority"
     );
-    run_outer_frame_with_size(
-        &mut dockspace,
-        &context,
-        &mut panes,
-        activation_sequence,
-        size,
-        vec![
-            Event::PointerMoved(last_pointer),
-            Event::PointerButton {
-                pos: last_pointer,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    run_outer_frame_with_size(
-        &mut dockspace,
-        &context,
-        &mut panes,
-        activation_sequence + 1,
-        size,
-        vec![
-            Event::PointerMoved(last_pointer),
-            Event::PointerButton {
-                pos: last_pointer,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    run_outer_frame_with_size(
-        &mut dockspace,
-        &context,
-        &mut panes,
-        activation_sequence + 2,
-        size,
-        Vec::new(),
-    );
-
-    assert_eq!(selected_item(&dockspace), Some(last));
+    assert_eq!(selected_item(&dockspace), selected_before);
+    assert_eq!(dockspace.engine().version(), version_before);
 }
 
 #[test]

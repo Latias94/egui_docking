@@ -326,16 +326,6 @@ impl RenderOutput {
         }
     }
 
-    pub(crate) fn push_mouse_wheel(&mut self, ui: &Ui, action: RenderAction) {
-        self.push_matching_raw_event(ui, action, |event| {
-            matches!(
-                event,
-                Event::MouseWheel { modifiers, .. }
-                    if !modifiers.ctrl && !modifiers.command
-            )
-        });
-    }
-
     pub(crate) fn push_post_batch_continuation(&mut self, action: RenderAction) {
         if !self.capture_semantic_actions {
             return;

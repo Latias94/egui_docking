@@ -1087,6 +1087,25 @@ mod tests {
     }
 
     #[test]
+    fn official_egui_wheel_does_not_invent_a_scrolled_edge() {
+        let mut cursor = PointerEdgeSequence::new(0);
+        let edge = pointer_edge(
+            &Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -24.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            },
+            &mut cursor,
+            Authority::Unknown(AuthorityUnavailableReason::ProviderUnavailable),
+        )
+        .expect("filtering an authority-incomplete wheel event is infallible");
+
+        assert!(edge.is_none());
+        assert_eq!(cursor, PointerEdgeSequence::new(0));
+    }
+
+    #[test]
     fn raw_event_position_places_escape_between_pointer_edges() {
         let context = Context::default();
         let mut state = state(&context);

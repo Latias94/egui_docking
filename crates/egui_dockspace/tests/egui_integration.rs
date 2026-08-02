@@ -484,8 +484,9 @@ fn run_accesskit_frame_in_ancestor_scroll_area(
     size: egui::Vec2,
     forced_outer_offset: Option<f32>,
     events: Vec<Event>,
-) -> (TreeUpdate, f32) {
+) -> (TreeUpdate, f32, bool) {
     let mut outer_offset = None;
+    let mut wheel_available_after_dockspace = false;
     let output = crate::test_support::run_ui(context, input_with_size(events, size), |ui| {
         let mut scroll = egui::ScrollArea::vertical()
             .id_salt(Id::new(("ancestor-scroll", salt)))
@@ -502,6 +503,12 @@ fn run_accesskit_frame_in_ancestor_scroll_area(
                     dockspace
                         .show_single_surface(SURFACE, dock_ui, panes)
                         .expect("nested AccessKit frame must advance");
+                    wheel_available_after_dockspace |= dock_ui.input(|input| {
+                        input
+                            .events
+                            .iter()
+                            .any(|event| matches!(event, Event::MouseWheel { .. }))
+                    });
                 },
             );
             outer_ui.add_space(800.0);
@@ -514,6 +521,7 @@ fn run_accesskit_frame_in_ancestor_scroll_area(
             .accesskit_update
             .expect("AccessKit output is enabled"),
         outer_offset.expect("ancestor scroll area paints in every pass"),
+        wheel_available_after_dockspace,
     )
 }
 
@@ -1195,7 +1203,7 @@ fn omitted_final_pass_cannot_acknowledge_an_earlier_dockspace_pass() {
 }
 
 #[test]
-fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() {
+fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B, ITEM_C]);
     let mut dockspace = Dockspace::builder("tab-overflow", workspace)
@@ -1207,10 +1215,17 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
     run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
     let selected_before = published_tab_rect(&dockspace, ITEM_A);
     let neighbor_before = published_tab_rect(&dockspace, ITEM_B);
+    let scroll_before = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .and_then(|projection| projection.plan().tab_bar_records().first())
+        .map(dockspace::scene::TabBarRecord::scroll_offset)
+        .expect("the overflow fixture publishes one tab bar");
+    let version_before = dockspace.engine().version();
     assert!(selected_before.is_some());
     assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
-    let wheel_frame = run_frame_with_size(
+    run_frame_with_size(
         &context,
         &mut dockspace,
         &mut panes,
@@ -1225,21 +1240,25 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
             },
         ],
     );
-    assert!(
-        wheel_frame
-            .last()
-            .is_some_and(|observation| !observation.interactions_current),
-        "a committed scroll invalidates the prior interaction projection until it is presented"
-    );
     run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
     assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
+    assert_eq!(dockspace.engine().version(), version_before);
+    assert_eq!(
+        dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .and_then(|projection| projection.plan().tab_bar_records().first())
+            .map(dockspace::scene::TabBarRecord::scroll_offset),
+        Some(scroll_before),
+        "official egui wheel facts cannot authorize docking scroll"
+    );
     let selected_after = published_tab_rect(&dockspace, ITEM_A)
         .expect("the selected tab must retain enough visible chrome to remain operable");
     let neighbor_after = published_tab_rect(&dockspace, ITEM_B);
-    assert_ne!(
+    assert_eq!(
         (Some(selected_after), neighbor_after),
         (selected_before, neighbor_before),
-        "the wheel request must move the tab-strip projection"
+        "final-frame hover must not be promoted into wheel receiver authority"
     );
 
     let painted = dockspace
@@ -1296,7 +1315,7 @@ fn overflowing_tabs_preserve_selected_identity_without_publishing_hidden_hits() 
 }
 
 #[test]
-fn keyboard_focused_tab_survives_extreme_wheel_scroll() {
+fn authority_incomplete_wheel_does_not_disturb_keyboard_focus() {
     let context = Context::default();
     context.enable_accesskit();
     let size = vec2(220.0, 200.0);
@@ -1364,7 +1383,7 @@ fn keyboard_focused_tab_survives_extreme_wheel_scroll() {
 }
 
 #[test]
-fn active_dragged_tab_survives_extreme_wheel_scroll() {
+fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
     let context = Context::default();
     let size = vec2(220.0, 200.0);
     let mut dockspace = Dockspace::builder(
@@ -1446,7 +1465,7 @@ fn active_dragged_tab_survives_extreme_wheel_scroll() {
 }
 
 #[test]
-fn frontmost_floating_tab_strip_exclusively_owns_overlapping_wheel_scroll() {
+fn authority_incomplete_wheel_does_not_choose_an_overlapping_tab_strip() {
     let context = Context::default();
     let size = vec2(220.0, 250.0);
     let floating_rect =
@@ -1466,6 +1485,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_wheel_scroll() {
     let overlap = logical_rect_intersection(background_before, foreground_before)
         .expect("fixture tab strips overlap");
     let pointer = logical_rect_center(overlap);
+    let version_before = dockspace.engine().version();
     run_frame_with_size(
         &context,
         &mut dockspace,
@@ -1481,30 +1501,17 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_wheel_scroll() {
             },
         ],
     );
-    let painted_scroll =
-        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    assert!(
-        !painted_scroll
-            .last()
-            .expect("the floating scroll candidate paints")
-            .interactions_current
-    );
-    let acknowledged_scroll =
-        run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
-    assert!(
-        acknowledged_scroll
-            .last()
-            .expect("the next host sequence acknowledges the floating scroll candidate")
-            .interactions_current
-    );
+    run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
 
+    assert_eq!(dockspace.engine().version(), version_before);
     assert_eq!(
         published_tab_rect(&dockspace, ITEM_A),
         Some(background_before)
     );
-    assert_ne!(
+    assert_eq!(
         published_tab_rect(&dockspace, ITEM_D),
-        Some(foreground_before)
+        Some(foreground_before),
+        "visual stacking plus final hover cannot prove wheel delivery"
     );
 }
 
@@ -2516,17 +2523,12 @@ fn overflow_scrollbar_accesskit_adjustments_commit_one_row_steps() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full nested-scroll sequence verifies both boundaries and smooth follow-up frames"
-)]
-fn overflow_popup_owns_wheel_residue_inside_an_ancestor_scroll_area() {
+fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
     let context = Context::default();
     context.enable_accesskit();
     let salt = "overflow-ancestor-scroll";
     let size = vec2(220.0, 180.0);
     let items = numbered_items(1_600, 64);
-    let last = *items.last().expect("large fixture has a last item");
     let mut dockspace = Dockspace::builder(salt, single_workspace(items.iter().copied()))
         .build()
         .expect("facade must build");
@@ -2541,7 +2543,7 @@ fn overflow_popup_owns_wheel_residue_inside_an_ancestor_scroll_area() {
         Some(100.0),
         Vec::new(),
     );
-    let (stable, baseline_offset) = run_accesskit_frame_in_ancestor_scroll_area(
+    let (stable, baseline_offset, _) = run_accesskit_frame_in_ancestor_scroll_area(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2564,7 +2566,7 @@ fn overflow_popup_owns_wheel_residue_inside_an_ancestor_scroll_area() {
         None,
         vec![accesskit_action(overflow, Action::Click)],
     );
-    let (opened, opened_outer_offset) = run_accesskit_frame_in_ancestor_scroll_area(
+    let (mut opened, mut opened_outer_offset, _) = run_accesskit_frame_in_ancestor_scroll_area(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2573,33 +2575,54 @@ fn overflow_popup_owns_wheel_residue_inside_an_ancestor_scroll_area() {
         None,
         Vec::new(),
     );
+    for _ in 0..8 {
+        if dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .is_some_and(|projection| !projection.plan().tab_list_menu_records().is_empty())
+        {
+            break;
+        }
+        (opened, opened_outer_offset, _) = run_accesskit_frame_in_ancestor_scroll_area(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            size,
+            None,
+            Vec::new(),
+        );
+    }
     assert!((opened_outer_offset - baseline_offset).abs() < 0.01);
     let (_, menu) = accesskit_node_by_role(&opened, Role::Menu);
     let pointer = accesskit_node_rect(menu).center();
+    let menu_offset_before = dockspace
+        .engine()
+        .interaction_projection(SURFACE)
+        .and_then(|projection| projection.plan().tab_list_menu_records().first())
+        .map(dockspace::scene::TabListMenuRecord::scroll_offset)
+        .expect("the popup is present in the authoritative projection");
 
-    let (_, top_boundary_offset) = run_accesskit_frame_in_ancestor_scroll_area(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        salt,
-        size,
-        None,
-        vec![
-            Event::PointerMoved(pointer),
-            Event::MouseWheel {
-                unit: MouseWheelUnit::Point,
-                delta: vec2(0.0, 10_000.0),
-                phase: TouchPhase::Move,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    assert!(
-        (top_boundary_offset - baseline_offset).abs() < 0.01,
-        "unconsumed wheel input at the popup top must not scroll its ancestor"
-    );
+    let (_, mut latest_outer_offset, wheel_available_after_dockspace) =
+        run_accesskit_frame_in_ancestor_scroll_area(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            salt,
+            size,
+            None,
+            vec![
+                Event::PointerMoved(pointer),
+                Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: vec2(0.0, -10_000.0),
+                    phase: TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
     for _ in 0..8 {
-        let (_, offset) = run_accesskit_frame_in_ancestor_scroll_area(
+        let (_, offset, _) = run_accesskit_frame_in_ancestor_scroll_area(
             &context,
             &mut dockspace,
             &mut panes,
@@ -2608,79 +2631,30 @@ fn overflow_popup_owns_wheel_residue_inside_an_ancestor_scroll_area() {
             None,
             Vec::new(),
         );
-        assert!(
-            (offset - baseline_offset).abs() < 0.01,
-            "smooth follow-up frames remain owned by the popup"
-        );
+        latest_outer_offset = offset;
     }
-
-    let (_, downward_offset) = run_accesskit_frame_in_ancestor_scroll_area(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        salt,
-        size,
-        None,
-        vec![
-            Event::PointerMoved(pointer),
-            Event::MouseWheel {
-                unit: MouseWheelUnit::Point,
-                delta: vec2(0.0, -10_000.0),
-                phase: TouchPhase::Move,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    assert!((downward_offset - baseline_offset).abs() < 0.01);
-    let mut bottom = None;
-    for _ in 0..16 {
-        let (update, offset) = run_accesskit_frame_in_ancestor_scroll_area(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            salt,
-            size,
-            None,
-            Vec::new(),
-        );
-        assert!((offset - baseline_offset).abs() < 0.01);
-        bottom = Some(update);
-    }
-    let bottom = bottom.expect("smooth scrolling produces follow-up frames");
-    let (_, bottom_menu) = accesskit_node_by_role(&bottom, Role::Menu);
-    let (_, last_node) =
-        accesskit_node_by_label(&bottom, Role::MenuItem, &format!("Pane {}", last.get()));
     assert!(
-        accesskit_node_rect(bottom_menu).contains(accesskit_node_center(last_node)),
-        "fixture reaches the popup bottom before testing boundary ownership"
-    );
-
-    let (_, bottom_boundary_offset) = run_accesskit_frame_in_ancestor_scroll_area(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        salt,
-        size,
-        None,
-        vec![
-            Event::PointerMoved(pointer),
-            Event::MouseWheel {
-                unit: MouseWheelUnit::Point,
-                delta: vec2(0.0, -10_000.0),
-                phase: TouchPhase::Move,
-                modifiers: Modifiers::NONE,
-            },
-        ],
+        wheel_available_after_dockspace,
+        "dockspace must leave an authority-incomplete wheel available to framework routing"
     );
     assert!(
-        (bottom_boundary_offset - baseline_offset).abs() < 0.01,
-        "unconsumed wheel input at the popup bottom must not scroll its ancestor"
+        (latest_outer_offset - baseline_offset).abs() < 0.01,
+        "egui's top-layer routing still prevents the popup wheel from scrolling its ancestor"
+    );
+    assert_eq!(
+        dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .and_then(|projection| projection.plan().tab_list_menu_records().first())
+            .map(dockspace::scene::TabListMenuRecord::scroll_offset),
+        Some(menu_offset_before),
+        "the same wheel cannot mutate docking state without a conforming receiver receipt"
     );
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn overflow_popup_wheel_never_falls_through_to_tiled_or_floating_tab_strips() {
+fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
     for (salt, floating_underlay) in [
         ("popup-over-tiled-strip", false),
         ("popup-over-floating-strip", true),
@@ -2746,6 +2720,12 @@ fn overflow_popup_wheel_never_falls_through_to_tiled_or_floating_tab_strips() {
         );
         let (_, last_before) = accesskit_node_by_label(&menu, Role::MenuItem, &last_label);
         let last_y_before = accesskit_node_center(last_before).y;
+        let menu_offset_before = dockspace
+            .engine()
+            .interaction_projection(SURFACE)
+            .and_then(|projection| projection.plan().tab_list_menu_records().first())
+            .map(dockspace::scene::TabListMenuRecord::scroll_offset)
+            .expect("the popup is present in the authoritative projection");
 
         run_accesskit_frame(
             &context,
@@ -2765,32 +2745,16 @@ fn overflow_popup_wheel_never_falls_through_to_tiled_or_floating_tab_strips() {
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         let scrolled = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         let (_, last_after) = accesskit_node_by_label(&scrolled, Role::MenuItem, &last_label);
-        assert!((accesskit_node_center(last_after).y - last_y_before).abs() > f32::EPSILON);
+        assert_eq!(accesskit_node_center(last_after).y, last_y_before);
         assert_eq!(
-            published_tab_rect(&dockspace, popup_items[0]),
-            Some(popup_tab_before)
+            dockspace
+                .engine()
+                .interaction_projection(SURFACE)
+                .and_then(|projection| projection.plan().tab_list_menu_records().first())
+                .map(dockspace::scene::TabListMenuRecord::scroll_offset),
+            Some(menu_offset_before),
+            "neither the popup nor an overlapping strip may claim an authority-incomplete wheel"
         );
-        assert_eq!(
-            published_tab_rect(&dockspace, underlay_items[1]),
-            Some(underlay_before)
-        );
-
-        run_accesskit_frame(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            size,
-            vec![
-                Event::PointerMoved(pointer),
-                Event::MouseWheel {
-                    unit: MouseWheelUnit::Point,
-                    delta: vec2(0.0, -10_000.0),
-                    phase: TouchPhase::Move,
-                    modifiers: Modifiers::NONE,
-                },
-            ],
-        );
-        run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         assert_eq!(
             published_tab_rect(&dockspace, popup_items[0]),
             Some(popup_tab_before)
