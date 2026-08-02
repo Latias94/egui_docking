@@ -50,10 +50,7 @@ pub use presentation_settlement::{
 };
 pub use projection::ProjectionError;
 pub use receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
-pub use render::{
-    EguiDockRenderer, EguiFrameAcceptance, EguiRendererError, EguiSurfaceDraft,
-    EguiSurfacePublicationMode,
-};
+pub use render::EguiRendererError;
 pub use response::{
     DockspaceCapability, DockspaceResponse, DockspaceSurfaceStatus, DockspaceUnavailableReason,
     HostFrameResponse, SurfaceCommitResponse, SurfaceFrameDisposition, SurfacePaintResponse,

@@ -149,7 +149,7 @@ pub(crate) enum EguiSurfaceContribution {
 
 /// Requested publication semantics for one actually painted surface draft.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EguiSurfacePublicationMode {
+pub(crate) enum EguiSurfacePublicationMode {
     /// Publish measurements or retained authority without claiming final presentation.
     PaintOnly,
     /// Record the exact painted result in the core host frame.
@@ -255,7 +255,7 @@ impl EguiCorePaintStage for CoreHostPresentationFrame {
 /// The draft borrows neither the core frame nor its renderer. It is bound to
 /// the exact renderer instance and style revision which created it, and can be
 /// accepted only after the matching core host frame commits successfully.
-pub struct EguiSurfaceDraft {
+pub(crate) struct EguiSurfaceDraft {
     surface: SurfaceId,
     paint: Option<SurfacePaintResponse>,
     measurements: Option<EguiSurfaceMeasurementSet>,
@@ -324,7 +324,7 @@ impl StagedSemanticInput {
 }
 
 /// Successfully accepted renderer sidecars for one committed core frame.
-pub struct EguiFrameAcceptance {
+pub(crate) struct EguiFrameAcceptance {
     surfaces: BTreeMap<SurfaceId, SurfaceCommitResponse>,
     presentation_outputs: Vec<HostPresentationOutput>,
     contribution_rejected: bool,
@@ -464,22 +464,10 @@ impl PreparedEguiFrameAcceptance {
 }
 
 impl EguiFrameAcceptance {
-    /// Returns the committed response for each exact surface draft.
+    #[cfg(test)]
     #[must_use]
-    pub const fn surfaces(&self) -> &BTreeMap<SurfaceId, SurfaceCommitResponse> {
+    pub(crate) const fn surfaces(&self) -> &BTreeMap<SurfaceId, SurfaceCommitResponse> {
         &self.surfaces
-    }
-
-    /// Returns the exact outputs recorded by painted drafts in this frame.
-    #[must_use]
-    pub fn presentation_outputs(&self) -> &[HostPresentationOutput] {
-        &self.presentation_outputs
-    }
-
-    /// Returns whether any painted contribution was rejected by the core.
-    #[must_use]
-    pub const fn contribution_rejected(&self) -> bool {
-        self.contribution_rejected
     }
 
     pub(crate) fn into_parts(
@@ -689,16 +677,6 @@ impl EguiSurfaceDraft {
     #[must_use]
     pub const fn paint(&self) -> Option<&SurfacePaintResponse> {
         self.paint.as_ref()
-    }
-
-    /// Returns the requested publication semantics.
-    #[must_use]
-    pub const fn publication_mode(&self) -> EguiSurfacePublicationMode {
-        match self.publication {
-            EguiSurfacePublication::Pending(mode) => mode,
-            EguiSurfacePublication::PaintOnly => EguiSurfacePublicationMode::PaintOnly,
-            EguiSurfacePublication::Presented(_) => EguiSurfacePublicationMode::EmitPresentedOutput,
-        }
     }
 
     pub(crate) const fn publication_is_pending(&self) -> bool {
@@ -993,7 +971,7 @@ mod multipass_semantic_input_tests {
 /// deliberately owns no [`DockEngine`], platform window, pointer provider, or
 /// focus state, so a host can pair it with exactly one external docking
 /// authority.
-pub struct EguiDockRenderer {
+pub(crate) struct EguiDockRenderer {
     identity: Arc<()>,
     id: Id,
     style: DockStyle,
