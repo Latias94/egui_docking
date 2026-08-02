@@ -153,7 +153,7 @@ impl TestInputStream {
         Self {
             source,
             next_sequence: engine
-                .source_watermark(source)
+                .semantic_input_watermark()
                 .map_or(0, SourceSequence::get),
         }
     }
@@ -421,7 +421,7 @@ fn backend_ingress_watermark_commits_only_with_the_complete_host_frame() {
         engine.backend_ingress_committed_through(),
         recorder.recorded_through()
     );
-    assert_eq!(engine.source_watermark(BACKEND_INGRESS_INPUT_SOURCE), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
 }
 
 #[test]
@@ -503,7 +503,7 @@ fn backend_provider_replacement_rejects_the_predecessor_batch() {
 }
 
 #[test]
-fn runtime_retention_manifest_accounts_for_semantic_source_watermarks() {
+fn runtime_retention_manifest_bounds_semantic_replay_authority_to_one_writer() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     assert_eq!(
         engine
@@ -514,8 +514,13 @@ fn runtime_retention_manifest_accounts_for_semantic_source_watermarks() {
     );
 
     engine
-        .source_watermarks
-        .insert(ENGINE_TEST_INPUT_SOURCE, SourceSequence::new(8));
+        .validate_and_advance_semantic_input_watermark((1..=10_000).map(|sequence| {
+            (
+                StableInputSourceId::new(sequence),
+                SourceSequence::new(sequence),
+            )
+        }))
+        .expect("one semantic writer accepts globally ordered diagnostic sources");
     let retained = engine.runtime_retention_manifest();
     assert_eq!(retained.input_sources().watermark_guards(), 1);
     assert_eq!(retained.input_sources().retained_structure_count(), 1);
@@ -3976,7 +3981,7 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
         presentation_streams: 1,
         presentation_pending_outputs: 0,
         live_pointer_providers: 1,
-        source_watermarks: 0,
+        semantic_input_watermark_guards: 0,
     };
 
     crate::drop_resolver::structural_work::reset();
@@ -4303,7 +4308,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             presentation_streams: 1,
             presentation_pending_outputs: 0,
             live_pointer_providers: 1,
-            source_watermarks: 0,
+            semantic_input_watermark_guards: 0,
         }
     );
     assert_eq!(work.workspace_deep_clones.engine_candidates.calls, 1);
@@ -5088,7 +5093,7 @@ fn stale_inventory_envelope_rolls_back_the_complete_host_frame() {
     let before_tick = engine.last_reducer_tick();
     let before_registry = engine.viewport.clone();
     let before_input = engine.last_input_sequence();
-    let before_source = engine.source_watermark(ENGINE_TEST_INPUT_SOURCE);
+    let before_source = engine.semantic_input_watermark();
     let stale = test_platform_snapshot_at(
         1,
         capabilities,
@@ -5131,10 +5136,7 @@ fn stale_inventory_envelope_rolls_back_the_complete_host_frame() {
     assert_eq!(engine.last_reducer_tick(), before_tick);
     assert_eq!(engine.viewport, before_registry);
     assert_eq!(engine.last_input_sequence(), before_input);
-    assert_eq!(
-        engine.source_watermark(ENGINE_TEST_INPUT_SOURCE),
-        before_source
-    );
+    assert_eq!(engine.semantic_input_watermark(), before_source);
 }
 
 fn install_test_output(
@@ -8213,10 +8215,10 @@ fn tick_final_vacancy_suppresses_focus_for_a_newly_visible_native_binding() {
     let mut frame = prelude
         .seal(&fixture.engine)
         .expect("post-show proof must transfer before semantic input");
-    frame
-        .append_input(
-            COMMAND_SOURCE,
-            SourceSequence::new(1),
+    let mut semantic_writer = TestInputStream::resume(&fixture.engine, COMMAND_SOURCE);
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected: expected_after_native_commit,
                 command: WorkspaceCommand::RehomeRoot {
@@ -8317,10 +8319,10 @@ fn tick_final_runtime_child_vacancy_emits_one_release_before_effect_extraction()
         .expect("reserved root remains capturable");
     let expected = fixture.engine.version();
     let mut frame = begin_test_host_frame(&fixture.engine, fixture.presentation_host);
-    frame
-        .append_input(
-            INPUT_SOURCE,
-            SourceSequence::new(1),
+    let mut semantic_writer = TestInputStream::resume(&fixture.engine, INPUT_SOURCE);
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected,
                 command: WorkspaceCommand::RehomeRoot {
@@ -8597,7 +8599,7 @@ fn explicit_tick_fatal_reduction_rolls_back_provenance_and_complete_state() {
     assert_eq!(engine, before);
     assert_eq!(engine.last_reducer_tick(), ReducerTickId::default());
     assert_eq!(engine.last_input_sequence(), InputSequence::default());
-    assert_eq!(engine.source_watermark(source), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
 }
 
 #[test]
@@ -8638,7 +8640,7 @@ fn explicit_tick_counter_exhaustion_is_atomic() {
         Err(EngineError::InputSequenceExhausted)
     );
     assert_eq!(fixture.engine, before_input_exhaustion);
-    assert_eq!(fixture.engine.source_watermark(source), None);
+    assert_eq!(fixture.engine.semantic_input_watermark(), None);
 }
 
 #[test]

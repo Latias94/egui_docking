@@ -1700,9 +1700,9 @@ impl CoreHostFrame {
 
     /// Appends one semantic input in its actual provider/host arrival order.
     ///
-    /// `source_sequence` prevents replay for one stable source. It is not a
-    /// cross-surface causal coordinate and therefore cannot be used to reorder
-    /// this frame.
+    /// `source_sequence` advances the session-owned semantic writer watermark.
+    /// `source` remains diagnostic provenance; it neither partitions replay
+    /// authority nor reorders this frame.
     pub fn append_input(
         &mut self,
         source: StableInputSourceId,
@@ -1840,7 +1840,7 @@ impl CoreHostFrame {
         if !from_backend_ingress
             && let Err(error) = self
                 .candidate
-                .validate_and_advance_source_watermarks([(source, source_sequence)])
+                .validate_and_advance_semantic_input_watermark([(source, source_sequence)])
         {
             self.input_prefix_error = Some(error);
             return self.reject(CoreHostFrameError::InputPrefixReductionFailed);

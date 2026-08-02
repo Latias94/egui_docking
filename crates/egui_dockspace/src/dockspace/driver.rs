@@ -263,8 +263,7 @@ impl PreparedEguiOuterFrameCommit {
             acceptance.into_parts();
 
         dockspace.pane_focus = self.state.pane_focus().clone();
-        dockspace.renderer_source_sequence = self.state.renderer_source_sequence();
-        dockspace.application_source_sequence = self.state.application_source_sequence();
+        dockspace.semantic_source_sequence = self.state.semantic_source_sequence();
         if let Some(outer) = self.state.take_outer_presentation() {
             if self.backend_ordered_input {
                 dockspace.commit_ordered_outer_presentation_observations(&transition);
@@ -996,7 +995,7 @@ impl DockspaceHostFrame<'_> {
             })
             .collect::<Vec<_>>();
         staged_inputs.sort_by_key(|(boundary, position, _)| (*boundary, *position));
-        let mut renderer_sequence = self.state.renderer_source_sequence();
+        let mut semantic_sequence = self.state.semantic_source_sequence();
         if self.state.input_authority() == EguiInputAuthority::FrameworkResponses {
             let mut staged_inputs = staged_inputs.into_iter().peekable();
             for boundary in 0..=pointer_segment_count {
@@ -1007,7 +1006,7 @@ impl DockspaceHostFrame<'_> {
                     let (_, _, input) = staged_inputs
                         .next()
                         .expect("a matching semantic boundary retains its input");
-                    let sequence = match renderer_sequence.checked_next() {
+                    let sequence = match semantic_sequence.checked_next() {
                         Some(sequence) => sequence,
                         None => {
                             return self.abort(DockspaceError::InputSourceSequenceExhausted {
@@ -1015,7 +1014,7 @@ impl DockspaceHostFrame<'_> {
                             });
                         }
                     };
-                    renderer_sequence = sequence;
+                    semantic_sequence = sequence;
                     let input_frame = core_frame
                         .input_mut()
                         .expect("framework responses retain the core input capability");
@@ -1286,7 +1285,7 @@ impl DockspaceHostFrame<'_> {
             }
             None => None,
         };
-        self.state.set_renderer_source_sequence(renderer_sequence);
+        self.state.set_semantic_source_sequence(semantic_sequence);
         let backend_ordered_input = self.state.input_authority() == EguiInputAuthority::CoreBackend;
         let state = self
             .state

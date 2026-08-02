@@ -299,7 +299,7 @@ impl EguiNativeConfigurationSession {
     ) -> Result<dockspace::ids::SourceSequence, DockspaceError> {
         let sequence = self
             .state()
-            .application_source_sequence()
+            .semantic_source_sequence()
             .checked_next()
             .ok_or(DockspaceError::InputSourceSequenceExhausted {
                 input_source: EGUI_APPLICATION_INPUT_SOURCE,
@@ -308,7 +308,7 @@ impl EguiNativeConfigurationSession {
             .input_core_frame_mut()
             .expect("a native configuration session retains its core input capability")
             .append_configuration(EGUI_APPLICATION_INPUT_SOURCE, sequence, input)?;
-        self.state_mut().set_application_source_sequence(sequence);
+        self.state_mut().set_semantic_source_sequence(sequence);
         self.state_mut().mark_terminal_configuration_pending();
         Ok(sequence)
     }

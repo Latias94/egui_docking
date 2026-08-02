@@ -895,8 +895,8 @@ pub(crate) mod structural_work {
     ///
     /// Plans and hit manifests are retained behind `Arc`, so their counts
     /// describe the cloned authority inventory rather than bytes copied. The
-    /// presentation ledger maps and source watermarks are owned collections;
-    /// their entry counts expose growth that a call-only gate would miss.
+    /// presentation ledger maps are owned collections. Semantic input replay authority is one
+    /// scalar guard; its count makes that bounded invariant visible to structural tests.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct EngineCloneVolume {
         pub(crate) scene_surfaces: usize,
@@ -906,7 +906,7 @@ pub(crate) mod structural_work {
         pub(crate) presentation_streams: usize,
         pub(crate) presentation_pending_outputs: usize,
         pub(crate) live_pointer_providers: usize,
-        pub(crate) source_watermarks: usize,
+        pub(crate) semantic_input_watermark_guards: usize,
     }
 
     impl EngineCloneVolume {
@@ -918,7 +918,7 @@ pub(crate) mod structural_work {
             self.presentation_streams += other.presentation_streams;
             self.presentation_pending_outputs += other.presentation_pending_outputs;
             self.live_pointer_providers += other.live_pointer_providers;
-            self.source_watermarks += other.source_watermarks;
+            self.semantic_input_watermark_guards += other.semantic_input_watermark_guards;
         }
     }
 

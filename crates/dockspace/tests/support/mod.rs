@@ -727,7 +727,7 @@ pub fn complete_host_frame_with_current_measurements(
     }
 }
 
-/// One explicit test producer for host-frame inputs.
+/// One explicit session writer for host-frame inputs.
 #[derive(Debug, Clone)]
 pub struct TestInputStream {
     source: StableInputSourceId,
@@ -735,7 +735,7 @@ pub struct TestInputStream {
 }
 
 impl TestInputStream {
-    /// Creates an independent stable producer stream for one test fixture.
+    /// Creates one semantic writer with a default diagnostic producer label.
     #[must_use]
     pub const fn new(source: StableInputSourceId) -> Self {
         Self {
@@ -744,38 +744,48 @@ impl TestInputStream {
         }
     }
 
-    /// Returns this producer's stable identity.
+    /// Returns this writer's default diagnostic producer label.
     #[must_use]
     pub const fn source(&self) -> StableInputSourceId {
         self.source
     }
 
-    /// Resumes this test producer after previously committed input from the
-    /// same source. This reads only the public source watermark; it does not
-    /// access or recreate an engine-owned queue.
+    /// Resumes this test producer after previously committed semantic input.
+    /// This reads only the public session writer watermark; the source remains
+    /// a diagnostic label and does not own a separate replay namespace.
     #[must_use]
     pub fn resume(engine: &DockEngine, source: StableInputSourceId) -> Self {
         Self {
             source,
             next_sequence: engine
-                .source_watermark(source)
+                .semantic_input_watermark()
                 .map_or(0, SourceSequence::get),
         }
     }
 
-    /// Appends one explicitly sourced input with this producer's next sequence.
+    /// Appends one input with this writer's next sequence and default source label.
     pub fn append(
         &mut self,
         frame: &mut CoreHostFrame,
         input: EngineInput,
     ) -> Result<(), CoreHostFrameError> {
+        self.append_as(frame, self.source, input)
+    }
+
+    /// Appends one input with this writer's next sequence and an explicit diagnostic source.
+    pub fn append_as(
+        &mut self,
+        frame: &mut CoreHostFrame,
+        source: StableInputSourceId,
+        input: EngineInput,
+    ) -> Result<(), CoreHostFrameError> {
         self.next_sequence = self
             .next_sequence
             .checked_add(1)
-            .expect("test input source sequence must not exhaust");
+            .expect("test semantic writer sequence must not exhaust");
         append_host_input(
             frame,
-            self.source,
+            source,
             SourceSequence::new(self.next_sequence),
             input,
         )

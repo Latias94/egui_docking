@@ -83,8 +83,7 @@ impl EguiSurfacePass {
 
 struct HostFrameScratch {
     pane_focus: PaneFocusAdapterState,
-    renderer_source_sequence: SourceSequence,
-    application_source_sequence: SourceSequence,
+    semantic_source_sequence: SourceSequence,
     terminal_configuration_pending: bool,
     style_replacement: Option<StagedStyleReplacement>,
 }
@@ -190,8 +189,7 @@ impl HostFrameState {
         core_frame: CoreHostFrame,
         key: EguiFrameScheduleKey,
         pane_focus: PaneFocusAdapterState,
-        renderer_source_sequence: SourceSequence,
-        application_source_sequence: SourceSequence,
+        semantic_source_sequence: SourceSequence,
         automatic_presentation: Option<AutomaticPresentationFrame>,
         outer_presentation: Option<OuterPresentationFrame>,
         automatic_pointer: Option<PreparedPointerInput>,
@@ -214,8 +212,7 @@ impl HostFrameState {
             native_staging_passes: BTreeMap::new(),
             scratch: HostFrameScratch {
                 pane_focus,
-                renderer_source_sequence,
-                application_source_sequence,
+                semantic_source_sequence,
                 terminal_configuration_pending: false,
                 style_replacement: None,
             },
@@ -737,20 +734,12 @@ impl HostFrameState {
         std::mem::take(&mut self.confirmed_full_outputs)
     }
 
-    pub(super) const fn renderer_source_sequence(&self) -> SourceSequence {
-        self.scratch.renderer_source_sequence
+    pub(super) const fn semantic_source_sequence(&self) -> SourceSequence {
+        self.scratch.semantic_source_sequence
     }
 
-    pub(super) fn set_renderer_source_sequence(&mut self, sequence: SourceSequence) {
-        self.scratch.renderer_source_sequence = sequence;
-    }
-
-    pub(super) const fn application_source_sequence(&self) -> SourceSequence {
-        self.scratch.application_source_sequence
-    }
-
-    pub(super) fn set_application_source_sequence(&mut self, sequence: SourceSequence) {
-        self.scratch.application_source_sequence = sequence;
+    pub(super) fn set_semantic_source_sequence(&mut self, sequence: SourceSequence) {
+        self.scratch.semantic_source_sequence = sequence;
     }
 
     pub(super) const fn terminal_configuration_pending(&self) -> bool {

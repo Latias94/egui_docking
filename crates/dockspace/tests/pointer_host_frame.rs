@@ -558,7 +558,8 @@ fn submit_input_with_empty_journal(
                 .expect("empty journal has an exact empty receipt set"),
         )
         .expect("empty receipt set stages");
-    append_host_input(&mut frame, source, SourceSequence::new(1), input)
+    support::TestInputStream::resume(engine, source)
+        .append(&mut frame, input)
         .expect("input stages after the active pointer provider snapshot");
     complete(engine, &mut frame);
     host.finish(frame, engine)
@@ -5666,7 +5667,7 @@ fn semantic_input_is_rejected_while_pointer_receipt_is_pending() {
         ),
         Err(CoreHostFrameError::PointerReceiverReceiptsMissingBeforeInput)
     );
-    assert_eq!(engine.source_watermark(SOURCE), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
     assert_eq!(
         engine.pointer_button_authority(),
         dockspace::pointer_journal::AnyButtonDownAuthority::Unknown(
@@ -6925,13 +6926,9 @@ fn native_surface_local_provider_retires_when_its_binding_is_reincarnated() {
                 .expect("an empty journal has no receiver receipts"),
         )
         .expect("the empty A1 segment reduces before the rebind");
-    append_host_input(
-        &mut rebind,
-        WORKSPACE_REBIND_SOURCE,
-        SourceSequence::new(1),
-        EngineInput::ReplaceWorkspace(workspace()),
-    )
-    .expect("workspace reincarnation follows the last accepted A1 segment");
+    support::TestInputStream::resume(&engine, WORKSPACE_REBIND_SOURCE)
+        .append(&mut rebind, EngineInput::ReplaceWorkspace(workspace()))
+        .expect("workspace reincarnation follows the last accepted A1 segment");
     complete(&engine, &mut rebind);
     let transition = host.finish(rebind, &mut engine);
 

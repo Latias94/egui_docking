@@ -206,7 +206,7 @@ impl PresentationIdentityFrontier {
 
 stable_id!(
     StableInputSourceId,
-    "Stable semantic identity for one producer of reducer inputs."
+    "Stable diagnostic identity for one producer of reducer inputs."
 );
 
 macro_rules! transient_counter_id {
@@ -290,5 +290,5 @@ impl ReducerCausalOrdinal {
 }
 transient_counter_id!(
     SourceSequence,
-    "Monotonic sequence assigned by one stable reducer input source."
+    "Monotonic sequence assigned by one session-owned semantic input writer."
 );

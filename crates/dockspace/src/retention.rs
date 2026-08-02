@@ -292,7 +292,7 @@ pub struct BindingRetentionManifest {
     destroyed_binding_guards: usize,
 }
 
-/// Stable semantic-input source watermarks retained as replay guards.
+/// The session-owned semantic-input watermark retained as a replay guard.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputSourceRetentionManifest {
     watermark_guards: usize,
@@ -303,7 +303,7 @@ impl InputSourceRetentionManifest {
         Self { watermark_guards }
     }
 
-    /// Returns source identities whose last accepted sequence remains authoritative.
+    /// Returns whether the semantic writer has one authoritative replay guard.
     #[must_use]
     pub const fn watermark_guards(self) -> usize {
         self.watermark_guards

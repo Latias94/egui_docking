@@ -1776,7 +1776,7 @@ pub struct DockEngine {
     bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
     native_admission: NativeAdmissionState,
     last_reducer_tick: ReducerTickId,
-    source_watermarks: BTreeMap<StableInputSourceId, SourceSequence>,
+    semantic_input_watermark: Option<SourceSequence>,
     last_input: InputSequence,
 }
 
@@ -2274,7 +2274,7 @@ impl DockEngine {
             bound_surface_recoveries: BTreeMap::new(),
             native_admission: NativeAdmissionState::default(),
             last_reducer_tick: ReducerTickId::default(),
-            source_watermarks: BTreeMap::new(),
+            semantic_input_watermark: None,
             last_input: InputSequence::default(),
         })
     }
@@ -2728,7 +2728,7 @@ impl DockEngine {
             self.close.retention_manifest(),
             self.pointer_journal.retention_manifest(),
             self.viewport.binding_retention_manifest(),
-            InputSourceRetentionManifest::new(self.source_watermarks.len()),
+            InputSourceRetentionManifest::new(usize::from(self.semantic_input_watermark.is_some())),
             self.scroll_interaction.retention_manifest(),
         )
     }
@@ -3164,10 +3164,14 @@ impl DockEngine {
         self.last_input
     }
 
-    /// Returns the last successfully committed sequence for one stable source.
+    /// Returns the last successfully committed sequence for the semantic writer lane.
+    ///
+    /// [`StableInputSourceId`] values attached to individual inputs are diagnostic labels. They
+    /// do not partition replay authority: every non-backend semantic input submitted to this
+    /// engine must advance this one session-owned sequence.
     #[must_use]
-    pub fn source_watermark(&self, source: StableInputSourceId) -> Option<SourceSequence> {
-        self.source_watermarks.get(&source).copied()
+    pub const fn semantic_input_watermark(&self) -> Option<SourceSequence> {
+        self.semantic_input_watermark
     }
 
     /// Produces a native placement proof from current acknowledged platform facts.
@@ -5791,7 +5795,9 @@ impl DockEngine {
                     presentation_streams: presentation.retained_stream_states(),
                     presentation_pending_outputs: presentation.pending_outputs(),
                     live_pointer_providers: usize::from(self.pointer_provider().is_some()),
-                    source_watermarks: self.source_watermarks.len(),
+                    semantic_input_watermark_guards: usize::from(
+                        self.semantic_input_watermark.is_some(),
+                    ),
                 },
             );
         }
@@ -5820,7 +5826,7 @@ impl DockEngine {
             bound_surface_recoveries: self.bound_surface_recoveries.clone(),
             native_admission: self.native_admission.clone(),
             last_reducer_tick: self.last_reducer_tick,
-            source_watermarks: self.source_watermarks.clone(),
+            semantic_input_watermark: self.semantic_input_watermark,
             last_input: self.last_input,
         };
         candidate.close.compact_published_terminal();

@@ -348,7 +348,7 @@ fn publish_resized_source_snapshot(
     )
     .expect("resized-source platform snapshot is canonical");
     let source_sequence = engine
-        .source_watermark(INPUT_SOURCE)
+        .semantic_input_watermark()
         .expect("native setup published platform input")
         .checked_next()
         .expect("test source sequence does not exhaust");
@@ -1848,7 +1848,7 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
     );
     let mut release_frame = host.begin(&engine);
     let input_sequence = engine
-        .source_watermark(INPUT_SOURCE)
+        .semantic_input_watermark()
         .expect("native fixture already published semantic input")
         .checked_next()
         .expect("test input sequence does not exhaust");
@@ -2873,7 +2873,7 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
     let generation = host.next_platform_observation_generation();
     let snapshot = resized_target_native_snapshot(generation, source_binding, target_binding);
     let source_sequence = engine
-        .source_watermark(INPUT_SOURCE)
+        .semantic_input_watermark()
         .expect("native setup published platform input")
         .checked_next()
         .expect("test source sequence does not exhaust");
@@ -3468,7 +3468,7 @@ fn platform_destruction_before_release_prevents_stale_cross_window_drop() {
     let generation = host.next_platform_observation_generation();
     let snapshot = source_only_native_snapshot(generation, source_binding);
     let source_sequence = engine
-        .source_watermark(INPUT_SOURCE)
+        .semantic_input_watermark()
         .expect("native setup published platform input")
         .checked_next()
         .expect("test source sequence does not exhaust");

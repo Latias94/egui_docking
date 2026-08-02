@@ -494,13 +494,13 @@ impl DockEngine {
         Ok(())
     }
 
-    pub(super) fn validate_and_advance_source_watermarks(
+    pub(super) fn validate_and_advance_semantic_input_watermark(
         &mut self,
         inputs: impl IntoIterator<Item = (StableInputSourceId, SourceSequence)>,
     ) -> Result<(), EngineError> {
-        let mut watermarks = self.source_watermarks.clone();
+        let mut watermark = self.semantic_input_watermark;
         for (input_source, source_sequence) in inputs {
-            if let Some(previous) = watermarks.get(&input_source).copied()
+            if let Some(previous) = watermark
                 && source_sequence <= previous
             {
                 return Err(EngineError::SourceSequenceNotIncreasing {
@@ -509,9 +509,9 @@ impl DockEngine {
                     submitted: source_sequence,
                 });
             }
-            watermarks.insert(input_source, source_sequence);
+            watermark = Some(source_sequence);
         }
-        self.source_watermarks = watermarks;
+        self.semantic_input_watermark = watermark;
         Ok(())
     }
 

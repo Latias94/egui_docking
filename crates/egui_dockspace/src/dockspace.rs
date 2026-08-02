@@ -106,8 +106,7 @@ pub struct Dockspace {
     pub(crate) presentation_host: PresentationHostLease,
     pub(crate) renderer: EguiDockRenderer,
     pub(crate) pane_focus: PaneFocusAdapterState,
-    pub(crate) application_source_sequence: SourceSequence,
-    renderer_source_sequence: SourceSequence,
+    pub(crate) semantic_source_sequence: SourceSequence,
     last_host_frame: Option<EguiFrameScheduleKey>,
     presentation_ledger: PresentationOutputLedger,
     pub(crate) pointer_input: EguiPointerInput,
@@ -139,8 +138,7 @@ impl Dockspace {
             presentation_host,
             renderer: EguiDockRenderer::new(id, style)?,
             pane_focus: PaneFocusAdapterState::default(),
-            application_source_sequence: SourceSequence::default(),
-            renderer_source_sequence: SourceSequence::default(),
+            semantic_source_sequence: SourceSequence::default(),
             last_host_frame: None,
             presentation_ledger: PresentationOutputLedger::default(),
             pointer_input: EguiPointerInput::default(),
@@ -372,8 +370,8 @@ impl Dockspace {
     }
 
     #[cfg(all(test, feature = "serde"))]
-    pub(crate) fn set_application_source_sequence_for_test(&mut self, sequence: SourceSequence) {
-        self.application_source_sequence = sequence;
+    pub(crate) fn set_semantic_source_sequence_for_test(&mut self, sequence: SourceSequence) {
+        self.semantic_source_sequence = sequence;
     }
 
     /// Returns current fixed renderer geometry and colors.
@@ -632,7 +630,7 @@ impl Dockspace {
             &mut self.engine,
             self.presentation_host,
             &mut self.pointer_input,
-            &mut self.application_source_sequence,
+            &mut self.semantic_source_sequence,
             &mut self.pane_focus,
             input,
         )
@@ -643,7 +641,7 @@ impl Dockspace {
         restore: &mut DockspaceDocumentRestore<'_>,
         presentation_host: PresentationHostLease,
         pointer_input: &mut EguiPointerInput,
-        application_source_sequence: &mut SourceSequence,
+        semantic_source_sequence: &mut SourceSequence,
         pane_focus: &mut PaneFocusAdapterState,
         input: EngineInput,
     ) -> Result<EngineTransition, DockspaceError> {
@@ -651,7 +649,7 @@ impl Dockspace {
             restore,
             presentation_host,
             pointer_input,
-            application_source_sequence,
+            semantic_source_sequence,
             pane_focus,
             input,
         )
@@ -661,7 +659,7 @@ impl Dockspace {
         engine: &mut impl EguiApplicationInputOwner,
         presentation_host: PresentationHostLease,
         pointer_input: &mut EguiPointerInput,
-        application_source_sequence: &mut SourceSequence,
+        semantic_source_sequence: &mut SourceSequence,
         pane_focus: &mut PaneFocusAdapterState,
         input: EngineInput,
     ) -> Result<EngineTransition, DockspaceError> {
@@ -672,7 +670,7 @@ impl Dockspace {
         {
             return Err(DockspaceError::BackendApplicationInputRequiresIngress);
         }
-        let sequence = application_source_sequence.checked_next().ok_or(
+        let sequence = semantic_source_sequence.checked_next().ok_or(
             DockspaceError::InputSourceSequenceExhausted {
                 input_source: EGUI_APPLICATION_INPUT_SOURCE,
             },
@@ -704,7 +702,7 @@ impl Dockspace {
         }
         let transition = engine.prepare_application_host_frame(frame)?.commit();
         engine.reconcile_application_sidecars();
-        *application_source_sequence = sequence;
+        *semantic_source_sequence = sequence;
         pane_focus.accept_transition(&transition);
         Ok(transition)
     }
@@ -1031,8 +1029,7 @@ impl Dockspace {
             core_frame,
             key,
             self.pane_focus.clone(),
-            self.renderer_source_sequence,
-            self.application_source_sequence,
+            self.semantic_source_sequence,
             automatic_presentation,
             outer_presentation,
             automatic_pointer,

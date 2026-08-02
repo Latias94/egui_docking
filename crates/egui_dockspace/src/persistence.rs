@@ -244,7 +244,7 @@ impl Dockspace {
             &mut restore,
             presentation_host,
             &mut self.pointer_input,
-            &mut self.application_source_sequence,
+            &mut self.semantic_source_sequence,
             &mut self.pane_focus,
             input,
         ) {
@@ -647,7 +647,7 @@ mod tests {
             .expect("source document must encode");
         let mut target = facade(5);
         let before = target.engine.version();
-        target.set_application_source_sequence_for_test(SourceSequence::new(u64::MAX));
+        target.set_semantic_source_sequence_for_test(SourceSequence::new(u64::MAX));
 
         assert!(matches!(
             target.load_document_json(&json, primary_item_association),

@@ -10,8 +10,7 @@ use dockspace::frame::{BindingRetirementStatus, NativeCreatePhase, NativeCreateR
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
-    FloatingPresentationId, ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
-    WorkspaceRevision,
+    FloatingPresentationId, ItemId, RootId, StableInputSourceId, SurfaceId, WorkspaceRevision,
 };
 use dockspace::intent::{
     Authority, AuthorityUnavailableReason, CloseSceneTarget, PointerButton, PointerId,
@@ -793,11 +792,11 @@ fn same_tick_close_then_repopulate_preserves_the_existing_surface_binding() {
         .expect("source binding exists")
         .binding();
     let expected = engine.version();
+    let mut semantic_writer = support::TestInputStream::resume(&engine, CLOSE_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            CLOSE_SOURCE,
-            SourceSequence::new(1),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::ResolveClose {
                 request: plan.request(),
                 token: plan.items()[0].token(),
@@ -805,10 +804,10 @@ fn same_tick_close_then_repopulate_preserves_the_existing_surface_binding() {
             },
         )
         .expect("close resolution belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             COMMAND_SOURCE,
-            SourceSequence::new(1),
             EngineInput::WorkspaceCommand {
                 expected,
                 command: WorkspaceCommand::CreateSurfaceRoot {
@@ -849,11 +848,11 @@ fn an_ordinary_workspace_command_unbinds_a_truly_vacant_external_surface() {
     let expected = engine.version();
     let command = rehome_source_to_target(&engine);
 
+    let mut semantic_writer = support::TestInputStream::resume(&engine, COMMAND_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            COMMAND_SOURCE,
-            SourceSequence::new(1),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand { expected, command },
         )
         .expect("workspace command belongs to the semantic host-frame phase");
@@ -910,18 +909,15 @@ fn same_tick_added_admitted_then_vacated_external_surface_is_unbound() {
     );
     let provider = presentation_host.platform_provider();
 
+    let mut semantic_writer = support::TestInputStream::resume(&engine, LIFECYCLE_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(1),
-            EngineInput::ReplaceWorkspace(replacement),
-        )
+    semantic_writer
+        .append(&mut frame, EngineInput::ReplaceWorkspace(replacement))
         .expect("workspace replacement belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             REGISTRATION_SOURCE,
-            SourceSequence::new(1),
             EngineInput::RegisterViewport {
                 provider,
                 expected: replacement_version,
@@ -932,10 +928,10 @@ fn same_tick_added_admitted_then_vacated_external_surface_is_unbound() {
             },
         )
         .expect("viewport registration belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             COMMAND_SOURCE,
-            SourceSequence::new(1),
             EngineInput::WorkspaceCommand {
                 expected: replacement_version,
                 command,
@@ -982,11 +978,12 @@ fn pending_native_reservation_is_not_settled_as_an_admitted_vacancy() {
     };
     let expected = fixture.engine.version();
 
+    let mut semantic_writer =
+        support::TestInputStream::resume(&fixture.engine, NATIVE_COMMAND_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    frame
-        .append_input(
-            NATIVE_COMMAND_SOURCE,
-            SourceSequence::new(1),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected,
                 command: vacate,
@@ -1126,11 +1123,12 @@ fn same_tick_native_first_live_admission_then_vacancy_releases_the_child() {
     );
 
     let expected = fixture.engine.version();
+    let mut semantic_writer =
+        support::TestInputStream::resume(&fixture.engine, NATIVE_COMMAND_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    frame
-        .append_input(
-            NATIVE_COMMAND_SOURCE,
-            SourceSequence::new(1),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand {
                 expected,
                 command: vacate,
@@ -1185,11 +1183,11 @@ fn a_rootless_surface_with_a_contained_sibling_is_not_vacant() {
     let expected = engine.version();
     let command = rehome_source_to_target(&engine);
 
+    let mut semantic_writer = support::TestInputStream::resume(&engine, COMMAND_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            COMMAND_SOURCE,
-            SourceSequence::new(1),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::WorkspaceCommand { expected, command },
         )
         .expect("workspace command belongs to the semantic host-frame phase");
@@ -1235,25 +1233,18 @@ fn validate_then_single_replacement_and_vacancy_settles_the_new_binding() {
     );
     let command = rehome_source_to_target(&engine);
 
+    let mut semantic_writer = support::TestInputStream::resume(&engine, LIFECYCLE_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(1),
-            EngineInput::ValidateWorkspace,
-        )
+    semantic_writer
+        .append(&mut frame, EngineInput::ValidateWorkspace)
         .expect("validation belongs to the semantic host-frame phase");
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(2),
-            EngineInput::ReplaceWorkspace(replacement),
-        )
+    semantic_writer
+        .append(&mut frame, EngineInput::ReplaceWorkspace(replacement))
         .expect("workspace replacement belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             COMMAND_SOURCE,
-            SourceSequence::new(1),
             EngineInput::WorkspaceCommand {
                 expected: replacement_version,
                 command,
@@ -1309,32 +1300,24 @@ fn validate_then_double_replacement_and_vacancy_settles_the_latest_binding() {
     );
     let command = rehome_source_to_target(&engine);
 
+    let mut semantic_writer = support::TestInputStream::resume(&engine, LIFECYCLE_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(1),
-            EngineInput::ValidateWorkspace,
-        )
+    semantic_writer
+        .append(&mut frame, EngineInput::ValidateWorkspace)
         .expect("validation belongs to the semantic host-frame phase");
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(2),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::ReplaceWorkspace(replacement.clone()),
         )
         .expect("first workspace replacement belongs to the semantic host-frame phase");
-    frame
-        .append_input(
-            LIFECYCLE_SOURCE,
-            SourceSequence::new(3),
-            EngineInput::ReplaceWorkspace(replacement),
-        )
+    semantic_writer
+        .append(&mut frame, EngineInput::ReplaceWorkspace(replacement))
         .expect("second workspace replacement belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             COMMAND_SOURCE,
-            SourceSequence::new(1),
             EngineInput::WorkspaceCommand {
                 expected: second_replacement_version,
                 command,
@@ -1398,11 +1381,11 @@ fn destroyed_then_registered_rebound_settles_the_new_exact_binding_at_tick_final
 
     let expected = engine.version();
     let command = rehome_source_to_target(&engine);
+    let mut semantic_writer = support::TestInputStream::resume(&engine, NATIVE_PLATFORM_SOURCE);
     let mut frame = presentation_host.begin(&engine);
-    frame
-        .append_input(
-            NATIVE_PLATFORM_SOURCE,
-            SourceSequence::new(2),
+    semantic_writer
+        .append(
+            &mut frame,
             EngineInput::PublishPlatformSnapshot {
                 provider,
                 expected_epoch: expected.epoch(),
@@ -1410,10 +1393,10 @@ fn destroyed_then_registered_rebound_settles_the_new_exact_binding_at_tick_final
             },
         )
         .expect("terminal observation belongs to the semantic host-frame phase");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             REGISTRATION_SOURCE,
-            SourceSequence::new(2),
             EngineInput::RegisterViewport {
                 provider,
                 expected,
@@ -1424,10 +1407,10 @@ fn destroyed_then_registered_rebound_settles_the_new_exact_binding_at_tick_final
             },
         )
         .expect("new exact external binding belongs to the same host frame");
-    frame
-        .append_input(
+    semantic_writer
+        .append_as(
+            &mut frame,
             COMMAND_SOURCE,
-            SourceSequence::new(1),
             EngineInput::WorkspaceCommand { expected, command },
         )
         .expect("surface removal belongs to the same host frame");

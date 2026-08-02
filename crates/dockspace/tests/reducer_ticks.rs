@@ -105,7 +105,7 @@ fn host_frame_preserves_provider_append_order_without_priority_sorting() {
     append(
         &mut frame,
         SOURCE_A,
-        1,
+        2,
         EngineInput::ReplaceWorkspace(workspace(2)),
     );
     complete_host_frame(&engine, &mut frame);
@@ -126,12 +126,8 @@ fn host_frame_preserves_provider_append_order_without_priority_sorting() {
         InputOutcome::WorkspaceReplaced { .. }
     ));
     assert_eq!(
-        engine.source_watermark(SOURCE_A),
-        Some(SourceSequence::new(1))
-    );
-    assert_eq!(
-        engine.source_watermark(SOURCE_B),
-        Some(SourceSequence::new(1))
+        engine.semantic_input_watermark(),
+        Some(SourceSequence::new(2))
     );
 }
 
@@ -165,7 +161,7 @@ fn configuration_phase_runs_after_semantic_inputs_without_reordering() {
     append(
         &mut frame,
         SOURCE_A,
-        1,
+        2,
         EngineInput::ReplacePolicy { expected, policy },
     );
     complete_host_frame(&engine, &mut frame);
@@ -232,8 +228,7 @@ fn configuration_phase_error_poison_rejects_the_entire_host_frame() {
     assert!(!engine.policy().allows_native_surfaces());
     assert_eq!(engine.last_reducer_tick(), ReducerTickId::default());
     assert_eq!(engine.last_input_sequence().get(), 0);
-    assert_eq!(engine.source_watermark(SOURCE_A), None);
-    assert_eq!(engine.source_watermark(SOURCE_B), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
 }
 
 #[test]
@@ -287,7 +282,7 @@ fn host_frame_rejects_a_foreign_engine_before_state_changes() {
     ));
     assert_eq!(right.last_reducer_tick(), before_tick);
     assert_eq!(right.last_input_sequence(), before_input);
-    assert_eq!(right.source_watermark(SOURCE_A), None);
+    assert_eq!(right.semantic_input_watermark(), None);
 }
 
 #[test]
@@ -315,7 +310,10 @@ fn host_frame_rejects_stale_workspace_or_requirements_before_state_changes() {
     ));
     assert_eq!(engine.last_reducer_tick(), before_tick);
     assert_eq!(engine.last_input_sequence(), before_input);
-    assert_eq!(engine.source_watermark(SOURCE_A), None);
+    assert_eq!(
+        engine.semantic_input_watermark(),
+        Some(SourceSequence::new(1))
+    );
 }
 
 #[test]
@@ -332,7 +330,7 @@ fn source_sequence_replay_rejects_the_entire_host_frame_atomically() {
     let before_tick = engine.last_reducer_tick();
     let before_input = engine.last_input_sequence();
     let mut replay = host.begin(&engine);
-    append(&mut replay, SOURCE_B, 1, EngineInput::ValidateWorkspace);
+    append(&mut replay, SOURCE_B, 6, EngineInput::ValidateWorkspace);
     assert_eq!(
         support::append_host_input(
             &mut replay,
@@ -348,17 +346,16 @@ fn source_sequence_replay_rejects_the_entire_host_frame_atomically() {
             input_source: SOURCE_A,
             previous,
             submitted,
-        }) if previous == SourceSequence::new(5) && submitted == SourceSequence::new(5)
+        }) if previous == SourceSequence::new(6) && submitted == SourceSequence::new(5)
     ));
     assert_eq!(engine.workspace(), &before_workspace);
     assert_eq!(engine.version(), before_version);
     assert_eq!(engine.last_reducer_tick(), before_tick);
     assert_eq!(engine.last_input_sequence(), before_input);
     assert_eq!(
-        engine.source_watermark(SOURCE_A),
+        engine.semantic_input_watermark(),
         Some(SourceSequence::new(5))
     );
-    assert_eq!(engine.source_watermark(SOURCE_B), None);
 }
 
 #[test]
@@ -386,7 +383,7 @@ fn duplicate_source_sequence_inside_one_host_frame_is_atomic() {
     ));
     assert_eq!(engine.last_reducer_tick(), ReducerTickId::default());
     assert_eq!(engine.last_input_sequence().get(), 0);
-    assert_eq!(engine.source_watermark(SOURCE_A), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
 }
 
 #[test]
@@ -442,7 +439,7 @@ fn incomplete_contribution_roster_rejects_before_tick_or_watermark_progress() {
     assert_eq!(engine.version(), before_version);
     assert_eq!(engine.last_reducer_tick(), ReducerTickId::default());
     assert_eq!(engine.last_input_sequence().get(), 0);
-    assert_eq!(engine.source_watermark(SOURCE_A), None);
+    assert_eq!(engine.semantic_input_watermark(), None);
 }
 
 #[test]
