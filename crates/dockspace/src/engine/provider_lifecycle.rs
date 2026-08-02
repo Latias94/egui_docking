@@ -402,7 +402,8 @@ impl DockEngine {
                 pointer_committed_through,
             )
             .map_err(|source| EngineError::BackendIngress { source })?;
-        debug_assert!(ticket.consume());
+        let consumed = ticket.consume();
+        debug_assert!(consumed);
         self.publish_candidate(candidate);
         Ok(recorder)
     }
