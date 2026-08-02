@@ -29,6 +29,7 @@ use dockspace::pointer_journal::{
     ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
     ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
+use dockspace::presentation_observation::PresentationHostLease;
 use dockspace::semantic_input::{
     SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
     SemanticReceiverEvent,
@@ -120,6 +121,7 @@ pub(crate) struct PreparedNativeIngress {
     pub(crate) bindings: NativeBindingRoster,
     pub(crate) routes: BTreeMap<ViewportId, BoundNativeRoute>,
     pub(crate) pointer_edges: BTreeMap<u64, RetainedPointerEdge>,
+    pub(crate) presentation_host: PresentationHostLease,
     pub(crate) transaction: NativeIngressTransaction,
 }
 
@@ -300,6 +302,12 @@ impl NativeIngressBridge {
             .savepoint();
         let presentation = presentations.prepare_savepoint();
         let state = self.state_snapshot();
+        let presentation_host = self
+            .recorder
+            .as_ref()
+            .expect("the provider was enrolled above")
+            .lease()
+            .presentation_host();
         let result = self.prepare_cycle_inner(dockspace, ingress, configured, presentations);
         match result {
             Ok(prepared) => Ok(PreparedNativeIngress {
@@ -307,6 +315,7 @@ impl NativeIngressBridge {
                 bindings: prepared.bindings,
                 routes: prepared.routes,
                 pointer_edges: prepared.pointer_edges,
+                presentation_host,
                 transaction: NativeIngressTransaction {
                     recorder,
                     state,

@@ -6,7 +6,9 @@ use dockspace::engine::BackendIngressProgress;
 use dockspace::ids::SurfaceId;
 use dockspace::intent::Authority;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::HostPresentationObservationOutcome;
+use dockspace::presentation_observation::{
+    HostPresentationObservationOutcome, PresentationHostLease,
+};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::{CloseDecisionToken, CloseItemDecisionState, DeferredCloseToken, NativeCloseEdge};
@@ -58,6 +60,7 @@ pub struct NativeRuntimeStatus {
 
 struct ActiveNativeCycle {
     session: EguiNativePresentationSession,
+    presentation_host: PresentationHostLease,
     routes: BTreeMap<ViewportId, BoundNativeRoute>,
     expected_surfaces: BTreeSet<SurfaceId>,
     callbacks: BTreeSet<ViewportId>,
@@ -249,6 +252,8 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         if self.cycle_in_flight() {
             return Err(NativeRuntimeError::CycleAlreadyActive);
         }
+        self.presentations
+            .reclaim_committed_quiescence(&mut self.dockspace)?;
         let native_ingress = cycle
             .native_host_ingress()
             .ok_or(NativeRuntimeError::NativeIngressMissing)?;
@@ -276,6 +281,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             bindings,
             routes,
             pointer_edges,
+            presentation_host,
             transaction,
         } = prepared;
         debug_assert!(self.ingress_transaction.is_none());
@@ -328,6 +334,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         }
         self.active = Some(ActiveNativeCycle {
             session,
+            presentation_host,
             routes,
             expected_surfaces,
             callbacks: BTreeSet::new(),
@@ -489,6 +496,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .copied()
             .collect::<Vec<_>>();
         let prepared_presentations = self.presentations.prepare_output_batch(
+            active.presentation_host,
             output_routes,
             outputs,
             std::mem::take(&mut active.staging),
@@ -590,7 +598,11 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         self.status.committed_cycles = self.status.committed_cycles.saturating_add(1);
         self.status.live_viewports = prepared.routes.len();
         self.status.pending_presentations = self.presentations.pending_count();
-        request_follow_up_cycle(context, self.ingress.has_post_commit_records());
+        request_follow_up_cycle(
+            context,
+            self.ingress.has_post_commit_records()
+                || self.presentations.has_committed_quiescence_work(),
+        );
         Ok(())
     }
 

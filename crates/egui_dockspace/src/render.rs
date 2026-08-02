@@ -452,9 +452,7 @@ impl PreparedEguiFrameAcceptance {
             surfaces.insert(surface, response);
         }
         presentation_outputs.extend(native_staging_outputs);
-        renderer.paint_resources.retain_core_resources(engine);
-        let retention = engine.runtime_retention_manifest();
-        renderer.receiver_store.retain(retention.presentation());
+        renderer.reconcile_core_retention(engine);
         EguiFrameAcceptance {
             surfaces,
             presentation_outputs,
@@ -1031,6 +1029,12 @@ impl EguiDockRenderer {
             paint_resource_set_count: self.paint_resources.resource_set_count(),
             receiver_presentation_count: self.receiver_store.presentation_count(),
         }
+    }
+
+    pub(crate) fn reconcile_core_retention(&mut self, engine: &DockEngine) {
+        self.paint_resources.retain_core_resources(engine);
+        let retention = engine.runtime_retention_manifest();
+        self.receiver_store.retain(retention.presentation());
     }
 
     /// Resolves an observed receiver against one exact retained paint generation.

@@ -10,7 +10,9 @@ use dockspace::engine::{
     OwnedPreparedHostFrameCommit, PreparedHostFrameCommit,
 };
 use dockspace::pointer_journal::{PointerEdgeSequence, PointerInputLease, PointerProviderScope};
-use dockspace::presentation_observation::PresentationHostLease;
+use dockspace::presentation_observation::{
+    HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
+};
 use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 
 #[cfg(feature = "serde")]
@@ -73,6 +75,17 @@ pub(super) trait EguiEngineOwner {
         &mut self,
         prepared: OwnedPreparedHostFrameCommit,
     ) -> Result<EngineTransition, EngineError>;
+
+    fn try_prepare_presentation_stream_quiescence(
+        &self,
+        presentation_host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<Option<PresentationStreamQuiescence>, EngineError>;
+
+    fn confirm_presentation_stream_quiescence_batch(
+        &mut self,
+        quiescences: Vec<PresentationStreamQuiescence>,
+    ) -> Result<(), EngineError>;
 }
 
 pub(super) trait EguiApplicationInputOwner {
@@ -222,6 +235,21 @@ impl EguiEngineOwner for DockEngine {
     ) -> Result<EngineTransition, EngineError> {
         prepared.commit(self)
     }
+
+    fn try_prepare_presentation_stream_quiescence(
+        &self,
+        presentation_host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<Option<PresentationStreamQuiescence>, EngineError> {
+        DockEngine::try_prepare_presentation_stream_quiescence(self, presentation_host, stream)
+    }
+
+    fn confirm_presentation_stream_quiescence_batch(
+        &mut self,
+        quiescences: Vec<PresentationStreamQuiescence>,
+    ) -> Result<(), EngineError> {
+        DockEngine::confirm_presentation_stream_quiescence_batch(self, quiescences)
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -303,5 +331,20 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         prepared: OwnedPreparedHostFrameCommit,
     ) -> Result<EngineTransition, EngineError> {
         self.adapter_commit_owned_host_presentation_frame(prepared)
+    }
+
+    fn try_prepare_presentation_stream_quiescence(
+        &self,
+        presentation_host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<Option<PresentationStreamQuiescence>, EngineError> {
+        self.adapter_try_prepare_presentation_stream_quiescence(presentation_host, stream)
+    }
+
+    fn confirm_presentation_stream_quiescence_batch(
+        &mut self,
+        quiescences: Vec<PresentationStreamQuiescence>,
+    ) -> Result<(), EngineError> {
+        self.adapter_confirm_presentation_stream_quiescence_batch(quiescences)
     }
 }

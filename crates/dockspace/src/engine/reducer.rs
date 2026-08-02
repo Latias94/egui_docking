@@ -733,6 +733,26 @@ impl DockEngine {
             presentation_attempt,
             staged_presentation_outputs,
         )?;
+        // Native staging owns a presentation stream before workspace ownership transfers. The
+        // tick-final presentation roster therefore combines semantic surfaces with every live or
+        // reserved viewport binding; only absence from both domains terminates an active stream.
+        let presentation_surfaces = candidate
+            .workspace
+            .surfaces()
+            .map(|(surface, _)| surface)
+            .chain(
+                candidate
+                    .viewport
+                    .registry()
+                    .records()
+                    .map(|(surface, _)| surface),
+            )
+            .collect::<BTreeSet<_>>();
+        candidate
+            .presentation_authority
+            .presentation
+            .retire_absent_surface_streams(&presentation_surfaces)
+            .map_err(presentation_ledger_error)?;
         candidate.settle_retired_presentation_hosts()?;
         let observed_focus_effects = Self::observed_focus_effects(&reduced);
         let focus_delta = FocusDelta::between(

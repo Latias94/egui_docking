@@ -2756,6 +2756,43 @@ impl DockEngine {
             .map_err(presentation_ledger_error)
     }
 
+    /// Tries to prepare stream reclamation without treating normal lifecycle progress as failure.
+    ///
+    /// `Ok(None)` means the exact stream is still active, has unsettled output, lacks its
+    /// same-host successor, remains referenced by another core authority, or belongs to a host
+    /// whose whole retirement path now owns cleanup. Those conditions are expected to change at a
+    /// later host boundary. Foreign identities and host mismatches remain typed errors rather than
+    /// being hidden as retryable state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `host` or `stream` is foreign, unknown, or belongs to a different
+    /// host.
+    pub fn try_prepare_presentation_stream_quiescence(
+        &self,
+        host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<Option<PresentationStreamQuiescence>, EngineError> {
+        let quiescence = match self
+            .presentation_authority
+            .presentation
+            .prepare_stream_quiescence(host, stream)
+        {
+            Ok(quiescence) => quiescence,
+            Err(
+                PresentationLedgerError::HostRetired { .. }
+                | PresentationLedgerError::StreamNotRetiring { .. }
+                | PresentationLedgerError::StreamHasPendingOutputs { .. }
+                | PresentationLedgerError::StreamQuiescenceRequiresSameHostSuccessor { .. },
+            ) => return Ok(None),
+            Err(source) => return Err(presentation_ledger_error(source)),
+        };
+        if self.retained_presentation_streams().contains(&stream) {
+            return Ok(None);
+        }
+        Ok(Some(quiescence))
+    }
+
     /// Consumes a renderer's affine quiescence acknowledgement for one retiring stream.
     ///
     /// No age or capacity policy participates in this reclamation. The exact stream remains in
@@ -2770,13 +2807,32 @@ impl DockEngine {
         &mut self,
         quiescence: PresentationStreamQuiescence,
     ) -> Result<(), EngineError> {
+        self.confirm_presentation_stream_quiescence_batch([quiescence])
+    }
+
+    /// Atomically consumes renderer quiescence acknowledgements for retiring streams.
+    ///
+    /// Every acknowledgement is revalidated against one candidate engine. If any stream changed
+    /// after preparation, none of the stream records are reclaimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when core still retains any stream, an acknowledgement is duplicated, or
+    /// a ledger state changed after the acknowledgement was prepared.
+    #[doc(hidden)]
+    pub fn confirm_presentation_stream_quiescence_batch(
+        &mut self,
+        quiescences: impl IntoIterator<Item = PresentationStreamQuiescence>,
+    ) -> Result<(), EngineError> {
         let mut candidate = self.candidate();
         let retained_streams = candidate.retained_presentation_streams();
-        candidate
-            .presentation_authority
-            .presentation
-            .compact_quiesced_retiring_stream(quiescence, &retained_streams)
-            .map_err(presentation_ledger_error)?;
+        for quiescence in quiescences {
+            candidate
+                .presentation_authority
+                .presentation
+                .compact_quiesced_retiring_stream(quiescence, &retained_streams)
+                .map_err(presentation_ledger_error)?;
+        }
         self.publish_candidate(candidate);
         Ok(())
     }

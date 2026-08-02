@@ -130,10 +130,13 @@ impl SmokeApp {
                 .native_create_sagas()
                 .map(|(saga, create)| (saga, create.binding(), create.phase()))
                 .collect::<Vec<_>>();
+            let presentation = engine.presentation_ledger_diagnostics();
+            let retention = engine.runtime_retention_manifest();
             let detail = format!(
                 "native dynamic tear-off/redock timed out in {:?} after {} cycles: \
                  {status:?}, interaction={:?}, surfaces={surfaces:?}, scenes={scenes:?}, \
-                 native_creates={native_creates:?}, preview={:?}, renderer={:?}",
+                 native_creates={native_creates:?}, preview={:?}, presentation={presentation:?}, \
+                 retention={retention:?}, renderer={:?}",
                 self.phase,
                 status.committed_cycles,
                 engine.interaction().status(),
@@ -262,20 +265,21 @@ impl SmokeApp {
                 }
             }
             SmokePhase::RootReleaseQueued => {
-                let workspace = self.runtime.dockspace().engine().workspace();
+                let engine = self.runtime.dockspace().engine();
+                let workspace = engine.workspace();
                 let surfaces = workspace
                     .surfaces()
                     .map(|(surface, _)| surface)
                     .collect::<Vec<_>>();
+                let retained_presentation_streams = engine
+                    .runtime_retention_manifest()
+                    .presentation_hosts()
+                    .retained_stream_states();
                 if status.live_viewports == 1
                     && surfaces == [ROOT_SURFACE]
                     && workspace.item_multiset() == BTreeMap::from([(ROOT_ITEM, 1)])
-                    && self
-                        .runtime
-                        .dockspace()
-                        .engine()
-                        .interaction_authority(ROOT_SURFACE)
-                        .is_some()
+                    && engine.interaction_authority(ROOT_SURFACE).is_some()
+                    && retained_presentation_streams == 1
                 {
                     return Ok(Some(status));
                 }

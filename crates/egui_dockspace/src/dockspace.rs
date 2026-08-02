@@ -50,7 +50,8 @@ use dockspace::pointer_journal::{
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::{
     HostFrameKey, HostPresentationObservation, HostPresentationObservationEntry,
-    HostPresentationOutput, PresentationHostLease, SurfacePresentationOutputTicket,
+    HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
+    SurfacePresentationOutputTicket,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
@@ -166,6 +167,54 @@ impl Dockspace {
         {
             &self.engine
         }
+    }
+
+    /// Reclaims renderer resources after the native host proves exact stream quiescence.
+    ///
+    /// This adapter boundary is hidden from the ordinary egui facade. A native runtime must
+    /// retain and retry every pair for which this returns `false`; no frame age or callback
+    /// disappearance is accepted as replacement evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a retained stream belongs to another engine or presentation host.
+    #[doc(hidden)]
+    pub fn adapter_reclaim_quiesced_presentation_streams(
+        &mut self,
+        streams: &BTreeSet<(PresentationHostLease, HostPresentationStreamId)>,
+    ) -> Result<bool, DockspaceError> {
+        let mut all_reclaimed = true;
+        let mut quiescences = Vec::with_capacity(streams.len());
+        for &(presentation_host, stream) in streams {
+            if !EguiEngineOwner::engine(&self.engine)
+                .presentation_retention_manifest()
+                .retains_stream(stream)
+            {
+                continue;
+            }
+            let Some(quiescence) = EguiEngineOwner::try_prepare_presentation_stream_quiescence(
+                &self.engine,
+                presentation_host,
+                stream,
+            )?
+            else {
+                all_reclaimed = false;
+                continue;
+            };
+            quiescences.push(quiescence);
+        }
+        if !quiescences.is_empty() {
+            EguiEngineOwner::confirm_presentation_stream_quiescence_batch(
+                &mut self.engine,
+                quiescences,
+            )?;
+        }
+
+        let retention = EguiEngineOwner::engine(&self.engine).presentation_retention_manifest();
+        self.presentation_ledger.retain(&retention);
+        self.renderer
+            .reconcile_core_retention(EguiEngineOwner::engine(&self.engine));
+        Ok(all_reclaimed)
     }
 
     /// Returns adapter-initiated pointer-provider retirement transitions awaiting dispatch.

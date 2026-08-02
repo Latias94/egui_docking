@@ -1029,8 +1029,14 @@ pub enum HostPresentationObservationOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PresentationStreamLifecycle {
     Active,
-    Retiring,
+    Retiring(PresentationStreamRetirementCause),
     Terminated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresentationStreamRetirementCause {
+    EndpointSuperseded,
+    SurfaceRemoved,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1207,6 +1213,20 @@ pub(crate) enum PresentationLedgerError {
     },
     #[error("presentation stream {stream:?} remains retained by core authority")]
     StreamQuiescenceStillRetained { stream: HostPresentationStreamId },
+    #[error(
+        "surface-removed presentation stream {stream:?} unexpectedly regained active ownership of surface {surface}"
+    )]
+    SurfaceRemovedStreamRegainedOwnership {
+        stream: HostPresentationStreamId,
+        surface: SurfaceId,
+    },
+    #[error(
+        "active presentation owner {stream:?} is inconsistent with surface {surface} during roster retirement"
+    )]
+    ActiveSurfaceOwnerInvariant {
+        stream: HostPresentationStreamId,
+        surface: SurfaceId,
+    },
     #[error(
         "superseded presentation host {host:?} cannot emit surface {surface} while stream {active_stream:?} is active"
     )]
@@ -1413,7 +1433,7 @@ impl PresentationLedger {
         for stream in self.streams.values() {
             match stream.lifecycle {
                 PresentationStreamLifecycle::Active => diagnostics.active_streams += 1,
-                PresentationStreamLifecycle::Retiring => diagnostics.retiring_streams += 1,
+                PresentationStreamLifecycle::Retiring(_) => diagnostics.retiring_streams += 1,
                 PresentationStreamLifecycle::Terminated => diagnostics.terminated_streams += 1,
             }
             if !stream.pending.is_empty() {
@@ -1475,6 +1495,48 @@ impl PresentationLedger {
         (state.lifecycle == PresentationStreamLifecycle::Active
             && self.active_streams.get(&state.surface) == Some(&stream))
         .then_some(state.surface)
+    }
+
+    /// Retires active streams whose semantic surfaces are absent from the tick-final roster.
+    ///
+    /// This must be called only after every workspace mutation in one reducer tick has settled.
+    /// Temporary mid-tick vacancy is not a terminal presentation fact.
+    pub(crate) fn retire_absent_surface_streams(
+        &mut self,
+        live_surfaces: &BTreeSet<SurfaceId>,
+    ) -> Result<(), PresentationLedgerError> {
+        let retiring = self
+            .active_streams
+            .iter()
+            .filter(|(surface, _)| !live_surfaces.contains(surface))
+            .map(|(surface, stream)| (*surface, *stream))
+            .collect::<Vec<_>>();
+        for (surface, stream) in &retiring {
+            let state = self.streams.get(stream).ok_or(
+                PresentationLedgerError::ActiveSurfaceOwnerInvariant {
+                    stream: *stream,
+                    surface: *surface,
+                },
+            )?;
+            if state.surface != *surface || state.lifecycle != PresentationStreamLifecycle::Active {
+                return Err(PresentationLedgerError::ActiveSurfaceOwnerInvariant {
+                    stream: *stream,
+                    surface: *surface,
+                });
+            }
+        }
+        for (surface, stream) in retiring {
+            let removed = self.active_streams.remove(&surface);
+            debug_assert_eq!(removed, Some(stream));
+            let state = self
+                .streams
+                .get_mut(&stream)
+                .expect("the complete validation pass retained the active stream");
+            state.lifecycle = PresentationStreamLifecycle::Retiring(
+                PresentationStreamRetirementCause::SurfaceRemoved,
+            );
+        }
+        Ok(())
     }
 
     pub(crate) fn host_for_stream(
@@ -1866,11 +1928,25 @@ impl PresentationLedger {
                 stream,
             });
         }
-        if state.lifecycle != PresentationStreamLifecycle::Retiring {
-            return Err(PresentationLedgerError::StreamNotRetiring { stream });
-        }
+        let retirement = match state.lifecycle {
+            PresentationStreamLifecycle::Retiring(retirement) => retirement,
+            PresentationStreamLifecycle::Active | PresentationStreamLifecycle::Terminated => {
+                return Err(PresentationLedgerError::StreamNotRetiring { stream });
+            }
+        };
         if !state.pending.is_empty() {
             return Err(PresentationLedgerError::StreamHasPendingOutputs { stream });
+        }
+        if retirement == PresentationStreamRetirementCause::SurfaceRemoved {
+            if self.active_streams.contains_key(&state.surface) {
+                return Err(
+                    PresentationLedgerError::SurfaceRemovedStreamRegainedOwnership {
+                        stream,
+                        surface: state.surface,
+                    },
+                );
+            }
+            return Ok(());
         }
         let has_same_host_successor = self
             .active_streams
@@ -1913,7 +1989,8 @@ impl PresentationLedger {
             .and_then(|stream| self.streams.get(&stream).map(|state| (stream, state.host)));
         let retired_stream_for_surface = self.host(lease)?.streams.iter().copied().find(|stream| {
             self.streams.get(stream).is_some_and(|state| {
-                state.surface == surface && state.lifecycle == PresentationStreamLifecycle::Retiring
+                state.surface == surface
+                    && matches!(state.lifecycle, PresentationStreamLifecycle::Retiring(_))
             })
         });
         if let Some((active_stream, active_host)) = active_host
@@ -1933,7 +2010,7 @@ impl PresentationLedger {
             self.streams.get(stream).is_some_and(|state| {
                 state.surface == surface
                     && state.endpoint == endpoint
-                    && state.lifecycle == PresentationStreamLifecycle::Retiring
+                    && matches!(state.lifecycle, PresentationStreamLifecycle::Retiring(_))
             })
         }) {
             // The same host may advance to a new core-frozen endpoint, but it
@@ -1957,7 +2034,9 @@ impl PresentationLedger {
         if let Some(previous) = self.active_streams.insert(surface, stream)
             && let Some(previous) = self.streams.get_mut(&previous)
         {
-            previous.lifecycle = PresentationStreamLifecycle::Retiring;
+            previous.lifecycle = PresentationStreamLifecycle::Retiring(
+                PresentationStreamRetirementCause::EndpointSuperseded,
+            );
         }
         self.streams.insert(
             stream,
@@ -2512,6 +2591,80 @@ mod tests {
                 stream,
             } if endpoint == first_endpoint && stream == first.stream()
         ));
+    }
+
+    #[test]
+    fn tick_final_surface_removal_retires_and_reclaims_without_a_successor() {
+        let mut ledger = ledger();
+        let host = ledger.create_host().expect("host lease");
+        let removed = ledger
+            .emit(
+                host,
+                SURFACE_A,
+                native_endpoint(10),
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("removed surface endpoint emits");
+        let retained = ledger
+            .emit(
+                host,
+                SURFACE_B,
+                HostPresentationEndpoint::Headless,
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("retained surface endpoint emits");
+
+        ledger
+            .retire_absent_surface_streams(&BTreeSet::from([SURFACE_B]))
+            .expect("the tick-final roster must retire only absent surfaces");
+        assert!(!ledger.active_streams.contains_key(&SURFACE_A));
+        assert_eq!(
+            ledger.active_streams.get(&SURFACE_B),
+            Some(&retained.stream())
+        );
+        assert!(ledger.streams.get(&removed.stream()).is_some_and(|state| {
+            state.lifecycle
+                == PresentationStreamLifecycle::Retiring(
+                    PresentationStreamRetirementCause::SurfaceRemoved,
+                )
+        }));
+        assert!(matches!(
+            ledger.prepare_stream_quiescence(host, removed.stream()),
+            Err(PresentationLedgerError::StreamHasPendingOutputs { stream })
+                if stream == removed.stream()
+        ));
+
+        let scope = ledger.pending_stream_scope(host).expect("pending scope");
+        ledger
+            .reduce_observation(
+                host,
+                &scope,
+                HostPresentationObservation::Batch(vec![
+                    HostPresentationObservationEntry::new(
+                        removed.stream(),
+                        HostPresentationStreamObservation::Captured {
+                            generation: HostPresentationCaptureGeneration::new(1),
+                            progress: HostPresentationProgress::Retired {
+                                settled_through: removed.key(),
+                                presented: Authority::Known(None),
+                            },
+                        },
+                    ),
+                    HostPresentationObservationEntry::new(
+                        retained.stream(),
+                        HostPresentationStreamObservation::NoUpdate,
+                    ),
+                ]),
+            )
+            .expect("removed surface output must settle without a successor");
+        let proof = ledger
+            .prepare_stream_quiescence(host, removed.stream())
+            .expect("settled surface-removed stream must accept exact renderer quiescence");
+        ledger
+            .compact_quiesced_retiring_stream(proof, &BTreeSet::new())
+            .expect("surface-removed stream must compact without a fabricated successor");
+        assert!(!ledger.streams.contains_key(&removed.stream()));
+        assert!(ledger.streams.contains_key(&retained.stream()));
     }
 
     #[test]

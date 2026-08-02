@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dockspace::presentation_observation::{
-    HostFrameKey, HostPresentationOutput, SurfacePresentationOutputTicket,
+    HostFrameKey, HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
+    SurfacePresentationOutputTicket,
 };
 use eframe::{
     HostedNativeStagingPresentation, HostedViewportOutput, NativeHoveredWindow,
@@ -48,6 +49,7 @@ pub(crate) struct PreparedNativePresentationBatch {
     runtime: u64,
     base_serial: u64,
     next_serial: u64,
+    presentation_host: PresentationHostLease,
     outputs: BTreeMap<dockspace::ids::SurfaceId, PreparedNativePresentationOutput>,
 }
 
@@ -119,7 +121,12 @@ pub(crate) struct NativePresentationLedger {
     settled: BTreeMap<u64, SettledNativePresentation>,
     retired_bindings: BTreeSet<ExactNativeViewport>,
     presented_graphs: BTreeMap<ExactNativeViewport, PresentedNativePointerGraph>,
+    live_streams:
+        BTreeMap<ExactNativeViewport, BTreeSet<(PresentationHostLease, HostPresentationStreamId)>>,
+    retired_streams:
+        BTreeMap<ExactNativeViewport, BTreeSet<(PresentationHostLease, HostPresentationStreamId)>>,
     staged_quiescence: Vec<ExactNativeViewport>,
+    committed_quiescence: BTreeSet<ExactNativeViewport>,
 }
 
 impl NativePresentationLedger {
@@ -137,7 +144,10 @@ impl NativePresentationLedger {
             settled: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
             presented_graphs: BTreeMap::new(),
+            live_streams: BTreeMap::new(),
+            retired_streams: BTreeMap::new(),
             staged_quiescence: Vec::new(),
+            committed_quiescence: BTreeSet::new(),
         })
     }
 
@@ -162,6 +172,7 @@ impl NativePresentationLedger {
 
     pub(crate) fn prepare_output_batch(
         &self,
+        presentation_host: PresentationHostLease,
         routes: impl IntoIterator<Item = BoundNativeRoute>,
         hosted_outputs: &[HostedViewportOutput<FullOutput>],
         mut staging: BTreeMap<egui::ViewportId, HostedNativeStagingPresentation>,
@@ -209,6 +220,7 @@ impl NativePresentationLedger {
             runtime: self.runtime,
             base_serial: self.next_serial,
             next_serial,
+            presentation_host,
             outputs: prepared,
         })
     }
@@ -251,6 +263,12 @@ impl NativePresentationLedger {
             };
             output.platform_output.presentation_token = Some(UserData::new(token));
             let presentation_output = settlement.presentation_output();
+            if let Some(output) = presentation_output {
+                self.live_streams
+                    .entry(output_plan.native)
+                    .or_default()
+                    .insert((prepared.presentation_host, output.stream()));
+            }
             let pending = PendingNativePresentation {
                 native: output_plan.native,
                 output: presentation_output,
@@ -413,6 +431,12 @@ impl NativePresentationLedger {
         );
         self.presented_graphs.remove(&exact);
         self.retired_bindings.insert(exact);
+        if let Some(streams) = self.live_streams.remove(&exact) {
+            self.retired_streams
+                .entry(exact)
+                .or_default()
+                .extend(streams);
+        }
 
         let pending = self
             .pending
@@ -442,8 +466,10 @@ impl NativePresentationLedger {
         Ok(())
     }
 
-    /// Releases the adapter tombstone after the fork proves that no renderer
-    /// result can still name this exact native lifetime.
+    /// Stages the fork proof that no renderer result can still name this exact native lifetime.
+    ///
+    /// Core stream reclamation remains a separate authority boundary. The tombstone is retained
+    /// until a later cycle confirms every stream archived for this binding.
     pub(crate) fn retirement_quiesced(&mut self, exact: ExactNativeViewport) {
         debug_assert!(
             self.pending.values().all(|pending| pending.native != exact),
@@ -460,8 +486,42 @@ impl NativePresentationLedger {
         }
         self.settled.clear();
         for exact in self.staged_quiescence.drain(..) {
-            self.retired_bindings.remove(&exact);
+            self.committed_quiescence.insert(exact);
         }
+    }
+
+    /// Reclaims core and adapter state for fork-confirmed native retirements.
+    ///
+    /// This runs before the next hosted transaction begins. A temporarily retained core stream
+    /// keeps its exact native proof and requests another cycle; only complete reclamation removes
+    /// the native tombstone.
+    pub(crate) fn reclaim_committed_quiescence(
+        &mut self,
+        dockspace: &mut Dockspace,
+    ) -> Result<(), NativeRuntimeError> {
+        let candidates = self
+            .committed_quiescence
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for exact in candidates {
+            let streams = self
+                .retired_streams
+                .get(&exact)
+                .cloned()
+                .unwrap_or_default();
+            if !dockspace.adapter_reclaim_quiesced_presentation_streams(&streams)? {
+                continue;
+            }
+            self.retired_streams.remove(&exact);
+            self.retired_bindings.remove(&exact);
+            self.committed_quiescence.remove(&exact);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_committed_quiescence_work(&self) -> bool {
+        !self.committed_quiescence.is_empty()
     }
 
     fn graph_for_native(
@@ -506,7 +566,24 @@ fn native_presentation_result(outcome: &PaintOutcome) -> EguiPresentationResult 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::ids::{ItemId, RootId, SurfaceId};
     use egui_dockspace::NativeViewportIncarnation;
+
+    fn test_dockspace() -> Dockspace {
+        let surface = SurfaceId::new(1);
+        let root = RootId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+        builder.set_root(root, RootRecord::new(tabs));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        Dockspace::builder(
+            "native-presentation-retention",
+            builder.build().expect("the test workspace is valid"),
+        )
+        .build()
+        .expect("the test dockspace is valid")
+    }
 
     #[test]
     fn browser_canvas_submission_cannot_authorize_native_presentation() {
@@ -525,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_quiescence_releases_only_the_named_retirement_tombstone() {
+    fn exact_quiescence_releases_only_the_named_retirement_after_core_reclamation() {
         let first = ExactNativeViewport::new(
             egui::ViewportId::from_hash_of("first-retired-viewport"),
             NativeViewportIncarnation::new(1),
@@ -542,8 +619,15 @@ mod tests {
         ledger.retirement_quiesced(first);
         assert_eq!(ledger.retired_binding_count(), 2);
         ledger.accept_commit();
+        assert_eq!(ledger.retired_binding_count(), 2);
+        assert!(ledger.has_committed_quiescence_work());
+
+        ledger
+            .reclaim_committed_quiescence(&mut test_dockspace())
+            .expect("a binding with no core stream archive reclaims immediately");
         assert_eq!(ledger.retired_binding_count(), 1);
         assert!(ledger.retired_bindings.contains(&second));
+        assert!(!ledger.has_committed_quiescence_work());
     }
 
     #[test]
@@ -569,5 +653,6 @@ mod tests {
         assert!(ledger.retired_bindings.contains(&exact));
         assert!(ledger.settled.contains_key(&7));
         assert!(ledger.staged_quiescence.is_empty());
+        assert!(ledger.committed_quiescence.is_empty());
     }
 }

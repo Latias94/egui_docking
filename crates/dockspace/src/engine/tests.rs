@@ -522,6 +522,184 @@ fn runtime_retention_manifest_accounts_for_semantic_source_watermarks() {
 }
 
 #[test]
+fn stream_quiescence_defers_until_core_references_are_settled() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let first_binding = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SOURCE_SURFACE,
+        WindowToken::new(1),
+        WindowIncarnation::new(1),
+    );
+    let second_binding = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SOURCE_SURFACE,
+        WindowToken::new(2),
+        WindowIncarnation::new(1),
+    );
+    let retiring = engine
+        .presentation_authority
+        .presentation
+        .emit(
+            host,
+            SOURCE_SURFACE,
+            HostPresentationEndpoint::Native(first_binding),
+            HostPresentationOutputPayload::Bootstrap,
+        )
+        .expect("first endpoint must emit");
+    let active = engine
+        .presentation_authority
+        .presentation
+        .emit(
+            host,
+            SOURCE_SURFACE,
+            HostPresentationEndpoint::Native(second_binding),
+            HostPresentationOutputPayload::Bootstrap,
+        )
+        .expect("successor endpoint must emit");
+
+    assert!(
+        engine
+            .try_prepare_presentation_stream_quiescence(host, retiring.stream())
+            .expect("a local stream must remain retryable")
+            .is_none()
+    );
+
+    let frozen_scope = BTreeSet::from([retiring.stream(), active.stream()]);
+    engine
+        .presentation_authority
+        .presentation
+        .reduce_observation(
+            host,
+            &frozen_scope,
+            HostPresentationObservation::Batch(
+                vec![retiring, active]
+                    .into_iter()
+                    .map(|output| {
+                        HostPresentationObservationEntry::new(
+                            output.stream(),
+                            HostPresentationStreamObservation::Captured {
+                                generation: HostPresentationCaptureGeneration::new(1),
+                                progress: HostPresentationProgress::Retired {
+                                    settled_through: output.key(),
+                                    presented: Authority::Known(None),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+        )
+        .expect("terminal observations must settle both endpoint streams");
+
+    let quiescence = engine
+        .try_prepare_presentation_stream_quiescence(host, retiring.stream())
+        .expect("settled local stream must validate")
+        .expect("settled retiring stream must become reclaimable");
+    engine
+        .confirm_presentation_stream_quiescence(quiescence)
+        .expect("affine stream proof must compact the exact retiring stream");
+    assert!(
+        !engine
+            .presentation_retention_manifest()
+            .retains_stream(retiring.stream())
+    );
+    assert!(
+        engine
+            .presentation_retention_manifest()
+            .retains_stream(active.stream())
+    );
+}
+
+#[test]
+fn stream_quiescence_batch_rolls_back_when_any_proof_is_stale() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let bindings = [1, 2, 3].map(|token| {
+        ViewportBinding::new(
+            engine.authority_domain,
+            WorkspaceEpoch::new(0),
+            SOURCE_SURFACE,
+            WindowToken::new(token),
+            WindowIncarnation::new(1),
+        )
+    });
+    let outputs = bindings.map(|binding| {
+        engine
+            .presentation_authority
+            .presentation
+            .emit(
+                host,
+                SOURCE_SURFACE,
+                HostPresentationEndpoint::Native(binding),
+                HostPresentationOutputPayload::Bootstrap,
+            )
+            .expect("each exact endpoint must emit")
+    });
+    let frozen_scope = outputs
+        .iter()
+        .map(|output| output.stream())
+        .collect::<BTreeSet<_>>();
+    engine
+        .presentation_authority
+        .presentation
+        .reduce_observation(
+            host,
+            &frozen_scope,
+            HostPresentationObservation::Batch(
+                outputs
+                    .iter()
+                    .map(|output| {
+                        HostPresentationObservationEntry::new(
+                            output.stream(),
+                            HostPresentationStreamObservation::Captured {
+                                generation: HostPresentationCaptureGeneration::new(1),
+                                progress: HostPresentationProgress::Retired {
+                                    settled_through: output.key(),
+                                    presented: Authority::Known(None),
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+        )
+        .expect("terminal observations must settle every endpoint stream");
+
+    let first = engine
+        .prepare_presentation_stream_quiescence(host, outputs[0].stream())
+        .expect("first retiring stream must prepare");
+    let second = engine
+        .prepare_presentation_stream_quiescence(host, outputs[1].stream())
+        .expect("second retiring stream must prepare");
+    let stale_second = engine
+        .prepare_presentation_stream_quiescence(host, outputs[1].stream())
+        .expect("preparation itself does not consume external renderer proof");
+    engine
+        .confirm_presentation_stream_quiescence(second)
+        .expect("the second stream must compact independently");
+
+    assert!(
+        engine
+            .confirm_presentation_stream_quiescence_batch([first, stale_second])
+            .is_err(),
+        "a stale member must reject the whole batch",
+    );
+    assert!(
+        engine
+            .presentation_retention_manifest()
+            .retains_stream(outputs[0].stream()),
+        "the valid first member must not publish before the stale member rejects",
+    );
+}
+
+#[test]
 fn backend_provider_replacement_retries_with_a_live_presentation_host() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let predecessor_host = engine

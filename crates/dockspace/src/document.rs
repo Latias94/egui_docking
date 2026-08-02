@@ -33,7 +33,9 @@ use crate::persistence::{
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
 };
 use crate::pointer_journal::{PointerEdgeSequence, PointerInputLease, PointerProviderScope};
-use crate::presentation_observation::PresentationHostLease;
+use crate::presentation_observation::{
+    HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
+};
 use crate::transition::{BackendIngressProviderReplacementStart, EngineTransition, InputOutcome};
 use crate::viewport::ViewportRole;
 use crate::viewport_persistence::{
@@ -682,6 +684,27 @@ impl DockspaceDocumentSession {
         prepared: crate::engine::OwnedPreparedHostFrameCommit,
     ) -> Result<EngineTransition, EngineError> {
         prepared.commit(&mut self.engine)
+    }
+
+    /// Tries to prepare adapter-proven presentation-stream reclamation.
+    #[doc(hidden)]
+    pub fn adapter_try_prepare_presentation_stream_quiescence(
+        &self,
+        presentation_host: PresentationHostLease,
+        stream: HostPresentationStreamId,
+    ) -> Result<Option<PresentationStreamQuiescence>, EngineError> {
+        self.engine
+            .try_prepare_presentation_stream_quiescence(presentation_host, stream)
+    }
+
+    /// Atomically confirms adapter-proven presentation-stream reclamation.
+    #[doc(hidden)]
+    pub fn adapter_confirm_presentation_stream_quiescence_batch(
+        &mut self,
+        quiescences: impl IntoIterator<Item = PresentationStreamQuiescence>,
+    ) -> Result<(), EngineError> {
+        self.engine
+            .confirm_presentation_stream_quiescence_batch(quiescences)
     }
 
     /// Returns this session's durable document lineage, if persistence is bound.
