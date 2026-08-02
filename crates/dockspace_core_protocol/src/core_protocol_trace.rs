@@ -410,8 +410,8 @@ pub struct IngressRef {
 /// A journal segment remains a complete contiguous provider interval. Multiple
 /// segments may appear in one boundary, interleaved with semantic inputs. The
 /// event vector describes arrival order only: the core mints one causal ordinal
-/// per edge (or one segment ordinal for an empty journal) and one ordinal per
-/// semantic input.
+/// per edge and one ordinal per semantic input. An empty journal only checks a
+/// provider checkpoint and therefore does not consume a causal ordinal.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostFrameEvent {
@@ -649,10 +649,17 @@ pub struct PointerEdgeIngress {
     pub sequence: u64,
     pub pointer: u64,
     pub kind: PointerEdgeKindSpec,
+    /// Whether accepting this edge retires its exact pointer stream.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ending_stream: bool,
     pub location: PointerLocationIngress,
     pub delivery: PointerEventDeliveryIngress,
     pub capture: PointerCaptureIngress,
     pub receiver: PointerReceiverIngress,
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Edge-local endpoint which delivered one pointer transition.

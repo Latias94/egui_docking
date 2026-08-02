@@ -73,14 +73,16 @@ Every boundary executes in this order:
 3. Replay the sole `events` vector in order. A trace may group contiguous
    pointer edges in one journal event, but the harness submits one edge
    segment at a time and answers its frozen receiver candidate before the next
-   edge or semantic input. The core mints one causal ordinal per edge (or one
-   ordinal for an empty journal segment) and one per semantic input; the trace
-   event index is only an arrival-order label.
+   edge or semantic input. The core mints one causal ordinal per pointer edge
+   and one per semantic input. An empty journal only validates a provider
+   checkpoint and consumes no causal ordinal; the trace event index is only an
+   arrival-order label.
 4. Record actual presentation outputs against the post-input candidate.
 5. Submit the exact post-input surface roster and contributions, then finish
    atomically.
-6. Compare the full observable transition and, after the last boundary, the
-   canonical workspace snapshot.
+6. Compare the trace schema's stable transition projection and, after the last
+   boundary, the canonical workspace snapshot. The harness is not a complete
+   projection of every internal transition identity.
 
 `retained` is an actual paint operation, not a cached-data hint. It calls
 `record_painted_surface_contribution`, so the core pairs the frozen Ready

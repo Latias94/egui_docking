@@ -213,6 +213,7 @@ pub struct PointerEdge {
     sequence: PointerEdgeSequence,
     pointer: PointerId,
     kind: PointerEdgeKind,
+    stream_terminal: bool,
     location: PointerEdgeLocation,
     capture_owner: Authority<PointerCaptureOwner>,
 }
@@ -229,6 +230,10 @@ edge's event-time `capture_owner: Authority<PointerCaptureOwner>` fact.
 `Known(None)` or `Known(Foreign)` may prove capture loss for the active session;
 `Unknown` keeps the session alive and blocks actions that require capture proof.
 It must never be rewritten as a move, a known owner, or `StreamCancelled`.
+An ordinary release may separately set `stream_terminal`; it keeps its release
+semantics while retiring the exact ephemeral pointer stream after acceptance.
+The protocol trace projects this as `PointerEdgeIngress.ending_stream`; omission
+means `false` for compatibility with existing fixtures.
 
 `SurfaceLocalPointerEndpoint` is the sole surface authority inside a local
 scope; there is no duplicate surface field to drift. The ledger validates the

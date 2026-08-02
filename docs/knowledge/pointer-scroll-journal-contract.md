@@ -466,6 +466,7 @@ old provider or binding cannot authorize a new session with reused numbers.
 The exact affected sessions terminate once on:
 
 - pointer-provider retirement or reset;
+- an ordinary pointer edge marked as ending its exact stream;
 - `PointerEdgeKind::StreamCancelled` for their pointer stream;
 - exact viewport-binding retirement or replacement;
 - presentation-host retirement;
@@ -540,6 +541,7 @@ provider or reducer defect. A trace scroll edge records semantic fixture names,
 not core-minted tickets or candidate IDs:
 
 - provider lease/incarnation, journal sequence, pointer stream, and device;
+- the pointer edge's `ending_stream` terminality bit;
 - scroll sequence token and phase;
 - exact unit, both delta components, momentum, and modifiers;
 - event location, delivery endpoint, binding incarnation, and coordinate

@@ -1046,14 +1046,19 @@ impl CoreProtocolHarness {
         view: HostFrameView<'_>,
         fixture: &PointerEdgeIngress,
     ) -> Result<PointerEdge, CoreProtocolTraceError> {
-        Ok(PointerEdge::new_with_delivery(
+        let edge = PointerEdge::new_with_delivery(
             PointerEdgeSequence::new(fixture.sequence),
             PointerId::new(fixture.pointer),
             self.compile_pointer_edge_kind(view, &fixture.kind)?,
             self.compile_pointer_location(view, &fixture.location)?,
             self.compile_pointer_delivery(&fixture.delivery)?,
             self.compile_pointer_capture(&fixture.capture)?,
-        ))
+        );
+        Ok(if fixture.ending_stream {
+            edge.ending_stream()
+        } else {
+            edge
+        })
     }
 
     fn compile_pointer_edge_kind(
@@ -3140,6 +3145,9 @@ fn validate_pointer_edge_fidelity(
     if actual.kind() != ingress.kind() {
         return Err("kind/button transition");
     }
+    if actual.ends_stream() != ingress.ends_stream() {
+        return Err("pointer stream terminality");
+    }
     if actual.location() != ingress.location() {
         return Err("location/route authority");
     }
@@ -4796,6 +4804,17 @@ mod tests {
                     PointerCaptureOwner::ProviderEndpoint,
                 ),
                 "kind/button transition",
+            ),
+            (
+                edge(
+                    1,
+                    7,
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    96.0,
+                    PointerCaptureOwner::ProviderEndpoint,
+                )
+                .ending_stream(),
+                "pointer stream terminality",
             ),
             (
                 edge(
