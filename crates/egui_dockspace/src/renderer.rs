@@ -436,6 +436,18 @@ impl RenderOutput {
             .expect("a surface paint initializes its receiver registry")
             .register(response, region);
     }
+
+    #[cfg(egui_backend_event_envelope)]
+    pub(crate) fn register_scroll_receiver(
+        &mut self,
+        receiver: egui::ScrollReceiver,
+        region: PresentationHitRegionKind,
+    ) {
+        self.receivers
+            .as_mut()
+            .expect("a surface paint initializes its receiver registry")
+            .register_scroll(receiver, region);
+    }
 }
 
 #[cfg(test)]

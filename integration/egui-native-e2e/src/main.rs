@@ -8,11 +8,14 @@ use std::time::{Duration, Instant};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
+use dockspace::presentation_observation::SurfacePresentationOutputTicket;
 use dockspace::scene::SurfaceScene;
 use dockspace::viewport::WindowToken;
 use eframe::egui;
-use eframe::{NativeTestDriver, NativeTestPointerAction, NativeTestPointerEvent};
-use egui_dockspace::{Dockspace, PaneView};
+use eframe::{
+    NativeTestDriver, NativeTestPointerAction, NativeTestPointerEvent, NativeTestScrollDelta,
+};
+use egui_dockspace::{DockStyle, Dockspace, PaneView};
 use egui_dockspace_native::{
     AllowNativeClose, NativeDockspaceApp, NativeRuntimeStatus, NativeSurfaceSpec,
     NativeViewportRoster,
@@ -20,9 +23,12 @@ use egui_dockspace_native::{
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
-const ROOT_ITEM: ItemId = ItemId::new(1);
+const ROOT_ITEM_COUNT: u64 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTSIDE_ALL_POINT: egui::Pos2 = egui::pos2(200.0, 800.0);
+const OVERFLOW_TAB_WIDTH: f32 = 1_000.0;
+const SCROLL_LINES: f32 = -1.0;
+const EXPECTED_SCROLL_OFFSET: f64 = 40.0;
 
 type SmokeError = Box<dyn Error + Send + Sync>;
 
@@ -42,6 +48,8 @@ enum SmokePhase {
     ChildPressQueued,
     RootMoveQueued,
     RootReleaseQueued,
+    OverflowStyleQueued,
+    RootScrollQueued,
 }
 
 struct SmokeApp {
@@ -53,6 +61,8 @@ struct SmokeApp {
     phase: SmokePhase,
     phase_cycle: u64,
     redock_point: Option<egui::Pos2>,
+    overflow_predecessor: Option<SurfacePresentationOutputTicket>,
+    scroll_predecessor: Option<SurfacePresentationOutputTicket>,
     closing: bool,
 }
 
@@ -80,6 +90,8 @@ impl SmokeApp {
             phase: SmokePhase::AwaitRoot,
             phase_cycle: 0,
             redock_point: None,
+            overflow_predecessor: None,
+            scroll_predecessor: None,
             closing: false,
         })
     }
@@ -277,17 +289,89 @@ impl SmokeApp {
                     .retained_stream_states();
                 if status.live_viewports == 1
                     && surfaces == [ROOT_SURFACE]
-                    && workspace.item_multiset() == BTreeMap::from([(ROOT_ITEM, 1)])
+                    && workspace.item_multiset() == expected_item_multiset()
                     && engine.interaction_authority(ROOT_SURFACE).is_some()
                     && retained_presentation_streams == 1
+                    && let Some(projection) = engine.interaction_projection(ROOT_SURFACE)
                 {
+                    self.overflow_predecessor = Some(projection.output_ticket());
+                    self.runtime
+                        .set_style(overflow_style())
+                        .map_err(|error| format!("failed to queue overflow style: {error}"))?;
+                    self.phase = SmokePhase::OverflowStyleQueued;
+                    self.phase_cycle = status.committed_cycles;
+                }
+            }
+            SmokePhase::OverflowStyleQueued if cycle_advanced => {
+                let engine = self.runtime.dockspace().engine();
+                if engine.interaction_authority(ROOT_SURFACE).is_some()
+                    && let Some((output, point, offset, maximum)) =
+                        tab_scroll_state(engine, ROOT_SURFACE)
+                    && Some(output) != self.overflow_predecessor
+                    && maximum >= EXPECTED_SCROLL_OFFSET
+                {
+                    if offset != 0.0 {
+                        return Err(format!(
+                            "overflow tab strip started with a non-zero scroll offset: {offset}"
+                        ));
+                    }
+                    self.scroll_predecessor = Some(output);
+                    self.queue_scroll(point, status.committed_cycles)?;
+                } else if status.committed_cycles.saturating_sub(self.phase_cycle) >= 8 {
+                    let workspace = engine.workspace();
+                    let nodes = workspace
+                        .nodes()
+                        .map(|(id, node)| (id, node.clone()))
+                        .collect::<Vec<_>>();
+                    let bars = engine
+                        .scene()
+                        .surface(ROOT_SURFACE)
+                        .and_then(SurfaceScene::ready)
+                        .map(|ready| {
+                            ready
+                                .plan()
+                                .tab_bar_records()
+                                .iter()
+                                .map(|bar| {
+                                    (
+                                        *bar.id(),
+                                        bar.members().len(),
+                                        bar.viewport().width(),
+                                        bar.scroll_offset(),
+                                        bar.maximum_scroll_offset(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        });
+                    return Err(format!(
+                        "overflow style did not produce an authoritative scrollable tab strip: \
+                         tab_min_width={}, nodes={nodes:?}, bars={bars:?}",
+                        self.runtime.dockspace().style().tab_min_width,
+                    ));
+                }
+            }
+            SmokePhase::RootScrollQueued if cycle_advanced => {
+                let engine = self.runtime.dockspace().engine();
+                if engine.interaction_authority(ROOT_SURFACE).is_some()
+                    && let Some((output, _, offset, maximum)) =
+                        tab_scroll_state(engine, ROOT_SURFACE)
+                    && Some(output) != self.scroll_predecessor
+                {
+                    if (offset - EXPECTED_SCROLL_OFFSET).abs() > f64::EPSILON {
+                        return Err(format!(
+                            "native scroll did not reach the core-owned tab-strip state: \
+                             offset={offset}, expected={EXPECTED_SCROLL_OFFSET}, maximum={maximum}"
+                        ));
+                    }
                     return Ok(Some(status));
                 }
             }
             SmokePhase::RootPressQueued
             | SmokePhase::OutsideMoveQueued
             | SmokePhase::ChildPressQueued
-            | SmokePhase::RootMoveQueued => {}
+            | SmokePhase::RootMoveQueued
+            | SmokePhase::OverflowStyleQueued
+            | SmokePhase::RootScrollQueued => {}
         }
         Ok(None)
     }
@@ -302,6 +386,19 @@ impl SmokeApp {
             .send_pointer(event)
             .map_err(|error| format!("native test event loop closed: {error}"))?;
         self.phase = next;
+        self.phase_cycle = committed_cycles;
+        Ok(())
+    }
+
+    fn queue_scroll(&mut self, position: egui::Pos2, committed_cycles: u64) -> Result<(), String> {
+        self.driver
+            .send_pointer(NativeTestPointerEvent::new(
+                egui::ViewportId::ROOT,
+                position,
+                NativeTestPointerAction::Scroll(NativeTestScrollDelta::lines(0.0, SCROLL_LINES)),
+            ))
+            .map_err(|error| format!("native test event loop closed: {error}"))?;
+        self.phase = SmokePhase::RootScrollQueued;
         self.phase_cycle = committed_cycles;
         Ok(())
     }
@@ -343,17 +440,13 @@ fn redock_drop_point(
     let ready = engine.scene().surface(surface)?.ready()?;
     let plan = ready.plan();
     let region = plan
-        .surface_background()
-        .map(|target| target.region())
-        .or_else(|| {
-            plan.drop_targets()
-                .iter()
-                .find(|target| {
-                    target.availability().is_available()
-                        && target.id().kind() == dockspace::drop_target::DropTargetKind::Center
-                })
-                .map(|target| target.region())
+        .drop_targets()
+        .iter()
+        .find(|target| {
+            target.availability().is_available()
+                && target.id().kind() == dockspace::drop_target::DropTargetKind::Center
         })
+        .map(|target| target.region())
         .or_else(|| {
             plan.drop_guide_clusters().iter().find_map(|cluster| {
                 cluster
@@ -362,8 +455,31 @@ fn redock_drop_point(
                     .filter(|target| target.availability().is_available())
                     .map(|target| target.region())
             })
-        })?;
+        })
+        .or_else(|| plan.surface_background().map(|target| target.region()))?;
     logical_rect_center(region.rect())
+}
+
+fn tab_scroll_state(
+    engine: &dockspace::engine::DockEngine,
+    surface: SurfaceId,
+) -> Option<(SurfacePresentationOutputTicket, egui::Pos2, f64, f64)> {
+    let projection = engine.interaction_projection(surface)?;
+    let bar = projection.plan().tab_bar_records().first()?;
+    Some((
+        projection.output_ticket(),
+        logical_rect_center(bar.viewport())?,
+        bar.scroll_offset(),
+        bar.maximum_scroll_offset(),
+    ))
+}
+
+fn overflow_style() -> DockStyle {
+    DockStyle {
+        tab_min_width: OVERFLOW_TAB_WIDTH,
+        tab_max_width: OVERFLOW_TAB_WIDTH,
+        ..DockStyle::default()
+    }
 }
 
 fn logical_rect_center(rect: dockspace::geometry::LogicalRect) -> Option<egui::Pos2> {
@@ -527,31 +643,35 @@ impl RendererCounts {
 
 fn workspace() -> Workspace {
     let mut builder = Workspace::builder();
-    let root_tabs = builder.insert_node(Node::tabs([ROOT_ITEM]));
+    let root_tabs = builder.insert_node(Node::tabs(root_items()));
     builder.set_root(ROOT, RootRecord::new(root_tabs).with_central(root_tabs));
     builder.set_surface(ROOT_SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("the native E2E workspace is valid")
 }
 
-struct SmokePanes {
-    titles: BTreeMap<ItemId, &'static str>,
+fn expected_item_multiset() -> BTreeMap<ItemId, usize> {
+    root_items().map(|item| (item, 1)).collect()
 }
+
+fn root_items() -> impl Iterator<Item = ItemId> {
+    (1..=ROOT_ITEM_COUNT).map(ItemId::new)
+}
+
+struct SmokePanes;
 
 impl SmokePanes {
     fn new() -> Self {
-        Self {
-            titles: BTreeMap::from([(ROOT_ITEM, "Dynamic pane")]),
-        }
+        Self
     }
 }
 
 impl PaneView for SmokePanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
-        self.titles.get(&item).map(|title| (*title).into())
+        Some(format!("Pane {}", item.get()).into())
     }
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
-        ui.label(self.titles.get(&item).copied().unwrap_or("Missing pane"));
+        ui.label(format!("Pane {}", item.get()));
     }
 }
 

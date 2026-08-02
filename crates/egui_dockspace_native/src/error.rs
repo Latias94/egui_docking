@@ -63,9 +63,6 @@ pub enum NativeRuntimeError {
     /// A new hosted cycle attempted to overtake an unfinished predecessor.
     #[error("a native hosted cycle is already active")]
     CycleAlreadyActive,
-    /// One physical viewport callback ran more than once in the same cycle.
-    #[error("hosted viewport {viewport:?} ran more than once in one cycle")]
-    DuplicateViewportCallback { viewport: ViewportId },
     /// The complete hosted callback roster omitted a configured physical viewport.
     #[error("hosted cycle omitted callback for viewport {viewport:?}")]
     MissingViewportCallback { viewport: ViewportId },

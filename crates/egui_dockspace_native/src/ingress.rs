@@ -365,7 +365,8 @@ impl NativeIngressBridge {
                         hovered_route: hovered_route(edge, &routes),
                         graphs: presentations.capture_edge(edge),
                     };
-                    let edge = self.translate_pointer_edge(dockspace, edge, &routes)?;
+                    let edge =
+                        self.translate_pointer_edge(dockspace, edge, &routes, &sidecar.graphs)?;
                     let previous = PointerEdgeSequence::new(
                         edge.sequence()
                             .get()
@@ -1200,6 +1201,7 @@ impl NativeIngressBridge {
         dockspace: &Dockspace,
         edge: &NativePointerEdge,
         routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+        graphs: &EdgePointerGraphs,
     ) -> Result<PointerEdge, NativeRuntimeError> {
         let sequence = PointerEdgeSequence::new(edge.sequence().get());
         let pointer = self.pointer_id(edge.identity())?;
@@ -1226,6 +1228,7 @@ impl NativeIngressBridge {
                     scroll,
                     edge.delivery_owner(),
                     routes,
+                    graphs,
                 )?)
             }
         };
@@ -1600,11 +1603,13 @@ fn translate_scroll_edge(
     scroll: NativeScrollEdge,
     native_delivery: &NativeAuthority<NativePointerDeliveryOwner>,
     routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+    graphs: &EdgePointerGraphs,
 ) -> Result<ScrollEdge, NativeRuntimeError> {
     let delivery = translate_scroll_delivery(dockspace, host, native_delivery, routes)?;
+    let normalized = normalized_scroll_delta(scroll, native_delivery, graphs);
     let delta = scroll
         .delta()
-        .map(|delta| translate_scroll_delta(delta, delivery))
+        .map(|delta| translate_scroll_delta(delta, delivery, normalized))
         .transpose()?;
     Ok(ScrollEdge::new(
         ScrollDeviceId::new(scroll.device().get()),
@@ -1638,6 +1643,35 @@ fn translate_scroll_edge(
         }),
         delivery,
     )?)
+}
+
+fn normalized_scroll_delta(
+    scroll: NativeScrollEdge,
+    native_delivery: &NativeAuthority<NativePointerDeliveryOwner>,
+    graphs: &EdgePointerGraphs,
+) -> Option<egui::Vec2> {
+    let NativePointerDeliveryOwner::Viewport(binding) = native_delivery.value()? else {
+        return None;
+    };
+    let presented = graphs.delivery()?;
+    if presented.native() != exact_native(*binding) {
+        return None;
+    }
+    let native = scroll.delta()?.vector();
+    let modifiers = *scroll.modifiers().value()?;
+    match presented.graph().normalize_scroll_delta(
+        egui::vec2(native.x() as f32, native.y() as f32),
+        egui_modifiers(modifiers),
+    ) {
+        egui::PointerReceiverAuthority::Known(egui::ScrollDeltaNormalization::Scroll(delta)) => {
+            Some(delta)
+        }
+        egui::PointerReceiverAuthority::Known(
+            egui::ScrollDeltaNormalization::AwaitingDelta
+            | egui::ScrollDeltaNormalization::FrameworkOwned,
+        )
+        | egui::PointerReceiverAuthority::Unknown(_) => None,
+    }
 }
 
 fn translate_scroll_delivery(
@@ -1684,9 +1718,13 @@ fn translate_scroll_delivery(
 fn translate_scroll_delta(
     delta: NativeScrollDelta,
     delivery: Authority<ScrollDeliveryEndpoint>,
+    normalized: Option<egui::Vec2>,
 ) -> Result<ScrollDelta, NativeRuntimeError> {
     let native = delta.vector();
-    let vector = FiniteScrollVector::new(native.x(), native.y())?;
+    let vector = normalized.map_or_else(
+        || FiniteScrollVector::new(native.x(), native.y()),
+        |delta| FiniteScrollVector::new(f64::from(delta.x), f64::from(delta.y)),
+    )?;
     match delta {
         NativeScrollDelta::Lines(_) => Ok(ScrollDelta::Lines(vector)),
         NativeScrollDelta::PhysicalPixels(_) => {
@@ -1706,6 +1744,16 @@ fn translate_scroll_delta(
                 coordinate_generation: endpoint.coordinate_generation(),
             })
         }
+    }
+}
+
+pub(crate) fn egui_modifiers(modifiers: eframe::NativeScrollModifiers) -> egui::Modifiers {
+    egui::Modifiers {
+        alt: modifiers.alt(),
+        ctrl: modifiers.control(),
+        shift: modifiers.shift(),
+        mac_cmd: cfg!(target_os = "macos") && modifiers.command(),
+        command: modifiers.command(),
     }
 }
 

@@ -307,11 +307,20 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             Err(source) => return Err(core_ingress_error(&input, source)),
         };
         while progress == BackendIngressProgress::ReceiverReceiptsRequired {
-            let receipts = pointer_receiver_receipts(&self.dockspace, &input, &pointer_edges)?;
+            let resolution = pointer_receiver_receipts(&self.dockspace, &input, &pointer_edges)?;
+            let (receipts, scroll_claims) = resolution.into_parts();
             progress = match input.submit_pointer_receiver_receipts(receipts) {
                 Ok(progress) => progress,
                 Err(source) => return Err(core_ingress_error(&input, source)),
             };
+            for claim in scroll_claims {
+                if !cycle.claim_native_scroll_derivative(claim.binding(), claim.pointer_sequence())
+                {
+                    return Err(NativeRuntimeError::IngressUnavailable(
+                        "core accepted a native scroll receiver without one exact egui wheel derivative",
+                    ));
+                }
+            }
         }
 
         let mut configuration = input.into_configuration()?;
@@ -362,17 +371,17 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .active
             .as_mut()
             .ok_or(NativeRuntimeError::CycleMissing)?;
-        if !active.callbacks.insert(viewport) {
-            return Err(NativeRuntimeError::DuplicateViewportCallback { viewport });
-        }
+        let first_pass = active.callbacks.insert(viewport);
         if viewport == ViewportId::ROOT {
-            NativeIngressBridge::schedule_restored_viewports(
-                &mut active.effects,
-                &active.pending_restored_viewports,
-                &active.routes,
-                &self.catalog,
-                &active.create_sink,
-            )?;
+            if first_pass {
+                NativeIngressBridge::schedule_restored_viewports(
+                    &mut active.effects,
+                    &active.pending_restored_viewports,
+                    &active.routes,
+                    &self.catalog,
+                    &active.create_sink,
+                )?;
+            }
             let mut declared = active
                 .routes
                 .values()

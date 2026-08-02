@@ -651,7 +651,10 @@ fn translate_platform_error(error: NativePlatformError) -> EffectDispatchResult 
         | NativePlatformError::PresentationViewportMismatch
         | NativePlatformError::UnknownPresentationTicket
         | NativePlatformError::WindowSnapshotMismatch
-        | NativePlatformError::IncompletePlatformRoster => {
+        | NativePlatformError::IncompletePlatformRoster
+        | NativePlatformError::HostIngressInFlight
+        | NativePlatformError::HostIngressPoisoned
+        | NativePlatformError::HostIngressSettlementMismatch => {
             EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected)
         }
     }

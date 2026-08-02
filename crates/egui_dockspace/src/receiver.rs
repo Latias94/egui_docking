@@ -113,6 +113,19 @@ impl PaintReceiverFingerprint {
         )
     }
 
+    /// Captures one typed scroll receiver from the completed paint pass.
+    #[must_use]
+    #[cfg(egui_backend_event_envelope)]
+    pub fn from_scroll_receiver(receiver: egui::ScrollReceiver) -> Self {
+        Self {
+            id: receiver.id(),
+            layer: receiver.layer_id(),
+            interact_rect: receiver.interact_rect(),
+            sense: Sense::hover(),
+            enabled: receiver.enabled(),
+        }
+    }
+
     /// Returns the egui widget identity.
     #[must_use]
     pub const fn id(self) -> Id {
@@ -189,6 +202,28 @@ impl PaintReceiverRegistrations {
             primary_drag_stopped: response.drag_stopped_by(PointerButton::Primary),
             contains_pointer: response.contains_pointer(),
         };
+        self.register_fingerprint(receiver, region, activity);
+    }
+
+    #[cfg(egui_backend_event_envelope)]
+    pub(crate) fn register_scroll(
+        &mut self,
+        receiver: egui::ScrollReceiver,
+        region: PresentationHitRegionKind,
+    ) {
+        self.register_fingerprint(
+            PaintReceiverFingerprint::from_scroll_receiver(receiver),
+            region,
+            PaintReceiverActivity::default(),
+        );
+    }
+
+    fn register_fingerprint(
+        &mut self,
+        receiver: PaintReceiverFingerprint,
+        region: PresentationHitRegionKind,
+        activity: PaintReceiverActivity,
+    ) {
         let widget = receiver.widget_key();
         if self.by_widget.get(&widget).is_some_and(|registered| {
             registered.region != region

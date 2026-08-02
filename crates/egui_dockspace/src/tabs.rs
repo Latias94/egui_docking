@@ -34,6 +34,35 @@ use crate::renderer::{
 };
 use crate::style::DockStyle;
 
+#[cfg(egui_backend_event_envelope)]
+fn native_scroll_config(
+    offset: f64,
+    maximum: f64,
+    projection: egui::ScrollProjection,
+) -> egui::ScrollReceiverConfig {
+    let negative = offset < maximum;
+    let positive = offset > 0.0;
+    match projection {
+        egui::ScrollProjection::HorizontalElseVertical => egui::ScrollReceiverConfig::new(
+            projection,
+            egui::Vec2::ONE,
+            egui::ScrollAxisCapabilities::new(negative, positive),
+            egui::ScrollAxisCapabilities::NONE,
+        ),
+        egui::ScrollProjection::VerticalElseHorizontal => egui::ScrollReceiverConfig::new(
+            projection,
+            egui::Vec2::ONE,
+            egui::ScrollAxisCapabilities::NONE,
+            egui::ScrollAxisCapabilities::new(negative, positive),
+        ),
+        egui::ScrollProjection::Independent
+        | egui::ScrollProjection::SumToHorizontal
+        | egui::ScrollProjection::SumToVertical => {
+            unreachable!("dock scroll receivers use a primary-axis fallback projection")
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_tabs(
     ui: &mut Ui,
@@ -136,15 +165,24 @@ pub(crate) fn paint_tabs(
             && bar.maximum_scroll_offset() > 0.0
             && let Some(viewport) = from_logical_rect(bar.viewport()).filter(Rect::is_positive)
         {
-            let response = tab_ui.interact(
-                interact_rect(viewport),
-                tab_ui.make_persistent_id((instance_id, "tab-strip-scroll", *bar.id())),
-                Sense::hover(),
+            let reservation = tab_ui.reserve_scroll_receiver(tab_ui.make_persistent_id((
+                instance_id,
+                "tab-strip-scroll",
+                *bar.id(),
+            )));
+            let config = native_scroll_config(
+                bar.scroll_offset(),
+                bar.maximum_scroll_offset(),
+                egui::ScrollProjection::HorizontalElseVertical,
             );
-            output.register_receiver(
-                &response,
-                PresentationHitRegionKind::TabStripScroll(*bar.id()),
-            );
+            if let Ok(receiver) =
+                tab_ui.finalize_scroll_receiver(reservation, interact_rect(viewport), config)
+            {
+                output.register_scroll_receiver(
+                    receiver,
+                    PresentationHitRegionKind::TabStripScroll(*bar.id()),
+                );
+            }
         }
     }
 
@@ -487,19 +525,27 @@ pub(crate) fn paint_authoritative_tab_list_menu(
             #[cfg(egui_backend_event_envelope)]
             {
                 if interactions_current {
-                    let response = menu_ui.interact(
-                        interact_rect(viewport_rect),
-                        menu_ui.make_persistent_id((
+                    let reservation =
+                        menu_ui.reserve_scroll_receiver(menu_ui.make_persistent_id((
                             instance_id,
                             "tab-list-menu-scroll",
                             menu.session(),
-                        )),
-                        Sense::hover(),
+                        )));
+                    let config = native_scroll_config(
+                        menu.scroll_offset(),
+                        menu.maximum_scroll_offset(),
+                        egui::ScrollProjection::VerticalElseHorizontal,
                     );
-                    output.register_receiver(
-                        &response,
-                        PresentationHitRegionKind::TabListMenuScroll(menu.session()),
-                    );
+                    if let Ok(receiver) = menu_ui.finalize_scroll_receiver(
+                        reservation,
+                        interact_rect(viewport_rect),
+                        config,
+                    ) {
+                        output.register_scroll_receiver(
+                            receiver,
+                            PresentationHitRegionKind::TabListMenuScroll(menu.session()),
+                        );
+                    }
                 }
             }
             paint_authoritative_menu_rows(
