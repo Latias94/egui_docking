@@ -23,6 +23,8 @@ use crate::policy::{
 };
 use crate::surface_recovery::SurfaceRecoveryTransaction;
 use crate::transaction::PreparedTransaction;
+use crate::transition::WorkspaceVersion;
+use crate::workspace::WorkspaceIndex;
 
 /// Core-private frozen payload for an approved content close.
 ///
@@ -742,6 +744,29 @@ impl<'a> DropCommandEligibility<'a> {
         payload: &'a MovePayload,
     ) -> Result<Self, CommandError> {
         validate_move_payload(workspace, payload)?;
+        Self::new_validated(workspace, policy, payload)
+    }
+
+    pub(crate) fn new_indexed(
+        workspace: &'a Workspace,
+        version: WorkspaceVersion,
+        index: &WorkspaceIndex,
+        policy: &'a DockPolicySnapshot,
+        payload: &'a MovePayload,
+    ) -> Result<Self, CommandError> {
+        validate_move_payload_with(
+            workspace,
+            ReferenceAuthority::Indexed { version, index },
+            payload,
+        )?;
+        Self::new_validated(workspace, policy, payload)
+    }
+
+    fn new_validated(
+        workspace: &'a Workspace,
+        policy: &'a DockPolicySnapshot,
+        payload: &'a MovePayload,
+    ) -> Result<Self, CommandError> {
         let retained_facts = move_payload_policy_facts_validated(workspace, payload, false)?;
         let source = retained_facts.source().ok_or(CommandError::Invariant {
             stage: "derive existing source facts for drop eligibility",
@@ -764,7 +789,24 @@ impl<'a> DropCommandEligibility<'a> {
     }
 
     pub(crate) fn check_target(&self, target: &DockTarget) -> Result<(), CommandError> {
-        validate_target(self.workspace, target)?;
+        self.check_target_with(ReferenceAuthority::Live, target)
+    }
+
+    pub(crate) fn check_target_indexed(
+        &self,
+        version: WorkspaceVersion,
+        index: &WorkspaceIndex,
+        target: &DockTarget,
+    ) -> Result<(), CommandError> {
+        self.check_target_with(ReferenceAuthority::Indexed { version, index }, target)
+    }
+
+    fn check_target_with(
+        &self,
+        references: ReferenceAuthority<'_>,
+        target: &DockTarget,
+    ) -> Result<(), CommandError> {
+        validate_target_with(self.workspace, references, target)?;
         validate_move_target_semantics(self.workspace, self.payload, target)?;
 
         let operation = if target_is_tabs(target) {
@@ -923,7 +965,7 @@ fn presentation_payload_facts(
             DockPayloadKind::Item,
             [*item],
         )),
-        RootContent::Move(payload) => move_payload_policy_facts(workspace, payload, true),
+        RootContent::Move(payload) => move_payload_policy_facts_validated(workspace, payload, true),
     }
 }
 
@@ -1972,8 +2014,100 @@ fn remove_empty_root(
     })
 }
 
+#[derive(Clone, Copy)]
+enum ReferenceAuthority<'a> {
+    Live,
+    Indexed {
+        version: WorkspaceVersion,
+        index: &'a WorkspaceIndex,
+    },
+}
+
+impl ReferenceAuthority<'_> {
+    fn verify_reference(
+        self,
+        workspace: &Workspace,
+        root: RootId,
+        node: NodeId,
+        expected: &crate::command::NodeFingerprint,
+        role: ReferenceRole,
+    ) -> Result<(), CommandError> {
+        match self {
+            Self::Live => workspace.verify_reference(root, node, expected, role),
+            Self::Indexed { version, index } => {
+                index.verify_reference(workspace, version, root, node, expected, role)
+            }
+        }
+    }
+
+    fn capture_tab_target(
+        self,
+        workspace: &Workspace,
+        root: RootId,
+        tabs: NodeId,
+    ) -> Result<TabTarget, CommandError> {
+        match self {
+            Self::Live => workspace.capture_tab_target(root, tabs),
+            Self::Indexed { version, index } => {
+                index.capture_tab_target(workspace, version, root, tabs)
+            }
+        }
+    }
+
+    fn capture_inner_edge_target(
+        self,
+        workspace: &Workspace,
+        target: &EdgeTarget,
+    ) -> Result<EdgeTarget, CommandError> {
+        match self {
+            Self::Live => workspace.capture_inner_edge_target(
+                target.root(),
+                target.node(),
+                target.edge(),
+                target.fraction(),
+            ),
+            Self::Indexed { version, index } => index.capture_inner_edge_target(
+                workspace,
+                version,
+                target.root(),
+                target.node(),
+                target.edge(),
+                target.fraction(),
+            ),
+        }
+    }
+
+    fn capture_outer_edge_target(
+        self,
+        workspace: &Workspace,
+        target: &EdgeTarget,
+    ) -> Result<EdgeTarget, CommandError> {
+        match self {
+            Self::Live => {
+                workspace.capture_outer_edge_target(target.root(), target.edge(), target.fraction())
+            }
+            Self::Indexed { version, index } => index.capture_outer_edge_target(
+                workspace,
+                version,
+                target.root(),
+                target.edge(),
+                target.fraction(),
+            ),
+        }
+    }
+}
+
 fn validate_item_source(workspace: &Workspace, source: &ItemSource) -> Result<(), CommandError> {
-    workspace.verify_reference(
+    validate_item_source_with(workspace, ReferenceAuthority::Live, source)
+}
+
+fn validate_item_source_with(
+    workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
+    source: &ItemSource,
+) -> Result<(), CommandError> {
+    references.verify_reference(
+        workspace,
         source.root(),
         source.tabs(),
         source.fingerprint(),
@@ -1996,7 +2130,16 @@ fn validate_item_source(workspace: &Workspace, source: &ItemSource) -> Result<()
 }
 
 fn validate_node_source(workspace: &Workspace, source: &NodeSource) -> Result<(), CommandError> {
-    workspace.verify_reference(
+    validate_node_source_with(workspace, ReferenceAuthority::Live, source)
+}
+
+fn validate_node_source_with(
+    workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
+    source: &NodeSource,
+) -> Result<(), CommandError> {
+    references.verify_reference(
+        workspace,
         source.root(),
         source.node(),
         source.fingerprint(),
@@ -2025,10 +2168,18 @@ fn validate_root_source(
 }
 
 fn validate_move_payload(workspace: &Workspace, payload: &MovePayload) -> Result<(), CommandError> {
+    validate_move_payload_with(workspace, ReferenceAuthority::Live, payload)
+}
+
+fn validate_move_payload_with(
+    workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
+    payload: &MovePayload,
+) -> Result<(), CommandError> {
     match payload {
-        MovePayload::Item(source) => validate_item_source(workspace, source),
+        MovePayload::Item(source) => validate_item_source_with(workspace, references, source),
         MovePayload::Tabs(source) => {
-            validate_node_source(workspace, source)?;
+            validate_node_source_with(workspace, references, source)?;
             if !matches!(workspace.nodes.get(source.node()), Some(Node::Tabs { .. })) {
                 return Err(CommandError::NodeIsNotTabs {
                     node: source.node(),
@@ -2037,7 +2188,7 @@ fn validate_move_payload(workspace: &Workspace, payload: &MovePayload) -> Result
             ensure_nonempty_payload(workspace, source.node())
         }
         MovePayload::Subtree(source) => {
-            validate_node_source(workspace, source)?;
+            validate_node_source_with(workspace, references, source)?;
             ensure_nonempty_payload(workspace, source.node())
         }
     }
@@ -2052,22 +2203,31 @@ fn ensure_nonempty_payload(workspace: &Workspace, node: NodeId) -> Result<(), Co
 }
 
 fn validate_target(workspace: &Workspace, target: &DockTarget) -> Result<(), CommandError> {
+    validate_target_with(workspace, ReferenceAuthority::Live, target)
+}
+
+fn validate_target_with(
+    workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
+    target: &DockTarget,
+) -> Result<(), CommandError> {
     match target {
-        DockTarget::Center(target) => validate_tab_target(workspace, target, None),
+        DockTarget::Center(target) => validate_tab_target(workspace, references, target, None),
         DockTarget::TabGap { target, index } => {
-            validate_tab_target(workspace, target, Some(*index))
+            validate_tab_target(workspace, references, target, Some(*index))
         }
         DockTarget::InnerEdge(target) => {
-            validate_edge_target(workspace, target, EdgeTargetScope::Inner)
+            validate_edge_target(workspace, references, target, EdgeTargetScope::Inner)
         }
         DockTarget::OuterEdge(target) => {
-            validate_edge_target(workspace, target, EdgeTargetScope::Outer)
+            validate_edge_target(workspace, references, target, EdgeTargetScope::Outer)
         }
     }
 }
 
 fn validate_edge_target(
     workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
     target: &EdgeTarget,
     requested: EdgeTargetScope,
 ) -> Result<(), CommandError> {
@@ -2078,22 +2238,16 @@ fn validate_edge_target(
             requested,
         });
     }
-    workspace.verify_reference(
+    references.verify_reference(
+        workspace,
         target.root(),
         target.node(),
         target.fingerprint(),
         ReferenceRole::Target,
     )?;
     let actual = match requested {
-        EdgeTargetScope::Inner => workspace.capture_inner_edge_target(
-            target.root(),
-            target.node(),
-            target.edge(),
-            target.fraction(),
-        )?,
-        EdgeTargetScope::Outer => {
-            workspace.capture_outer_edge_target(target.root(), target.edge(), target.fraction())?
-        }
+        EdgeTargetScope::Inner => references.capture_inner_edge_target(workspace, target)?,
+        EdgeTargetScope::Outer => references.capture_outer_edge_target(workspace, target)?,
     };
     if actual == *target {
         Ok(())
@@ -2106,16 +2260,18 @@ fn validate_edge_target(
 
 fn validate_tab_target(
     workspace: &Workspace,
+    references: ReferenceAuthority<'_>,
     target: &TabTarget,
     insertion_index: Option<usize>,
 ) -> Result<(), CommandError> {
-    workspace.verify_reference(
+    references.verify_reference(
+        workspace,
         target.root(),
         target.tabs(),
         target.fingerprint(),
         ReferenceRole::Target,
     )?;
-    let actual = workspace.capture_tab_target(target.root(), target.tabs())?;
+    let actual = references.capture_tab_target(workspace, target.root(), target.tabs())?;
     if actual != *target {
         return Err(CommandError::Invariant {
             stage: "rederive frozen tabs target facts",

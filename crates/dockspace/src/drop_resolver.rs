@@ -12,16 +12,18 @@ use crate::drop_target::{
     DropDestination, DropTargetAvailability, DropTargetId, DropTargetKind, DropTargetRecord,
     DropTargetUnavailable, DropVisual, SceneLayerKey, SurfaceBackground,
 };
-use crate::error::{CommandError, ReferenceRole, TransactionError};
+use crate::error::{CommandError, TransactionError};
 use crate::geometry::{LogicalPoint, LogicalRect};
-use crate::graph::{Node, Workspace};
+use crate::graph::Workspace;
 use crate::hit_region::HitRegion;
-use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, RootId, SurfaceId, WorkspaceRevision};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
 use crate::policy::{DockPolicySnapshot, PolicyRejection};
 use crate::scene::{PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp};
 use crate::transaction::WorkspaceTransaction;
+use crate::transition::WorkspaceVersion;
+use crate::workspace::WorkspaceIndex;
 use thiserror::Error;
 
 /// Queries both the exact drop outcome and the complete visible guide affordance.
@@ -88,10 +90,23 @@ pub fn resolve_drop(
             None,
         ));
     };
+    let workspace_version = WorkspaceVersion::new(
+        presented.stamp().requirement().workspace_epoch(),
+        WorkspaceRevision::default(),
+    );
+    let workspace_index =
+        WorkspaceIndex::build(workspace, workspace_version).map_err(|source| {
+            DropResolutionError::UnexpectedPrevalidation(TransactionError::Command {
+                index: 0,
+                source,
+            })
+        })?;
     resolve_presented_drop(
         presented.stamp(),
         presented.plan(),
         workspace,
+        workspace_version,
+        &workspace_index,
         policy,
         session,
         source,
@@ -113,6 +128,8 @@ pub(crate) fn resolve_presented_drop(
     stamp: SurfaceSceneStamp,
     ready: &PresentationPlan,
     workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &WorkspaceIndex,
     policy: &DockPolicySnapshot,
     session: DragSessionId,
     source: MovePayload,
@@ -133,6 +150,8 @@ pub(crate) fn resolve_presented_drop(
             stamp,
             ready,
             workspace,
+            workspace_version,
+            workspace_index,
             policy,
             session,
             source,
@@ -142,11 +161,17 @@ pub(crate) fn resolve_presented_drop(
         .map(|resolution| DropQuery::new(resolution, None));
     }
 
-    let suppression = SourceSuppression::from_payload(workspace, &source);
+    let assessment = DropEligibilityContext::new(
+        workspace,
+        workspace_version,
+        workspace_index,
+        policy,
+        &source,
+        surface_background_offer,
+    );
+    let suppression = assessment.source_suppression();
     let occluding_layer = occluding_layer(ready, point, suppression);
     let selected = select_guide_clusters(ready, point, occluding_layer, suppression);
-    let assessment =
-        DropEligibilityContext::new(workspace, policy, &source, surface_background_offer);
     let (affordance, exact) = build_affordance(stamp, surface, point, selected, &assessment)?;
     let resolution = match exact {
         Some(ExactGuidePreparation::Eligible {
@@ -174,6 +199,8 @@ pub(crate) fn resolve_presented_drop(
                 scene: stamp,
                 ready,
                 workspace,
+                workspace_version,
+                workspace_index,
                 policy,
                 session,
                 surface,
@@ -223,6 +250,8 @@ fn resolve_presented_unguided_drop(
     stamp: SurfaceSceneStamp,
     surface_scene: &PresentationPlan,
     workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &WorkspaceIndex,
     policy: &DockPolicySnapshot,
     session: DragSessionId,
     source: MovePayload,
@@ -237,7 +266,15 @@ fn resolve_presented_unguided_drop(
         )));
     }
 
-    let suppression = SourceSuppression::from_payload(workspace, &source);
+    let assessment = DropEligibilityContext::new(
+        workspace,
+        workspace_version,
+        workspace_index,
+        policy,
+        &source,
+        surface_background_offer,
+    );
+    let suppression = assessment.source_suppression();
     let occluding_layer = occluding_layer(surface_scene, point, suppression);
     let mut hits: Vec<&DropTargetRecord> = surface_scene
         .drop_targets()
@@ -265,8 +302,6 @@ fn resolve_presented_unguided_drop(
             .then_with(|| left.id().cmp(&right.id()))
     });
 
-    let assessment =
-        DropEligibilityContext::new(workspace, policy, &source, surface_background_offer);
     let Some(target) = hits.first().copied() else {
         return Ok(DropResolution::KnownNone(KnownDropAbsence::new(
             stamp, surface, point,
@@ -324,10 +359,23 @@ fn resolve_unguided_drop(
             reason,
         )));
     };
+    let workspace_version = WorkspaceVersion::new(
+        ready.stamp().requirement().workspace_epoch(),
+        WorkspaceRevision::default(),
+    );
+    let workspace_index =
+        WorkspaceIndex::build(workspace, workspace_version).map_err(|source| {
+            DropResolutionError::UnexpectedPrevalidation(TransactionError::Command {
+                index: 0,
+                source,
+            })
+        })?;
     resolve_presented_unguided_drop(
         ready.stamp(),
         ready.plan(),
         workspace,
+        workspace_version,
+        &workspace_index,
         policy,
         session,
         source,
@@ -521,6 +569,8 @@ fn resolve_exact_unguided_target(
 
     let assessment = DropEligibilityContext::new(
         location.workspace,
+        location.workspace_version,
+        location.workspace_index,
         location.policy,
         &source,
         location.surface_background_offer,
@@ -545,26 +595,52 @@ fn resolve_exact_unguided_target(
 
 struct DropEligibilityContext<'a> {
     workspace: &'a Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &'a WorkspaceIndex,
     policy: &'a DockPolicySnapshot,
     source: &'a MovePayload,
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     topology: Result<crate::operation::DropCommandEligibility<'a>, CommandError>,
+    complete_root_source: Result<Option<NodeSource>, CommandError>,
 }
 
 impl<'a> DropEligibilityContext<'a> {
     fn new(
         workspace: &'a Workspace,
+        workspace_version: WorkspaceVersion,
+        workspace_index: &'a WorkspaceIndex,
         policy: &'a DockPolicySnapshot,
         source: &'a MovePayload,
         surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     ) -> Self {
+        let topology = crate::operation::DropCommandEligibility::new_indexed(
+            workspace,
+            workspace_version,
+            workspace_index,
+            policy,
+            source,
+        );
+        let complete_root_source = match &topology {
+            Ok(_) => {
+                workspace_index.capture_complete_root_source(workspace, workspace_version, source)
+            }
+            Err(error) => Err(error.clone()),
+        };
         Self {
             workspace,
+            workspace_version,
+            workspace_index,
             policy,
             source,
             surface_background_offer,
-            topology: crate::operation::DropCommandEligibility::new(workspace, policy, source),
+            topology,
+            complete_root_source,
         }
+    }
+
+    fn source_suppression(&self) -> Option<SourceSuppression> {
+        let source = self.complete_root_source.as_ref().ok()?.as_ref()?;
+        SourceSuppression::from_source(self.workspace, source)
     }
 
     fn check_target(
@@ -580,26 +656,35 @@ impl<'a> DropEligibilityContext<'a> {
 
         let command = match target.destination() {
             DropDestination::Topology(destination) => {
-                let destination =
-                    match rebind_topology_target(self.workspace, target.id(), destination) {
-                        Ok(destination) => destination,
-                        Err(TargetRebindError::Stale) => {
-                            return Ok(PreparedDropTarget::Rejected(
-                                DropRejectionReason::SceneUnavailable(DropTargetUnavailable::Stale),
-                            ));
-                        }
-                        Err(TargetRebindError::Command(error)) => {
-                            return classify_command_error(error);
-                        }
-                        Err(TargetRebindError::IdentityInvariant) => {
-                            return Err(DropResolutionError::PresentedTargetIdentityMismatch {
-                                target: target.id(),
-                            });
-                        }
-                    };
+                let destination = match rebind_topology_target(
+                    self.workspace,
+                    self.workspace_version,
+                    self.workspace_index,
+                    target.id(),
+                    destination,
+                ) {
+                    Ok(destination) => destination,
+                    Err(TargetRebindError::Stale) => {
+                        return Ok(PreparedDropTarget::Rejected(
+                            DropRejectionReason::SceneUnavailable(DropTargetUnavailable::Stale),
+                        ));
+                    }
+                    Err(TargetRebindError::Command(error)) => {
+                        return classify_command_error(error);
+                    }
+                    Err(TargetRebindError::IdentityInvariant) => {
+                        return Err(DropResolutionError::PresentedTargetIdentityMismatch {
+                            target: target.id(),
+                        });
+                    }
+                };
                 match &self.topology {
                     Ok(context) => {
-                        if let Err(error) = context.check_target(&destination) {
+                        if let Err(error) = context.check_target_indexed(
+                            self.workspace_version,
+                            self.workspace_index,
+                            &destination,
+                        ) {
                             return classify_command_error(error);
                         }
                     }
@@ -611,9 +696,14 @@ impl<'a> DropEligibilityContext<'a> {
                 }
             }
             DropDestination::SurfaceBackground(destination) => {
+                let complete_root_source = match &self.complete_root_source {
+                    Ok(source) => source.as_ref(),
+                    Err(error) => return classify_command_error(error.clone()),
+                };
                 let Some(command) = prepare_surface_background_command(
                     self.workspace,
                     self.source,
+                    complete_root_source,
                     *destination,
                     self.surface_background_offer,
                 ) else {
@@ -621,13 +711,6 @@ impl<'a> DropEligibilityContext<'a> {
                         DropRejectionReason::SurfaceBackgroundRootOfferMissing,
                     ));
                 };
-                if let Err(error) = crate::operation::authorize_workspace_command(
-                    self.workspace,
-                    self.policy,
-                    &command,
-                ) {
-                    return classify_command_error(error);
-                }
                 command
             }
         };
@@ -653,6 +736,12 @@ impl<'a> DropEligibilityContext<'a> {
             .preflight(self.workspace, self.policy)
         {
             Ok(()) => Ok(PreparedDropTarget::Eligible(command)),
+            Err(TransactionError::Command {
+                source: CommandError::Policy(reason),
+                ..
+            }) => Ok(PreparedDropTarget::Rejected(DropRejectionReason::Policy(
+                reason,
+            ))),
             Err(error) if error.is_expected_rejection() => Ok(PreparedDropTarget::Rejected(
                 DropRejectionReason::Prevalidation(error),
             )),
@@ -682,6 +771,8 @@ impl From<CommandError> for TargetRebindError {
 /// to a different root, node, edge, index, or surface.
 fn rebind_topology_target(
     workspace: &Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &WorkspaceIndex,
     id: DropTargetId,
     frozen: &DockTarget,
 ) -> Result<DockTarget, TargetRebindError> {
@@ -694,7 +785,12 @@ fn rebind_topology_target(
             },
             DockTarget::Center(target),
         ) if target.surface() == surface && target.root() == root && target.tabs() == tabs => {
-            DockTarget::Center(workspace.capture_tab_target(root, tabs)?)
+            DockTarget::Center(workspace_index.capture_tab_target(
+                workspace,
+                workspace_version,
+                root,
+                tabs,
+            )?)
         }
         (
             DropTargetId::TabGap {
@@ -713,7 +809,12 @@ fn rebind_topology_target(
             && *frozen_index == index =>
         {
             DockTarget::TabGap {
-                target: workspace.capture_tab_target(root, tabs)?,
+                target: workspace_index.capture_tab_target(
+                    workspace,
+                    workspace_version,
+                    root,
+                    tabs,
+                )?,
                 index,
             }
         }
@@ -731,7 +832,9 @@ fn rebind_topology_target(
             && target.edge() == edge
             && target.scope() == EdgeTargetScope::Inner =>
         {
-            DockTarget::InnerEdge(workspace.capture_inner_edge_target(
+            DockTarget::InnerEdge(workspace_index.capture_inner_edge_target(
+                workspace,
+                workspace_version,
                 root,
                 node,
                 edge,
@@ -752,7 +855,13 @@ fn rebind_topology_target(
             && target.edge() == edge
             && target.scope() == EdgeTargetScope::Outer =>
         {
-            let rebound = workspace.capture_outer_edge_target(root, edge, target.fraction())?;
+            let rebound = workspace_index.capture_outer_edge_target(
+                workspace,
+                workspace_version,
+                root,
+                edge,
+                target.fraction(),
+            )?;
             if rebound.node() != node {
                 return Err(TargetRebindError::Stale);
             }
@@ -1055,22 +1164,23 @@ fn record_geometric_winner() {}
 fn prepare_surface_background_command(
     workspace: &Workspace,
     source: &MovePayload,
+    complete_root_source: Option<&NodeSource>,
     destination: SurfaceBackground,
     offer: Option<SurfaceBackgroundRootOffer>,
 ) -> Option<WorkspaceCommand> {
-    if let Some(source) = complete_root_source(workspace, source) {
+    if let Some(source) = complete_root_source {
         if let Some(RootPresentationOwner::Contained { surface, floating }) =
             workspace.presentation_for_root(source.root())
             && surface == destination.surface()
         {
             return Some(WorkspaceCommand::PromoteContained {
-                source,
+                source: source.clone(),
                 surface,
                 floating,
             });
         }
         return Some(WorkspaceCommand::RehomeRoot {
-            source,
+            source: source.clone(),
             target: RootPresentationTarget::Main {
                 surface: destination.surface(),
             },
@@ -1084,49 +1194,12 @@ fn prepare_surface_background_command(
     })
 }
 
-fn complete_root_source(workspace: &Workspace, payload: &MovePayload) -> Option<NodeSource> {
-    let (root, node, fingerprint) = match payload {
-        MovePayload::Item(source) => (source.root(), source.tabs(), source.fingerprint()),
-        MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
-            (source.root(), source.node(), source.fingerprint())
-        }
-    };
-    workspace
-        .verify_reference(root, node, fingerprint, ReferenceRole::Source)
-        .ok()?;
-    let record = workspace.root(root)?;
-    let removes_complete_root = match payload {
-        MovePayload::Item(source) => {
-            record.central.is_none()
-                && workspace.collect_items_in_subtree(record.node).len() == 1
-                && matches!(
-                    workspace.node(source.tabs()),
-                    Some(Node::Tabs { items, .. }) if items.contains(&source.item())
-                )
-        }
-        MovePayload::Tabs(source) => {
-            source.node() == record.node
-                && matches!(
-                    workspace.node(source.node()),
-                    Some(Node::Tabs { items, .. }) if !items.is_empty()
-                )
-        }
-        MovePayload::Subtree(source) => {
-            source.node() == record.node
-                && !workspace.collect_items_in_subtree(source.node()).is_empty()
-        }
-    };
-    if removes_complete_root {
-        workspace.capture_node_source(root, record.node).ok()
-    } else {
-        None
-    }
-}
-
 struct DropLocation<'a> {
     scene: SurfaceSceneStamp,
     ready: &'a PresentationPlan,
     workspace: &'a Workspace,
+    workspace_version: WorkspaceVersion,
+    workspace_index: &'a WorkspaceIndex,
     policy: &'a DockPolicySnapshot,
     session: DragSessionId,
     surface: SurfaceId,
@@ -1143,8 +1216,7 @@ struct SourceSuppression {
 }
 
 impl SourceSuppression {
-    fn from_payload(workspace: &Workspace, payload: &MovePayload) -> Option<Self> {
-        let source = complete_root_source(workspace, payload)?;
+    fn from_source(workspace: &Workspace, source: &NodeSource) -> Option<Self> {
         let root = source.root();
         let floating = match workspace.presentation_for_root(root)? {
             RootPresentationOwner::Main { .. } => None,
@@ -1730,7 +1802,7 @@ mod tests {
         Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, WorkspaceBuilder,
     };
     use crate::ids::{ItemId, NodeId, WorkspaceEpoch};
-    use crate::policy::{DockPolicy, PolicyRevision};
+    use crate::policy::{DockPolicy, DockPresentationMode, PolicyRevision};
     use crate::presentation_observation::{PresentationOutputSerial, PresentedSurfaceAuthority};
     use crate::scene::{
         ContainedMinimumMeasurement, PresentationPlanValidator, SurfaceCoordinateCapture,
@@ -2169,7 +2241,17 @@ mod tests {
         let clusters = complete_guide_clusters(&fixture);
         let payload = partial_payload(&fixture);
         let policy = DockPolicySnapshot::default();
-        let assessment = DropEligibilityContext::new(&fixture.workspace, &policy, &payload, None);
+        let workspace_version = WorkspaceVersion::default();
+        let workspace_index = WorkspaceIndex::build(&fixture.workspace, workspace_version)
+            .expect("fixture index must build");
+        let assessment = DropEligibilityContext::new(
+            &fixture.workspace,
+            workspace_version,
+            &workspace_index,
+            &policy,
+            &payload,
+            None,
+        );
 
         reset_resolution_work();
         let (_, exact) = build_affordance(
@@ -2191,6 +2273,8 @@ mod tests {
         assert_eq!(work.transaction_prepares, 1);
         assert_eq!(work.transaction_commands, 1);
         assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+        assert_eq!(work.root_fingerprint_builds, 6);
+        assert_eq!(work.root_fingerprint_node_visits, 10);
     }
 
     #[test]
@@ -2206,7 +2290,17 @@ mod tests {
         let mut policy = DockPolicy::default();
         policy.set_allow_edge_split(false);
         let policy = policy.snapshot(PolicyRevision::default());
-        let assessment = DropEligibilityContext::new(&fixture.workspace, &policy, &payload, None);
+        let workspace_version = WorkspaceVersion::default();
+        let workspace_index = WorkspaceIndex::build(&fixture.workspace, workspace_version)
+            .expect("fixture index must build");
+        let assessment = DropEligibilityContext::new(
+            &fixture.workspace,
+            workspace_version,
+            &workspace_index,
+            &policy,
+            &payload,
+            None,
+        );
 
         reset_resolution_work();
         let (_, exact) = build_affordance(
@@ -2251,6 +2345,8 @@ mod tests {
 
     struct ResolutionWorkload {
         workspace: Workspace,
+        workspace_version: WorkspaceVersion,
+        workspace_index: WorkspaceIndex,
         scene: SurfaceSceneSet,
         payload: MovePayload,
         offer: SurfaceBackgroundRootOffer,
@@ -2391,9 +2487,14 @@ mod tests {
         ));
         ready.push_contained_minimum(contained_minimum(FloatingPresentationId::new(100)));
         let scene = seal_workspace(&workspace, ready);
+        let workspace_version = WorkspaceVersion::default();
+        let workspace_index = WorkspaceIndex::build(&workspace, workspace_version)
+            .expect("scale workload index must build");
 
         ResolutionWorkload {
             workspace,
+            workspace_version,
+            workspace_index,
             scene,
             payload,
             offer: SurfaceBackgroundRootOffer::new(RootId::new(1_000_000)),
@@ -2406,14 +2507,20 @@ mod tests {
         let workload = build_resolution_workload(spec);
         reset_resolution_work();
 
-        let query = resolve_drop(
-            &workload.scene,
+        let ready = workload
+            .scene
+            .ready_surface(TARGET_SURFACE)
+            .expect("scale workload target must be presented");
+        let query = resolve_presented_drop(
+            ready.stamp(),
+            ready.plan(),
             &workload.workspace,
+            workload.workspace_version,
+            &workload.workspace_index,
             &DockPolicySnapshot::default(),
             session(),
             workload.payload,
             Some(workload.offer),
-            TARGET_SURFACE,
             LogicalPoint::new(10.0, 10.0).expect("workload point must be finite"),
         )
         .expect("scale workload must not expose an invariant");
@@ -2485,36 +2592,36 @@ mod tests {
             [
                 ResolutionWorkBaseline {
                     spec: specs[0],
-                    root_fingerprint_builds: 8,
-                    root_fingerprint_node_visits: 248,
+                    root_fingerprint_builds: 2,
+                    root_fingerprint_node_visits: 62,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 31,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[1],
-                    root_fingerprint_builds: 8,
-                    root_fingerprint_node_visits: 248,
+                    root_fingerprint_builds: 2,
+                    root_fingerprint_node_visits: 62,
                     source_root_nodes: 31,
                     transaction_clone_nodes: 248,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[2],
-                    root_fingerprint_builds: 8,
-                    root_fingerprint_node_visits: 1_808,
+                    root_fingerprint_builds: 2,
+                    root_fingerprint_node_visits: 452,
                     source_root_nodes: 226,
                     transaction_clone_nodes: 247,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[3],
-                    root_fingerprint_builds: 8,
-                    root_fingerprint_node_visits: 504,
+                    root_fingerprint_builds: 2,
+                    root_fingerprint_node_visits: 126,
                     source_root_nodes: 63,
                     transaction_clone_nodes: 2_016,
                 },
                 ResolutionWorkBaseline {
                     spec: specs[4],
-                    root_fingerprint_builds: 8,
-                    root_fingerprint_node_visits: 15_376,
+                    root_fingerprint_builds: 2,
+                    root_fingerprint_node_visits: 3_844,
                     source_root_nodes: 1_922,
                     transaction_clone_nodes: 2_015,
                 },
@@ -2690,6 +2797,44 @@ mod tests {
                 Some(COMPLETE_ROOT)
             );
         }
+    }
+
+    #[test]
+    fn background_preflight_preserves_typed_policy_rejection() {
+        let fixture = fixture();
+        let scene = seal(&fixture, ready_background(None));
+        let mut policy = DockPolicy::default();
+        policy.set_allow_tiled_presentation(false);
+        let policy = policy.snapshot(PolicyRevision::default());
+        let resolution = resolve_unguided_drop(
+            &scene,
+            &fixture.workspace,
+            &policy,
+            session(),
+            partial_payload(&fixture),
+            Some(SurfaceBackgroundRootOffer::new(OFFERED_ROOT)),
+            TARGET_SURFACE,
+            LogicalPoint::new(10.0, 10.0).expect("point must be finite"),
+        )
+        .expect("a policy rejection is a normal resolution outcome");
+
+        let DropResolution::Rejected(rejected) = resolution else {
+            panic!("disabled tiled presentation must reject the background winner");
+        };
+        assert!(
+            matches!(
+                rejected.candidates(),
+                [candidate]
+                if matches!(
+                    candidate.reason(),
+                    DropRejectionReason::Policy(PolicyRejection::PresentationModeDisabled {
+                        mode: DockPresentationMode::Tiled,
+                    })
+                )
+            ),
+            "unexpected background rejection: {:?}",
+            rejected.candidates()
+        );
     }
 
     #[test]
@@ -3103,8 +3248,15 @@ mod tests {
                 .expect("main source must be current"),
         );
 
-        let suppression = SourceSuppression::from_payload(&workspace, &payload)
-            .expect("complete root suppresses");
+        let workspace_version = WorkspaceVersion::default();
+        let workspace_index = WorkspaceIndex::build(&workspace, workspace_version)
+            .expect("suppression index must build");
+        let source = workspace_index
+            .capture_complete_root_source(&workspace, workspace_version, &payload)
+            .expect("complete source analysis must succeed")
+            .expect("complete root source must exist");
+        let suppression =
+            SourceSuppression::from_source(&workspace, &source).expect("complete root suppresses");
         assert!(suppression.excludes_target(DropTargetId::Center {
             surface,
             root: main_root,

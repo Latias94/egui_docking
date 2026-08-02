@@ -1806,20 +1806,19 @@ impl DockEngine {
         // The raw framework winner is now proven. Source and payload
         // suppression are core semantics, so only the drop resolver applies
         // them; the adapter never needs to know the active drag payload.
-        let query = resolve_presented_drop(
-            presentation.scene(),
-            presentation.plan(),
-            &self.workspace,
-            policy,
-            drag.session,
-            drag.payload.clone(),
-            drag.surface_background_offer,
-            point,
-        )
-        .map_err(|source| EngineError::PointerInteractionInvariant {
-            cause,
-            detail: source.to_string(),
-        })?;
+        let query = self
+            .resolve_presented_drop_with_current_index(
+                &presentation,
+                policy,
+                drag.session,
+                drag.payload.clone(),
+                drag.surface_background_offer,
+                point,
+            )
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: source.to_string(),
+            })?;
         let (resolution, affordance) = query.into_parts();
         let decision = match resolution {
             DropResolution::Resolved(resolved) => {
@@ -1860,6 +1859,31 @@ impl DockEngine {
             }
         };
         Ok(PreviewEvaluation::new(decision, affordance))
+    }
+
+    pub(super) fn resolve_presented_drop_with_current_index(
+        &self,
+        presentation: &JournalSurfacePresentation,
+        policy: &DockPolicySnapshot,
+        session: crate::interaction::DragSessionId,
+        source: MovePayload,
+        surface_background_offer: Option<crate::intent::SurfaceBackgroundRootOffer>,
+        point: crate::geometry::LogicalPoint,
+    ) -> Result<crate::drop_resolver::DropQuery, DropResolutionError> {
+        resolve_presented_drop(
+            presentation.scene(),
+            presentation.plan(),
+            &self.workspace,
+            self.version,
+            self.presentation_authority
+                .presentation_requirements
+                .workspace_index(),
+            policy,
+            session,
+            source,
+            surface_background_offer,
+            point,
+        )
     }
 
     /// Resolves the canonical desktop-global outside-all path from the same

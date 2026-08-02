@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::command::{
     ContainedRosterSource, DockFraction, Edge, EdgeTarget, EdgeTargetScope, FingerprintNode,
-    FingerprintPresentation, ItemSource, NodeFingerprint, NodeFingerprintRecord, NodeSource,
-    RootFingerprintData, SurfaceRosterSource, TabTarget,
+    FingerprintPresentation, ItemSource, MovePayload, NodeFingerprint, NodeFingerprintRecord,
+    NodeSource, RootFingerprintData, SurfaceRosterSource, TabTarget,
 };
 use crate::error::{CommandError, ReferenceRole};
 use crate::graph::{Node, Workspace};
@@ -58,6 +58,7 @@ struct WorkspaceRootIndex {
     central: Option<NodeId>,
     owner: RootPresentationOwner,
     members: BTreeSet<NodeId>,
+    item_count: usize,
     fingerprint: NodeFingerprint,
 }
 
@@ -159,6 +160,78 @@ impl WorkspaceIndex {
             return Err(CommandError::NodeOutsideRoot { role, root, node });
         }
         Ok(indexed)
+    }
+
+    pub(crate) fn verify_reference(
+        &self,
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        root: RootId,
+        node: NodeId,
+        expected: &NodeFingerprint,
+        role: ReferenceRole,
+    ) -> Result<(), CommandError> {
+        let indexed = self.capture_reference(workspace, version, root, node, role)?;
+        if indexed.fingerprint == *expected {
+            Ok(())
+        } else {
+            Err(CommandError::StaleNode {
+                role,
+                node,
+                expected: expected.clone(),
+                actual: indexed.fingerprint.clone(),
+            })
+        }
+    }
+
+    pub(crate) fn capture_complete_root_source(
+        &self,
+        workspace: &Workspace,
+        version: WorkspaceVersion,
+        payload: &MovePayload,
+    ) -> Result<Option<NodeSource>, CommandError> {
+        let (root, node, fingerprint) = match payload {
+            MovePayload::Item(source) => (source.root(), source.tabs(), source.fingerprint()),
+            MovePayload::Tabs(source) | MovePayload::Subtree(source) => {
+                (source.root(), source.node(), source.fingerprint())
+            }
+        };
+        let indexed =
+            self.capture_reference(workspace, version, root, node, ReferenceRole::Source)?;
+        if indexed.fingerprint != *fingerprint {
+            return Err(CommandError::StaleNode {
+                role: ReferenceRole::Source,
+                node,
+                expected: fingerprint.clone(),
+                actual: indexed.fingerprint.clone(),
+            });
+        }
+
+        let removes_complete_root = match payload {
+            MovePayload::Item(source) => {
+                indexed.central.is_none()
+                    && indexed.item_count == 1
+                    && matches!(
+                        workspace.node(source.tabs()),
+                        Some(Node::Tabs { items, .. }) if items.contains(&source.item())
+                    )
+            }
+            MovePayload::Tabs(source) => {
+                source.node() == indexed.root_node
+                    && matches!(
+                        workspace.node(source.node()),
+                        Some(Node::Tabs { items, .. }) if !items.is_empty()
+                    )
+            }
+            MovePayload::Subtree(source) => {
+                source.node() == indexed.root_node && indexed.item_count > 0
+            }
+        };
+        Ok(removes_complete_root.then(|| NodeSource {
+            root,
+            node: indexed.root_node,
+            fingerprint: indexed.fingerprint.clone(),
+        }))
     }
 
     pub(crate) fn capture_tab_target(
@@ -581,6 +654,7 @@ impl Workspace {
         let mut nodes = Vec::new();
         let mut stack = vec![record.node];
         let mut visited = BTreeSet::new();
+        let mut item_count = 0_usize;
         while let Some(id) = stack.pop() {
             if !visited.insert(id) {
                 return Err(CommandError::Invariant {
@@ -594,17 +668,25 @@ impl Workspace {
             #[cfg(test)]
             crate::drop_resolver::structural_work::record_root_fingerprint_node_visit();
             let snapshot = match node {
-                Node::Tabs { items, selected } => FingerprintNode::Tabs {
-                    items: items.clone(),
-                    selected: *selected,
-                    mru: self
-                        .tab_mru
-                        .get(&id)
-                        .ok_or(CommandError::Invariant {
-                            stage: "capture tabs MRU fingerprint",
-                        })?
-                        .clone(),
-                },
+                Node::Tabs { items, selected } => {
+                    item_count =
+                        item_count
+                            .checked_add(items.len())
+                            .ok_or(CommandError::Invariant {
+                                stage: "capture root item count",
+                            })?;
+                    FingerprintNode::Tabs {
+                        items: items.clone(),
+                        selected: *selected,
+                        mru: self
+                            .tab_mru
+                            .get(&id)
+                            .ok_or(CommandError::Invariant {
+                                stage: "capture tabs MRU fingerprint",
+                            })?
+                            .clone(),
+                    }
+                }
                 Node::Split {
                     axis,
                     children,
@@ -636,6 +718,7 @@ impl Workspace {
             central: record.central,
             owner,
             members: visited,
+            item_count,
             fingerprint,
         })
     }

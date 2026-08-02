@@ -6643,6 +6643,48 @@ fn background_payload(fixture: &BackgroundFixture, item: ItemId) -> MovePayload 
     )
 }
 
+#[test]
+fn engine_presented_drop_reuses_the_requirement_workspace_index() {
+    let fixture = background_fixture(DockPolicy::default());
+    let source = background_payload(&fixture, ItemId::new(1));
+    let projection = fixture
+        .engine
+        .interaction_projection(TARGET_SURFACE)
+        .expect("rootless target projection must be receiver-authoritative");
+    let presentation = JournalSurfacePresentation::from_interaction(projection);
+    let point = LogicalPoint::new(10.0, 10.0).expect("background point must be finite");
+
+    crate::drop_resolver::structural_work::reset();
+    let query = fixture
+        .engine
+        .resolve_presented_drop_with_current_index(
+            &presentation,
+            fixture.engine.policy_snapshot(),
+            DragSessionId::new(fixture.engine.version().epoch(), DragGeneration::new(1)),
+            source,
+            Some(crate::intent::SurfaceBackgroundRootOffer::new(RootId::new(
+                1_000,
+            ))),
+            point,
+        )
+        .expect("current engine presentation must resolve without rebuilding its index");
+    assert!(matches!(
+        query.resolution(),
+        DropResolution::Resolved(resolved)
+            if resolved.target_id()
+                == crate::drop_target::DropTargetId::SurfaceBackground {
+                    surface: TARGET_SURFACE,
+                }
+    ));
+
+    let work = crate::drop_resolver::structural_work::snapshot();
+    assert_eq!(work.drop_targets_assessed, 1);
+    assert_eq!(work.geometric_winners, 1);
+    assert_eq!(work.transaction_prepares, 1);
+    assert_eq!(work.root_fingerprint_builds, 2);
+    assert_eq!(work.root_fingerprint_node_visits, 2);
+}
+
 struct DurableRectFixture {
     engine: DockEngine,
     presentation_host: PresentationHostLease,
