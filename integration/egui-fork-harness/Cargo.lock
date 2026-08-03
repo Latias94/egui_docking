@@ -795,14 +795,13 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dpi"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+version = "0.1.1"
+source = "git+https://github.com/Latias94/winit?rev=bc2d69433d733d113f7b0b507fe060d62f30b7d1#bc2d69433d733d113f7b0b507fe060d62f30b7d1"
 
 [[package]]
 name = "ecolor"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "bytemuck",
  "emath",
@@ -812,7 +811,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -851,7 +850,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "accesskit",
  "ahash",
@@ -881,7 +880,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -900,7 +899,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -943,7 +942,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "bytemuck",
  "egui",
@@ -963,7 +962,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "emath"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "bytemuck",
  "serde",
@@ -1010,7 +1009,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -1035,7 +1034,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.35.0"
-source = "git+https://github.com/Latias94/egui?rev=ebff89f25a3b84c51aa047a614eef3595f4e4c20#ebff89f25a3b84c51aa047a614eef3595f4e4c20"
+source = "git+https://github.com/Latias94/egui?rev=66920b0de76f84503145a3c8e0eabc0b65666413#66920b0de76f84503145a3c8e0eabc0b65666413"
 
 [[package]]
 name = "equivalent"
@@ -3996,8 +3995,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
+source = "git+https://github.com/Latias94/winit?rev=bc2d69433d733d113f7b0b507fe060d62f30b7d1#bc2d69433d733d113f7b0b507fe060d62f30b7d1"
 dependencies = [
  "ahash",
  "android-activity",

@@ -20,15 +20,16 @@ egui_dockspace = { path = "../egui_dockspace", features = ["serde"] }
 thiserror = "2.0.18"
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-egui = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-emath = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
-epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "ebff89f25a3b84c51aa047a614eef3595f4e4c20" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+egui = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+emath = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "66920b0de76f84503145a3c8e0eabc0b65666413" }
+winit = { git = "https://github.com/Latias94/winit", rev = "bc2d69433d733d113f7b0b507fe060d62f30b7d1" }
 
 [lints.rust]
 unsafe_code = "forbid"
