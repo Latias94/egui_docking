@@ -16,7 +16,7 @@ use crate::scene::{
 use crate::surface_recovery::ConvertedMainRecovery;
 
 /// Authority attached to a provider observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Authority<T> {
     /// The provider authoritatively observed this value.
     Known(T),

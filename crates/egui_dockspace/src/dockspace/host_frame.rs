@@ -9,6 +9,8 @@ use dockspace::presentation_observation::{
 };
 use dockspace::scene::SurfaceScene;
 use dockspace::transition::WorkspaceVersion;
+#[cfg(egui_backend_event_envelope)]
+use egui::UserData;
 use egui::{Context, FullOutput, ViewportId};
 
 use crate::error::DockspaceError;
@@ -63,7 +65,12 @@ pub(super) struct EguiSurfacePass {
     context: Context,
     viewport: ViewportId,
     cumulative_pass: u64,
+    #[cfg(egui_backend_event_envelope)]
+    output_proof: Option<UserData>,
 }
+
+#[cfg(egui_backend_event_envelope)]
+struct EguiSurfaceOutputProof;
 
 struct EguiNativeStagingPass {
     presentation: NativeStagingPresentation,
@@ -77,7 +84,47 @@ impl EguiSurfacePass {
             context: context.clone(),
             viewport,
             cumulative_pass: context.cumulative_pass_nr_for(viewport),
+            #[cfg(egui_backend_event_envelope)]
+            output_proof: None,
         }
+    }
+
+    #[cfg(egui_backend_event_envelope)]
+    fn with_output_proof(mut self) -> Self {
+        let proof = UserData::new(EguiSurfaceOutputProof);
+        self.context.request_output_provenance(proof.clone());
+        self.output_proof = Some(proof);
+        self
+    }
+
+    #[cfg(not(egui_backend_event_envelope))]
+    const fn with_output_proof(self) -> Self {
+        self
+    }
+
+    #[cfg(egui_backend_event_envelope)]
+    fn consume_output_proof(
+        &self,
+        surface: SurfaceId,
+        output: &mut FullOutput,
+    ) -> Result<(), DockspaceError> {
+        let expected = self
+            .output_proof
+            .as_ref()
+            .ok_or(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { surface })?;
+        if !output.consume_output_provenance(expected) {
+            return Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { surface });
+        }
+        Ok(())
+    }
+
+    #[cfg(not(egui_backend_event_envelope))]
+    fn consume_output_proof(
+        &self,
+        _surface: SurfaceId,
+        _output: &mut FullOutput,
+    ) -> Result<(), DockspaceError> {
+        Ok(())
     }
 }
 
@@ -183,6 +230,140 @@ impl DerefMut for HostFrameStateSlot {
     }
 }
 
+#[cfg(all(test, egui_backend_event_envelope))]
+mod output_proof_tests {
+    use super::*;
+
+    fn proven_output_with(
+        context: &Context,
+        mut run_ui: impl FnMut(&mut egui::Ui),
+    ) -> (EguiSurfacePass, FullOutput) {
+        let mut pass = None;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            pass = Some(EguiSurfacePass::from_context(ui.ctx()).with_output_proof());
+            run_ui(ui);
+        });
+        (
+            pass.expect("the egui callback mints one output proof"),
+            output,
+        )
+    }
+
+    fn proven_output(context: &Context) -> (EguiSurfacePass, FullOutput) {
+        proven_output_with(context, |_| {})
+    }
+
+    #[test]
+    fn exact_pass_output_consumes_its_private_proof() {
+        let context = Context::default();
+        let (pass, output) = proven_output(&context);
+
+        let mut output = output;
+        pass.consume_output_proof(SurfaceId::new(1), &mut output)
+            .expect("the exact pass output carries its private proof");
+
+        assert!(output.platform_output.presentation_token.is_none());
+    }
+
+    #[test]
+    fn output_proof_preserves_the_application_presentation_token() {
+        let context = Context::default();
+        let application_token = UserData::new("application-owned");
+        let expected = application_token.clone();
+        let (pass, mut output) = proven_output_with(&context, |ui| {
+            ui.ctx()
+                .set_presentation_token(Some(application_token.clone()));
+        });
+
+        pass.consume_output_proof(SurfaceId::new(1), &mut output)
+            .expect("the proof uses an independent backend-only lane");
+
+        assert_eq!(output.platform_output.presentation_token, Some(expected));
+    }
+
+    #[test]
+    fn changed_paint_content_invalidates_the_output_proof() {
+        let context = Context::default();
+        let (pass, mut output) = proven_output_with(&context, |ui| {
+            ui.label("content-bound output proof");
+        });
+        assert!(!output.shapes.is_empty());
+        output.shapes.clear();
+
+        assert!(matches!(
+            pass.consume_output_proof(SurfaceId::new(1), &mut output),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn changed_texture_content_invalidates_the_output_proof() {
+        let context = Context::default();
+        let (pass, mut output) = proven_output(&context);
+        output
+            .textures_delta
+            .free
+            .push(egui::TextureId::Managed(91));
+
+        assert!(matches!(
+            pass.consume_output_proof(SurfaceId::new(1), &mut output),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn changed_hit_graph_invalidates_the_output_proof() {
+        let context = Context::default();
+        let (pass, mut output) = proven_output(&context);
+        assert!(output.pointer_hit_graph_candidate.is_some());
+        output.pointer_hit_graph_candidate = None;
+
+        assert!(matches!(
+            pass.consume_output_proof(SurfaceId::new(1), &mut output),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn cloned_output_shares_one_affine_proof() {
+        let context = Context::default();
+        let (pass, mut first) = proven_output(&context);
+        let mut duplicate = first.clone();
+
+        pass.consume_output_proof(SurfaceId::new(1), &mut first)
+            .expect("the first exact output consumes the proof");
+        assert!(matches!(
+            pass.consume_output_proof(SurfaceId::new(1), &mut duplicate),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn later_output_from_the_same_context_cannot_replace_an_older_pass() {
+        let context = Context::default();
+        let (older, _) = proven_output(&context);
+        let (_, newer_output) = proven_output(&context);
+
+        assert!(matches!(
+            older.consume_output_proof(SurfaceId::new(1), &mut newer_output.clone()),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn another_context_cannot_supply_the_output() {
+        let first = Context::default();
+        let second = Context::default();
+        let (pass, _) = proven_output(&first);
+        let (_, foreign_output) = proven_output(&second);
+
+        assert!(matches!(
+            pass.consume_output_proof(SurfaceId::new(1), &mut foreign_output.clone()),
+            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+        ));
+    }
+}
+
 impl HostFrameState {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -274,6 +455,28 @@ impl HostFrameState {
             .map(|record| record.binding());
         candidate
             .resolve_callback(native, current)
+            .map_err(NativeBindingError::from)
+            .map_err(DockspaceError::from)
+    }
+
+    pub(super) fn resolve_native_input_receiver(
+        &self,
+        native: ExactNativeViewport,
+    ) -> Result<NativeCoreRoute, DockspaceError> {
+        let candidate = self
+            .native_bindings
+            .as_ref()
+            .expect("a native session retains one exact binding candidate");
+        let surface = candidate
+            .input_receiver_surface(native)
+            .map_err(NativeBindingError::from)?;
+        let current = self
+            .view()
+            .viewport()
+            .viewport(surface)
+            .map(|record| record.binding());
+        candidate
+            .resolve_input_receiver(native, current)
             .map_err(NativeBindingError::from)
             .map_err(DockspaceError::from)
     }
@@ -413,6 +616,7 @@ impl HostFrameState {
                 });
             }
         }
+        let pass = pass.with_output_proof();
         self.native_staging_passes
             .insert(surface, EguiNativeStagingPass { presentation, pass });
         self.confirmed_full_outputs.remove(&surface);
@@ -575,6 +779,7 @@ impl HostFrameState {
         if let Some(previous) = self.drafts.get_mut(&surface) {
             draft.preserve_prior_raw_event_inputs(previous)?;
         }
+        let pass = pass.with_output_proof();
         self.drafts.insert(surface, draft);
         self.surface_passes.insert(surface, pass);
         self.confirmed_full_outputs.remove(&surface);
@@ -595,8 +800,21 @@ impl HostFrameState {
         surface: SurfaceId,
         context: &Context,
         viewport: ViewportId,
-        output: FullOutput,
+        mut output: FullOutput,
     ) -> Result<(), DockspaceError> {
+        let pass = self.validate_surface_output(surface, context, viewport, &output)?;
+        pass.consume_output_proof(surface, &mut output)?;
+        self.confirmed_full_outputs.insert(surface, output);
+        Ok(())
+    }
+
+    fn validate_surface_output<'output>(
+        &'output self,
+        surface: SurfaceId,
+        context: &Context,
+        viewport: ViewportId,
+        output: &FullOutput,
+    ) -> Result<&'output EguiSurfacePass, DockspaceError> {
         if self.mode != EguiHostFrameMode::CompleteRoster {
             return Err(DockspaceError::OuterHostFrameRequired);
         }
@@ -636,7 +854,22 @@ impl HostFrameState {
         {
             return Err(DockspaceError::OuterHostSurfaceFullOutputMissing { surface });
         }
-        self.confirmed_full_outputs.insert(surface, output);
+        if self.confirmed_full_outputs.contains_key(&surface) {
+            return Err(DockspaceError::OuterHostSurfaceOutputAlreadyConfirmed { surface });
+        }
+        Ok(pass)
+    }
+
+    pub(super) fn confirm_external_surface_output(
+        &mut self,
+        surface: SurfaceId,
+        context: &Context,
+        viewport: ViewportId,
+        output: &mut FullOutput,
+    ) -> Result<(), DockspaceError> {
+        let pass = self.validate_surface_output(surface, context, viewport, output)?;
+        pass.consume_output_proof(surface, output)?;
+        self.confirmed_full_outputs.insert(surface, output.clone());
         Ok(())
     }
 

@@ -546,6 +546,21 @@ struct ExactRouteCandidate<B> {
 pub(super) struct NativeBindingCandidate(ExactRouteCandidate<ViewportBinding>);
 
 impl NativeBindingCandidate {
+    pub(super) fn input_receiver_surface(
+        &self,
+        native: ExactNativeViewport,
+    ) -> Result<SurfaceId, NativeRouteLookupError> {
+        resolve_input_candidate(&self.0, native).map(|route| route.declared_surface)
+    }
+
+    pub(super) fn resolve_input_receiver(
+        &self,
+        native: ExactNativeViewport,
+        current: Option<ViewportBinding>,
+    ) -> Result<NativeCoreRoute, NativeRouteLookupError> {
+        resolve_current_input_candidate(&self.0, native, current).map(NativeCoreRoute)
+    }
+
     pub(super) fn callback_surface(
         &self,
         native: ExactNativeViewport,
@@ -579,6 +594,39 @@ impl NativeBindingCandidate {
         resolve_current_candidate(&self.0, native, current, NativeRouteUse::Presentation)
             .map(NativeCoreRoute)
     }
+}
+
+fn resolve_current_input_candidate<B: ExactCoreBinding>(
+    candidate: &ExactRouteCandidate<B>,
+    native: ExactNativeViewport,
+    current: Option<B>,
+) -> Result<RouteRecord<B>, NativeRouteLookupError> {
+    let route = resolve_input_candidate(candidate, native)?;
+    if current != Some(route.core) {
+        return Err(NativeRouteLookupError::CoreBindingNoLongerCurrent {
+            native,
+            expected: route.core_identity(),
+            observed: current.map(ExactCoreBinding::exact_identity),
+            use_case: NativeRouteUse::Callback,
+        });
+    }
+    Ok(route)
+}
+
+fn resolve_input_candidate<B: ExactCoreBinding>(
+    candidate: &ExactRouteCandidate<B>,
+    native: ExactNativeViewport,
+) -> Result<RouteRecord<B>, NativeRouteLookupError> {
+    candidate
+        .state
+        .live_by_native
+        .get(&native)
+        .or_else(|| candidate.state.retired_by_native.get(&native))
+        .copied()
+        .ok_or(NativeRouteLookupError::NativeBindingUnknown {
+            native,
+            use_case: NativeRouteUse::Callback,
+        })
 }
 
 fn resolve_current_candidate<B: ExactCoreBinding>(
@@ -1072,6 +1120,38 @@ mod tests {
         assert!(matches!(
             registry.resolve_core(authority, a1.core),
             Err(NativeRouteLookupError::CoreBindingRetired { .. })
+        ));
+    }
+
+    #[test]
+    fn input_candidate_keeps_a_pre_retirement_route_until_core_reduces_the_tombstone() {
+        let authority = route_authority();
+        let mut registry = ExactRouteRegistry::new(authority);
+        let a1 = route(authority, 7, 1, 10, 1);
+        let initial = registry
+            .reconcile_candidate(authority, [a1], [])
+            .expect("A1 roster must validate");
+        registry.commit(initial).expect("A1 roster must commit");
+
+        let retiring = registry
+            .reconcile_candidate(authority, [], [a1.native])
+            .expect("the exact A1 retirement must validate");
+        assert_eq!(
+            resolve_current_input_candidate(&retiring, a1.native, Some(a1.core)),
+            Ok(a1)
+        );
+        assert!(matches!(
+            resolve_candidate(&retiring, a1.native, NativeRouteUse::Callback),
+            Err(NativeRouteLookupError::NativeBindingRetired { native, .. })
+                if native == a1.native
+        ));
+        assert!(matches!(
+            resolve_current_input_candidate(&retiring, a1.native, None),
+            Err(NativeRouteLookupError::CoreBindingNoLongerCurrent {
+                native,
+                observed: None,
+                ..
+            }) if native == a1.native
         ));
     }
 

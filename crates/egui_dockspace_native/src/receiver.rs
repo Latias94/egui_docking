@@ -7,13 +7,13 @@ use dockspace::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbe, PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
-    PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
+    PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
 };
 use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
 use dockspace::scene::SurfaceInteractionProjection;
 use eframe::{
     NativePhysicalPoint, NativePointerEdge, NativePointerEdgeKind, NativePointerSequence,
-    NativeViewportBinding,
+    NativePointerSource, NativeViewportBinding,
 };
 use egui::{
     PointerHit, PointerReceiverAuthority, Pos2, ScrollProbe, ScrollReceiver, WidgetReceiver,
@@ -23,7 +23,7 @@ use egui_dockspace::{
 };
 
 use crate::NativeRuntimeError;
-use crate::ingress::{BoundNativeRoute, RetainedPointerEdge, egui_modifiers};
+use crate::ingress::{BoundNativeRoute, RetainedPointerEdge};
 use crate::presentation::PresentedNativePointerGraph;
 
 pub(crate) struct PointerReceiverResolution {
@@ -95,15 +95,31 @@ fn resolve_candidate(
     pointer_edges: &BTreeMap<u64, RetainedPointerEdge>,
     candidate: &PointerReceiverCandidate,
 ) -> Result<ResolvedPointerReceiver, NativeRuntimeError> {
+    let challenge = candidate.scroll_challenge();
+    let retained = pointer_edges.get(&candidate.id().sequence().get());
+    let locked_claim = match challenge {
+        Some(ScrollReceiverChallenge::Locked { .. } | ScrollReceiverChallenge::OwnedTerminal) => {
+            retained
+                .map(|retained| scroll_derivative_claim(retained.edge()))
+                .transpose()?
+        }
+        Some(
+            ScrollReceiverChallenge::Spatial { .. }
+            | ScrollReceiverChallenge::FrameworkReserved
+            | ScrollReceiverChallenge::Unavailable,
+        )
+        | None => None,
+    };
     if !candidate.receiver_is_applicable() {
         return Ok(ResolvedPointerReceiver {
             observation: PointerReceiverObservation::NotApplicable,
-            scroll_claim: None,
+            scroll_claim: locked_claim,
         });
     }
-    let Some(retained) = pointer_edges.get(&candidate.id().sequence().get()) else {
-        return Ok(resolved_unknown(
+    let Some(retained) = retained else {
+        return Ok(resolved_unknown_with_claim(
             PointerReceiverUnknownReason::EventCorrelationUnavailable,
+            locked_claim,
         ));
     };
     let edge = retained.edge();
@@ -111,65 +127,113 @@ fn resolve_candidate(
     let mut scroll_claim = None;
     if candidate.probes().requires(PointerReceiverProbe::Delivery) {
         let Some(route) = retained.delivery_route() else {
-            return Ok(resolved_unknown(
+            return Ok(resolved_unknown_with_claim(
                 PointerReceiverUnknownReason::EventCorrelationUnavailable,
+                locked_claim,
             ));
         };
         let Some(projection) = input
             .receiver_view()
             .interaction_projection(route.surface())
         else {
-            return Ok(resolved_unknown(
+            return Ok(resolved_unknown_with_claim(
                 PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                locked_claim,
             ));
         };
         let Some(graph) = retained.graphs().delivery() else {
-            return Ok(resolved_unknown(
+            return Ok(resolved_unknown_with_claim(
                 PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                locked_claim,
             ));
         };
         if graph.native() != route.exact() || graph.scene() != projection.output_ticket() {
-            return Ok(resolved_unknown(
+            return Ok(resolved_unknown_with_claim(
                 PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                locked_claim,
             ));
         }
-        let Some(logical_point) = candidate.route_point() else {
-            return Ok(resolved_unknown(
-                PointerReceiverUnknownReason::EventCorrelationUnavailable,
-            ));
+        let delivery = match challenge {
+            Some(ScrollReceiverChallenge::Locked {
+                receiver,
+                probe_point,
+                projected_delta,
+            }) => locked_scroll_delivery(
+                dockspace,
+                input,
+                route,
+                projection,
+                graph.graph(),
+                receiver,
+                probe_point,
+                projected_delta,
+            )?,
+            Some(ScrollReceiverChallenge::Spatial { .. }) | None => {
+                let Some(logical_point) = candidate.route_point() else {
+                    return Ok(resolved_unknown_with_claim(
+                        PointerReceiverUnknownReason::EventCorrelationUnavailable,
+                        locked_claim,
+                    ));
+                };
+                let Some(egui_point) = presented_point(edge, route, graph, logical_point, true)
+                else {
+                    return Ok(resolved_unknown_with_claim(
+                        PointerReceiverUnknownReason::EventCorrelationUnavailable,
+                        locked_claim,
+                    ));
+                };
+                let PointerReceiverAuthority::Known(hit) = graph.graph().probe(egui_point) else {
+                    return Ok(resolved_unknown_with_claim(
+                        PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                        locked_claim,
+                    ));
+                };
+                match challenge {
+                    Some(ScrollReceiverChallenge::Spatial { projected_delta }) => {
+                        scroll_delivery_receipt(
+                            dockspace,
+                            input,
+                            route,
+                            projection,
+                            logical_point,
+                            projected_delta,
+                            graph.graph(),
+                            egui_point,
+                            &hit,
+                        )?
+                    }
+                    None => pointer_delivery_receipt(
+                        dockspace,
+                        input,
+                        route,
+                        projection,
+                        logical_point,
+                        &hit,
+                    )?,
+                    Some(_) => unreachable!("the outer match restricts this receiver challenge"),
+                }
+            }
+            Some(
+                ScrollReceiverChallenge::OwnedTerminal
+                | ScrollReceiverChallenge::FrameworkReserved
+                | ScrollReceiverChallenge::Unavailable,
+            ) => {
+                return Err(NativeRuntimeError::IngressUnavailable(
+                    "non-probing scroll challenge requested receiver evidence",
+                ));
+            }
         };
-        let Some(egui_point) = presented_point(edge, route, graph, logical_point, true) else {
-            return Ok(resolved_unknown(
-                PointerReceiverUnknownReason::EventCorrelationUnavailable,
-            ));
-        };
-        let PointerReceiverAuthority::Known(hit) = graph.graph().probe(egui_point) else {
-            return Ok(resolved_unknown(
-                PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
-            ));
-        };
-        let delivery = delivery_receipt(
-            dockspace,
-            input,
-            route,
-            projection,
-            logical_point,
-            edge,
-            graph.graph(),
-            egui_point,
-            &hit,
-        )?;
-        if matches!(edge.kind(), NativePointerEdgeKind::Scrolled(_))
+        let spatial_claim = if matches!(challenge, Some(ScrollReceiverChallenge::Spatial { .. }))
+            && matches!(edge.kind(), NativePointerEdgeKind::Scrolled(_))
             && matches!(
                 delivery.scroll(),
                 PointerReceiverDeliveryDisposition::Dock(_)
-            )
-        {
-            scroll_claim = Some(NativeScrollDerivativeClaim {
-                binding: route.native_binding(),
-                pointer_sequence: edge.sequence(),
-            });
-        }
+            ) {
+            Some(scroll_derivative_claim(edge)?)
+        } else {
+            None
+        };
+        scroll_claim = locked_claim.or(spatial_claim);
         probes.push(PointerReceiverProbeReceipt::Delivery(delivery));
     }
     if candidate.probes().requires(PointerReceiverProbe::HoverHit) {
@@ -296,17 +360,127 @@ fn logical_point_from_physical(
     LogicalPoint::new(x, y).ok()
 }
 
-fn delivery_receipt(
+fn locked_scroll_delivery(
+    dockspace: &Dockspace,
+    input: &EguiNativeInputSession,
+    route: BoundNativeRoute,
+    projection: SurfaceInteractionProjection<'_>,
+    graph: &egui::PointerHitGraphSnapshot,
+    locked: dockspace::presentation_hit::PresentationHitRegionId,
+    probe_point: LogicalPoint,
+    projected_delta: Option<dockspace::pointer_journal::FiniteScrollVector>,
+) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
+    let unknown = PointerReceiverDeliveryDisposition::Unknown(
+        PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+    );
+    let scroll = if locked.surface() != route.surface()
+        || projection.hit_manifest().region(locked).is_none()
+    {
+        PointerReceiverDeliveryDisposition::NoReceiver
+    } else {
+        let mut matching = None;
+        let mut authority_unavailable = false;
+        for receiver in graph.scroll_receivers() {
+            match lookup_scroll_receiver(dockspace, input, route, projection, graph, receiver)? {
+                PaintReceiverLookup::Dock(kind) if receiver.enabled() && kind == locked.kind() => {
+                    if matching.replace(receiver).is_some() {
+                        authority_unavailable = true;
+                    }
+                }
+                PaintReceiverLookup::FingerprintMismatch
+                | PaintReceiverLookup::GenerationUnavailable => {
+                    authority_unavailable = true;
+                }
+                PaintReceiverLookup::Dock(_) | PaintReceiverLookup::Foreign => {}
+            }
+        }
+        match (matching, authority_unavailable, projected_delta) {
+            (Some(_), false, None) => PointerReceiverDeliveryDisposition::Dock(locked),
+            (Some(expected), false, Some(projected_delta)) => {
+                let point = egui::pos2(probe_point.x() as f32, probe_point.y() as f32);
+                match graph
+                    .probe_projected_scroll(point, projected_egui_scroll_vector(projected_delta))
+                {
+                    PointerReceiverAuthority::Known(ScrollProbe::Receiver { receiver, .. })
+                        if receiver == expected =>
+                    {
+                        PointerReceiverDeliveryDisposition::Dock(locked)
+                    }
+                    PointerReceiverAuthority::Known(ScrollProbe::Receiver { .. })
+                    | PointerReceiverAuthority::Known(
+                        ScrollProbe::Blocked | ScrollProbe::FrameworkOwned,
+                    ) => PointerReceiverDeliveryDisposition::Blocked,
+                    PointerReceiverAuthority::Known(ScrollProbe::NoReceiver) => {
+                        PointerReceiverDeliveryDisposition::NoReceiver
+                    }
+                    PointerReceiverAuthority::Known(ScrollProbe::AwaitingDelta)
+                    | PointerReceiverAuthority::Unknown(_) => unknown,
+                }
+            }
+            (None, false, _) => PointerReceiverDeliveryDisposition::NoReceiver,
+            (_, true, _) => unknown,
+        }
+    };
+    PointerReceiverDelivery::from_lanes_with_scroll(projection, unknown, unknown, scroll)
+        .map_err(egui_dockspace::DockspaceError::from)
+        .map_err(NativeRuntimeError::from)
+}
+
+fn scroll_delivery_receipt(
     dockspace: &Dockspace,
     input: &EguiNativeInputSession,
     route: BoundNativeRoute,
     projection: SurfaceInteractionProjection<'_>,
     point: LogicalPoint,
-    edge: &NativePointerEdge,
+    scroll_probe_vector: Option<dockspace::pointer_journal::FiniteScrollVector>,
     graph: &egui::PointerHitGraphSnapshot,
     egui_point: Pos2,
     hit: &PointerHit,
 ) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
+    let (click, drag) = pointer_delivery_lanes(dockspace, input, route, projection, point, hit)?;
+    let scroll = scroll_delivery_lane(
+        dockspace,
+        input,
+        route,
+        projection,
+        point,
+        scroll_probe_vector,
+        graph,
+        egui_point,
+    )?;
+    PointerReceiverDelivery::from_lanes_with_scroll(projection, click, drag, scroll)
+        .map_err(egui_dockspace::DockspaceError::from)
+        .map_err(NativeRuntimeError::from)
+}
+
+fn pointer_delivery_receipt(
+    dockspace: &Dockspace,
+    input: &EguiNativeInputSession,
+    route: BoundNativeRoute,
+    projection: SurfaceInteractionProjection<'_>,
+    point: LogicalPoint,
+    hit: &PointerHit,
+) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
+    let (click, drag) = pointer_delivery_lanes(dockspace, input, route, projection, point, hit)?;
+    PointerReceiverDelivery::from_lanes(projection, click, drag)
+        .map_err(egui_dockspace::DockspaceError::from)
+        .map_err(NativeRuntimeError::from)
+}
+
+fn pointer_delivery_lanes(
+    dockspace: &Dockspace,
+    input: &EguiNativeInputSession,
+    route: BoundNativeRoute,
+    projection: SurfaceInteractionProjection<'_>,
+    point: LogicalPoint,
+    hit: &PointerHit,
+) -> Result<
+    (
+        PointerReceiverDeliveryDisposition,
+        PointerReceiverDeliveryDisposition,
+    ),
+    NativeRuntimeError,
+> {
     let click = delivery_lane(
         dockspace,
         input,
@@ -327,12 +501,7 @@ fn delivery_receipt(
         PresentationPointerLane::Drag,
         hit.drag_receiver,
     )?;
-    let scroll = scroll_delivery_lane(
-        dockspace, input, route, projection, point, edge, graph, egui_point,
-    )?;
-    PointerReceiverDelivery::from_lanes_with_scroll(projection, click, drag, scroll)
-        .map_err(egui_dockspace::DockspaceError::from)
-        .map_err(NativeRuntimeError::from)
+    Ok((click, drag))
 }
 
 fn scroll_delivery_lane(
@@ -341,17 +510,17 @@ fn scroll_delivery_lane(
     route: BoundNativeRoute,
     projection: SurfaceInteractionProjection<'_>,
     point: LogicalPoint,
-    edge: &NativePointerEdge,
+    scroll_probe_vector: Option<dockspace::pointer_journal::FiniteScrollVector>,
     graph: &egui::PointerHitGraphSnapshot,
     egui_point: Pos2,
 ) -> Result<PointerReceiverDeliveryDisposition, NativeRuntimeError> {
-    let Some((delta, modifiers)) = native_scroll_probe_input(edge) else {
-        return Ok(PointerReceiverDeliveryDisposition::Unknown(
-            PointerReceiverUnknownReason::EventCorrelationUnavailable,
-        ));
+    let probe = match scroll_probe_vector {
+        Some(delta) => {
+            graph.probe_projected_scroll(egui_point, projected_egui_scroll_vector(delta))
+        }
+        None => graph.probe_scroll_owner(egui_point),
     };
-    let PointerReceiverAuthority::Known(probe) = graph.probe_scroll(egui_point, delta, modifiers)
-    else {
+    let PointerReceiverAuthority::Known(probe) = probe else {
         return Ok(PointerReceiverDeliveryDisposition::Unknown(
             PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
         ));
@@ -361,9 +530,10 @@ fn scroll_delivery_lane(
             ScrollProbe::Blocked | ScrollProbe::FrameworkOwned => {
                 PointerReceiverDeliveryDisposition::Blocked
             }
-            ScrollProbe::NoReceiver | ScrollProbe::AwaitingDelta => {
-                PointerReceiverDeliveryDisposition::NoReceiver
-            }
+            ScrollProbe::NoReceiver => PointerReceiverDeliveryDisposition::NoReceiver,
+            ScrollProbe::AwaitingDelta => PointerReceiverDeliveryDisposition::Unknown(
+                PointerReceiverUnknownReason::EventCorrelationUnavailable,
+            ),
             ScrollProbe::Receiver { .. } => unreachable!(),
         });
     };
@@ -387,16 +557,10 @@ fn scroll_delivery_lane(
     }
 }
 
-fn native_scroll_probe_input(edge: &NativePointerEdge) -> Option<(egui::Vec2, egui::Modifiers)> {
-    let NativePointerEdgeKind::Scrolled(scroll) = edge.kind() else {
-        return None;
-    };
-    let vector = scroll.delta().map_or(egui::Vec2::ZERO, |delta| {
-        let vector = delta.vector();
-        egui::vec2(vector.x() as f32, vector.y() as f32)
-    });
-    let modifiers = scroll.modifiers().value().copied()?;
-    Some((vector, egui_modifiers(modifiers)))
+fn projected_egui_scroll_vector(
+    vector: dockspace::pointer_journal::FiniteScrollVector,
+) -> egui::Vec2 {
+    egui::vec2(vector.x().signum() as f32, vector.y().signum() as f32)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -571,10 +735,31 @@ const fn unknown(reason: PointerReceiverUnknownReason) -> PointerReceiverObserva
 }
 
 const fn resolved_unknown(reason: PointerReceiverUnknownReason) -> ResolvedPointerReceiver {
+    resolved_unknown_with_claim(reason, None)
+}
+
+const fn resolved_unknown_with_claim(
+    reason: PointerReceiverUnknownReason,
+    scroll_claim: Option<NativeScrollDerivativeClaim>,
+) -> ResolvedPointerReceiver {
     ResolvedPointerReceiver {
         observation: unknown(reason),
-        scroll_claim: None,
+        scroll_claim,
     }
+}
+
+fn scroll_derivative_claim(
+    edge: &NativePointerEdge,
+) -> Result<NativeScrollDerivativeClaim, NativeRuntimeError> {
+    let NativePointerSource::Viewport(binding) = edge.source() else {
+        return Err(NativeRuntimeError::IngressUnavailable(
+            "core-owned scroll derivative has no exact source viewport",
+        ));
+    };
+    Ok(NativeScrollDerivativeClaim {
+        binding,
+        pointer_sequence: edge.sequence(),
+    })
 }
 
 fn _assert_native_binding_is_copy(_: NativeViewportBinding) {}
@@ -600,5 +785,14 @@ mod tests {
     fn stale_presentation_scale_fails_closed() {
         assert!(!presentation_scales_match(2.0, 2.0, 2.0, 2.5));
         assert!(!presentation_scales_match(2.0, 2.5, 1.5, 2.5));
+    }
+
+    #[test]
+    fn receiver_probe_preserves_tiny_nonzero_f64_direction() {
+        let vector =
+            dockspace::pointer_journal::FiniteScrollVector::new(f64::MAX, f64::MIN_POSITIVE)
+                .expect("the core probe vector is finite");
+
+        assert_eq!(projected_egui_scroll_vector(vector), egui::vec2(1.0, 1.0));
     }
 }

@@ -1,16 +1,20 @@
-//! Opaque renderer-facing measurement, paint, and pointer capabilities.
+//! Opaque renderer-facing pointer capabilities.
 
 use thiserror::Error;
 
-use super::{DockspaceHostFrame, DockspaceRuntimeError, DockspaceSession};
-use crate::drop_target::DropTargetId;
-use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
-use crate::ids::{ItemId, SurfaceId};
-use crate::intent::{Authority, PointerButton, PointerId};
-use crate::interaction::{InteractionPreview, PreviewVisual};
+use super::{
+    DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceRuntimeError, DockspaceSession,
+    SurfacePaintPlan, UniformSurfaceMetrics,
+};
+use crate::geometry::{LogicalPoint, LogicalRect};
+use crate::ids::SurfaceId;
+use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use crate::pointer_journal::{
-    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    FiniteScrollVector, PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge,
+    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
+    PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
+    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
+    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
     SurfaceLocalPointerScope,
 };
 use crate::pointer_receiver::{
@@ -19,75 +23,9 @@ use crate::pointer_receiver::{
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
     PresentedPointerReceiverObservation,
 };
-use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
-use crate::scene::{PresentationPlan, SurfaceScene};
-use crate::scene_manifest::{
-    Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic, TabStripMetrics,
-};
-
-/// Uniform measurements for a renderer whose panes and tabs share one metric.
-///
-/// This deliberately hides manifest keys. Rich adapters can later use the same
-/// facade with semantic per-item callbacks without gaining access to core
-/// scene stamps or requirement identities.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UniformSurfaceMetrics {
-    bounds: LogicalRect,
-    pane_minimum: LogicalSize,
-    tab_intrinsic: TabIntrinsic,
-    tab_strip: TabStripMetrics,
-}
-
-impl UniformSurfaceMetrics {
-    /// Validates one complete uniform measurement profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the tab content width is negative or non-finite.
-    pub fn new(
-        bounds: LogicalRect,
-        pane_minimum: LogicalSize,
-        tab_content_width: f64,
-    ) -> Result<Self, DockspaceInteractionError> {
-        let tab_intrinsic = TabIntrinsic::new(tab_content_width)
-            .map_err(|_| DockspaceInteractionError::InvalidMeasurementProfile)?;
-        let tab_strip = TabStripMetrics::new(0.0, 0.0)
-            .map_err(|_| DockspaceInteractionError::InvalidMeasurementProfile)?;
-        Ok(Self {
-            bounds,
-            pane_minimum,
-            tab_intrinsic,
-            tab_strip,
-        })
-    }
-}
-
-/// Opaque receiver descriptor captured while painting one semantic output.
-///
-/// A descriptor is not input authority. It must be rebound after a concrete
-/// output is finally presented before an event may name it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DockspaceReceiverDescriptor {
-    output: SurfacePresentationOutputTicket,
-    region: PresentationHitRegionId,
-    bounds: LogicalRect,
-    center: LogicalPoint,
-}
-
-impl DockspaceReceiverDescriptor {
-    /// Returns the exact receiver rectangle supplied to the renderer.
-    #[must_use]
-    pub const fn bounds(self) -> LogicalRect {
-        self.bounds
-    }
-
-    /// Returns the center of the exact half-open receiver rectangle.
-    #[must_use]
-    pub const fn center(self) -> LogicalPoint {
-        self.center
-    }
-}
+use crate::scene::SurfaceScene;
+use crate::scene_manifest::{Measurement, MeasurementUnavailableReason, SurfaceMeasurements};
 
 /// Exact presented surface capability used to qualify known-empty facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +46,7 @@ impl PresentedDockReceiver {
     /// Returns the exact receiver rectangle presented by the renderer.
     #[must_use]
     pub const fn bounds(self) -> LogicalRect {
-        self.descriptor.bounds
+        self.descriptor.bounds()
     }
 
     /// Returns the receiver center in surface-local logical coordinates.
@@ -118,166 +56,266 @@ impl PresentedDockReceiver {
     }
 }
 
-/// Stable renderer-facing preview geometry.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DockspacePreviewVisual {
-    /// Highlight one exact docking rectangle.
-    Dock {
-        /// Surface which paints the highlight.
-        surface: SurfaceId,
-        /// Final logical highlight geometry.
-        rect: LogicalRect,
-    },
-    /// Paint one contained-floating placement.
-    Contained {
-        /// Host surface.
-        surface: SurfaceId,
-        /// Final logical placement.
-        rect: LogicalRect,
-        /// Whether this is an explicitly enabled native fallback.
-        fallback: bool,
-    },
-    /// Paint a source-hosted cue for a future native surface.
-    Native {
-        /// Existing surface which paints the cue.
-        host_surface: SurfaceId,
-        /// Reserved future surface.
-        target_surface: SurfaceId,
-        /// Final desktop-physical placement.
-        placement: PhysicalRect,
-    },
-}
+/// Stable pointer identity owned by one renderer-neutral surface provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct SurfacePointerId(u64);
 
-/// Borrowed preview which belongs to one exact paint plan.
-#[derive(Debug, Clone, Copy)]
-pub struct DockspaceDragPreview<'plan> {
-    preview: &'plan InteractionPreview,
-}
-
-impl DockspaceDragPreview<'_> {
-    /// Returns the renderer-neutral geometry which must be painted.
+impl SurfacePointerId {
+    /// Creates an identity from the host provider's stable representation.
     #[must_use]
-    pub fn visual(self) -> DockspacePreviewVisual {
-        match *self.preview.visual() {
-            PreviewVisual::Dock { surface, rect, .. } => {
-                DockspacePreviewVisual::Dock { surface, rect }
-            }
-            PreviewVisual::Contained {
-                surface,
-                rect,
-                fallback,
-            } => DockspacePreviewVisual::Contained {
-                surface,
-                rect,
-                fallback,
-            },
-            PreviewVisual::Native {
-                host_surface,
-                target_surface,
-                placement,
-            } => DockspacePreviewVisual::Native {
-                host_surface,
-                target_surface,
-                placement,
-            },
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the host provider's stable representation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Renderer-neutral pointer button identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SurfacePointerButton {
+    /// Primary selection and drag button.
+    Primary,
+    /// Secondary context button.
+    Secondary,
+    /// Middle pointer button.
+    Middle,
+    /// Host-defined additional button.
+    Other(u16),
+}
+
+/// Event-time capture authority for one surface-local edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfacePointerCapture {
+    /// The provider endpoint frozen into this session owns capture.
+    ProviderEndpoint,
+    /// A receiver outside this dockspace owns capture.
+    Foreign,
+    /// No receiver owns capture.
+    None,
+    /// The host could not observe capture authority for this edge.
+    Unknown,
+}
+
+/// Event-time surface-local pointer position authority.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfacePointerPosition {
+    /// The host observed one exact logical point for this edge.
+    Known(LogicalPoint),
+    /// The host could not observe an event-time logical point.
+    Unknown,
+}
+
+/// Explicit lifecycle reason for terminating one pointer stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfacePointerCancelReason {
+    /// The physical or virtual device was removed.
+    DeviceRemoved,
+    /// The input provider shut down permanently.
+    ProviderShutdown,
+    /// The platform explicitly cancelled this stream.
+    ExplicitPlatformCancellation,
+    /// The provider reset its identity namespace.
+    ProviderReset,
+}
+
+/// Raw two-axis scroll delta retained until core selects the receiver.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceScrollDelta {
+    /// Native physical pixels.
+    PhysicalPixels {
+        /// Horizontal content movement.
+        x: f64,
+        /// Vertical content movement.
+        y: f64,
+    },
+    /// Renderer-independent logical points.
+    LogicalPoints {
+        /// Horizontal content movement.
+        x: f64,
+        /// Vertical content movement.
+        y: f64,
+    },
+    /// Provider line units.
+    Lines {
+        /// Horizontal content movement.
+        x: f64,
+        /// Vertical content movement.
+        y: f64,
+    },
+    /// Provider page units.
+    Pages {
+        /// Horizontal content movement.
+        x: f64,
+        /// Vertical content movement.
+        y: f64,
+    },
+}
+
+/// Explicit provider reason for cancelling a phaseful scroll sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceScrollCancelReason {
+    /// The platform explicitly cancelled the gesture.
+    PlatformCancelled,
+    /// The scroll device was removed.
+    DeviceRemoved,
+    /// The provider reset its sequence namespace.
+    ProviderReset,
+}
+
+/// Provider-owned identity of one physical or virtual scroll device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct SurfaceScrollDeviceId(u64);
+
+impl SurfaceScrollDeviceId {
+    /// Creates a scroll-device identity from the host provider representation.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the host provider representation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Provider-owned monotonic identity of one smooth-scroll sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct SurfaceScrollSequenceId(u64);
+
+impl SurfaceScrollSequenceId {
+    /// Creates a sequence identity from the host provider representation.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the host provider representation.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Native phase and payload shape of one lossless scroll sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceScrollPhase {
+    /// One independent wheel step.
+    Discrete {
+        /// Raw sample delta.
+        delta: SurfaceScrollDelta,
+    },
+    /// Starts one provider-defined smooth sequence.
+    Begin {
+        /// Provider-owned sequence identity.
+        sequence: SurfaceScrollSequenceId,
+        /// Optional first sample.
+        delta: Option<SurfaceScrollDelta>,
+    },
+    /// Continues one provider-defined smooth sequence.
+    Update {
+        /// Provider-owned sequence identity.
+        sequence: SurfaceScrollSequenceId,
+        /// Raw continuation sample.
+        delta: SurfaceScrollDelta,
+    },
+    /// Terminates a smooth sequence after an optional final sample.
+    End {
+        /// Provider-owned sequence identity.
+        sequence: SurfaceScrollSequenceId,
+        /// Optional final sample.
+        delta: Option<SurfaceScrollDelta>,
+    },
+    /// Terminates a smooth sequence without applying another sample.
+    Cancel {
+        /// Provider-owned sequence identity.
+        sequence: SurfaceScrollSequenceId,
+        /// Explicit cancellation reason.
+        reason: SurfaceScrollCancelReason,
+    },
+}
+
+/// Direct-versus-momentum provenance for one scroll sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceScrollMomentum {
+    /// Direct user-controlled movement.
+    Direct,
+    /// Platform-generated momentum within the same sequence.
+    Momentum,
+}
+
+/// Exact event-time keyboard modifiers for one scroll sample.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SurfaceScrollModifiers {
+    shift: bool,
+    control: bool,
+    alt: bool,
+    command: bool,
+}
+
+impl SurfaceScrollModifiers {
+    /// Creates one exact modifier snapshot.
+    #[must_use]
+    pub const fn new(shift: bool, control: bool, alt: bool, command: bool) -> Self {
+        Self {
+            shift,
+            control,
+            alt,
+            command,
         }
     }
 }
 
-/// Read-only plan supplied before one exact renderer paint.
-#[derive(Debug, Clone, Copy)]
-pub struct SurfacePaintPlan<'frame> {
-    surface: SurfaceId,
-    output: SurfacePresentationOutputTicket,
-    plan: &'frame PresentationPlan,
-    hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
-    drag_preview: Option<&'frame InteractionPreview>,
+/// One lossless wheel or trackpad sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceScrollEvent {
+    device: SurfaceScrollDeviceId,
+    phase: SurfaceScrollPhase,
+    momentum: SurfaceScrollMomentum,
+    modifiers: SurfaceScrollModifiers,
 }
 
-impl<'frame> SurfacePaintPlan<'frame> {
-    /// Returns the logical surface painted by this plan.
+impl SurfaceScrollEvent {
+    /// Creates one exact scroll sample.
     #[must_use]
-    pub const fn surface(self) -> SurfaceId {
-        self.surface
-    }
-
-    /// Returns the exact surface bounds.
-    #[must_use]
-    pub fn bounds(self) -> LogicalRect {
-        self.plan.bounds()
-    }
-
-    /// Returns the exact receiver descriptor for one visible tab.
-    #[must_use]
-    pub fn tab_receiver(self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabBody(tab) if tab.item == item),
-        )
-    }
-
-    /// Returns the exact center-drop receiver for the stack containing `item`.
-    #[must_use]
-    pub fn center_drop_receiver_for_item(
-        self,
-        item: ItemId,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let tabs = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| record.id().item == item)?
-            .id()
-            .tabs;
-        self.receiver(|kind| {
-            matches!(
-                kind,
-                PresentationHitRegionKind::DropTarget(DropTargetId::Center {
-                    tabs: target,
-                    ..
-                }) if target == tabs
-            )
-        })
-    }
-
-    /// Returns the exact transient drag preview included in this paint.
-    #[must_use]
-    pub fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
-        self.drag_preview
-            .map(|preview| DockspaceDragPreview { preview })
-    }
-
-    fn receiver(
-        self,
-        matches: impl Fn(PresentationHitRegionKind) -> bool,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let region = self
-            .hit_manifest
-            .regions()
-            .iter()
-            .copied()
-            .find(|region| !region.is_passive() && matches(region.id().kind()))?;
-        Some(DockspaceReceiverDescriptor {
-            output: self.output,
-            region: region.id(),
-            bounds: region.hit().rect(),
-            center: LogicalPoint::new(
-                region.hit().rect().x() + region.hit().rect().width() * 0.5,
-                region.hit().rect().y() + region.hit().rect().height() * 0.5,
-            )
-            .ok()?,
-        })
+    pub const fn new(
+        device: SurfaceScrollDeviceId,
+        phase: SurfaceScrollPhase,
+        momentum: SurfaceScrollMomentum,
+        modifiers: SurfaceScrollModifiers,
+    ) -> Self {
+        Self {
+            device,
+            phase,
+            momentum,
+            modifiers,
+        }
     }
 }
 
-/// One surface-local primary-pointer edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One surface-local pointer edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SurfacePointerEvent {
-    /// Primary button press.
-    PrimaryPressed,
     /// Pointer motion while the provider owns the stream.
     Moved,
-    /// Primary button release.
-    PrimaryReleased,
+    /// One button became pressed.
+    ButtonPressed(SurfacePointerButton),
+    /// One button became released.
+    ButtonReleased(SurfacePointerButton),
+    /// The provider observed a capture transition.
+    CaptureChanged,
+    /// The provider explicitly terminated the pointer stream.
+    StreamCancelled(SurfacePointerCancelReason),
+    /// One lossless wheel or trackpad sample.
+    Scrolled(SurfaceScrollEvent),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -293,6 +331,36 @@ enum ReceiverFact<'receiver> {
 pub struct SurfacePointerReceiverFacts<'receiver> {
     delivery: ReceiverFact<'receiver>,
     hover: ReceiverFact<'receiver>,
+}
+
+/// One ordered surface-local edge and its independent framework facts.
+#[derive(Debug, Clone, Copy)]
+pub struct SurfacePointerInput<'receiver> {
+    pointer: SurfacePointerId,
+    event: SurfacePointerEvent,
+    position: SurfacePointerPosition,
+    capture: SurfacePointerCapture,
+    receivers: SurfacePointerReceiverFacts<'receiver>,
+}
+
+impl<'receiver> SurfacePointerInput<'receiver> {
+    /// Creates one event-time input record.
+    #[must_use]
+    pub const fn new(
+        pointer: SurfacePointerId,
+        event: SurfacePointerEvent,
+        position: SurfacePointerPosition,
+        capture: SurfacePointerCapture,
+        receivers: SurfacePointerReceiverFacts<'receiver>,
+    ) -> Self {
+        Self {
+            pointer,
+            event,
+            position,
+            capture,
+            receivers,
+        }
+    }
 }
 
 impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
@@ -390,6 +458,12 @@ pub enum DockspaceInteractionError {
     /// A surface-local pointer batch was already supplied for this host frame.
     #[error("surface pointer input was already submitted for this host frame")]
     PointerInputAlreadySubmitted,
+    /// An explicit pointer batch contained no edges.
+    #[error("an explicit surface pointer batch must contain at least one edge")]
+    PointerBatchEmpty,
+    /// One scroll sample contained a non-finite or structurally invalid value.
+    #[error("surface scroll sample is structurally invalid")]
+    InvalidScrollSample,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -410,21 +484,22 @@ impl RuntimePointerState {
 }
 
 impl DockspaceSession {
-    /// Consumes one actual renderer result for a previously painted output.
+    /// Settles one actual renderer result for a previously painted output.
     ///
-    /// The confirmation is submitted at the next host-frame prelude; it does
-    /// not grant interaction authority synchronously.
+    /// The terminal fact is submitted at the next host-frame prelude. A
+    /// `Presented` result may grant interaction authority after publication;
+    /// a `Dropped` result retires the output without granting authority.
     ///
     /// # Errors
     ///
-    /// Returns an error when the capability is foreign, stale, already
-    /// consumed, or conflicts with another pending confirmation.
-    pub fn confirm_presented(
+    /// Returns an error carrying the original affine capability when it is
+    /// foreign, stale, or conflicts with another pending settlement.
+    pub fn settle_presentation(
         &mut self,
         output: super::PaintedSurfaceOutput,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.presentation.confirm_presented(output)?;
-        Ok(())
+        result: super::SurfacePresentationResult,
+    ) -> Result<(), super::PresentationSettlementError> {
+        self.presentation.settle(output, result)
     }
 
     /// Enables one logical surface as the sole surface-local pointer endpoint.
@@ -632,21 +707,44 @@ impl DockspaceHostFrame<'_> {
         Ok(())
     }
 
-    /// Submits one lossless surface-local primary pointer edge and its exact
-    /// framework receiver facts.
+    /// Submits one ordered surface-local edge.
+    ///
+    /// This is the one-element form of [`Self::submit_surface_pointer_batch`].
+    /// The input still carries an explicit pointer identity, position authority,
+    /// capture authority, and receiver facts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no pointer provider is active or the edge violates
+    /// the frozen protocol.
+    pub fn submit_surface_pointer(
+        &mut self,
+        input: SurfacePointerInput<'_>,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.submit_surface_pointer_batch([input])
+    }
+
+    /// Submits one lossless, provider-ordered batch of surface-local edges.
+    ///
+    /// Sequence identities are assigned atomically in iterator order. Every
+    /// edge retains its own pointer, position, capture, scroll, and independent
+    /// receiver facts; no final-frame snapshot is used to reconstruct them.
     ///
     /// # Errors
     ///
     /// Returns an error when no pointer provider is active, the sequence is
-    /// exhausted, or the edge and receiver facts violate the frozen protocol.
-    pub fn submit_surface_pointer(
+    /// exhausted, the batch is empty, or an edge and its receiver facts violate
+    /// the frozen protocol.
+    pub fn submit_surface_pointer_batch<'receiver>(
         &mut self,
-        event: SurfacePointerEvent,
-        position: LogicalPoint,
-        facts: SurfacePointerReceiverFacts<'_>,
+        inputs: impl IntoIterator<Item = SurfacePointerInput<'receiver>>,
     ) -> Result<(), DockspaceRuntimeError> {
         if self.pointer_input_submitted {
             return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
+        }
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        if inputs.is_empty() {
+            return Err(DockspaceInteractionError::PointerBatchEmpty.into());
         }
         let pointer = self
             .session
@@ -655,54 +753,150 @@ impl DockspaceHostFrame<'_> {
         let previous = self
             .next_pointer_sequence
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
-        let sequence = previous
-            .checked_add(1)
-            .ok_or(DockspaceInteractionError::PointerSequenceExhausted)?;
-        let kind = match event {
-            SurfacePointerEvent::PrimaryPressed => {
-                PointerEdgeKind::ButtonPressed(PointerButton::Primary)
-            }
-            SurfacePointerEvent::Moved => PointerEdgeKind::Moved,
-            SurfacePointerEvent::PrimaryReleased => {
-                PointerEdgeKind::ButtonReleased(PointerButton::Primary)
-            }
-        };
-        let capture = match event {
-            SurfacePointerEvent::PrimaryReleased => PointerCaptureOwner::None,
-            SurfacePointerEvent::PrimaryPressed | SurfacePointerEvent::Moved => {
-                PointerCaptureOwner::ProviderEndpoint
-            }
-        };
-        let edge_sequence = PointerEdgeSequence::new(sequence);
-        let journal = PointerEdgeJournal::new(
-            PointerEdgeSequence::new(previous),
-            edge_sequence,
-            vec![PointerEdge::new(
-                edge_sequence,
-                PointerId::new(1),
-                kind,
-                PointerEdgeLocation::SurfaceLocal {
-                    position: Authority::Known(position),
+        let mut sequence = previous;
+        let mut prepared = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let segment_start = sequence;
+            sequence = sequence
+                .checked_add(1)
+                .ok_or(DockspaceInteractionError::PointerSequenceExhausted)?;
+            let edge_sequence = PointerEdgeSequence::new(sequence);
+            let kind = self.surface_pointer_kind(pointer.surface, input.event)?;
+            let location = PointerEdgeLocation::SurfaceLocal {
+                position: match input.position {
+                    SurfacePointerPosition::Known(position) => Authority::Known(position),
+                    SurfacePointerPosition::Unknown => {
+                        Authority::Unknown(AuthorityUnavailableReason::NotReported)
+                    }
                 },
-                Authority::Known(capture),
-            )],
-        )
-        .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-        self.frame.submit_pointer_journal(pointer.lease, journal)?;
-        let candidates = self
-            .frame
-            .pointer_receiver_candidates()
-            .ok_or(DockspaceInteractionError::PointerProtocolInvariant)?;
-        let [candidate] = candidates.candidates() else {
-            return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
-        };
-        let observation = self.pointer_observation(pointer.surface, candidate, facts)?;
-        let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+            };
+            let edge = PointerEdge::new(
+                edge_sequence,
+                PointerId::new(input.pointer.get()),
+                kind,
+                location,
+                surface_capture(input.capture),
+            );
+            let journal = PointerEdgeJournal::new(
+                PointerEdgeSequence::new(segment_start),
+                edge_sequence,
+                vec![edge],
+            )
             .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-        self.frame.submit_pointer_receiver_receipts(receipts)?;
+            prepared.push((edge_sequence, input, journal));
+        }
+        for (edge_sequence, input, journal) in prepared {
+            self.frame.submit_pointer_journal(pointer.lease, journal)?;
+            let candidates = self
+                .frame
+                .pointer_receiver_candidates()
+                .ok_or(DockspaceInteractionError::PointerProtocolInvariant)?;
+            let [candidate] = candidates.candidates() else {
+                return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
+            };
+            if candidate.id().sequence() != edge_sequence {
+                return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
+            }
+            let observation =
+                self.pointer_observation(pointer.surface, candidate, input.receivers)?;
+            let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
+            self.frame.submit_pointer_receiver_receipts(receipts)?;
+        }
         self.next_pointer_sequence = Some(sequence);
         self.pointer_input_submitted = true;
         Ok(())
+    }
+
+    fn surface_pointer_kind(
+        &self,
+        surface: SurfaceId,
+        event: SurfacePointerEvent,
+    ) -> Result<PointerEdgeKind, DockspaceRuntimeError> {
+        Ok(match event {
+            SurfacePointerEvent::Moved => PointerEdgeKind::Moved,
+            SurfacePointerEvent::ButtonPressed(button) => {
+                PointerEdgeKind::ButtonPressed(surface_button(button))
+            }
+            SurfacePointerEvent::ButtonReleased(button) => {
+                PointerEdgeKind::ButtonReleased(surface_button(button))
+            }
+            SurfacePointerEvent::CaptureChanged => PointerEdgeKind::CaptureChanged,
+            SurfacePointerEvent::StreamCancelled(reason) => {
+                PointerEdgeKind::StreamCancelled(surface_cancel_reason(reason))
+            }
+            SurfacePointerEvent::Scrolled(scroll) => {
+                PointerEdgeKind::Scrolled(self.surface_scroll_edge(surface, scroll)?)
+            }
+        })
+    }
+
+    fn surface_scroll_edge(
+        &self,
+        surface: SurfaceId,
+        event: SurfaceScrollEvent,
+    ) -> Result<ScrollEdge, DockspaceRuntimeError> {
+        let authority = self
+            .frame
+            .view()
+            .interaction_projection(surface)
+            .map(|projection| projection.authority());
+        let delivery = match authority {
+            Some(authority) => Authority::Known(
+                ScrollDeliveryEndpoint::new(
+                    self.session.presentation_host,
+                    surface,
+                    authority.binding(),
+                    authority.coordinate_generation(),
+                )
+                .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?,
+            ),
+            None => Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        };
+        let (sequence, phase, delta) = match event.phase {
+            SurfaceScrollPhase::Discrete { delta } => (None, ScrollPhase::Discrete, Some(delta)),
+            SurfaceScrollPhase::Begin { sequence, delta } => (
+                Some(ScrollSequenceToken::new(sequence.get())),
+                ScrollPhase::Begin,
+                delta,
+            ),
+            SurfaceScrollPhase::Update { sequence, delta } => (
+                Some(ScrollSequenceToken::new(sequence.get())),
+                ScrollPhase::Update,
+                Some(delta),
+            ),
+            SurfaceScrollPhase::End { sequence, delta } => (
+                Some(ScrollSequenceToken::new(sequence.get())),
+                ScrollPhase::End,
+                delta,
+            ),
+            SurfaceScrollPhase::Cancel { sequence, reason } => (
+                Some(ScrollSequenceToken::new(sequence.get())),
+                ScrollPhase::Cancel(surface_scroll_cancel_reason(reason)),
+                None,
+            ),
+        };
+        let delta = delta
+            .map(|delta| surface_scroll_delta(delta, authority))
+            .transpose()?;
+        ScrollEdge::new(
+            ScrollDeviceId::new(event.device.get()),
+            sequence,
+            phase,
+            delta,
+            Authority::Known(match event.momentum {
+                SurfaceScrollMomentum::Direct => ScrollMomentum::Direct,
+                SurfaceScrollMomentum::Momentum => ScrollMomentum::Momentum,
+            }),
+            Authority::Known(ScrollModifiers::new(
+                event.modifiers.shift,
+                event.modifiers.control,
+                event.modifiers.alt,
+                event.modifiers.command,
+            )),
+            delivery,
+        )
+        .map_err(|_| DockspaceInteractionError::InvalidScrollSample.into())
     }
 
     pub(super) fn complete_pointer_input(&mut self) -> Result<(), DockspaceRuntimeError> {
@@ -777,6 +971,79 @@ impl DockspaceHostFrame<'_> {
                 .iter()
                 .any(|contribution| contribution.surface() == surface)
     }
+}
+
+const fn surface_button(button: SurfacePointerButton) -> PointerButton {
+    match button {
+        SurfacePointerButton::Primary => PointerButton::Primary,
+        SurfacePointerButton::Secondary => PointerButton::Secondary,
+        SurfacePointerButton::Middle => PointerButton::Middle,
+        SurfacePointerButton::Other(button) => PointerButton::Other(button),
+    }
+}
+
+const fn surface_capture(capture: SurfacePointerCapture) -> Authority<PointerCaptureOwner> {
+    match capture {
+        SurfacePointerCapture::ProviderEndpoint => {
+            Authority::Known(PointerCaptureOwner::ProviderEndpoint)
+        }
+        SurfacePointerCapture::Foreign => Authority::Known(PointerCaptureOwner::Foreign),
+        SurfacePointerCapture::None => Authority::Known(PointerCaptureOwner::None),
+        SurfacePointerCapture::Unknown => {
+            Authority::Unknown(AuthorityUnavailableReason::NotReported)
+        }
+    }
+}
+
+const fn surface_cancel_reason(reason: SurfacePointerCancelReason) -> PointerStreamCancelReason {
+    match reason {
+        SurfacePointerCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
+        SurfacePointerCancelReason::ProviderShutdown => PointerStreamCancelReason::ProviderShutdown,
+        SurfacePointerCancelReason::ExplicitPlatformCancellation => {
+            PointerStreamCancelReason::ExplicitPlatformCancellation
+        }
+        SurfacePointerCancelReason::ProviderReset => PointerStreamCancelReason::ProviderReset,
+    }
+}
+
+const fn surface_scroll_cancel_reason(reason: SurfaceScrollCancelReason) -> ScrollCancelReason {
+    match reason {
+        SurfaceScrollCancelReason::PlatformCancelled => ScrollCancelReason::PlatformCancelled,
+        SurfaceScrollCancelReason::DeviceRemoved => ScrollCancelReason::DeviceRemoved,
+        SurfaceScrollCancelReason::ProviderReset => ScrollCancelReason::ProviderReset,
+    }
+}
+
+fn surface_scroll_delta(
+    delta: SurfaceScrollDelta,
+    authority: Option<PresentedSurfaceAuthority>,
+) -> Result<ScrollDelta, DockspaceRuntimeError> {
+    let (x, y) = match delta {
+        SurfaceScrollDelta::PhysicalPixels { x, y }
+        | SurfaceScrollDelta::LogicalPoints { x, y }
+        | SurfaceScrollDelta::Lines { x, y }
+        | SurfaceScrollDelta::Pages { x, y } => (x, y),
+    };
+    let vector = FiniteScrollVector::new(x, y)
+        .map_err(|_| DockspaceInteractionError::InvalidScrollSample)?;
+    Ok(match delta {
+        SurfaceScrollDelta::PhysicalPixels { .. } => ScrollDelta::PhysicalPixels {
+            delta: vector,
+            coordinates: authority
+                .and_then(|authority| {
+                    authority.binding().map(|binding| {
+                        PhysicalScrollCoordinates::new(binding, authority.coordinate_generation())
+                    })
+                })
+                .map_or_else(
+                    || Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                    Authority::Known,
+                ),
+        },
+        SurfaceScrollDelta::LogicalPoints { .. } => ScrollDelta::LogicalPoints(vector),
+        SurfaceScrollDelta::Lines { .. } => ScrollDelta::Lines(vector),
+        SurfaceScrollDelta::Pages { .. } => ScrollDelta::Pages(vector),
+    })
 }
 
 fn delivery_fact(

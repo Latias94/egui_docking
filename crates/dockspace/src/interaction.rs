@@ -35,9 +35,9 @@ use crate::presentation_config::PresentationConfigRevision;
 use crate::presentation_hit::PresentationHitRegionId;
 use crate::presentation_observation::PresentedSurfaceAuthority;
 use crate::scene::{
-    PopupInteractionGateRevision, SplitterRecord, SurfaceCoordinateCapture, SurfaceSceneStamp,
-    TabBarSceneId, TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabSceneId,
-    TabStripControlRecord,
+    PopupInteractionGateRevision, PresentationLayoutFacts, SplitterRecord,
+    SurfaceCoordinateCapture, SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord,
+    TabListMenuRecord, TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
 };
 use crate::scene_manifest::{RequirementRevision, SurfaceMeasurementTicket};
 use crate::surface_recovery::SurfaceRecoveryObligation;
@@ -1485,16 +1485,7 @@ pub enum ScrollTerminationReason {
 /// Canonical reduction result for one ordered scroll edge or lifecycle transition.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScrollReductionOutcome {
-    /// A smooth sequence has not supplied its first non-zero directional delta.
-    AwaitingFirstDelta {
-        /// Core-owned session identity.
-        session: ScrollSessionId,
-        /// Provider-owned sequence token awaiting its first directional sample.
-        sequence: ScrollSequenceToken,
-        /// Native phase carried by this still-directionless edge.
-        phase: ScrollPhase,
-    },
-    /// The first directional sample locked one exact core-owned receiver.
+    /// A smooth begin locked one exact core-owned receiver.
     Began {
         /// Core-owned session identity.
         session: ScrollSessionId,
@@ -1859,6 +1850,7 @@ pub(crate) struct ArmedDrag {
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
     pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
 }
@@ -1916,6 +1908,7 @@ pub(crate) struct DragArmStart {
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
     pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuationDraft>,
 }
@@ -1934,6 +1927,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
     pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
     pub(crate) journal_presentation_reservation: Option<JournalPresentationReservation>,
@@ -2477,6 +2471,7 @@ impl InteractionState {
             origin: start.origin,
             source_validated_at: start.source_validated_at,
             presentation: start.presentation,
+            source_layout_facts: start.source_layout_facts,
             journal_source_geometry: start.journal_source_geometry,
             continuation,
         }));
@@ -2514,6 +2509,7 @@ impl InteractionState {
             origin: armed.origin.clone(),
             source_validated_at: armed.source_validated_at,
             presentation: armed.presentation,
+            source_layout_facts: armed.source_layout_facts.clone(),
             journal_source_geometry: armed.journal_source_geometry,
             continuation: armed.continuation.clone(),
             journal_presentation_reservation: None,

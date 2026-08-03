@@ -646,17 +646,22 @@ pub struct FiniteScrollVector {
     y_bits: u64,
 }
 
+/// Exact coordinate authority used to convert one physical-pixel scroll sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalScrollCoordinates {
+    binding: ViewportBinding,
+    coordinate_generation: CoordinateGeneration,
+}
+
 /// Unit retained for one raw scroll sample until its exact receiver is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScrollDelta {
-    /// Native physical pixels under one exact binding and coordinate generation.
+    /// Native physical pixels with explicit known-or-unknown conversion authority.
     PhysicalPixels {
         /// Raw content movement.
         delta: FiniteScrollVector,
-        /// Native viewport incarnation whose scale converts the sample.
-        binding: ViewportBinding,
-        /// Exact coordinate generation observed with the sample.
-        coordinate_generation: CoordinateGeneration,
+        /// Exact binding and coordinate generation, or why they were unavailable.
+        coordinates: Authority<PhysicalScrollCoordinates>,
     },
     /// Renderer-independent logical points.
     LogicalPoints(FiniteScrollVector),

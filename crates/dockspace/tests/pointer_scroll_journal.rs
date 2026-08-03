@@ -4,7 +4,7 @@ use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerButton, PointerId};
+use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::interaction::{
     InteractionEventKind, InteractionOutcome, ScrollReductionOutcome, ScrollTerminationReason,
 };
@@ -17,7 +17,7 @@ use dockspace::pointer_journal::{
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceipt, PointerReceiverReceiptBatch,
-    PresentedPointerReceiverObservation,
+    PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
@@ -158,6 +158,8 @@ impl ScrollFixture {
         phase: ScrollPhase,
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
+        endpoint: ScrollDeliveryEndpoint,
+        modifiers: ScrollModifiers,
     ) -> PointerEdge {
         let scroll = ScrollEdge::new(
             device,
@@ -165,8 +167,8 @@ impl ScrollFixture {
             phase,
             delta,
             Authority::Known(ScrollMomentum::Direct),
-            Authority::Known(ScrollModifiers::default()),
-            Authority::Known(self.endpoint),
+            Authority::Known(modifiers),
+            Authority::Known(endpoint),
         )
         .expect("scroll edge has a legal phase shape");
         PointerEdge::new(
@@ -196,8 +198,108 @@ impl ScrollFixture {
         token: Option<ScrollSequenceToken>,
         delta: Option<ScrollDelta>,
     ) -> dockspace::transition::EngineTransition {
+        self.submit_with_disposition(
+            device,
+            phase,
+            token,
+            delta,
+            PointerReceiverDeliveryDisposition::Dock(self.region),
+        )
+    }
+
+    fn submit_with_disposition(
+        &mut self,
+        device: ScrollDeviceId,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+        disposition: PointerReceiverDeliveryDisposition,
+    ) -> dockspace::transition::EngineTransition {
+        self.submit_with_receipt(
+            device,
+            phase,
+            token,
+            delta,
+            self.endpoint,
+            Some(disposition),
+        )
+    }
+
+    fn submit_unknown_at_endpoint(
+        &mut self,
+        phase: ScrollPhase,
+        token: ScrollSequenceToken,
+        delta: ScrollDelta,
+        endpoint: ScrollDeliveryEndpoint,
+    ) -> dockspace::transition::EngineTransition {
+        self.submit_with_receipt(
+            ScrollDeviceId::new(1),
+            phase,
+            Some(token),
+            Some(delta),
+            endpoint,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_with_receipt(
+        &mut self,
+        device: ScrollDeviceId,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+        endpoint: ScrollDeliveryEndpoint,
+        disposition: Option<PointerReceiverDeliveryDisposition>,
+    ) -> dockspace::transition::EngineTransition {
+        self.submit_with_receipt_and_modifiers(
+            device,
+            phase,
+            token,
+            delta,
+            endpoint,
+            disposition,
+            ScrollModifiers::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_with_receipt_and_modifiers(
+        &mut self,
+        device: ScrollDeviceId,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+        endpoint: ScrollDeliveryEndpoint,
+        disposition: Option<PointerReceiverDeliveryDisposition>,
+        modifiers: ScrollModifiers,
+    ) -> dockspace::transition::EngineTransition {
+        self.submit_with_receipt_and_modifiers_and_inspect(
+            device,
+            phase,
+            token,
+            delta,
+            endpoint,
+            disposition,
+            modifiers,
+            |_| {},
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_with_receipt_and_modifiers_and_inspect(
+        &mut self,
+        device: ScrollDeviceId,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+        endpoint: ScrollDeliveryEndpoint,
+        disposition: Option<PointerReceiverDeliveryDisposition>,
+        modifiers: ScrollModifiers,
+        inspect: impl FnOnce(&dockspace::pointer_receiver::PointerReceiverCandidate),
+    ) -> dockspace::transition::EngineTransition {
         let sequence = self.watermark + 1;
-        let edge = self.scroll_edge(sequence, device, phase, token, delta);
+        let edge = self.scroll_edge(sequence, device, phase, token, delta, endpoint, modifiers);
         let journal = PointerEdgeJournal::new(
             PointerEdgeSequence::new(self.watermark),
             PointerEdgeSequence::new(sequence),
@@ -208,26 +310,33 @@ impl ScrollFixture {
         frame
             .submit_pointer_journal(self.provider, journal)
             .expect("scroll journal stages");
-        let projection = frame
-            .view()
-            .interaction_projection(SURFACE)
-            .expect("scroll output remains interactive");
-        let delivery = PointerReceiverDelivery::new(
-            projection,
-            PointerReceiverDeliveryDisposition::Dock(self.region),
-        )
-        .expect("scroll delivery is bound to the exact output");
         let candidate = frame
             .pointer_receiver_candidates()
             .expect("scroll edge requests receiver evidence")
             .candidates()[0]
             .clone();
-        let observation = PointerReceiverObservation::Presented(
-            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
-                delivery,
-            )])
-            .expect("scroll observation answers the delivery probe"),
-        );
+        inspect(&candidate);
+        let observation = if !candidate.receiver_is_applicable() {
+            PointerReceiverObservation::NotApplicable
+        } else {
+            disposition.map_or(
+                PointerReceiverObservation::Unknown(PointerReceiverUnknownReason::NotReported),
+                |disposition| {
+                    let projection = frame
+                        .view()
+                        .interaction_projection(SURFACE)
+                        .expect("scroll output remains interactive");
+                    let delivery = PointerReceiverDelivery::new(projection, disposition)
+                        .expect("scroll delivery is bound to the exact output");
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new([
+                            PointerReceiverProbeReceipt::Delivery(delivery),
+                        ])
+                        .expect("scroll observation answers the delivery probe"),
+                    )
+                },
+            )
+        };
         frame
             .submit_pointer_receiver_receipts(
                 PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
@@ -350,6 +459,74 @@ fn scroll_terminal_reasons(
 }
 
 #[test]
+fn smooth_continuation_freezes_its_receiver_without_a_pointer_position() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
+
+    let sequence = fixture.watermark + 1;
+    let scroll = ScrollEdge::new(
+        ScrollDeviceId::new(1),
+        Some(token),
+        ScrollPhase::Update,
+        Some(line_delta(-1.0, 0.0)),
+        Authority::Known(ScrollMomentum::Direct),
+        Authority::Known(ScrollModifiers::default()),
+        Authority::Known(fixture.endpoint),
+    )
+    .expect("smooth continuation is valid");
+    let edge = PointerEdge::new(
+        PointerEdgeSequence::new(sequence),
+        POINTER,
+        PointerEdgeKind::Scrolled(scroll),
+        PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Unknown(AuthorityUnavailableReason::CoordinateUnavailable),
+        },
+        Authority::Known(PointerCaptureOwner::None),
+    );
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(fixture.watermark),
+        PointerEdgeSequence::new(sequence),
+        vec![edge],
+    )
+    .expect("continuation journal is contiguous");
+    let mut frame = fixture.host.begin(&fixture.engine);
+    frame
+        .submit_pointer_journal(fixture.provider, journal)
+        .expect("continuation stages");
+
+    let candidate = &frame
+        .pointer_receiver_candidates()
+        .expect("continuation requests current presentation proof")
+        .candidates()[0];
+    assert_eq!(candidate.route_point(), None);
+    let Some(ScrollReceiverChallenge::Locked {
+        receiver,
+        probe_point,
+        projected_delta,
+    }) = candidate.scroll_challenge()
+    else {
+        panic!("the active sequence must request its frozen receiver");
+    };
+    assert_eq!(receiver, fixture.region);
+    assert!(
+        fixture
+            .engine
+            .interaction_projection(SURFACE)
+            .expect("the scroll owner has a current projection")
+            .hit_manifest()
+            .region(receiver)
+            .expect("the locked receiver remains in the current manifest")
+            .hit()
+            .contains(probe_point)
+    );
+    assert_eq!(
+        projected_delta,
+        Some(FiniteScrollVector::new(-1.0, 0.0).expect("probe vector is finite"))
+    );
+}
+
+#[test]
 fn exact_ready_output_without_the_locked_receiver_terminates_smooth_scroll() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
@@ -446,12 +623,8 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     let token = ScrollSequenceToken::new(41);
     let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
     let first_session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
-                session, ..
-            }),
-        ] => *session,
-        outcomes => panic!("smooth scroll must await its first delta, got {outcomes:?}"),
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
+        outcomes => panic!("smooth scroll must freeze its begin receiver, got {outcomes:?}"),
     };
     let second = fixture.submit_known_for_device(
         ScrollDeviceId::new(2),
@@ -460,12 +633,8 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         None,
     );
     let second_session = match second.reduced_pointer_edges()[0].interaction_outcomes() {
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
-                session, ..
-            }),
-        ] => *session,
-        outcomes => panic!("second smooth scroll must await its first delta, got {outcomes:?}"),
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
+        outcomes => panic!("second smooth scroll must freeze its begin receiver, got {outcomes:?}"),
     };
 
     let terminal = fixture.end_pointer_stream();
@@ -486,7 +655,7 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     assert!(matches!(
         successor.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Scroll(
-            ScrollReductionOutcome::AwaitingFirstDelta { session: actual, .. }
+            ScrollReductionOutcome::Began { session: actual, .. }
         )] if *actual != first_session && *actual != second_session
     ));
 
@@ -501,17 +670,13 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
 }
 
 #[test]
-fn smooth_scroll_end_without_delta_terminates_an_awaiting_session() {
+fn smooth_scroll_end_without_delta_terminates_its_frozen_owner() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
     let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
     let session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
-                session, ..
-            }),
-        ] => *session,
-        outcomes => panic!("smooth scroll must await its first delta, got {outcomes:?}"),
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
+        outcomes => panic!("smooth scroll must freeze its begin receiver, got {outcomes:?}"),
     };
 
     let ended = fixture.submit_known(ScrollPhase::End, Some(token), None);
@@ -520,39 +685,33 @@ fn smooth_scroll_end_without_delta_terminates_an_awaiting_session() {
         [InteractionOutcome::Scroll(
             ScrollReductionOutcome::Terminated {
                 session: actual,
-                receiver: None,
+                receiver: Some(receiver),
                 reason: ScrollTerminationReason::Completed,
             }
-        )] if *actual == session
+        )] if *actual == session && *receiver == fixture.region
     ));
 }
 
 #[test]
-fn zero_deltas_do_not_lock_a_smooth_scroll_receiver() {
+fn zero_deltas_keep_the_smooth_scroll_receiver_locked() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
     let began = fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(0.0, 0.0)));
     let session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
         [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
-                session,
-                phase: ScrollPhase::Begin,
-                ..
-            }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(_)),
         ] => *session,
-        outcomes => panic!("zero-delta begin must await direction, got {outcomes:?}"),
+        outcomes => panic!("zero-delta begin must freeze its receiver, got {outcomes:?}"),
     };
 
     let update = fixture.submit_known(ScrollPhase::Update, Some(token), Some(line_delta(0.0, 0.0)));
     assert!(matches!(
         update.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::Scroll(
-            ScrollReductionOutcome::AwaitingFirstDelta {
-                session: actual,
-                phase: ScrollPhase::Update,
-                ..
-            }
-        )] if *actual == session
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+            if application.session() == Some(session)
+                && application.requested_delta() == 0.0
+                && application.applied_delta() == 0.0
     ));
 
     let directional = fixture.submit_known(
@@ -562,12 +721,192 @@ fn zero_deltas_do_not_lock_a_smooth_scroll_receiver() {
     );
     assert!(matches!(
         directional.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Began {
-                session: actual,
-                ..
-            }),
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(_)),
-        ] if *actual == session
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+            if application.session() == Some(session)
     ));
+}
+
+#[test]
+fn semantic_termination_waits_for_the_provider_terminal_without_reopening() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
+
+    let terminated = fixture.submit_with_disposition(
+        ScrollDeviceId::new(1),
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(1.0, 0.0)),
+        PointerReceiverDeliveryDisposition::NoReceiver,
+    );
+    assert!(matches!(
+        terminated.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                reason: ScrollTerminationReason::ReceiverLost,
+                ..
+            }
+        )]
+    ));
+
+    let late_update = fixture.submit_with_receipt_and_modifiers_and_inspect(
+        ScrollDeviceId::new(1),
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(1.0, 0.0)),
+        fixture.endpoint,
+        None,
+        ScrollModifiers::default(),
+        |candidate| {
+            assert_eq!(
+                candidate.scroll_challenge(),
+                Some(ScrollReceiverChallenge::OwnedTerminal)
+            );
+            assert!(!candidate.receiver_is_applicable());
+        },
+    );
+    assert!(
+        late_update.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "an already terminated semantic session must not resume"
+    );
+
+    let provider_terminal = fixture.submit_known(ScrollPhase::End, Some(token), None);
+    assert!(
+        provider_terminal.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "the provider terminal consumes the tombstone without a second semantic terminal"
+    );
+
+    let successor =
+        fixture.submit_known(ScrollPhase::Begin, Some(ScrollSequenceToken::new(42)), None);
+    assert!(matches!(
+        successor.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Began { .. }
+        )]
+    ));
+}
+
+#[test]
+fn framework_reserved_update_releases_the_owned_derivative_until_provider_terminal() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
+
+    let modified = fixture.submit_with_receipt_and_modifiers_and_inspect(
+        ScrollDeviceId::new(1),
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(1.0, 0.0)),
+        fixture.endpoint,
+        None,
+        ScrollModifiers::new(false, true, false, false),
+        |candidate| {
+            assert_eq!(
+                candidate.scroll_challenge(),
+                Some(ScrollReceiverChallenge::FrameworkReserved)
+            );
+            assert!(!candidate.receiver_is_applicable());
+        },
+    );
+    assert!(matches!(
+        modified.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                reason: ScrollTerminationReason::ReceiverLost,
+                ..
+            }
+        )]
+    ));
+
+    let late_update = fixture.submit_with_receipt_and_modifiers_and_inspect(
+        ScrollDeviceId::new(1),
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(1.0, 0.0)),
+        fixture.endpoint,
+        None,
+        ScrollModifiers::default(),
+        |candidate| {
+            assert_eq!(
+                candidate.scroll_challenge(),
+                Some(ScrollReceiverChallenge::Unavailable)
+            );
+            assert!(!candidate.receiver_is_applicable());
+        },
+    );
+    assert!(
+        late_update.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty()
+    );
+
+    let terminal = fixture.submit_with_receipt(
+        ScrollDeviceId::new(1),
+        ScrollPhase::End,
+        Some(token),
+        None,
+        fixture.endpoint,
+        None,
+    );
+    assert!(
+        terminal.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty()
+    );
+}
+
+#[test]
+fn zero_delta_endpoint_change_terminates_and_cannot_be_hidden_by_a_return_to_origin() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(0.0, 0.0)));
+    let changed_endpoint = ScrollDeliveryEndpoint::new(
+        fixture.host.lease(),
+        SURFACE,
+        None,
+        fixture
+            .endpoint
+            .coordinate_generation()
+            .checked_next()
+            .expect("the test coordinate generation can advance"),
+    )
+    .expect("the changed endpoint stays in the same authority domain");
+
+    let changed = fixture.submit_unknown_at_endpoint(
+        ScrollPhase::Update,
+        token,
+        line_delta(0.0, 0.0),
+        changed_endpoint,
+    );
+    assert!(matches!(
+        changed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                reason: ScrollTerminationReason::DeliveryEndpointChanged,
+                ..
+            }
+        )]
+    ));
+
+    let returned = fixture.submit_known(
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(-1.0, 0.0)),
+    );
+    assert!(
+        returned.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "returning to the original endpoint cannot resurrect a terminated session"
+    );
+    let terminal = fixture.submit_known(ScrollPhase::End, Some(token), None);
+    assert!(
+        terminal.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty()
+    );
 }

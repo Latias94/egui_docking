@@ -1809,6 +1809,7 @@ impl DockEngine {
         let query = self
             .resolve_presented_drop_with_current_index(
                 &presentation,
+                drag.source_layout_facts.as_deref(),
                 policy,
                 drag.session,
                 drag.payload.clone(),
@@ -1864,6 +1865,7 @@ impl DockEngine {
     pub(super) fn resolve_presented_drop_with_current_index(
         &self,
         presentation: &JournalSurfacePresentation,
+        source_layout_facts: Option<&crate::scene::PresentationLayoutFacts>,
         policy: &DockPolicySnapshot,
         session: crate::interaction::DragSessionId,
         source: MovePayload,
@@ -1873,6 +1875,7 @@ impl DockEngine {
         resolve_presented_drop(
             presentation.scene(),
             presentation.plan(),
+            source_layout_facts,
             &self.workspace,
             self.version,
             self.presentation_authority
@@ -2338,6 +2341,7 @@ impl DockEngine {
             contained,
             initial_pointer: point,
             presentation: Self::freeze_journal_presentation(presentation),
+            source_layout_facts: plan.layout_facts().cloned().map(std::sync::Arc::new),
         })
     }
 
@@ -2521,6 +2525,7 @@ impl DockEngine {
                 origin,
                 source_validated_at: self.version,
                 presentation: prepared.presentation,
+                source_layout_facts: prepared.source_layout_facts,
                 journal_source_geometry: Some(prepared.source_geometry),
                 continuation,
             })

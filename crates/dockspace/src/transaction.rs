@@ -47,14 +47,6 @@ impl WorkspaceTransaction {
         let prepared = crate::operation::prepare_transaction(workspace, policy, &self.commands)?;
         Ok(prepared.publish(workspace))
     }
-
-    pub(crate) fn preflight(
-        &self,
-        workspace: &Workspace,
-        policy: &DockPolicySnapshot,
-    ) -> Result<(), TransactionError> {
-        crate::operation::prepare_transaction(workspace, policy, &self.commands).map(drop)
-    }
 }
 
 impl FromIterator<WorkspaceCommand> for WorkspaceTransaction {

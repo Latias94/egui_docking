@@ -54,7 +54,8 @@ use dockspace::scene_manifest::{
     TabStripControlMetrics, TabStripControlPlacement,
 };
 use dockspace::semantic_input::{
-    SemanticDelivery, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
+    SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
+    SemanticReceiverEvent,
 };
 use dockspace::tab_strip::TabStripControlId;
 use dockspace::transition::{InputOutcome, PresentationHostRetirementOutcome};
@@ -1120,10 +1121,8 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     let first = begin.reduced_pointer_edges()[0].interaction_outcomes();
     assert!(matches!(
         first,
-        [InteractionOutcome::Scroll(ScrollReductionOutcome::AwaitingFirstDelta {
-            sequence,
-            ..
-        })] if *sequence == token
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver, .. })]
+            if *receiver == region_id
     ));
 
     let update = submit_exact_scroll_edge(
@@ -1143,12 +1142,8 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     );
     assert!(matches!(
         update.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver, .. }),
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application)),
-        ]
-            if *receiver == region_id
-                && application.receiver() == region_id
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+            if application.receiver() == region_id
                 && application.requested_delta() == 40.0
                 && application.applied_delta() == 40.0
                 && application.offset() == 40.0
@@ -1335,10 +1330,8 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
     );
     assert!(matches!(
         resumed.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { receiver, .. }),
-            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application)),
-        ] if *receiver == region_id && application.offset() == 40.0
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+            if application.receiver() == region_id && application.offset() == 40.0
     ));
 }
 
@@ -5882,6 +5875,94 @@ fn presented_semantic_receiver_navigates_tabs_through_the_checked_command_path()
             selected: Some(item),
             ..
         }) if *item == ItemId::new(2)
+    ));
+}
+
+#[test]
+fn clipped_menu_row_remains_an_exact_semantic_receiver() {
+    const SOURCE: StableInputSourceId = StableInputSourceId::new(0x7a03);
+
+    let mut engine =
+        DockEngine::new(overflowing_tab_workspace(), DockPolicy::default()).expect("valid engine");
+    let mut host = TestPresentationHost::new(&mut engine);
+    publish_surface_with(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        overflowing_tab_bounds(),
+        overflowing_tab_profile(),
+    );
+    let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
+    let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let projection = engine
+        .interaction_projection(SURFACE)
+        .expect("the presented popup has semantic authority");
+    let row = projection
+        .plan()
+        .tab_list_menu_records()
+        .first()
+        .and_then(|menu| menu.rows().iter().rev().find(|row| row.hit().is_none()))
+        .copied()
+        .expect("the constrained menu has a clipped semantic row");
+    let menu = projection
+        .plan()
+        .tab_list_menu_records()
+        .first()
+        .expect("the menu is open")
+        .session();
+    let target = PresentationHitRegionKind::TabListMenuRow {
+        menu,
+        tab: row.tab(),
+    };
+    let action = SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Focus);
+    assert!(
+        !projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .any(|region| region.id().kind() == target),
+        "a clipped row must not fabricate pointer geometry"
+    );
+    assert!(projection.semantic_manifest().supports(target, action));
+    let event = SemanticReceiverEvent::new(
+        projection.output_ticket(),
+        projection.authority().emission(),
+        SemanticDelivery::Headless,
+        target,
+        action,
+    );
+    let expected = engine.version();
+
+    let mut frame = host.begin(&engine);
+    frame
+        .submit_pointer_journal(provider, empty_journal(0))
+        .expect("the provider publishes its complete empty continuation");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("the empty continuation has no receipts"),
+        )
+        .expect("the empty receipt roster stages");
+    frame
+        .append_input(
+            SOURCE,
+            SourceSequence::new(1),
+            EngineInput::ActivateSemanticReceiver { expected, event },
+        )
+        .expect("the clipped semantic row is accepted after the pointer prefix");
+    complete(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
+
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::TabListMenuFocusMoved {
+                item,
+                changed: true,
+                ..
+            },
+            ..
+        } if *item == row.tab().item
     ));
 }
 

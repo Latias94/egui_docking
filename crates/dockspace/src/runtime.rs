@@ -3,22 +3,37 @@
 //! This module is the migration boundary for adapters which must not own or
 //! access [`crate::engine::DockEngine`] directly. It supports durable commands,
 //! close decisions, complete measurement answers, exact paint settlement, and
-//! surface-local pointer input backed by concrete final-presentation authority.
+//! lossless surface-local pointer batches backed by concrete final-presentation
+//! authority.
 
 mod interaction;
 mod native;
+mod paint;
 mod presentation;
 
 pub use interaction::{
-    DockspaceDragPreview, DockspaceInteractionError, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfacePaintPlan, SurfacePointerEvent, SurfacePointerReceiverFacts, UniformSurfaceMetrics,
+    DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
+    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
 };
 pub use native::{
     HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformSnapshot,
     NativeSurfaceLease, NativeWindowFacts,
 };
-pub use presentation::{PaintedSurfaceOutput, PresentationConfirmationError};
+pub use paint::{
+    ContainedPaintRecord, ContainedResizePaintRecord, DockspaceDragPreview, DockspaceGuideScope,
+    DockspacePaintLayer, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind, DropGuidePaintRecord,
+    DropGuideTargetPaintRecord, PanePaintRecord, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
+    UniformSurfaceMetrics,
+};
+pub use presentation::{
+    PaintedSurfaceOutput, PresentationObservationError, PresentationSettlementError,
+    PresentationSettlementRejection, SurfacePresentationResult,
+};
 
 use std::collections::BTreeSet;
 
@@ -513,8 +528,8 @@ impl HostFrameReport {
     /// Takes the affine capabilities for outputs actually painted by this frame.
     ///
     /// The host must consume each capability through
-    /// [`DockspaceSession::confirm_presented`] only after its renderer reports
-    /// an exact final-presentation result.
+    /// [`DockspaceSession::settle_presentation`] only after its renderer reports
+    /// whether that exact output was presented or dropped.
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
     }
@@ -556,9 +571,9 @@ pub enum DockspaceRuntimeError {
     /// A renderer-neutral interaction capability was structurally invalid.
     #[error(transparent)]
     Interaction(#[from] DockspaceInteractionError),
-    /// A final-presentation capability was stale, foreign, or already consumed.
+    /// The facade presentation sidecar could not synchronize with the core.
     #[error(transparent)]
-    PresentationConfirmation(#[from] PresentationConfirmationError),
+    PresentationObservation(#[from] PresentationObservationError),
     /// Native lifecycle data was stale, incomplete, or structurally invalid.
     #[error(transparent)]
     Native(#[from] NativePlatformError),

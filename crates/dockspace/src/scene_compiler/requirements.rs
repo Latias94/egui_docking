@@ -149,7 +149,17 @@ fn derive_root_requirements(
                 node,
             })? {
             Node::Tabs { items, selected } => {
-                pane_minimums.insert(PaneMinimumKey::new(root, node, *selected));
+                if items.is_empty() {
+                    debug_assert!(selected.is_none());
+                    pane_minimums.insert(PaneMinimumKey::new(root, node, None));
+                } else {
+                    pane_minimums.extend(
+                        items
+                            .iter()
+                            .copied()
+                            .map(|item| PaneMinimumKey::new(root, node, Some(item))),
+                    );
+                }
                 let target = workspace_index
                     .capture_tab_target(workspace, workspace_version, root, node)
                     .map_err(

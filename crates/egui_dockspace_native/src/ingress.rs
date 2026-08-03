@@ -23,9 +23,9 @@ use dockspace::platform::{
     WorkAreaRosterObservation,
 };
 use dockspace::pointer_journal::{
-    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
-    PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerEventDeliveryOwner, PointerStreamCancelReason, ScrollCancelReason,
+    DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PhysicalScrollCoordinates,
+    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, PointerEventDeliveryOwner, PointerStreamCancelReason, ScrollCancelReason,
     ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
     ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
@@ -67,6 +67,7 @@ use egui_dockspace::{
 use crate::effects::NativeEffectDriver;
 use crate::presentation::{
     EdgePointerGraphs, NativePresentationLedger, NativePresentationPrepareSavepoint,
+    PresentedNativePointerGraph,
 };
 use crate::{NativeRuntimeError, NativeViewportRoster};
 
@@ -365,8 +366,7 @@ impl NativeIngressBridge {
                         hovered_route: hovered_route(edge, &routes),
                         graphs: presentations.capture_edge(edge),
                     };
-                    let edge =
-                        self.translate_pointer_edge(dockspace, edge, &routes, &sidecar.graphs)?;
+                    let edge = self.translate_pointer_edge(&sidecar, &routes)?;
                     let previous = PointerEdgeSequence::new(
                         edge.sequence()
                             .get()
@@ -469,6 +469,9 @@ impl NativeIngressBridge {
                         }
                         NativeAccessibilityAction::Decrement => {
                             SemanticAccessibilityAction::Decrement
+                        }
+                        NativeAccessibilityAction::ScrollIntoView => {
+                            SemanticAccessibilityAction::ScrollIntoView
                         }
                     };
                     let Some(event) = resolve_semantic_receiver_event(
@@ -1198,11 +1201,10 @@ impl NativeIngressBridge {
 
     fn translate_pointer_edge(
         &mut self,
-        dockspace: &Dockspace,
-        edge: &NativePointerEdge,
+        retained: &RetainedPointerEdge,
         routes: &BTreeMap<ViewportId, BoundNativeRoute>,
-        graphs: &EdgePointerGraphs,
     ) -> Result<PointerEdge, NativeRuntimeError> {
+        let edge = retained.edge();
         let sequence = PointerEdgeSequence::new(edge.sequence().get());
         let pointer = self.pointer_id(edge.identity())?;
         let kind = match edge.kind() {
@@ -1219,7 +1221,6 @@ impl NativeIngressBridge {
             ),
             NativePointerEdgeKind::Scrolled(scroll) => {
                 PointerEdgeKind::Scrolled(translate_scroll_edge(
-                    dockspace,
                     self.recorder
                         .as_ref()
                         .expect("the provider was enrolled above")
@@ -1228,7 +1229,8 @@ impl NativeIngressBridge {
                     scroll,
                     edge.delivery_owner(),
                     routes,
-                    graphs,
+                    retained.graphs().delivery(),
+                    event_time_physical_scroll_coordinates(retained),
                 )?)
             }
         };
@@ -1598,18 +1600,17 @@ fn delivery_route(
 }
 
 fn translate_scroll_edge(
-    dockspace: &Dockspace,
     host: dockspace::presentation_observation::PresentationHostLease,
     scroll: NativeScrollEdge,
     native_delivery: &NativeAuthority<NativePointerDeliveryOwner>,
     routes: &BTreeMap<ViewportId, BoundNativeRoute>,
-    graphs: &EdgePointerGraphs,
+    presented: Option<&PresentedNativePointerGraph>,
+    physical_coordinates: Authority<PhysicalScrollCoordinates>,
 ) -> Result<ScrollEdge, NativeRuntimeError> {
-    let delivery = translate_scroll_delivery(dockspace, host, native_delivery, routes)?;
-    let normalized = normalized_scroll_delta(scroll, native_delivery, graphs);
+    let delivery = translate_scroll_delivery(host, native_delivery, routes, presented)?;
     let delta = scroll
         .delta()
-        .map(|delta| translate_scroll_delta(delta, delivery, normalized))
+        .map(|delta| translate_scroll_delta(delta, physical_coordinates))
         .transpose()?;
     Ok(ScrollEdge::new(
         ScrollDeviceId::new(scroll.device().get()),
@@ -1645,40 +1646,11 @@ fn translate_scroll_edge(
     )?)
 }
 
-fn normalized_scroll_delta(
-    scroll: NativeScrollEdge,
-    native_delivery: &NativeAuthority<NativePointerDeliveryOwner>,
-    graphs: &EdgePointerGraphs,
-) -> Option<egui::Vec2> {
-    let NativePointerDeliveryOwner::Viewport(binding) = native_delivery.value()? else {
-        return None;
-    };
-    let presented = graphs.delivery()?;
-    if presented.native() != exact_native(*binding) {
-        return None;
-    }
-    let native = scroll.delta()?.vector();
-    let modifiers = *scroll.modifiers().value()?;
-    match presented.graph().normalize_scroll_delta(
-        egui::vec2(native.x() as f32, native.y() as f32),
-        egui_modifiers(modifiers),
-    ) {
-        egui::PointerReceiverAuthority::Known(egui::ScrollDeltaNormalization::Scroll(delta)) => {
-            Some(delta)
-        }
-        egui::PointerReceiverAuthority::Known(
-            egui::ScrollDeltaNormalization::AwaitingDelta
-            | egui::ScrollDeltaNormalization::FrameworkOwned,
-        )
-        | egui::PointerReceiverAuthority::Unknown(_) => None,
-    }
-}
-
 fn translate_scroll_delivery(
-    dockspace: &Dockspace,
     host: dockspace::presentation_observation::PresentationHostLease,
     native: &NativeAuthority<NativePointerDeliveryOwner>,
     routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+    presented: Option<&PresentedNativePointerGraph>,
 ) -> Result<Authority<ScrollDeliveryEndpoint>, NativeRuntimeError> {
     let Some(NativePointerDeliveryOwner::Viewport(binding)) = native.value() else {
         return Ok(Authority::Unknown(map_unavailable(
@@ -1696,13 +1668,12 @@ fn translate_scroll_delivery(
             AuthorityUnavailableReason::SurfaceUnavailable,
         ));
     };
-    let Some(projection) = dockspace.engine().interaction_projection(route.surface()) else {
+    let Some(presented) = presented else {
         return Ok(Authority::Unknown(
             AuthorityUnavailableReason::SurfaceUnavailable,
         ));
     };
-    let authority = projection.authority();
-    if authority.binding() != Some(route.core()) {
+    if presented.native() != route.exact() || presented.scene().surface() != route.surface() {
         return Ok(Authority::Unknown(
             AuthorityUnavailableReason::SurfaceUnavailable,
         ));
@@ -1711,50 +1682,52 @@ fn translate_scroll_delivery(
         host,
         route.surface(),
         Some(route.core()),
-        authority.coordinate_generation(),
+        presented.coordinate_generation(),
     )?))
 }
 
 fn translate_scroll_delta(
     delta: NativeScrollDelta,
-    delivery: Authority<ScrollDeliveryEndpoint>,
-    normalized: Option<egui::Vec2>,
+    physical_coordinates: Authority<PhysicalScrollCoordinates>,
 ) -> Result<ScrollDelta, NativeRuntimeError> {
     let native = delta.vector();
-    let vector = normalized.map_or_else(
-        || FiniteScrollVector::new(native.x(), native.y()),
-        |delta| FiniteScrollVector::new(f64::from(delta.x), f64::from(delta.y)),
-    )?;
+    let vector = FiniteScrollVector::new(native.x(), native.y())?;
     match delta {
         NativeScrollDelta::Lines(_) => Ok(ScrollDelta::Lines(vector)),
-        NativeScrollDelta::PhysicalPixels(_) => {
-            let Authority::Known(endpoint) = delivery else {
-                return Err(NativeRuntimeError::IngressUnavailable(
-                    "physical scroll delta has no exact presentation endpoint",
-                ));
-            };
-            let Some(binding) = endpoint.binding() else {
-                return Err(NativeRuntimeError::IngressUnavailable(
-                    "physical scroll delta has no exact native binding",
-                ));
-            };
-            Ok(ScrollDelta::PhysicalPixels {
-                delta: vector,
-                binding,
-                coordinate_generation: endpoint.coordinate_generation(),
-            })
-        }
+        NativeScrollDelta::PhysicalPixels(_) => Ok(ScrollDelta::PhysicalPixels {
+            delta: vector,
+            coordinates: physical_coordinates,
+        }),
     }
 }
 
-pub(crate) fn egui_modifiers(modifiers: eframe::NativeScrollModifiers) -> egui::Modifiers {
-    egui::Modifiers {
-        alt: modifiers.alt(),
-        ctrl: modifiers.control(),
-        shift: modifiers.shift(),
-        mac_cmd: cfg!(target_os = "macos") && modifiers.command(),
-        command: modifiers.command(),
+fn event_time_physical_scroll_coordinates(
+    retained: &RetainedPointerEdge,
+) -> Authority<PhysicalScrollCoordinates> {
+    let edge = retained.edge();
+    let Some(capture) = edge.delivery_coordinates().value().copied() else {
+        return Authority::Unknown(map_unavailable(
+            edge.delivery_coordinates()
+                .unavailable_reason()
+                .unwrap_or(NativeUnavailableReason::NotObserved),
+        ));
+    };
+    let (Some(route), Some(graph)) = (retained.delivery_route(), retained.graphs().delivery())
+    else {
+        return Authority::Unknown(AuthorityUnavailableReason::SurfaceUnavailable);
+    };
+    if capture.binding() != route.native_binding()
+        || graph.native() != route.exact()
+        || graph.scene().surface() != route.surface()
+        || capture.native_scale_factor() as f32 != graph.graph().native_pixels_per_point()
+        || capture.presentation_scale_factor() as f32 != graph.graph().pixels_per_point()
+    {
+        return Authority::Unknown(AuthorityUnavailableReason::CoordinateUnavailable);
     }
+    Authority::Known(PhysicalScrollCoordinates::new(
+        route.core(),
+        graph.coordinate_generation(),
+    ))
 }
 
 fn translate_delivery_owner(
@@ -1848,6 +1821,42 @@ mod tests {
             ),
             Authority::Known(PointerEventDeliveryOwner::Foreign)
         );
+    }
+
+    #[test]
+    fn native_scroll_delta_reaches_core_without_f32_normalization() {
+        let raw = NativeScrollDelta::Lines(
+            eframe::NativeFiniteScrollVector::new(16_777_217.25, -16_777_216.0)
+                .expect("the native vector is finite"),
+        );
+        let translated = translate_scroll_delta(
+            raw,
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        )
+        .expect("line deltas do not require coordinate conversion");
+
+        assert_eq!(translated.vector().x(), 16_777_217.25);
+        assert_eq!(translated.vector().y(), -16_777_216.0);
+    }
+
+    #[test]
+    fn unknown_physical_scroll_coordinates_preserve_the_journal_sample() {
+        let raw = NativeScrollDelta::PhysicalPixels(
+            eframe::NativeFiniteScrollVector::new(2.5, -7.25).expect("the native vector is finite"),
+        );
+        let translated = translate_scroll_delta(
+            raw,
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
+        )
+        .expect("missing coordinate authority is a typed fact, not a cycle failure");
+
+        assert!(matches!(
+            translated,
+            ScrollDelta::PhysicalPixels {
+                delta,
+                coordinates: Authority::Unknown(AuthorityUnavailableReason::NotReported),
+            } if delta.x() == 2.5 && delta.y() == -7.25
+        ));
     }
 
     #[test]
@@ -2105,6 +2114,14 @@ fn resolve_semantic_receiver_event(
     ) else {
         return None;
     };
+    if !dockspace.retained_semantic_receiver_supports(
+        presented.scene(),
+        presented.emission(),
+        target,
+        action,
+    ) {
+        return None;
+    }
     Some(SemanticReceiverEvent::new(
         presented.scene(),
         presented.emission(),

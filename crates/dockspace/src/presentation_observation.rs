@@ -709,6 +709,8 @@ pub enum HostPresentationOutputPayload {
     Paint {
         /// Exact semantic scene output painted by the host.
         scene: SurfacePresentationOutputTicket,
+        /// Coordinate authority frozen into that semantic output.
+        coordinate_generation: CoordinateGeneration,
         /// Transient core-owned visuals painted above that scene.
         interaction: HostInteractionPresentation,
     },
@@ -729,6 +731,18 @@ impl HostPresentationOutputPayload {
     pub const fn scene(self) -> Option<SurfacePresentationOutputTicket> {
         match self {
             Self::Paint { scene, .. } => Some(scene),
+            Self::NativeStaging { .. } | Self::Bootstrap | Self::Unavailable => None,
+        }
+    }
+
+    /// Returns the coordinate authority frozen into a painted semantic output.
+    #[must_use]
+    pub const fn coordinate_generation(self) -> Option<CoordinateGeneration> {
+        match self {
+            Self::Paint {
+                coordinate_generation,
+                ..
+            } => Some(coordinate_generation),
             Self::NativeStaging { .. } | Self::Bootstrap | Self::Unavailable => None,
         }
     }

@@ -13,8 +13,9 @@ use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::{CloseDecisionToken, CloseItemDecisionState, DeferredCloseToken, NativeCloseEdge};
 use eframe::{
-    HostedNativeStagingPresentation, HostedViewportCycle, HostedViewportMode, HostedViewportOutput,
-    HostedViewportUiDisposition, NativeEffectSink, NativeViewportCreateSink,
+    HostedNativeStagingPresentation, HostedViewportCommitDirective, HostedViewportCycle,
+    HostedViewportMode, HostedViewportOutput, HostedViewportUiDisposition, NativeEffectSink,
+    NativeViewportCreateSink,
 };
 use egui::{FullOutput, ViewportId};
 use egui_dockspace::{
@@ -446,7 +447,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         outputs: &mut [HostedViewportOutput<FullOutput>],
     ) -> Result<(), NativeRuntimeError> {
         let mut active = self.active.take().ok_or(NativeRuntimeError::CycleMissing)?;
-        for output in outputs.iter() {
+        for output in outputs.iter_mut() {
             let viewport = output.viewport_id();
             let Some(route) = active.routes.get(&viewport).copied() else {
                 continue;
@@ -459,14 +460,14 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                     &mut self.dockspace,
                     route.exact(),
                     context,
-                    output.output().clone(),
+                    output.output_mut(),
                 )?;
             } else {
                 active.session.confirm_native_surface_output(
                     &mut self.dockspace,
                     route.exact(),
                     context,
-                    output.output().clone(),
+                    output.output_mut(),
                 )?;
             }
         }
@@ -543,9 +544,8 @@ impl<P: PaneView> NativeDockspaceApp<P> {
 
     fn commit_cycle(
         &mut self,
-        context: &egui::Context,
         outputs: &mut [HostedViewportOutput<FullOutput>],
-    ) -> Result<(), NativeRuntimeError> {
+    ) -> Result<HostedViewportCommitDirective, NativeRuntimeError> {
         let prepared = self
             .prepared
             .take()
@@ -607,12 +607,15 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         self.status.committed_cycles = self.status.committed_cycles.saturating_add(1);
         self.status.live_viewports = prepared.routes.len();
         self.status.pending_presentations = self.presentations.pending_count();
-        request_follow_up_cycle(
-            context,
-            self.ingress.has_post_commit_records()
-                || self.presentations.has_committed_quiescence_work(),
-        );
-        Ok(())
+        Ok(
+            if self.ingress.has_post_commit_records()
+                || self.presentations.has_committed_quiescence_work()
+            {
+                HostedViewportCommitDirective::repaint_root()
+            } else {
+                HostedViewportCommitDirective::none()
+            },
+        )
     }
 
     fn abort_cycle(&mut self) {
@@ -802,11 +805,9 @@ impl<P: PaneView> eframe::App for NativeDockspaceApp<P> {
 
     fn commit_hosted_viewport_cycle(
         &mut self,
-        context: &egui::Context,
         outputs: &mut [HostedViewportOutput<FullOutput>],
-        _frame: &mut eframe::Frame,
-    ) -> eframe::HostedViewportAppResult<()> {
-        self.commit_cycle(context, outputs)
+    ) -> eframe::HostedViewportAppResult<HostedViewportCommitDirective> {
+        self.commit_cycle(outputs)
             .map_err(HostedHookError::from)
             .map_err(|error| Box::new(error) as eframe::HostedViewportAppError)
     }
@@ -824,40 +825,11 @@ impl<P: PaneView> eframe::App for NativeDockspaceApp<P> {
     }
 }
 
-fn request_follow_up_cycle(context: &egui::Context, has_post_commit_work: bool) {
-    if has_post_commit_work {
-        context.request_repaint_of(ViewportId::ROOT);
-    }
-}
-
 fn _assert_exact_native_is_copy(_: ExactNativeViewport) {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
-
-    #[test]
-    fn post_commit_work_requests_exactly_one_root_follow_up_cycle() {
-        let context = egui::Context::default();
-        let requests = Arc::new(AtomicUsize::new(0));
-        context.set_request_repaint_callback({
-            let requests = Arc::clone(&requests);
-            move |request| {
-                if request.viewport_id == ViewportId::ROOT {
-                    requests.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        });
-
-        request_follow_up_cycle(&context, false);
-        assert_eq!(requests.load(Ordering::Relaxed), 0);
-
-        request_follow_up_cycle(&context, true);
-        assert_eq!(requests.load(Ordering::Relaxed), 1);
-    }
 
     #[test]
     fn restored_viewport_stays_undeclared_until_materialized_then_hidden_until_routed() {

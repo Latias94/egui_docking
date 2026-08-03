@@ -30,11 +30,11 @@ use crate::policy::{
 use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
 use crate::scene::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
-    PaneRecord, PaneSceneId, PresentationPlan, SceneBuildError, SplitterGapPresentation,
-    SplitterGapRecord, SplitterJunctionRecord, SplitterRecord, SplitterSceneId, TabBarRecord,
-    TabBarSceneId, TabGroupDragRecord, TabListMenuBackdropRecord, TabListMenuGeometryAvailability,
-    TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
-    TabStripMemberRecord, TabStripMemberVisibility,
+    PaneRecord, PaneSceneId, PresentationPlan, RootLayoutFacts, SceneBuildError,
+    SplitterGapPresentation, SplitterGapRecord, SplitterJunctionRecord, SplitterRecord,
+    SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord, TabListMenuBackdropRecord,
+    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
+    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
 };
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, ManifestBuildError, ManifestMeasurementError,
@@ -51,9 +51,13 @@ use crate::tab_strip::{
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
 
+mod future_layout;
 mod requirements;
 mod surface;
 
+pub(crate) use future_layout::{
+    FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,
+};
 pub(crate) use requirements::{
     derive_scene_requirement_draft, derive_scene_requirement_draft_with_index,
 };

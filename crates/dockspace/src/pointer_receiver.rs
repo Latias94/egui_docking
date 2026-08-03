@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
-use crate::pointer_journal::{PointerEdgeSequence, PointerInputLease};
+use crate::pointer_journal::{FiniteScrollVector, PointerEdgeSequence, PointerInputLease};
 use crate::presentation_hit::{PresentationHitRegionId, PresentationPointerLane};
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
 use crate::scene::SurfaceInteractionProjection;
@@ -213,6 +213,55 @@ pub enum PointerReceiverProbeRequest {
     DeliveryAndHoverHit,
 }
 
+/// Core-owned receiver and derivative requirement for one scroll edge.
+///
+/// This type keeps framework derivative ownership separate from renderer hit
+/// evidence. Adapters must not infer either fact from a missing probe vector or
+/// from the receiver returned by their own hit test.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollReceiverChallenge {
+    /// An unowned scroll sample needs one spatial receiver proof.
+    Spatial {
+        /// Modifier-projected direction used for receiver admission, when the
+        /// provider has already emitted a directional sample.
+        ///
+        /// `None` still requires an exact top-receiver proof. Smooth `Begin`
+        /// freezes that receiver before any directional delta arrives.
+        projected_delta: Option<FiniteScrollVector>,
+    },
+    /// An active docking sequence must prove its frozen receiver.
+    Locked {
+        /// Stable receiver identity frozen when the sequence began.
+        receiver: PresentationHitRegionId,
+        /// Stable point inside the frozen receiver, independent of the current pointer.
+        probe_point: LogicalPoint,
+        /// Direction for blocker and axis-admission checks, when the edge has a delta.
+        projected_delta: Option<FiniteScrollVector>,
+    },
+    /// Docking already terminated semantically but still owns the provider sequence.
+    OwnedTerminal,
+    /// The framework owns this exact modified scroll sample.
+    FrameworkReserved,
+    /// Receiver or conversion authority is unavailable, or the sequence never became dock-owned.
+    Unavailable,
+}
+
+impl ScrollReceiverChallenge {
+    const fn requires_receiver_probe(self) -> bool {
+        matches!(self, Self::Spatial { .. } | Self::Locked { .. })
+    }
+
+    const fn locked_receiver(self) -> Option<PresentationHitRegionId> {
+        match self {
+            Self::Locked { receiver, .. } => Some(receiver),
+            Self::Spatial { .. }
+            | Self::OwnedTerminal
+            | Self::FrameworkReserved
+            | Self::Unavailable => None,
+        }
+    }
+}
+
 impl PointerReceiverProbeRequest {
     /// Returns whether this exact probe is required.
     #[must_use]
@@ -253,6 +302,7 @@ pub struct PointerReceiverCandidate {
     probes: PointerReceiverProbeRequest,
     route_point: Option<LogicalPoint>,
     hover_point: Option<LogicalPoint>,
+    scroll_challenge: Option<ScrollReceiverChallenge>,
 }
 
 impl PointerReceiverCandidate {
@@ -288,6 +338,15 @@ impl PointerReceiverCandidate {
         self.hover_point
     }
 
+    /// Returns the core-owned scroll receiver and derivative requirement.
+    ///
+    /// `None` identifies a non-scroll edge. The adapter must obey the explicit
+    /// challenge and must not derive derivative ownership from its receipt.
+    #[must_use]
+    pub const fn scroll_challenge(&self) -> Option<ScrollReceiverChallenge> {
+        self.scroll_challenge
+    }
+
     /// Returns whether this candidate requires actual receiver evidence.
     #[must_use]
     pub const fn receiver_is_applicable(&self) -> bool {
@@ -314,6 +373,7 @@ pub(crate) struct PointerReceiverCandidateSpec {
     probes: PointerReceiverProbeRequest,
     route_point: Option<LogicalPoint>,
     hover_point: Option<LogicalPoint>,
+    scroll_challenge: Option<ScrollReceiverChallenge>,
 }
 
 #[allow(
@@ -327,6 +387,7 @@ impl PointerReceiverCandidateSpec {
             probes: PointerReceiverProbeRequest::NotApplicable,
             route_point: None,
             hover_point: None,
+            scroll_challenge: None,
         }
     }
 
@@ -339,6 +400,25 @@ impl PointerReceiverCandidateSpec {
             probes: PointerReceiverProbeRequest::Delivery,
             route_point,
             hover_point: None,
+            scroll_challenge: None,
+        }
+    }
+
+    pub(crate) const fn scroll_delivery(
+        sequence: PointerEdgeSequence,
+        route_point: Option<LogicalPoint>,
+        challenge: ScrollReceiverChallenge,
+    ) -> Self {
+        Self {
+            sequence,
+            probes: if challenge.requires_receiver_probe() {
+                PointerReceiverProbeRequest::Delivery
+            } else {
+                PointerReceiverProbeRequest::NotApplicable
+            },
+            route_point,
+            hover_point: None,
+            scroll_challenge: Some(challenge),
         }
     }
 
@@ -351,6 +431,7 @@ impl PointerReceiverCandidateSpec {
             probes: PointerReceiverProbeRequest::HoverHit,
             route_point: hover_point,
             hover_point,
+            scroll_challenge: None,
         }
     }
 
@@ -363,6 +444,7 @@ impl PointerReceiverCandidateSpec {
             probes: PointerReceiverProbeRequest::DeliveryAndHoverHit,
             route_point: hover_point,
             hover_point,
+            scroll_challenge: None,
         }
     }
 }
@@ -444,6 +526,7 @@ impl PointerReceiverCandidateRoster {
                 probes: spec.probes,
                 route_point: spec.route_point,
                 hover_point: spec.hover_point,
+                scroll_challenge: spec.scroll_challenge,
             })
             .collect();
         Ok(Self {
@@ -606,6 +689,24 @@ impl PointerReceiverCandidateRoster {
                 for receipt in presented.probes() {
                     match receipt {
                         PointerReceiverProbeReceipt::Delivery(delivery) => {
+                            if let (
+                                Some(expected),
+                                PointerReceiverDeliveryDisposition::Dock(submitted),
+                            ) = (
+                                candidate
+                                    .scroll_challenge
+                                    .and_then(ScrollReceiverChallenge::locked_receiver),
+                                delivery.scroll(),
+                            ) && submitted != expected
+                            {
+                                return Err(
+                                    PointerReceiverReceiptValidationError::LockedScrollReceiverMismatch {
+                                        candidate: candidate.id,
+                                        expected,
+                                        submitted,
+                                    },
+                                );
+                            }
                             if let Some((output, authority)) = delivery.known_authority() {
                                 self.validate_known_authority(
                                     candidate.id,
@@ -1439,6 +1540,16 @@ pub enum PointerReceiverReceiptValidationError {
         hover_output: SurfacePresentationOutputTicket,
         /// Hover final-presentation authority.
         hover_authority: PresentedSurfaceAuthority,
+    },
+    /// A smooth-scroll continuation claimed a receiver other than its frozen owner.
+    #[error("pointer receiver candidate {candidate:?} changed its locked scroll receiver")]
+    LockedScrollReceiverMismatch {
+        /// Candidate being answered.
+        candidate: PointerReceiverCandidateId,
+        /// Core-owned receiver frozen for the active sequence.
+        expected: PresentationHitRegionId,
+        /// Different receiver submitted by the adapter.
+        submitted: PresentationHitRegionId,
     },
 }
 

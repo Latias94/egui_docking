@@ -110,6 +110,7 @@ impl EguiOuterHostFrame<'_> {
         input: RawInput,
         panes: &mut dyn PaneView,
     ) -> Result<SurfacePaintResponse, DockspaceError> {
+        let viewport = input.viewport_id;
         let mut paint = None;
         let mut pointer_events = None;
         let output = context.run_ui(input, |ui| {
@@ -123,7 +124,7 @@ impl EguiOuterHostFrame<'_> {
         self.inner
             .prepare_outer_pointer(surface, context, &pointer_events)?;
         self.inner
-            .confirm_surface_output(surface, context, context.viewport_id(), output)?;
+            .confirm_surface_output(surface, context, viewport, output)?;
         Ok(paint)
     }
 
@@ -775,6 +776,17 @@ impl DockspaceHostFrame<'_> {
     ) -> Result<(), DockspaceError> {
         self.state
             .confirm_surface_output(surface, context, viewport, output)
+    }
+
+    pub(super) fn confirm_external_surface_output(
+        &mut self,
+        surface: SurfaceId,
+        context: &Context,
+        viewport: ViewportId,
+        output: &mut FullOutput,
+    ) -> Result<(), DockspaceError> {
+        self.state
+            .confirm_external_surface_output(surface, context, viewport, output)
     }
 
     fn prepare_surface_contribution(

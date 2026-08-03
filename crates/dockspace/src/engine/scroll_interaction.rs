@@ -1,6 +1,7 @@
 //! Ordered, device-independent scroll interaction state.
 
 use super::*;
+use crate::pointer_journal::ScrollModifiers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ScrollSequenceKey {
@@ -128,18 +129,16 @@ struct SuppressedScrollSession {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct AwaitingScrollReceiver {
-    endpoint: ScrollDeliveryEndpoint,
-    popup_routing: PopupRoutingRevision,
-    policy: PolicyRevision,
-    config: PresentationConfigRevision,
+struct AwaitingScrollProviderTerminal {
+    receiver: Option<PresentationHitRegionId>,
+    claim_derivative: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ActiveScrollDisposition {
-    AwaitingFirstDelta(AwaitingScrollReceiver),
     Owned(ScrollOwner),
     Suppressed(SuppressedScrollSession),
+    AwaitingProviderTerminal(AwaitingScrollProviderTerminal),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -193,6 +192,34 @@ impl ScrollInteractionState {
         Ok(session)
     }
 
+    fn mark_semantically_terminated(
+        &mut self,
+        key: ScrollSequenceKey,
+        release_derivative_to_framework: bool,
+    ) -> Result<ActiveScrollSession, &'static str> {
+        let session = self
+            .active
+            .get(&key)
+            .copied()
+            .ok_or("smooth scroll edge has no matching active sequence")?;
+        if matches!(
+            session.disposition,
+            ActiveScrollDisposition::AwaitingProviderTerminal(_)
+        ) {
+            return Err("smooth scroll sequence already terminated semantically");
+        }
+        self.active
+            .get_mut(&key)
+            .expect("the scroll session was read from the same active map")
+            .disposition =
+            ActiveScrollDisposition::AwaitingProviderTerminal(AwaitingScrollProviderTerminal {
+                receiver: scroll_session_receiver(session),
+                claim_derivative: !release_derivative_to_framework
+                    && matches!(session.disposition, ActiveScrollDisposition::Owned(_)),
+            });
+        Ok(session)
+    }
+
     pub(super) fn retire_provider(
         &mut self,
         provider: PointerInputLease,
@@ -206,6 +233,7 @@ impl ScrollInteractionState {
         let sessions = keys
             .into_iter()
             .filter_map(|key| self.active.remove(&key))
+            .filter(scroll_session_is_semantically_active)
             .map(|session| (session.id, scroll_session_receiver(session)))
             .collect();
         self.token_watermarks
@@ -222,10 +250,8 @@ impl ScrollInteractionState {
             .collect::<Vec<_>>();
         let sessions = keys
             .into_iter()
-            .filter_map(|key| {
-                let session = self.active.remove(&key)?;
-                Some(session)
-            })
+            .filter_map(|key| self.active.remove(&key))
+            .filter(scroll_session_is_semantically_active)
             .collect();
         // The pointer stream incarnation is itself terminal authority. No
         // scroll-token tombstone from that stream is needed after retirement.
@@ -234,13 +260,17 @@ impl ScrollInteractionState {
     }
 
     fn retire_all(&mut self) -> Vec<ActiveScrollSession> {
-        std::mem::take(&mut self.active).into_values().collect()
+        std::mem::take(&mut self.active)
+            .into_values()
+            .filter(scroll_session_is_semantically_active)
+            .collect()
     }
 }
 
 #[derive(Clone, Copy)]
 enum ObservedScrollReceiver<'a> {
     Unknown,
+    FrameworkBlocked,
     Known {
         disposition: PointerReceiverDeliveryDisposition,
         presentation: &'a JournalSurfacePresentation,
@@ -248,6 +278,44 @@ enum ObservedScrollReceiver<'a> {
 }
 
 impl DockEngine {
+    pub(super) fn scroll_receiver_challenge(
+        &self,
+        stream: PointerStreamId,
+        scroll: ScrollEdge,
+    ) -> ScrollReceiverChallenge {
+        if scroll.delta().is_some()
+            && matches!(
+                scroll.modifiers(),
+                Authority::Known(modifiers) if modifiers.control() || modifiers.command()
+            )
+        {
+            return ScrollReceiverChallenge::FrameworkReserved;
+        }
+        let projected_delta = scroll_receiver_probe_vector(scroll);
+        let Some(token) = scroll.sequence() else {
+            return ScrollReceiverChallenge::Spatial { projected_delta };
+        };
+        let key = ScrollSequenceKey::new(stream.lease(), stream, scroll.device(), token);
+        let Some(session) = self.scroll_interaction.active.get(&key) else {
+            return ScrollReceiverChallenge::Spatial { projected_delta };
+        };
+        match session.disposition {
+            ActiveScrollDisposition::Owned(owner) => ScrollReceiverChallenge::Locked {
+                receiver: owner.receiver,
+                probe_point: scroll_owner_probe_point(owner),
+                projected_delta,
+            },
+            ActiveScrollDisposition::Suppressed(_) => ScrollReceiverChallenge::Unavailable,
+            ActiveScrollDisposition::AwaitingProviderTerminal(terminal) => {
+                if terminal.claim_derivative {
+                    ScrollReceiverChallenge::OwnedTerminal
+                } else {
+                    ScrollReceiverChallenge::Unavailable
+                }
+            }
+        }
+    }
+
     pub(super) fn reduce_scroll_edge(
         &mut self,
         cause: ReductionCause,
@@ -257,7 +325,22 @@ impl DockEngine {
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
-        let observed = Self::observed_scroll_receiver(cause, receipt, snapshot)?;
+        let observed = match (scroll.delta(), scroll.modifiers()) {
+            (
+                Some(ScrollDelta::PhysicalPixels {
+                    coordinates: Authority::Unknown(_),
+                    ..
+                }),
+                _,
+            ) => ObservedScrollReceiver::Unknown,
+            (Some(_), Authority::Unknown(_)) => ObservedScrollReceiver::Unknown,
+            (Some(_), Authority::Known(modifiers))
+                if modifiers.control() || modifiers.command() =>
+            {
+                ObservedScrollReceiver::FrameworkBlocked
+            }
+            _ => Self::observed_scroll_receiver(cause, receipt, snapshot)?,
+        };
         if let ObservedScrollReceiver::Known { presentation, .. } = &observed
             && self
                 .validate_scroll_delivery_endpoint(cause, edge, presentation)?
@@ -327,21 +410,20 @@ impl DockEngine {
             .active
             .iter()
             .filter_map(|(key, session)| match session.disposition {
-                ActiveScrollDisposition::AwaitingFirstDelta(awaiting) => self
-                    .awaiting_scroll_lifecycle_loss(awaiting)
-                    .map(|reason| (*key, reason)),
                 ActiveScrollDisposition::Owned(owner) => self
                     .scroll_owner_lifecycle_loss(owner)
                     .map(|reason| (*key, reason)),
                 ActiveScrollDisposition::Suppressed(suppressed) => self
                     .suppressed_scroll_lifecycle_loss(suppressed)
                     .map(|reason| (*key, reason)),
+                ActiveScrollDisposition::AwaitingProviderTerminal(_) => None,
             })
             .collect::<Vec<_>>();
         for (key, reason) in losses {
-            let Some(session) = self.scroll_interaction.active.remove(&key) else {
-                continue;
-            };
+            let session = self
+                .scroll_interaction
+                .mark_semantically_terminated(key, false)
+                .expect("the lifecycle loss was derived from the same active map");
             interaction_events.push(InteractionEvent::new_caused(
                 cause,
                 self.version,
@@ -364,7 +446,7 @@ impl DockEngine {
         let phase = ScrollPhase::Discrete;
         match self.resolve_initial_scroll_owner(cause, edge, observed)? {
             Ok(owner) => self
-                .apply_scroll_delta(cause, None, owner, phase, scroll.delta())
+                .apply_scroll_delta(cause, None, owner, scroll)
                 .map(|outcome| outcome.into_iter().collect()),
             Err(reason) => Ok(vec![scroll_suppressed(None, None, phase, reason)]),
         }
@@ -394,42 +476,6 @@ impl DockEngine {
             .ok_or_else(|| scroll_invariant(cause, "scroll session identity space is exhausted"))?;
         self.scroll_interaction.advance_token_watermark(key);
 
-        if !has_directional_scroll_delta(scroll.delta()) {
-            let Authority::Known(endpoint) = scroll.delivery() else {
-                let reason = ScrollSuppressionReason::ReceiverUnknown;
-                let suppressed = self.capture_suppressed_scroll(edge, reason);
-                self.scroll_interaction.active.insert(
-                    key,
-                    ActiveScrollSession {
-                        id: session,
-                        disposition: ActiveScrollDisposition::Suppressed(suppressed),
-                    },
-                );
-                return Ok(vec![scroll_suppressed(
-                    Some(session),
-                    Some(token),
-                    scroll.phase(),
-                    reason,
-                )]);
-            };
-            self.scroll_interaction.active.insert(
-                key,
-                ActiveScrollSession {
-                    id: session,
-                    disposition: ActiveScrollDisposition::AwaitingFirstDelta(
-                        self.capture_awaiting_scroll(endpoint),
-                    ),
-                },
-            );
-            return Ok(vec![InteractionOutcome::Scroll(
-                ScrollReductionOutcome::AwaitingFirstDelta {
-                    session,
-                    sequence: token,
-                    phase: scroll.phase(),
-                },
-            )]);
-        }
-
         match self.resolve_initial_scroll_owner(cause, edge, observed)? {
             Ok(owner) => {
                 self.scroll_interaction.active.insert(
@@ -444,13 +490,9 @@ impl DockEngine {
                         session,
                         receiver: owner.receiver,
                     })];
-                if let Some(applied) = self.apply_scroll_delta(
-                    cause,
-                    Some(session),
-                    owner,
-                    scroll.phase(),
-                    scroll.delta(),
-                )? {
+                if let Some(applied) =
+                    self.apply_scroll_delta(cause, Some(session), owner, scroll)?
+                {
                     outcomes.push(applied);
                 }
                 Ok(outcomes)
@@ -499,155 +541,42 @@ impl DockEngine {
                 )
             })?;
 
-        match active.disposition {
-            ActiveScrollDisposition::AwaitingFirstDelta(awaiting) => self
-                .reduce_awaiting_scroll_continuation(
-                    cause, key, active.id, edge, scroll, observed, awaiting, terminal,
-                ),
+        let outcomes = match active.disposition {
             ActiveScrollDisposition::Suppressed(suppressed) => {
                 if terminal {
-                    let retired = self
-                        .scroll_interaction
-                        .retire(key)
-                        .map_err(|detail| scroll_invariant(cause, detail))?;
-                    return Ok(vec![InteractionOutcome::Scroll(
-                        ScrollReductionOutcome::Terminated {
-                            session: retired.id,
-                            receiver: None,
-                            reason: ScrollTerminationReason::Completed,
-                        },
-                    )]);
+                    self.terminate_scroll_session(cause, key, ScrollTerminationReason::Completed)?
+                } else {
+                    vec![scroll_suppressed(
+                        Some(active.id),
+                        Some(token),
+                        scroll.phase(),
+                        suppressed.reason,
+                    )]
                 }
-                Ok(vec![scroll_suppressed(
-                    Some(active.id),
-                    Some(token),
-                    scroll.phase(),
-                    suppressed.reason,
-                )])
             }
             ActiveScrollDisposition::Owned(owner) => self.reduce_owned_scroll_continuation(
                 cause, key, active.id, edge, scroll, observed, owner, terminal,
-            ),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn reduce_awaiting_scroll_continuation(
-        &mut self,
-        cause: ReductionCause,
-        key: ScrollSequenceKey,
-        session: ScrollSessionId,
-        edge: &PointerEdge,
-        scroll: ScrollEdge,
-        observed: ObservedScrollReceiver<'_>,
-        awaiting: AwaitingScrollReceiver,
-        terminal: bool,
-    ) -> Result<Vec<InteractionOutcome>, EngineError> {
-        if let Some(reason) = self.awaiting_scroll_lifecycle_loss(awaiting) {
-            return self.terminate_scroll_session(cause, key, reason);
-        }
-        if !has_directional_scroll_delta(scroll.delta()) {
-            if terminal {
-                return self.terminate_scroll_session(
-                    cause,
-                    key,
-                    ScrollTerminationReason::Completed,
-                );
-            }
-            return Ok(vec![InteractionOutcome::Scroll(
-                ScrollReductionOutcome::AwaitingFirstDelta {
-                    session,
-                    sequence: key.token,
-                    phase: scroll.phase(),
-                },
-            )]);
-        }
-        match scroll.delivery() {
-            Authority::Known(endpoint) if endpoint == awaiting.endpoint => {}
-            Authority::Known(_) => {
-                return self.terminate_scroll_session(
-                    cause,
-                    key,
-                    ScrollTerminationReason::DeliveryEndpointChanged,
-                );
-            }
-            Authority::Unknown(_) => {
-                if terminal {
-                    return self.terminate_scroll_session(
-                        cause,
-                        key,
-                        ScrollTerminationReason::Completed,
+            )?,
+            ActiveScrollDisposition::AwaitingProviderTerminal(terminal) => {
+                if matches!(observed, ObservedScrollReceiver::FrameworkBlocked)
+                    && terminal.claim_derivative
+                {
+                    self.scroll_interaction
+                        .active
+                        .get_mut(&key)
+                        .expect("the provider-terminal session remains active")
+                        .disposition = ActiveScrollDisposition::AwaitingProviderTerminal(
+                        AwaitingScrollProviderTerminal {
+                            claim_derivative: false,
+                            ..terminal
+                        },
                     );
                 }
-                return Ok(vec![scroll_suppressed(
-                    Some(session),
-                    Some(key.token),
-                    scroll.phase(),
-                    ScrollSuppressionReason::ReceiverUnknown,
-                )]);
-            }
-        }
-        if matches!(observed, ObservedScrollReceiver::Unknown) {
-            if terminal {
-                return self.terminate_scroll_session(
-                    cause,
-                    key,
-                    ScrollTerminationReason::Completed,
-                );
-            }
-            return Ok(vec![scroll_suppressed(
-                Some(session),
-                Some(key.token),
-                scroll.phase(),
-                ScrollSuppressionReason::ReceiverUnknown,
-            )]);
-        }
-
-        let owner = match self.resolve_initial_scroll_owner(cause, edge, observed)? {
-            Ok(owner) => owner,
-            Err(reason) => {
-                if terminal {
-                    return self.terminate_scroll_session(
-                        cause,
-                        key,
-                        ScrollTerminationReason::Completed,
-                    );
-                }
-                let suppressed = self.capture_suppressed_scroll(edge, reason);
-                self.scroll_interaction
-                    .active
-                    .get_mut(&key)
-                    .expect("the awaiting scroll session is still active")
-                    .disposition = ActiveScrollDisposition::Suppressed(suppressed);
-                return Ok(vec![scroll_suppressed(
-                    Some(session),
-                    Some(key.token),
-                    scroll.phase(),
-                    reason,
-                )]);
+                Vec::new()
             }
         };
-        self.scroll_interaction
-            .active
-            .get_mut(&key)
-            .expect("the awaiting scroll session is still active")
-            .disposition = ActiveScrollDisposition::Owned(owner);
-
-        let mut outcomes = vec![InteractionOutcome::Scroll(ScrollReductionOutcome::Began {
-            session,
-            receiver: owner.receiver,
-        })];
-        if let Some(applied) =
-            self.apply_scroll_delta(cause, Some(session), owner, scroll.phase(), scroll.delta())?
-        {
-            outcomes.push(applied);
-        }
         if terminal {
-            outcomes.extend(self.terminate_scroll_session(
-                cause,
-                key,
-                ScrollTerminationReason::Completed,
-            )?);
+            self.finish_scroll_provider_terminal(cause, key)?;
         }
         Ok(outcomes)
     }
@@ -694,6 +623,13 @@ impl DockEngine {
                     ScrollSuppressionReason::ReceiverUnknown,
                 ));
                 return Ok(outcomes);
+            }
+            ObservedScrollReceiver::FrameworkBlocked => {
+                return self.terminate_scroll_session_releasing_derivative(
+                    cause,
+                    key,
+                    ScrollTerminationReason::ReceiverLost,
+                );
             }
             ObservedScrollReceiver::Known {
                 disposition: PointerReceiverDeliveryDisposition::Dock(region),
@@ -757,13 +693,9 @@ impl DockEngine {
                         ScrollTerminationReason::PolicyChanged,
                     );
                 }
-                if let Some(applied) = self.apply_scroll_delta(
-                    cause,
-                    Some(session),
-                    owner,
-                    scroll.phase(),
-                    scroll.delta(),
-                )? {
+                if let Some(applied) =
+                    self.apply_scroll_delta(cause, Some(session), owner, scroll)?
+                {
                     outcomes.push(applied);
                 }
             }
@@ -797,7 +729,23 @@ impl DockEngine {
             .sequence()
             .ok_or_else(|| scroll_invariant(cause, "smooth scroll cancel has no sequence token"))?;
         let key = ScrollSequenceKey::new(stream.lease(), stream, scroll.device(), token);
-        self.terminate_scroll_session(cause, key, ScrollTerminationReason::Cancelled(reason))
+        let already_terminated = self
+            .scroll_interaction
+            .active
+            .get(&key)
+            .is_some_and(|session| {
+                matches!(
+                    session.disposition,
+                    ActiveScrollDisposition::AwaitingProviderTerminal(_)
+                )
+            });
+        let outcomes = if already_terminated {
+            Vec::new()
+        } else {
+            self.terminate_scroll_session(cause, key, ScrollTerminationReason::Cancelled(reason))?
+        };
+        self.finish_scroll_provider_terminal(cause, key)?;
+        Ok(outcomes)
     }
 
     fn terminate_scroll_session(
@@ -808,7 +756,7 @@ impl DockEngine {
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let session = self
             .scroll_interaction
-            .retire(key)
+            .mark_semantically_terminated(key, false)
             .map_err(|detail| scroll_invariant(cause, detail))?;
         Ok(vec![InteractionOutcome::Scroll(
             ScrollReductionOutcome::Terminated {
@@ -819,12 +767,62 @@ impl DockEngine {
         )])
     }
 
+    fn terminate_scroll_session_releasing_derivative(
+        &mut self,
+        cause: ReductionCause,
+        key: ScrollSequenceKey,
+        reason: ScrollTerminationReason,
+    ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        let session = self
+            .scroll_interaction
+            .mark_semantically_terminated(key, true)
+            .map_err(|detail| scroll_invariant(cause, detail))?;
+        Ok(vec![InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                session: session.id,
+                receiver: scroll_session_receiver(session),
+                reason,
+            },
+        )])
+    }
+
+    fn finish_scroll_provider_terminal(
+        &mut self,
+        cause: ReductionCause,
+        key: ScrollSequenceKey,
+    ) -> Result<(), EngineError> {
+        let session = self
+            .scroll_interaction
+            .active
+            .get(&key)
+            .copied()
+            .ok_or_else(|| {
+                scroll_invariant(cause, "provider terminal has no matching scroll sequence")
+            })?;
+        if !matches!(
+            session.disposition,
+            ActiveScrollDisposition::AwaitingProviderTerminal(_)
+        ) {
+            return Err(scroll_invariant(
+                cause,
+                "provider terminal arrived before semantic scroll termination",
+            ));
+        }
+        self.scroll_interaction
+            .retire(key)
+            .map_err(|detail| scroll_invariant(cause, detail))?;
+        Ok(())
+    }
+
     fn resolve_initial_scroll_owner(
         &self,
         cause: ReductionCause,
         edge: &PointerEdge,
         observed: ObservedScrollReceiver<'_>,
     ) -> Result<Result<ScrollOwner, ScrollSuppressionReason>, EngineError> {
+        if matches!(observed, ObservedScrollReceiver::FrameworkBlocked) {
+            return Ok(Err(ScrollSuppressionReason::FrameworkBlocked));
+        }
         let ObservedScrollReceiver::Known {
             disposition,
             presentation,
@@ -875,19 +873,6 @@ impl DockEngine {
         };
         SuppressedScrollSession {
             reason,
-            endpoint,
-            popup_routing: self
-                .presentation_authority
-                .tab_strip_states
-                .popup_requirement()
-                .revision(),
-            policy: self.policy.revision(),
-            config: self.presentation_authority.presentation_config_revision,
-        }
-    }
-
-    fn capture_awaiting_scroll(&self, endpoint: ScrollDeliveryEndpoint) -> AwaitingScrollReceiver {
-        AwaitingScrollReceiver {
             endpoint,
             popup_routing: self
                 .presentation_authority
@@ -1063,13 +1048,24 @@ impl DockEngine {
         cause: ReductionCause,
         session: Option<ScrollSessionId>,
         owner: ScrollOwner,
-        phase: ScrollPhase,
-        delta: Option<ScrollDelta>,
+        scroll: ScrollEdge,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
-        let Some(delta) = delta else {
+        let Some(delta) = scroll.delta() else {
             return Ok(None);
         };
-        let requested_delta = self.convert_scroll_delta(cause, owner, delta)?;
+        let Authority::Known(modifiers) = scroll.modifiers() else {
+            return Err(scroll_invariant(
+                cause,
+                "scroll application reached core without authoritative modifiers",
+            ));
+        };
+        if modifiers.control() || modifiers.command() {
+            return Err(scroll_invariant(
+                cause,
+                "framework-reserved modified scroll reached core application",
+            ));
+        }
+        let requested_delta = self.convert_scroll_delta(cause, owner, delta, modifiers)?;
         let old_offset = match owner.geometry {
             ScrollReceiverGeometry::TabStrip { key, .. } => self
                 .presentation_authority
@@ -1107,7 +1103,7 @@ impl DockEngine {
             ScrollReductionOutcome::Applied(ScrollApplication::new(
                 session,
                 owner.receiver,
-                phase,
+                scroll.phase(),
                 requested_delta,
                 applied_delta,
                 unapplied_delta,
@@ -1121,17 +1117,25 @@ impl DockEngine {
         cause: ReductionCause,
         owner: ScrollOwner,
         delta: ScrollDelta,
+        modifiers: ScrollModifiers,
     ) -> Result<f64, EngineError> {
-        let component = owner.geometry.primary_component(delta.vector());
+        let vector = core_scroll_vector(delta.vector(), modifiers).map_err(|_| {
+            scroll_invariant(
+                cause,
+                "shift-axis scroll projection produced a non-finite delta",
+            )
+        })?;
+        let component = owner.geometry.primary_component(vector);
         let content_delta = match delta {
             ScrollDelta::LogicalPoints(_) => component,
             ScrollDelta::Lines(_) => component * owner.geometry.line_extent(),
             ScrollDelta::Pages(_) => component * owner.geometry.viewport_extent(),
             ScrollDelta::PhysicalPixels {
-                binding,
-                coordinate_generation,
+                coordinates: Authority::Known(coordinates),
                 ..
             } => {
+                let binding = coordinates.binding();
+                let coordinate_generation = coordinates.coordinate_generation();
                 if owner.endpoint.binding() != Some(binding)
                     || owner.endpoint.coordinate_generation() != coordinate_generation
                 {
@@ -1156,6 +1160,15 @@ impl DockEngine {
                         )
                     })?;
                 component / coordinates.presentation_scale_factor().get()
+            }
+            ScrollDelta::PhysicalPixels {
+                coordinates: Authority::Unknown(_),
+                ..
+            } => {
+                return Err(scroll_invariant(
+                    cause,
+                    "physical scroll application reached core without coordinate authority",
+                ));
             }
         };
         let requested = -content_delta;
@@ -1236,28 +1249,6 @@ impl DockEngine {
         None
     }
 
-    fn awaiting_scroll_lifecycle_loss(
-        &self,
-        awaiting: AwaitingScrollReceiver,
-    ) -> Option<ScrollTerminationReason> {
-        if self.policy.revision() != awaiting.policy {
-            return Some(ScrollTerminationReason::PolicyChanged);
-        }
-        if self.presentation_authority.presentation_config_revision != awaiting.config {
-            return Some(ScrollTerminationReason::PresentationConfigChanged);
-        }
-        if self
-            .presentation_authority
-            .tab_strip_states
-            .popup_requirement()
-            .revision()
-            != awaiting.popup_routing
-        {
-            return Some(ScrollTerminationReason::PopupRoutingChanged);
-        }
-        self.scroll_endpoint_lifecycle_loss(awaiting.endpoint)
-    }
-
     fn suppressed_scroll_lifecycle_loss(
         &self,
         suppressed: SuppressedScrollSession,
@@ -1332,20 +1323,62 @@ fn menu_line_extent(record: &crate::scene::TabListMenuRecord) -> Option<f64> {
     }
 }
 
-const fn has_directional_scroll_delta(delta: Option<ScrollDelta>) -> bool {
-    let Some(delta) = delta else {
-        return false;
+pub(super) fn scroll_receiver_probe_vector(
+    scroll: ScrollEdge,
+) -> Option<crate::pointer_journal::FiniteScrollVector> {
+    let delta = scroll.delta()?;
+    if matches!(
+        delta,
+        ScrollDelta::PhysicalPixels {
+            coordinates: Authority::Unknown(_),
+            ..
+        }
+    ) {
+        return None;
+    }
+    let Authority::Known(modifiers) = scroll.modifiers() else {
+        return None;
     };
-    let vector = delta.vector();
-    vector.x() != 0.0 || vector.y() != 0.0
+    if modifiers.control() || modifiers.command() {
+        return None;
+    }
+    core_scroll_vector(delta.vector(), modifiers).ok()
+}
+
+fn core_scroll_vector(
+    vector: crate::pointer_journal::FiniteScrollVector,
+    modifiers: ScrollModifiers,
+) -> Result<crate::pointer_journal::FiniteScrollVector, crate::pointer_journal::ScrollEdgeError> {
+    if !modifiers.shift() {
+        return Ok(vector);
+    }
+    crate::pointer_journal::FiniteScrollVector::new(vector.x() + vector.y(), 0.0)
 }
 
 const fn scroll_session_receiver(session: ActiveScrollSession) -> Option<PresentationHitRegionId> {
     match session.disposition {
-        ActiveScrollDisposition::AwaitingFirstDelta(_) => None,
         ActiveScrollDisposition::Owned(owner) => Some(owner.receiver),
         ActiveScrollDisposition::Suppressed(_) => None,
+        ActiveScrollDisposition::AwaitingProviderTerminal(terminal) => terminal.receiver,
     }
+}
+
+fn scroll_owner_probe_point(owner: ScrollOwner) -> LogicalPoint {
+    let rect = owner.hit.hit().rect();
+    let min = rect.min();
+    let max = rect.max();
+    LogicalPoint::new(
+        min.x() + (max.x() - min.x()) / 2.0,
+        min.y() + (max.y() - min.y()) / 2.0,
+    )
+    .expect("a validated hit rectangle has a finite midpoint")
+}
+
+const fn scroll_session_is_semantically_active(session: &ActiveScrollSession) -> bool {
+    !matches!(
+        session.disposition,
+        ActiveScrollDisposition::AwaitingProviderTerminal(_)
+    )
 }
 
 const fn scroll_suppressed(
@@ -1373,6 +1406,17 @@ fn scroll_invariant(cause: ReductionCause, detail: impl Into<String>) -> EngineE
 mod tests {
     use super::*;
     use crate::intent::PointerId;
+
+    #[test]
+    fn shift_projection_keeps_raw_f64_precision_in_core() {
+        let raw = crate::pointer_journal::FiniteScrollVector::new(16_777_217.25, -16_777_216.0)
+            .expect("the raw scroll vector is finite");
+        let projected = core_scroll_vector(raw, ScrollModifiers::new(true, false, false, false))
+            .expect("the projected scroll vector is finite");
+
+        assert_eq!(projected.x(), 1.25);
+        assert_eq!(projected.y(), 0.0);
+    }
 
     #[test]
     fn retention_manifest_accounts_for_sessions_and_live_stream_watermarks() {

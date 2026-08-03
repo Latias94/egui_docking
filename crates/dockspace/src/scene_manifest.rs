@@ -181,7 +181,12 @@ impl PopupPlaneBoundsKey {
     }
 }
 
-/// Exact key for the intrinsic content minimum of one tabs leaf.
+/// Exact key for one pane item's intrinsic content minimum in a tabs leaf.
+///
+/// Every item is measured, not only the selected item. This lets core project
+/// a drag candidate in which any visible tab becomes the selected item of a
+/// newly created leaf without inventing a minimum-size heuristic. An empty leaf
+/// is represented by `selected == None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PaneMinimumKey {
     root: RootId,
@@ -212,7 +217,7 @@ impl PaneMinimumKey {
         self.tabs
     }
 
-    /// Returns the exact selected pane observed by the core.
+    /// Returns the pane item being measured, or `None` for an empty leaf.
     #[must_use]
     pub const fn selected(self) -> Option<ItemId> {
         self.selected
@@ -419,6 +424,11 @@ impl TabStripMetrics {
     #[must_use]
     pub const fn scroll_offset(self) -> Option<f64> {
         self.scroll_offset
+    }
+
+    pub(crate) const fn without_legacy_scroll_offset(mut self) -> Self {
+        self.scroll_offset = None;
+        self
     }
 
     /// Returns renderer measurements for a tab-list menu, when available.
@@ -1341,6 +1351,22 @@ impl AuthoritativeSurfaceMeasurements<'_> {
             Some(Measurement::Measured(value)) => Some(*value),
             Some(Measurement::Unavailable(_)) | None => None,
         }
+    }
+
+    pub(crate) fn tab_intrinsics(
+        &self,
+    ) -> impl Iterator<Item = (TabIntrinsicKey, TabIntrinsic)> + '_ {
+        self.measurements
+            .tab_intrinsics
+            .iter()
+            .filter_map(|(key, value)| value.measured().copied().map(|value| (*key, value)))
+    }
+
+    pub(crate) fn tab_strips(&self) -> impl Iterator<Item = (TabStripKey, TabStripMetrics)> + '_ {
+        self.measurements
+            .tab_strips
+            .iter()
+            .filter_map(|(key, value)| value.measured().copied().map(|value| (*key, value)))
     }
 }
 

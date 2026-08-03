@@ -1,5 +1,7 @@
 //! Deterministic resolution of authoritative drop locations.
 
+mod preview;
+
 use crate::RootPresentationOwner;
 use crate::command::{
     DockTarget, EdgeTargetScope, MovePayload, NodeSource, RootContent, RootPresentationTarget,
@@ -20,7 +22,10 @@ use crate::ids::{FloatingPresentationId, RootId, SurfaceId, WorkspaceRevision};
 use crate::intent::SurfaceBackgroundRootOffer;
 use crate::interaction::DragSessionId;
 use crate::policy::{DockPolicySnapshot, PolicyRejection};
-use crate::scene::{PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp};
+use crate::scene::{
+    PresentationLayoutFacts, PresentationPlan, SurfaceScene, SurfaceSceneSet, SurfaceSceneStamp,
+};
+#[cfg(test)]
 use crate::transaction::WorkspaceTransaction;
 use crate::transition::WorkspaceVersion;
 use crate::workspace::WorkspaceIndex;
@@ -101,9 +106,11 @@ pub fn resolve_drop(
                 source,
             })
         })?;
+    let source_layout_facts = source_presentation_layout_facts(scene, workspace, &source);
     resolve_presented_drop(
         presented.stamp(),
         presented.plan(),
+        source_layout_facts,
         workspace,
         workspace_version,
         &workspace_index,
@@ -127,6 +134,7 @@ pub fn resolve_drop(
 pub(crate) fn resolve_presented_drop(
     stamp: SurfaceSceneStamp,
     ready: &PresentationPlan,
+    source_layout_facts: Option<&PresentationLayoutFacts>,
     workspace: &Workspace,
     workspace_version: WorkspaceVersion,
     workspace_index: &WorkspaceIndex,
@@ -149,6 +157,7 @@ pub(crate) fn resolve_presented_drop(
         return resolve_presented_unguided_drop(
             stamp,
             ready,
+            source_layout_facts,
             workspace,
             workspace_version,
             workspace_index,
@@ -166,6 +175,8 @@ pub(crate) fn resolve_presented_drop(
         workspace_version,
         workspace_index,
         policy,
+        ready,
+        source_layout_facts,
         &source,
         surface_background_offer,
     );
@@ -202,6 +213,7 @@ pub(crate) fn resolve_presented_drop(
                 workspace_version,
                 workspace_index,
                 policy,
+                source_layout_facts,
                 session,
                 surface,
                 point,
@@ -249,6 +261,7 @@ pub(crate) fn resolve_presented_drop(
 fn resolve_presented_unguided_drop(
     stamp: SurfaceSceneStamp,
     surface_scene: &PresentationPlan,
+    source_layout_facts: Option<&PresentationLayoutFacts>,
     workspace: &Workspace,
     workspace_version: WorkspaceVersion,
     workspace_index: &WorkspaceIndex,
@@ -271,6 +284,8 @@ fn resolve_presented_unguided_drop(
         workspace_version,
         workspace_index,
         policy,
+        surface_scene,
+        source_layout_facts,
         &source,
         surface_background_offer,
     );
@@ -308,15 +323,17 @@ fn resolve_presented_unguided_drop(
         )));
     };
     match assessment.prepare_winner(target)? {
-        PreparedDropTarget::Eligible(command) => Ok(DropResolution::Resolved(ResolvedDrop {
-            scene: stamp,
-            session,
-            source,
-            target: target.id(),
-            visual: target.visual(),
-            command,
-        })),
-        PreparedDropTarget::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
+        PreparedDropWinner::Eligible { command, visual } => {
+            Ok(DropResolution::Resolved(ResolvedDrop {
+                scene: stamp,
+                session,
+                source,
+                target: target.id(),
+                visual,
+                command,
+            }))
+        }
+        PreparedDropWinner::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
             stamp,
             surface,
             point,
@@ -370,9 +387,11 @@ fn resolve_unguided_drop(
                 source,
             })
         })?;
+    let source_layout_facts = source_presentation_layout_facts(scene, workspace, &source);
     resolve_presented_unguided_drop(
         ready.stamp(),
         ready.plan(),
+        source_layout_facts,
         workspace,
         workspace_version,
         &workspace_index,
@@ -475,30 +494,28 @@ fn build_affordance(
             let target = guide_target.target();
             let key = DropGuideTargetKey::new(cluster_id, slot, target.id());
             let is_exact_hit = active == Some(key);
-            let preparation = if is_exact_hit {
-                assessment.prepare_winner(target)?
-            } else {
-                assessment.check_target(target)?
-            };
-            let eligibility = match preparation {
-                PreparedDropTarget::Eligible(command) => {
-                    if is_exact_hit {
+            let eligibility = if is_exact_hit {
+                match assessment.prepare_winner(target)? {
+                    PreparedDropWinner::Eligible { command, visual } => {
                         exact = Some(ExactGuidePreparation::Eligible {
                             target: target.id(),
-                            visual: target.visual(),
+                            visual,
                             command,
                         });
+                        DropGuideEligibility::Eligible
                     }
-                    DropGuideEligibility::Eligible
-                }
-                PreparedDropTarget::Rejected(reason) => {
-                    if is_exact_hit {
+                    PreparedDropWinner::Rejected(reason) => {
                         exact = Some(ExactGuidePreparation::Rejected {
                             target: target.id(),
                             reason: reason.clone(),
                         });
+                        DropGuideEligibility::Rejected(reason)
                     }
-                    DropGuideEligibility::Rejected(reason)
+                }
+            } else {
+                match assessment.check_target(target)? {
+                    PreparedDropTarget::Eligible(_) => DropGuideEligibility::Eligible,
+                    PreparedDropTarget::Rejected(reason) => DropGuideEligibility::Rejected(reason),
                 }
             };
             targets.push(DropAffordanceTarget::new(
@@ -572,19 +589,23 @@ fn resolve_exact_unguided_target(
         location.workspace_version,
         location.workspace_index,
         location.policy,
+        location.ready,
+        location.source_layout_facts,
         &source,
         location.surface_background_offer,
     );
     match assessment.prepare_winner(target)? {
-        PreparedDropTarget::Eligible(command) => Ok(DropResolution::Resolved(ResolvedDrop {
-            scene: location.scene,
-            session: location.session,
-            source,
-            target: target.id(),
-            visual: target.visual(),
-            command,
-        })),
-        PreparedDropTarget::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
+        PreparedDropWinner::Eligible { command, visual } => {
+            Ok(DropResolution::Resolved(ResolvedDrop {
+                scene: location.scene,
+                session: location.session,
+                source,
+                target: target.id(),
+                visual,
+                command,
+            }))
+        }
+        PreparedDropWinner::Rejected(reason) => Ok(DropResolution::Rejected(RejectedDrop::new(
             location.scene,
             location.surface,
             location.point,
@@ -598,6 +619,8 @@ struct DropEligibilityContext<'a> {
     workspace_version: WorkspaceVersion,
     workspace_index: &'a WorkspaceIndex,
     policy: &'a DockPolicySnapshot,
+    target_plan: &'a PresentationPlan,
+    source_layout_facts: Option<&'a PresentationLayoutFacts>,
     source: &'a MovePayload,
     surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     topology: Result<crate::operation::DropCommandEligibility<'a>, CommandError>,
@@ -610,6 +633,8 @@ impl<'a> DropEligibilityContext<'a> {
         workspace_version: WorkspaceVersion,
         workspace_index: &'a WorkspaceIndex,
         policy: &'a DockPolicySnapshot,
+        target_plan: &'a PresentationPlan,
+        source_layout_facts: Option<&'a PresentationLayoutFacts>,
         source: &'a MovePayload,
         surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     ) -> Self {
@@ -631,6 +656,8 @@ impl<'a> DropEligibilityContext<'a> {
             workspace_version,
             workspace_index,
             policy,
+            target_plan,
+            source_layout_facts,
             source,
             surface_background_offer,
             topology,
@@ -720,29 +747,47 @@ impl<'a> DropEligibilityContext<'a> {
     fn prepare_winner(
         &self,
         target: &DropTargetRecord,
-    ) -> Result<PreparedDropTarget, DropResolutionError> {
+    ) -> Result<PreparedDropWinner, DropResolutionError> {
         record_geometric_winner();
         match self.check_target(target)? {
-            PreparedDropTarget::Eligible(command) => self.preflight(command),
-            rejected @ PreparedDropTarget::Rejected(_) => Ok(rejected),
+            PreparedDropTarget::Eligible(command) => self.preflight(target, command),
+            PreparedDropTarget::Rejected(reason) => Ok(PreparedDropWinner::Rejected(reason)),
         }
     }
 
     fn preflight(
         &self,
+        target: &DropTargetRecord,
         command: WorkspaceCommand,
-    ) -> Result<PreparedDropTarget, DropResolutionError> {
-        match WorkspaceTransaction::from_commands([command.clone()])
-            .preflight(self.workspace, self.policy)
-        {
-            Ok(()) => Ok(PreparedDropTarget::Eligible(command)),
+    ) -> Result<PreparedDropWinner, DropResolutionError> {
+        match crate::operation::prepare_transaction(
+            self.workspace,
+            self.policy,
+            std::slice::from_ref(&command),
+        ) {
+            Ok(prepared) => {
+                let visual = preview::resolved_visual(
+                    self.workspace,
+                    &prepared.candidate,
+                    self.workspace_version,
+                    self.policy,
+                    self.target_plan,
+                    self.source_layout_facts,
+                    target,
+                    &command,
+                )
+                .map_err(|source| DropResolutionError::PreviewProjection {
+                    detail: source.to_string(),
+                })?;
+                Ok(PreparedDropWinner::Eligible { command, visual })
+            }
             Err(TransactionError::Command {
                 source: CommandError::Policy(reason),
                 ..
-            }) => Ok(PreparedDropTarget::Rejected(DropRejectionReason::Policy(
+            }) => Ok(PreparedDropWinner::Rejected(DropRejectionReason::Policy(
                 reason,
             ))),
-            Err(error) if error.is_expected_rejection() => Ok(PreparedDropTarget::Rejected(
+            Err(error) if error.is_expected_rejection() => Ok(PreparedDropWinner::Rejected(
                 DropRejectionReason::Prevalidation(error),
             )),
             Err(error) => Err(DropResolutionError::UnexpectedPrevalidation(error)),
@@ -1194,9 +1239,28 @@ fn prepare_surface_background_command(
     })
 }
 
+fn source_presentation_layout_facts<'a>(
+    scene: &'a SurfaceSceneSet,
+    workspace: &Workspace,
+    source: &MovePayload,
+) -> Option<&'a PresentationLayoutFacts> {
+    let root = match source {
+        MovePayload::Item(source) => source.root(),
+        MovePayload::Tabs(source) | MovePayload::Subtree(source) => source.root(),
+    };
+    let surface = match workspace.presentation_for_root(root)? {
+        RootPresentationOwner::Main { surface }
+        | RootPresentationOwner::Contained { surface, .. } => surface,
+    };
+    scene
+        .ready_surface(surface)
+        .and_then(|scene| scene.plan().layout_facts())
+}
+
 struct DropLocation<'a> {
     scene: SurfaceSceneStamp,
     ready: &'a PresentationPlan,
+    source_layout_facts: Option<&'a PresentationLayoutFacts>,
     workspace: &'a Workspace,
     workspace_version: WorkspaceVersion,
     workspace_index: &'a WorkspaceIndex,
@@ -1246,6 +1310,14 @@ const fn drop_target_root(target: DropTargetId) -> Option<RootId> {
 
 enum PreparedDropTarget {
     Eligible(WorkspaceCommand),
+    Rejected(DropRejectionReason),
+}
+
+enum PreparedDropWinner {
+    Eligible {
+        command: WorkspaceCommand,
+        visual: DropVisual,
+    },
     Rejected(DropRejectionReason),
 }
 
@@ -1562,6 +1634,12 @@ pub enum DropResolutionError {
     PresentedTargetIdentityMismatch {
         /// Structural id that disagreed with the compiled command proof.
         target: DropTargetId,
+    },
+    /// A successful transaction candidate could not reproduce its final edge preview.
+    #[error("post-transaction drop preview projection failed: {detail}")]
+    PreviewProjection {
+        /// Internal projection failure retained for host diagnostics.
+        detail: String,
     },
 }
 
@@ -1919,6 +1997,7 @@ mod tests {
             plan.bounds(),
             None,
         );
+        measured.clone_layout_facts_from(plan);
         for record in plan.pane_records().iter().cloned() {
             measured.push_pane_record(record);
         }
@@ -2249,6 +2328,11 @@ mod tests {
             workspace_version,
             &workspace_index,
             &policy,
+            scene
+                .ready_surface(TARGET_SURFACE)
+                .expect("target scene must be ready")
+                .plan(),
+            None,
             &payload,
             None,
         );
@@ -2298,6 +2382,11 @@ mod tests {
             workspace_version,
             &workspace_index,
             &policy,
+            scene
+                .ready_surface(TARGET_SURFACE)
+                .expect("target scene must be ready")
+                .plan(),
+            None,
             &payload,
             None,
         );
@@ -2514,6 +2603,7 @@ mod tests {
         let query = resolve_presented_drop(
             ready.stamp(),
             ready.plan(),
+            None,
             &workload.workspace,
             workload.workspace_version,
             &workload.workspace_index,
@@ -3268,6 +3358,325 @@ mod tests {
             tabs: sibling_tabs,
         }));
         assert!(!suppression.excludes_occlusion(sibling));
+    }
+
+    #[test]
+    fn same_root_edge_preview_matches_the_post_detach_payload_layout() {
+        let surface = SurfaceId::new(91);
+        let root = RootId::new(92);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([ItemId::new(93)]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(94)]));
+        let split = builder.insert_node(
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+                .expect("weighted source layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().expect("preview workspace must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("preview engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        assert!(plan.layout_facts().is_some());
+        let target_id = DropTargetId::InnerEdge {
+            surface,
+            root,
+            node: target_tabs,
+            edge: Edge::Left,
+        };
+        let target = plan
+            .drop_guide_clusters()
+            .iter()
+            .flat_map(DropGuideClusterRecord::targets)
+            .map(|(_, target)| target.target())
+            .find(|target| target.id() == target_id)
+            .expect("the target pane must expose a left inner guide");
+        let hit = target.region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("guide midpoint must be finite");
+        let source = MovePayload::Tabs(
+            workspace
+                .capture_node_source(root, source_tabs)
+                .expect("source tabs must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        assert!(
+            scene
+                .ready_surface(surface)
+                .expect("sealed target surface must remain ready")
+                .plan()
+                .layout_facts()
+                .is_some()
+        );
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("same-root edge resolution must remain valid");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!("the exact inner guide must resolve");
+        };
+
+        let mut committed = workspace.clone();
+        WorkspaceTransaction::from_commands([resolved.command().clone()])
+            .apply(&mut committed, &DockPolicySnapshot::default())
+            .expect("the prevalidated drop command must commit");
+        let committed_engine = DockEngine::new(committed, DockPolicy::default())
+            .expect("the committed workspace must remain valid");
+        let committed_plan = compile_fixture_surface_plan(&committed_engine, surface, rect());
+        let payload_bounds = committed_plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.id().tabs == source_tabs)
+            .expect("the moved tabs node must remain the payload leaf")
+            .bounds();
+
+        assert_eq!(resolved.visual().rect(), payload_bounds);
+    }
+
+    #[test]
+    fn same_root_center_preview_matches_the_post_detach_content_layout() {
+        let surface = SurfaceId::new(95);
+        let root = RootId::new(96);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([ItemId::new(97)]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(98)]));
+        let split = builder.insert_node(
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+                .expect("weighted center-preview layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder
+            .build()
+            .expect("center-preview workspace must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("center-preview engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        let target_id = DropTargetId::Center {
+            surface,
+            root,
+            tabs: target_tabs,
+        };
+        let target = plan
+            .drop_guide_clusters()
+            .iter()
+            .flat_map(DropGuideClusterRecord::targets)
+            .map(|(_, target)| target.target())
+            .find(|target| target.id() == target_id)
+            .expect("the target pane must expose a center guide");
+        let stale_visual = target.visual().rect();
+        let hit = target.region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("guide midpoint must be finite");
+        let source = MovePayload::Tabs(
+            workspace
+                .capture_node_source(root, source_tabs)
+                .expect("source tabs must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("same-root center resolution must remain valid");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!("the exact center guide must resolve");
+        };
+
+        let mut committed = workspace.clone();
+        WorkspaceTransaction::from_commands([resolved.command().clone()])
+            .apply(&mut committed, &DockPolicySnapshot::default())
+            .expect("the prevalidated center command must commit");
+        let committed_engine = DockEngine::new(committed, DockPolicy::default())
+            .expect("the committed center workspace must remain valid");
+        let committed_plan = compile_fixture_surface_plan(&committed_engine, surface, rect());
+        let content_bounds = committed_plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.id().tabs == target_tabs)
+            .expect("the target tabs must remain after center merge")
+            .content_bounds();
+
+        assert_ne!(stale_visual, content_bounds);
+        assert_eq!(resolved.visual().rect(), content_bounds);
+    }
+
+    #[test]
+    fn same_root_tab_gap_preview_tracks_the_inserted_tab_in_the_future_strip() {
+        let surface = SurfaceId::new(111);
+        let root = RootId::new(112);
+        let moved = ItemId::new(113);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs([moved]));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(114), ItemId::new(115)]));
+        let split = builder.insert_node(
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+                .expect("weighted tab-gap layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder
+            .build()
+            .expect("tab-gap preview workspace must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("tab-gap preview engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        let target_id = DropTargetId::TabGap {
+            surface,
+            root,
+            tabs: target_tabs,
+            index: 1,
+        };
+        let target = plan
+            .drop_targets()
+            .iter()
+            .find(|target| target.id() == target_id)
+            .expect("the target strip must expose its middle tab gap");
+        let stale_visual = target.visual().rect();
+        let hit = target.region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("tab-gap midpoint must be finite");
+        let source = MovePayload::Item(
+            workspace
+                .capture_item_source(root, source_tabs, moved)
+                .expect("source item must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("same-root tab-gap resolution must remain valid");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!("the exact tab gap must resolve");
+        };
+
+        let mut committed = workspace.clone();
+        WorkspaceTransaction::from_commands([resolved.command().clone()])
+            .apply(&mut committed, &DockPolicySnapshot::default())
+            .expect("the prevalidated tab-gap command must commit");
+        let committed_engine = DockEngine::new(committed, DockPolicy::default())
+            .expect("the committed tab-gap workspace must remain valid");
+        let committed_plan = compile_fixture_surface_plan(&committed_engine, surface, rect());
+        let bar = committed_plan
+            .tab_bar_records()
+            .iter()
+            .find(|bar| bar.id().root == root && bar.id().tabs == target_tabs)
+            .expect("the target tab bar must remain after insertion");
+        let inserted = bar
+            .members()
+            .iter()
+            .find(|member| member.tab().item == moved)
+            .expect("the future strip must contain the moved item")
+            .full_bounds();
+        let width = stale_visual.width().min(bar.viewport().width());
+        let marker_x = (inserted.x() - width * 0.5).clamp(
+            bar.viewport().x(),
+            (bar.viewport().max().x() - width).max(bar.viewport().x()),
+        );
+        let expected =
+            LogicalRect::new(marker_x, bar.viewport().y(), width, bar.viewport().height())
+                .expect("future tab-gap marker must be valid");
+
+        assert_ne!(stale_visual, expected);
+        assert_eq!(resolved.visual().rect(), expected);
+    }
+
+    #[test]
+    fn cross_surface_unselected_item_preview_uses_retained_source_measurements() {
+        let source_surface = SurfaceId::new(101);
+        let target_surface = SurfaceId::new(102);
+        let source_root = RootId::new(103);
+        let target_root = RootId::new(104);
+        let moved = ItemId::new(105);
+        let mut builder = Workspace::builder();
+        let source_tabs = builder.insert_node(Node::tabs_with_selection(
+            [moved, ItemId::new(106)],
+            Some(ItemId::new(106)),
+        ));
+        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(107)]));
+        builder.set_root(source_root, RootRecord::new(source_tabs));
+        builder.set_root(target_root, RootRecord::new(target_tabs));
+        builder.set_surface(source_surface, SurfacePresentation::with_main(source_root));
+        builder.set_surface(target_surface, SurfacePresentation::with_main(target_root));
+        let workspace = builder
+            .build()
+            .expect("cross-surface fixture must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("cross-surface preview engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, target_surface, rect());
+        let target_id = DropTargetId::InnerEdge {
+            surface: target_surface,
+            root: target_root,
+            node: target_tabs,
+            edge: Edge::Right,
+        };
+        let target = plan
+            .drop_guide_clusters()
+            .iter()
+            .flat_map(DropGuideClusterRecord::targets)
+            .map(|(_, target)| target.target())
+            .find(|target| target.id() == target_id)
+            .expect("target pane must expose a right inner guide");
+        let hit = target.region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("guide midpoint must be finite");
+        let source = MovePayload::Item(
+            workspace
+                .capture_item_source(source_root, source_tabs, moved)
+                .expect("unselected source item must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            target_surface,
+            point,
+        )
+        .expect("cross-surface edge resolution must use retained source measurements");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!("the exact cross-surface guide must resolve");
+        };
+
+        let mut committed = workspace.clone();
+        WorkspaceTransaction::from_commands([resolved.command().clone()])
+            .apply(&mut committed, &DockPolicySnapshot::default())
+            .expect("the cross-surface drop command must commit");
+        let committed_engine = DockEngine::new(committed, DockPolicy::default())
+            .expect("the committed cross-surface workspace must remain valid");
+        let committed_plan =
+            compile_fixture_surface_plan(&committed_engine, target_surface, rect());
+        let payload_bounds = committed_plan
+            .pane_records()
+            .iter()
+            .find(|pane| pane.selected() == Some(moved))
+            .expect("the moved item must own its new target leaf")
+            .bounds();
+
+        assert_eq!(resolved.visual().rect(), payload_bounds);
     }
 }
 

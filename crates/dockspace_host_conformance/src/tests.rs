@@ -10,9 +10,14 @@ use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceSession, HostFrameReport,
+    DockspaceHostFrame, DockspaceInteractionError, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostFrameReport,
     HostInputOutcome, HostWindowToken, NativeCloseState, NativePlatformError, NativeSurfaceLease,
-    NativeWindowFacts, PresentedDockReceiver, SurfacePointerEvent, SurfacePointerReceiverFacts,
+    NativeWindowFacts, PresentationSettlementRejection, PresentedDockReceiver,
+    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
+    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
     UniformSurfaceMetrics,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
@@ -64,7 +69,7 @@ impl DeterministicHost {
         assert_eq!(outputs.len(), 1, "the fixture paints one logical surface");
         for output in outputs {
             self.session
-                .confirm_presented(output)
+                .settle_presentation(output, SurfacePresentationResult::Presented)
                 .expect("the host confirms the exact output it presented");
         }
         self.run(|_| {});
@@ -97,6 +102,234 @@ fn assert_command_applied(report: &HostFrameReport) {
             changed: true,
         }]
     ));
+}
+
+#[test]
+fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
+    let mut builder = Workspace::builder();
+    let left = builder.insert_node(Node::tabs([A]));
+    let right = builder.insert_node(Node::tabs([B]));
+    let split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [left, right])
+            .expect("the renderer fixture split is valid"),
+    );
+    builder.set_root(ROOT, RootRecord::new(split));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    let mut host = DeterministicHost::new(
+        builder
+            .build()
+            .expect("the renderer fixture workspace is canonical"),
+    );
+    let bounds = LogicalRect::new(0.0, 0.0, 800.0, 480.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(80.0, 60.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the renderer supplies the complete measurement manifest");
+    });
+
+    let mut first_visuals = Vec::new();
+    let first_output = host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the paint phase is available")
+            .expect("the measured surface has one complete plan");
+        assert_eq!(plan.surface(), SURFACE);
+        assert_eq!(plan.bounds(), bounds);
+
+        let panes = plan.panes().collect::<Vec<_>>();
+        assert_eq!(panes.len(), 2);
+        assert!(panes.iter().all(|pane| pane.root() == ROOT));
+        assert_eq!(
+            panes
+                .iter()
+                .filter_map(|pane| pane.selected())
+                .collect::<Vec<_>>(),
+            [A, B]
+        );
+        first_visuals.extend(panes.iter().map(|pane| pane.visual_id()));
+
+        let tabs = plan.tabs().collect::<Vec<_>>();
+        assert_eq!(
+            tabs.iter().map(|tab| tab.item()).collect::<Vec<_>>(),
+            [A, B]
+        );
+        assert!(tabs.iter().all(|tab| tab.selected()));
+        first_visuals.extend(tabs.iter().map(|tab| tab.visual_id()));
+
+        let tab_bars = plan.tab_bars().collect::<Vec<_>>();
+        assert_eq!(tab_bars.len(), 2);
+        assert!(tab_bars.iter().all(|bar| bar.members().len() == 1));
+        first_visuals.extend(tab_bars.iter().map(|bar| bar.visual_id()));
+
+        let splitters = plan.splitters().collect::<Vec<_>>();
+        assert_eq!(splitters.len(), 1);
+        assert_eq!(splitters[0].axis(), Axis::Horizontal);
+        assert!(splitters[0].operable());
+        assert!(splitters[0].hit_bounds().width() > 0.0);
+        first_visuals.push(splitters[0].visual_id());
+
+        assert_eq!(plan.splitter_junctions().len(), 0);
+        assert_eq!(plan.contained().len(), 0);
+        let guides = plan.drop_guides().collect::<Vec<_>>();
+        assert!(!guides.is_empty());
+        assert!(guides.iter().all(|guide| guide.targets().count() >= 4));
+        first_visuals.extend(guides.iter().map(|guide| guide.visual_id()));
+        let roles = plan
+            .receivers()
+            .map(|receiver| receiver.role())
+            .collect::<Vec<_>>();
+        assert!(roles.contains(&DockspaceReceiverRole::PaneBody));
+        assert!(roles.contains(&DockspaceReceiverRole::TabBody));
+        assert!(roles.contains(&DockspaceReceiverRole::Splitter));
+        assert!(first_visuals.iter().all(|id| {
+            matches!(
+                id.kind(),
+                DockspaceVisualKind::Pane
+                    | DockspaceVisualKind::Tab
+                    | DockspaceVisualKind::TabBar
+                    | DockspaceVisualKind::Splitter
+                    | DockspaceVisualKind::DropGuide
+            )
+        }));
+
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the host confirms the complete plan it painted");
+    });
+    host.observe_painted_outputs(first_output);
+
+    let second_output = host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the retained paint phase is available")
+            .expect("the retained surface remains paintable");
+        let mut current = plan
+            .panes()
+            .map(|record| record.visual_id())
+            .chain(plan.tabs().map(|record| record.visual_id()))
+            .chain(plan.tab_bars().map(|record| record.visual_id()))
+            .chain(plan.splitters().map(|record| record.visual_id()))
+            .chain(plan.drop_guides().map(|record| record.visual_id()))
+            .collect::<Vec<_>>();
+        first_visuals.sort_unstable();
+        current.sort_unstable();
+        assert_eq!(current, first_visuals, "visual identity is output-stable");
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the retained complete plan was painted");
+    });
+    host.observe_painted_outputs(second_output);
+}
+
+#[test]
+fn dropped_output_retires_without_granting_interaction_authority() {
+    let (workspace, _) = tabs_workspace([A]);
+    let mut host = DeterministicHost::new(workspace);
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the surface measurements are complete");
+    });
+    let mut paint = host.run(|frame| {
+        assert!(
+            frame
+                .paint_plan(SURFACE)
+                .expect("the paint phase is available")
+                .is_some()
+        );
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the host records the exact output it painted");
+    });
+    let mut outputs = paint.take_painted_outputs();
+    assert_eq!(outputs.len(), 1, "the fixture paints one exact output");
+    let output = outputs.pop().expect("the checked output exists");
+    host.session
+        .settle_presentation(output, SurfacePresentationResult::Dropped)
+        .expect("the renderer may authoritatively drop an output");
+    host.run(|_| {});
+
+    assert!(matches!(
+        host.session.enable_surface_pointer(SURFACE),
+        Err(dockspace::runtime::DockspaceRuntimeError::Interaction(
+            dockspace::runtime::DockspaceInteractionError::PresentationAuthorityUnavailable {
+                surface: SURFACE
+            }
+        ))
+    ));
+}
+
+#[test]
+fn rejected_settlement_returns_its_affine_output_for_retry() {
+    let (workspace, _) = tabs_workspace([A]);
+    let mut host = DeterministicHost::new(workspace);
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the surface measurements are complete");
+    });
+
+    let mut first_report = host.run(|frame| {
+        assert!(
+            frame
+                .paint_plan(SURFACE)
+                .expect("the first paint phase is available")
+                .is_some()
+        );
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the first output is painted");
+    });
+    let mut first_outputs = first_report.take_painted_outputs();
+    let first = first_outputs
+        .pop()
+        .expect("the first paint emits one capability");
+
+    let mut second_report = host.run(|frame| {
+        assert!(
+            frame
+                .paint_plan(SURFACE)
+                .expect("the second paint phase is available")
+                .is_some()
+        );
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the second output is painted");
+    });
+    let mut second_outputs = second_report.take_painted_outputs();
+    let second = second_outputs
+        .pop()
+        .expect("the second paint emits one capability");
+
+    host.session
+        .settle_presentation(first, SurfacePresentationResult::Presented)
+        .expect("the first output becomes the pending terminal result");
+    let error = host
+        .session
+        .settle_presentation(second, SurfacePresentationResult::Dropped)
+        .expect_err("one stream admits only one pending settlement");
+    assert_eq!(
+        error.rejection(),
+        PresentationSettlementRejection::SettlementAlreadyPending
+    );
+    let second = error.into_output();
+
+    host.run(|_| {});
+    host.session
+        .settle_presentation(second, SurfacePresentationResult::Dropped)
+        .expect("the returned capability remains valid after the first settlement commits");
+    host.run(|_| {});
 }
 
 #[test]
@@ -379,11 +612,13 @@ impl InteractionFixture {
         let press = source.center();
         self.host.run(|frame| {
             frame
-                .submit_surface_pointer(
-                    SurfacePointerEvent::PrimaryPressed,
-                    press,
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(press),
+                    SurfacePointerCapture::ProviderEndpoint,
                     SurfacePointerReceiverFacts::delivery(&source),
-                )
+                ))
                 .expect("the source tab receives the press");
         });
 
@@ -396,11 +631,13 @@ impl InteractionFixture {
             .expect("the threshold-crossing point is valid");
         self.host.run(|frame| {
             frame
-                .submit_surface_pointer(
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
                     SurfacePointerEvent::Moved,
-                    moved,
+                    SurfacePointerPosition::Known(moved),
+                    SurfacePointerCapture::ProviderEndpoint,
                     SurfacePointerReceiverFacts::no_hover(&surface),
-                )
+                ))
                 .expect("the threshold move has an exact known-empty hover result");
         });
     }
@@ -409,11 +646,13 @@ impl InteractionFixture {
         let target = self.current_target();
         self.host.run(|frame| {
             frame
-                .submit_surface_pointer(
+                .submit_surface_pointer(SurfacePointerInput::new(
+                    SurfacePointerId::new(1),
                     SurfacePointerEvent::Moved,
-                    target.center(),
+                    SurfacePointerPosition::Known(target.center()),
+                    SurfacePointerCapture::ProviderEndpoint,
                     SurfacePointerReceiverFacts::hover(&target),
-                )
+                ))
                 .expect("the target receives one exact hover edge");
         });
     }
@@ -427,6 +666,15 @@ impl InteractionFixture {
             assert!(
                 plan.drag_preview().is_some(),
                 "the renderer must actually see the preview it confirms"
+            );
+            let guides = plan.drop_guides().collect::<Vec<_>>();
+            assert!(
+                !guides.is_empty(),
+                "an active docking preview exposes its complete guide cluster"
+            );
+            assert!(
+                guides.iter().any(|guide| guide.targets().count() >= 5),
+                "one guide cluster exposes center and four directional targets"
             );
             frame
                 .confirm_surface_painted(SURFACE)
@@ -495,6 +743,247 @@ impl InteractionFixture {
 }
 
 #[test]
+fn runtime_pointer_batch_preserves_order_and_explicit_cancellation() {
+    let mut fixture = InteractionFixture::new();
+    let source = fixture.current_source();
+    let surface = fixture
+        .host
+        .session
+        .presented_surface(SURFACE)
+        .expect("the surface remains presented");
+    let press = source.center();
+    let moved = LogicalPoint::new(press.x() + 24.0, press.y() + 24.0)
+        .expect("the threshold-crossing point is valid");
+    let before = fixture.host.workspace().clone();
+
+    fixture.host.run(|frame| {
+        frame
+            .submit_surface_pointer_batch([
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(7),
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(press),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::delivery(&source),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(7),
+                    SurfacePointerEvent::Moved,
+                    SurfacePointerPosition::Known(moved),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::no_hover(&surface),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(7),
+                    SurfacePointerEvent::StreamCancelled(
+                        SurfacePointerCancelReason::ExplicitPlatformCancellation,
+                    ),
+                    SurfacePointerPosition::Known(moved),
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::unknown(),
+                ),
+            ])
+            .expect("one batch preserves press, move, then cancellation order");
+    });
+
+    assert_eq!(fixture.host.workspace(), &before);
+    fixture.host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the cancelled surface remains paintable")
+            .expect("the retained surface has one paint plan");
+        assert!(
+            plan.drag_preview().is_none(),
+            "the explicit terminal edge must not leave a drag session behind"
+        );
+    });
+}
+
+#[test]
+fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
+    let mut fixture = InteractionFixture::new();
+    let source = fixture.current_source();
+    let press = source.center();
+    let before = fixture.host.workspace().clone();
+
+    fixture.host.run(|frame| {
+        let error = frame
+            .submit_surface_pointer_batch([
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(9),
+                    SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                    SurfacePointerPosition::Known(press),
+                    SurfacePointerCapture::ProviderEndpoint,
+                    SurfacePointerReceiverFacts::delivery(&source),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(9),
+                    SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                        SurfaceScrollDeviceId::new(4),
+                        SurfaceScrollPhase::Discrete {
+                            delta: SurfaceScrollDelta::Lines {
+                                x: f64::NAN,
+                                y: 0.0,
+                            },
+                        },
+                        SurfaceScrollMomentum::Direct,
+                        SurfaceScrollModifiers::default(),
+                    )),
+                    SurfacePointerPosition::Known(press),
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::unknown(),
+                ),
+            ])
+            .expect_err("the invalid second edge rejects the complete public batch");
+        assert!(matches!(
+            error,
+            dockspace::runtime::DockspaceRuntimeError::Interaction(
+                DockspaceInteractionError::InvalidScrollSample
+            )
+        ));
+    });
+
+    assert_eq!(fixture.host.workspace(), &before);
+    fixture.host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the rejected batch leaves the surface paintable")
+            .expect("the retained surface has one paint plan");
+        assert!(
+            plan.drag_preview().is_none(),
+            "the valid prefix was never reduced"
+        );
+    });
+}
+
+#[test]
+fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
+    let (workspace, _) = tabs_workspace([A, B, C, X]);
+    let mut host = DeterministicHost::new(workspace);
+    let bounds = LogicalRect::new(0.0, 0.0, 220.0, 180.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the first pass measures the complete overflow strip");
+    });
+
+    let mut scroll_receiver = None;
+    let paint = host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the overflow strip is paintable")
+            .expect("the measured surface has one paint plan");
+        let bar = plan.tab_bars().next().expect("the tabs expose one bar");
+        assert!(bar.maximum_scroll_offset() > 0.0);
+        assert_eq!(bar.scroll_offset(), 0.0);
+        scroll_receiver = plan
+            .receivers()
+            .find(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the initial overflow output was painted");
+    });
+    host.observe_painted_outputs(paint);
+    host.session
+        .enable_surface_pointer(SURFACE)
+        .expect("the presented surface admits a local pointer provider");
+    let receiver = host
+        .session
+        .bind_presented_receiver(
+            &scroll_receiver.expect("the overflow strip exposes a scroll receiver"),
+        )
+        .expect("the scroll receiver belongs to the presented output");
+
+    let smooth = SurfaceScrollSequenceId::new(1);
+    host.run(|frame| {
+        frame
+            .submit_surface_pointer_batch([
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(11),
+                    SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                        SurfaceScrollDeviceId::new(3),
+                        SurfaceScrollPhase::Discrete {
+                            delta: SurfaceScrollDelta::Lines { x: -1.0, y: 0.0 },
+                        },
+                        SurfaceScrollMomentum::Direct,
+                        SurfaceScrollModifiers::default(),
+                    )),
+                    SurfacePointerPosition::Known(receiver.center()),
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::delivery(&receiver),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(12),
+                    SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                        SurfaceScrollDeviceId::new(4),
+                        SurfaceScrollPhase::Begin {
+                            sequence: smooth,
+                            delta: Some(SurfaceScrollDelta::Lines { x: -0.5, y: 0.0 }),
+                        },
+                        SurfaceScrollMomentum::Direct,
+                        SurfaceScrollModifiers::default(),
+                    )),
+                    SurfacePointerPosition::Known(receiver.center()),
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::delivery(&receiver),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(12),
+                    SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                        SurfaceScrollDeviceId::new(4),
+                        SurfaceScrollPhase::Update {
+                            sequence: smooth,
+                            delta: SurfaceScrollDelta::Lines { x: -0.5, y: 0.0 },
+                        },
+                        SurfaceScrollMomentum::Direct,
+                        SurfaceScrollModifiers::default(),
+                    )),
+                    SurfacePointerPosition::Unknown,
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::delivery(&receiver),
+                ),
+                SurfacePointerInput::new(
+                    SurfacePointerId::new(12),
+                    SurfacePointerEvent::Scrolled(SurfaceScrollEvent::new(
+                        SurfaceScrollDeviceId::new(4),
+                        SurfaceScrollPhase::End {
+                            sequence: smooth,
+                            delta: None,
+                        },
+                        SurfaceScrollMomentum::Direct,
+                        SurfaceScrollModifiers::default(),
+                    )),
+                    SurfacePointerPosition::Unknown,
+                    SurfacePointerCapture::None,
+                    SurfacePointerReceiverFacts::delivery(&receiver),
+                ),
+            ])
+            .expect("the exact scroll receiver consumes discrete and phaseful samples");
+    });
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the changed scroll state recompiles from the same measurements");
+    });
+    host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the scrolled surface remains paintable")
+            .expect("the scrolled surface has one paint plan");
+        let bar = plan.tab_bars().next().expect("the tabs retain one bar");
+        assert!(
+            bar.scroll_offset() > 0.0,
+            "the offset is owned and changed by dockspace; offset={}, maximum={}",
+            bar.scroll_offset(),
+            bar.maximum_scroll_offset(),
+        );
+    });
+}
+
+#[test]
 fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
     let mut fixture = InteractionFixture::new();
     fixture.begin_drag_without_target();
@@ -503,11 +992,13 @@ fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
 
     fixture.host.run(|frame| {
         frame
-            .submit_surface_pointer(
-                SurfacePointerEvent::PrimaryReleased,
-                target.center(),
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(target.center()),
+                SurfacePointerCapture::None,
                 SurfacePointerReceiverFacts::hover(&target),
-            )
+            ))
             .expect("the first target hit is reported exactly on release");
     });
 
@@ -524,11 +1015,13 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     let point = cached.current_target().center();
     cached.host.run(|frame| {
         frame
-            .submit_surface_pointer(
-                SurfacePointerEvent::PrimaryReleased,
-                point,
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(point),
+                SurfacePointerCapture::None,
                 SurfacePointerReceiverFacts::unknown(),
-            )
+            ))
             .expect("absence of a current hover fact is represented as unknown");
     });
     assert_eq!(cached.host.workspace(), &before_cached);
@@ -542,11 +1035,13 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     let before_stale = stale.host.workspace().clone();
     stale.host.run(|frame| {
         frame
-            .submit_surface_pointer(
-                SurfacePointerEvent::PrimaryReleased,
-                old_target.center(),
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(old_target.center()),
+                SurfacePointerCapture::None,
                 SurfacePointerReceiverFacts::hover(&old_target),
-            )
+            ))
             .expect("the facade converts a stale concrete receiver into fail-closed evidence");
     });
     assert_eq!(stale.host.workspace(), &before_stale);
@@ -562,11 +1057,13 @@ fn ogc_03_current_painted_preview_commits_exactly_once() {
 
     fixture.host.run(|frame| {
         frame
-            .submit_surface_pointer(
-                SurfacePointerEvent::PrimaryReleased,
-                target.center(),
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(target.center()),
+                SurfacePointerCapture::None,
                 SurfacePointerReceiverFacts::hover(&target),
-            )
+            ))
             .expect("the current receiver reports release over the painted preview");
     });
 
@@ -623,11 +1120,13 @@ fn ogc_04_stale_window_facts_clear_preview_and_require_repaint() {
     });
     fixture.host.run(|frame| {
         frame
-            .submit_surface_pointer(
-                SurfacePointerEvent::PrimaryReleased,
-                stale_target.center(),
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(1),
+                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(stale_target.center()),
+                SurfacePointerCapture::None,
                 SurfacePointerReceiverFacts::hover(&stale_target),
-            )
+            ))
             .expect("the facade degrades stale concrete receiver facts to Unknown");
     });
     assert_eq!(fixture.host.workspace(), &before);

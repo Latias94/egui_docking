@@ -521,6 +521,24 @@ impl Dockspace {
         )
     }
 
+    /// Returns whether core accepts one semantic action for an exact retained output.
+    #[must_use]
+    pub fn retained_semantic_receiver_supports(
+        &self,
+        output: SurfacePresentationOutputTicket,
+        emission: HostFrameKey,
+        target: dockspace::presentation_hit::PresentationHitRegionKind,
+        action: dockspace::semantic_input::SemanticReceiverAction,
+    ) -> bool {
+        self.engine
+            .interaction_projection(output.surface())
+            .is_some_and(|projection| {
+                projection.output_ticket() == output
+                    && projection.authority().emission() == emission
+                    && projection.semantic_manifest().supports(target, action)
+            })
+    }
+
     /// Records one close decision in the active backend causal stream.
     pub fn record_backend_close_resolution(
         &self,

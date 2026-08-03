@@ -1350,6 +1350,7 @@ impl DockEngine {
             let HostPresentationOutputPayload::Paint {
                 scene: ticket,
                 interaction,
+                coordinate_generation,
             } = promotion.payload()
             else {
                 continue;
@@ -1377,19 +1378,12 @@ impl DockEngine {
                 );
                 continue;
             }
-            let coordinate_generation = match capture {
-                SurfaceCoordinateCapture::Headless {
-                    authority_generation,
-                }
-                | SurfaceCoordinateCapture::NativeUnavailable {
-                    authority_generation,
-                    ..
-                }
-                | SurfaceCoordinateCapture::NativeReady {
-                    authority_generation,
-                    ..
-                } => authority_generation,
-            };
+            if capture.authority_generation() != coordinate_generation {
+                changed_surfaces.extend(
+                    self.invalidate_interaction_authority_for_current_streams(&promotion_stream),
+                );
+                continue;
+            }
             let authority = PresentedSurfaceAuthority::mint_observed(
                 ticket,
                 promotion.stream(),

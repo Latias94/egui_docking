@@ -5256,13 +5256,14 @@ fn paired_retention_records_one_actual_paint_and_one_matching_emission() {
     };
     assert_eq!(emission.request(), request);
     assert_eq!(emission.output().surface(), SOURCE_SURFACE);
-    assert_eq!(
+    assert!(matches!(
         emission.output().payload(),
         HostPresentationOutputPayload::Paint {
-            scene: ticket,
-            interaction: HostInteractionPresentation::default(),
-        }
-    );
+            scene,
+            interaction,
+            ..
+        } if scene == ticket && interaction == HostInteractionPresentation::default()
+    ));
 }
 
 #[test]
@@ -6659,6 +6660,7 @@ fn engine_presented_drop_reuses_the_requirement_workspace_index() {
         .engine
         .resolve_presented_drop_with_current_index(
             &presentation,
+            None,
             fixture.engine.policy_snapshot(),
             DragSessionId::new(fixture.engine.version().epoch(), DragGeneration::new(1)),
             source,

@@ -1,8 +1,11 @@
 //! Immutable presentation records grouped by semantic owner.
 
 mod contained;
+mod layout;
 mod splitter;
 mod tab;
+
+pub(crate) use layout::{PresentationLayoutFacts, RootLayoutFacts};
 
 pub use contained::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,

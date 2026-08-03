@@ -95,7 +95,7 @@ use crate::event::{ReductionCause, WorkspaceEvent, WorkspaceEventKind};
 use crate::frame::{
     PanelFocus, SurfaceVacancyAuthority, ViewportCoordinator, ViewportCoordinatorError,
 };
-use crate::geometry::{LogicalRect, LogicalSize};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::graph::{Node, Workspace};
 use crate::ids::{
     EngineAuthorityDomainId, FloatingPresentationId, HostPresentationAttemptId, InputSequence,
@@ -149,7 +149,7 @@ use crate::pointer_receiver::{
     PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
     PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverObservationError, PointerReceiverPresentedOutput, PointerReceiverProbeReceipt,
-    PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError,
+    PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError, ScrollReceiverChallenge,
     ValidatedPointerReceiverReceipt, ValidatedPointerReceiverReceiptBatch,
 };
 use crate::policy::{
@@ -937,6 +937,9 @@ fn pointer_receiver_candidate_spec(
     stream: PointerStreamId,
 ) -> PointerReceiverCandidateSpec {
     if matches!(edge.kind(), PointerEdgeKind::Scrolled(_)) {
+        let PointerEdgeKind::Scrolled(scroll) = edge.kind() else {
+            unreachable!("the branch is restricted to scroll edges");
+        };
         let delivery_point = match edge.location() {
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Known(point),
@@ -948,7 +951,11 @@ fn pointer_receiver_candidate_spec(
                 .and_then(DesktopRouteValidation::dock_route)
                 .map(|route| route.surface_position()),
         };
-        return PointerReceiverCandidateSpec::delivery(edge.sequence(), delivery_point);
+        return PointerReceiverCandidateSpec::scroll_delivery(
+            edge.sequence(),
+            delivery_point,
+            engine.scroll_receiver_challenge(stream, scroll),
+        );
     }
     let (receiver_route, hover_point) = match edge.location() {
         PointerEdgeLocation::SurfaceLocal {
@@ -2037,6 +2044,7 @@ struct PreparedContainedGesture {
     surface_bounds: crate::geometry::LogicalRect,
     coordinate_capture: SurfaceCoordinateCapture,
     presentation: FrozenPresentationAuthority,
+    source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
 #[derive(Clone)]
@@ -2050,6 +2058,7 @@ struct PreparedTabGesture {
     contained: Option<PreparedContainedTabOrigin>,
     initial_pointer: crate::geometry::LogicalPoint,
     presentation: FrozenPresentationAuthority,
+    source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
 #[derive(Clone)]

@@ -74,6 +74,7 @@ pub(crate) struct NativePresentationPrepareSavepoint {
 pub(crate) struct PresentedNativePointerGraph {
     native: ExactNativeViewport,
     scene: SurfacePresentationOutputTicket,
+    coordinate_generation: dockspace::viewport::CoordinateGeneration,
     emission: HostFrameKey,
     graph: PointerHitGraphSnapshot,
 }
@@ -85,6 +86,10 @@ impl PresentedNativePointerGraph {
 
     pub(crate) const fn scene(&self) -> SurfacePresentationOutputTicket {
         self.scene
+    }
+
+    pub(crate) const fn coordinate_generation(&self) -> dockspace::viewport::CoordinateGeneration {
+        self.coordinate_generation
     }
 
     pub(crate) const fn emission(&self) -> HostFrameKey {
@@ -367,12 +372,16 @@ impl NativePresentationLedger {
                     output
                         .payload()
                         .scene()
-                        .map(|scene| PresentedNativePointerGraph {
-                            native: pending.native,
-                            scene,
-                            emission: output.key(),
-                            graph,
-                        })
+                        .zip(output.payload().coordinate_generation())
+                        .map(
+                            |(scene, coordinate_generation)| PresentedNativePointerGraph {
+                                native: pending.native,
+                                scene,
+                                coordinate_generation,
+                                emission: output.key(),
+                                graph,
+                            },
+                        )
                 }),
             (EguiPresentationResult::Presented | EguiPresentationResult::Dropped, None)
             | (EguiPresentationResult::Dropped, Some(_)) => None,

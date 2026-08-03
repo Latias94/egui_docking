@@ -111,7 +111,7 @@ fn engine_exposes_a_core_derived_exact_surface_manifest() {
     assert_eq!(manifest.workspace(), engine.version());
     assert_eq!(manifest.surfaces().len(), 1);
     assert_eq!(requirements.ticket().surface(), SURFACE);
-    assert_eq!(requirements.pane_minimums().len(), 1);
+    assert_eq!(requirements.pane_minimums().len(), 2);
     assert_eq!(requirements.tab_intrinsics().len(), 2);
     assert_eq!(requirements.tab_strips().len(), 1);
 }

@@ -1126,6 +1126,8 @@ impl DockEngine {
             EngineInput::ActivateSemanticReceiver { expected, event } => self
                 .reduce_semantic_receiver_input(
                     input.sequence,
+                    cause,
+                    focus_causal,
                     *expected,
                     *application_base,
                     *event,

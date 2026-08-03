@@ -1200,9 +1200,8 @@ fn scroll_trace_suite() -> CoreProtocolTraceSuite {
             expected: scroll_expected(
                 4,
                 1,
-                vec![ExpectedInteractionOutcome::ScrollAwaitingFirstDelta {
-                    sequence: 41,
-                    phase: ScrollPhaseSpec::Begin,
+                vec![ExpectedInteractionOutcome::ScrollBegan {
+                    receiver: scroll_receiver(),
                 }],
                 ExpectedSurfaceContributionOutcome::Retained {
                     surface: SurfaceKey(1),
@@ -1265,7 +1264,7 @@ fn scroll_trace_suite() -> CoreProtocolTraceSuite {
                     momentum,
                     ScrollModifiersAuthorityIngress::Known {
                         shift: false,
-                        control: true,
+                        control: false,
                         alt: true,
                         command: false,
                     },
@@ -1291,20 +1290,15 @@ fn scroll_trace_suite() -> CoreProtocolTraceSuite {
                 ..scroll_expected(
                     6,
                     3,
-                    vec![
-                        ExpectedInteractionOutcome::ScrollBegan {
-                            receiver: scroll_receiver(),
-                        },
-                        ExpectedInteractionOutcome::ScrollApplied {
-                            session: true,
-                            receiver: scroll_receiver(),
-                            phase: ScrollPhaseSpec::Update,
-                            requested_delta: 40.0,
-                            applied_delta: 40.0,
-                            unapplied_delta: 0.0,
-                            offset: 40.0,
-                        },
-                    ],
+                    vec![ExpectedInteractionOutcome::ScrollApplied {
+                        session: true,
+                        receiver: scroll_receiver(),
+                        phase: ScrollPhaseSpec::Update,
+                        requested_delta: 40.0,
+                        applied_delta: 40.0,
+                        unapplied_delta: 0.0,
+                        offset: 40.0,
+                    }],
                     ExpectedSurfaceContributionOutcome::Ready {
                         surface: SurfaceKey(1),
                     },

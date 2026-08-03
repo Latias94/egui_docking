@@ -1207,6 +1207,7 @@ mod tests {
     use dockspace::policy::DockPolicy;
     use dockspace::scene::TabBarSceneId;
     use dockspace::tab_strip::TabStripControlId;
+    #[cfg(not(egui_backend_event_envelope))]
     use egui::accesskit::ActionRequest;
     use egui::{Context, Id, Modifiers, RawInput, Rect, Ui, pos2, vec2};
 

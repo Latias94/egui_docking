@@ -35,25 +35,19 @@ use crate::renderer::{
 use crate::style::DockStyle;
 
 #[cfg(egui_backend_event_envelope)]
-fn native_scroll_config(
-    offset: f64,
-    maximum: f64,
-    projection: egui::ScrollProjection,
-) -> egui::ScrollReceiverConfig {
-    let negative = offset < maximum;
-    let positive = offset > 0.0;
+fn native_scroll_config(projection: egui::ScrollProjection) -> egui::ScrollReceiverConfig {
     match projection {
         egui::ScrollProjection::HorizontalElseVertical => egui::ScrollReceiverConfig::new(
             projection,
             egui::Vec2::ONE,
-            egui::ScrollAxisCapabilities::new(negative, positive),
+            egui::ScrollAxisCapabilities::BOTH,
             egui::ScrollAxisCapabilities::NONE,
         ),
         egui::ScrollProjection::VerticalElseHorizontal => egui::ScrollReceiverConfig::new(
             projection,
             egui::Vec2::ONE,
             egui::ScrollAxisCapabilities::NONE,
-            egui::ScrollAxisCapabilities::new(negative, positive),
+            egui::ScrollAxisCapabilities::BOTH,
         ),
         egui::ScrollProjection::Independent
         | egui::ScrollProjection::SumToHorizontal
@@ -170,11 +164,7 @@ pub(crate) fn paint_tabs(
                 "tab-strip-scroll",
                 *bar.id(),
             )));
-            let config = native_scroll_config(
-                bar.scroll_offset(),
-                bar.maximum_scroll_offset(),
-                egui::ScrollProjection::HorizontalElseVertical,
-            );
+            let config = native_scroll_config(egui::ScrollProjection::HorizontalElseVertical);
             if let Ok(receiver) =
                 tab_ui.finalize_scroll_receiver(reservation, interact_rect(viewport), config)
             {
@@ -531,11 +521,8 @@ pub(crate) fn paint_authoritative_tab_list_menu(
                             "tab-list-menu-scroll",
                             menu.session(),
                         )));
-                    let config = native_scroll_config(
-                        menu.scroll_offset(),
-                        menu.maximum_scroll_offset(),
-                        egui::ScrollProjection::VerticalElseHorizontal,
-                    );
+                    let config =
+                        native_scroll_config(egui::ScrollProjection::VerticalElseHorizontal);
                     if let Ok(receiver) = menu_ui.finalize_scroll_receiver(
                         reservation,
                         interact_rect(viewport_rect),
@@ -657,6 +644,15 @@ fn paint_authoritative_menu_rows(
                 node.clear_selected();
             }
         });
+        if interactions_current {
+            output.register_receiver(
+                &response,
+                PresentationHitRegionKind::TabListMenuRow {
+                    menu: menu.session(),
+                    tab: row.tab(),
+                },
+            );
+        }
         if interactions_current && row.focused() && !response.has_focus() {
             response.request_focus();
         }
@@ -679,13 +675,6 @@ fn paint_authoritative_menu_rows(
             );
         }
         if interactions_current && let Some(hit) = hit {
-            output.register_receiver(
-                &response,
-                PresentationHitRegionKind::TabListMenuRow {
-                    menu: menu.session(),
-                    tab: row.tab(),
-                },
-            );
             let activation = semantic_activation_fact(ui, &response, hit, true, true);
             if let Some(activation) = activation {
                 output.push_widget_activation(
@@ -829,6 +818,12 @@ fn paint_authoritative_menu_scrollbar(
             node.set_disabled();
         }
     });
+    if interactions_current {
+        output.register_receiver(
+            &response,
+            PresentationHitRegionKind::TabListMenuScroll(menu.session()),
+        );
+    }
     if !interactions_current {
         return;
     }
@@ -1580,6 +1575,29 @@ fn tab_id(ui: &Ui, instance_id: Id, item: ItemId) -> Id {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(egui_backend_event_envelope)]
+    #[test]
+    fn native_scroll_receiver_keeps_ownership_at_both_bounds() {
+        assert_eq!(
+            native_scroll_config(egui::ScrollProjection::HorizontalElseVertical),
+            egui::ScrollReceiverConfig::new(
+                egui::ScrollProjection::HorizontalElseVertical,
+                egui::Vec2::ONE,
+                egui::ScrollAxisCapabilities::BOTH,
+                egui::ScrollAxisCapabilities::NONE,
+            )
+        );
+        assert_eq!(
+            native_scroll_config(egui::ScrollProjection::VerticalElseHorizontal),
+            egui::ScrollReceiverConfig::new(
+                egui::ScrollProjection::VerticalElseHorizontal,
+                egui::Vec2::ONE,
+                egui::ScrollAxisCapabilities::NONE,
+                egui::ScrollAxisCapabilities::BOTH,
+            )
+        );
+    }
 
     #[test]
     fn close_button_never_overlaps_tab_drag_rect() {

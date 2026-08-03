@@ -308,7 +308,7 @@ mod tests {
 
     fn record_painted_or_deferred_contributions(
         frame: dockspace::engine::CoreHostFrame,
-        except: Option<SurfaceId>,
+        except: &[SurfaceId],
     ) -> dockspace::engine::CoreHostPresentationFrame {
         let mut frame = frame
             .into_presentation()
@@ -320,7 +320,7 @@ mod tests {
             .map(|obligation| (obligation.slot().surface(), obligation))
             .collect::<std::collections::BTreeMap<_, _>>();
         for surface in frame.surfaces().collect::<Vec<_>>() {
-            if Some(surface) == except {
+            if except.contains(&surface) {
                 continue;
             }
             let (ready, token) = {
@@ -371,7 +371,10 @@ mod tests {
         frame
     }
 
-    fn publish_surface(engine: &mut DockEngine, surface: SurfaceId) -> PresentationPlan {
+    fn publish_surfaces(
+        engine: &mut DockEngine,
+        surfaces: &[SurfaceId],
+    ) -> std::collections::BTreeMap<SurfaceId, PresentationPlan> {
         let host = engine
             .create_presentation_host()
             .expect("test presentation host mints");
@@ -382,32 +385,35 @@ mod tests {
             .submit_presentation_observation(HostPresentationObservation::NoUpdate)
             .expect("test observation submits");
         let mut frame = prelude.seal(engine).expect("test host frame seals");
-        let contribution = {
-            let view = frame.view();
-            let token = view
-                .begin_surface_contribution(surface)
-                .expect("test surface accepts one contribution");
-            let measurements = authoritative_measurements(view, surface);
-            view.prepare_surface_contribution(token, measurements)
-                .expect("test surface measurements prepare successfully")
-        };
-        frame
-            .push_surface_contribution(contribution)
-            .expect("test surface contribution fits the host frame");
-        let frame = record_painted_or_deferred_contributions(frame, Some(surface));
+        for surface in surfaces.iter().copied() {
+            let contribution = {
+                let view = frame.view();
+                let token = view
+                    .begin_surface_contribution(surface)
+                    .expect("test surface accepts one contribution");
+                let measurements = authoritative_measurements(view, surface);
+                view.prepare_surface_contribution(token, measurements)
+                    .expect("test surface measurements prepare successfully")
+            };
+            frame
+                .push_surface_contribution(contribution)
+                .expect("test surface contribution fits the host frame");
+        }
+        let frame = record_painted_or_deferred_contributions(frame, surfaces);
         let transition = frame.finish(engine).expect("surface contribution reduces");
-        let (stamp, ticket) = transition
+        let expected = transition
             .surface_contributions()
             .iter()
-            .find_map(|outcome| match outcome {
+            .filter_map(|outcome| match outcome {
                 SurfaceContributionOutcome::Ready {
                     surface: actual,
                     stamp,
                     ticket,
-                } if *actual == surface => Some((*stamp, *ticket)),
+                } if surfaces.contains(actual) => Some((*actual, (*stamp, *ticket))),
                 _ => None,
             })
-            .expect("target surface installs one ready contribution");
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(expected.len(), surfaces.len());
         let mut prelude = engine
             .begin_host_frame(host)
             .expect("test emission frame begins");
@@ -415,7 +421,7 @@ mod tests {
             .submit_presentation_observation(HostPresentationObservation::NoUpdate)
             .expect("test observation submits");
         let frame = prelude.seal(engine).expect("test emission frame seals");
-        let frame = record_painted_or_deferred_contributions(frame, None);
+        let frame = record_painted_or_deferred_contributions(frame, &[]);
         let emitted = frame
             .finish(engine)
             .expect("surface output emission reduces");
@@ -424,11 +430,11 @@ mod tests {
             .iter()
             .map(|emission| emission.output())
             .collect::<Vec<_>>();
-        let output = outputs
-            .iter()
-            .copied()
-            .find(|output| output.surface() == surface)
-            .expect("one actual surface output emits");
+        assert!(
+            surfaces
+                .iter()
+                .all(|surface| outputs.iter().any(|output| output.surface() == *surface))
+        );
 
         let mut prelude = engine
             .begin_host_frame(host)
@@ -445,9 +451,7 @@ mod tests {
                                 generation: HostPresentationCaptureGeneration::new(1),
                                 progress: HostPresentationProgress::Retired {
                                     settled_through: candidate.key(),
-                                    presented: Authority::Known(
-                                        (candidate == output).then_some(candidate.key()),
-                                    ),
+                                    presented: Authority::Known(Some(candidate.key())),
                                 },
                             },
                         )
@@ -456,7 +460,7 @@ mod tests {
             ))
             .expect("exact presentation observation submits");
         let frame = prelude.seal(engine).expect("test observation frame seals");
-        let frame = record_painted_or_deferred_contributions(frame, None);
+        let frame = record_painted_or_deferred_contributions(frame, &[]);
         let transition = frame
             .finish(engine)
             .expect("surface presentation observation reduces");
@@ -474,23 +478,30 @@ mod tests {
             )
                 })
         );
-        assert!(transition.surface_contributions().iter().any(|outcome| {
-            matches!(
-                outcome,
-                SurfaceContributionOutcome::Retained {
-                    surface: actual,
-                    stamp: retained,
-                    ticket: retained_ticket,
-                } if *actual == surface && *retained == stamp && *retained_ticket == ticket
-            )
-        }));
-        let projection = engine
-            .scene()
-            .surface(surface)
-            .and_then(SurfaceScene::paint_projection)
-            .expect("surface contribution installs a paint projection");
-        let plan = projection.plan().clone();
-        plan
+        for (surface, (stamp, ticket)) in &expected {
+            assert!(transition.surface_contributions().iter().any(|outcome| {
+                matches!(
+                    outcome,
+                    SurfaceContributionOutcome::Retained {
+                        surface: actual,
+                        stamp: retained,
+                        ticket: retained_ticket,
+                    } if actual == surface && retained == stamp && retained_ticket == ticket
+                )
+            }));
+        }
+        surfaces
+            .iter()
+            .copied()
+            .map(|surface| {
+                let projection = engine
+                    .scene()
+                    .surface(surface)
+                    .and_then(SurfaceScene::paint_projection)
+                    .expect("surface contribution installs a paint projection");
+                (surface, projection.plan().clone())
+            })
+            .collect()
     }
 
     fn midpoint(bounds: LogicalRect) -> LogicalPoint {
@@ -625,8 +636,13 @@ mod tests {
         let workspace = builder.build().expect("guide workspace is valid");
         let mut engine =
             DockEngine::new(workspace, DockPolicy::default()).expect("guide engine is valid");
-        let source_plan = publish_surface(&mut engine, OTHER_SURFACE);
-        let target_plan = publish_surface(&mut engine, SURFACE);
+        let mut plans = publish_surfaces(&mut engine, &[OTHER_SURFACE, SURFACE]);
+        let source_plan = plans
+            .remove(&OTHER_SURFACE)
+            .expect("source surface has one presented plan");
+        let target_plan = plans
+            .remove(&SURFACE)
+            .expect("target surface has one presented plan");
 
         let inner_plan = target_plan
             .drop_guide_clusters()

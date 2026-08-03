@@ -37,11 +37,12 @@ use dockspace::platform::{
 };
 use dockspace::pointer_journal::{
     DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector,
-    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerEventDeliveryOwner, PointerInputLease, PointerProviderScope,
-    PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
-    ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
-    SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
+    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerEventDeliveryOwner,
+    PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
+    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
+    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
+    SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
@@ -1135,11 +1136,13 @@ impl CoreProtocolHarness {
                 })?;
                 Ok(ScrollDelta::PhysicalPixels {
                     delta: vector,
-                    binding,
-                    coordinate_generation: compile_coordinate_generation(
-                        authority.coordinate_generation(),
-                        coordinate_generation,
-                    ),
+                    coordinates: Authority::Known(PhysicalScrollCoordinates::new(
+                        binding,
+                        compile_coordinate_generation(
+                            authority.coordinate_generation(),
+                            coordinate_generation,
+                        ),
+                    )),
                 })
             }
             ScrollDeltaIngress::LogicalPoints { .. } => Ok(ScrollDelta::LogicalPoints(vector)),
@@ -4321,12 +4324,6 @@ fn observe_scroll_outcome(
     outcome: ScrollReductionOutcome,
 ) -> Result<ExpectedInteractionOutcome, CoreProtocolTraceError> {
     match outcome {
-        ScrollReductionOutcome::AwaitingFirstDelta {
-            sequence, phase, ..
-        } => Ok(ExpectedInteractionOutcome::ScrollAwaitingFirstDelta {
-            sequence: sequence.get(),
-            phase: observe_scroll_phase(phase),
-        }),
         ScrollReductionOutcome::Began { receiver, .. } => {
             Ok(ExpectedInteractionOutcome::ScrollBegan {
                 receiver: observe_scroll_receiver(workspace, receiver)?,

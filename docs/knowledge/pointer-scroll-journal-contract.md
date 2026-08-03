@@ -1,6 +1,6 @@
 ---
 title: "Pointer Scroll Journal Contract"
-status: "Proposed - binding for the U9 cutover"
+status: "Accepted - implemented for the U9 cutover"
 scope: "Lossless tab-strip and tab-list-menu scrolling through PointerEdgeJournal"
 ---
 
@@ -8,9 +8,8 @@ scope: "Lossless tab-strip and tab-list-menu scrolling through PointerEdgeJourna
 
 ## Status
 
-This document is the binding design contract for adding wheel and trackpad
-scroll edges to the U9 `PointerEdgeJournal` cutover. The contract is not yet an
-implementation claim. Current implementation anchors include
+This document is the binding contract for wheel and trackpad edges in the U9
+`PointerEdgeJournal` cutover. Current implementation anchors include
 `dockspace::pointer_journal`, `dockspace::pointer_receiver`,
 `dockspace::presentation_hit`, `dockspace::tab_strip`,
 `dockspace::scene_compiler`, and `dockspace::engine`.
@@ -174,12 +173,16 @@ pub enum ScrollPhase {
 pub enum ScrollDelta {
     PhysicalPixels {
         delta: FiniteScrollVector,
-        binding: ViewportBinding,
-        coordinate_generation: CoordinateGeneration,
+        coordinates: Authority<PhysicalScrollCoordinates>,
     },
     LogicalPoints(FiniteScrollVector),
     Lines(FiniteScrollVector),
     Pages(FiniteScrollVector),
+}
+
+pub struct PhysicalScrollCoordinates {
+    pub binding: ViewportBinding,
+    pub coordinate_generation: CoordinateGeneration,
 }
 
 pub struct ScrollDeliveryEndpoint {
@@ -260,6 +263,14 @@ one. A surface-local provider can name only its frozen endpoint. A
 desktop-global provider may preserve delivery to one binding while separately
 reporting another hover route.
 
+The core candidate carries both the locked `PresentationHitRegionId` and a
+core-projected receiver-probe vector. The adapter validates a continuation
+against the exact scroll-receiver roster retained by the current presented
+egui pass; it does not need an event position and must not run a new spatial
+winner search. Modifier interpretation and full-precision delta application
+remain in core. The adapter may normalize the already-projected vector only to
+prove direction admission.
+
 ### Receipt Outcomes
 
 The existing delivery dispositions retain their fail-closed meaning:
@@ -277,9 +288,11 @@ wrong-attempt, stale-output, wrong-binding, wrong-coordinate-generation,
 point-mismatched, lane-incompatible, or contradictory receipts reject the host
 frame before any offset or watermark advances.
 
-If the core manifest has a scroll winner, `NoReceiver` is contradictory. If it
-has no winner, `Dock(region)` is contradictory. `Blocked` is valid evidence of
-an external receiver. `Unknown` consumes no docking semantics.
+If the current renderer omitted a core-required scroll receiver, `NoReceiver`
+is an exact loss proof and terminates an existing owner; it never falls through
+to another receiver. A `Dock(region)` absent from the current core manifest is
+contradictory. `Blocked` is valid evidence of an external receiver. `Unknown`
+consumes no docking semantics.
 
 At a minimum or maximum offset, a valid docking owner remains the sole
 receiver even when the applied delta is zero. There is no fallback to an
@@ -322,12 +335,14 @@ stateDiagram-v2
     Idle --> Suppressed: Begin + Blocked/NoReceiver/Unknown
     Owned --> Owned: Update + same receiver and routing authority
     Owned --> Owned: Update + Unknown / no mutation
-    Owned --> Terminated: Update + known receiver loss
-    Owned --> Terminated: End / optional final mutation
-    Owned --> Terminated: Cancel or lifecycle invalidation
+    Owned --> TerminalPending: Update + known receiver loss
+    Owned --> [*]: End / optional final mutation
+    Owned --> [*]: Cancel
+    Owned --> TerminalPending: lifecycle invalidation
     Suppressed --> Suppressed: Update
-    Suppressed --> Terminated: End or Cancel
-    Terminated --> [*]
+    Suppressed --> [*]: End or Cancel
+    TerminalPending --> TerminalPending: Update / no semantic mutation
+    TerminalPending --> [*]: End, Cancel, stream retirement, or provider retirement
 ```
 
 The transition rules are:
@@ -346,8 +361,13 @@ The transition rules are:
 - `End` applies its optional final delta only if the same owner remains known,
   then terminates unconditionally. An unknown receiver still terminates.
 - `Cancel` never applies a delta and terminates unconditionally.
+- A semantic termination observed before the provider's terminal edge retains a
+  sequence tombstone. Later updates cannot reopen the owner, and the exact
+  provider `End` or `Cancel` consumes the tombstone without emitting a second
+  semantic terminal outcome.
 - `Update`, `End`, or `Cancel` without an existing matching owned or suppressed
-  sequence is a structural protocol error, not an implicit `Discrete` edge.
+  sequence or terminal tombstone is a structural protocol error, not an
+  implicit `Discrete` edge.
 - A second `Begin` for an active token, token replacement without terminal
   phase, or cross-device token mutation rejects atomically.
 
@@ -383,9 +403,11 @@ are explicit policy choices evaluated from the event-time modifier snapshot.
 Unknown required modifiers fail closed.
 
 Physical pixels convert only through the exact current scale factor for the
-edge's `ViewportBinding` and `CoordinateGeneration`. Logical points are applied
-one-to-one. Line and page units never use `tab_min_width`, frame duration, or
-an adapter's current animation sample.
+edge's known `ViewportBinding` and `CoordinateGeneration`. Unknown coordinate
+authority preserves the journal edge and advances its watermark, but disables
+the dependent docking mutation. Logical points are applied one-to-one. Line
+and page units never use `tab_min_width`, frame duration, or an adapter's
+current animation sample.
 
 For every receiver:
 
@@ -527,6 +549,19 @@ wheel event's position. A crates.io egui callback consequently cannot claim
 strict docking wheel authority merely because the final pointer lies over a
 tab strip. It remains paint-only for this capability unless the application
 supplies an independently conforming authoritative provider.
+
+For the current winit 0.30 fork, AppKit can bind a callback to its current
+`NSEvent` and extract that event's position. Win32 `GetCursorPos` and X11
+`XQueryPointer` expose callback-time current state rather than the coordinates
+of the translated wheel message; Wayland exposes neither global fact. Those
+backends therefore publish `Unknown` for wheel event-time hit authority until a
+raw backend event envelope carries the original coordinates through winit.
+
+Every native scroll record also carries a producer-minted derivative
+disposition: either `RequiredDerivative` or `ExplicitNoDerivative(reason)`.
+The host never infers absence by scanning a possibly rewritten `RawInput`.
+Required derivatives must correlate exactly once; explicit absence is affine
+and fails if a matching derivative exists.
 
 After an edge is claimed by the journal provider, egui's aggregate
 `WheelState`, `smooth_scroll_delta`, and docking `ScrollArea` must not consume

@@ -47,6 +47,7 @@ pub mod scene;
 mod scene_compiler;
 pub mod scene_manifest;
 pub mod semantic_input;
+pub mod semantic_manifest;
 mod splitter_junction_index;
 pub mod surface_recovery;
 pub mod tab_strip;

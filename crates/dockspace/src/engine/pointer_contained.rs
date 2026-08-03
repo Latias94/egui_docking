@@ -93,6 +93,7 @@ impl DockEngine {
             surface_bounds: plan.bounds(),
             coordinate_capture: presentation.coordinate_capture(),
             presentation: Self::freeze_journal_presentation(presentation),
+            source_layout_facts: plan.layout_facts().cloned().map(std::sync::Arc::new),
         })
     }
 
@@ -246,6 +247,7 @@ impl DockEngine {
                         origin,
                         source_validated_at: self.version,
                         presentation: prepared.presentation,
+                        source_layout_facts: prepared.source_layout_facts,
                         journal_source_geometry: None,
                         continuation,
                     })

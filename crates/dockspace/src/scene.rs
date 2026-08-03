@@ -26,15 +26,17 @@ use crate::ids::{
 use crate::policy::{
     DockPolicySnapshot, DockTabBarPolicyRequest, TabBarInteraction, TabBarVisibility,
 };
+use crate::presentation_config::DockPresentationConfig;
 use crate::presentation_hit::PresentationHitManifest;
 use crate::presentation_observation::{
     HostPresentationEndpoint, PresentationAuthorityRejection, PresentationOutputSerial,
     PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
 use crate::scene_manifest::{
-    MeasurementAuthorityError, SceneRequirementManifest, SurfaceMeasurementTicket,
-    SurfaceSceneRevision,
+    AuthoritativeSurfaceMeasurements, MeasurementAuthorityError, SceneRequirementManifest,
+    SurfaceMeasurementTicket, SurfaceSceneRevision,
 };
+use crate::semantic_manifest::PresentationSemanticManifest;
 use crate::splitter_junction_index::derive_splitter_junction_candidates;
 use crate::tab_strip::{PopupPlaneRequirement, TabStripControlId, TabStripStateKey};
 #[cfg(test)]
@@ -51,6 +53,7 @@ pub use self::records::{
     TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord, TabStripMemberRecord,
     TabStripMemberVisibility,
 };
+pub(crate) use self::records::{PresentationLayoutFacts, RootLayoutFacts};
 pub use crate::drop_target::SceneLayerKey;
 
 #[cfg(test)]
@@ -112,6 +115,22 @@ pub(crate) enum SurfaceCoordinateCapture {
 }
 
 impl SurfaceCoordinateCapture {
+    pub(crate) const fn authority_generation(self) -> CoordinateGeneration {
+        match self {
+            Self::Headless {
+                authority_generation,
+            }
+            | Self::NativeUnavailable {
+                authority_generation,
+                ..
+            }
+            | Self::NativeReady {
+                authority_generation,
+                ..
+            } => authority_generation,
+        }
+    }
+
     pub(crate) fn same_projection_authority(self, other: Self) -> bool {
         match (self, other) {
             (
@@ -161,6 +180,7 @@ pub struct PresentationPlan {
     popup: PopupPlaneRequirement,
     bounds: LogicalRect,
     popup_plane_bounds: Option<LogicalRect>,
+    layout_facts: Option<PresentationLayoutFacts>,
     pane_records: Vec<PaneRecord>,
     tab_records: Vec<TabRecord>,
     tab_bar_records: Vec<TabBarRecord>,
@@ -230,6 +250,7 @@ impl PresentationPlan {
             popup,
             bounds,
             popup_plane_bounds,
+            layout_facts: None,
             pane_records: Vec::new(),
             tab_records: Vec::new(),
             tab_bar_records: Vec::new(),
@@ -272,6 +293,32 @@ impl PresentationPlan {
     #[must_use]
     pub const fn popup(&self) -> PopupPlaneRequirement {
         self.popup
+    }
+
+    pub(crate) fn install_layout_facts(
+        &mut self,
+        config: DockPresentationConfig,
+        measurements: AuthoritativeSurfaceMeasurements<'_>,
+    ) {
+        debug_assert!(self.layout_facts.is_none());
+        self.layout_facts = Some(PresentationLayoutFacts::new(config, measurements));
+    }
+
+    pub(crate) fn push_root_layout_facts(&mut self, facts: RootLayoutFacts) {
+        let inserted = self
+            .layout_facts
+            .as_mut()
+            .is_some_and(|layout| layout.insert_root(facts));
+        debug_assert!(inserted);
+    }
+
+    pub(crate) const fn layout_facts(&self) -> Option<&PresentationLayoutFacts> {
+        self.layout_facts.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_layout_facts_from(&mut self, source: &Self) {
+        self.layout_facts.clone_from(&source.layout_facts);
     }
 
     /// Returns the exact manifest ticket which authorized this compiled plan.
@@ -725,6 +772,7 @@ pub struct SurfacePlanScene {
     output_ticket: SurfacePresentationOutputTicket,
     plan: Arc<PresentationPlan>,
     hit_manifest: Arc<PresentationHitManifest>,
+    semantic_manifest: Arc<PresentationSemanticManifest>,
     coordinate_capture: SurfaceCoordinateCapture,
 }
 
@@ -940,6 +988,12 @@ impl SurfacePlanScene {
     #[must_use]
     pub fn hit_manifest(&self) -> &PresentationHitManifest {
         &self.hit_manifest
+    }
+
+    /// Returns the semantic receiver inventory bound to this exact output.
+    #[must_use]
+    pub fn semantic_manifest(&self) -> &PresentationSemanticManifest {
+        &self.semantic_manifest
     }
 
     pub(crate) const fn coordinate_capture(&self) -> SurfaceCoordinateCapture {
@@ -1249,6 +1303,12 @@ impl<'a> SurfaceInteractionProjection<'a> {
     #[must_use]
     pub fn hit_manifest(self) -> &'a PresentationHitManifest {
         self.output.hit_manifest()
+    }
+
+    /// Returns the semantic receiver inventory compiled for this exact output.
+    #[must_use]
+    pub fn semantic_manifest(self) -> &'a PresentationSemanticManifest {
+        self.output.semantic_manifest()
     }
 
     /// Returns final-presentation authority for this exact output.
@@ -1725,6 +1785,7 @@ impl SurfaceSceneSet {
         let output_ticket =
             SurfacePresentationOutputTicket::mint(authority_domain, output_serial, stamp);
         let hit_manifest = PresentationHitManifest::compile(output_ticket, &plan);
+        let semantic_manifest = PresentationSemanticManifest::compile(output_ticket, &plan);
         let (retained_fallback, retained_interaction, confirmed_paint_fallback) = match current {
             SurfaceScene::Ready(ready) => ready.into_retained_authority(),
             SurfaceScene::Stale(stale) => {
@@ -1744,6 +1805,7 @@ impl SurfaceSceneSet {
                     output_ticket,
                     plan: Arc::new(plan),
                     hit_manifest: Arc::new(hit_manifest),
+                    semantic_manifest: Arc::new(semantic_manifest),
                     coordinate_capture,
                 }),
                 paint_fallback,

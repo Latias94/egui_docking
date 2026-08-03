@@ -45,6 +45,8 @@ pub enum SemanticAccessibilityAction {
     Increment,
     /// Decrease the exact adjustable target.
     Decrement,
+    /// Reveal the exact target inside its owning scroll viewport.
+    ScrollIntoView,
 }
 
 /// One device-independent action delivered to a retained semantic receiver.

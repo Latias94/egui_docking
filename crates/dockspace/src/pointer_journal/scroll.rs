@@ -74,6 +74,31 @@ impl ScrollDelta {
         }
     }
 }
+impl PhysicalScrollCoordinates {
+    /// Creates exact conversion authority for one physical-pixel sample.
+    #[must_use]
+    pub const fn new(
+        binding: ViewportBinding,
+        coordinate_generation: CoordinateGeneration,
+    ) -> Self {
+        Self {
+            binding,
+            coordinate_generation,
+        }
+    }
+
+    /// Returns the native viewport incarnation whose scale converts the sample.
+    #[must_use]
+    pub const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+
+    /// Returns the exact coordinate generation observed with the sample.
+    #[must_use]
+    pub const fn coordinate_generation(self) -> CoordinateGeneration {
+        self.coordinate_generation
+    }
+}
 impl ScrollModifiers {
     /// Creates an exact modifier snapshot.
     #[must_use]
@@ -208,14 +233,13 @@ impl ScrollEdge {
         }
         if let (
             Some(ScrollDelta::PhysicalPixels {
-                binding,
-                coordinate_generation,
+                coordinates: Authority::Known(coordinates),
                 ..
             }),
             Authority::Known(delivery),
         ) = (self.delta, self.delivery)
-            && (delivery.binding() != Some(binding)
-                || delivery.coordinate_generation() != coordinate_generation)
+            && (delivery.binding() != Some(coordinates.binding())
+                || delivery.coordinate_generation() != coordinates.coordinate_generation())
         {
             return Err(ScrollEdgeError::PhysicalDeltaEndpointMismatch);
         }

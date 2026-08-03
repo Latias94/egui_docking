@@ -27,7 +27,6 @@ const ROOT_ITEM_COUNT: u64 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTSIDE_ALL_POINT: egui::Pos2 = egui::pos2(200.0, 800.0);
 const OVERFLOW_TAB_WIDTH: f32 = 1_000.0;
-const SCROLL_LINES: f32 = -1.0;
 const EXPECTED_SCROLL_OFFSET: f64 = 40.0;
 
 type SmokeError = Box<dyn Error + Send + Sync>;
@@ -63,6 +62,7 @@ struct SmokeApp {
     redock_point: Option<egui::Pos2>,
     overflow_predecessor: Option<SurfacePresentationOutputTicket>,
     scroll_predecessor: Option<SurfacePresentationOutputTicket>,
+    post_commit_error: Option<String>,
     closing: bool,
 }
 
@@ -92,12 +92,22 @@ impl SmokeApp {
             redock_point: None,
             overflow_predecessor: None,
             scroll_predecessor: None,
+            post_commit_error: None,
             closing: false,
         })
     }
 
     fn observe_readiness(&mut self, context: &egui::Context) {
         if self.closing {
+            return;
+        }
+        if let Some(detail) = self.post_commit_error.take() {
+            *self
+                .outcome
+                .lock()
+                .expect("smoke outcome lock is available") = SmokeOutcome::Failed(detail);
+            self.closing = true;
+            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
             return;
         }
         let status = self.runtime.status();
@@ -304,20 +314,7 @@ impl SmokeApp {
             }
             SmokePhase::OverflowStyleQueued if cycle_advanced => {
                 let engine = self.runtime.dockspace().engine();
-                if engine.interaction_authority(ROOT_SURFACE).is_some()
-                    && let Some((output, point, offset, maximum)) =
-                        tab_scroll_state(engine, ROOT_SURFACE)
-                    && Some(output) != self.overflow_predecessor
-                    && maximum >= EXPECTED_SCROLL_OFFSET
-                {
-                    if offset != 0.0 {
-                        return Err(format!(
-                            "overflow tab strip started with a non-zero scroll offset: {offset}"
-                        ));
-                    }
-                    self.scroll_predecessor = Some(output);
-                    self.queue_scroll(point, status.committed_cycles)?;
-                } else if status.committed_cycles.saturating_sub(self.phase_cycle) >= 8 {
+                if status.committed_cycles.saturating_sub(self.phase_cycle) >= 8 {
                     let workspace = engine.workspace();
                     let nodes = workspace
                         .nodes()
@@ -376,6 +373,47 @@ impl SmokeApp {
         Ok(None)
     }
 
+    fn queue_physical_scroll_after_commit(
+        &mut self,
+        outputs: &[eframe::HostedViewportOutput<egui::FullOutput>],
+    ) -> Result<(), String> {
+        if self.phase != SmokePhase::OverflowStyleQueued {
+            return Ok(());
+        }
+        let engine = self.runtime.dockspace().engine();
+        let Some((output, point, offset, maximum)) = tab_scroll_state(engine, ROOT_SURFACE) else {
+            return Ok(());
+        };
+        if Some(output) == self.overflow_predecessor || maximum < EXPECTED_SCROLL_OFFSET {
+            return Ok(());
+        }
+        if offset != 0.0 {
+            return Err(format!(
+                "overflow tab strip started with a non-zero scroll offset: {offset}"
+            ));
+        }
+        let presentation_scale = outputs
+            .iter()
+            .find(|hosted| hosted.viewport_id() == egui::ViewportId::ROOT)
+            .map(|hosted| f64::from(hosted.output().pixels_per_point))
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+            .ok_or_else(|| "committed root output has no finite presentation scale".to_owned())?;
+        self.scroll_predecessor = Some(output);
+        self.driver
+            .send_pointer(NativeTestPointerEvent::new(
+                egui::ViewportId::ROOT,
+                point,
+                NativeTestPointerAction::Scroll(NativeTestScrollDelta::physical_pixels(
+                    0.0,
+                    -EXPECTED_SCROLL_OFFSET * presentation_scale,
+                )),
+            ))
+            .map_err(|error| format!("native test event loop closed: {error}"))?;
+        self.phase = SmokePhase::RootScrollQueued;
+        self.phase_cycle = self.runtime.status().committed_cycles;
+        Ok(())
+    }
+
     fn queue_pointer(
         &mut self,
         event: NativeTestPointerEvent,
@@ -386,19 +424,6 @@ impl SmokeApp {
             .send_pointer(event)
             .map_err(|error| format!("native test event loop closed: {error}"))?;
         self.phase = next;
-        self.phase_cycle = committed_cycles;
-        Ok(())
-    }
-
-    fn queue_scroll(&mut self, position: egui::Pos2, committed_cycles: u64) -> Result<(), String> {
-        self.driver
-            .send_pointer(NativeTestPointerEvent::new(
-                egui::ViewportId::ROOT,
-                position,
-                NativeTestPointerAction::Scroll(NativeTestScrollDelta::lines(0.0, SCROLL_LINES)),
-            ))
-            .map_err(|error| format!("native test event loop closed: {error}"))?;
-        self.phase = SmokePhase::RootScrollQueued;
         self.phase_cycle = committed_cycles;
         Ok(())
     }
@@ -507,6 +532,7 @@ impl eframe::App for SmokeApp {
         cycle: &eframe::HostedViewportCycle,
         frame: &mut eframe::Frame,
     ) -> eframe::HostedViewportAppResult<()> {
+        self.observe_readiness(context);
         self.runtime
             .begin_hosted_viewport_cycle(context, cycle, frame)
     }
@@ -532,14 +558,13 @@ impl eframe::App for SmokeApp {
 
     fn commit_hosted_viewport_cycle(
         &mut self,
-        context: &egui::Context,
         outputs: &mut [eframe::HostedViewportOutput<egui::FullOutput>],
-        frame: &mut eframe::Frame,
-    ) -> eframe::HostedViewportAppResult<()> {
-        self.runtime
-            .commit_hosted_viewport_cycle(context, outputs, frame)?;
-        self.observe_readiness(context);
-        Ok(())
+    ) -> eframe::HostedViewportAppResult<eframe::HostedViewportCommitDirective> {
+        self.runtime.commit_hosted_viewport_cycle(outputs)?;
+        if let Err(error) = self.queue_physical_scroll_after_commit(outputs) {
+            self.post_commit_error = Some(error);
+        }
+        Ok(eframe::HostedViewportCommitDirective::repaint_root())
     }
 
     fn abort_hosted_viewport_cycle(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {

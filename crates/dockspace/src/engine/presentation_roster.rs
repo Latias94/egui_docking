@@ -368,6 +368,7 @@ impl HostPresentationRoster {
                 projection.coordinate_capture(),
                 HostPresentationOutputPayload::Paint {
                     scene: projection.output_ticket(),
+                    coordinate_generation: projection.coordinate_capture().authority_generation(),
                     interaction,
                 },
             ),

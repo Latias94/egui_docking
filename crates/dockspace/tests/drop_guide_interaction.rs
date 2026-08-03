@@ -406,7 +406,7 @@ fn activation_without_button_hit_publishes_center_and_outer_four_affordance() {
 }
 
 #[test]
-fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
+fn top_and_bottom_buttons_publish_source_aware_future_layout_previews() {
     for edge in [Edge::Top, Edge::Bottom] {
         let mut fixture = Fixture::new(DockPolicy::default());
         let expected = outer_edge_guide(&fixture, edge);
@@ -431,6 +431,12 @@ fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
         assert_eq!(active.slot(), DropGuideSlot::Edge(edge));
         assert!(active.eligibility().is_eligible());
         assert_eq!(active.target_id(), expected.target);
+        let preview = match edge {
+            Edge::Top => rect(0.0, 0.0, 400.0, 149.5),
+            Edge::Bottom => rect(0.0, 150.5, 400.0, 149.5),
+            Edge::Left | Edge::Right => unreachable!("test uses only vertical edges"),
+        };
+        assert_ne!(preview, expected.preview);
         assert!(matches!(
             fixture
                 .engine
@@ -439,7 +445,7 @@ fn top_and_bottom_buttons_publish_matching_active_slots_and_previews() {
                 .expect("edge preview must exist")
                 .visual(),
             PreviewVisual::Dock { target, rect, .. }
-                if *target == expected.target && *rect == expected.preview
+                if *target == expected.target && *rect == preview
         ));
     }
 }

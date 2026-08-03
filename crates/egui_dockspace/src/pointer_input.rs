@@ -907,6 +907,7 @@ mod tests {
                 },
             ]
             .into_iter()
+            .map(Into::into)
             .collect(),
             ..RawInput::default()
         }
@@ -965,6 +966,13 @@ mod tests {
         let context = Context::default();
         let mut state = state(&context);
         let epoch = EguiPointerInputEpoch::new(12, 0, ViewportId::ROOT, 1);
+        #[cfg(egui_backend_event_envelope)]
+        let captured = input()
+            .events
+            .into_iter()
+            .map(egui::EventEnvelope::into_event)
+            .collect::<Vec<_>>();
+        #[cfg(not(egui_backend_event_envelope))]
         let captured = input().events;
         let mut first = None;
         let _ = context.run_ui(RawInput::default(), |_ui| {

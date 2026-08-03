@@ -64,6 +64,7 @@ pub(crate) fn compile_surface_scene(
         .ok_or(SceneCompilationError::MissingSurface { surface })?;
     let fraction = dock_fraction(config)?;
     let mut ready = PresentationPlan::from_measurements(actual, popup, bounds, popup_plane_bounds);
+    ready.install_layout_facts(config.clone(), measurements);
     if tab_strip_states.popup_requirement() != popup {
         return Err(SceneCompilationError::PopupPlaneStateMismatch);
     }
@@ -266,15 +267,17 @@ fn compile_root(
     let root_record = workspace
         .root(root)
         .ok_or(SceneCompilationError::MissingRoot { surface, root })?;
+    let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
     let leaf_constraints = root_leaf_constraints(
         workspace,
         config,
         requirements,
-        measurements,
         surface,
         root,
         bounds,
+        &pane_minimums,
     )?;
+    ready.push_root_layout_facts(RootLayoutFacts::new(root, bounds, pane_minimums));
     let metrics = LayoutMetrics::new(config.splitter_thickness())?;
     let root_overrides = resize_overrides
         .iter()
@@ -1074,7 +1077,7 @@ fn compile_tab_list_menu(
     Ok(())
 }
 
-fn allocate_tab_widths(
+pub(super) fn allocate_tab_widths(
     desired: &[f64],
     available: f64,
     minimum: f64,
@@ -1264,13 +1267,19 @@ fn root_leaf_constraints(
     workspace: &Workspace,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
-    measurements: AuthoritativeSurfaceMeasurements<'_>,
     surface: SurfaceId,
     root: RootId,
     bounds: LogicalRect,
+    pane_minimums: &BTreeMap<PaneMinimumKey, LogicalSize>,
 ) -> Result<BTreeMap<NodeId, Constraints>, SceneCompilationError> {
-    let minimums =
-        root_leaf_minimums(workspace, config, requirements, measurements, surface, root)?;
+    let minimums = root_leaf_minimums(
+        workspace,
+        config,
+        requirements,
+        surface,
+        root,
+        pane_minimums,
+    )?;
     let root_node = workspace
         .root(root)
         .ok_or(SceneCompilationError::MissingRoot { surface, root })?
@@ -1294,22 +1303,40 @@ fn root_leaf_constraints(
         .collect()
 }
 
+fn root_pane_minimum_measurements(
+    requirements: &SurfaceRequirements,
+    measurements: AuthoritativeSurfaceMeasurements<'_>,
+    root: RootId,
+) -> Result<BTreeMap<PaneMinimumKey, LogicalSize>, SceneCompilationError> {
+    requirements
+        .pane_minimums()
+        .filter(|key| key.root() == root)
+        .map(|key| {
+            measurements
+                .pane_minimum(key)
+                .map(|minimum| (key, minimum))
+                .ok_or(SceneCompilationError::MissingPaneMinimumMeasurement { key })
+        })
+        .collect()
+}
+
 fn root_leaf_minimums(
     workspace: &Workspace,
     config: &DockPresentationConfig,
     requirements: &SurfaceRequirements,
-    measurements: AuthoritativeSurfaceMeasurements<'_>,
     surface: SurfaceId,
     root: RootId,
+    pane_minimums: &BTreeMap<PaneMinimumKey, LogicalSize>,
 ) -> Result<BTreeMap<NodeId, LogicalSize>, SceneCompilationError> {
     let mut minimums = BTreeMap::new();
-    for key in requirements
-        .pane_minimums()
-        .filter(|key| key.root() == root)
-    {
-        let measured = measurements
-            .pane_minimum(key)
-            .ok_or(SceneCompilationError::MissingPaneMinimumMeasurement { key })?;
+    for (key, measured) in pane_minimums.iter().filter(|(key, _)| key.root() == root) {
+        let key = *key;
+        let Some(Node::Tabs { selected, .. }) = workspace.node(key.tabs()) else {
+            continue;
+        };
+        if key.selected() != *selected {
+            continue;
+        }
         let id = TabBarSceneId {
             root: key.root(),
             tabs: key.tabs(),
@@ -1319,7 +1346,7 @@ fn root_leaf_minimums(
             .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
         minimums.insert(
             key.tabs(),
-            pane_outer_minimum(measured, config, tab_bar.policy().visibility())?,
+            pane_outer_minimum(*measured, config, tab_bar.policy().visibility())?,
         );
     }
     let root_node = workspace
@@ -1355,7 +1382,7 @@ fn root_leaf_minimums(
     Ok(minimums)
 }
 
-fn pane_outer_minimum(
+pub(super) fn pane_outer_minimum(
     measured: LogicalSize,
     config: &DockPresentationConfig,
     tab_bar_visibility: TabBarVisibility,
@@ -1384,8 +1411,15 @@ fn contained_minimum_size(
     root: RootId,
 ) -> Result<LogicalSize, SceneCompilationError> {
     let surface = requirements.ticket().surface();
-    let minimums =
-        root_leaf_minimums(workspace, config, requirements, measurements, surface, root)?;
+    let pane_minimums = root_pane_minimum_measurements(requirements, measurements, root)?;
+    let minimums = root_leaf_minimums(
+        workspace,
+        config,
+        requirements,
+        surface,
+        root,
+        &pane_minimums,
+    )?;
     let root_record = workspace
         .root(root)
         .ok_or(SceneCompilationError::MissingRoot { surface, root })?;
@@ -1410,7 +1444,7 @@ fn contained_minimum_size(
     )?)
 }
 
-fn subtree_minimum(
+pub(super) fn subtree_minimum(
     workspace: &Workspace,
     surface: SurfaceId,
     root: RootId,

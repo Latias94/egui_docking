@@ -236,6 +236,18 @@ pub enum DockspaceError {
         /// Logical surface whose cumulative pass cannot advance.
         surface: SurfaceId,
     },
+    /// The supplied final output did not carry the opaque proof minted by the painted pass.
+    #[error("surface {surface} final egui output does not belong to its painted pass")]
+    OuterHostSurfaceOutputAuthorityMismatch {
+        /// Logical surface whose output proof mismatched.
+        surface: SurfaceId,
+    },
+    /// A final output was submitted more than once for one painted pass.
+    #[error("surface {surface} final egui output was already confirmed")]
+    OuterHostSurfaceOutputAlreadyConfirmed {
+        /// Logical surface whose affine output slot was already consumed.
+        surface: SurfaceId,
+    },
     /// The supplied egui output did not contain a completed pass for this viewport.
     #[error("surface {surface} has no completed final egui output")]
     OuterHostSurfaceFullOutputMissing {

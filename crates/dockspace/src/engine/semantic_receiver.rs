@@ -1,7 +1,8 @@
 //! Presentation-bound keyboard and accessibility interaction reduction.
 
 use crate::command::WorkspaceCommand;
-use crate::event::WorkspaceEvent;
+use crate::event::{ReductionCause, WorkspaceEvent};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::intent::{CloseActivation, CloseSceneTarget};
 use crate::interaction::{
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
@@ -11,15 +12,23 @@ use crate::presentation_hit::PresentationHitRegionKind;
 use crate::semantic_input::{
     SemanticAccessibilityAction, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
 };
+use crate::tab_strip::TabStripStateKey;
 use crate::transition::{InputOutcome, WorkspaceVersion};
+use crate::viewport_focus::FocusCausalStamp;
 
-use super::{DockEngine, EngineError};
+use super::{
+    ContainedPlacementInput, DockEngine, EngineError, PreparedTabListMenuNavigation,
+    PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
+    TabListMenuNavigation, TabScrollAdjustment,
+};
 
 impl DockEngine {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_semantic_receiver_input(
         &mut self,
         input: crate::ids::InputSequence,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
         event: SemanticReceiverEvent,
@@ -171,6 +180,152 @@ impl DockEngine {
                     interaction_events,
                 )
             }
+            (
+                PresentationHitRegionKind::TabStripControl(control),
+                SemanticReceiverAction::Key(SemanticKey::Enter | SemanticKey::Space)
+                | SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Click),
+            ) => match self.prepare_semantic_tab_strip_control(projection, control) {
+                Ok(prepared) => self.reduce_prepared_tab_strip_control(cause, &prepared),
+                Err(rejection) => Ok(self.semantic_rejection(rejection)),
+            },
+            (
+                PresentationHitRegionKind::TabListMenuRow { menu, tab },
+                SemanticReceiverAction::Key(SemanticKey::Enter | SemanticKey::Space)
+                | SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Click),
+            ) => match self.prepare_semantic_tab_list_menu_row(projection, menu, tab) {
+                Ok(prepared) => self.reduce_prepared_tab_list_menu_row(
+                    cause,
+                    focus_causal,
+                    &prepared,
+                    policy,
+                    events,
+                ),
+                Err(rejection) => Ok(self.semantic_rejection(rejection)),
+            },
+            (
+                PresentationHitRegionKind::TabListMenuRow { menu, tab },
+                SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::Focus),
+            ) => match self.prepare_semantic_tab_list_menu_navigation(
+                projection,
+                menu,
+                TabListMenuNavigation::Focus(tab.item),
+            ) {
+                Ok(prepared) => self.reduce_prepared_tab_list_menu_navigation(cause, &prepared),
+                Err(rejection) => Ok(self.semantic_rejection(rejection)),
+            },
+            (
+                PresentationHitRegionKind::TabListMenuRow { menu, tab },
+                SemanticReceiverAction::Accessibility(SemanticAccessibilityAction::ScrollIntoView),
+            ) => match self.prepare_semantic_tab_list_menu_scroll(
+                projection,
+                menu,
+                TabScrollAdjustment::reveal_item(tab.item),
+            ) {
+                Ok(prepared) => self.reduce_prepared_tab_list_menu_scroll(cause, &prepared),
+                Err(rejection) => Ok(self.semantic_rejection(rejection)),
+            },
+            (
+                PresentationHitRegionKind::TabListMenuRow { menu, .. },
+                SemanticReceiverAction::Key(
+                    key @ (SemanticKey::ArrowUp
+                    | SemanticKey::ArrowDown
+                    | SemanticKey::Home
+                    | SemanticKey::End),
+                ),
+            ) => {
+                let navigation = match key {
+                    SemanticKey::ArrowUp => TabListMenuNavigation::Previous,
+                    SemanticKey::ArrowDown => TabListMenuNavigation::Next,
+                    SemanticKey::Home => TabListMenuNavigation::First,
+                    SemanticKey::End => TabListMenuNavigation::Last,
+                    _ => unreachable!("the match arm admits only menu navigation keys"),
+                };
+                match self.prepare_semantic_tab_list_menu_navigation(projection, menu, navigation) {
+                    Ok(prepared) => self.reduce_prepared_tab_list_menu_navigation(cause, &prepared),
+                    Err(rejection) => Ok(self.semantic_rejection(rejection)),
+                }
+            }
+            (
+                PresentationHitRegionKind::TabListMenuScroll(menu),
+                SemanticReceiverAction::Accessibility(
+                    action @ (SemanticAccessibilityAction::Increment
+                    | SemanticAccessibilityAction::Decrement),
+                ),
+            ) => {
+                let Some(step) = projection
+                    .plan()
+                    .tab_list_menu_records()
+                    .iter()
+                    .find(|record| record.session() == menu)
+                    .and_then(|record| record.rows().first())
+                    .map(|row| row.bounds().height())
+                    .filter(|step| step.is_finite() && *step > 0.0)
+                else {
+                    return Ok(self.semantic_rejection(
+                        InteractionRejection::SemanticActionUnsupported {
+                            target,
+                            action: SemanticReceiverAction::Accessibility(action),
+                        },
+                    ));
+                };
+                let direction = if action == SemanticAccessibilityAction::Increment {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let adjustment = TabScrollAdjustment::scroll_by(step * direction)
+                    .expect("finite positive row height produces a valid scroll adjustment");
+                match self.prepare_semantic_tab_list_menu_scroll(projection, menu, adjustment) {
+                    Ok(prepared) => self.reduce_prepared_tab_list_menu_scroll(cause, &prepared),
+                    Err(rejection) => Ok(self.semantic_rejection(rejection)),
+                }
+            }
+            (
+                PresentationHitRegionKind::ContainedResize {
+                    floating,
+                    direction,
+                },
+                SemanticReceiverAction::Key(
+                    key @ (SemanticKey::ArrowLeft
+                    | SemanticKey::ArrowRight
+                    | SemanticKey::ArrowUp
+                    | SemanticKey::ArrowDown),
+                ),
+            ) => self.reduce_semantic_contained_resize(
+                input,
+                expected,
+                projection,
+                floating,
+                direction,
+                semantic_direction(key),
+                policy,
+                events,
+                interaction_events,
+            ),
+            (
+                PresentationHitRegionKind::ContainedResize {
+                    floating,
+                    direction,
+                },
+                SemanticReceiverAction::Accessibility(
+                    action @ (SemanticAccessibilityAction::Increment
+                    | SemanticAccessibilityAction::Decrement),
+                ),
+            ) => self.reduce_semantic_contained_resize(
+                input,
+                expected,
+                projection,
+                floating,
+                direction,
+                if action == SemanticAccessibilityAction::Increment {
+                    1.0
+                } else {
+                    -1.0
+                },
+                policy,
+                events,
+                interaction_events,
+            ),
             _ => Ok(
                 self.semantic_rejection(InteractionRejection::SemanticActionUnsupported {
                     target,
@@ -215,14 +370,16 @@ impl DockEngine {
                 actual,
             });
         }
-        let retained = projection
-            .hit_manifest()
-            .regions()
-            .iter()
-            .any(|region| region.id().kind() == event.target());
-        if !retained {
+        let manifest = projection.semantic_manifest();
+        if !manifest.contains(event.target()) {
             return Err(InteractionRejection::SemanticReceiverUnavailable {
                 target: event.target(),
+            });
+        }
+        if !manifest.supports(event.target(), event.action()) {
+            return Err(InteractionRejection::SemanticActionUnsupported {
+                target: event.target(),
+                action: event.action(),
             });
         }
         Ok(projection)
@@ -262,6 +419,260 @@ impl DockEngine {
             _ => return None,
         };
         Some(members[destination].tab())
+    }
+
+    pub(super) fn prepare_semantic_tab_strip_control(
+        &self,
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        control: crate::tab_strip::TabStripControlId,
+    ) -> Result<PreparedTabStripControlActivation, InteractionRejection> {
+        let key = TabStripStateKey::new(projection.output_ticket().surface(), control.bar());
+        let plan = projection.plan();
+        let record = plan
+            .tab_strip_control_records()
+            .iter()
+            .copied()
+            .find(|record| record.id() == control)
+            .ok_or(InteractionRejection::TabStripControlUnavailable { control })?;
+        if !record.enabled() {
+            return Err(InteractionRejection::TabStripControlDisabled { control });
+        }
+        if self
+            .presentation_authority
+            .tab_strip_states
+            .state(key)
+            .is_none()
+            || !plan
+                .tab_bar_records()
+                .iter()
+                .any(|bar| *bar.id() == control.bar())
+        {
+            return Err(InteractionRejection::TabStripSourceUnavailable { key });
+        }
+        Ok(PreparedTabStripControlActivation {
+            presentation: Self::freeze_interaction_projection(projection),
+            control: crate::interaction::FrozenTabStripControlClick { key, record },
+        })
+    }
+
+    pub(super) fn prepare_semantic_tab_list_menu_row(
+        &self,
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        session: crate::tab_strip::TabListMenuSessionId,
+        tab: crate::scene::TabSceneId,
+    ) -> Result<PreparedTabListMenuRowActivation, InteractionRejection> {
+        let plan = projection.plan();
+        let revision = plan.popup().revision();
+        self.validate_tab_list_menu_popup(plan, session, revision)?;
+        let record = plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|menu| menu.session() == session)
+            .and_then(|menu| menu.rows().iter().copied().find(|row| row.tab() == tab))
+            .ok_or(InteractionRejection::TabListMenuRowUnavailable { session, tab })?;
+        if !self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu_for(session.key())
+            .is_some_and(|active| active.session() == session && active.items().contains(&tab.item))
+        {
+            return Err(InteractionRejection::TabListMenuSessionUnavailable { session });
+        }
+        Ok(PreparedTabListMenuRowActivation {
+            presentation: Self::freeze_interaction_projection(projection),
+            row: crate::interaction::FrozenTabListMenuRowClick {
+                session,
+                record,
+                revision,
+            },
+        })
+    }
+
+    pub(super) fn prepare_semantic_tab_list_menu_scroll(
+        &self,
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        session: crate::tab_strip::TabListMenuSessionId,
+        adjustment: TabScrollAdjustment,
+    ) -> Result<PreparedTabListMenuScroll, InteractionRejection> {
+        let plan = projection.plan();
+        let revision = plan.popup().revision();
+        self.validate_tab_list_menu_popup(plan, session, revision)?;
+        let record = plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| record.session() == session)
+            .cloned()
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        let active = self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu_for(session.key())
+            .filter(|active| active.session() == session)
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        let requested = match &adjustment.0 {
+            super::TabScrollAdjustmentKind::ScrollByPreserving { keep_visible, .. } => {
+                keep_visible.as_slice()
+            }
+            super::TabScrollAdjustmentKind::RevealItem(item) => std::slice::from_ref(item),
+        };
+        if let Some(item) = requested.iter().copied().find(|item| {
+            !active.items().contains(item)
+                || !record.rows().iter().any(|row| row.tab().item == *item)
+        }) {
+            return Err(InteractionRejection::TabListMenuScrollItemUnavailable { session, item });
+        }
+        Ok(PreparedTabListMenuScroll {
+            presentation: Self::freeze_interaction_projection(projection),
+            session,
+            revision,
+            record,
+            adjustment,
+        })
+    }
+
+    pub(super) fn prepare_semantic_tab_list_menu_navigation(
+        &self,
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        session: crate::tab_strip::TabListMenuSessionId,
+        navigation: TabListMenuNavigation,
+    ) -> Result<PreparedTabListMenuNavigation, InteractionRejection> {
+        let plan = projection.plan();
+        let revision = plan.popup().revision();
+        self.validate_tab_list_menu_popup(plan, session, revision)?;
+        let record = plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| record.session() == session)
+            .cloned()
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        let active = self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu_for(session.key())
+            .filter(|active| active.session() == session)
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        let current = active
+            .items()
+            .iter()
+            .position(|item| *item == active.focus())
+            .ok_or(InteractionRejection::TabListMenuFocusItemUnavailable {
+                session,
+                item: active.focus(),
+            })?;
+        let last = active.items().len().checked_sub(1).ok_or(
+            InteractionRejection::TabListMenuFocusItemUnavailable {
+                session,
+                item: active.focus(),
+            },
+        )?;
+        let target = match navigation {
+            TabListMenuNavigation::Previous => active.items()[current.saturating_sub(1)],
+            TabListMenuNavigation::Next => active.items()[current.saturating_add(1).min(last)],
+            TabListMenuNavigation::First => active.items()[0],
+            TabListMenuNavigation::Last => active.items()[last],
+            TabListMenuNavigation::Focus(item) => item,
+        };
+        if !active.items().contains(&target)
+            || !record.rows().iter().any(|row| row.tab().item == target)
+        {
+            return Err(InteractionRejection::TabListMenuFocusItemUnavailable {
+                session,
+                item: target,
+            });
+        }
+        Ok(PreparedTabListMenuNavigation {
+            presentation: Self::freeze_interaction_projection(projection),
+            session,
+            revision,
+            record,
+            target,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_semantic_contained_resize(
+        &mut self,
+        input: crate::ids::InputSequence,
+        expected: WorkspaceVersion,
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        floating: crate::ids::FloatingPresentationId,
+        direction: crate::scene::ContainedResizeDirection,
+        direction_sign: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let Some(contained) = projection
+            .plan()
+            .contained_records()
+            .iter()
+            .find(|record| record.floating() == floating)
+        else {
+            return Ok(self.semantic_rejection(
+                InteractionRejection::SemanticReceiverUnavailable {
+                    target: PresentationHitRegionKind::ContainedResize {
+                        floating,
+                        direction,
+                    },
+                },
+            ));
+        };
+        let Some(workspace_record) = self.workspace.contained_floating(floating) else {
+            return Ok(self.semantic_rejection(InteractionRejection::TargetAuthorityInvalid));
+        };
+        if workspace_record.root != contained.root() {
+            return Ok(self.semantic_rejection(InteractionRejection::TargetAuthorityInvalid));
+        }
+        let delta = self
+            .presentation_authority
+            .presentation_config
+            .splitter_keyboard_step()
+            * direction_sign;
+        let requested = match semantic_contained_resize_rect(
+            projection.output_ticket().surface(),
+            workspace_record.rect,
+            projection.plan().bounds(),
+            contained.minimum_size(),
+            direction,
+            delta,
+        ) {
+            Ok(requested) => requested,
+            Err(rejection) => return Ok(self.semantic_rejection(rejection)),
+        };
+        let clamped = match super::clamp_contained_rect(
+            projection.output_ticket().surface(),
+            projection.plan().bounds(),
+            requested,
+            contained.minimum_size(),
+        ) {
+            Ok(clamped) => clamped,
+            Err(error) => {
+                return Ok(self.semantic_rejection(
+                    InteractionRejection::ContainedPlacementUnavailable(error),
+                ));
+            }
+        };
+        let placement = crate::intent::ContainedPlacementProof::new(
+            projection.plan_stamp(),
+            projection.output_ticket().surface(),
+            requested,
+            contained.minimum_size(),
+            projection.plan().bounds(),
+            clamped,
+        );
+        self.reduce_contained_placement_input(
+            input,
+            expected,
+            ContainedPlacementInput {
+                root: contained.root(),
+                floating,
+                expected_rect: workspace_record.rect,
+                placement,
+            },
+            policy,
+            events,
+            interaction_events,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -323,5 +734,112 @@ fn semantic_splitter_direction(
         (crate::graph::Axis::Horizontal, SemanticKey::ArrowRight)
         | (crate::graph::Axis::Vertical, SemanticKey::ArrowDown) => Some(1.0),
         _ => None,
+    }
+}
+
+const fn semantic_direction(key: SemanticKey) -> f64 {
+    match key {
+        SemanticKey::ArrowLeft | SemanticKey::ArrowUp => -1.0,
+        SemanticKey::ArrowRight | SemanticKey::ArrowDown => 1.0,
+        SemanticKey::Home | SemanticKey::End | SemanticKey::Enter | SemanticKey::Space => 0.0,
+    }
+}
+
+fn semantic_contained_resize_rect(
+    surface: crate::ids::SurfaceId,
+    source: LogicalRect,
+    bounds: LogicalRect,
+    minimum: LogicalSize,
+    direction: crate::scene::ContainedResizeDirection,
+    delta: f64,
+) -> Result<LogicalRect, InteractionRejection> {
+    let horizontal_edge = match direction {
+        crate::scene::ContainedResizeDirection::West => Some(false),
+        crate::scene::ContainedResizeDirection::East => Some(true),
+        crate::scene::ContainedResizeDirection::North
+        | crate::scene::ContainedResizeDirection::South => None,
+        crate::scene::ContainedResizeDirection::NorthEast
+        | crate::scene::ContainedResizeDirection::SouthEast
+        | crate::scene::ContainedResizeDirection::SouthWest
+        | crate::scene::ContainedResizeDirection::NorthWest => {
+            return Err(InteractionRejection::TargetAuthorityInvalid);
+        }
+    };
+    let vertical_edge = match direction {
+        crate::scene::ContainedResizeDirection::North => Some(false),
+        crate::scene::ContainedResizeDirection::South => Some(true),
+        crate::scene::ContainedResizeDirection::East
+        | crate::scene::ContainedResizeDirection::West => None,
+        crate::scene::ContainedResizeDirection::NorthEast
+        | crate::scene::ContainedResizeDirection::SouthEast
+        | crate::scene::ContainedResizeDirection::SouthWest
+        | crate::scene::ContainedResizeDirection::NorthWest => unreachable!(
+            "diagonal semantic resize directions were rejected before vertical projection"
+        ),
+    };
+    let unavailable = || {
+        InteractionRejection::ContainedPlacementUnavailable(
+            crate::intent::ContainedPlacementUnavailable::UnrepresentableGeometry { surface },
+        )
+    };
+    let (min_x, max_x) = semantic_resize_axis(
+        source.x(),
+        source.max().x(),
+        bounds.x(),
+        bounds.max().x(),
+        minimum.width(),
+        delta,
+        horizontal_edge,
+    )
+    .ok_or_else(unavailable)?;
+    let (min_y, max_y) = semantic_resize_axis(
+        source.y(),
+        source.max().y(),
+        bounds.y(),
+        bounds.max().y(),
+        minimum.height(),
+        delta,
+        vertical_edge,
+    )
+    .ok_or_else(unavailable)?;
+    let min = LogicalPoint::new(min_x, min_y).map_err(|_| unavailable())?;
+    let max = LogicalPoint::new(max_x, max_y).map_err(|_| unavailable())?;
+    LogicalRect::from_min_max(min, max).map_err(|_| unavailable())
+}
+
+fn semantic_resize_axis(
+    source_min: f64,
+    source_max: f64,
+    bounds_min: f64,
+    bounds_max: f64,
+    minimum_extent: f64,
+    delta: f64,
+    moving_max: Option<bool>,
+) -> Option<(f64, f64)> {
+    if !source_min.is_finite()
+        || !source_max.is_finite()
+        || !bounds_min.is_finite()
+        || !bounds_max.is_finite()
+        || !minimum_extent.is_finite()
+        || !delta.is_finite()
+    {
+        return None;
+    }
+    match moving_max {
+        None => Some((source_min, source_max)),
+        Some(false) => {
+            let latest_min = source_max - minimum_extent;
+            (bounds_min <= latest_min)
+                .then_some(source_min + delta)
+                .filter(|requested| requested.is_finite())
+                .map(|requested| (requested.clamp(bounds_min, latest_min), source_max))
+        }
+        Some(true) => {
+            let earliest_max = source_min + minimum_extent;
+            (earliest_max <= bounds_max)
+                .then_some(source_max + delta)
+                .filter(|requested| requested.is_finite())
+                .map(|requested| (source_min, requested.clamp(earliest_max, bounds_max)))
+        }
     }
 }

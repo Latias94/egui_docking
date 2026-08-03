@@ -1038,7 +1038,10 @@ fn single_central_leaf_derives_every_exact_question() {
     );
     assert_eq!(
         requirements.pane_minimums().collect::<Vec<_>>(),
-        [PaneMinimumKey::new(root, tabs, Some(ItemId::new(11)))]
+        [
+            PaneMinimumKey::new(root, tabs, Some(ItemId::new(10))),
+            PaneMinimumKey::new(root, tabs, Some(ItemId::new(11))),
+        ]
     );
     assert_eq!(requirements.tab_intrinsics().len(), 2);
     assert_eq!(
@@ -1102,7 +1105,7 @@ fn nested_split_and_rootless_contained_roster_are_complete() {
         .surface(surface)
         .expect("surface should be present");
 
-    assert_eq!(requirements.pane_minimums().len(), 3);
+    assert_eq!(requirements.pane_minimums().len(), 4);
     assert_eq!(requirements.tab_intrinsics().len(), 4);
     assert_eq!(requirements.tab_strips().len(), 3);
     assert_eq!(requirements.ticket().surface(), surface);

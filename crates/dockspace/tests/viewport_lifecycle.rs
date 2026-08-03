@@ -1194,19 +1194,21 @@ fn move_journal_drag_to_surface(
         PointerReceiverHoverHitDisposition::Dock(target_receiver),
     )
     .expect("target hover must bind to the presented drop receiver");
-    frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(
-                PointerReceiverObservation::Presented(
-                    PresentedPointerReceiverObservation::new([
-                        PointerReceiverProbeReceipt::HoverHit(hover),
-                    ])
-                    .expect("target move must answer hover"),
-                ),
+    let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(
+        PointerReceiverObservation::Presented(
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::HoverHit(
+                hover,
             )])
-            .expect("target move receipt set must be exact"),
-        )
-        .expect("target move receipts must stage");
+            .expect("target move must answer hover"),
+        ),
+    )])
+    .expect("target move receipt set must be exact");
+    if let Err(error) = frame.submit_pointer_receiver_receipts(receipts) {
+        panic!(
+            "target move receipts must stage: {error:?}; source: {:?}",
+            frame.input_prefix_error()
+        );
+    }
     support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
     fixture.pointer_sequence += 1;

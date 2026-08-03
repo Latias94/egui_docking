@@ -204,7 +204,7 @@ impl EguiNativeInputSession {
         fingerprint: PaintReceiverFingerprint,
     ) -> Result<PaintReceiverLookup, DockspaceError> {
         dockspace.validate_native_session(&self.lease)?;
-        let route = self.state().resolve_native_callback(native)?;
+        let route = self.state().resolve_native_input_receiver(native)?;
         if output.surface() != route.surface() {
             return Err(DockspaceError::NativeReceiverOutputSurfaceMismatch {
                 native,
@@ -507,6 +507,7 @@ impl EguiNativePresentationSession {
             });
         }
         let surface = route.surface();
+        let viewport = input.viewport_id;
         self.state_mut().record_native_surface_pass(route)?;
         self.with_driver(dockspace, |driver| {
             let mut paint = None;
@@ -515,7 +516,7 @@ impl EguiNativePresentationSession {
             });
             let paint =
                 paint.ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })??;
-            driver.confirm_surface_output(surface, context, context.viewport_id(), output)?;
+            driver.confirm_surface_output(surface, context, viewport, output)?;
             Ok(paint)
         })
     }
@@ -563,14 +564,14 @@ impl EguiNativePresentationSession {
         dockspace: &mut Dockspace,
         native: ExactNativeViewport,
         context: &Context,
-        output: FullOutput,
+        output: &mut FullOutput,
     ) -> Result<(), DockspaceError> {
         let route = self.state().resolve_native_presentation(native)?;
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
         self.with_driver(dockspace, |driver| {
-            driver.confirm_surface_output(surface, context, native.viewport(), output)
+            driver.confirm_external_surface_output(surface, context, native.viewport(), output)
         })
     }
 
@@ -583,14 +584,14 @@ impl EguiNativePresentationSession {
         dockspace: &mut Dockspace,
         native: ExactNativeViewport,
         context: &Context,
-        output: FullOutput,
+        output: &mut FullOutput,
     ) -> Result<NativeStagingPresentation, DockspaceError> {
         let (route, presentation) = self.state().resolve_native_staging_presentation(native)?;
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
         self.with_driver(dockspace, |driver| {
-            driver.confirm_surface_output(surface, context, native.viewport(), output)
+            driver.confirm_external_surface_output(surface, context, native.viewport(), output)
         })?;
         Ok(presentation)
     }

@@ -557,33 +557,8 @@ impl<'frame> HostFrameView<'frame> {
         let projection = self
             .semantic_projection(surface)
             .ok_or(InteractionRejection::TabStripSourceUnavailable { key })?;
-        let plan = projection.plan();
-        let record = plan
-            .tab_strip_control_records()
-            .iter()
-            .copied()
-            .find(|record| record.id() == control)
-            .ok_or(InteractionRejection::TabStripControlUnavailable { control })?;
-        if !record.enabled() {
-            return Err(InteractionRejection::TabStripControlDisabled { control });
-        }
-        if self
-            .engine
-            .presentation_authority
-            .tab_strip_states
-            .state(key)
-            .is_none()
-            || !plan
-                .tab_bar_records()
-                .iter()
-                .any(|bar| *bar.id() == control.bar())
-        {
-            return Err(InteractionRejection::TabStripSourceUnavailable { key });
-        }
-        Ok(PreparedTabStripControlActivation {
-            presentation: DockEngine::freeze_interaction_projection(projection),
-            control: FrozenTabStripControlClick { key, record },
-        })
+        self.engine
+            .prepare_semantic_tab_strip_control(projection, control)
     }
 
     /// Prepares one keyboard or accessibility activation of an exact active menu row.
@@ -600,38 +575,8 @@ impl<'frame> HostFrameView<'frame> {
         let projection = self
             .semantic_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let plan = projection.plan();
-        let revision = plan.popup().revision();
         self.engine
-            .validate_tab_list_menu_popup(plan, session, revision)?;
-        let menu = plan
-            .tab_list_menu_records()
-            .iter()
-            .find(|record| record.session() == session)
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let record = menu
-            .rows()
-            .iter()
-            .copied()
-            .find(|record| record.tab() == tab)
-            .ok_or(InteractionRejection::TabListMenuRowUnavailable { session, tab })?;
-        if !self
-            .engine
-            .presentation_authority
-            .tab_strip_states
-            .active_menu_for(session.key())
-            .is_some_and(|active| active.session() == session && active.items().contains(&tab.item))
-        {
-            return Err(InteractionRejection::TabListMenuSessionUnavailable { session });
-        }
-        Ok(PreparedTabListMenuRowActivation {
-            presentation: DockEngine::freeze_interaction_projection(projection),
-            row: FrozenTabListMenuRowClick {
-                session,
-                record,
-                revision,
-            },
-        })
+            .prepare_semantic_tab_list_menu_row(projection, session, tab)
     }
 
     /// Prepares one Escape, keyboard, or programmatic dismissal of the exact
@@ -744,42 +689,8 @@ impl<'frame> HostFrameView<'frame> {
         let projection = self
             .semantic_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let plan = projection.plan();
-        let revision = plan.popup().revision();
         self.engine
-            .validate_tab_list_menu_popup(plan, session, revision)?;
-        let record = plan
-            .tab_list_menu_records()
-            .iter()
-            .find(|record| record.session() == session)
-            .cloned()
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let active = self
-            .engine
-            .presentation_authority
-            .tab_strip_states
-            .active_menu_for(session.key())
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        if active.session() != session {
-            return Err(InteractionRejection::TabListMenuSessionUnavailable { session });
-        }
-        let requested_items: &[ItemId] = match &adjustment.0 {
-            TabScrollAdjustmentKind::ScrollByPreserving { keep_visible, .. } => keep_visible,
-            TabScrollAdjustmentKind::RevealItem(item) => std::slice::from_ref(item),
-        };
-        if let Some(item) = requested_items.iter().copied().find(|item| {
-            !active.items().contains(item)
-                || !record.rows().iter().any(|row| row.tab().item == *item)
-        }) {
-            return Err(InteractionRejection::TabListMenuScrollItemUnavailable { session, item });
-        }
-        Ok(PreparedTabListMenuScroll {
-            presentation: DockEngine::freeze_interaction_projection(projection),
-            session,
-            revision,
-            record,
-            adjustment,
-        })
+            .prepare_semantic_tab_list_menu_scroll(projection, session, adjustment)
     }
 
     /// Prepares one exact keyboard or accessibility focus move in the active menu.
@@ -796,61 +707,8 @@ impl<'frame> HostFrameView<'frame> {
         let projection = self
             .semantic_projection(surface)
             .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let plan = projection.plan();
-        let revision = plan.popup().revision();
         self.engine
-            .validate_tab_list_menu_popup(plan, session, revision)?;
-        let record = plan
-            .tab_list_menu_records()
-            .iter()
-            .find(|record| record.session() == session)
-            .cloned()
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let active = self
-            .engine
-            .presentation_authority
-            .tab_strip_states
-            .active_menu_for(session.key())
-            .filter(|active| active.session() == session)
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
-        let current = active
-            .items()
-            .iter()
-            .position(|item| *item == active.focus())
-            .ok_or(InteractionRejection::TabListMenuFocusItemUnavailable {
-                session,
-                item: active.focus(),
-            })?;
-        let last_index = active.items().len().checked_sub(1).ok_or(
-            InteractionRejection::TabListMenuFocusItemUnavailable {
-                session,
-                item: active.focus(),
-            },
-        )?;
-        let target = match navigation {
-            TabListMenuNavigation::Previous => active.items()[current.saturating_sub(1)],
-            TabListMenuNavigation::Next => {
-                active.items()[current.saturating_add(1).min(last_index)]
-            }
-            TabListMenuNavigation::First => active.items()[0],
-            TabListMenuNavigation::Last => active.items()[last_index],
-            TabListMenuNavigation::Focus(item) => item,
-        };
-        if !active.items().contains(&target)
-            || !record.rows().iter().any(|row| row.tab().item == target)
-        {
-            return Err(InteractionRejection::TabListMenuFocusItemUnavailable {
-                session,
-                item: target,
-            });
-        }
-        Ok(PreparedTabListMenuNavigation {
-            presentation: DockEngine::freeze_interaction_projection(projection),
-            session,
-            revision,
-            record,
-            target,
-        })
+            .prepare_semantic_tab_list_menu_navigation(projection, session, navigation)
     }
 
     /// Returns one exact final-presentation authority visible to this frame.

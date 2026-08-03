@@ -75,13 +75,29 @@ The first renderer-neutral runtime slice now exists as
 `dockspace::runtime::DockspaceSession`. It privately owns `DockEngine` and
 exposes affine application host frames for durable commands, close decisions,
 complete uniform measurements, exact paint settlement, and surface-local
-pointer input. Paint-time receiver descriptors are not authority: an affine
+pointer input. One public pointer batch carries any number of provider-ordered
+edges through edgewise core challenges inside the same rollbackable host frame.
+Every edge retains a typed pointer identity, explicit known-or-unknown position,
+capture authority, button or terminal reason, and independent receiver facts.
+Discrete and phaseful scroll retain device/sequence identities, raw units,
+momentum, and exact modifiers; receiver selection and unit conversion remain
+core-owned. Paint-time receiver descriptors are not authority: an affine
 output capability must first cross an exact final-presentation observation,
 after which the facade can bind independently observed framework receiver facts
 to the current output. Stale or missing facts degrade to `Unknown` and fail
 closed. The independent `dockspace_host_conformance` executor uses this boundary
 for `OGC-01` through `OGC-04` without importing engine internals, scene stamps,
 provider leases, or the core hit resolver.
+
+The primary docking-geometry slice is now renderer-complete. A borrowed
+`SurfacePaintPlan` exposes panes, tabs, tab bars, splitters, splitter junctions,
+contained presentations, docking-guide clusters and targets, the active
+semantic receiver roster, and transient drag preview geometry. Stable opaque
+visual identities hide `NodeId`, scene stamps, reducer ticks, and coordinate
+generations. The host-conformance executor proves that this geometry roster can
+be traversed without reconstructing projection state, that guide clusters
+include center and four directional targets, and that visual identities remain
+stable across distinct presented outputs.
 
 The OGC-04 slice adds opaque native root bindings without exposing provider
 leases or `ViewportBinding`. An adapter supplies a reusable host window token,
@@ -93,12 +109,13 @@ when both use the same host token. Frame reports expose only the sorted logical
 surfaces whose presentation authority changed, so repaint remains core-derived
 without leaking scene stamps.
 
-This is still a vertical slice rather than the complete facade. Native child
-recovery, provider handoff, effect execution, and desktop-global routing remain
-outside this root-binding slice. Rich adapters
-need semantic per-item measurement callbacks, ordered keyboard/accessibility
-input, multiple pointer identities, global/native routing, and lifecycle/effect
-execution behind equally opaque capabilities before they can migrate.
+This is still a vertical slice rather than the complete facade. Tab-strip
+control and popup paint records, semantic-manifest views, native child recovery,
+provider handoff, effect execution, and desktop-global routing remain outside
+this root-binding slice. Rich adapters need semantic per-item measurement
+callbacks, ordered multi-edge keyboard/accessibility input, global/native
+routing, persistence, and lifecycle/effect execution behind equally opaque
+capabilities before they can migrate.
 
 ## Internal Implementation Categories
 
