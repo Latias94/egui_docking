@@ -66,8 +66,8 @@ provenance, cross-viewport receiver probing, terminal renderer results, and a
 complete-roster input-before-paint hosted-cycle SPI. Native lifecycle ownership
 lives in the unpublished `egui_dockspace_native` runtime. The excluded native
 workspaces pin the public fork commit
-`66920b0de76f84503145a3c8e0eabc0b65666413` and the event-position Winit commit
-`bc2d69433d733d113f7b0b507fe060d62f30b7d1`; the complete two-window conformance
+`48a0ae9801dfc47c70d4485474b6783256c8d3d2` and the event-fact Winit commit
+`ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c`; the complete two-window conformance
 matrix, bounded long-session ledgers, performance gates, an upstream-reviewable
 patch series, and the sealed public facade remain release blockers. Egui no
 longer computes a second docking geometry plan: it submits intrinsic
@@ -112,8 +112,8 @@ cargo test --manifest-path integration/egui-official-harness/Cargo.toml --locked
 
 The development fork in `repo-ref/egui-release` starts at the exact upstream
 `0.35.0` tag. The excluded fork-backed workspaces pin the complete public patch
-revision `66920b0de76f84503145a3c8e0eabc0b65666413` and Winit revision
-`bc2d69433d733d113f7b0b507fe060d62f30b7d1`; their lockfiles make a clean
+revision `48a0ae9801dfc47c70d4485474b6783256c8d3d2` and Winit revision
+`ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c`; their lockfiles make a clean
 checkout reproducible without either ignored local repository. The fork-backed
 runtime remains `publish = false` until its required seams are available from a
 publishable release. Launch the current two-window trial example with:
@@ -122,19 +122,20 @@ publishable release. Launch the current two-window trial example with:
 python3 scripts/run_native_multiview.py
 ```
 
-A self-driving native smoke gate starts one real root window, tears its tab off
-into a dynamically created child, waits for the child's first-live interaction
-admission, redocks the tab into the root, verifies exact ownership and source
-vacancy, then closes itself:
+A self-driving native smoke gate starts one real root window, tears a two-tab group off into a
+dynamically created child, waits for the child's first-live interaction admission, redocks the
+complete group into the root, verifies exact ownership, tab order, selection, MRU, and source
+vacancy, then scrolls an overflowing tab strip through the production Winit window-event and
+egui derivative-claim path before closing itself:
 
 ```text
 python3 scripts/run_native_e2e.py
 ```
 
-This gate drives typed pointer events through the real native event loop and
-uses real OS windows. It does not simulate hardware input, transfer a window
-between mixed-DPI monitors, exercise close/focus failure matrices, or prove
-multi-item ordering and grab-offset preservation.
+This gate drives typed pointer events and a positioned `WindowEvent::MouseWheel` through the real
+native event loop and uses real OS windows. It does not simulate hardware input, transfer a window
+between mixed-DPI monitors, exercise close/focus failure matrices, or prove grab-offset
+preservation.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example deliberately
 uses the registry-only paint path and is not an interaction or multiview demo.

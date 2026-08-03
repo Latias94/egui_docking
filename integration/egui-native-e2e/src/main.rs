@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::command::Edge;
+use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::SurfacePresentationOutputTicket;
@@ -14,6 +15,7 @@ use dockspace::viewport::WindowToken;
 use eframe::egui;
 use eframe::{
     NativeTestDriver, NativeTestPointerAction, NativeTestPointerEvent, NativeTestScrollDelta,
+    NativeTestWindowScroll,
 };
 use egui_dockspace::{DockStyle, Dockspace, PaneView};
 use egui_dockspace_native::{
@@ -23,7 +25,8 @@ use egui_dockspace_native::{
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
-const ROOT_ITEM_COUNT: u64 = 2;
+const ROOT_ITEM_COUNT: u64 = 3;
+const GROUP_ITEM_COUNT: u64 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTSIDE_ALL_POINT: egui::Pos2 = egui::pos2(200.0, 800.0);
 const OVERFLOW_TAB_WIDTH: f32 = 1_000.0;
@@ -186,7 +189,7 @@ impl SmokeApp {
                 let engine = self.runtime.dockspace().engine();
                 if status.live_viewports == 1
                     && engine.interaction_authority(ROOT_SURFACE).is_some()
-                    && let Some(point) = tab_drag_point(engine, ROOT_SURFACE)
+                    && let Some(point) = tab_group_drag_point(engine, ROOT_SURFACE)
                 {
                     self.queue_pointer(
                         NativeTestPointerEvent::new(
@@ -232,8 +235,9 @@ impl SmokeApp {
                 if status.live_viewports == 2
                     && let Some(child) = dynamic_child_surface(engine.workspace())
                     && engine.interaction_authority(child).is_some()
-                    && let Some(point) = tab_drag_point(engine, child)
+                    && let Some(point) = tab_group_drag_point(engine, child)
                 {
+                    verify_surface_tab_group(engine.workspace(), child, "native child")?;
                     self.queue_pointer(
                         NativeTestPointerEvent::unique_child(
                             point,
@@ -304,6 +308,7 @@ impl SmokeApp {
                     && retained_presentation_streams == 1
                     && let Some(projection) = engine.interaction_projection(ROOT_SURFACE)
                 {
+                    verify_surface_tab_group(workspace, ROOT_SURFACE, "recovered root")?;
                     self.overflow_predecessor = Some(projection.output_ticket());
                     self.runtime
                         .set_style(overflow_style())
@@ -400,13 +405,16 @@ impl SmokeApp {
             .ok_or_else(|| "committed root output has no finite presentation scale".to_owned())?;
         self.scroll_predecessor = Some(output);
         self.driver
-            .send_pointer(NativeTestPointerEvent::new(
+            .send_window_scroll(NativeTestWindowScroll::new(
                 egui::ViewportId::ROOT,
-                point,
-                NativeTestPointerAction::Scroll(NativeTestScrollDelta::physical_pixels(
+                [
+                    (f64::from(point.x) * presentation_scale).round(),
+                    (f64::from(point.y) * presentation_scale).round(),
+                ],
+                NativeTestScrollDelta::physical_pixels(
                     0.0,
                     -EXPECTED_SCROLL_OFFSET * presentation_scale,
-                )),
+                ),
             ))
             .map_err(|error| format!("native test event loop closed: {error}"))?;
         self.phase = SmokePhase::RootScrollQueued;
@@ -450,12 +458,71 @@ fn dynamic_child_surface(workspace: &Workspace) -> Option<SurfaceId> {
     Some(*child)
 }
 
-fn tab_drag_point(
+fn tab_group_drag_point(
     engine: &dockspace::engine::DockEngine,
     surface: SurfaceId,
 ) -> Option<egui::Pos2> {
     let ready = engine.scene().surface(surface)?.ready()?;
-    logical_rect_center(ready.plan().tab_records().first()?.drag_hit().rect())
+    let expected = group_items().collect::<Vec<_>>();
+    let bar = ready.plan().tab_bar_records().iter().find(|bar| {
+        bar.members()
+            .iter()
+            .map(|member| member.tab().item)
+            .eq(expected.iter().copied())
+    })?;
+    logical_rect_center(bar.group_drag()?.grip_bounds())
+}
+
+fn verify_surface_tab_group(
+    workspace: &Workspace,
+    surface: SurfaceId,
+    label: &str,
+) -> Result<(), String> {
+    let presentation = workspace
+        .surface(surface)
+        .ok_or_else(|| format!("{label} surface {surface:?} is absent"))?;
+    let root = presentation
+        .main_root
+        .ok_or_else(|| format!("{label} surface {surface:?} has no main root"))?;
+    let root = workspace
+        .root(root)
+        .ok_or_else(|| format!("{label} main root is absent"))?;
+    let expected = group_items().collect::<Vec<_>>();
+    let mut pending = vec![root.node];
+    let mut matched = None;
+    while let Some(node) = pending.pop() {
+        match workspace
+            .node(node)
+            .ok_or_else(|| format!("{label} contains an absent node {node:?}"))?
+        {
+            Node::Tabs { items, selected } if items == &expected => {
+                matched = Some((node, items, *selected));
+                break;
+            }
+            Node::Tabs { .. } => {}
+            Node::Split { children, .. } => pending.extend(children.iter().rev().copied()),
+        }
+    }
+    let Some((tabs, items, selected)) = matched else {
+        return Err(format!(
+            "{label} does not contain the expected tab group {expected:?}"
+        ));
+    };
+    if items != &expected || selected != expected.first().copied() {
+        return Err(format!(
+            "{label} changed tab order or selection: items={items:?}, selected={selected:?}, \
+             expected={expected:?}"
+        ));
+    }
+    let mru = workspace
+        .tab_mru(tabs)
+        .ok_or_else(|| format!("{label} has no tab MRU"))?;
+    if mru != expected.as_slice() {
+        return Err(format!(
+            "{label} changed tab MRU: mru={mru:?}, expected={expected:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn redock_drop_point(
@@ -465,23 +532,33 @@ fn redock_drop_point(
     let ready = engine.scene().surface(surface)?.ready()?;
     let plan = ready.plan();
     let region = plan
-        .drop_targets()
+        .drop_guide_clusters()
         .iter()
-        .find(|target| {
-            target.availability().is_available()
-                && target.id().kind() == dockspace::drop_target::DropTargetKind::Center
+        .find_map(|cluster| {
+            cluster
+                .target(dockspace::drop_guide::DropGuideSlot::Edge(Edge::Left))
+                .map(|target| target.target())
+                .filter(|target| target.availability().is_available())
+                .map(|target| target.region())
         })
-        .map(|target| target.region())
         .or_else(|| {
-            plan.drop_guide_clusters().iter().find_map(|cluster| {
-                cluster
-                    .target(dockspace::drop_guide::DropGuideSlot::Center)
-                    .map(|target| target.target())
-                    .filter(|target| target.availability().is_available())
-                    .map(|target| target.region())
-            })
-        })
-        .or_else(|| plan.surface_background().map(|target| target.region()))?;
+            plan.drop_targets()
+                .iter()
+                .find(|target| {
+                    target.availability().is_available()
+                        && matches!(
+                            target.id(),
+                            dockspace::drop_target::DropTargetId::InnerEdge {
+                                edge: Edge::Left,
+                                ..
+                            } | dockspace::drop_target::DropTargetId::OuterEdge {
+                                edge: Edge::Left,
+                                ..
+                            }
+                        )
+                })
+                .map(|target| target.region())
+        })?;
     logical_rect_center(region.rect())
 }
 
@@ -668,8 +745,13 @@ impl RendererCounts {
 
 fn workspace() -> Workspace {
     let mut builder = Workspace::builder();
-    let root_tabs = builder.insert_node(Node::tabs(root_items()));
-    builder.set_root(ROOT, RootRecord::new(root_tabs).with_central(root_tabs));
+    let group = builder.insert_node(Node::tabs(group_items()));
+    let central = builder.insert_node(Node::tabs([ItemId::new(ROOT_ITEM_COUNT)]));
+    let root = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [group, central])
+            .expect("two root branches form a valid split"),
+    );
+    builder.set_root(ROOT, RootRecord::new(root).with_central(central));
     builder.set_surface(ROOT_SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("the native E2E workspace is valid")
 }
@@ -680,6 +762,10 @@ fn expected_item_multiset() -> BTreeMap<ItemId, usize> {
 
 fn root_items() -> impl Iterator<Item = ItemId> {
     (1..=ROOT_ITEM_COUNT).map(ItemId::new)
+}
+
+fn group_items() -> impl Iterator<Item = ItemId> {
+    (1..=GROUP_ITEM_COUNT).map(ItemId::new)
 }
 
 struct SmokePanes;
