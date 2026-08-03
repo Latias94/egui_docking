@@ -15,15 +15,15 @@ egui_dockspace = { path = "../../crates/egui_dockspace" }
 egui_dockspace_native = { path = "../../crates/egui_dockspace_native" }
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-egui = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-emath = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
-epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "3dc8c1b912516889a1312ec335a7bf3267555299" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+egui = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+emath = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
+epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "e9151b1960638a6bc24f9383eccb6cacd1d165f1" }
 
 [lints.rust]
 unsafe_code = "forbid"

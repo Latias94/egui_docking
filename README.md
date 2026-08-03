@@ -66,7 +66,7 @@ provenance, cross-viewport receiver probing, terminal renderer results, and a
 complete-roster input-before-paint hosted-cycle SPI. Native lifecycle ownership
 lives in the unpublished `egui_dockspace_native` runtime. The excluded native
 workspaces pin the public fork commit
-`3dc8c1b912516889a1312ec335a7bf3267555299`; the complete two-window conformance
+`e9151b1960638a6bc24f9383eccb6cacd1d165f1`; the complete two-window conformance
 matrix, bounded long-session ledgers, performance gates, an upstream-reviewable
 patch series, and the sealed public facade remain release blockers. Egui no
 longer computes a second docking geometry plan: it submits intrinsic
@@ -111,7 +111,7 @@ cargo test --manifest-path integration/egui-official-harness/Cargo.toml --locked
 
 The development fork in `repo-ref/egui-release` starts at the exact upstream
 `0.35.0` tag. The excluded fork-backed workspaces pin the complete public patch
-revision `3dc8c1b912516889a1312ec335a7bf3267555299`; their lockfiles make a clean
+revision `e9151b1960638a6bc24f9383eccb6cacd1d165f1`; their lockfiles make a clean
 checkout reproducible without the ignored local repository. The fork-backed
 runtime remains `publish = false` until its required seams are available from a
 publishable release. Launch the current two-window trial example with:
