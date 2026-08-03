@@ -6,8 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dockspace::command::Edge;
+use dockspace::drop_target::DropTargetId;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::interaction::PreviewVisual;
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::SurfacePresentationOutputTicket;
 use dockspace::scene::SurfaceScene;
@@ -63,6 +65,7 @@ struct SmokeApp {
     phase: SmokePhase,
     phase_cycle: u64,
     redock_point: Option<egui::Pos2>,
+    redock_target: Option<DropTargetId>,
     overflow_predecessor: Option<SurfacePresentationOutputTicket>,
     scroll_predecessor: Option<SurfacePresentationOutputTicket>,
     post_commit_error: Option<String>,
@@ -93,6 +96,7 @@ impl SmokeApp {
             phase: SmokePhase::AwaitRoot,
             phase_cycle: 0,
             redock_point: None,
+            redock_target: None,
             overflow_predecessor: None,
             scroll_predecessor: None,
             post_commit_error: None,
@@ -249,12 +253,14 @@ impl SmokeApp {
                 }
             }
             SmokePhase::ChildPressQueued if cycle_advanced => {
-                let point = redock_drop_point(self.runtime.dockspace().engine(), ROOT_SURFACE)
-                    .ok_or_else(|| {
-                        "root surface published no authoritative background or center drop target"
-                            .to_owned()
-                    })?;
+                let (point, target) =
+                    redock_drop_target(self.runtime.dockspace().engine(), ROOT_SURFACE)
+                        .ok_or_else(|| {
+                            "root surface published no authoritative left-edge drop target"
+                                .to_owned()
+                        })?;
                 self.redock_point = Some(point);
+                self.redock_target = Some(target);
                 self.queue_pointer(
                     NativeTestPointerEvent::new(
                         egui::ViewportId::ROOT,
@@ -266,14 +272,23 @@ impl SmokeApp {
                 )?;
             }
             SmokePhase::RootMoveQueued if cycle_advanced => {
+                let expected_target = self
+                    .redock_target
+                    .ok_or_else(|| "redock target disappeared before preview".to_owned())?;
                 let root_preview = self
                     .runtime
                     .dockspace()
                     .engine()
                     .presentation_preview()
                     .is_some_and(|preview| {
-                        preview.visual().surface() == ROOT_SURFACE
-                            && preview.visual().target_surface().is_none()
+                        matches!(
+                            preview.visual(),
+                            PreviewVisual::Dock {
+                                surface: ROOT_SURFACE,
+                                target,
+                                ..
+                            } if *target == expected_target
+                        )
                     });
                 if root_preview {
                     let point = self
@@ -309,6 +324,7 @@ impl SmokeApp {
                     && let Some(projection) = engine.interaction_projection(ROOT_SURFACE)
                 {
                     verify_surface_tab_group(workspace, ROOT_SURFACE, "recovered root")?;
+                    verify_left_redock_topology(workspace)?;
                     self.overflow_predecessor = Some(projection.output_ticket());
                     self.runtime
                         .set_style(overflow_style())
@@ -359,6 +375,9 @@ impl SmokeApp {
                         tab_scroll_state(engine, ROOT_SURFACE)
                     && Some(output) != self.scroll_predecessor
                 {
+                    if offset == 0.0 {
+                        return Ok(None);
+                    }
                     if (offset - EXPECTED_SCROLL_OFFSET).abs() > f64::EPSILON {
                         return Err(format!(
                             "native scroll did not reach the core-owned tab-strip state: \
@@ -508,30 +527,85 @@ fn verify_surface_tab_group(
             "{label} does not contain the expected tab group {expected:?}"
         ));
     };
-    if items != &expected || selected != expected.first().copied() {
+    if items != &expected || selected != Some(expected_group_selection()) {
         return Err(format!(
             "{label} changed tab order or selection: items={items:?}, selected={selected:?}, \
-             expected={expected:?}"
+             expected_items={expected:?}, expected_selection={:?}",
+            expected_group_selection()
         ));
     }
     let mru = workspace
         .tab_mru(tabs)
         .ok_or_else(|| format!("{label} has no tab MRU"))?;
-    if mru != expected.as_slice() {
+    let expected_mru = expected_group_mru();
+    if mru != expected_mru {
         return Err(format!(
-            "{label} changed tab MRU: mru={mru:?}, expected={expected:?}"
+            "{label} changed tab MRU: mru={mru:?}, expected={expected_mru:?}"
         ));
     }
     Ok(())
 }
 
-fn redock_drop_point(
+fn verify_left_redock_topology(workspace: &Workspace) -> Result<(), String> {
+    let presentation = workspace
+        .surface(ROOT_SURFACE)
+        .ok_or_else(|| "recovered root surface is absent".to_owned())?;
+    let root = workspace
+        .root(
+            presentation
+                .main_root
+                .ok_or_else(|| "recovered root surface has no main root".to_owned())?,
+        )
+        .ok_or_else(|| "recovered main root is absent".to_owned())?;
+    let Node::Split { axis, children, .. } = workspace
+        .node(root.node)
+        .ok_or_else(|| "recovered root node is absent".to_owned())?
+    else {
+        return Err("left-edge redock did not produce a split root".to_owned());
+    };
+    let [group, central] = children.as_slice() else {
+        return Err(format!(
+            "left-edge redock produced {} root children instead of two",
+            children.len()
+        ));
+    };
+    if *axis != Axis::Horizontal || root.central != Some(*central) {
+        return Err(format!(
+            "left-edge redock changed split direction or central identity: \
+             axis={axis:?}, children={children:?}, central={:?}",
+            root.central
+        ));
+    }
+    match workspace.node(*group) {
+        Some(Node::Tabs { items, selected })
+            if items == &group_items().collect::<Vec<_>>()
+                && *selected == Some(expected_group_selection()) => {}
+        group => {
+            return Err(format!(
+                "left-edge redock did not place the complete group first: {group:?}"
+            ));
+        }
+    }
+    match workspace.node(*central) {
+        Some(Node::Tabs { items, selected })
+            if items.as_slice() == [ItemId::new(ROOT_ITEM_COUNT)]
+                && *selected == Some(ItemId::new(ROOT_ITEM_COUNT)) => {}
+        central => {
+            return Err(format!(
+                "left-edge redock did not preserve the central branch second: {central:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn redock_drop_target(
     engine: &dockspace::engine::DockEngine,
     surface: SurfaceId,
-) -> Option<egui::Pos2> {
+) -> Option<(egui::Pos2, DropTargetId)> {
     let ready = engine.scene().surface(surface)?.ready()?;
     let plan = ready.plan();
-    let region = plan
+    let target = plan
         .drop_guide_clusters()
         .iter()
         .find_map(|cluster| {
@@ -539,27 +613,23 @@ fn redock_drop_point(
                 .target(dockspace::drop_guide::DropGuideSlot::Edge(Edge::Left))
                 .map(|target| target.target())
                 .filter(|target| target.availability().is_available())
-                .map(|target| target.region())
         })
         .or_else(|| {
-            plan.drop_targets()
-                .iter()
-                .find(|target| {
-                    target.availability().is_available()
-                        && matches!(
-                            target.id(),
-                            dockspace::drop_target::DropTargetId::InnerEdge {
-                                edge: Edge::Left,
-                                ..
-                            } | dockspace::drop_target::DropTargetId::OuterEdge {
-                                edge: Edge::Left,
-                                ..
-                            }
-                        )
-                })
-                .map(|target| target.region())
+            plan.drop_targets().iter().find(|target| {
+                target.availability().is_available()
+                    && matches!(
+                        target.id(),
+                        dockspace::drop_target::DropTargetId::InnerEdge {
+                            edge: Edge::Left,
+                            ..
+                        } | dockspace::drop_target::DropTargetId::OuterEdge {
+                            edge: Edge::Left,
+                            ..
+                        }
+                    )
+            })
         })?;
-    logical_rect_center(region.rect())
+    Some((logical_rect_center(target.region().rect())?, target.id()))
 }
 
 fn tab_scroll_state(
@@ -745,7 +815,13 @@ impl RendererCounts {
 
 fn workspace() -> Workspace {
     let mut builder = Workspace::builder();
-    let group = builder.insert_node(Node::tabs(group_items()));
+    let group = builder.insert_node(Node::tabs_with_selection(
+        group_items(),
+        Some(expected_group_selection()),
+    ));
+    builder
+        .set_tab_mru(group, expected_group_mru())
+        .expect("the native E2E group is a tabs node");
     let central = builder.insert_node(Node::tabs([ItemId::new(ROOT_ITEM_COUNT)]));
     let root = builder.insert_node(
         Node::equal_split(Axis::Horizontal, [group, central])
@@ -766,6 +842,14 @@ fn root_items() -> impl Iterator<Item = ItemId> {
 
 fn group_items() -> impl Iterator<Item = ItemId> {
     (1..=GROUP_ITEM_COUNT).map(ItemId::new)
+}
+
+const fn expected_group_selection() -> ItemId {
+    ItemId::new(2)
+}
+
+const fn expected_group_mru() -> [ItemId; 2] {
+    [ItemId::new(2), ItemId::new(1)]
 }
 
 struct SmokePanes;
