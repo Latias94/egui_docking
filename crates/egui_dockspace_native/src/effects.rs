@@ -179,13 +179,10 @@ impl NativeEffectDriver {
             .is_some_and(|pending| pending.phase == RestoredCreatePhase::Materialized)
     }
 
-    pub(crate) fn restored_create_is_terminal(&self, viewport: ViewportId) -> bool {
-        self.restored_creates.get(&viewport).is_some_and(|pending| {
-            matches!(
-                pending.phase,
-                RestoredCreatePhase::Failed | RestoredCreatePhase::Unsupported
-            )
-        })
+    pub(crate) fn restored_create_terminal_error(&self) -> Option<NativeRuntimeError> {
+        self.restored_creates
+            .values()
+            .find_map(|pending| restored_create_terminal_error(pending.token, pending.phase))
     }
 
     pub(crate) fn route_for_new_binding(
@@ -599,6 +596,25 @@ fn restored_create_transition(
     }
 }
 
+fn restored_create_terminal_error(
+    token: RestoredCreateToken,
+    phase: RestoredCreatePhase,
+) -> Option<NativeRuntimeError> {
+    match phase {
+        RestoredCreatePhase::Failed => Some(NativeRuntimeError::RestoredViewportCreateFailed {
+            surface: token.surface,
+            viewport: token.viewport,
+        }),
+        RestoredCreatePhase::Unsupported => {
+            Some(NativeRuntimeError::RestoredViewportCreateUnsupported {
+                surface: token.surface,
+                viewport: token.viewport,
+            })
+        }
+        RestoredCreatePhase::AwaitingResult | RestoredCreatePhase::Materialized => None,
+    }
+}
+
 fn dispatch_result(
     effect: EffectId,
     epoch: WorkspaceEpoch,
@@ -754,7 +770,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn restored_create_failures_are_precise_terminals_without_becoming_runtime_fatal() {
+    fn restored_create_outcomes_distinguish_retry_materialization_and_fatal_failure() {
         assert_eq!(
             restored_create_transition(NativeViewportCreateDispatchOutcome::Materialized),
             RestoredCreateTransition::Retain(RestoredCreatePhase::Materialized)
@@ -771,5 +787,29 @@ mod tests {
             restored_create_transition(NativeViewportCreateDispatchOutcome::Unsupported),
             RestoredCreateTransition::Retain(RestoredCreatePhase::Unsupported)
         );
+
+        let token = RestoredCreateToken {
+            runtime: 7,
+            surface: dockspace::ids::SurfaceId::new(11),
+            viewport: ViewportId::from_hash_of("restored-create-terminal"),
+        };
+        assert!(
+            restored_create_terminal_error(token, RestoredCreatePhase::AwaitingResult).is_none()
+        );
+        assert!(restored_create_terminal_error(token, RestoredCreatePhase::Materialized).is_none());
+        assert!(matches!(
+            restored_create_terminal_error(token, RestoredCreatePhase::Failed),
+            Some(NativeRuntimeError::RestoredViewportCreateFailed {
+                surface,
+                viewport,
+            }) if surface == token.surface && viewport == token.viewport
+        ));
+        assert!(matches!(
+            restored_create_terminal_error(token, RestoredCreatePhase::Unsupported),
+            Some(NativeRuntimeError::RestoredViewportCreateUnsupported {
+                surface,
+                viewport,
+            }) if surface == token.surface && viewport == token.viewport
+        ));
     }
 }

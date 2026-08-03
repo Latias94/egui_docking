@@ -641,6 +641,11 @@ impl NativeIngressBridge {
                 "native ingress batch omitted its atomic platform snapshot",
             ));
         }
+        // The restored surface already owns workspace content. Failing inside this savepoint keeps
+        // the document intact for explicit recovery instead of committing a windowless runtime.
+        if let Some(error) = self.effects.restored_create_terminal_error() {
+            return Err(error);
+        }
         let watermark = PointerEdgeSequence::new(ingress.pointer_journal().through().get());
         if let Some(journal) = empty_pointer_interval(submitted_pointer_segment, watermark)? {
             self.recorder
@@ -776,10 +781,6 @@ impl NativeIngressBridge {
 
     pub(crate) fn restored_viewport_is_materialized(&self, viewport: ViewportId) -> bool {
         self.effects.restored_create_is_materialized(viewport)
-    }
-
-    pub(crate) fn restored_viewport_is_terminal(&self, viewport: ViewportId) -> bool {
-        self.effects.restored_create_is_terminal(viewport)
     }
 
     pub(crate) fn has_post_commit_records(&self) -> bool {

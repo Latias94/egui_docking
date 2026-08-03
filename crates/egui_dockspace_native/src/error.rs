@@ -43,6 +43,20 @@ pub enum NativeRuntimeError {
         #[source]
         source: eframe::NativeViewportCreateSubmitError,
     },
+    /// The platform accepted a restored child request but failed to create its window.
+    #[error("restored native viewport {viewport:?} for surface {surface} failed to materialize")]
+    RestoredViewportCreateFailed {
+        surface: SurfaceId,
+        viewport: ViewportId,
+    },
+    /// The platform cannot create the restored child window requested by this document.
+    #[error(
+        "restored native viewport {viewport:?} for surface {surface} is unsupported by the native backend"
+    )]
+    RestoredViewportCreateUnsupported {
+        surface: SurfaceId,
+        viewport: ViewportId,
+    },
     /// A hosted callback arrived for a viewport outside the configured roster.
     #[error("hosted callback named unconfigured viewport {viewport:?}")]
     UnconfiguredViewport { viewport: ViewportId },

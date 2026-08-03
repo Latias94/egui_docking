@@ -291,10 +291,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .pending_restored_viewports
             .iter()
             .copied()
-            .filter(|viewport| {
-                !routes.contains_key(viewport)
-                    && !self.ingress.restored_viewport_is_terminal(*viewport)
-            })
+            .filter(|viewport| !routes.contains_key(viewport))
             .collect();
         self.next_cycle = self
             .next_cycle
