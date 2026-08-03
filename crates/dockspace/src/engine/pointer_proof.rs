@@ -2,6 +2,236 @@
 
 use super::*;
 
+pub(super) fn pointer_receiver_candidate_spec(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+    stream: PointerStreamId,
+) -> PointerReceiverCandidateSpec {
+    if matches!(edge.kind(), PointerEdgeKind::Scrolled(_)) {
+        let PointerEdgeKind::Scrolled(scroll) = edge.kind() else {
+            unreachable!("the branch is restricted to scroll edges");
+        };
+        let delivery_point = match edge.location() {
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Known(point),
+            } => Some(point),
+            PointerEdgeLocation::SurfaceLocal {
+                position: Authority::Unknown(_),
+            } => None,
+            PointerEdgeLocation::Desktop { .. } => validated_desktop_delivery_route(engine, edge)
+                .and_then(DesktopRouteValidation::dock_route)
+                .map(|route| route.surface_position()),
+        };
+        return PointerReceiverCandidateSpec::scroll_delivery(
+            edge.sequence(),
+            delivery_point,
+            engine.scroll_receiver_challenge(stream, scroll),
+        );
+    }
+    let (receiver_route, hover_point) = match edge.location() {
+        PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Known(point),
+        } => (true, Some(point)),
+        PointerEdgeLocation::SurfaceLocal {
+            position: Authority::Unknown(_),
+        } => (true, None),
+        PointerEdgeLocation::Desktop { route } => match route
+            .validate_against_registry(engine.authority_domain, engine.viewport.registry())
+            .dock_route()
+        {
+            Some(route) => (true, Some(route.surface_position())),
+            None => (false, None),
+        },
+    };
+    if !receiver_route {
+        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
+    }
+
+    let owns_stream = engine.interaction.active_stream() == Some(stream);
+    let (delivery, hover) = match (engine.interaction.status(), edge.kind(), owns_stream) {
+        (InteractionStatus::Idle, PointerEdgeKind::ButtonPressed(PointerButton::Primary), _) => {
+            (true, false)
+        }
+        (
+            InteractionStatus::Pressed { .. },
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            true,
+        ) => (true, false),
+        (
+            InteractionStatus::Armed { .. } | InteractionStatus::Dragging { .. },
+            PointerEdgeKind::Moved,
+            true,
+        )
+        | (
+            InteractionStatus::Dragging { .. },
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            true,
+        ) => (false, true),
+        _ => (false, false),
+    };
+    match (delivery, hover) {
+        (false, false) => PointerReceiverCandidateSpec::not_applicable(edge.sequence()),
+        (true, false) => PointerReceiverCandidateSpec::delivery(edge.sequence(), hover_point),
+        (false, true) => PointerReceiverCandidateSpec::hover_hit(edge.sequence(), hover_point),
+        (true, true) => {
+            PointerReceiverCandidateSpec::delivery_and_hover_hit(edge.sequence(), hover_point)
+        }
+    }
+}
+
+/// Joins the edge-local delivery binding with the independent desktop position.
+/// The hovered-window classification is deliberately not consulted.
+pub(super) fn validated_desktop_delivery_route(
+    engine: &DockEngine,
+    edge: &PointerEdge,
+) -> Option<DesktopRouteValidation> {
+    let position = edge.desktop_route()?.position();
+    let Authority::Known(PointerEventDeliveryOwner::Native(binding)) = edge.delivery_owner() else {
+        return None;
+    };
+    Some(
+        DesktopRouteFact::dock_from_desktop_position(binding, position)
+            .validate_against_registry(engine.authority_domain, engine.viewport.registry()),
+    )
+}
+
+/// Returns the semantic delivery lane which must have produced a core action
+/// for one claimed receiver region.
+///
+/// Pane and contained-frame fallbacks deliberately have no action lane: they
+/// prove only that docking did not own a control activation at that point.
+const fn delivery_action_lane(kind: PresentationHitRegionKind) -> Option<PresentationPointerLane> {
+    match kind {
+        PresentationHitRegionKind::TabClose(_)
+        | PresentationHitRegionKind::TabStripControl(_)
+        | PresentationHitRegionKind::TabListMenuRow { .. }
+        | PresentationHitRegionKind::TabListMenuBlocker(_)
+        | PresentationHitRegionKind::TabListMenuBackdrop(_)
+        | PresentationHitRegionKind::ContainedClose(_) => Some(PresentationPointerLane::Click),
+        PresentationHitRegionKind::TabStripScroll(_)
+        | PresentationHitRegionKind::TabListMenuScroll(_) => Some(PresentationPointerLane::Scroll),
+        PresentationHitRegionKind::TabBody(_)
+        | PresentationHitRegionKind::TabGroupGrip(_)
+        | PresentationHitRegionKind::SplitterHandle(_)
+        | PresentationHitRegionKind::SplitterJunction(_)
+        | PresentationHitRegionKind::ContainedTitle(_)
+        | PresentationHitRegionKind::ContainedResize { .. } => Some(PresentationPointerLane::Drag),
+        PresentationHitRegionKind::PaneBody(_)
+        | PresentationHitRegionKind::ContainedFrameBlocker(_)
+        | PresentationHitRegionKind::DropGuideActivation(_)
+        | PresentationHitRegionKind::DropTarget(_) => None,
+    }
+}
+
+pub(super) const fn is_tab_list_menu_click(kind: PresentationHitRegionKind) -> bool {
+    matches!(
+        kind,
+        PresentationHitRegionKind::TabListMenuRow { .. }
+            | PresentationHitRegionKind::TabListMenuBlocker(_)
+            | PresentationHitRegionKind::TabListMenuBackdrop(_)
+    )
+}
+
+/// Failure while proving that a receipt names the semantic receiver at the
+/// journal edge's exact logical point.
+///
+/// Receipt construction proves only that a region belongs to a presented
+/// output. The reducer additionally owns the point-to-region relationship so
+/// an adapter cannot reuse another valid region from the same output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PointerReceiverGeometryError {
+    /// The receipt survived output-authority validation but the corresponding
+    /// current interaction manifest is no longer available. This is an engine
+    /// invariant failure surfaced as a fail-closed receipt rejection.
+    #[error(
+        "pointer receipt for edge {sequence} has no current interaction manifest for surface {surface}"
+    )]
+    InteractionManifestUnavailable {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface named by the receipt's semantic region.
+        surface: SurfaceId,
+    },
+    /// The current provider lane cannot supply a logical point for a docking
+    /// receiver claim.
+    #[error("pointer receipt for edge {sequence} names a docking region without a logical point")]
+    LogicalPointUnavailable {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+    },
+    /// A known receiver-absence claim was bound to another logical surface.
+    #[error(
+        "pointer receipt for edge {sequence} claims no receiver on surface {actual}, expected {expected}"
+    )]
+    AbsenceSurfaceMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface implied by the provider route.
+        expected: SurfaceId,
+        /// Surface bound to the claimed absence observation.
+        actual: SurfaceId,
+    },
+    /// A desktop-global route was validated against the native inventory, but
+    /// the receiver output belongs to another binding incarnation or
+    /// coordinate generation.
+    #[error(
+        "pointer receipt for edge {sequence} does not match its exact desktop route presentation: {source}"
+    )]
+    DesktopRoutePresentationMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Exact route-to-presentation mismatch.
+        #[source]
+        source: DesktopRoutePresentationError,
+    },
+    /// A local edge was answered using a receiver from another surface.
+    #[error(
+        "pointer receipt for edge {sequence} names receiver {region:?} on surface {actual}, expected {expected}"
+    )]
+    SurfaceMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Surface implied by the provider's local endpoint.
+        expected: SurfaceId,
+        /// Surface owned by the receipt's semantic region.
+        actual: SurfaceId,
+        /// Claimed semantic region.
+        region: PresentationHitRegionId,
+    },
+    /// A claimed docking region does not cover the edge's exact logical point.
+    #[error("pointer receipt for edge {sequence} names region {region:?} outside the edge point")]
+    RegionDoesNotCoverPoint {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Claimed semantic region.
+        region: PresentationHitRegionId,
+    },
+    /// A receiver claim lost the core-owned deterministic winner comparison
+    /// for its action lane. `None` represents an asserted known absence.
+    #[error(
+        "pointer receipt for edge {sequence} claims receiver {claimed:?}, but lane {lane:?} winner is {winner:?}"
+    )]
+    ReceiverWinnerMismatch {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Action lane selected from the semantic region kind.
+        lane: PresentationPointerLane,
+        /// Region claimed by the adapter, or `None` for known absence.
+        claimed: Option<PresentationHitRegionId>,
+        /// Core-computed winner, when one exists.
+        winner: Option<PresentationHitRegionId>,
+    },
+    /// The core hit manifest contained two equally ranked regions on a lane,
+    /// so no receipt can safely choose one.
+    #[error("pointer receipt for edge {sequence} has an ambiguous {lane:?} receiver winner")]
+    ReceiverWinnerAmbiguous {
+        /// Exact provider sequence carrying the claim.
+        sequence: crate::pointer_journal::PointerEdgeSequence,
+        /// Action lane selected from the semantic region kind.
+        lane: PresentationPointerLane,
+    },
+}
+
 impl DockEngine {
     pub(super) fn validate_pointer_receiver_geometry(
         &self,
