@@ -136,6 +136,12 @@ pub enum SurfaceContributionBeginError {
 /// Failure to turn adapter measurements into a core-owned contribution.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum SurfaceContributionPrepareError {
+    /// The token's surface is not a live presentation slot in this host frame.
+    #[error("surface {surface} is outside the current presentation roster")]
+    SurfaceOutsideRoster {
+        /// Requested logical surface.
+        surface: SurfaceId,
+    },
     /// The token's exact base authority was superseded before preparation.
     #[error("surface {surface} contribution base {submitted:?} is stale; current is {current:?}")]
     StaleBase {

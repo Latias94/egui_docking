@@ -919,6 +919,10 @@ impl HostFrameState {
         &self.drafts
     }
 
+    pub(super) fn has_surface_passes(&self) -> bool {
+        !self.surface_passes.is_empty()
+    }
+
     pub(super) fn drafts_mut(&mut self) -> &mut BTreeMap<SurfaceId, EguiSurfaceDraft> {
         &mut self.drafts
     }

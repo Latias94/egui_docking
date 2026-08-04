@@ -156,6 +156,39 @@ impl CoreHostFramePrelude {
 }
 
 impl DockEngine {
+    fn presentation_lifecycle_focus_causal(
+        &mut self,
+        actions: &[crate::frame::ViewportLifecycleAction],
+        presentation_cause: ReductionCause,
+    ) -> Result<FocusCausalStamp, EngineError> {
+        let mut native_create_causal = None;
+        for action in actions {
+            match action {
+                crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. } => {
+                    let generation = self.last_focus_reducer_generation.checked_next().ok_or(
+                        EngineError::ViewportFocus {
+                            input: self.last_input,
+                            source: ViewportFocusError::ReducerGenerationExhausted,
+                        },
+                    )?;
+                    self.last_focus_reducer_generation = generation;
+                    return Ok(FocusCausalStamp::new(generation, presentation_cause));
+                }
+                crate::frame::ViewportLifecycleAction::TransferNativeCreate {
+                    prepared, ..
+                } => {
+                    native_create_causal.get_or_insert(prepared.focus_causal());
+                }
+                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { .. }
+                | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. }
+                | crate::frame::ViewportLifecycleAction::RetryRecovery { .. } => {}
+            }
+        }
+        native_create_causal.ok_or(EngineError::ReductionCauseInvariant {
+            detail: "presentation observation produced no native lifecycle cause",
+        })
+    }
+
     /// Begins the observation-only prelude of one core-owned host frame.
     ///
     /// The returned capability freezes only domain, predecessor, host identity,
@@ -316,21 +349,10 @@ impl DockEngine {
                 input: candidate.last_input,
                 source: crate::frame::ViewportCoordinatorError::PlatformProviderUnavailable,
             })?;
-            let focus_causal = presentation_lifecycle_actions
-                .iter()
-                .find_map(|action| match action {
-                    crate::frame::ViewportLifecycleAction::TransferNativeCreate {
-                        prepared,
-                        ..
-                    } => Some(prepared.focus_causal()),
-                    crate::frame::ViewportLifecycleAction::SurfaceDestroyed { .. }
-                    | crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. }
-                    | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. }
-                    | crate::frame::ViewportLifecycleAction::RetryRecovery { .. } => None,
-                })
-                .ok_or(EngineError::ReductionCauseInvariant {
-                    detail: "presentation observation produced no native transfer cause",
-                })?;
+            let focus_causal = candidate.presentation_lifecycle_focus_causal(
+                &presentation_lifecycle_actions,
+                ReductionCause::SurfacePresentationObservationBatch { tick },
+            )?;
             let recovery_batch = candidate.freeze_surface_recovery_batch(
                 candidate.last_input,
                 &presentation_lifecycle_actions,
@@ -776,6 +798,9 @@ impl<'frame> HostFrameView<'frame> {
         &self,
         surface: SurfaceId,
     ) -> Result<SurfaceContributionToken, SurfaceContributionBeginError> {
+        if !self.presentation_roster.contains_surface(surface) {
+            return Err(SurfaceContributionBeginError::SurfaceOutsideRoster { surface });
+        }
         self.engine.begin_surface_contribution(surface)
     }
 
@@ -785,6 +810,11 @@ impl<'frame> HostFrameView<'frame> {
         token: SurfaceContributionToken,
         measurements: SurfaceMeasurements,
     ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        if !self.presentation_roster.contains_surface(token.surface()) {
+            return Err(SurfaceContributionPrepareError::SurfaceOutsideRoster {
+                surface: token.surface(),
+            });
+        }
         self.engine
             .prepare_surface_contribution(token, measurements)
     }
@@ -795,6 +825,11 @@ impl<'frame> HostFrameView<'frame> {
         token: SurfaceContributionToken,
         reason: MeasurementUnavailableReason,
     ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        if !self.presentation_roster.contains_surface(token.surface()) {
+            return Err(SurfaceContributionPrepareError::SurfaceOutsideRoster {
+                surface: token.surface(),
+            });
+        }
         self.engine
             .prepare_surface_unavailable_contribution(token, reason)
     }
@@ -804,6 +839,11 @@ impl<'frame> HostFrameView<'frame> {
         &self,
         token: SurfaceContributionToken,
     ) -> Result<PreparedSurfaceContribution, SurfaceContributionPrepareError> {
+        if !self.presentation_roster.contains_surface(token.surface()) {
+            return Err(SurfaceContributionPrepareError::SurfaceOutsideRoster {
+                surface: token.surface(),
+            });
+        }
         self.engine.prepare_surface_retained_contribution(token)
     }
 }
@@ -833,12 +873,7 @@ impl CoreHostFrame {
             item_identity_scope,
             poison: _,
         } = prelude;
-        let receiver_surface_scope = candidate
-            .presentation_authority
-            .presentation_requirements
-            .surfaces()
-            .map(|(surface, _)| surface)
-            .collect::<BTreeSet<_>>();
+        let frozen_presentation_roster = HostPresentationRoster::capture(&candidate)?;
         let pointer_provider = candidate.pointer_journal.active_lease();
         if let Some(provider) = pointer_provider {
             candidate.validate_pointer_provider_scope(provider.scope())?;
@@ -872,35 +907,6 @@ impl CoreHostFrame {
                 });
             }
         }
-        let mut frozen_pointer_outputs = BTreeMap::new();
-        let mut frozen_pointer_presentations = BTreeMap::new();
-        let mut frozen_semantic_presentations = BTreeMap::new();
-        let pointer_surface = pointer_provider
-            .and_then(|lease| lease.scope().surface_local())
-            .map(|scope| scope.surface());
-        for surface in &receiver_surface_scope {
-            if let Some(projection) = candidate
-                .presentation_authority
-                .scene
-                .interaction_projection(*surface)
-            {
-                frozen_semantic_presentations.insert(
-                    *surface,
-                    JournalSurfacePresentation::from_interaction(projection),
-                );
-                if pointer_surface.is_none_or(|expected| expected == *surface) {
-                    frozen_pointer_outputs.insert(
-                        *surface,
-                        PointerReceiverPresentedOutput::from_interaction(projection),
-                    );
-                    frozen_pointer_presentations.insert(
-                        *surface,
-                        JournalSurfacePresentation::from_interaction(projection),
-                    );
-                }
-            }
-        }
-        let frozen_presentation_roster = HostPresentationRoster::capture(&candidate)?;
         let presentation_attempt = candidate
             .presentation_authority
             .issue_host_presentation_attempt()
@@ -911,7 +917,7 @@ impl CoreHostFrame {
         );
         let tick_policy = candidate.policy.clone();
         let application_base = candidate.version;
-        Ok(Self {
+        let mut frame = Self {
             authority_domain,
             presentation_host,
             workspace: admission_workspace,
@@ -930,9 +936,9 @@ impl CoreHostFrame {
             pending_backend_ingress: None,
             pointer_provider,
             staged_pointer_journal: candidate.pointer_journal.clone(),
-            frozen_pointer_outputs,
-            frozen_pointer_presentations,
-            frozen_semantic_presentations,
+            frozen_pointer_outputs: BTreeMap::new(),
+            frozen_pointer_presentations: BTreeMap::new(),
+            frozen_semantic_presentations: BTreeMap::new(),
             pointer_receiver_attempt_issuer: pointer_provider
                 .map(|_| Arc::clone(&candidate.pointer_receiver_attempt_issuer)),
             pending_pointer_segment: None,
@@ -961,7 +967,9 @@ impl CoreHostFrame {
             next_causal_ordinal: 0,
             poison: None,
             input_prefix_error: None,
-        })
+        };
+        frame.refresh_presented_interaction_authority();
+        Ok(frame)
     }
 
     fn refresh_presentation_snapshot(&mut self) -> Result<(), EngineError> {
@@ -971,7 +979,18 @@ impl CoreHostFrame {
             .same_semantic_projection(&roster);
         self.presentation_snapshot_changed |= self.frozen_presentation_roster != roster;
         self.frozen_presentation_roster = roster;
+        self.retain_presented_interaction_authority_in_roster();
         Ok(())
+    }
+
+    fn retain_presented_interaction_authority_in_roster(&mut self) {
+        let roster = &self.frozen_presentation_roster;
+        self.frozen_pointer_outputs
+            .retain(|surface, _| roster.contains_surface(*surface));
+        self.frozen_pointer_presentations
+            .retain(|surface, _| roster.contains_surface(*surface));
+        self.frozen_semantic_presentations
+            .retain(|surface, _| roster.contains_surface(*surface));
     }
 
     fn refresh_presented_interaction_authority(&mut self) {
@@ -982,12 +1001,7 @@ impl CoreHostFrame {
             .pointer_provider
             .and_then(|lease| lease.scope().surface_local())
             .map(|scope| scope.surface());
-        for (surface, _) in self
-            .candidate
-            .presentation_authority
-            .presentation_requirements
-            .surfaces()
-        {
+        for surface in self.frozen_presentation_roster.surfaces() {
             let Some(projection) = self
                 .candidate
                 .presentation_authority
@@ -1255,19 +1269,15 @@ impl CoreHostFrame {
                 });
                 return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
             };
-            let Some(focus_causal) = lifecycle_actions.iter().find_map(|action| match action {
-                crate::frame::ViewportLifecycleAction::TransferNativeCreate {
-                    prepared, ..
-                } => Some(prepared.focus_causal()),
-                crate::frame::ViewportLifecycleAction::SurfaceDestroyed { .. }
-                | crate::frame::ViewportLifecycleAction::RecoveryReplacementReady { .. }
-                | crate::frame::ViewportLifecycleAction::RecoveryReplacementLost { .. }
-                | crate::frame::ViewportLifecycleAction::RetryRecovery { .. } => None,
-            }) else {
-                self.input_prefix_error = Some(EngineError::ReductionCauseInvariant {
-                    detail: "ordered presentation observation produced no native transfer cause",
-                });
-                return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+            let focus_causal = match self
+                .candidate
+                .presentation_lifecycle_focus_causal(&lifecycle_actions, cause)
+            {
+                Ok(causal) => causal,
+                Err(error) => {
+                    self.input_prefix_error = Some(error);
+                    return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                }
             };
             let recovery_batch = match self
                 .candidate
@@ -1716,6 +1726,15 @@ impl CoreHostFrame {
             return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
         };
         self.candidate.last_input = sequence;
+        let refresh_presented_interaction_authority = matches!(
+            &input,
+            EngineInput::RegisterViewport { .. }
+                | EngineInput::BootstrapChildViewport { .. }
+                | EngineInput::PublishPlatformSnapshot { .. }
+                | EngineInput::PublishNativeCloseObservation { .. }
+                | EngineInput::ReplaceWorkspace(_)
+                | EngineInput::RestoreWorkspace(_)
+        );
         let input = SequencedInput::new(stamp, sequence, source, source_sequence, input);
         match phase {
             HostFrameInputPhase::Semantic => {
@@ -1758,6 +1777,9 @@ impl CoreHostFrame {
                 if let Err(error) = self.refresh_presentation_snapshot() {
                     self.input_prefix_error = Some(error);
                     return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
+                }
+                if refresh_presented_interaction_authority {
+                    self.refresh_presented_interaction_authority();
                 }
             }
             HostFrameInputPhase::Configuration => {

@@ -598,7 +598,7 @@ impl DockspaceDocumentSession {
     #[doc(hidden)]
     pub fn adapter_begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: crate::backend_ingress::BackendIngressDrainReceipt,
+        drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         self.engine
             .begin_backend_ingress_provider_replacement(drained)

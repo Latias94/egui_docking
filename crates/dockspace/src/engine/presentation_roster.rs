@@ -2,6 +2,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::presentation_observation::NativeStagingOwner;
+
 use super::*;
 
 /// One exact physical output slot frozen by the core.
@@ -12,7 +14,7 @@ pub enum HostPresentationSlot {
         /// Logical surface whose exact output is requested.
         surface: SurfaceId,
     },
-    /// A non-interactive native-create staging placeholder.
+    /// A non-interactive native lifecycle staging placeholder.
     NativeStaging {
         /// Exact lifecycle request which must be painted without invoking pane UI.
         presentation: NativeStagingPresentation,
@@ -36,6 +38,68 @@ impl HostPresentationSlot {
             Self::Surface { .. } => None,
             Self::NativeStaging { presentation } => Some(presentation),
         }
+    }
+}
+
+/// Deterministic physical-output schedule derived from the current core state.
+///
+/// A host may use this snapshot before beginning a frame to arrange callbacks
+/// and transport resources. It is deliberately non-authoritative: membership
+/// does not grant measurement, input, receiver, contribution, or presentation
+/// authority. Once a host frame is sealed, callers must discard the snapshot's
+/// correctness meaning and use the core-minted frame roster and affine
+/// obligations instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPresentationSchedule {
+    surfaces: Box<[SurfaceId]>,
+    native_staging: Box<[NativeStagingPresentation]>,
+}
+
+impl HostPresentationSchedule {
+    fn capture(engine: &DockEngine) -> Result<Self, EngineError> {
+        let roster = HostPresentationRoster::capture(engine)?;
+        Ok(Self {
+            surfaces: roster.surfaces().collect(),
+            native_staging: roster.native_staging_presentations().collect(),
+        })
+    }
+
+    /// Returns the live semantic surfaces for which a callback may be scheduled.
+    #[must_use]
+    pub fn surfaces(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
+        self.surfaces.iter().copied()
+    }
+
+    /// Returns the non-interactive native staging callbacks that may be scheduled.
+    #[must_use]
+    pub fn native_staging_presentations(
+        &self,
+    ) -> impl ExactSizeIterator<Item = NativeStagingPresentation> + '_ {
+        self.native_staging.iter().copied()
+    }
+
+    /// Returns every scheduled physical slot in deterministic category order.
+    #[must_use]
+    pub fn slots(&self) -> impl Iterator<Item = HostPresentationSlot> + '_ {
+        let surfaces = self
+            .surfaces()
+            .map(|surface| HostPresentationSlot::Surface { surface });
+        let native_staging = self
+            .native_staging_presentations()
+            .map(|presentation| HostPresentationSlot::NativeStaging { presentation });
+        surfaces.chain(native_staging)
+    }
+}
+
+impl DockEngine {
+    /// Derives the current non-authoritative physical-output schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the current native lifecycle and semantic scene do
+    /// not form one collision-free physical roster.
+    pub fn host_presentation_schedule(&self) -> Result<HostPresentationSchedule, EngineError> {
+        HostPresentationSchedule::capture(self)
     }
 }
 
@@ -230,10 +294,15 @@ pub(super) struct HostPresentationRoster {
 
 impl HostPresentationRoster {
     pub(super) fn capture(candidate: &DockEngine) -> Result<Self, EngineError> {
+        let suspended_surfaces = candidate
+            .viewport
+            .suspended_native_presentation_surfaces()
+            .collect::<BTreeSet<_>>();
         let surfaces = candidate
             .presentation_authority
             .presentation_requirements
             .surfaces()
+            .filter(|(surface, _)| !suspended_surfaces.contains(surface))
             .map(|(surface, _)| (surface, Self::freeze_surface(candidate, surface)))
             .collect::<BTreeMap<_, _>>();
 
@@ -245,16 +314,27 @@ impl HostPresentationRoster {
         let mut native_staging = BTreeMap::new();
         for presentation in candidate.viewport.native_staging_presentations() {
             let surface = presentation.binding().surface();
-            if presentation.resource().saga() != presentation.saga()
-                || !native_resources.contains_key(&presentation.resource())
-            {
-                return Err(EngineError::HostPresentationStagingResourceMissing {
-                    resource: presentation.resource(),
-                });
+            let owner_matches_roster = match presentation.owner() {
+                NativeStagingOwner::NativeCreate { .. } => {
+                    !surfaces.contains_key(&surface) && !suspended_surfaces.contains(&surface)
+                }
+                NativeStagingOwner::RecoveryReplacement { .. } => {
+                    suspended_surfaces.contains(&surface) && !surfaces.contains_key(&surface)
+                }
+            };
+            if !owner_matches_roster {
+                return Err(EngineError::HostPresentationRosterCollision { surface });
             }
-            if surfaces.contains_key(&surface)
-                || native_staging.insert(surface, presentation).is_some()
-            {
+            if let Some(resource) = presentation.retained_resource() {
+                if presentation
+                    .native_create_saga()
+                    .is_some_and(|saga| resource.saga() != saga)
+                    || !native_resources.contains_key(&resource)
+                {
+                    return Err(EngineError::HostPresentationStagingResourceMissing { resource });
+                }
+            }
+            if native_staging.insert(surface, presentation).is_some() {
                 return Err(EngineError::HostPresentationRosterCollision { surface });
             }
         }

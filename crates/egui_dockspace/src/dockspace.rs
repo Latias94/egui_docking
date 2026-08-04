@@ -358,7 +358,7 @@ impl Dockspace {
     /// Revokes one exact joined backend after consuming its stopped producer.
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: dockspace::backend_ingress::BackendIngressDrainReceipt,
+        drained: &mut dockspace::backend_ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, DockspaceError> {
         self.ensure_native_session_idle()?;
         if self.pointer_input.provider().is_some() {
@@ -801,13 +801,18 @@ impl Dockspace {
         if self.pointer_input.provider().is_some() {
             self.abort_pointer_input()?;
         }
-        self.begin_host_frame_inner(
+        let host = self.begin_host_frame_inner(
             key,
             None,
             EguiHostFrameMode::SingleSurface,
             EguiInputAuthority::FrameworkResponses,
             EguiOutputBoundary::UnobservableCallback,
-        )
+        )?;
+        let surface_count = host.expected_surfaces().len();
+        if surface_count > 1 {
+            return Err(DockspaceError::MultiSurfaceHostFrameUnsupported { surface_count });
+        }
+        Ok(host)
     }
 
     /// Starts one outer-host frame for the complete logical surface roster.
@@ -885,13 +890,18 @@ impl Dockspace {
     }
 
     fn ensure_outer_pointer_provider(&mut self) -> Result<(), DockspaceError> {
-        let surfaces = self
-            .engine
-            .presentation_requirements()
-            .surfaces()
-            .map(|(surface, _)| surface)
-            .collect::<Vec<_>>();
-        let sole_surface = (surfaces.len() == 1).then_some(surfaces[0]);
+        let schedule = EguiEngineOwner::engine(&self.engine).host_presentation_schedule()?;
+        if schedule.native_staging_presentations().len() != 0 {
+            if self.pointer_input.provider().is_some() {
+                self.abort_pointer_input()?;
+            }
+            return Ok(());
+        }
+        let mut surfaces = schedule.surfaces();
+        let sole_surface = match surfaces.len() {
+            1 => surfaces.next(),
+            _ => None,
+        };
         let Some(surface) = sole_surface else {
             if self.pointer_input.provider().is_some() {
                 self.abort_pointer_input()?;
@@ -974,33 +984,6 @@ impl Dockspace {
             };
         }
 
-        if let Some(automatic) = automatic_presentation.as_ref() {
-            let sole_surface = self
-                .engine
-                .presentation_requirements()
-                .surfaces()
-                .map(|(surface, _)| surface)
-                .next()
-                .filter(|_| self.engine.presentation_requirements().surfaces().len() == 1);
-            let workspace_epoch = self.engine.version().epoch();
-            let binding_changed = match sole_surface {
-                Some(surface) => self.pointer_input.scope_changed(
-                    &automatic.context,
-                    automatic.viewport,
-                    surface,
-                    workspace_epoch,
-                ),
-                None => self.pointer_input.provider().is_some(),
-            };
-            if binding_changed {
-                self.abort_pointer_input()?;
-            }
-            // Upstream egui 0.35 cannot correlate an input edge with its exact
-            // receiver. The crates.io facade therefore never enrolls a pointer
-            // provider automatically; a native bridge may install one only
-            // when it can submit complete receiver receipts.
-        }
-
         let mut prelude = try_or_abort_pointer!(EguiEngineOwner::begin_host_frame(
             &mut self.engine,
             self.presentation_host,
@@ -1027,13 +1010,6 @@ impl Dockspace {
         };
         try_or_abort_pointer!(prelude.submit_presentation_observation(observation));
         let core_frame = try_or_abort_pointer!(prelude.seal(&self.engine));
-        let expected_surfaces = core_frame.surfaces().collect::<BTreeSet<_>>();
-        if expected_surfaces.len() > 1 && !mode.accepts_multiple_surfaces() {
-            self.abort_pointer_input()?;
-            return Err(DockspaceError::MultiSurfaceHostFrameUnsupported {
-                surface_count: expected_surfaces.len(),
-            });
-        }
         let automatic_pointer = if let Some(automatic) = automatic_presentation.as_ref() {
             if self.pointer_input.provider().is_some() {
                 let epoch = try_or_abort_pointer!(
@@ -1089,10 +1065,6 @@ impl Dockspace {
         panes: &mut dyn PaneView,
     ) -> Result<DockspaceResponse, DockspaceError> {
         self.ensure_native_session_idle()?;
-        let surface_count = self.engine.presentation_requirements().surfaces().len();
-        if surface_count != 1 {
-            return Err(DockspaceError::SingleSurfaceHostFrameRequiresOneSurface { surface_count });
-        }
         if self.pointer_input.provider().is_some() {
             self.abort_pointer_input()?;
         }
@@ -1113,6 +1085,16 @@ impl Dockspace {
             EguiInputAuthority::FrameworkResponses,
             EguiOutputBoundary::UnobservableCallback,
         )?;
+        let (surface_count, scheduled_surface) = {
+            let mut scheduled_surfaces = host.expected_surfaces();
+            (scheduled_surfaces.len(), scheduled_surfaces.next())
+        };
+        if surface_count != 1 {
+            return Err(DockspaceError::SingleSurfaceHostFrameRequiresOneSurface { surface_count });
+        }
+        if scheduled_surface != Some(surface) {
+            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+        }
         let _ = host.show_surface(surface, ui, panes)?;
         let HostFrameResponse {
             transition,

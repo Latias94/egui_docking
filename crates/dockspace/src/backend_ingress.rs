@@ -90,6 +90,7 @@ pub struct BackendIngressDrainReceipt {
     lease: BackendIngressLease,
     recorded_through: BackendIngressOrdinal,
     pointer_through: PointerEdgeSequence,
+    consumed: bool,
 }
 
 impl BackendIngressDrainReceipt {
@@ -109,6 +110,31 @@ impl BackendIngressDrainReceipt {
     #[must_use]
     pub const fn pointer_through(&self) -> PointerEdgeSequence {
         self.pointer_through
+    }
+
+    /// Returns whether this affine proof was transferred into a replacement ticket.
+    #[must_use]
+    pub const fn is_consumed(&self) -> bool {
+        self.consumed
+    }
+
+    pub(crate) const fn validate_active(&self) -> Result<(), BackendIngressError> {
+        if self.consumed {
+            Err(BackendIngressError::DrainReceiptConsumed)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn transfer(&mut self) -> Result<Self, BackendIngressError> {
+        self.validate_active()?;
+        self.consumed = true;
+        Ok(Self {
+            lease: self.lease,
+            recorded_through: self.recorded_through,
+            pointer_through: self.pointer_through,
+            consumed: false,
+        })
     }
 }
 
@@ -680,6 +706,7 @@ impl BackendIngressRecorder {
             lease: self.lease,
             recorded_through: self.last_ordinal,
             pointer_through: self.pointer_through,
+            consumed: false,
         }
     }
 
@@ -1146,6 +1173,9 @@ impl BackendIngressAuthority {
 /// Structural rejection while capturing or validating backend ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BackendIngressError {
+    /// A joined replacement attempted to reuse an already transferred drain proof.
+    #[error("backend ingress drain receipt was already consumed")]
+    DrainReceiptConsumed,
     /// One affine prefix-retirement proof was submitted after successful settlement.
     #[error("backend ingress prefix-retirement receipt was already consumed")]
     PrefixRetirementReceiptConsumed,

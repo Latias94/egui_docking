@@ -793,10 +793,11 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
     );
 
     let predecessor = recorder.lease();
-    let drained = recorder.drain();
+    let mut drained = recorder.drain();
     let replacement = dockspace
-        .begin_backend_ingress_provider_replacement(drained)
+        .begin_backend_ingress_provider_replacement(&mut drained)
         .expect("the exact predecessor may begin a joined replacement");
+    assert!(drained.is_consumed());
     let (mut ticket, _) = replacement.into_parts();
     let mut successor = dockspace
         .finish_backend_ingress_provider_replacement(&mut ticket)

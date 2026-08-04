@@ -494,9 +494,11 @@ fn active_backend_blocks_retirement_compaction_until_its_ingress_is_revoked() {
             if repeated == host
     ));
 
+    let mut drained = backend.drain();
     let _replacement = engine
-        .begin_backend_ingress_provider_replacement(backend.drain())
+        .begin_backend_ingress_provider_replacement(&mut drained)
         .expect("provider replacement revokes the blocked ingress lanes");
+    assert!(drained.is_consumed());
     let compacted = engine.presentation_ledger_diagnostics();
     assert_eq!(compacted.retired_hosts(), 0);
     assert_eq!(compacted.compacted_retired_hosts(), 1);

@@ -423,6 +423,37 @@ fn backend_ingress_watermark_commits_only_with_the_complete_host_frame() {
 }
 
 #[test]
+fn failed_backend_provider_replacement_preserves_the_drain_receipt() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let predecessor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("predecessor backend provider must enroll");
+    let mut drained = predecessor.drain();
+    let mut unrelated = single_surface_engine(TARGET_SURFACE, TARGET_ROOT, ItemId::new(2));
+
+    assert!(matches!(
+        unrelated.begin_backend_ingress_provider_replacement(&mut drained),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::ProviderUnavailable,
+        })
+    ));
+    assert!(!drained.is_consumed());
+    assert!(engine.backend_ingress_provider().is_some());
+
+    let replacement = engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("the same affine receipt must remain retryable after rejection");
+    assert!(drained.is_consumed());
+    let (mut ticket, _) = replacement.into_parts();
+    let _ = engine
+        .finish_backend_ingress_provider_replacement(&mut ticket, host)
+        .expect("the preserved receipt must still activate its exact successor");
+}
+
+#[test]
 fn backend_provider_replacement_rejects_the_predecessor_batch() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let host = engine
@@ -433,9 +464,11 @@ fn backend_provider_replacement_rejects_the_predecessor_batch() {
         .expect("predecessor backend provider must enroll");
     let predecessor_pointer = predecessor.lease().pointer_provider();
     let predecessor_batch = record_empty_backend_checkpoint(&mut predecessor);
+    let mut drained = predecessor.drain();
     let replacement = engine
-        .begin_backend_ingress_provider_replacement(predecessor.drain())
+        .begin_backend_ingress_provider_replacement(&mut drained)
         .expect("predecessor replacement must revoke both lanes");
+    assert!(drained.is_consumed());
     let retained = engine.runtime_retention_manifest().pointer();
     assert_eq!(retained.retired_lease_guards(), 1);
     assert_eq!(retained.compacted_retirement_ranges(), 0);
@@ -958,9 +991,11 @@ fn backend_provider_replacement_retries_with_a_live_presentation_host() {
     let predecessor = engine
         .create_backend_ingress_provider(predecessor_host, PointerEdgeSequence::new(0))
         .expect("predecessor backend provider must enroll");
+    let mut drained = predecessor.drain();
     let replacement = engine
-        .begin_backend_ingress_provider_replacement(predecessor.drain())
+        .begin_backend_ingress_provider_replacement(&mut drained)
         .expect("joined replacement must revoke every predecessor lane");
+    assert!(drained.is_consumed());
     let (mut ticket, _) = replacement.into_parts();
 
     engine
@@ -1084,9 +1119,11 @@ fn platform_only_replacement_cannot_revoke_a_joined_backend_provider() {
     ));
 
     let _ = record_empty_backend_checkpoint(&mut recorder);
+    let mut drained = recorder.drain();
     let replacement = engine
-        .begin_backend_ingress_provider_replacement(recorder.drain())
+        .begin_backend_ingress_provider_replacement(&mut drained)
         .expect("the affine joined drain starts the replacement");
+    assert!(drained.is_consumed());
     assert_eq!(engine.backend_ingress_provider(), None);
     assert_eq!(engine.platform_provider(), None);
     assert_eq!(engine.pointer_provider(), None);

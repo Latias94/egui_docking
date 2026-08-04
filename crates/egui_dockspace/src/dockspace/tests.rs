@@ -494,6 +494,74 @@ fn failed_pointer_abort_preserves_the_adapter_lease() {
 }
 
 #[test]
+fn outer_frame_without_a_surface_callback_submits_an_empty_pointer_interval() {
+    let mut dockspace = Dockspace::builder("empty-outer-pointer-interval", workspace())
+        .build()
+        .expect("facade builds");
+    let frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(1, 0))
+        .expect("outer frame derives its physical roster");
+    let provider = frame
+        .inner
+        .dockspace
+        .pointer_input
+        .provider()
+        .expect("the sole scheduled surface enrolls a pointer provider");
+
+    let commit = frame
+        .finish()
+        .expect("an absent callback reduces as unavailable with an empty pointer interval");
+
+    assert_eq!(commit.outputs().len(), 0);
+    assert_eq!(dockspace.engine.pointer_provider(), Some(provider));
+    assert_eq!(dockspace.pointer_input.provider(), Some(provider));
+}
+
+#[test]
+fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
+    let context = context();
+    let mut panes = TestPanes;
+    let mut dockspace = Dockspace::builder("missing-outer-pointer-capture", workspace())
+        .build()
+        .expect("facade builds");
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(1, 0))
+        .expect("outer frame derives its physical roster");
+    let mut paint = None;
+    let raw_input = input();
+    let viewport = raw_input.viewport_id;
+    let output = context.run_ui(raw_input, |ui| {
+        paint = Some(frame.inner.show_surface(SURFACE, ui, &mut panes));
+    });
+    paint
+        .expect("egui invokes the surface callback")
+        .expect("surface paints");
+    frame
+        .inner
+        .confirm_surface_output(SURFACE, &context, viewport, output)
+        .expect("the split-output test confirms the exact painted output");
+    let provider = frame
+        .inner
+        .dockspace
+        .pointer_input
+        .provider()
+        .expect("the outer surface retains its pointer provider");
+
+    let error = frame
+        .finish()
+        .expect_err("paint without an exact pointer epoch must fail closed");
+
+    assert!(matches!(
+        error,
+        DockspaceError::CoreHostFrame(
+            dockspace::engine::CoreHostFrameError::PointerJournalMissingBeforePresentation {
+                provider: missing,
+            },
+        ) if missing == provider
+    ));
+}
+
+#[test]
 fn successful_pointer_abort_exposes_the_active_gesture_cancellation() {
     let context = multipass_context();
     let mut dockspace = Dockspace::builder("successful-pointer-abort", workspace())

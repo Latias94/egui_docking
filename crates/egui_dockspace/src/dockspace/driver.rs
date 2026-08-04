@@ -969,6 +969,22 @@ impl DockspaceHostFrame<'_> {
             .filter_map(EguiSurfaceDraft::pane_focus_observation)
             .collect::<Vec<_>>();
         let mut core_frame = self.state.take_core_frame();
+        if self.state.input_authority() == EguiInputAuthority::FrameworkResponses
+            && self.dockspace.pointer_input.provider().is_some()
+            && self.state.automatic_pointer().is_none()
+            && !self.state.has_surface_passes()
+        {
+            let input_frame = core_frame
+                .input_mut()
+                .expect("framework responses retain the core input capability");
+            if let Err(error) = self
+                .dockspace
+                .pointer_input
+                .submit_empty_interval(input_frame)
+            {
+                return self.abort(error);
+            }
+        }
         let pointer_segments = match self
             .state
             .automatic_pointer()

@@ -387,7 +387,7 @@ impl DockEngine {
                         .native_create_saga(saga)
                         .and_then(|saga| match saga.phase() {
                             NativeCreatePhase::AwaitingFirstLivePresentation { proof } => {
-                                Some(proof.resource())
+                                proof.retained_resource()
                             }
                             NativeCreatePhase::AwaitingHidden { .. }
                             | NativeCreatePhase::AwaitingPreShowPresentation { .. }

@@ -70,10 +70,6 @@ impl EguiOutputBoundary {
 }
 
 impl EguiHostFrameMode {
-    pub(super) const fn accepts_multiple_surfaces(self) -> bool {
-        matches!(self, Self::CompleteRoster)
-    }
-
     pub(super) const fn defers_publication_staging(self) -> bool {
         matches!(self, Self::CompleteRoster)
     }

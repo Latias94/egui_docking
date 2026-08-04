@@ -58,7 +58,7 @@ use self::presentation_roster::{
 };
 pub use self::presentation_roster::{
     HostPresentationDisposition, HostPresentationDispositionOutcome, HostPresentationObligation,
-    HostPresentationSlot, HostPresentationUnavailableReason,
+    HostPresentationSchedule, HostPresentationSlot, HostPresentationUnavailableReason,
 };
 use self::reducer::{
     HostBackendIngressCursor, HostPointerProtocolSegment, PreparedHostPointerProtocol,
@@ -665,11 +665,10 @@ pub struct CoreHostFrame {
     /// answered edge is reduced immediately against the rollbackable engine
     /// candidate before another receiver question can be minted.
     staged_pointer_journal: PointerJournalLedger,
-    /// Interactive outputs visible after presentation observations reduce.
-    /// Candidate identities and receipt validation remain bound to this sealed
-    /// roster for the complete host frame. Semantic inputs may invalidate the
-    /// candidate scene, but cannot retroactively present newly compiled hit
-    /// regions to a later pointer segment in the same frame.
+    /// Interactive outputs visible after the latest accepted input prefix.
+    /// Every refresh intersects presented authority with the current physical
+    /// roster. Semantic inputs may revoke an output, but cannot retroactively
+    /// present newly compiled hit regions to a later pointer segment.
     frozen_pointer_outputs: BTreeMap<SurfaceId, PointerReceiverPresentedOutput>,
     /// Exact sealed projections backing `frozen_pointer_outputs`. These retain
     /// the presented plan and hit manifest needed to reduce all pointer edges

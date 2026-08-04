@@ -22,6 +22,7 @@ use crate::interaction::{ContainedTransformPreviewToken, PreviewToken};
 use crate::platform_provider::PlatformObservationLease;
 use crate::retention::PresentationHostRetentionManifest;
 use crate::scene::SurfaceSceneStamp;
+use crate::surface_recovery::SurfaceRecoveryObligationId;
 use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration, ViewportBinding};
 
 use self::retention::RetiredPresentationHostRanges;
@@ -419,13 +420,84 @@ pub enum HostPresentationEndpoint {
     Native(ViewportBinding),
 }
 
-/// Native-create staging pass which must be observed before lifecycle advance.
+/// Native bring-up staging pass which must be observed before lifecycle advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NativeStagingPresentationPhase {
     /// Hidden-window output which must be presented before `ShowWindow` is requested.
     PreShow,
-    /// Visible placeholder output which must be presented before ownership transfer.
+    /// Visible placeholder output which must be presented before owner-specific admission.
     PostShow,
+}
+
+/// Core-private lifecycle owner of one native staging sequence.
+///
+/// A recovery replacement can stage an established logical surface without a
+/// retained tear-off resource. Keeping lifecycle identity separate from that
+/// optional resource prevents recovery from fabricating a native-create saga.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum NativeStagingOwner {
+    NativeCreate {
+        resource: NativeStagingResourceId,
+    },
+    RecoveryReplacement {
+        destroyed_binding: ViewportBinding,
+        recovery_obligation: SurfaceRecoveryObligationId,
+        retained_resource: Option<NativeStagingResourceId>,
+    },
+}
+
+impl NativeStagingOwner {
+    pub(crate) fn native_create(
+        saga: NativeCreateSagaId,
+        resource: NativeStagingResourceId,
+    ) -> Option<Self> {
+        if resource.saga() != saga {
+            return None;
+        }
+        Some(Self::NativeCreate { resource })
+    }
+
+    pub(crate) fn recovery_replacement(
+        destroyed_binding: ViewportBinding,
+        recovery_obligation: SurfaceRecoveryObligationId,
+        retained_resource: Option<NativeStagingResourceId>,
+    ) -> Option<Self> {
+        if let Some(resource) = retained_resource
+            && resource.authority_domain() != destroyed_binding.authority_domain()
+        {
+            return None;
+        }
+        Some(Self::RecoveryReplacement {
+            destroyed_binding,
+            recovery_obligation,
+            retained_resource,
+        })
+    }
+
+    pub(crate) const fn authority_domain(self) -> EngineAuthorityDomainId {
+        match self {
+            Self::NativeCreate { resource, .. } => resource.authority_domain(),
+            Self::RecoveryReplacement {
+                destroyed_binding, ..
+            } => destroyed_binding.authority_domain(),
+        }
+    }
+
+    pub(crate) const fn retained_resource(self) -> Option<NativeStagingResourceId> {
+        match self {
+            Self::NativeCreate { resource, .. } => Some(resource),
+            Self::RecoveryReplacement {
+                retained_resource, ..
+            } => retained_resource,
+        }
+    }
+
+    pub(crate) const fn native_create_saga(self) -> Option<NativeCreateSagaId> {
+        match self {
+            Self::NativeCreate { resource } => Some(resource.saga()),
+            Self::RecoveryReplacement { .. } => None,
+        }
+    }
 }
 
 /// Opaque identity of the retained source resource backing one native-create saga.
@@ -513,7 +585,7 @@ pub struct NativeStagingBasis {
     platform_provider: PlatformObservationLease,
     presentation_observation_generation: PresentationObservationGeneration,
     coordinate_generation: CoordinateGeneration,
-    resource: NativeStagingResourceId,
+    owner: NativeStagingOwner,
 }
 
 impl NativeStagingBasis {
@@ -521,13 +593,13 @@ impl NativeStagingBasis {
         platform_provider: PlatformObservationLease,
         presentation_observation_generation: PresentationObservationGeneration,
         coordinate_generation: CoordinateGeneration,
-        resource: NativeStagingResourceId,
+        owner: NativeStagingOwner,
     ) -> Option<Self> {
-        (platform_provider.authority_domain() == resource.authority_domain()).then_some(Self {
+        (platform_provider.authority_domain() == owner.authority_domain()).then_some(Self {
             platform_provider,
             presentation_observation_generation,
             coordinate_generation,
-            resource,
+            owner,
         })
     }
 
@@ -549,18 +621,18 @@ impl NativeStagingBasis {
         self.coordinate_generation
     }
 
-    /// Returns the retained source resource required by this staging request.
+    /// Returns the retained source resource used by this staging request, if any.
     #[must_use]
-    pub const fn resource(self) -> NativeStagingResourceId {
-        self.resource
+    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
+        self.owner.retained_resource()
     }
 }
 
-/// Opaque core-minted request to paint one exact native staging window.
+/// Opaque core-minted request to paint one exact native lifecycle staging window.
 ///
 /// The request is not a dock scene and grants no interaction authority. It
 /// exists solely to join an actual host paint and final-presentation fact to
-/// one native-create saga and viewport incarnation.
+/// one native bring-up owner and viewport incarnation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeStagingPresentation {
     binding: ViewportBinding,
@@ -574,7 +646,7 @@ impl NativeStagingPresentation {
         phase: NativeStagingPresentationPhase,
         basis: NativeStagingBasis,
     ) -> Option<Self> {
-        (binding.authority_domain() == basis.resource.authority_domain()).then_some(Self {
+        (binding.authority_domain() == basis.owner.authority_domain()).then_some(Self {
             binding,
             phase,
             basis,
@@ -582,8 +654,8 @@ impl NativeStagingPresentation {
     }
 
     #[must_use]
-    pub const fn saga(self) -> NativeCreateSagaId {
-        self.basis.resource.saga
+    pub const fn native_create_saga(self) -> Option<NativeCreateSagaId> {
+        self.basis.owner.native_create_saga()
     }
 
     #[must_use]
@@ -602,14 +674,18 @@ impl NativeStagingPresentation {
         self.basis
     }
 
-    /// Returns the retained source resource required by this staging request.
+    /// Returns the retained source resource used by this staging request, if any.
     #[must_use]
-    pub const fn resource(self) -> NativeStagingResourceId {
-        self.basis.resource
+    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
+        self.basis.owner.retained_resource()
+    }
+
+    pub(crate) const fn owner(self) -> NativeStagingOwner {
+        self.basis.owner
     }
 
     pub(crate) const fn authority_domain(self) -> EngineAuthorityDomainId {
-        self.basis.resource.authority_domain
+        self.basis.owner.authority_domain()
     }
 }
 
@@ -634,14 +710,26 @@ impl PresentedNativeStagingPresentation {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn mint_observed_for_test(
+        request: NativeStagingPresentation,
+        ordinal: u64,
+    ) -> Self {
+        let stream = HostPresentationStreamId {
+            authority_domain: request.authority_domain(),
+            serial: PresentationStreamSerial(1),
+        };
+        Self::mint_observed(request, stream, HostFrameKey { stream, ordinal })
+    }
+
     pub(crate) const fn request(self) -> NativeStagingPresentation {
         self.request
     }
 
-    /// Returns the retained source resource proven by this final presentation.
+    /// Returns the retained source resource proven by this final presentation, if any.
     #[must_use]
-    pub const fn resource(self) -> NativeStagingResourceId {
-        self.request.resource()
+    pub const fn retained_resource(self) -> Option<NativeStagingResourceId> {
+        self.request.retained_resource()
     }
 
     /// Returns whether this proof names the exact staging output.
@@ -714,7 +802,7 @@ pub enum HostPresentationOutputPayload {
         /// Transient core-owned visuals painted above that scene.
         interaction: HostInteractionPresentation,
     },
-    /// One non-interactive native-create staging placeholder was painted.
+    /// One non-interactive native lifecycle staging placeholder was painted.
     NativeStaging {
         /// Exact lifecycle request represented by this paint.
         presentation: NativeStagingPresentation,

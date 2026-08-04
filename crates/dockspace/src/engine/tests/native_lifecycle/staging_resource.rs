@@ -40,7 +40,7 @@ fn retained_resource_spans_staging_transfer_and_first_live() {
         request,
         crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
     );
-    assert_eq!(pre_show.resource(), resource);
+    assert_eq!(pre_show.retained_resource(), Some(resource));
     assert_eq!(
         pre_show.basis().platform_provider(),
         fixture
@@ -64,7 +64,7 @@ fn retained_resource_spans_staging_transfer_and_first_live() {
         })
         .expect("show must carry the exact pre-show proof");
     assert_eq!(pre_show_proof.request(), pre_show);
-    assert_eq!(pre_show_proof.resource(), resource);
+    assert_eq!(pre_show_proof.retained_resource(), Some(resource));
 
     let _ =
         publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 3);
@@ -79,7 +79,7 @@ fn retained_resource_spans_staging_transfer_and_first_live() {
         request,
         crate::presentation_observation::NativeStagingPresentationPhase::PostShow,
     );
-    assert_eq!(post_show.resource(), resource);
+    assert_eq!(post_show.retained_resource(), Some(resource));
     let _ = present_background_native_staging(&mut fixture, post_show);
 
     assert!(
@@ -138,7 +138,7 @@ fn delayed_pre_show_output_cannot_cross_a_reissued_basis() {
         crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
     );
     assert_ne!(reissued, first);
-    assert_eq!(reissued.resource(), first.resource());
+    assert_eq!(reissued.retained_resource(), first.retained_resource());
     assert_ne!(
         reissued.basis().presentation_observation_generation(),
         first.basis().presentation_observation_generation()
@@ -234,10 +234,10 @@ fn unavailable_staging_slot_preserves_phase_and_resource() {
         ),
         presentation
     );
-    assert_eq!(
-        retained_resource(&fixture, presentation.resource()).id(),
-        presentation.resource()
-    );
+    let resource = presentation
+        .retained_resource()
+        .expect("native create staging must retain its source resource");
+    assert_eq!(retained_resource(&fixture, resource).id(), resource);
 }
 
 #[test]

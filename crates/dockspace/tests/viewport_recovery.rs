@@ -1,8 +1,10 @@
+#[path = "viewport_recovery/cleanup_ownership.rs"]
+mod cleanup_ownership;
 mod support;
 
 use support::{
     TestPresentationHost, complete_host_frame_with_current_outputs,
-    complete_host_frame_with_unavailable,
+    complete_host_frame_with_retained_or_unavailable, complete_host_frame_with_unavailable,
 };
 
 use dockspace::NativeCloseEdge;
@@ -10,16 +12,20 @@ use dockspace::RootPresentationOwner;
 use dockspace::command::WorkspaceCommand;
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectInvalidation, EffectPhase,
-    EffectRecordLookup, EffectResult, PlatformEffect, PlatformEffectEmission,
+    EffectRecordLookup, EffectResult, EffectUnsupportedReason, PlatformEffect,
+    PlatformEffectEmission,
 };
-use dockspace::engine::{DockEngine, EngineError, EngineInput};
-use dockspace::frame::RecoveryPendingStatus;
+use dockspace::engine::{
+    CoreHostFrame, DockEngine, EngineError, EngineInput, SurfaceContributionBeginError,
+};
+use dockspace::frame::{BindingRetirementOrigin, BindingRetirementStatus, RecoveryPendingStatus};
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
+use dockspace::interaction::{InteractionOutcome, InteractionRejection};
 use dockspace::platform::{
     CloseEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
@@ -27,7 +33,12 @@ use dockspace::platform::{
     WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::policy::DockPolicy;
+use dockspace::presentation_hit::PresentationHitRegionKind;
+use dockspace::presentation_observation::NativeStagingPresentationPhase;
 use dockspace::scene::SurfaceScene;
+use dockspace::semantic_input::{
+    SemanticDelivery, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
+};
 use dockspace::surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
 };
@@ -103,6 +114,14 @@ fn workspace() -> (Workspace, NodeId) {
         builder.build().expect("test workspace must be valid"),
         child_root,
     )
+}
+
+fn host_only_workspace() -> Workspace {
+    let mut builder = Workspace::builder();
+    let host_tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
+    builder.set_root(ROOT_HOST, RootRecord::new(host_tabs));
+    builder.set_surface(SURFACE_HOST, SurfacePresentation::with_main(ROOT_HOST));
+    builder.build().expect("host-only workspace must be valid")
 }
 
 fn platform_capabilities() -> PlatformCapabilities {
@@ -219,6 +238,37 @@ fn publish_windows_with_presentation(
     )
 }
 
+fn publish_windows_with_presentation_ack(
+    engine: &mut DockEngine,
+    presentation_host: &mut TestPresentationHost,
+    windows: Vec<ObservedWindow>,
+    presentation: WindowPresentationState,
+    binding: ViewportBinding,
+    effect: EffectId,
+) -> EngineTransition {
+    let observation_generation = presentation_host.next_platform_observation_generation();
+    let snapshot = platform_snapshot_with_facts_at_generation(
+        observation_generation,
+        windows,
+        Authority::Known(presentation),
+        &[],
+        &[(binding, effect)],
+        platform_capabilities(),
+    );
+    let expected_epoch = engine.version().epoch();
+    let provider = presentation_host.platform_provider();
+    submit_test_input(
+        engine,
+        presentation_host,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("correlated platform snapshot must publish")
+}
+
 fn publish_windows_with_presentation_and_close(
     engine: &mut DockEngine,
     presentation_host: &mut TestPresentationHost,
@@ -250,6 +300,7 @@ fn publish_windows_with_facts(
         windows,
         presentation,
         states,
+        &[],
         capabilities,
     );
     let expected_epoch = engine.version().epoch();
@@ -271,6 +322,7 @@ fn platform_snapshot_with_facts_at_generation(
     mut windows: Vec<ObservedWindow>,
     presentation: Authority<WindowPresentationState>,
     states: &[(ViewportBinding, WindowCloseState, Option<EffectId>)],
+    presentation_acknowledgements: &[(ViewportBinding, EffectId)],
     capabilities: PlatformCapabilities,
 ) -> PlatformSnapshot {
     for window in &mut windows {
@@ -300,7 +352,13 @@ fn platform_snapshot_with_facts_at_generation(
                 binding,
                 PresentationObservationGeneration::new(observation_generation),
                 presentation,
-                PresentationEffectAcknowledgement::known(None),
+                PresentationEffectAcknowledgement::known(
+                    presentation_acknowledgements.iter().find_map(
+                        |(acknowledged_binding, effect)| {
+                            (*acknowledged_binding == binding).then_some(*effect)
+                        },
+                    ),
+                ),
             ));
     }
     let inventory_observation =
@@ -337,25 +395,59 @@ fn platform_snapshot_with_facts_at_generation(
     .expect("test platform snapshot must be canonical")
 }
 
+fn child_next_tab_event(
+    frame: &CoreHostFrame,
+    binding: ViewportBinding,
+) -> (dockspace::scene::TabSceneId, SemanticReceiverEvent) {
+    let projection = frame
+        .view()
+        .semantic_projection(SURFACE_CHILD)
+        .expect("sealed child must have presented semantic authority");
+    let tab = projection
+        .plan()
+        .tab_records()
+        .iter()
+        .find(|tab| tab.selected() && tab.id().item == ItemId::new(2))
+        .map(|tab| *tab.id())
+        .expect("child left leaf must select item 2");
+    let event = SemanticReceiverEvent::new(
+        projection.output_ticket(),
+        projection.authority().emission(),
+        SemanticDelivery::Native(binding),
+        PresentationHitRegionKind::TabBody(tab),
+        SemanticReceiverAction::Key(SemanticKey::ArrowRight),
+    );
+    (tab, event)
+}
+
+fn next_destroyed_child_snapshot(fixture: &mut Fixture) -> PlatformSnapshot {
+    let generation = fixture
+        .presentation_host
+        .next_platform_observation_generation();
+    platform_snapshot_with_facts_at_generation(
+        generation,
+        vec![unavailable_host_window(fixture.host_binding)],
+        Authority::Known(WindowPresentationState::Visible),
+        &[(fixture.child_binding, WindowCloseState::Destroyed, None)],
+        &[],
+        platform_capabilities(),
+    )
+}
+
 fn publish_scene(engine: &mut DockEngine, host: &mut TestPresentationHost) {
-    let surfaces: Vec<_> = engine
-        .workspace()
-        .surfaces()
-        .map(|(surface, _)| surface)
-        .collect();
     let mut frame = host.begin(engine);
+    let surfaces = frame.surfaces().collect::<Vec<_>>();
     for surface in surfaces {
         let viewport = engine.viewport().viewport(surface);
-        let awaiting_recovery = engine.viewport().recovery_pending(surface).is_some();
-        if viewport.is_some_and(|record| !record.is_ready())
-            || (viewport.is_none() && awaiting_recovery)
-        {
+        if viewport.is_some_and(|record| !record.is_ready()) {
             continue;
         }
-        let ticket = engine
+        let ticket = frame
+            .view()
             .begin_surface_contribution(surface)
             .expect("ready fixture surface must have a current ticket");
-        let contribution = engine
+        let contribution = frame
+            .view()
             .prepare_surface_contribution(
                 ticket,
                 support::measurements(
@@ -577,7 +669,7 @@ fn pending_fixture() -> PendingFixture {
     assert_eq!(
         pending.status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: replacement_effect
+            replacement: replacement_effect
         }
     );
     assert!(fixture.engine.workspace().surface(SURFACE_CHILD).is_some());
@@ -592,6 +684,246 @@ fn pending_fixture() -> PendingFixture {
         fixture,
         replacement_binding,
         replacement_effect,
+    }
+}
+
+fn assert_recovery_presentation_scope(
+    fixture: &mut Fixture,
+    expected_staging: Option<NativeStagingPresentationPhase>,
+    live_surface_expected: bool,
+) {
+    let schedule = fixture
+        .engine
+        .host_presentation_schedule()
+        .expect("recovery state must derive one physical output schedule");
+    assert_eq!(
+        schedule.surfaces().any(|surface| surface == SURFACE_CHILD),
+        live_surface_expected
+    );
+    assert_eq!(
+        schedule
+            .native_staging_presentations()
+            .filter(|presentation| presentation.binding().surface() == SURFACE_CHILD)
+            .map(|presentation| presentation.phase())
+            .collect::<Vec<_>>(),
+        expected_staging.into_iter().collect::<Vec<_>>()
+    );
+
+    let frame = fixture.presentation_host.begin(&fixture.engine);
+    let live_surface_present = frame.surfaces().any(|surface| surface == SURFACE_CHILD);
+    assert_eq!(live_surface_present, live_surface_expected);
+    let staging = frame
+        .view()
+        .native_staging_presentations()
+        .filter(|presentation| presentation.binding().surface() == SURFACE_CHILD)
+        .map(|presentation| presentation.phase())
+        .collect::<Vec<_>>();
+    assert_eq!(staging, expected_staging.into_iter().collect::<Vec<_>>());
+
+    if !live_surface_expected {
+        assert!(frame.view().interaction_projection(SURFACE_CHILD).is_none());
+        assert!(frame.view().semantic_projection(SURFACE_CHILD).is_none());
+        assert!(matches!(
+            frame.view().begin_surface_contribution(SURFACE_CHILD),
+            Err(SurfaceContributionBeginError::SurfaceOutsideRoster {
+                surface: SURFACE_CHILD,
+            })
+        ));
+    }
+}
+
+fn advance_replacement_to_pre_show(pending: &mut PendingFixture) {
+    let binding = pending.replacement_binding;
+    let host = pending.fixture.host_binding;
+    let already_awaiting_pre_show = matches!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("replacement recovery remains pending")
+            .status(),
+        RecoveryPendingStatus::AwaitingPreShowPresentation { replacement }
+            if replacement == pending.replacement_effect
+    );
+    if !already_awaiting_pre_show {
+        assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+        let hidden = publish_windows_with_presentation_ack(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            vec![unavailable_host_window(host), replacement_window(binding)],
+            WindowPresentationState::Hidden,
+            binding,
+            pending.replacement_effect,
+        );
+        assert_no_new_effects(&hidden);
+        assert_eq!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .recovery_pending(SURFACE_CHILD)
+                .expect("hidden replacement recovery remains pending")
+                .status(),
+            RecoveryPendingStatus::AwaitingPreShowPresentation {
+                replacement: pending.replacement_effect,
+            }
+        );
+    }
+    assert_recovery_presentation_scope(
+        &mut pending.fixture,
+        Some(NativeStagingPresentationPhase::PreShow),
+        false,
+    );
+}
+
+fn present_replacement_pre_show(pending: &mut PendingFixture) -> EffectId {
+    advance_replacement_to_pre_show(pending);
+    let binding = pending.replacement_binding;
+    let pre_show = support::present_requested_native_staging(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        binding,
+        NativeStagingPresentationPhase::PreShow,
+    );
+    let show = pre_show
+        .platform_effects()
+        .iter()
+        .find_map(|emission| match emission.effect() {
+            PlatformEffect::ShowWindow {
+                binding: actual, ..
+            } if *actual == binding => Some(emission.id()),
+            _ => None,
+        })
+        .expect("pre-show presentation must emit one correlated ShowWindow");
+    assert!(matches!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("pre-show presentation keeps recovery pending")
+            .status(),
+        RecoveryPendingStatus::AwaitingShowAcknowledgement {
+            replacement,
+            show: actual_show,
+        } if replacement == pending.replacement_effect && actual_show == show
+    ));
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+    show
+}
+
+fn acknowledge_replacement_show(pending: &mut PendingFixture, show: EffectId) {
+    let binding = pending.replacement_binding;
+    let host = pending.fixture.host_binding;
+    let acknowledged = publish_windows_with_presentation_ack(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![unavailable_host_window(host), replacement_window(binding)],
+        WindowPresentationState::Hidden,
+        binding,
+        show,
+    );
+    assert_no_new_effects(&acknowledged);
+    assert!(matches!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("show acknowledgement keeps recovery pending")
+            .status(),
+        RecoveryPendingStatus::AwaitingVisible {
+            replacement,
+            show: actual_show,
+        } if replacement == pending.replacement_effect && actual_show == show
+    ));
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+}
+
+fn advance_replacement_to_post_show(pending: &mut PendingFixture, show: EffectId) {
+    let binding = pending.replacement_binding;
+    let host = pending.fixture.host_binding;
+    let visible = publish_windows(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![unavailable_host_window(host), replacement_window(binding)],
+    );
+    assert_no_new_effects(&visible);
+    assert!(matches!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("visible replacement keeps recovery pending through post-show")
+            .status(),
+        RecoveryPendingStatus::AwaitingPostShowPresentation {
+            replacement,
+            show: actual_show,
+        } if replacement == pending.replacement_effect && actual_show == show
+    ));
+    assert_recovery_presentation_scope(
+        &mut pending.fixture,
+        Some(NativeStagingPresentationPhase::PostShow),
+        false,
+    );
+}
+
+fn advance_replacement_to_first_live(pending: &mut PendingFixture) -> EngineTransition {
+    let binding = pending.replacement_binding;
+    let show = present_replacement_pre_show(pending);
+    acknowledge_replacement_show(pending, show);
+    advance_replacement_to_post_show(pending, show);
+    let post_show = support::present_requested_native_staging(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        binding,
+        NativeStagingPresentationPhase::PostShow,
+    );
+    assert_awaiting_first_live_presentation(&pending.fixture, binding);
+    assert_recovery_presentation_scope(&mut pending.fixture, None, true);
+    post_show
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProviderReplacementCheckpoint {
+    AwaitingHidden,
+    PreShowPresentation,
+    ShowAcknowledgement,
+    Visible,
+    PostShowPresentation,
+}
+
+fn pending_at_provider_replacement_checkpoint(
+    checkpoint: ProviderReplacementCheckpoint,
+) -> (PendingFixture, EffectId) {
+    let mut pending = pending_fixture();
+    match checkpoint {
+        ProviderReplacementCheckpoint::AwaitingHidden => {
+            let last_effect = pending.replacement_effect;
+            (pending, last_effect)
+        }
+        ProviderReplacementCheckpoint::PreShowPresentation => {
+            advance_replacement_to_pre_show(&mut pending);
+            let last_effect = pending.replacement_effect;
+            (pending, last_effect)
+        }
+        ProviderReplacementCheckpoint::ShowAcknowledgement => {
+            let show = present_replacement_pre_show(&mut pending);
+            (pending, show)
+        }
+        ProviderReplacementCheckpoint::Visible => {
+            let show = present_replacement_pre_show(&mut pending);
+            acknowledge_replacement_show(&mut pending, show);
+            (pending, show)
+        }
+        ProviderReplacementCheckpoint::PostShowPresentation => {
+            let show = present_replacement_pre_show(&mut pending);
+            acknowledge_replacement_show(&mut pending, show);
+            advance_replacement_to_post_show(&mut pending, show);
+            (pending, show)
+        }
     }
 }
 
@@ -753,7 +1085,7 @@ fn minimized_host_requires_fresh_visible_scene_authority_before_recovery() {
             .expect("destroyed child recovery must remain pending")
             .status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: replacement_effect
+            replacement: replacement_effect
         }
     );
 
@@ -799,7 +1131,8 @@ fn minimized_host_requires_fresh_visible_scene_authority_before_recovery() {
             .expect("replacement compensation must remain queryable")
             .status(),
         RecoveryPendingStatus::CompensatingReplacement {
-            effect: compensation
+            replacement: replacement_effect,
+            cleanup: compensation,
         }
     );
 }
@@ -909,7 +1242,7 @@ fn unavailable_host_keeps_recovery_pending_and_requests_one_last_outer_placement
             .expect("recovery must remain pending")
             .status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: pending.replacement_effect
+            replacement: pending.replacement_effect
         }
     );
 }
@@ -1015,6 +1348,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
         recovery.status(),
         RecoveryPendingStatus::AwaitingRecoveryHost
     );
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 }
 
 #[test]
@@ -1066,7 +1400,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
     assert_eq!(
         recovery.status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: pending.replacement_effect,
+            replacement: pending.replacement_effect,
         },
         "a suppressed retry cannot take ownership from the staging abort"
     );
@@ -1097,6 +1431,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
         recovery.status(),
         RecoveryPendingStatus::AwaitingRecoveryHost
     );
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 
     // The staging terminal deliberately removes the child viewport while the
     // source roster is still retained. Publish only the host contribution and
@@ -1237,7 +1572,7 @@ fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentatio
             .expect("the original replacement must remain pending after clear")
             .status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: pending.replacement_effect
+            replacement: pending.replacement_effect
         }
     );
     assert!(matches!(
@@ -1252,19 +1587,8 @@ fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentatio
         EffectPhase::Requested
     ));
 
-    let visible = publish_windows_with_facts(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(host),
-            replacement_window(replacement),
-        ],
-        Authority::Known(WindowPresentationState::Visible),
-        &[],
-        platform_capabilities(),
-    );
+    let visible = advance_replacement_to_first_live(&mut pending);
     assert_no_new_effects(&visible);
-    assert_awaiting_first_live_presentation(&pending.fixture, replacement);
 
     publish_scene(
         &mut pending.fixture.engine,
@@ -1307,6 +1631,7 @@ fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admi
         ],
         Authority::Known(WindowPresentationState::Hidden),
         &[(replacement, WindowCloseState::LiveRequested, None)],
+        &[(replacement, pending.replacement_effect)],
         platform_capabilities(),
     );
     let cleared = platform_snapshot_with_facts_at_generation(
@@ -1317,6 +1642,7 @@ fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admi
         ],
         Authority::Known(WindowPresentationState::Hidden),
         &[(replacement, WindowCloseState::LiveClear, None)],
+        &[(replacement, pending.replacement_effect)],
         platform_capabilities(),
     );
 
@@ -1385,24 +1711,13 @@ fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admi
         ViewportAdmission::Pending
     );
 
-    let visible = publish_windows_with_facts(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(host),
-            replacement_window(replacement),
-        ],
-        Authority::Known(WindowPresentationState::Visible),
-        &[],
-        platform_capabilities(),
-    );
+    let visible = advance_replacement_to_first_live(&mut pending);
     assert!(visible.platform_effects().iter().all(|request| {
         !matches!(
             request.effect(),
             PlatformEffect::CompensatingClose { binding, .. } if *binding == replacement
         )
     }));
-    assert_awaiting_first_live_presentation(&pending.fixture, replacement);
 
     publish_scene(
         &mut pending.fixture.engine,
@@ -1429,14 +1744,7 @@ fn replacement_first_live_presentation_resolves_pending_without_moving_topology(
     let mut pending = pending_fixture();
     let before = pending.fixture.engine.workspace().clone();
 
-    let ready = publish_windows(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(pending.fixture.host_binding),
-            replacement_window(pending.replacement_binding),
-        ],
-    );
+    let ready = advance_replacement_to_first_live(&mut pending);
 
     assert_no_new_effects(&ready);
     assert_eq!(pending.fixture.engine.workspace(), &before);
@@ -1456,7 +1764,6 @@ fn replacement_first_live_presentation_resolves_pending_without_moving_topology(
             .contained_floating(RECOVERY_FLOATING)
             .is_none()
     );
-    assert_awaiting_first_live_presentation(&pending.fixture, pending.replacement_binding);
 
     publish_scene(
         &mut pending.fixture.engine,
@@ -1487,17 +1794,287 @@ fn replacement_first_live_presentation_resolves_pending_without_moving_topology(
 }
 
 #[test]
+fn provider_replacement_terminates_every_pre_admission_recovery_bringup() {
+    for checkpoint in [
+        ProviderReplacementCheckpoint::AwaitingHidden,
+        ProviderReplacementCheckpoint::PreShowPresentation,
+        ProviderReplacementCheckpoint::ShowAcknowledgement,
+        ProviderReplacementCheckpoint::Visible,
+        ProviderReplacementCheckpoint::PostShowPresentation,
+    ] {
+        let (mut pending, last_effect) = pending_at_provider_replacement_checkpoint(checkpoint);
+        let replacement = pending.replacement_binding;
+        let predecessor = pending.fixture.presentation_host.platform_provider();
+
+        let start = pending
+            .fixture
+            .engine
+            .begin_platform_provider_replacement(predecessor)
+            .unwrap_or_else(|error| {
+                panic!("provider replacement must begin at {checkpoint:?}: {error}")
+            });
+        assert!(start.transition().platform_effects().is_empty());
+        assert_eq!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .recovery_pending(SURFACE_CHILD)
+                .expect("provider replacement must retain recovery ownership")
+                .status(),
+            RecoveryPendingStatus::ReplacementProviderLost {
+                replacement: pending.replacement_effect,
+                last_effect,
+            }
+        );
+        assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+
+        let successor = pending
+            .fixture
+            .engine
+            .finish_platform_provider_replacement(start.ticket())
+            .expect("the exact handoff ticket must activate its successor");
+        pending
+            .fixture
+            .presentation_host
+            .adopt_platform_provider_replacement(successor);
+        assert!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(pending.replacement_effect)
+                .is_some(),
+            "the replacement lineage must survive compaction at {checkpoint:?}"
+        );
+        assert!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .effects()
+                .record(last_effect)
+                .is_some(),
+            "the latest bring-up effect must survive compaction at {checkpoint:?}"
+        );
+
+        let cleanup_transition = publish_windows(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            vec![
+                unavailable_host_window(pending.fixture.host_binding),
+                replacement_window(replacement),
+            ],
+        );
+        let cleanup = cleanup_transition
+            .platform_effects()
+            .iter()
+            .find_map(|emission| {
+                matches!(
+                    emission.effect(),
+                    PlatformEffect::CompensatingClose {
+                        binding,
+                        compensates,
+                    } if *binding == replacement && *compensates == pending.replacement_effect
+                )
+                .then_some(emission.id())
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "successor observation must retire the provider-lost replacement at {checkpoint:?}"
+                )
+            });
+        let provider_lost = pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("content recovery must remain pending independently of window cleanup");
+        assert_eq!(provider_lost.replacement_binding(), None);
+        assert_eq!(
+            provider_lost.status(),
+            RecoveryPendingStatus::ReplacementProviderLost {
+                replacement: pending.replacement_effect,
+                last_effect,
+            }
+        );
+        let retirement = pending
+            .fixture
+            .engine
+            .viewport()
+            .binding_retirements()
+            .find_map(|(binding, retirement)| (binding == replacement).then_some(retirement))
+            .expect("the provider-lost binding must have one independent cleanup owner");
+        assert_eq!(
+            retirement.origin(),
+            BindingRetirementOrigin::RecoveryReplacementProviderLost {
+                replacement: pending.replacement_effect,
+                last_effect,
+            }
+        );
+        assert_eq!(
+            retirement.status(),
+            BindingRetirementStatus::CleanupRequested { effect: cleanup }
+        );
+        assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+
+        let _ = publish_windows(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            vec![
+                host_window(pending.fixture.host_binding),
+                replacement_window(replacement),
+            ],
+        );
+        publish_scene(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+        );
+        let recovered = publish_windows(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            vec![
+                host_window(pending.fixture.host_binding),
+                replacement_window(replacement),
+            ],
+        );
+
+        assert_whole_root_recovered(&pending.fixture);
+        assert_no_new_effects(&recovered);
+        assert!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .recovery_pending(SURFACE_CHILD)
+                .is_none(),
+            "content recovery must complete without taking ownership back from retirement"
+        );
+    }
+}
+
+#[test]
+fn destroyed_child_rejects_its_old_semantic_output_later_in_the_same_frame() {
+    let mut fixture = fixture();
+    let expected = fixture.engine.version();
+    let provider = fixture.presentation_host.platform_provider();
+    let snapshot = next_destroyed_child_snapshot(&mut fixture);
+    let mut writer = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
+    let mut frame = fixture.presentation_host.begin(&fixture.engine);
+    let (tab, event) = child_next_tab_event(&frame, fixture.child_binding);
+
+    writer
+        .append(
+            &mut frame,
+            EngineInput::PublishPlatformSnapshot {
+                provider,
+                expected_epoch: expected.epoch(),
+                snapshot,
+            },
+        )
+        .expect("destroyed observation must reduce first");
+    assert!(!frame.surfaces().any(|surface| surface == SURFACE_CHILD));
+    assert!(frame.view().interaction_projection(SURFACE_CHILD).is_none());
+    assert!(frame.view().semantic_projection(SURFACE_CHILD).is_none());
+
+    writer
+        .append(
+            &mut frame,
+            EngineInput::ActivateSemanticReceiver { expected, event },
+        )
+        .expect("stale semantic delivery must reduce to a typed rejection");
+    complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
+    let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
+
+    assert!(matches!(
+        transition.reduced_inputs()[1].outcome(),
+        InputOutcome::InteractionProcessed {
+            outcome: InteractionOutcome::Rejected(
+                InteractionRejection::SemanticPresentationUnavailable {
+                    surface: SURFACE_CHILD,
+                },
+            ),
+            ..
+        }
+    ));
+    assert!(matches!(
+        fixture.engine.workspace().node(tab.tabs),
+        Some(Node::Tabs {
+            selected: Some(item),
+            ..
+        }) if *item == ItemId::new(2)
+    ));
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .is_some()
+    );
+}
+
+#[test]
+fn semantic_input_before_child_destruction_keeps_actual_same_frame_order() {
+    let mut fixture = fixture();
+    let expected = fixture.engine.version();
+    let provider = fixture.presentation_host.platform_provider();
+    let snapshot = next_destroyed_child_snapshot(&mut fixture);
+    let mut writer = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
+    let mut frame = fixture.presentation_host.begin(&fixture.engine);
+    let (tab, event) = child_next_tab_event(&frame, fixture.child_binding);
+
+    writer
+        .append(
+            &mut frame,
+            EngineInput::ActivateSemanticReceiver { expected, event },
+        )
+        .expect("current semantic delivery must reduce first");
+    writer
+        .append(
+            &mut frame,
+            EngineInput::PublishPlatformSnapshot {
+                provider,
+                expected_epoch: expected.epoch(),
+                snapshot,
+            },
+        )
+        .expect("later destroyed observation must preserve arrival order");
+    complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
+    let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
+
+    let semantic_outcome = transition.reduced_inputs()[0].outcome();
+    assert!(
+        matches!(
+            semantic_outcome,
+            InputOutcome::CommandProcessed { changed: true, .. }
+        ),
+        "unexpected semantic outcome before destruction: {semantic_outcome:?}"
+    );
+    assert!(matches!(
+        transition.reduced_inputs()[1].outcome(),
+        InputOutcome::PlatformSnapshotPublished { .. }
+    ));
+    assert!(matches!(
+        fixture.engine.workspace().node(tab.tabs),
+        Some(Node::Tabs {
+            selected: Some(item),
+            ..
+        }) if *item == ItemId::new(3)
+    ));
+    assert!(
+        fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .is_some()
+    );
+}
+
+#[test]
 fn adopted_replacement_retains_recovery_for_a_second_destruction() {
     let mut pending = pending_fixture();
-    publish_windows(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(pending.fixture.host_binding),
-            replacement_window(pending.replacement_binding),
-        ],
-    );
-    assert_awaiting_first_live_presentation(&pending.fixture, pending.replacement_binding);
+    let _ = advance_replacement_to_first_live(&mut pending);
 
     publish_scene(
         &mut pending.fixture.engine,
@@ -1617,7 +2194,8 @@ fn host_ready_before_replacement_rehomes_and_compensates_exactly_once() {
             .expect("replacement compensation must remain queryable")
             .status(),
         RecoveryPendingStatus::CompensatingReplacement {
-            effect: compensation
+            replacement: pending.replacement_effect,
+            cleanup: compensation,
         }
     );
 
@@ -1775,7 +2353,10 @@ fn failed_replacement_compensation_retries_only_after_explicit_input() {
             .recovery_pending(SURFACE_CHILD)
             .expect("replacement cleanup must remain queryable")
             .status(),
-        RecoveryPendingStatus::CompensatingReplacement { effect: retry }
+        RecoveryPendingStatus::CompensatingReplacement {
+            replacement: pending.replacement_effect,
+            cleanup: retry,
+        }
     );
 
     let late = publish_windows(
@@ -1820,9 +2401,11 @@ fn replacement_dispatch_failure_remains_recoverable_without_redispatch() {
     assert_eq!(
         recovery_pending.status(),
         RecoveryPendingStatus::ReplacementFailed {
-            effect: pending.replacement_effect
+            replacement: pending.replacement_effect,
+            failed: pending.replacement_effect,
         }
     );
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
     assert!(matches!(
         pending
             .fixture
@@ -1873,7 +2456,7 @@ fn replacement_dispatch_failure_remains_recoverable_without_redispatch() {
 }
 
 #[test]
-fn external_replacement_adopts_only_the_exact_recovery_target() {
+fn external_replacement_cannot_bypass_correlated_native_bringup() {
     let mut pending = pending_fixture();
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
@@ -1943,7 +2526,7 @@ fn external_replacement_adopts_only_the_exact_recovery_target() {
             .is_none()
     );
 
-    let adopted = submit_test_input(
+    let rejected = submit_test_input(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
         EngineInput::RegisterViewport {
@@ -1955,18 +2538,20 @@ fn external_replacement_adopts_only_the_exact_recovery_target() {
             recovery_target: Some(pending.fixture.recovery_target),
         },
     )
-    .expect("exact replacement registration must reduce");
-    let binding = match adopted.reduced_inputs()[0].outcome() {
-        InputOutcome::ViewportRegistered { binding } => *binding,
-        outcome => panic!("unexpected exact replacement outcome: {outcome:?}"),
-    };
+    .expect("uncorrelated replacement registration must reduce fail-closed");
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::ViewportRegistrationRejected {
+            surface: SURFACE_CHILD
+        }
+    ));
     let recovery = pending
         .fixture
         .engine
         .viewport()
         .recovery_pending(SURFACE_CHILD)
-        .expect("registered replacement remains pending until ready");
-    assert_eq!(recovery.replacement_binding(), Some(binding));
+        .expect("failed replacement recovery must remain pending");
+    assert_eq!(recovery.replacement_binding(), None);
     assert_eq!(
         pending
             .fixture
@@ -1974,108 +2559,15 @@ fn external_replacement_adopts_only_the_exact_recovery_target() {
             .surface_recovery_target(SURFACE_CHILD),
         Some(pending.fixture.recovery_target)
     );
-    assert_eq!(
+    assert!(matches!(
         recovery.status(),
-        RecoveryPendingStatus::ReplacementRegistered
-    );
+        RecoveryPendingStatus::ReplacementFailed { .. }
+    ));
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 }
 
 #[test]
-fn hidden_external_replacement_cannot_own_focus_until_first_live_presentation() {
-    let mut pending = pending_fixture();
-    let expected_epoch = pending.fixture.engine.version().epoch();
-    let provider = pending.fixture.presentation_host.platform_provider();
-    submit_test_input(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        EngineInput::ReportPlatformEffect {
-            provider,
-            expected_epoch,
-            result: EffectResult::new(
-                pending.replacement_effect,
-                expected_epoch,
-                EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
-            ),
-        },
-    )
-    .expect("replacement failure must make external adoption available");
-
-    let expected = pending.fixture.engine.version();
-    let registered = submit_test_input(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        EngineInput::RegisterViewport {
-            provider,
-            expected,
-            surface: SURFACE_CHILD,
-            token: WindowToken::new(22),
-            role: ViewportRole::Child,
-            recovery_target: Some(pending.fixture.recovery_target),
-        },
-    )
-    .expect("exact external recovery replacement must register");
-    let replacement = match registered.reduced_inputs()[0].outcome() {
-        InputOutcome::ViewportRegistered { binding } => *binding,
-        outcome => panic!("unexpected external replacement outcome: {outcome:?}"),
-    };
-
-    let hidden = publish_windows_with_presentation(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(pending.fixture.host_binding),
-            replacement_window(replacement),
-        ],
-        Authority::Known(WindowPresentationState::Hidden),
-    );
-    assert_no_new_effects(&hidden);
-    assert_eq!(
-        pending
-            .fixture
-            .engine
-            .viewport()
-            .registry()
-            .record(SURFACE_CHILD)
-            .expect("hidden replacement remains registered")
-            .admission(),
-        ViewportAdmission::Pending
-    );
-    assert_eq!(
-        pending.fixture.engine.viewport_focus_binding(SURFACE_CHILD),
-        None,
-        "hidden replacement must not become a focus authority"
-    );
-
-    let visible = publish_windows(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            unavailable_host_window(pending.fixture.host_binding),
-            replacement_window(replacement),
-        ],
-    );
-    assert_no_new_effects(&visible);
-    assert_awaiting_first_live_presentation(&pending.fixture, replacement);
-    assert_eq!(
-        pending.fixture.engine.viewport_focus_binding(SURFACE_CHILD),
-        None,
-        "visible replacement must not own focus before its first live presentation"
-    );
-
-    publish_scene(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-    );
-    assert_replacement_admitted(&pending.fixture, replacement);
-    assert_eq!(
-        pending.fixture.engine.viewport_focus_binding(SURFACE_CHILD),
-        Some(replacement),
-        "first live presentation admits the external replacement"
-    );
-}
-
-#[test]
-fn observed_replacement_survives_dispatch_failure_until_first_live_presentation() {
+fn dispatch_failed_replacement_cannot_bypass_bringup_with_visible_facts() {
     let mut pending = pending_fixture();
     let observed = publish_windows(
         &mut pending.fixture.engine,
@@ -2095,7 +2587,7 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
             .expect("geometryless replacement must remain pending")
             .status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: pending.replacement_effect
+            replacement: pending.replacement_effect
         }
     );
     assert!(matches!(
@@ -2111,7 +2603,7 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
     ));
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
-    submit_test_input(
+    let rejected = submit_test_input(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
         EngineInput::ReportPlatformEffect {
@@ -2125,6 +2617,21 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
         },
     )
     .expect("observed replacement failure must reduce");
+    let cleanup = rejected
+        .platform_effects()
+        .iter()
+        .find_map(|emission| {
+            matches!(
+                emission.effect(),
+                PlatformEffect::CompensatingClose {
+                    binding,
+                    compensates,
+                } if *binding == pending.replacement_binding
+                    && *compensates == pending.replacement_effect
+            )
+            .then_some(emission.id())
+        })
+        .expect("an observed failed replacement must be retired immediately");
 
     let failed = pending
         .fixture
@@ -2148,16 +2655,35 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
                     .record(SURFACE_CHILD),
             )
         });
-    assert_eq!(
-        failed.replacement_binding(),
-        Some(pending.replacement_binding)
-    );
+    assert_eq!(failed.replacement_binding(), None);
     assert_eq!(
         failed.status(),
         RecoveryPendingStatus::ReplacementFailed {
-            effect: pending.replacement_effect
+            replacement: pending.replacement_effect,
+            failed: pending.replacement_effect,
         }
     );
+    let retirement = pending
+        .fixture
+        .engine
+        .viewport()
+        .binding_retirements()
+        .find_map(|(binding, retirement)| {
+            (binding == pending.replacement_binding).then_some(retirement)
+        })
+        .expect("the failed replacement binding must have one cleanup owner");
+    assert_eq!(
+        retirement.origin(),
+        BindingRetirementOrigin::RecoveryReplacementFailed {
+            replacement: pending.replacement_effect,
+            failed: pending.replacement_effect,
+        }
+    );
+    assert_eq!(
+        retirement.status(),
+        BindingRetirementStatus::CleanupRequested { effect: cleanup }
+    );
+    assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 
     let ready = publish_windows(
         &mut pending.fixture.engine,
@@ -2168,30 +2694,18 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
         ],
     );
     assert_no_new_effects(&ready);
-    assert_awaiting_first_live_presentation(&pending.fixture, pending.replacement_binding);
-
-    publish_scene(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-    );
-    assert_replacement_admitted(&pending.fixture, pending.replacement_binding);
-
-    let host_ready = publish_windows(
-        &mut pending.fixture.engine,
-        &mut pending.fixture.presentation_host,
-        vec![
-            host_window(pending.fixture.host_binding),
-            replacement_window(pending.replacement_binding),
-        ],
-    );
-    assert_no_new_effects(&host_ready);
-    assert!(
+    assert_eq!(
         pending
             .fixture
             .engine
-            .workspace()
-            .surface(SURFACE_CHILD)
-            .is_some()
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("uncorrelated visible facts cannot consume recovery")
+            .status(),
+        RecoveryPendingStatus::ReplacementFailed {
+            replacement: pending.replacement_effect,
+            failed: pending.replacement_effect,
+        }
     );
     assert!(
         pending
@@ -2201,19 +2715,133 @@ fn observed_replacement_survives_dispatch_failure_until_first_live_presentation(
             .contained_floating(RECOVERY_FLOATING)
             .is_none()
     );
-    assert_eq!(
-        effect_count(&pending.fixture.engine, |effect| matches!(
-            effect,
-            PlatformEffect::CompensatingClose { .. }
-        )),
-        0
+
+    let recovered = make_host_current_and_retry_recovery(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
     );
+    assert_no_new_effects(&recovered);
+    assert_whole_root_recovered(&pending.fixture);
 }
 
 #[test]
-fn replacement_adoption_requires_visible_presentation_authority() {
+fn failed_recovery_show_retires_the_window_without_waiting_for_host_recovery() {
+    for failure in [
+        EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+        EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+    ] {
+        let mut pending = pending_fixture();
+        let show = present_replacement_pre_show(&mut pending);
+        let expected_epoch = pending.fixture.engine.version().epoch();
+        let provider = pending.fixture.presentation_host.platform_provider();
+        let failed = submit_test_input(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            EngineInput::ReportPlatformEffect {
+                provider,
+                expected_epoch,
+                result: EffectResult::new(show, expected_epoch, failure),
+            },
+        )
+        .expect("deterministic show failure must reduce");
+
+        let cleanup = failed
+            .platform_effects()
+            .iter()
+            .find_map(|emission| {
+                matches!(
+                    emission.effect(),
+                    PlatformEffect::CompensatingClose {
+                        binding,
+                        compensates,
+                    } if *binding == pending.replacement_binding
+                        && *compensates == pending.replacement_effect
+                )
+                .then_some(emission.id())
+            })
+            .expect("the failed show must immediately schedule exact binding cleanup");
+        let recovery = pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("content recovery must remain pending independently of window cleanup");
+        assert_eq!(recovery.replacement_binding(), None);
+        assert_eq!(
+            recovery.status(),
+            RecoveryPendingStatus::ReplacementFailed {
+                replacement: pending.replacement_effect,
+                failed: show,
+            }
+        );
+        assert!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .viewport(SURFACE_CHILD)
+                .is_none()
+        );
+        let retirement = pending
+            .fixture
+            .engine
+            .viewport()
+            .binding_retirements()
+            .find_map(|(binding, retirement)| {
+                (binding == pending.replacement_binding).then_some(retirement)
+            })
+            .expect("failed show must transfer its exact binding to retirement");
+        assert_eq!(
+            retirement.origin(),
+            BindingRetirementOrigin::RecoveryReplacementFailed {
+                replacement: pending.replacement_effect,
+                failed: show,
+            }
+        );
+        assert_eq!(
+            retirement.status(),
+            BindingRetirementStatus::CleanupRequested { effect: cleanup }
+        );
+        assert_recovery_presentation_scope(&mut pending.fixture, None, false);
+
+        let unavailable = publish_windows(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            vec![unavailable_host_window(pending.fixture.host_binding)],
+        );
+        assert_no_new_effects(&unavailable);
+        assert_eq!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .recovery_pending(SURFACE_CHILD)
+                .expect("unavailable host must retain content recovery")
+                .status(),
+            RecoveryPendingStatus::ReplacementFailed {
+                replacement: pending.replacement_effect,
+                failed: show,
+            }
+        );
+        assert_eq!(
+            pending
+                .fixture
+                .engine
+                .viewport()
+                .binding_retirements()
+                .find_map(|(binding, retirement)| {
+                    (binding == pending.replacement_binding).then_some(retirement.status())
+                }),
+            Some(BindingRetirementStatus::CleanupRequested { effect: cleanup })
+        );
+    }
+}
+
+#[test]
+fn recovery_replacement_requires_exact_hidden_acknowledgement() {
     for presentation in [
         Authority::Known(WindowPresentationState::Hidden),
+        Authority::Known(WindowPresentationState::Visible),
         Authority::Unknown(AuthorityUnavailableReason::NotReported),
     ] {
         let mut pending = pending_fixture();
@@ -2233,11 +2861,11 @@ fn replacement_adoption_requires_visible_presentation_authority() {
             .engine
             .viewport()
             .recovery_pending(SURFACE_CHILD)
-            .expect("non-visible replacement must remain pending");
+            .expect("uncorrelated replacement facts must remain pending");
         assert_eq!(
             recovery.status(),
             RecoveryPendingStatus::ReplacementRequested {
-                effect: pending.replacement_effect
+                replacement: pending.replacement_effect
             }
         );
         assert_eq!(
@@ -2263,4 +2891,44 @@ fn replacement_adoption_requires_visible_presentation_authority() {
             EffectPhase::Requested
         ));
     }
+}
+
+#[test]
+fn recovery_replacement_rejects_the_wrong_hidden_acknowledgement() {
+    let mut pending = pending_fixture();
+    let transition = publish_windows_with_presentation_ack(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(pending.fixture.host_binding),
+            replacement_window(pending.replacement_binding),
+        ],
+        WindowPresentationState::Hidden,
+        pending.replacement_binding,
+        EffectId::new(u64::MAX - 1),
+    );
+    assert_no_new_effects(&transition);
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("wrong acknowledgement cannot consume recovery")
+            .status(),
+        RecoveryPendingStatus::ReplacementRequested {
+            replacement: pending.replacement_effect,
+        }
+    );
+    assert!(matches!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(pending.replacement_effect)
+            .expect("replacement effect remains pending")
+            .phase(),
+        EffectPhase::Requested
+    ));
 }

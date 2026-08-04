@@ -183,14 +183,18 @@ impl DockEngine {
     /// same candidate which creates the replacement ticket.
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: crate::backend_ingress::BackendIngressDrainReceipt,
+        drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         let ingress = drained.lease();
-        let (ticket, transition) = self
-            .begin_platform_provider_replacement_inner(ingress.platform_provider(), Some(&drained))?
-            .into_parts();
+        let (candidate, start) =
+            self.prepare_platform_provider_replacement(ingress.platform_provider(), Some(drained))?;
+        let predecessor = drained
+            .transfer()
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let (ticket, transition) = start.into_parts();
+        self.publish_candidate(candidate);
         Ok(BackendIngressProviderReplacementStart::new(
-            BackendIngressProviderReplacementTicket::new(ticket, drained),
+            BackendIngressProviderReplacementTicket::new(ticket, predecessor),
             transition,
         ))
     }
@@ -207,14 +211,21 @@ impl DockEngine {
         &mut self,
         provider: PlatformObservationLease,
     ) -> Result<PlatformProviderReplacementStart, EngineError> {
-        self.begin_platform_provider_replacement_inner(provider, None)
+        let (candidate, start) = self.prepare_platform_provider_replacement(provider, None)?;
+        self.publish_candidate(candidate);
+        Ok(start)
     }
 
-    fn begin_platform_provider_replacement_inner(
-        &mut self,
+    fn prepare_platform_provider_replacement(
+        &self,
         provider: PlatformObservationLease,
         drained_backend: Option<&crate::backend_ingress::BackendIngressDrainReceipt>,
-    ) -> Result<PlatformProviderReplacementStart, EngineError> {
+    ) -> Result<(DockEngine, PlatformProviderReplacementStart), EngineError> {
+        if let Some(drained) = drained_backend {
+            drained
+                .validate_active()
+                .map_err(|source| EngineError::BackendIngress { source })?;
+        }
         let drained_ingress = drained_backend.map(|receipt| receipt.lease());
         match (self.backend_ingress.active(), drained_ingress) {
             (Some(active), None) => {
@@ -362,8 +373,10 @@ impl DockEngine {
             surface_scene_deltas,
             published_state_changed: true,
         });
-        self.publish_candidate(candidate);
-        Ok(PlatformProviderReplacementStart::new(ticket, transition))
+        Ok((
+            candidate,
+            PlatformProviderReplacementStart::new(ticket, transition),
+        ))
     }
 
     /// Activates the exact successor reserved by a completed provider handoff.

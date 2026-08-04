@@ -1,15 +1,13 @@
 use std::collections::BTreeMap;
 
-use crate::effect::{
-    EffectId, EffectInvalidation, EffectPhase, EffectRecord, EffectTransition, PlatformEffect,
-};
-use crate::ids::NativeCreateSagaId;
+use crate::effect::{EffectId, EffectInvalidation, EffectPhase, EffectRecord, PlatformEffect};
+use crate::ids::{NativeCreateSagaId, SurfaceId};
 use crate::interaction::PreparedNativeTearOff;
-use crate::platform::{WindowPresentationObservation, WindowPresentationState};
+use crate::platform::WindowPresentationState;
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::{
-    NativeStagingBasis, NativeStagingPresentation, NativeStagingPresentationPhase,
-    NativeStagingResourceDescriptor, NativeStagingResourceId, PresentedNativeStagingPresentation,
+    NativeStagingOwner, NativeStagingPresentation, NativeStagingResourceDescriptor,
+    NativeStagingResourceId, PresentedNativeStagingPresentation,
 };
 use crate::viewport::{
     CoordinateGeneration, CoordinateObservationGeneration, InventoryGeneration,
@@ -18,13 +16,19 @@ use crate::viewport::{
 use crate::viewport_registry::{ViewportLifecycle, ViewportRecord};
 
 use super::binding_retirement::BindingRetirementRequest;
+use super::native_bringup::{NativeBringupPhase, NativeBringupPresentationOutcome};
 use super::native_staging_resource::NativeStagingResourceOwner;
 use super::{
     BindingRetirementCleanup, BindingRetirementOrigin, BindingRetirementStatus,
-    RecoveryPendingStatus, ViewportCoordinator, ViewportCoordinatorError, ViewportLifecycleAction,
+    NativeVisibilityProof, NativeVisibleProof, RecoveryPendingStatus, ViewportCoordinator,
+    ViewportCoordinatorError, ViewportLifecycleAction,
 };
 
-/// Active phase of one native create saga.
+/// Queryable owner-specific phase of one native create saga.
+///
+/// The shared hidden-to-post-show proof is converted into this public shape,
+/// while ownership transfer and first-live admission remain native-create-only
+/// states. Recovery replacement cannot represent either terminal phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeCreatePhase {
     AwaitingHidden {
@@ -68,32 +72,101 @@ pub enum NativeCreatePhase {
         visibility: NativeVisibilityProof,
         presentation: NativeStagingPresentation,
     },
-    /// Both staging outputs were presented and ownership may be transferred.
+    /// Both staging outputs were presented and graph ownership may advance.
     AwaitingOwnershipTransfer {
         proof: NativeVisibleProof,
     },
-    /// Ownership moved, but the exact first live docking output is still pending.
+    /// Graph ownership moved, but the exact first live output is still pending.
     AwaitingFirstLivePresentation {
         proof: NativeVisibleProof,
     },
 }
 
 impl NativeCreatePhase {
-    pub(crate) fn show_effect(self) -> Option<EffectId> {
+    fn bringup(self) -> Option<NativeBringupPhase> {
         match self {
-            Self::AwaitingShowAcknowledgement { show, .. } | Self::AwaitingVisible { show, .. } => {
-                Some(show)
+            Self::AwaitingHidden { create } => Some(NativeBringupPhase::AwaitingHidden { create }),
+            Self::AwaitingPreShowPresentation {
+                create,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                presentation,
+            } => Some(NativeBringupPhase::AwaitingPreShowPresentation {
+                create,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                presentation,
+            }),
+            Self::AwaitingShowAcknowledgement {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                pre_show,
+            } => Some(NativeBringupPhase::AwaitingShowAcknowledgement {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                pre_show,
+            }),
+            Self::AwaitingVisible {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                acknowledged_generation,
+                acknowledged_inventory_generation,
+                acknowledged_coordinate_generation,
+                acknowledged_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                show_emitted_inventory_generation,
+                pre_show,
+            } => Some(NativeBringupPhase::AwaitingVisible {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                acknowledged_generation,
+                acknowledged_inventory_generation,
+                acknowledged_coordinate_generation,
+                acknowledged_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                show_emitted_inventory_generation,
+                pre_show,
+            }),
+            Self::AwaitingPostShowPresentation {
+                visibility,
+                presentation,
+            } => Some(NativeBringupPhase::AwaitingPostShowPresentation {
+                visibility,
+                presentation,
+            }),
+            Self::AwaitingOwnershipTransfer { .. } | Self::AwaitingFirstLivePresentation { .. } => {
+                None
             }
-            Self::AwaitingPostShowPresentation { visibility, .. } => Some(visibility.show),
-            Self::AwaitingOwnershipTransfer { proof }
-            | Self::AwaitingFirstLivePresentation { proof } => Some(proof.show()),
-            Self::AwaitingHidden { .. } | Self::AwaitingPreShowPresentation { .. } => None,
         }
     }
 
-    /// Returns the lifecycle effect an ordinary presentation observation must acknowledge.
+    /// Returns the lifecycle effect which correlates presentation facts for this phase.
     #[must_use]
-    pub const fn acknowledged_effect(self) -> EffectId {
+    pub const fn presentation_correlation_effect(self) -> EffectId {
         match self {
             Self::AwaitingHidden { create } | Self::AwaitingPreShowPresentation { create, .. } => {
                 create
@@ -106,138 +179,109 @@ impl NativeCreatePhase {
             | Self::AwaitingFirstLivePresentation { proof } => proof.show(),
         }
     }
+
+    pub(super) const fn show_effect(self) -> Option<EffectId> {
+        match self {
+            Self::AwaitingShowAcknowledgement { show, .. } | Self::AwaitingVisible { show, .. } => {
+                Some(show)
+            }
+            Self::AwaitingPostShowPresentation { visibility, .. } => Some(visibility.show),
+            Self::AwaitingOwnershipTransfer { proof }
+            | Self::AwaitingFirstLivePresentation { proof } => Some(proof.show()),
+            Self::AwaitingHidden { .. } | Self::AwaitingPreShowPresentation { .. } => None,
+        }
+    }
+
+    const fn staging_presentation(self) -> Option<NativeStagingPresentation> {
+        match self {
+            Self::AwaitingPreShowPresentation { presentation, .. }
+            | Self::AwaitingPostShowPresentation { presentation, .. } => Some(presentation),
+            Self::AwaitingHidden { .. }
+            | Self::AwaitingShowAcknowledgement { .. }
+            | Self::AwaitingVisible { .. }
+            | Self::AwaitingOwnershipTransfer { .. }
+            | Self::AwaitingFirstLivePresentation { .. } => None,
+        }
+    }
 }
 
-/// Exact platform visibility proof retained while post-show staging is pending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeVisibilityProof {
-    pub(super) binding: ViewportBinding,
-    pub(super) create: EffectId,
-    pub(super) show: EffectId,
-    pub(super) hidden_generation: PresentationObservationGeneration,
-    pub(super) hidden_inventory_generation: InventoryGeneration,
-    pub(super) hidden_coordinate_generation: CoordinateGeneration,
-    pub(super) hidden_coordinate_observation_generation: CoordinateObservationGeneration,
-    pub(super) acknowledged_generation: PresentationObservationGeneration,
-    pub(super) acknowledged_inventory_generation: InventoryGeneration,
-    pub(super) acknowledged_coordinate_generation: CoordinateGeneration,
-    pub(super) acknowledged_coordinate_observation_generation: CoordinateObservationGeneration,
-    pub(super) visible_generation: PresentationObservationGeneration,
-    pub(super) visible_inventory_generation: InventoryGeneration,
-    pub(super) visible_coordinate_generation: CoordinateGeneration,
-    pub(super) visible_coordinate_observation_generation: CoordinateObservationGeneration,
-    pub(super) create_emitted_inventory_generation: InventoryGeneration,
-    pub(super) show_emitted_inventory_generation: InventoryGeneration,
-    pub(super) pre_show: PresentedNativeStagingPresentation,
-}
-
-/// Exact presentation proof which authorizes one native ownership transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeVisibleProof {
-    pub(super) visibility: NativeVisibilityProof,
-    pub(super) post_show: PresentedNativeStagingPresentation,
-}
-
-impl NativeVisibleProof {
-    #[must_use]
-    pub const fn binding(self) -> ViewportBinding {
-        self.visibility.binding
-    }
-
-    #[must_use]
-    pub const fn create(self) -> EffectId {
-        self.visibility.create
-    }
-
-    #[must_use]
-    pub const fn show(self) -> EffectId {
-        self.visibility.show
-    }
-
-    /// Returns the retained staging resource proven by both staging outputs.
-    #[must_use]
-    pub const fn resource(self) -> NativeStagingResourceId {
-        self.post_show.resource()
-    }
-
-    #[must_use]
-    pub const fn hidden_generation(self) -> PresentationObservationGeneration {
-        self.visibility.hidden_generation
-    }
-
-    #[must_use]
-    pub const fn acknowledged_generation(self) -> PresentationObservationGeneration {
-        self.visibility.acknowledged_generation
-    }
-
-    #[must_use]
-    pub const fn hidden_inventory_generation(self) -> InventoryGeneration {
-        self.visibility.hidden_inventory_generation
-    }
-
-    #[must_use]
-    pub const fn acknowledged_inventory_generation(self) -> InventoryGeneration {
-        self.visibility.acknowledged_inventory_generation
-    }
-
-    #[must_use]
-    pub const fn visible_generation(self) -> PresentationObservationGeneration {
-        self.visibility.visible_generation
-    }
-
-    #[must_use]
-    pub const fn visible_inventory_generation(self) -> InventoryGeneration {
-        self.visibility.visible_inventory_generation
-    }
-
-    #[must_use]
-    pub const fn inventory_generation(self) -> InventoryGeneration {
-        self.visibility.visible_inventory_generation
-    }
-
-    #[must_use]
-    pub const fn hidden_coordinate_generation(self) -> CoordinateGeneration {
-        self.visibility.hidden_coordinate_generation
-    }
-
-    #[must_use]
-    pub const fn hidden_coordinate_observation_generation(self) -> CoordinateObservationGeneration {
-        self.visibility.hidden_coordinate_observation_generation
-    }
-
-    #[must_use]
-    pub const fn acknowledged_coordinate_generation(self) -> CoordinateGeneration {
-        self.visibility.acknowledged_coordinate_generation
-    }
-
-    #[must_use]
-    pub const fn acknowledged_coordinate_observation_generation(
-        self,
-    ) -> CoordinateObservationGeneration {
-        self.visibility
-            .acknowledged_coordinate_observation_generation
-    }
-
-    #[must_use]
-    pub const fn visible_coordinate_generation(self) -> CoordinateGeneration {
-        self.visibility.visible_coordinate_generation
-    }
-
-    #[must_use]
-    pub const fn visible_coordinate_observation_generation(
-        self,
-    ) -> CoordinateObservationGeneration {
-        self.visibility.visible_coordinate_observation_generation
-    }
-
-    #[must_use]
-    pub const fn create_emitted_inventory_generation(self) -> InventoryGeneration {
-        self.visibility.create_emitted_inventory_generation
-    }
-
-    #[must_use]
-    pub const fn show_emitted_inventory_generation(self) -> InventoryGeneration {
-        self.visibility.show_emitted_inventory_generation
+impl From<NativeBringupPhase> for NativeCreatePhase {
+    fn from(phase: NativeBringupPhase) -> Self {
+        match phase {
+            NativeBringupPhase::AwaitingHidden { create } => Self::AwaitingHidden { create },
+            NativeBringupPhase::AwaitingPreShowPresentation {
+                create,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                presentation,
+            } => Self::AwaitingPreShowPresentation {
+                create,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                presentation,
+            },
+            NativeBringupPhase::AwaitingShowAcknowledgement {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                pre_show,
+            } => Self::AwaitingShowAcknowledgement {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                pre_show,
+            },
+            NativeBringupPhase::AwaitingVisible {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                acknowledged_generation,
+                acknowledged_inventory_generation,
+                acknowledged_coordinate_generation,
+                acknowledged_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                show_emitted_inventory_generation,
+                pre_show,
+            } => Self::AwaitingVisible {
+                create,
+                show,
+                hidden_generation,
+                hidden_inventory_generation,
+                hidden_coordinate_generation,
+                hidden_coordinate_observation_generation,
+                acknowledged_generation,
+                acknowledged_inventory_generation,
+                acknowledged_coordinate_generation,
+                acknowledged_coordinate_observation_generation,
+                create_emitted_inventory_generation,
+                show_emitted_inventory_generation,
+                pre_show,
+            },
+            NativeBringupPhase::AwaitingPostShowPresentation {
+                visibility,
+                presentation,
+            } => Self::AwaitingPostShowPresentation {
+                visibility,
+                presentation,
+            },
+        }
     }
 }
 
@@ -420,21 +464,28 @@ impl ViewportCoordinator {
     pub(crate) fn native_staging_presentations(
         &self,
     ) -> impl Iterator<Item = NativeStagingPresentation> + '_ {
-        self.native_creates
+        let native_create = self
+            .native_creates
             .sagas
             .values()
-            .filter_map(|saga| match saga.phase {
-                NativeCreatePhase::AwaitingPreShowPresentation { presentation, .. }
-                | NativeCreatePhase::AwaitingPostShowPresentation { presentation, .. } => {
-                    Some(presentation)
-                }
-                NativeCreatePhase::AwaitingHidden { .. }
-                | NativeCreatePhase::AwaitingShowAcknowledgement { .. }
-                | NativeCreatePhase::AwaitingVisible { .. }
-                | NativeCreatePhase::AwaitingOwnershipTransfer { .. }
-                | NativeCreatePhase::AwaitingFirstLivePresentation { .. } => None,
-            })
+            .filter_map(|saga| saga.phase.staging_presentation());
+        let recovery = self
+            .recovery_replacements
+            .values()
+            .filter_map(|pending| pending.bringup_phase()?.staging_presentation());
+        native_create
+            .chain(recovery)
             .filter(|presentation| self.native_staging_presentation_is_current(*presentation))
+    }
+
+    /// Returns recovery surfaces whose live presentation and interaction authority is suspended.
+    pub(crate) fn suspended_native_presentation_surfaces(
+        &self,
+    ) -> impl Iterator<Item = SurfaceId> + '_ {
+        self.recovery_replacements
+            .values()
+            .filter(|pending| pending.suspends_live_presentation())
+            .map(|pending| pending.destroyed_binding().surface())
     }
 
     /// Returns every retained source resource still owned by native lifecycle state.
@@ -444,96 +495,38 @@ impl ViewportCoordinator {
         self.native_staging_resources.iter()
     }
 
-    fn mint_native_staging_presentation(
-        &self,
-        saga: NativeCreateSagaId,
-        binding: ViewportBinding,
-        phase: NativeStagingPresentationPhase,
-        provider: PlatformObservationLease,
-        presentation_generation: PresentationObservationGeneration,
-        coordinate_generation: CoordinateGeneration,
-    ) -> Result<NativeStagingPresentation, ViewportCoordinatorError> {
-        let resource = self
-            .native_creates
-            .sagas
-            .get(&saga)
-            .map(|create| create.resource)
-            .filter(|resource| self.native_staging_resources.get(*resource).is_some())
-            .ok_or(ViewportCoordinatorError::InvalidNativeStagingResource { saga })?;
-        let basis = NativeStagingBasis::new(
-            provider,
-            presentation_generation,
-            coordinate_generation,
-            resource,
-        )
-        .ok_or(ViewportCoordinatorError::InvalidNativeStagingResource { saga })?;
-        NativeStagingPresentation::mint(binding, phase, basis)
-            .ok_or(ViewportCoordinatorError::InvalidNativeStagingResource { saga })
-    }
-
-    fn native_staging_presentation_is_current(
+    pub(super) fn native_staging_presentation_is_current(
         &self,
         presentation: NativeStagingPresentation,
     ) -> bool {
-        let basis = presentation.basis();
-        let Some(saga) = self.native_creates.sagas.get(&presentation.saga()) else {
-            return false;
-        };
-        let phase_matches = match saga.phase {
-            NativeCreatePhase::AwaitingPreShowPresentation {
-                presentation: expected,
-                ..
+        let owner_is_current = match presentation.owner() {
+            NativeStagingOwner::NativeCreate { resource } => {
+                let saga = resource.saga();
+                self.native_creates.sagas.get(&saga).is_some_and(|create| {
+                    create.binding == presentation.binding()
+                        && create.resource == resource
+                        && create.phase.staging_presentation() == Some(presentation)
+                })
             }
-            | NativeCreatePhase::AwaitingPostShowPresentation {
-                presentation: expected,
-                ..
-            } => expected == presentation,
-            NativeCreatePhase::AwaitingHidden { .. }
-            | NativeCreatePhase::AwaitingShowAcknowledgement { .. }
-            | NativeCreatePhase::AwaitingVisible { .. }
-            | NativeCreatePhase::AwaitingOwnershipTransfer { .. }
-            | NativeCreatePhase::AwaitingFirstLivePresentation { .. } => false,
+            NativeStagingOwner::RecoveryReplacement {
+                destroyed_binding,
+                recovery_obligation,
+                retained_resource,
+            } => self
+                .recovery_replacements
+                .pending(destroyed_binding.surface())
+                .is_some_and(|pending| {
+                    pending.destroyed_binding() == destroyed_binding
+                        && pending.recovery_obligation() == recovery_obligation
+                        && pending.retained_staging_resource() == retained_resource
+                        && pending.replacement_binding() == Some(presentation.binding())
+                        && pending
+                            .bringup_phase()
+                            .and_then(NativeBringupPhase::staging_presentation)
+                            == Some(presentation)
+                }),
         };
-        if !phase_matches
-            || saga.binding != presentation.binding()
-            || saga.resource != basis.resource()
-        {
-            return false;
-        }
-        let expected_state = match presentation.phase() {
-            NativeStagingPresentationPhase::PreShow => WindowPresentationState::Hidden,
-            NativeStagingPresentationPhase::PostShow => WindowPresentationState::Visible,
-        };
-        self.native_staging_basis_matches_current(presentation, expected_state)
-    }
-
-    fn native_staging_basis_matches_current(
-        &self,
-        presentation: NativeStagingPresentation,
-        expected_state: WindowPresentationState,
-    ) -> bool {
-        let basis = presentation.basis();
-        if self.platform_provider() != Some(basis.platform_provider())
-            || self
-                .native_staging_resources
-                .get(basis.resource())
-                .is_none()
-        {
-            return false;
-        }
-        let Some(record) = self
-            .registry
-            .record(presentation.binding().surface())
-            .filter(|record| record.binding() == presentation.binding())
-        else {
-            return false;
-        };
-        let Some(observation) = record.presentation_observation() else {
-            return false;
-        };
-        observation.known_state() == Some(expected_state)
-            && observation.generation() == basis.presentation_observation_generation()
-            && record.coordinate_generation() == basis.coordinate_generation()
+        owner_is_current && self.native_staging_basis_matches_current(presentation)
     }
 
     pub(super) fn reduce_ready_native_create(
@@ -549,247 +542,22 @@ impl ViewportCoordinator {
         else {
             return Ok(());
         };
-        let phase = (|| {
-            let saga = self
-                .native_creates
-                .sagas
-                .get(&saga_id)
-                .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?;
-            Ok::<_, ViewportCoordinatorError>(saga.phase)
-        })()?;
-        let Some((observation, coordinate_generation, coordinate_observation_generation)) = self
-            .registry
-            .record(binding.surface())
-            .filter(|record| record.binding() == binding)
-            .and_then(|record| {
-                Some((
-                    record.presentation_observation()?,
-                    record.coordinate_generation(),
-                    record.coordinate_observation_generation()?,
-                ))
-            })
-        else {
+        let saga = self
+            .native_creates
+            .sagas
+            .get(&saga_id)
+            .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?;
+        let Some(phase) = saga.phase.bringup() else {
             return Ok(());
         };
-        match phase {
-            NativeCreatePhase::AwaitingHidden { create }
-                if observation.known_state() == Some(WindowPresentationState::Hidden)
-                    && self.presentation_observation_settles(observation, create) =>
-            {
-                let Some(create_emitted_inventory_generation) =
-                    self.effect_emission_fence(create, binding)
-                else {
-                    return Ok(());
-                };
-                if self.effects.mark_observed_applied(
-                    provider,
-                    create,
-                    binding,
-                    observation.inventory_generation(),
-                ) != EffectTransition::Applied
-                {
-                    return Ok(());
-                }
-                let presentation = self.mint_native_staging_presentation(
-                    saga_id,
-                    binding,
-                    NativeStagingPresentationPhase::PreShow,
-                    provider,
-                    observation.generation(),
-                    coordinate_generation,
-                )?;
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingPreShowPresentation {
-                    create,
-                    hidden_generation: observation.generation(),
-                    hidden_inventory_generation: observation.inventory_generation(),
-                    hidden_coordinate_generation: coordinate_generation,
-                    hidden_coordinate_observation_generation: coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    presentation,
-                };
-            }
-            NativeCreatePhase::AwaitingPreShowPresentation {
-                create,
-                create_emitted_inventory_generation,
-                presentation,
-                ..
-            } if observation.known_state() == Some(WindowPresentationState::Hidden)
-                && self.presentation_observation_settles(observation, create)
-                && (presentation.basis().platform_provider() != provider
-                    || presentation.basis().presentation_observation_generation()
-                        != observation.generation()
-                    || presentation.basis().coordinate_generation() != coordinate_generation) =>
-            {
-                let presentation = self.mint_native_staging_presentation(
-                    saga_id,
-                    binding,
-                    NativeStagingPresentationPhase::PreShow,
-                    provider,
-                    observation.generation(),
-                    coordinate_generation,
-                )?;
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingPreShowPresentation {
-                    create,
-                    hidden_generation: observation.generation(),
-                    hidden_inventory_generation: observation.inventory_generation(),
-                    hidden_coordinate_generation: coordinate_generation,
-                    hidden_coordinate_observation_generation: coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    presentation,
-                };
-            }
-            NativeCreatePhase::AwaitingShowAcknowledgement {
-                create,
-                show,
-                hidden_generation,
-                hidden_inventory_generation,
-                hidden_coordinate_generation,
-                hidden_coordinate_observation_generation,
-                create_emitted_inventory_generation,
-                pre_show,
-            } if observation.generation() > hidden_generation
-                && observation.inventory_generation() > hidden_inventory_generation
-                && self.presentation_observation_settles(observation, show) =>
-            {
-                let Some(show_emitted_inventory_generation) =
-                    self.effect_emission_fence(show, binding)
-                else {
-                    return Ok(());
-                };
-                if self.effects.mark_observed_applied(
-                    provider,
-                    show,
-                    binding,
-                    observation.inventory_generation(),
-                ) != EffectTransition::Applied
-                {
-                    return Ok(());
-                }
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingVisible {
-                    create,
-                    show,
-                    hidden_generation,
-                    hidden_inventory_generation,
-                    hidden_coordinate_generation,
-                    hidden_coordinate_observation_generation,
-                    acknowledged_generation: observation.generation(),
-                    acknowledged_inventory_generation: observation.inventory_generation(),
-                    acknowledged_coordinate_generation: coordinate_generation,
-                    acknowledged_coordinate_observation_generation:
-                        coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    show_emitted_inventory_generation,
-                    pre_show,
-                };
-            }
-            NativeCreatePhase::AwaitingVisible {
-                create,
-                show,
-                hidden_generation,
-                hidden_inventory_generation,
-                hidden_coordinate_generation,
-                hidden_coordinate_observation_generation,
-                acknowledged_generation,
-                acknowledged_inventory_generation,
-                acknowledged_coordinate_generation,
-                acknowledged_coordinate_observation_generation,
-                create_emitted_inventory_generation,
-                show_emitted_inventory_generation,
-                pre_show,
-            } if observation.generation() > acknowledged_generation
-                && observation.inventory_generation() > acknowledged_inventory_generation
-                && observation.known_state() == Some(WindowPresentationState::Visible)
-                && self.presentation_observation_is_after_emission(observation, show) =>
-            {
-                let visibility = NativeVisibilityProof {
-                    binding,
-                    create,
-                    show,
-                    hidden_generation,
-                    hidden_inventory_generation,
-                    hidden_coordinate_generation,
-                    hidden_coordinate_observation_generation,
-                    acknowledged_generation,
-                    acknowledged_inventory_generation,
-                    acknowledged_coordinate_generation,
-                    acknowledged_coordinate_observation_generation,
-                    visible_generation: observation.generation(),
-                    visible_inventory_generation: observation.inventory_generation(),
-                    visible_coordinate_generation: coordinate_generation,
-                    visible_coordinate_observation_generation: coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    show_emitted_inventory_generation,
-                    pre_show,
-                };
-                let presentation = self.mint_native_staging_presentation(
-                    saga_id,
-                    binding,
-                    NativeStagingPresentationPhase::PostShow,
-                    provider,
-                    observation.generation(),
-                    coordinate_generation,
-                )?;
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingPostShowPresentation {
-                    visibility,
-                    presentation,
-                };
-            }
-            NativeCreatePhase::AwaitingPostShowPresentation {
-                mut visibility,
-                presentation,
-            } if observation.known_state() == Some(WindowPresentationState::Visible)
-                && self
-                    .presentation_observation_is_after_emission(observation, visibility.show)
-                && (presentation.basis().platform_provider() != provider
-                    || presentation.basis().presentation_observation_generation()
-                        != observation.generation()
-                    || presentation.basis().coordinate_generation() != coordinate_generation) =>
-            {
-                visibility.visible_generation = observation.generation();
-                visibility.visible_inventory_generation = observation.inventory_generation();
-                visibility.visible_coordinate_generation = coordinate_generation;
-                visibility.visible_coordinate_observation_generation =
-                    coordinate_observation_generation;
-                let presentation = self.mint_native_staging_presentation(
-                    saga_id,
-                    binding,
-                    NativeStagingPresentationPhase::PostShow,
-                    provider,
-                    observation.generation(),
-                    coordinate_generation,
-                )?;
-                self.native_creates
-                    .sagas
-                    .get_mut(&saga_id)
-                    .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingPostShowPresentation {
-                    visibility,
-                    presentation,
-                };
-            }
-            NativeCreatePhase::AwaitingHidden { .. }
-            | NativeCreatePhase::AwaitingPreShowPresentation { .. }
-            | NativeCreatePhase::AwaitingShowAcknowledgement { .. }
-            | NativeCreatePhase::AwaitingVisible { .. }
-            | NativeCreatePhase::AwaitingPostShowPresentation { .. }
-            | NativeCreatePhase::AwaitingOwnershipTransfer { .. }
-            | NativeCreatePhase::AwaitingFirstLivePresentation { .. } => {}
+        let owner = NativeStagingOwner::native_create(saga_id, saga.resource)
+            .ok_or(ViewportCoordinatorError::InvalidNativeStagingResource { saga: saga_id })?;
+        if let Some(next) = self.reduce_ready_native_bringup(provider, binding, owner, phase)? {
+            self.native_creates
+                .sagas
+                .get_mut(&saga_id)
+                .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
+                .phase = next.into();
         }
         Ok(())
     }
@@ -803,101 +571,48 @@ impl ViewportCoordinator {
         if request.authority_domain() != self.authority_domain {
             return Ok(None);
         }
-        let saga_id = request.saga();
+        match request.owner() {
+            NativeStagingOwner::NativeCreate { .. } => {
+                self.observe_native_create_staging_presentation(presented)
+            }
+            NativeStagingOwner::RecoveryReplacement { .. } => {
+                self.observe_recovery_staging_presentation(presented)
+            }
+        }
+    }
+
+    fn observe_native_create_staging_presentation(
+        &mut self,
+        presented: PresentedNativeStagingPresentation,
+    ) -> Result<Option<ViewportLifecycleAction>, ViewportCoordinatorError> {
+        let request = presented.request();
+        if !self.native_staging_presentation_is_current(request) {
+            return Ok(None);
+        }
+        let NativeStagingOwner::NativeCreate { resource } = request.owner() else {
+            return Ok(None);
+        };
+        let saga_id = resource.saga();
         let Some(saga) = self.native_creates.sagas.get(&saga_id) else {
             return Ok(None);
         };
-        if saga.binding != request.binding()
-            || saga.resource != request.resource()
-            || !self.native_staging_presentation_is_current(request)
-        {
+        let Some(phase) = saga.phase.bringup() else {
             return Ok(None);
-        }
-        let phase = saga.phase;
+        };
         let prepared = saga.prepared.clone();
         let binding = saga.binding;
-        let current = self
-            .registry
-            .record(binding.surface())
-            .filter(|record| record.binding() == binding);
-
-        match phase {
-            NativeCreatePhase::AwaitingPreShowPresentation {
-                create,
-                hidden_generation,
-                hidden_inventory_generation,
-                hidden_coordinate_generation,
-                hidden_coordinate_observation_generation,
-                create_emitted_inventory_generation,
-                presentation,
-            } if presentation == request
-                && request.phase() == NativeStagingPresentationPhase::PreShow =>
-            {
-                let Some(record) = current else {
-                    return Ok(None);
-                };
-                let Some(observation) = record.presentation_observation() else {
-                    return Ok(None);
-                };
-                if observation.known_state() != Some(WindowPresentationState::Hidden)
-                    || observation.generation() != hidden_generation
-                    || observation.inventory_generation() < hidden_inventory_generation
-                    || record.coordinate_generation() != hidden_coordinate_generation
-                    || record.coordinate_observation_generation()
-                        < Some(hidden_coordinate_observation_generation)
-                {
-                    return Ok(None);
-                }
-                let show = self
-                    .effects
-                    .request(PlatformEffect::ShowWindow {
-                        binding,
-                        after_hidden: hidden_generation,
-                        after_pre_show: presented,
-                    })
-                    .map_err(ViewportCoordinatorError::Effect)?;
+        let owner = request.owner();
+        match self.observe_native_bringup_presentation(binding, owner, phase, presented)? {
+            NativeBringupPresentationOutcome::Ignored => Ok(None),
+            NativeBringupPresentationOutcome::Advanced(next) => {
                 self.native_creates
                     .sagas
                     .get_mut(&saga_id)
                     .ok_or(ViewportCoordinatorError::MissingCreateSaga { saga: saga_id })?
-                    .phase = NativeCreatePhase::AwaitingShowAcknowledgement {
-                    create,
-                    show,
-                    hidden_generation,
-                    hidden_inventory_generation,
-                    hidden_coordinate_generation,
-                    hidden_coordinate_observation_generation,
-                    create_emitted_inventory_generation,
-                    pre_show: presented,
-                };
+                    .phase = next.into();
                 Ok(None)
             }
-            NativeCreatePhase::AwaitingPostShowPresentation {
-                visibility,
-                presentation,
-            } if presentation == request
-                && request.phase() == NativeStagingPresentationPhase::PostShow
-                && visibility.pre_show.resource() == presented.resource() =>
-            {
-                let Some(record) = current else {
-                    return Ok(None);
-                };
-                let Some(observation) = record.presentation_observation() else {
-                    return Ok(None);
-                };
-                if observation.known_state() != Some(WindowPresentationState::Visible)
-                    || observation.generation() != visibility.visible_generation
-                    || observation.inventory_generation() < visibility.visible_inventory_generation
-                    || record.coordinate_generation() != visibility.visible_coordinate_generation
-                    || record.coordinate_observation_generation()
-                        < Some(visibility.visible_coordinate_observation_generation)
-                {
-                    return Ok(None);
-                }
-                let proof = NativeVisibleProof {
-                    visibility,
-                    post_show: presented,
-                };
+            NativeBringupPresentationOutcome::Ready(proof) => {
                 self.native_creates
                     .sagas
                     .get_mut(&saga_id)
@@ -909,48 +624,79 @@ impl ViewportCoordinator {
                     proof,
                 }))
             }
-            NativeCreatePhase::AwaitingHidden { .. }
-            | NativeCreatePhase::AwaitingPreShowPresentation { .. }
-            | NativeCreatePhase::AwaitingShowAcknowledgement { .. }
-            | NativeCreatePhase::AwaitingVisible { .. }
-            | NativeCreatePhase::AwaitingPostShowPresentation { .. }
-            | NativeCreatePhase::AwaitingOwnershipTransfer { .. }
-            | NativeCreatePhase::AwaitingFirstLivePresentation { .. } => Ok(None),
         }
     }
 
-    fn presentation_observation_settles(
-        &self,
-        observation: WindowPresentationObservation,
-        effect: EffectId,
-    ) -> bool {
-        observation.acknowledges(effect)
-            && self.presentation_observation_is_after_emission(observation, effect)
-    }
-
-    fn presentation_observation_is_after_emission(
-        &self,
-        observation: WindowPresentationObservation,
-        effect: EffectId,
-    ) -> bool {
-        self.effects.record(effect).is_some_and(|record| {
-            record.request().effect().binding() == observation.binding()
-                && record
-                    .emitted_inventory_generation()
-                    .is_some_and(|emitted| observation.inventory_generation() > emitted)
-        })
-    }
-
-    fn effect_emission_fence(
-        &self,
-        effect: EffectId,
-        binding: ViewportBinding,
-    ) -> Option<InventoryGeneration> {
-        self.effects.record(effect).and_then(|record| {
-            (record.request().effect().binding() == binding)
-                .then(|| record.emitted_inventory_generation())
-                .flatten()
-        })
+    fn observe_recovery_staging_presentation(
+        &mut self,
+        presented: PresentedNativeStagingPresentation,
+    ) -> Result<Option<ViewportLifecycleAction>, ViewportCoordinatorError> {
+        let request = presented.request();
+        if !self.native_staging_presentation_is_current(request) {
+            return Ok(None);
+        }
+        let NativeStagingOwner::RecoveryReplacement {
+            destroyed_binding,
+            recovery_obligation,
+            retained_resource,
+        } = request.owner()
+        else {
+            return Ok(None);
+        };
+        let surface = destroyed_binding.surface();
+        let Some(pending) = self.recovery_replacements.pending(surface) else {
+            return Ok(None);
+        };
+        let Some(phase) = pending.bringup_phase() else {
+            return Ok(None);
+        };
+        let binding = request.binding();
+        match self.observe_native_bringup_presentation(
+            binding,
+            request.owner(),
+            phase,
+            presented,
+        )? {
+            NativeBringupPresentationOutcome::Ignored => Ok(None),
+            NativeBringupPresentationOutcome::Advanced(next) => {
+                self.recovery_replacements
+                    .update_bringup(binding, phase, next)
+                    .map_err(super::recovery_replacement_error)?;
+                Ok(None)
+            }
+            NativeBringupPresentationOutcome::Ready(proof) => {
+                if !self.replacement_is_admissible(binding) {
+                    return Ok(None);
+                }
+                let mut staging_resources = self.native_staging_resources.clone();
+                let mut recovery_replacements = self.recovery_replacements.clone();
+                if let Some(resource) = retained_resource {
+                    staging_resources
+                        .transition(
+                            resource,
+                            NativeStagingResourceOwner::SurfaceRecovery {
+                                obligation: recovery_obligation,
+                                binding: destroyed_binding,
+                            },
+                            NativeStagingResourceOwner::RecoveryReplacementFirstLive {
+                                obligation: recovery_obligation,
+                                binding,
+                            },
+                        )
+                        .map_err(ViewportCoordinatorError::from)?;
+                }
+                recovery_replacements
+                    .mark_awaiting_first_live(binding, phase, proof)
+                    .map_err(super::recovery_replacement_error)?;
+                self.native_staging_resources = staging_resources;
+                self.recovery_replacements = recovery_replacements;
+                Ok(Some(ViewportLifecycleAction::RecoveryReplacementReady {
+                    destroyed_binding,
+                    replacement_binding: binding,
+                    recovery_obligation,
+                }))
+            }
+        }
     }
 
     pub(crate) fn transfer_native_create(
@@ -969,8 +715,8 @@ impl ViewportCoordinator {
         let visibility = proof.visibility;
         if proof != expected
             || visibility.binding != saga.binding
-            || proof.resource() != saga.resource
-            || visibility.pre_show.resource() != saga.resource
+            || proof.retained_resource() != Some(saga.resource)
+            || visibility.pre_show.retained_resource() != Some(saga.resource)
             || visibility.visible_generation <= visibility.acknowledged_generation
             || visibility.acknowledged_generation <= visibility.hidden_generation
             // Coordinate generations are geometry-authority generations, not
@@ -998,10 +744,7 @@ impl ViewportCoordinator {
         {
             return Err(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id });
         }
-        if !self.native_staging_basis_matches_current(
-            proof.post_show.request(),
-            WindowPresentationState::Visible,
-        ) {
+        if !self.native_staging_basis_matches_current(proof.post_show.request()) {
             return Err(ViewportCoordinatorError::CreateSagaNotReady { saga: saga_id });
         }
         let binding = saga.binding;

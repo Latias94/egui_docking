@@ -43,7 +43,7 @@ pub(super) trait EguiEngineOwner {
 
     fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: BackendIngressDrainReceipt,
+        drained: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError>;
 
     fn finish_backend_ingress_provider_replacement(
@@ -194,7 +194,7 @@ impl EguiEngineOwner for DockEngine {
 
     fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: BackendIngressDrainReceipt,
+        drained: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         DockEngine::begin_backend_ingress_provider_replacement(self, drained)
     }
@@ -298,7 +298,7 @@ impl EguiEngineOwner for DockspaceDocumentSession {
 
     fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: BackendIngressDrainReceipt,
+        drained: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         self.adapter_begin_backend_ingress_provider_replacement(drained)
     }

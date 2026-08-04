@@ -418,26 +418,6 @@ impl EguiPointerInput {
         self.provider
     }
 
-    pub(crate) fn scope_changed(
-        &self,
-        context: &Context,
-        viewport: ViewportId,
-        surface: SurfaceId,
-        workspace_epoch: WorkspaceEpoch,
-    ) -> bool {
-        let Some(binding) = self.binding.as_ref() else {
-            return self.provider.is_some();
-        };
-        self.provider.is_some()
-            && (binding.viewport.is_some_and(|bound| bound != viewport)
-                || binding.surface != surface
-                || binding.workspace_epoch != workspace_epoch
-                || binding
-                    .context
-                    .as_ref()
-                    .is_some_and(|bound| !bound.eq(context)))
-    }
-
     pub(crate) fn scope_changed_unbound(
         &self,
         surface: SurfaceId,

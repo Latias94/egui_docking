@@ -1502,16 +1502,21 @@ impl DockEngine {
                                     continue;
                                 }
                             };
+                            let Some(resource) = proof.retained_resource() else {
+                                return Err(EngineError::ReductionCauseInvariant {
+                                    detail: "native create proof lost its retained staging resource",
+                                });
+                            };
                             publication.bound_surface_recoveries.insert(
                                 surface,
                                 BoundSurfaceRecovery::new(binding, obligation.clone())
-                                    .retaining_staging_resource(proof.resource()),
+                                    .retaining_staging_resource(resource),
                             );
                             self.native_admission
                                 .register_transfer(
                                     *saga,
                                     binding,
-                                    proof.resource(),
+                                    resource,
                                     self.presentation_authority.last_presentation_output_serial,
                                     source_vacancy,
                                 )

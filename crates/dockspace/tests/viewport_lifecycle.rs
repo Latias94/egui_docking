@@ -47,6 +47,7 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::PresentationHitRegionKind;
+use dockspace::presentation_observation::NativeStagingPresentationPhase;
 use dockspace::scene::SurfaceScene;
 use dockspace::surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
@@ -783,14 +784,38 @@ fn current_platform_snapshot(
             .presentation_observation()
             .and_then(WindowPresentationObservation::known_state)
             .unwrap_or(WindowPresentationState::Visible);
-        let acknowledged_effect =
-            fixture
-                .engine
-                .viewport()
-                .native_create_sagas()
-                .find_map(|(_, saga)| {
-                    (saga.binding() == binding).then(|| saga.phase().acknowledged_effect())
-                });
+        let acknowledged_effect = fixture
+            .engine
+            .viewport()
+            .native_create_sagas()
+            .find_map(|(_, saga)| {
+                (saga.binding() == binding).then(|| saga.phase().presentation_correlation_effect())
+            })
+            .or_else(|| {
+                let pending = fixture
+                    .engine
+                    .viewport()
+                    .recovery_pending(binding.surface())?;
+                (pending.replacement_binding() == Some(binding))
+                    .then(|| match pending.status() {
+                        RecoveryPendingStatus::ReplacementRequested { replacement }
+                        | RecoveryPendingStatus::ReplacementIndeterminate { replacement }
+                        | RecoveryPendingStatus::AwaitingPreShowPresentation { replacement } => {
+                            Some(replacement)
+                        }
+                        RecoveryPendingStatus::AwaitingShowAcknowledgement { show, .. }
+                        | RecoveryPendingStatus::AwaitingVisible { show, .. }
+                        | RecoveryPendingStatus::AwaitingPostShowPresentation { show, .. } => {
+                            Some(show)
+                        }
+                        RecoveryPendingStatus::AwaitingRecoveryHost
+                        | RecoveryPendingStatus::ReplacementFailed { .. }
+                        | RecoveryPendingStatus::ReplacementProviderLost { .. }
+                        | RecoveryPendingStatus::AwaitingFirstLivePresentation
+                        | RecoveryPendingStatus::CompensatingReplacement { .. } => None,
+                    })
+                    .flatten()
+            });
         *window = window
             .clone()
             .with_presentation_observation(WindowPresentationObservation::new(
@@ -1467,6 +1492,24 @@ fn native_window_with_coordinate_generation(
     ))
 }
 
+fn recovery_replacement_window(
+    binding: ViewportBinding,
+    presentation: WindowPresentationState,
+) -> ObservedWindow {
+    observed_window(
+        binding,
+        CoordinateObservationGeneration::new(1),
+        1_800.0,
+        WindowInputState::ReceivesInput,
+    )
+    .with_presentation_observation(WindowPresentationObservation::new(
+        binding,
+        PresentationObservationGeneration::new(0),
+        Authority::Known(presentation),
+        PresentationEffectAcknowledgement::known(None),
+    ))
+}
+
 fn native_close_edge_from(transition: &EngineTransition) -> NativeCloseEdge {
     transition
         .reduced_inputs()
@@ -1562,7 +1605,7 @@ fn advance_native_create_to_ownership_transfer(
                         after_pre_show,
                         ..
                     } if *binding == request.binding()
-                        && after_pre_show.resource() == pre_show.resource()
+                        && after_pre_show.retained_resource() == pre_show.retained_resource()
                 )
             })
     );
@@ -1696,7 +1739,7 @@ fn defer_transferred_native_recovery(
     assert_eq!(
         pending.status(),
         RecoveryPendingStatus::ReplacementRequested {
-            effect: replacement.id()
+            replacement: replacement.id()
         }
     );
 
@@ -2191,6 +2234,21 @@ fn native_ownership_transfer_waits_for_the_exact_first_live_target_output() {
                 )
             })
     );
+    let first_live_frame = fixture.presentation_host.begin(&fixture.engine);
+    assert!(
+        first_live_frame
+            .surfaces()
+            .any(|surface| surface == SURFACE_NATIVE),
+        "ordinary native create must restore its live slot before awaiting first-live output",
+    );
+    assert!(
+        first_live_frame
+            .view()
+            .begin_surface_contribution(SURFACE_NATIVE)
+            .is_ok(),
+        "first-live surface measurement must not be suppressed by recovery bring-up",
+    );
+    drop(first_live_frame);
 
     publish_surface_for_fixture(
         &mut fixture,
@@ -2514,7 +2572,8 @@ fn delayed_retry_recovery_releases_transferred_native_staging_resource() {
             .expect("failed replacement must retain delayed recovery")
             .status(),
         RecoveryPendingStatus::ReplacementFailed {
-            effect: replacement_effect
+            replacement: replacement_effect,
+            failed: replacement_effect,
         }
     );
     assert!(retained_native_staging_resource_is_visible(
@@ -2575,19 +2634,56 @@ fn visible_recovery_replacement_retains_resource_until_exact_first_live_presenta
     let (mut fixture, request, resource) = transferred_child_source_awaiting_first_live();
     let (_, replacement_binding) = defer_transferred_native_recovery(&mut fixture, request);
 
-    publish_windows!(
+    let hidden = publish_windows!(
         &mut fixture,
         vec![
             source_window(&fixture),
             unavailable_host_window(&fixture),
-            observed_window(
-                replacement_binding,
-                CoordinateObservationGeneration::new(1),
-                1_800.0,
-                WindowInputState::ReceivesInput,
-            ),
+            recovery_replacement_window(replacement_binding, WindowPresentationState::Hidden,),
         ],
     );
+    assert!(platform_effects(&fixture, &hidden).is_empty());
+    let pre_show = support::present_requested_native_staging(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        replacement_binding,
+        NativeStagingPresentationPhase::PreShow,
+    );
+    assert!(
+        platform_effects(&fixture, &pre_show)
+            .iter()
+            .any(|emission| {
+                matches!(
+                    emission.effect(),
+                    PlatformEffect::ShowWindow { binding, .. } if *binding == replacement_binding
+                )
+            })
+    );
+    let acknowledged = publish_windows!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            unavailable_host_window(&fixture),
+            recovery_replacement_window(replacement_binding, WindowPresentationState::Hidden,),
+        ],
+    );
+    assert!(platform_effects(&fixture, &acknowledged).is_empty());
+    let visible = publish_windows!(
+        &mut fixture,
+        vec![
+            source_window(&fixture),
+            unavailable_host_window(&fixture),
+            recovery_replacement_window(replacement_binding, WindowPresentationState::Visible,),
+        ],
+    );
+    assert!(platform_effects(&fixture, &visible).is_empty());
+    let post_show = support::present_requested_native_staging(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        replacement_binding,
+        NativeStagingPresentationPhase::PostShow,
+    );
+    assert!(platform_effects(&fixture, &post_show).is_empty());
     let pending = fixture
         .engine
         .viewport()

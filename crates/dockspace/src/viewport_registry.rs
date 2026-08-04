@@ -473,22 +473,6 @@ impl ViewportRegistry {
 
     /// Registers an externally owned replacement that must remain non-authoritative until its
     /// exact visible presentation proof arrives.
-    pub(crate) fn register_existing_pending(
-        &mut self,
-        epoch: WorkspaceEpoch,
-        surface: SurfaceId,
-        token: WindowToken,
-        role: ViewportRole,
-    ) -> Result<ViewportBinding, ViewportRegistryError> {
-        self.register_existing_with_admission(
-            epoch,
-            surface,
-            token,
-            role,
-            ViewportAdmission::Pending,
-        )
-    }
-
     fn register_existing_with_admission(
         &mut self,
         epoch: WorkspaceEpoch,

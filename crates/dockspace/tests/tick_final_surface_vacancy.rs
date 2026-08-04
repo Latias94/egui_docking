@@ -191,7 +191,7 @@ impl NativeVacancyFixture {
                 .native_create_saga(request.saga())
                 .expect("native saga remains queryable")
                 .phase();
-            let acknowledged_effect = phase.acknowledged_effect();
+            let acknowledged_effect = phase.presentation_correlation_effect();
             windows.push(
                 observed_native_window(request, generation).with_presentation_observation(
                     WindowPresentationObservation::new(

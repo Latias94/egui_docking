@@ -15,6 +15,7 @@ use dockspace::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     WindowInventoryObservation, WorkAreaRosterObservation,
 };
+use dockspace::presentation_observation::NativeStagingPresentationPhase;
 use dockspace::presentation_observation::{
     HostInteractionPresentation, HostPresentationCaptureGeneration, HostPresentationEmission,
     HostPresentationObservation, HostPresentationObservationEntry,
@@ -30,6 +31,7 @@ use dockspace::scene_manifest::{
 };
 use dockspace::transition::{EngineTransition, PresentationHostRetirementOutcome};
 use dockspace::transition::{InputPriority, SurfaceContributionOutcome};
+use dockspace::viewport::ViewportBinding;
 use dockspace::viewport::{
     CapabilityObservationGeneration, InventoryObservationGeneration, WorkAreaObservationGeneration,
 };
@@ -799,8 +801,12 @@ impl TestInputStream {
         input: EngineInput,
     ) -> Result<EngineTransition, EngineError> {
         let mut frame = host.begin(engine);
-        self.append(&mut frame, input)
-            .expect("test host-frame input must be structurally valid");
+        if let Err(error) = self.append(&mut frame, input) {
+            panic!(
+                "test host-frame input must be structurally valid: {error:?}; reduction: {:?}",
+                frame.input_prefix_error()
+            );
+        }
         complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
         Ok(host.finish(frame, engine))
     }
@@ -1053,7 +1059,32 @@ pub fn present_native_staging(
     host: &mut TestPresentationHost,
     presentation: NativeStagingPresentation,
 ) -> EngineTransition {
-    let mut paint_frame = host.begin(engine);
+    let paint_frame = host.begin(engine);
+    present_native_staging_in_frame(engine, host, paint_frame, presentation)
+}
+
+/// Paints the current staging request for one exact native binding and phase.
+pub fn present_requested_native_staging(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    binding: ViewportBinding,
+    phase: NativeStagingPresentationPhase,
+) -> EngineTransition {
+    let paint_frame = host.begin(engine);
+    let presentation = paint_frame
+        .view()
+        .native_staging_presentations()
+        .find(|presentation| presentation.binding() == binding && presentation.phase() == phase)
+        .expect("the exact native staging request must be current");
+    present_native_staging_in_frame(engine, host, paint_frame, presentation)
+}
+
+fn present_native_staging_in_frame(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    mut paint_frame: CoreHostFrame,
+    presentation: NativeStagingPresentation,
+) -> EngineTransition {
     assert!(
         paint_frame
             .view()

@@ -1034,7 +1034,7 @@ fn background_native_window_snapshot_with_focus(
         .engine
         .viewport()
         .native_create_saga(request.saga())
-        .map(|saga| saga.phase().acknowledged_effect());
+        .map(|saga| saga.phase().presentation_correlation_effect());
     let native = ObservedWindow::new(request.binding())
         .with_coordinate_observation(WindowCoordinateObservation::new(
             request.binding(),
