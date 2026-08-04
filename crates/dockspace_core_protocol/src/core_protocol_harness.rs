@@ -3889,6 +3889,7 @@ const fn compile_scroll_phase(phase: ScrollPhaseSpec) -> ScrollPhase {
 const fn compile_scroll_cancel_reason(reason: ScrollCancelReasonSpec) -> ScrollCancelReason {
     match reason {
         ScrollCancelReasonSpec::PlatformCancelled => ScrollCancelReason::PlatformCancelled,
+        ScrollCancelReasonSpec::BindingRetired => ScrollCancelReason::BindingRetired,
         ScrollCancelReasonSpec::DeviceRemoved => ScrollCancelReason::DeviceRemoved,
         ScrollCancelReasonSpec::ProviderReset => ScrollCancelReason::ProviderReset,
     }
@@ -4494,6 +4495,7 @@ const fn observe_scroll_phase(phase: ScrollPhase) -> ScrollPhaseSpec {
 const fn observe_scroll_cancel_reason(reason: ScrollCancelReason) -> ScrollCancelReasonSpec {
     match reason {
         ScrollCancelReason::PlatformCancelled => ScrollCancelReasonSpec::PlatformCancelled,
+        ScrollCancelReason::BindingRetired => ScrollCancelReasonSpec::BindingRetired,
         ScrollCancelReason::DeviceRemoved => ScrollCancelReasonSpec::DeviceRemoved,
         ScrollCancelReason::ProviderReset => ScrollCancelReasonSpec::ProviderReset,
     }

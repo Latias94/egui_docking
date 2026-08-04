@@ -166,6 +166,7 @@ impl DockEngine {
             predecessor_tick,
             presentation_host_frontier,
             platform_provider_frontier,
+            runtime_retention_revision,
             tick,
             admission_surface_scope,
             frozen_presentation_roster,
@@ -229,6 +230,17 @@ impl DockEngine {
             return Err(EngineError::HostFrameAuthorityDomainMismatch {
                 expected: self.authority_domain,
                 submitted: authority_domain,
+            });
+        }
+        if candidate.runtime_retention_revision != runtime_retention_revision {
+            return Err(EngineError::ReductionCauseInvariant {
+                detail: "sealed host-frame candidate does not match its retention revision",
+            });
+        }
+        if runtime_retention_revision != self.runtime_retention_revision {
+            return Err(EngineError::HostFrameRuntimeRetentionStale {
+                submitted: runtime_retention_revision,
+                current: self.runtime_retention_revision,
             });
         }
         let current_host_frontier = self.presentation_authority.presentation.host_frontier();
@@ -385,7 +397,7 @@ impl DockEngine {
                 submitted: submitted_contribution_surfaces.into_iter().collect(),
             });
         }
-        let fence = self.host_frame_commit_fence();
+        let fence = self.host_frame_commit_fence(runtime_retention_revision);
         let (candidate, transition) = self.reduce_tick_candidate(
             candidate,
             tick,
@@ -414,7 +426,7 @@ impl DockEngine {
         })
     }
 
-    fn host_frame_commit_fence(&self) -> HostFrameCommitFence {
+    fn host_frame_commit_fence(&self, runtime_retention_revision: u64) -> HostFrameCommitFence {
         HostFrameCommitFence {
             authority_domain: self.authority_domain,
             predecessor_tick: self.last_reducer_tick,
@@ -427,6 +439,7 @@ impl DockEngine {
             platform_provider_frontier: self.viewport.platform_provider_frontier(),
             pointer_provider: self.pointer_journal.active_lease(),
             backend_ingress: self.backend_ingress.active(),
+            runtime_retention_revision,
         }
     }
 
@@ -477,6 +490,12 @@ impl DockEngine {
                 ingress,
                 platform: self.platform_provider(),
                 pointer: current_pointer_provider,
+            });
+        }
+        if fence.runtime_retention_revision != self.runtime_retention_revision {
+            return Err(EngineError::HostFrameRuntimeRetentionStale {
+                submitted: fence.runtime_retention_revision,
+                current: self.runtime_retention_revision,
             });
         }
         let current_requirements = self

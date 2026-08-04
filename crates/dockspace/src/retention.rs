@@ -8,9 +8,11 @@ use crate::presentation_observation::{HostFrameKey, HostPresentationStreamId};
 ///
 /// This enum is not a proof or a compaction capability. These barriers are protocol facts, not
 /// timers or capacity policies. Joined backend replacement discharges pointer, effect-provider,
-/// and platform-observation barriers by consuming the sole recorder. Published terminal effect
-/// and close detail is compacted on the next atomic engine candidate; monotonic identity frontiers
-/// continue to classify late replay without retaining the payload.
+/// and every remaining platform-observation barrier by consuming the sole recorder. A long-lived
+/// joined provider may release one destroyed binding earlier through a core-committed affine
+/// prefix-retirement receipt. Published terminal effect and close detail is compacted on the next
+/// atomic engine candidate; monotonic identity frontiers continue to classify late replay without
+/// retaining the payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RuntimeRetentionReleaseBarrier {
     /// The retired effect producer is quiescent, allowing its provider guard to be released.
@@ -18,6 +20,10 @@ pub enum RuntimeRetentionReleaseBarrier {
     /// The producer was joined and no prepared journal for the retired lease can still commit.
     PointerIngressQuiesced,
     /// No accepted platform snapshot can still contain facts for the destroyed binding.
+    ///
+    /// This is proven either by complete provider drain or by one binding-scoped quiescence record
+    /// entering a reclaimed, core-committed backend prefix. Snapshot absence, generation advance,
+    /// and elapsed frames are not evidence.
     PlatformObservationIngressQuiesced,
 }
 

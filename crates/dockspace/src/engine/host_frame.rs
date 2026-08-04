@@ -290,6 +290,7 @@ impl DockEngine {
             .surfaces()
             .map(|(surface, _)| surface)
             .collect::<BTreeSet<_>>();
+        let runtime_retention_revision = self.runtime_retention_revision;
         let mut candidate = self.candidate();
         let mut vacancy_ledger = TickVacancyLedger::capture(&candidate);
         let tick = candidate
@@ -374,6 +375,7 @@ impl DockEngine {
             prelude,
             candidate,
             tick,
+            runtime_retention_revision,
             admission_workspace,
             admission_requirements,
             admission_surface_scope,
@@ -811,6 +813,7 @@ impl CoreHostFrame {
         prelude: CoreHostFramePrelude,
         candidate: DockEngine,
         tick: ReducerTickId,
+        runtime_retention_revision: u64,
         admission_workspace: WorkspaceVersion,
         admission_requirements: RequirementRevision,
         admission_surface_scope: BTreeSet<SurfaceId>,
@@ -916,6 +919,7 @@ impl CoreHostFrame {
             predecessor_tick,
             presentation_host_frontier,
             platform_provider_frontier,
+            runtime_retention_revision,
             tick,
             admission_surface_scope,
             frozen_presentation_roster,
@@ -1137,6 +1141,10 @@ impl CoreHostFrame {
                             snapshot,
                         },
                     )?;
+                }
+                BackendIngressPayload::PlatformBindingQuiesced { .. } => {
+                    // This is an adapter-retention fact, not a semantic mutation. The recorder
+                    // turns it into an affine proof only after this complete batch commits.
                 }
                 BackendIngressPayload::NativeCloseObservation {
                     expected_epoch,

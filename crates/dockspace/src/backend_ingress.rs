@@ -20,7 +20,7 @@ use crate::pointer_journal::{
 use crate::presentation_observation::{HostPresentationObservationEntry, PresentationHostLease};
 use crate::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use crate::transition::WorkspaceVersion;
-use crate::viewport::{ViewportRole, WindowToken};
+use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
 
 /// Opaque capture position in one backend ingress provider lifetime.
 ///
@@ -44,6 +44,25 @@ impl BackendIngressOrdinal {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+/// Non-reused identity of one recorder append, independent of rollback ordinals.
+///
+/// Rollback may reuse a public capture position, but it must never make a
+/// different payload indistinguishable from the immutable batch which core
+/// already committed at that position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct BackendIngressRecordIdentity(u64);
+
+impl BackendIngressRecordIdentity {
+    const ORIGIN: Self = Self(0);
+
+    const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
     }
 }
 
@@ -90,6 +109,76 @@ impl BackendIngressDrainReceipt {
     #[must_use]
     pub const fn pointer_through(&self) -> PointerEdgeSequence {
         self.pointer_through
+    }
+}
+
+/// Affine proof that one recorder prefix has been reclaimed after core commit.
+///
+/// Binding quiescence facts inside this prefix are safe to apply only while the
+/// engine remains at the receipt's opaque commit boundary. The receipt remains reusable
+/// after a failed settlement and becomes consumed only after the engine publishes
+/// every associated retention update atomically. Prefixes without binding
+/// quiescence remain allocation-free and do not require engine settlement.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "a reclaimed backend prefix must be settled with its core authority"]
+pub struct BackendIngressPrefixRetirementReceipt {
+    authority: Option<BackendIngressPrefixRetirementAuthority>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BackendIngressPrefixRetirementAuthority {
+    lease: BackendIngressLease,
+    through: BackendIngressOrdinal,
+    binding_quiescences: Vec<ViewportBinding>,
+}
+
+impl BackendIngressPrefixRetirementReceipt {
+    fn new(
+        lease: BackendIngressLease,
+        through: BackendIngressOrdinal,
+        binding_quiescences: Vec<ViewportBinding>,
+    ) -> Self {
+        Self {
+            authority: Some(BackendIngressPrefixRetirementAuthority {
+                lease,
+                through,
+                binding_quiescences,
+            }),
+        }
+    }
+
+    pub(crate) const fn lease(&self) -> Option<BackendIngressLease> {
+        match &self.authority {
+            Some(authority) => Some(authority.lease),
+            None => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn through(&self) -> Option<BackendIngressOrdinal> {
+        match &self.authority {
+            Some(authority) => Some(authority.through),
+            None => None,
+        }
+    }
+
+    pub(crate) fn binding_quiescences(&self) -> &[ViewportBinding] {
+        self.authority
+            .as_ref()
+            .map_or(&[], |authority| &authority.binding_quiescences)
+    }
+
+    fn authority(&self) -> Result<&BackendIngressPrefixRetirementAuthority, BackendIngressError> {
+        self.authority
+            .as_ref()
+            .ok_or(BackendIngressError::PrefixRetirementReceiptConsumed)
+    }
+
+    pub(crate) fn consume(&mut self) -> Result<(), BackendIngressError> {
+        self.authority
+            .take()
+            .map(|_| ())
+            .ok_or(BackendIngressError::PrefixRetirementReceiptConsumed)
     }
 }
 
@@ -163,11 +252,20 @@ impl BackendIngressProviderReplacementTicket {
 pub struct BackendIngressCommitWatermark {
     lease: BackendIngressLease,
     through: BackendIngressOrdinal,
+    record_identity: BackendIngressRecordIdentity,
 }
 
 impl BackendIngressCommitWatermark {
-    pub(crate) const fn new(lease: BackendIngressLease, through: BackendIngressOrdinal) -> Self {
-        Self { lease, through }
+    const fn new(
+        lease: BackendIngressLease,
+        through: BackendIngressOrdinal,
+        record_identity: BackendIngressRecordIdentity,
+    ) -> Self {
+        Self {
+            lease,
+            through,
+            record_identity,
+        }
     }
 
     /// Returns the exact provider pair which committed this prefix.
@@ -260,6 +358,15 @@ pub enum BackendIngressPayload {
         /// Complete platform fact envelope captured at this ingress position.
         snapshot: PlatformSnapshot,
     },
+    /// The producer has permanently closed every ingress lane for one exact binding.
+    ///
+    /// This record does not itself release core retention. Reclamation becomes
+    /// authoritative only when the recorder retires a core-committed prefix and
+    /// returns a [`BackendIngressPrefixRetirementReceipt`].
+    PlatformBindingQuiesced {
+        /// Exact core-minted binding which no future producer fact may name.
+        binding: ViewportBinding,
+    },
     /// One exact binding-scoped native-close observation.
     NativeCloseObservation {
         /// Workspace epoch whose binding incarnation the backend observed.
@@ -287,6 +394,7 @@ pub enum BackendIngressPayload {
 pub struct BackendIngressRecord {
     lease: BackendIngressLease,
     ordinal: BackendIngressOrdinal,
+    identity: BackendIngressRecordIdentity,
     payload: BackendIngressPayload,
 }
 
@@ -313,6 +421,7 @@ impl BackendIngressRecord {
 pub struct BackendIngressBatch {
     lease: BackendIngressLease,
     previous: BackendIngressOrdinal,
+    previous_record_identity: BackendIngressRecordIdentity,
     through: BackendIngressOrdinal,
     records: Vec<BackendIngressRecord>,
 }
@@ -321,12 +430,14 @@ impl BackendIngressBatch {
     fn from_records(
         lease: BackendIngressLease,
         previous: BackendIngressOrdinal,
+        previous_record_identity: BackendIngressRecordIdentity,
         through: BackendIngressOrdinal,
         records: Vec<BackendIngressRecord>,
     ) -> Result<Self, BackendIngressError> {
         let batch = Self {
             lease,
             previous,
+            previous_record_identity,
             through,
             records,
         };
@@ -371,10 +482,11 @@ impl BackendIngressBatch {
     }
 
     /// Validates this batch against the engine-owned provider and committed watermark.
-    pub(crate) fn validate_against(
+    fn validate_against(
         &self,
         expected_lease: BackendIngressLease,
         committed_through: BackendIngressOrdinal,
+        committed_record_identity: BackendIngressRecordIdentity,
     ) -> Result<(), BackendIngressError> {
         if self.lease != expected_lease {
             return Err(BackendIngressError::BatchLeaseMismatch {
@@ -386,6 +498,11 @@ impl BackendIngressBatch {
             return Err(BackendIngressError::BatchPreviousMismatch {
                 expected: committed_through,
                 submitted: self.previous,
+            });
+        }
+        if self.previous_record_identity != committed_record_identity {
+            return Err(BackendIngressError::BatchPreviousIdentityMismatch {
+                ordinal: committed_through,
             });
         }
         self.validate_shape()
@@ -432,7 +549,10 @@ impl BackendIngressBatch {
 pub struct BackendIngressRecorder {
     lease: BackendIngressLease,
     retired_through: BackendIngressOrdinal,
+    retired_record_identity: BackendIngressRecordIdentity,
     last_ordinal: BackendIngressOrdinal,
+    /// Monotonic append authority which deliberately does not rewind on rollback.
+    last_record_identity: BackendIngressRecordIdentity,
     pointer_through: PointerEdgeSequence,
     records: Vec<BackendIngressRecord>,
 }
@@ -480,7 +600,9 @@ impl BackendIngressRecorder {
         Ok(Self {
             lease: BackendIngressLease::new(platform, pointer, presentation_host)?,
             retired_through: BackendIngressOrdinal::ORIGIN,
+            retired_record_identity: BackendIngressRecordIdentity::ORIGIN,
             last_ordinal: BackendIngressOrdinal::ORIGIN,
+            last_record_identity: BackendIngressRecordIdentity::ORIGIN,
             pointer_through: pointer_committed_through,
             records: Vec::new(),
         })
@@ -571,6 +693,40 @@ impl BackendIngressRecorder {
             expected_epoch,
             snapshot,
         })
+    }
+
+    /// Records permanent producer quiescence for one exact platform binding.
+    ///
+    /// The caller must first remove every route, callback, and sidecar capable of
+    /// generating a later fact for this binding. A future fact which violates that
+    /// promise is rejected fail-closed by the core after the guard is reclaimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the binding belongs to another engine authority
+    /// domain, the retained prefix already closes the same binding lane, or the
+    /// backend ordinal cannot advance without wrapping.
+    pub fn record_platform_binding_quiescence(
+        &mut self,
+        binding: ViewportBinding,
+    ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        if binding.authority_domain() != self.lease.authority_domain() {
+            return Err(BackendIngressError::BindingQuiescenceAuthorityMismatch {
+                expected: self.lease.authority_domain(),
+                submitted: binding.authority_domain(),
+            });
+        }
+        if self.records.iter().any(|record| {
+            matches!(
+                &record.payload,
+                BackendIngressPayload::PlatformBindingQuiesced {
+                    binding: recorded
+                } if *recorded == binding
+            )
+        }) {
+            return Err(BackendIngressError::DuplicateBindingQuiescence { binding });
+        }
+        self.push(BackendIngressPayload::PlatformBindingQuiesced { binding })
     }
 
     /// Records one exact binding-scoped native-close observation.
@@ -694,6 +850,7 @@ impl BackendIngressRecorder {
         BackendIngressBatch::from_records(
             self.lease,
             self.retired_through,
+            self.retired_record_identity,
             self.last_ordinal,
             self.records.clone(),
         )
@@ -719,20 +876,42 @@ impl BackendIngressRecorder {
                 recorded: self.last_ordinal,
             });
         }
+        let previous_record_identity = if committed_through == self.retired_through {
+            self.retired_record_identity
+        } else {
+            self.records
+                .iter()
+                .find(|record| record.ordinal == committed_through)
+                .map(|record| record.identity)
+                .ok_or(BackendIngressError::CommitWatermarkContentMismatch {
+                    ordinal: committed_through,
+                })?
+        };
         let records = self
             .records
             .iter()
             .filter(|record| record.ordinal > committed_through)
             .cloned()
             .collect();
-        BackendIngressBatch::from_records(self.lease, committed_through, self.last_ordinal, records)
+        BackendIngressBatch::from_records(
+            self.lease,
+            committed_through,
+            previous_record_identity,
+            self.last_ordinal,
+            records,
+        )
     }
 
     /// Reclaims the exact prefix proven committed by the core.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the watermark belongs to another backend lifetime,
+    /// regresses behind the reclaimed prefix, or advances beyond captured input.
     pub fn retire_committed_prefix(
         &mut self,
         committed: BackendIngressCommitWatermark,
-    ) -> Result<(), BackendIngressError> {
+    ) -> Result<Option<BackendIngressPrefixRetirementReceipt>, BackendIngressError> {
         if committed.lease != self.lease {
             return Err(BackendIngressError::CommitWatermarkLeaseMismatch {
                 expected: self.lease,
@@ -751,12 +930,50 @@ impl BackendIngressRecorder {
                 recorded: self.last_ordinal,
             });
         }
+        if committed.through == self.retired_through {
+            return Ok(None);
+        }
         let retained = self
             .records
             .partition_point(|record| record.ordinal <= committed.through);
+        let committed_record = self.records.get(retained.saturating_sub(1)).ok_or(
+            BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: committed.through,
+            },
+        )?;
+        if committed_record.ordinal != committed.through
+            || committed_record.identity != committed.record_identity
+        {
+            return Err(BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: committed.through,
+            });
+        }
+        let mut binding_quiescences = self.records[..retained]
+            .iter()
+            .filter_map(|record| match &record.payload {
+                BackendIngressPayload::PlatformBindingQuiesced { binding } => Some(*binding),
+                BackendIngressPayload::PlatformSnapshot { .. }
+                | BackendIngressPayload::NativeCloseObservation { .. }
+                | BackendIngressPayload::PlatformEffectResult(_)
+                | BackendIngressPayload::SemanticInput(_)
+                | BackendIngressPayload::PresentationObservation { .. }
+                | BackendIngressPayload::PointerSegment(_) => None,
+            })
+            .collect::<Vec<_>>();
+        binding_quiescences.sort_unstable();
+        binding_quiescences.dedup();
         self.records.drain(..retained);
         self.retired_through = committed.through;
-        Ok(())
+        self.retired_record_identity = committed.record_identity;
+        if binding_quiescences.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(BackendIngressPrefixRetirementReceipt::new(
+                self.lease,
+                committed.through,
+                binding_quiescences,
+            )))
+        }
     }
 
     /// Returns the number of captured records not yet reclaimed.
@@ -774,12 +991,18 @@ impl BackendIngressRecorder {
             .last_ordinal
             .checked_next()
             .ok_or(BackendIngressError::OrdinalExhausted)?;
+        let identity = self
+            .last_record_identity
+            .checked_next()
+            .ok_or(BackendIngressError::RecordIdentityExhausted)?;
         self.records.push(BackendIngressRecord {
             lease: self.lease,
             ordinal,
+            identity,
             payload,
         });
         self.last_ordinal = ordinal;
+        self.last_record_identity = identity;
         Ok(ordinal)
     }
 }
@@ -794,6 +1017,7 @@ pub(crate) struct BackendIngressAuthority {
     authority_domain: EngineAuthorityDomainId,
     active: Option<BackendIngressLease>,
     committed_through: BackendIngressOrdinal,
+    committed_record_identity: BackendIngressRecordIdentity,
 }
 
 impl BackendIngressAuthority {
@@ -802,6 +1026,7 @@ impl BackendIngressAuthority {
             authority_domain,
             active: None,
             committed_through: BackendIngressOrdinal::ORIGIN,
+            committed_record_identity: BackendIngressRecordIdentity::ORIGIN,
         }
     }
 
@@ -838,6 +1063,7 @@ impl BackendIngressAuthority {
         }
         self.active = Some(lease);
         self.committed_through = BackendIngressOrdinal::ORIGIN;
+        self.committed_record_identity = BackendIngressRecordIdentity::ORIGIN;
         Ok(recorder)
     }
 
@@ -853,6 +1079,7 @@ impl BackendIngressAuthority {
         }
         self.active = None;
         self.committed_through = BackendIngressOrdinal::ORIGIN;
+        self.committed_record_identity = BackendIngressRecordIdentity::ORIGIN;
         Ok(())
     }
 
@@ -863,7 +1090,11 @@ impl BackendIngressAuthority {
         let active = self
             .active
             .ok_or(BackendIngressError::ProviderUnavailable)?;
-        batch.validate_against(active, self.committed_through)
+        batch.validate_against(
+            active,
+            self.committed_through,
+            self.committed_record_identity,
+        )
     }
 
     pub(crate) fn commit_batch(
@@ -871,7 +1102,43 @@ impl BackendIngressAuthority {
         batch: &BackendIngressBatch,
     ) -> Result<(), BackendIngressError> {
         self.validate_batch(batch)?;
+        if let Some(record) = batch.records.last() {
+            self.committed_record_identity = record.identity;
+        }
         self.committed_through = batch.through();
+        Ok(())
+    }
+
+    pub(crate) fn commit_watermark(&self) -> Option<BackendIngressCommitWatermark> {
+        self.active.map(|lease| {
+            BackendIngressCommitWatermark::new(
+                lease,
+                self.committed_through,
+                self.committed_record_identity,
+            )
+        })
+    }
+
+    pub(crate) fn commit_prefix_retirement(
+        &mut self,
+        receipt: &BackendIngressPrefixRetirementReceipt,
+    ) -> Result<(), BackendIngressError> {
+        let authority = receipt.authority()?;
+        let active = self
+            .active
+            .ok_or(BackendIngressError::ProviderUnavailable)?;
+        if authority.lease != active {
+            return Err(BackendIngressError::PrefixRetirementLeaseMismatch {
+                expected: active,
+                submitted: authority.lease,
+            });
+        }
+        if authority.through != self.committed_through {
+            return Err(BackendIngressError::PrefixRetirementWatermarkMismatch {
+                committed: self.committed_through,
+                submitted: authority.through,
+            });
+        }
         Ok(())
     }
 }
@@ -879,6 +1146,9 @@ impl BackendIngressAuthority {
 /// Structural rejection while capturing or validating backend ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BackendIngressError {
+    /// One affine prefix-retirement proof was submitted after successful settlement.
+    #[error("backend ingress prefix-retirement receipt was already consumed")]
+    PrefixRetirementReceiptConsumed,
     /// A successfully committed provider handoff ticket was submitted again.
     #[error("backend ingress provider replacement ticket was already consumed")]
     ProviderReplacementTicketConsumed,
@@ -891,6 +1161,20 @@ pub enum BackendIngressError {
     /// No joined backend provider currently owns ingress authority.
     #[error("backend ingress provider is unavailable")]
     ProviderUnavailable,
+    /// A binding-quiescence record belongs to another engine authority domain.
+    #[error("binding quiescence belongs to authority domain {submitted:?}, expected {expected:?}")]
+    BindingQuiescenceAuthorityMismatch {
+        /// Engine authority owned by the backend recorder.
+        expected: EngineAuthorityDomainId,
+        /// Engine authority carried by the binding.
+        submitted: EngineAuthorityDomainId,
+    },
+    /// One unretired recorder prefix repeated a binding-quiescence assertion.
+    #[error("backend ingress already recorded quiescence for binding {binding:?}")]
+    DuplicateBindingQuiescence {
+        /// Exact binding repeated by the producer.
+        binding: ViewportBinding,
+    },
     /// An operation named a provider other than the exact active pair.
     #[error("backend ingress provider {submitted:?} does not match active provider {expected:?}")]
     ProviderLeaseMismatch {
@@ -974,6 +1258,9 @@ pub enum BackendIngressError {
     /// The backend capture ordinal cannot advance without wrapping.
     #[error("backend ingress ordinal is exhausted")]
     OrdinalExhausted,
+    /// The non-reused append identity cannot advance without wrapping.
+    #[error("backend ingress record identity is exhausted")]
+    RecordIdentityExhausted,
     /// A pointer segment contained more than one receiver-bearing edge.
     #[error("backend ingress pointer segment contains {edges} edges; at most one is allowed")]
     PointerSegmentMustBeEdgewise {
@@ -1024,12 +1311,40 @@ pub enum BackendIngressError {
         /// Provider pair carried by the core proof.
         submitted: BackendIngressLease,
     },
+    /// Recorder contents at a committed ordinal differ from the immutable batch core accepted.
+    #[error("backend commit watermark content no longer matches record {ordinal:?}")]
+    CommitWatermarkContentMismatch {
+        /// Public capture position whose non-reused identity changed after rollback.
+        ordinal: BackendIngressOrdinal,
+    },
     /// Prefix reclamation attempted to move behind an already reclaimed position.
     #[error("backend retirement watermark {submitted:?} predates reclaimed watermark {retired:?}")]
     RetirementWatermarkRegressed {
         /// Current reclaimed lower bound.
         retired: BackendIngressOrdinal,
         /// Regressive proof position.
+        submitted: BackendIngressOrdinal,
+    },
+    /// A prefix-retirement proof belongs to another active joined provider.
+    #[error("prefix-retirement lease {submitted:?} does not match active lease {expected:?}")]
+    PrefixRetirementLeaseMismatch {
+        /// Current core-owned backend lease.
+        expected: BackendIngressLease,
+        /// Recorder lease carried by the proof.
+        submitted: BackendIngressLease,
+    },
+    /// A prefix-retirement proof does not end at the current core commit boundary.
+    ///
+    /// Exact equality is the causal barrier between permanent producer
+    /// quiescence and guard reclamation. It prevents a later committed fact from
+    /// crossing an older closure proof before that proof is settled.
+    #[error(
+        "prefix-retirement proof reaches {submitted:?}, but core is committed through {committed:?}"
+    )]
+    PrefixRetirementWatermarkMismatch {
+        /// Last backend ordinal committed by a complete host frame.
+        committed: BackendIngressOrdinal,
+        /// Inclusive upper watermark carried by the proof.
         submitted: BackendIngressOrdinal,
     },
     /// The batch belongs to a different exact provider pair.
@@ -1049,6 +1364,14 @@ pub enum BackendIngressError {
         expected: BackendIngressOrdinal,
         /// Batch's exclusive lower watermark.
         submitted: BackendIngressOrdinal,
+    },
+    /// The batch follows a rewritten record at the public committed ordinal.
+    #[error(
+        "backend ingress batch predecessor identity does not match committed record {ordinal:?}"
+    )]
+    BatchPreviousIdentityMismatch {
+        /// Public capture position whose predecessor identity diverged.
+        ordinal: BackendIngressOrdinal,
     },
     /// One record was spliced from another provider pair.
     #[error(
@@ -1134,6 +1457,30 @@ mod tests {
             PointerEdgeSequence::new(0),
         )
         .expect("matching desktop providers must create a recorder")
+    }
+
+    fn binding(domain: u64, token: u64) -> ViewportBinding {
+        ViewportBinding::new(
+            EngineAuthorityDomainId::new_for_test(domain),
+            WorkspaceEpoch::new(0),
+            SurfaceId::new(token),
+            WindowToken::new(token),
+            WindowIncarnation::new(1),
+        )
+    }
+
+    fn authority_and_recorder(domain: u64) -> (BackendIngressAuthority, BackendIngressRecorder) {
+        let domain = EngineAuthorityDomainId::new_for_test(domain);
+        let mut authority = BackendIngressAuthority::new(domain);
+        let recorder = authority
+            .enroll(
+                platform_provider(domain),
+                desktop_pointer_provider(domain, 1),
+                presentation_host(domain),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("matching backend authority must enroll");
+        (authority, recorder)
     }
 
     fn snapshot(generation: u64) -> PlatformSnapshot {
@@ -1423,12 +1770,20 @@ mod tests {
             .expect("retry must preserve the same batch");
         assert_eq!(retry, first);
         assert_eq!(
-            first.validate_against(recorder.lease(), BackendIngressOrdinal::ORIGIN),
+            first.validate_against(
+                recorder.lease(),
+                BackendIngressOrdinal::ORIGIN,
+                BackendIngressRecordIdentity::ORIGIN,
+            ),
             Ok(())
         );
         assert_eq!(
             first
-                .validate_against(recorder.lease(), BackendIngressOrdinal(1))
+                .validate_against(
+                    recorder.lease(),
+                    BackendIngressOrdinal(1),
+                    BackendIngressRecordIdentity::ORIGIN,
+                )
                 .expect_err("a different engine watermark must fail"),
             BackendIngressError::BatchPreviousMismatch {
                 expected: BackendIngressOrdinal(1),
@@ -1456,6 +1811,7 @@ mod tests {
             BackendIngressBatch::from_records(
                 first.lease,
                 first.previous,
+                first.previous_record_identity,
                 first.through,
                 reordered,
             )
@@ -1480,11 +1836,243 @@ mod tests {
             BackendIngressBatch::from_records(
                 first.lease,
                 first.previous,
+                first.previous_record_identity,
                 first.through,
                 spliced,
             ),
             Err(BackendIngressError::RecordLeaseMismatch { ordinal, .. })
                 if ordinal == BackendIngressOrdinal(1)
         ));
+    }
+
+    #[test]
+    fn committed_prefix_retirement_mints_one_affine_binding_quiescence_proof() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        let retired_binding = binding(1, 7);
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("prefix semantic input must fit");
+        recorder
+            .record_platform_binding_quiescence(retired_binding)
+            .expect("binding quiescence must fit");
+        let before_reclaim = recorder.savepoint();
+        let batch = recorder.pending_batch().expect("prefix must freeze");
+        authority
+            .commit_batch(&batch)
+            .expect("core authority must commit the exact prefix");
+        let watermark = authority
+            .commit_watermark()
+            .expect("the committed authority must expose its exact watermark");
+        let mut receipt = recorder
+            .retire_committed_prefix(watermark)
+            .expect("committed prefix must be reclaimable")
+            .expect("an advancing prefix must mint a receipt");
+
+        assert_eq!(receipt.through(), Some(BackendIngressOrdinal(2)));
+        assert_eq!(receipt.binding_quiescences(), &[retired_binding]);
+        assert_eq!(
+            recorder
+                .rollback_to(before_reclaim)
+                .expect_err("a reclaimed prefix invalidates older savepoints"),
+            BackendIngressError::SavepointPrefixReclaimed {
+                saved: BackendIngressOrdinal::ORIGIN,
+                current: BackendIngressOrdinal(2),
+            }
+        );
+
+        authority
+            .commit_prefix_retirement(&receipt)
+            .expect("the same core authority must accept its reclaimed prefix");
+        receipt.consume().expect("the proof is affine");
+        assert_eq!(
+            authority
+                .commit_prefix_retirement(&receipt)
+                .expect_err("a consumed proof cannot replay"),
+            BackendIngressError::PrefixRetirementReceiptConsumed,
+        );
+    }
+
+    #[test]
+    fn prefix_retirement_receipt_cannot_cross_a_later_committed_fact() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        recorder
+            .record_platform_binding_quiescence(binding(1, 1))
+            .expect("first quiescence must fit");
+        let first_batch = recorder.pending_batch().expect("first prefix must freeze");
+        authority
+            .commit_batch(&first_batch)
+            .expect("first prefix must commit");
+        let first_watermark = authority
+            .commit_watermark()
+            .expect("the first commit must expose its exact watermark");
+        let first = recorder
+            .retire_committed_prefix(first_watermark)
+            .expect("first prefix must reclaim")
+            .expect("first prefix must mint a receipt");
+
+        recorder
+            .record_platform_binding_quiescence(binding(1, 2))
+            .expect("second quiescence must fit");
+        let second_batch = recorder.pending_batch().expect("second prefix must freeze");
+        authority
+            .commit_batch(&second_batch)
+            .expect("second prefix must commit");
+        let second_watermark = authority
+            .commit_watermark()
+            .expect("the second commit must expose its exact watermark");
+        let second = recorder
+            .retire_committed_prefix(second_watermark)
+            .expect("second prefix must reclaim")
+            .expect("second prefix must mint a receipt");
+
+        assert_eq!(
+            authority
+                .commit_prefix_retirement(&first)
+                .expect_err("a later committed fact must invalidate the older barrier"),
+            BackendIngressError::PrefixRetirementWatermarkMismatch {
+                committed: BackendIngressOrdinal(2),
+                submitted: BackendIngressOrdinal(1),
+            },
+        );
+        authority
+            .commit_prefix_retirement(&second)
+            .expect("the proof ending at the exact current boundary remains valid");
+    }
+
+    #[test]
+    fn committed_watermark_rejects_rollback_rewrite_at_the_same_ordinal() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the original record must fit");
+        let committed = recorder
+            .pending_batch()
+            .expect("the original immutable batch must freeze");
+        authority
+            .commit_batch(&committed)
+            .expect("core commits the original record identity");
+        let watermark = authority
+            .commit_watermark()
+            .expect("the original commit must expose its exact identity");
+
+        recorder
+            .rollback_to(savepoint)
+            .expect("the recorder may abandon its unretired branch");
+        recorder
+            .record_platform_binding_quiescence(binding(1, 9))
+            .expect("rollback may reuse the public ordinal with a new record identity");
+
+        assert_eq!(
+            recorder
+                .retire_committed_prefix(watermark)
+                .expect_err("an old commit cannot authenticate rewritten quiescence"),
+            BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: BackendIngressOrdinal(1),
+            },
+        );
+        assert_eq!(recorder.retained_record_count(), 1);
+    }
+
+    #[test]
+    fn committed_predecessor_identity_rejects_a_rewritten_prefix_hidden_by_a_later_record() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the original record must fit");
+        let original = recorder
+            .pending_batch()
+            .expect("the original immutable batch must freeze");
+        let original_identity = original.records[0].identity;
+        authority
+            .commit_batch(&original)
+            .expect("core commits the original predecessor identity");
+
+        recorder
+            .rollback_to(savepoint)
+            .expect("the recorder may abandon its unretired branch");
+        recorder
+            .record_platform_binding_quiescence(binding(1, 9))
+            .expect("the rewritten predecessor must fit");
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("a later record must fit after the rewritten predecessor");
+        let rewritten_suffix = recorder
+            .batch_after(BackendIngressOrdinal(1))
+            .expect("the recorder can expose the rewritten ordinal suffix");
+
+        assert_ne!(rewritten_suffix.previous_record_identity, original_identity);
+        assert_eq!(
+            authority
+                .validate_batch(&rewritten_suffix)
+                .expect_err("the later record cannot hide a rewritten committed predecessor"),
+            BackendIngressError::BatchPreviousIdentityMismatch {
+                ordinal: BackendIngressOrdinal(1),
+            },
+        );
+        let watermark = authority
+            .commit_watermark()
+            .expect("the rejected suffix must leave the original watermark intact");
+        assert_eq!(watermark.through(), BackendIngressOrdinal(1));
+        assert_eq!(
+            recorder
+                .retire_committed_prefix(watermark)
+                .expect_err("rewritten quiescence must not mint a retirement receipt"),
+            BackendIngressError::CommitWatermarkContentMismatch {
+                ordinal: BackendIngressOrdinal(1),
+            },
+        );
+        assert_eq!(recorder.retained_record_count(), 2);
+    }
+
+    #[test]
+    fn ordinary_prefix_reclamation_needs_no_engine_retirement_receipt() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("ordinary ingress must fit");
+        let batch = recorder
+            .pending_batch()
+            .expect("ordinary prefix must freeze");
+        authority
+            .commit_batch(&batch)
+            .expect("ordinary prefix must commit");
+        let watermark = authority
+            .commit_watermark()
+            .expect("the ordinary commit must expose its exact watermark");
+
+        assert!(
+            recorder
+                .retire_committed_prefix(watermark)
+                .expect("ordinary prefix must reclaim")
+                .is_none(),
+            "prefixes without binding closure must not force an engine candidate clone",
+        );
+        assert_eq!(recorder.retained_record_count(), 0);
+    }
+
+    #[test]
+    fn binding_quiescence_rejects_foreign_authority_and_unretired_duplicates() {
+        let mut recorder = recorder(1);
+        assert_eq!(
+            recorder
+                .record_platform_binding_quiescence(binding(2, 1))
+                .expect_err("foreign binding authority must fail"),
+            BackendIngressError::BindingQuiescenceAuthorityMismatch {
+                expected: EngineAuthorityDomainId::new_for_test(1),
+                submitted: EngineAuthorityDomainId::new_for_test(2),
+            }
+        );
+        let local = binding(1, 1);
+        recorder
+            .record_platform_binding_quiescence(local)
+            .expect("local binding quiescence must fit");
+        assert_eq!(
+            recorder
+                .record_platform_binding_quiescence(local)
+                .expect_err("one retained prefix cannot repeat a lane closure"),
+            BackendIngressError::DuplicateBindingQuiescence { binding: local },
+        );
     }
 }

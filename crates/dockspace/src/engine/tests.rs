@@ -501,6 +501,253 @@ fn backend_provider_replacement_rejects_the_predecessor_batch() {
 }
 
 #[test]
+fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let mut recorder = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("joined backend provider must enroll");
+    let provider = recorder.lease().platform_provider();
+    let first = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SurfaceId::new(7),
+        WindowToken::new(7),
+        WindowIncarnation::new(1),
+    );
+    let second = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SurfaceId::new(8),
+        WindowToken::new(8),
+        WindowIncarnation::new(1),
+    );
+    engine
+        .viewport
+        .record_destroyed_binding_guard_for_test(first, provider);
+    recorder
+        .record_platform_binding_quiescence(first)
+        .expect("first lane closure must fit");
+    recorder
+        .record_platform_binding_quiescence(second)
+        .expect("second lane closure must fit");
+    let batch = record_empty_backend_checkpoint(&mut recorder);
+    let mut frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut frame, batch);
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
+    frame
+        .finish(&mut engine)
+        .expect("the quiescence prefix must commit before reclamation");
+    let mut receipt = recorder
+        .retire_committed_prefix(
+            engine
+                .backend_ingress_commit_watermark()
+                .expect("the committed prefix must expose a watermark"),
+        )
+        .expect("the recorder must reclaim the committed prefix")
+        .expect("the advancing prefix must mint a receipt");
+
+    assert!(matches!(
+        engine.settle_backend_ingress_prefix_retirement(&mut receipt),
+        Err(EngineError::Viewport {
+            source: ViewportCoordinatorError::DestroyedBindingGuardMissing { binding },
+            ..
+        }) if binding == second
+    ));
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        1,
+        "the valid first guard must not be partially removed on failure",
+    );
+    assert!(
+        receipt.through().is_some(),
+        "a failed settlement remains affine"
+    );
+
+    engine
+        .viewport
+        .record_destroyed_binding_guard_for_test(second, provider);
+    assert_eq!(
+        engine
+            .settle_backend_ingress_prefix_retirement(&mut receipt)
+            .expect("the exact retry must atomically compact both guards"),
+        vec![first, second],
+    );
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+    );
+    assert!(
+        receipt.through().is_none(),
+        "a successful receipt is consumed"
+    );
+}
+
+#[test]
+fn prepared_host_frame_cannot_restore_a_compacted_binding_guard() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let mut recorder = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("joined backend provider must enroll");
+    let provider = recorder.lease().platform_provider();
+    let binding = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SurfaceId::new(7),
+        WindowToken::new(7),
+        WindowIncarnation::new(1),
+    );
+    engine
+        .viewport
+        .record_destroyed_binding_guard_for_test(binding, provider);
+    recorder
+        .record_platform_binding_quiescence(binding)
+        .expect("the exact lane closure must fit");
+    let committed_batch = record_empty_backend_checkpoint(&mut recorder);
+    let mut committed_frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut committed_frame, committed_batch);
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut committed_frame);
+    committed_frame
+        .finish(&mut engine)
+        .expect("the quiescence prefix must commit");
+    let mut receipt = recorder
+        .retire_committed_prefix(
+            engine
+                .backend_ingress_commit_watermark()
+                .expect("the committed prefix must expose its exact watermark"),
+        )
+        .expect("the recorder must reclaim the committed prefix")
+        .expect("the quiescence prefix must mint a receipt");
+
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .expect("the next empty pointer checkpoint must be canonical"),
+        )
+        .expect("the next backend checkpoint must fit");
+    let later_batch = recorder
+        .pending_batch()
+        .expect("the later uncommitted suffix must freeze");
+    let mut stale_frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut stale_frame, later_batch);
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut stale_frame);
+    let prepared = stale_frame
+        .prepare_owned(&engine)
+        .expect("the frame is valid before retention settlement");
+
+    engine
+        .settle_backend_ingress_prefix_retirement(&mut receipt)
+        .expect("the exact receipt must compact the binding guard");
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+    );
+    assert!(matches!(
+        prepared.commit(&mut engine),
+        Err(EngineError::HostFrameRuntimeRetentionStale { .. })
+    ));
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+        "a stale owned frame must not restore the compacted guard",
+    );
+}
+
+#[test]
+fn sealed_host_frame_rejects_retention_settlement_before_prepare() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let mut recorder = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("joined backend provider must enroll");
+    let provider = recorder.lease().platform_provider();
+    let binding = ViewportBinding::new(
+        engine.authority_domain,
+        WorkspaceEpoch::new(0),
+        SurfaceId::new(7),
+        WindowToken::new(7),
+        WindowIncarnation::new(1),
+    );
+    engine
+        .viewport
+        .record_destroyed_binding_guard_for_test(binding, provider);
+    recorder
+        .record_platform_binding_quiescence(binding)
+        .expect("the exact lane closure must fit");
+    let committed_batch = record_empty_backend_checkpoint(&mut recorder);
+    let mut committed_frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut committed_frame, committed_batch);
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut committed_frame);
+    committed_frame
+        .finish(&mut engine)
+        .expect("the quiescence prefix must commit");
+    let mut receipt = recorder
+        .retire_committed_prefix(
+            engine
+                .backend_ingress_commit_watermark()
+                .expect("the committed prefix must expose its exact watermark"),
+        )
+        .expect("the recorder must reclaim the committed prefix")
+        .expect("the quiescence prefix must mint a receipt");
+
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .expect("the next empty pointer checkpoint must be canonical"),
+        )
+        .expect("the next backend checkpoint must fit");
+    let later_batch = recorder
+        .pending_batch()
+        .expect("the later uncommitted suffix must freeze");
+    let mut stale_frame = begin_test_host_frame(&engine, host);
+    submit_empty_backend_batch(&mut stale_frame, later_batch);
+    complete_host_frame_with_explicit_surface_roster(&engine, &mut stale_frame);
+
+    engine
+        .settle_backend_ingress_prefix_retirement(&mut receipt)
+        .expect("the exact receipt must compact the binding guard");
+    assert!(matches!(
+        stale_frame.prepare_owned(&engine),
+        Err(EngineError::HostFrameRuntimeRetentionStale { .. })
+    ));
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+        "a frame sealed before settlement must not restore the compacted guard",
+    );
+}
+
+#[test]
 fn runtime_retention_manifest_bounds_semantic_replay_authority_to_one_writer() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     assert_eq!(

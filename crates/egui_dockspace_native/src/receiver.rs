@@ -16,7 +16,7 @@ use eframe::{
     NativePointerSource, NativeViewportBinding,
 };
 use egui::{
-    PointerHit, PointerReceiverAuthority, Pos2, ScrollProbe, ScrollReceiver, WidgetReceiver,
+    PointerHit, PointerReceiverAuthority, Pos2, ScrollProbe, ScrollReceiver, Sense, WidgetReceiver,
 };
 use egui_dockspace::{
     Dockspace, EguiNativeInputSession, PaintReceiverFingerprint, PaintReceiverLookup,
@@ -713,7 +713,13 @@ fn lookup_scroll_receiver(
         projection.output_ticket(),
         projection.authority(),
         graph.widget_pass_nr(),
-        PaintReceiverFingerprint::from_scroll_receiver(receiver),
+        PaintReceiverFingerprint::new(
+            receiver.id(),
+            receiver.layer_id(),
+            receiver.interact_rect(),
+            Sense::hover(),
+            receiver.enabled(),
+        ),
     )?)
 }
 

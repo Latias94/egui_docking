@@ -1419,10 +1419,18 @@ cannot mutate the graph.
    remaining structural and long-session soak bounds before release. Exact
    presentation-output reclamation, presentation-host interval compaction,
    pointer-provider compaction, and producer-bound destroyed-binding compaction
-   are implemented. Pointer and binding detail is released only when joined
-   backend replacement consumes the sole recorder; standalone provider tickets
-   do not imply producer quiescence. The same drain now releases only the exact
-   revoked effect-provider guard. It deliberately retains every `EffectRecord`;
+   are implemented. Pointer detail is released when joined backend replacement
+   consumes the sole recorder. Destroyed-binding detail may also be released
+   during a long-lived provider: the producer records exact binding quiescence
+   after Winit-owned pointer, scroll, effect, close, and window routes plus
+   coordinator-owned presentation and parent-create lanes are terminal. The core
+   commits that ordered record, recorder prefix reclamation mints an affine
+   receipt, and the engine consumes it only at the exact current commit boundary.
+   The successful fork host settlement then compacts its own binding ABA history.
+   Snapshot absence, generation advance, and standalone provider tickets do not
+   imply producer quiescence. The complete drain still releases every remaining
+   binding guard and only the exact revoked effect-provider guard. It deliberately
+   retains every `EffectRecord`;
    effect owners and a terminal observer need separate proofs. Close records
    remain untouched until close input has its own affine producer drain and
    terminal observation acknowledgement.

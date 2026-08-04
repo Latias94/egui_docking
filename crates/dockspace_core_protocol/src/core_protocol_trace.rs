@@ -726,6 +726,7 @@ pub enum ScrollPhaseSpec {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScrollCancelReasonSpec {
     PlatformCancelled,
+    BindingRetired,
     DeviceRemoved,
     ProviderReset,
 }

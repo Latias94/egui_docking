@@ -10,9 +10,10 @@ use dockspace::interaction::{
 };
 use dockspace::pointer_journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
-    PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope, ScrollDeliveryEndpoint,
-    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
-    ScrollSequenceToken, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope, ScrollCancelReason,
+    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
+    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
+    SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
@@ -778,6 +779,64 @@ fn semantic_termination_waits_for_the_provider_terminal_without_reopening() {
             .interaction_outcomes()
             .is_empty(),
         "the provider terminal consumes the tombstone without a second semantic terminal"
+    );
+
+    let successor =
+        fixture.submit_known(ScrollPhase::Begin, Some(ScrollSequenceToken::new(42)), None);
+    assert!(matches!(
+        successor.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Began { .. }
+        )]
+    ));
+}
+
+#[test]
+fn binding_retirement_waits_for_the_physical_scroll_terminal() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    let began = fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
+    let session = match began.reduced_pointer_edges()[0].interaction_outcomes() {
+        [
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. }),
+            InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(_)),
+        ] => *session,
+        outcomes => panic!("smooth scroll must freeze its begin receiver, got {outcomes:?}"),
+    };
+
+    let retired = fixture.submit_known(
+        ScrollPhase::Cancel(ScrollCancelReason::BindingRetired),
+        Some(token),
+        None,
+    );
+    assert!(matches!(
+        retired.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                session: actual,
+                reason: ScrollTerminationReason::Cancelled(
+                    ScrollCancelReason::BindingRetired
+                ),
+                ..
+            }
+        )] if *actual == session
+    ));
+
+    let late_update =
+        fixture.submit_known(ScrollPhase::Update, Some(token), Some(line_delta(1.0, 0.0)));
+    assert!(
+        late_update.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "a late provider tail cannot reopen the retired binding owner"
+    );
+
+    let provider_terminal = fixture.submit_known(ScrollPhase::End, Some(token), None);
+    assert!(
+        provider_terminal.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "the physical terminal only consumes the retired-tail tombstone"
     );
 
     let successor =

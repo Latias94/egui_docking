@@ -161,6 +161,8 @@ pub enum SurfaceScrollDelta {
 pub enum SurfaceScrollCancelReason {
     /// The platform explicitly cancelled the gesture.
     PlatformCancelled,
+    /// The delivery binding retired while the physical sequence may still emit a terminal tail.
+    BindingRetired,
     /// The scroll device was removed.
     DeviceRemoved,
     /// The provider reset its sequence namespace.
@@ -1009,6 +1011,7 @@ const fn surface_cancel_reason(reason: SurfacePointerCancelReason) -> PointerStr
 const fn surface_scroll_cancel_reason(reason: SurfaceScrollCancelReason) -> ScrollCancelReason {
     match reason {
         SurfaceScrollCancelReason::PlatformCancelled => ScrollCancelReason::PlatformCancelled,
+        SurfaceScrollCancelReason::BindingRetired => ScrollCancelReason::BindingRetired,
         SurfaceScrollCancelReason::DeviceRemoved => ScrollCancelReason::DeviceRemoved,
         SurfaceScrollCancelReason::ProviderReset => ScrollCancelReason::ProviderReset,
     }

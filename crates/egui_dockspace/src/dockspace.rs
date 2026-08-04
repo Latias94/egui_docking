@@ -247,6 +247,24 @@ impl Dockspace {
         )?)
     }
 
+    /// Settles one core-committed backend prefix after the native producer reclaims it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a native session is active or the core rejects the
+    /// receipt's authority, commit boundary, or binding-guard roster.
+    #[doc(hidden)]
+    pub fn adapter_settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut dockspace::backend_ingress::BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<dockspace::viewport::ViewportBinding>, DockspaceError> {
+        self.ensure_native_session_idle()?;
+        Ok(EguiEngineOwner::settle_backend_ingress_prefix_retirement(
+            &mut self.engine,
+            receipt,
+        )?)
+    }
+
     /// Records one exact renderer result in the joined backend ingress order.
     ///
     /// The backend recorder is already bound to this facade's core-minted

@@ -10,7 +10,7 @@ use dockspace::effect::{
     EffectUnsupportedReason, NativeCloseResolution, PlatformEffect, PlatformEffectEmission,
 };
 use dockspace::geometry::PhysicalRect;
-use dockspace::ids::WorkspaceEpoch;
+use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::viewport::{ViewportBinding, ViewportRole};
 use eframe::{
     NativeEffectCorrelation, NativeEffectDispatchOutcome, NativeEffectProperty, NativeEffectResult,
@@ -46,15 +46,213 @@ struct CoreCreateToken {
     viewport: ViewportId,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct InitializationReceiptTombstone {
+    effect: EffectId,
+    epoch: WorkspaceEpoch,
+}
+
+impl InitializationReceiptTombstone {
+    fn matches(self, token: CoreEffectToken) -> bool {
+        self.effect == token.effect
+            && self.epoch == token.epoch
+            && matches!(
+                token.property,
+                NativeEffectProperty::Geometry | NativeEffectProperty::Presentation
+            )
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PendingNativeCreate {
     token: CoreCreateToken,
-    request: NativeViewportCreateRequestId,
-    parent: NativeViewportBinding,
+    origin: PendingNativeCreateOrigin,
     placement: PhysicalRect,
-    materialized: bool,
     bound: Option<ExactNativeViewport>,
-    initialized: bool,
+    initialization: NativeCreateInitialization,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeCreateInitialization {
+    Unsubmitted,
+    AwaitingDispatch {
+        geometry: InitializationLane,
+        presentation: InitializationLane,
+    },
+    Failed,
+}
+
+impl NativeCreateInitialization {
+    const fn is_publishable(self) -> bool {
+        matches!(
+            self,
+            Self::AwaitingDispatch {
+                geometry,
+                presentation,
+            } if geometry.has_dispatch_proof() && presentation.has_dispatch_proof()
+        )
+    }
+
+    const fn is_failed(self) -> bool {
+        matches!(self, Self::Failed)
+    }
+
+    fn observe(
+        &mut self,
+        property: NativeEffectProperty,
+        outcome: NativeEffectDispatchOutcome,
+    ) -> Result<InitializationReceiptDisposition, NativeRuntimeError> {
+        let Self::AwaitingDispatch {
+            geometry,
+            presentation,
+        } = self
+        else {
+            return match *self {
+                Self::Failed
+                    if matches!(
+                        property,
+                        NativeEffectProperty::Geometry | NativeEffectProperty::Presentation
+                    ) =>
+                {
+                    Ok(InitializationReceiptDisposition::Consumed)
+                }
+                Self::Unsubmitted => Err(NativeRuntimeError::HostedProtocol(
+                    "native initialization result preceded its transactional submission".into(),
+                )),
+                Self::Failed => Ok(InitializationReceiptDisposition::NotInitialization),
+                Self::AwaitingDispatch { .. } => Err(NativeRuntimeError::HostedProtocol(
+                    "native initialization state could not be borrowed consistently".into(),
+                )),
+            };
+        };
+        let disposition = match property {
+            NativeEffectProperty::Geometry => geometry.observe(outcome),
+            NativeEffectProperty::Presentation => presentation.observe(outcome),
+            _ => return Ok(InitializationReceiptDisposition::NotInitialization),
+        };
+        if matches!(
+            disposition,
+            InitializationReceiptDisposition::Report(
+                EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_)
+            )
+        ) {
+            *self = Self::Failed;
+        }
+        Ok(disposition)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InitializationLane {
+    #[default]
+    Awaiting,
+    Indeterminate,
+    Dispatched,
+    DispatchedIndeterminate,
+}
+
+impl InitializationLane {
+    const fn has_dispatch_proof(self) -> bool {
+        matches!(self, Self::Dispatched | Self::DispatchedIndeterminate)
+    }
+
+    fn observe(
+        &mut self,
+        outcome: NativeEffectDispatchOutcome,
+    ) -> InitializationReceiptDisposition {
+        match outcome {
+            NativeEffectDispatchOutcome::Dispatched => {
+                *self = match *self {
+                    Self::Awaiting | Self::Indeterminate => Self::Dispatched,
+                    Self::Dispatched | Self::DispatchedIndeterminate => *self,
+                };
+                InitializationReceiptDisposition::Consumed
+            }
+            NativeEffectDispatchOutcome::Indeterminate => match *self {
+                Self::Awaiting => {
+                    *self = Self::Indeterminate;
+                    InitializationReceiptDisposition::Report(EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::AcknowledgementLost,
+                    ))
+                }
+                Self::Dispatched => {
+                    *self = Self::DispatchedIndeterminate;
+                    InitializationReceiptDisposition::Report(EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::AcknowledgementLost,
+                    ))
+                }
+                Self::Indeterminate | Self::DispatchedIndeterminate => {
+                    InitializationReceiptDisposition::Consumed
+                }
+            },
+            NativeEffectDispatchOutcome::Rejected => InitializationReceiptDisposition::Report(
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+            ),
+            NativeEffectDispatchOutcome::Unsupported => InitializationReceiptDisposition::Report(
+                EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitializationReceiptDisposition {
+    NotInitialization,
+    Consumed,
+    Report(EffectDispatchResult),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingEffectRoute {
+    surface: SurfaceId,
+    core: ViewportBinding,
+    initialization: NativeCreateInitialization,
+}
+
+impl PendingEffectRoute {
+    pub(crate) const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    pub(crate) const fn core(self) -> ViewportBinding {
+        self.core
+    }
+
+    pub(crate) const fn is_publishable(self) -> bool {
+        self.initialization.is_publishable()
+    }
+
+    pub(crate) const fn is_failed(self) -> bool {
+        self.initialization.is_failed()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum PendingNativeCreateOrigin {
+    Requested {
+        request: NativeViewportCreateRequestId,
+        parent: NativeViewportBinding,
+        materialized: bool,
+    },
+    Adopted {
+        native: ExactNativeViewport,
+    },
+}
+
+impl PendingNativeCreateOrigin {
+    const fn is_materialized(&self) -> bool {
+        match self {
+            Self::Requested { materialized, .. } => *materialized,
+            Self::Adopted { .. } => true,
+        }
+    }
+
+    const fn adopted_native(&self) -> Option<ExactNativeViewport> {
+        match self {
+            Self::Requested { .. } => None,
+            Self::Adopted { native } => Some(*native),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -75,13 +273,13 @@ struct PendingRestoredCreate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestoredCreatePhase {
     AwaitingResult,
-    Materialized,
     Failed,
     Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RestoredCreateTransition {
+    Materialized,
     Retain(RestoredCreatePhase),
     Retry,
 }
@@ -91,7 +289,10 @@ enum RestoredCreateTransition {
 pub(crate) struct NativeEffectDriver {
     runtime: u64,
     creates: BTreeMap<ViewportId, PendingNativeCreate>,
+    initialization_receipt_tombstones:
+        BTreeMap<ExactNativeViewport, InitializationReceiptTombstone>,
     restored_creates: BTreeMap<ViewportId, PendingRestoredCreate>,
+    materialized_restored_viewports: BTreeMap<ViewportId, SurfaceId>,
 }
 
 impl NativeEffectDriver {
@@ -104,7 +305,9 @@ impl NativeEffectDriver {
         Ok(Self {
             runtime,
             creates: BTreeMap::new(),
+            initialization_receipt_tombstones: BTreeMap::new(),
             restored_creates: BTreeMap::new(),
+            materialized_restored_viewports: BTreeMap::new(),
         })
     }
 
@@ -119,7 +322,9 @@ impl NativeEffectDriver {
             return Ok(());
         };
         for viewport in pending_viewports {
-            if self.restored_creates.contains_key(viewport) {
+            if self.restored_creates.contains_key(viewport)
+                || self.materialized_restored_viewports.contains_key(viewport)
+            {
                 continue;
             }
             let spec = catalog
@@ -168,15 +373,31 @@ impl NativeEffectDriver {
         &mut self,
         routes: &BTreeMap<ViewportId, BoundNativeRoute>,
     ) {
-        self.restored_creates.retain(|viewport, pending| {
-            pending.phase != RestoredCreatePhase::Materialized || !routes.contains_key(viewport)
-        });
+        self.materialized_restored_viewports
+            .retain(|viewport, _| !routes.contains_key(viewport));
     }
 
     pub(crate) fn restored_create_is_materialized(&self, viewport: ViewportId) -> bool {
-        self.restored_creates
-            .get(&viewport)
-            .is_some_and(|pending| pending.phase == RestoredCreatePhase::Materialized)
+        self.materialized_restored_viewports.contains_key(&viewport)
+    }
+
+    pub(crate) fn retire_materialized_restored_viewport(
+        &mut self,
+        viewport: ViewportId,
+        surface: SurfaceId,
+    ) -> Result<bool, NativeRuntimeError> {
+        let Some(materialized_surface) =
+            self.materialized_restored_viewports.get(&viewport).copied()
+        else {
+            return Ok(false);
+        };
+        if materialized_surface != surface {
+            return Err(NativeRuntimeError::IngressUnavailable(
+                "materialized restored viewport retirement changed its configured surface",
+            ));
+        }
+        self.materialized_restored_viewports.remove(&viewport);
+        Ok(true)
     }
 
     pub(crate) fn restored_create_terminal_error(&self) -> Option<NativeRuntimeError> {
@@ -188,23 +409,181 @@ impl NativeEffectDriver {
     pub(crate) fn route_for_new_binding(
         &mut self,
         native: NativeViewportBinding,
-    ) -> Option<(dockspace::ids::SurfaceId, ViewportBinding)> {
+    ) -> Option<PendingEffectRoute> {
         let pending = self.creates.get_mut(&native.viewport_id())?;
-        if !pending.materialized || pending.bound.is_some() {
+        if !pending.origin.is_materialized() {
             return None;
         }
         let exact = exact_native(native);
-        pending.bound = Some(exact);
-        Some((pending.token.core.surface(), pending.token.core))
+        if pending
+            .origin
+            .adopted_native()
+            .is_some_and(|expected| expected != exact)
+        {
+            return None;
+        }
+        match pending.bound {
+            Some(bound) if bound != exact => return None,
+            Some(_) => {}
+            None => pending.bound = Some(exact),
+        }
+        Some(PendingEffectRoute {
+            surface: pending.token.core.surface(),
+            core: pending.token.core,
+            initialization: pending.initialization,
+        })
     }
 
-    pub(crate) fn forget_native(&mut self, native: ExactNativeViewport) {
+    pub(crate) fn route_for_provisional_retirement(
+        &mut self,
+        native: ExactNativeViewport,
+    ) -> Option<PendingEffectRoute> {
+        let pending = self.creates.get_mut(&native.viewport())?;
+        if !pending.origin.is_materialized()
+            || pending
+                .origin
+                .adopted_native()
+                .is_some_and(|expected| expected != native)
+        {
+            return None;
+        }
+        match pending.bound {
+            Some(bound) if bound != native => return None,
+            Some(_) => {}
+            None => pending.bound = Some(native),
+        }
+        Some(PendingEffectRoute {
+            surface: pending.token.core.surface(),
+            core: pending.token.core,
+            initialization: pending.initialization,
+        })
+    }
+
+    pub(crate) fn publish_route(&mut self, native: ExactNativeViewport) -> bool {
+        let publishable = self.creates.get(&native.viewport()).is_some_and(|pending| {
+            pending.bound == Some(native) && pending.initialization.is_publishable()
+        });
+        if publishable {
+            self.creates.remove(&native.viewport());
+        }
+        publishable
+    }
+
+    pub(crate) fn has_provisional_native(&self, native: ExactNativeViewport) -> bool {
         self.creates
-            .retain(|_, pending| pending.bound != Some(native));
+            .get(&native.viewport())
+            .is_some_and(|pending| pending.bound == Some(native))
+    }
+
+    pub(crate) fn forget_pending_native(&mut self, native: ExactNativeViewport) {
+        self.creates.retain(|_, pending| {
+            pending.bound != Some(native) && pending.origin.adopted_native() != Some(native)
+        });
+    }
+
+    pub(crate) fn retain_initialization_receipts(
+        &mut self,
+        native: ExactNativeViewport,
+    ) -> Result<(), NativeRuntimeError> {
+        if self.initialization_receipt_tombstones.contains_key(&native) {
+            return Err(NativeRuntimeError::IngressUnavailable(
+                "native initialization repeated one receipt tombstone",
+            ));
+        }
+        let pending = self.creates.remove(&native.viewport()).ok_or(
+            NativeRuntimeError::IngressUnavailable(
+                "native initialization receipt retention lost its pending create",
+            ),
+        )?;
+        if pending.bound != Some(native) {
+            self.creates.insert(native.viewport(), pending);
+            return Err(NativeRuntimeError::IngressUnavailable(
+                "native initialization receipt retention changed its exact lifetime",
+            ));
+        }
+        let tombstone = InitializationReceiptTombstone {
+            effect: pending.token.effect,
+            epoch: pending.token.epoch,
+        };
+        let previous = self
+            .initialization_receipt_tombstones
+            .insert(native, tombstone);
+        debug_assert!(previous.is_none());
+        Ok(())
+    }
+
+    pub(crate) fn retire_initialization_receipts(&mut self, native: ExactNativeViewport) {
+        self.initialization_receipt_tombstones.remove(&native);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_initialization_receipt_tombstone(&self, native: ExactNativeViewport) -> bool {
+        self.initialization_receipt_tombstones.contains_key(&native)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_provisional_native_for_test(
+        &mut self,
+        native: ExactNativeViewport,
+        core: ViewportBinding,
+        failed: bool,
+    ) {
+        self.creates.insert(
+            native.viewport(),
+            PendingNativeCreate {
+                token: CoreCreateToken {
+                    runtime: self.runtime,
+                    effect: EffectId::new(1),
+                    epoch: WorkspaceEpoch::new(1),
+                    core,
+                    viewport: native.viewport(),
+                },
+                origin: PendingNativeCreateOrigin::Adopted { native },
+                placement: PhysicalRect::new(0.0, 0.0, 320.0, 240.0)
+                    .expect("test placement is valid"),
+                bound: Some(native),
+                initialization: if failed {
+                    NativeCreateInitialization::Failed
+                } else {
+                    NativeCreateInitialization::AwaitingDispatch {
+                        geometry: InitializationLane::Awaiting,
+                        presentation: InitializationLane::Awaiting,
+                    }
+                },
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_materialized_restored_viewport_for_test(
+        &mut self,
+        viewport: ViewportId,
+        surface: SurfaceId,
+    ) {
+        self.materialized_restored_viewports
+            .insert(viewport, surface);
+    }
+
+    pub(crate) fn retire_restored_viewport(
+        &mut self,
+        viewport: ViewportId,
+        surface: dockspace::ids::SurfaceId,
+    ) -> Result<(), NativeRuntimeError> {
+        if self
+            .restored_creates
+            .get(&viewport)
+            .is_some_and(|pending| pending.token.surface != surface)
+        {
+            return Err(NativeRuntimeError::IngressUnavailable(
+                "restored viewport retirement changed its configured surface",
+            ));
+        }
+        self.restored_creates.remove(&viewport);
+        Ok(())
     }
 
     pub(crate) fn consume_effect_result(
-        &self,
+        &mut self,
         result: &NativeEffectResult,
         recorder: &mut BackendIngressRecorder,
     ) -> Result<(), NativeRuntimeError> {
@@ -225,6 +604,26 @@ impl NativeEffectDriver {
                 "native effect result changed its exact viewport lifetime".into(),
             ));
         }
+        if self
+            .initialization_receipt_tombstones
+            .get(&exact)
+            .copied()
+            .is_some_and(|tombstone| tombstone.matches(token))
+        {
+            return Ok(());
+        }
+        match self.consume_initialization_result(token, exact, result.outcome())? {
+            InitializationReceiptDisposition::Consumed => return Ok(()),
+            InitializationReceiptDisposition::Report(dispatch) => {
+                recorder.record_platform_effect_result(EffectResult::new(
+                    token.effect,
+                    token.epoch,
+                    dispatch,
+                ))?;
+                return Ok(());
+            }
+            InitializationReceiptDisposition::NotInitialization => {}
+        }
         if let Some(dispatch) = translate_dispatch_outcome(result.outcome()) {
             recorder.record_platform_effect_result(EffectResult::new(
                 token.effect,
@@ -233,6 +632,21 @@ impl NativeEffectDriver {
             ))?;
         }
         Ok(())
+    }
+
+    fn consume_initialization_result(
+        &mut self,
+        token: CoreEffectToken,
+        exact: ExactNativeViewport,
+        outcome: NativeEffectDispatchOutcome,
+    ) -> Result<InitializationReceiptDisposition, NativeRuntimeError> {
+        let Some(pending) = self.creates.get_mut(&exact.viewport()) else {
+            return Ok(InitializationReceiptDisposition::NotInitialization);
+        };
+        if pending.token.effect != token.effect || pending.bound != Some(exact) {
+            return Ok(InitializationReceiptDisposition::NotInitialization);
+        }
+        pending.initialization.observe(token.property, outcome)
     }
 
     pub(crate) fn consume_create_result(
@@ -264,9 +678,20 @@ impl NativeEffectDriver {
                 "viewport-create result named no pending core request".into(),
             )
         })?;
+        let PendingNativeCreateOrigin::Requested {
+            request,
+            parent,
+            materialized,
+        } = &mut pending.origin
+        else {
+            return Err(NativeRuntimeError::HostedProtocol(
+                "viewport-create result named an adopted replacement without a create request"
+                    .into(),
+            ));
+        };
         if pending.token.effect != token.effect
-            || pending.request != result.request_id()
-            || pending.parent != result.parent()
+            || *request != result.request_id()
+            || *parent != result.parent()
             || result.viewport_id() != token.viewport
         {
             return Err(NativeRuntimeError::HostedProtocol(
@@ -275,7 +700,7 @@ impl NativeEffectDriver {
         }
         match result.outcome() {
             NativeViewportCreateDispatchOutcome::Materialized => {
-                pending.materialized = true;
+                *materialized = true;
             }
             NativeViewportCreateDispatchOutcome::Rejected => {
                 recorder.record_platform_effect_result(EffectResult::new(
@@ -313,14 +738,11 @@ impl NativeEffectDriver {
         if token.runtime != self.runtime {
             return Ok(());
         }
-        let pending = self
-            .restored_creates
-            .get_mut(&token.viewport)
-            .ok_or_else(|| {
-                NativeRuntimeError::HostedProtocol(
-                    "restored viewport-create result named no pending request".into(),
-                )
-            })?;
+        let pending = self.restored_creates.get(&token.viewport).ok_or_else(|| {
+            NativeRuntimeError::HostedProtocol(
+                "restored viewport-create result named no pending request".into(),
+            )
+        })?;
         if pending.token.surface != token.surface
             || pending.request != result.request_id()
             || pending.parent != result.parent()
@@ -336,8 +758,27 @@ impl NativeEffectDriver {
             ));
         }
         match restored_create_transition(result.outcome()) {
+            RestoredCreateTransition::Materialized => {
+                if self
+                    .materialized_restored_viewports
+                    .contains_key(&token.viewport)
+                {
+                    return Err(NativeRuntimeError::HostedProtocol(
+                        "restored viewport-create repeated one materialized lifetime".into(),
+                    ));
+                }
+                self.restored_creates.remove(&token.viewport);
+                let previous = self
+                    .materialized_restored_viewports
+                    .insert(token.viewport, token.surface);
+                debug_assert!(previous.is_none());
+                Ok(())
+            }
             RestoredCreateTransition::Retain(phase) => {
-                pending.phase = phase;
+                self.restored_creates
+                    .get_mut(&token.viewport)
+                    .expect("the validated restored create remains pending")
+                    .phase = phase;
                 Ok(())
             }
             RestoredCreateTransition::Retry => {
@@ -363,19 +804,17 @@ impl NativeEffectDriver {
         &mut self,
         effects: &[PlatformEffectEmission],
         routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+        deferred_replacements: &BTreeMap<SurfaceId, ExactNativeViewport>,
+        adopted_replacements: &mut BTreeMap<ExactNativeViewport, ViewportBinding>,
         catalog: &NativeViewportRoster,
         effect_sink: &NativeEffectSink,
         create_sink: &NativeViewportCreateSink,
-    ) -> Vec<EffectResult> {
-        let mut terminal = self.initialize_bound_creates(routes, effect_sink);
+    ) -> Result<Vec<EffectResult>, NativeRuntimeError> {
+        self.initialize_bound_creates(routes, effect_sink)?;
+        let mut terminal = Vec::new();
         for emission in effects {
             let dispatch = match emission.effect() {
                 PlatformEffect::CreateWindow {
-                    binding,
-                    placement,
-                    role,
-                }
-                | PlatformEffect::RequestReplacement {
                     binding,
                     placement,
                     role,
@@ -388,6 +827,37 @@ impl NativeEffectDriver {
                     catalog,
                     create_sink,
                 ),
+                PlatformEffect::RequestReplacement {
+                    binding,
+                    placement,
+                    role,
+                } => {
+                    if let Some(native) = deferred_replacements.get(&binding.surface()).copied() {
+                        if adopted_replacements.contains_key(&native) {
+                            Err(EffectDispatchResult::DispatchFailed(
+                                DispatchFailureReason::AdapterRejected,
+                            ))
+                        } else {
+                            let adoption = self.adopt_existing_replacement(
+                                emission, *binding, *placement, *role, native, routes, catalog,
+                            );
+                            if adoption.is_ok() {
+                                adopted_replacements.insert(native, *binding);
+                            }
+                            adoption
+                        }
+                    } else {
+                        self.dispatch_create(
+                            emission,
+                            *binding,
+                            *placement,
+                            *role,
+                            routes,
+                            catalog,
+                            create_sink,
+                        )
+                    }
+                }
                 PlatformEffect::RetainChild { .. } | PlatformEffect::ContinueCleanup { .. } => {
                     // These are observation/ownership lanes. Keeping the live
                     // viewport in the runtime roster is the concrete action;
@@ -404,7 +874,7 @@ impl NativeEffectDriver {
                 terminal.push(dispatch_result(emission.id(), emission.epoch(), result));
             }
         }
-        terminal
+        Ok(terminal)
     }
 
     fn dispatch_effect(
@@ -487,12 +957,68 @@ impl NativeEffectDriver {
             spec.viewport(),
             PendingNativeCreate {
                 token,
-                request,
-                parent: parent.native_binding(),
+                origin: PendingNativeCreateOrigin::Requested {
+                    request,
+                    parent: parent.native_binding(),
+                    materialized: false,
+                },
                 placement,
-                materialized: false,
                 bound: None,
-                initialized: false,
+                initialization: NativeCreateInitialization::Unsubmitted,
+            },
+        );
+        Ok(())
+    }
+
+    fn adopt_existing_replacement(
+        &mut self,
+        emission: &PlatformEffectEmission,
+        binding: ViewportBinding,
+        placement: PhysicalRect,
+        role: ViewportRole,
+        native: ExactNativeViewport,
+        routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+        catalog: &NativeViewportRoster,
+    ) -> Result<(), EffectDispatchResult> {
+        if role != ViewportRole::Child {
+            return Err(EffectDispatchResult::Unsupported(
+                EffectUnsupportedReason::BackendUnsupported,
+            ));
+        }
+        let parent = routes
+            .get(&ViewportId::ROOT)
+            .ok_or(EffectDispatchResult::DispatchFailed(
+                DispatchFailureReason::WindowUnavailable,
+            ))?;
+        if binding.surface() == parent.surface() {
+            return Err(EffectDispatchResult::DispatchFailed(
+                DispatchFailureReason::AdapterRejected,
+            ));
+        }
+        let spec = catalog.child_for_binding(binding);
+        if spec.viewport() != native.viewport()
+            || routes.contains_key(&native.viewport())
+            || self.creates.contains_key(&native.viewport())
+        {
+            return Err(EffectDispatchResult::DispatchFailed(
+                DispatchFailureReason::AdapterRejected,
+            ));
+        }
+        let token = CoreCreateToken {
+            runtime: self.runtime,
+            effect: emission.id(),
+            epoch: emission.epoch(),
+            core: binding,
+            viewport: native.viewport(),
+        };
+        self.creates.insert(
+            native.viewport(),
+            PendingNativeCreate {
+                token,
+                origin: PendingNativeCreateOrigin::Adopted { native },
+                placement,
+                bound: Some(native),
+                initialization: NativeCreateInitialization::Unsubmitted,
             },
         );
         Ok(())
@@ -502,21 +1028,25 @@ impl NativeEffectDriver {
         &mut self,
         routes: &BTreeMap<ViewportId, BoundNativeRoute>,
         effect_sink: &NativeEffectSink,
-    ) -> Vec<EffectResult> {
-        let mut terminal = Vec::new();
+    ) -> Result<(), NativeRuntimeError> {
         let candidates = self
             .creates
             .iter()
-            .filter(|(_, pending)| pending.bound.is_some() && !pending.initialized)
-            .map(|(viewport, pending)| (*viewport, pending.token))
+            .filter(|(_, pending)| {
+                pending.bound.is_some()
+                    && pending.initialization == NativeCreateInitialization::Unsubmitted
+            })
+            .map(|(viewport, _)| *viewport)
             .collect::<Vec<_>>();
-        for (viewport, token) in candidates {
-            if let Err(result) = self.initialize_bound_create(viewport, routes, effect_sink) {
-                terminal.push(dispatch_result(token.effect, token.epoch, result));
-                self.creates.remove(&viewport);
-            }
+        for viewport in candidates {
+            self.initialize_bound_create(viewport, routes, effect_sink)
+                .map_err(|result| {
+                    NativeRuntimeError::HostedProtocol(format!(
+                        "native replacement initialization was not accepted atomically: {result:?}"
+                    ))
+                })?;
         }
-        terminal
+        Ok(())
     }
 
     fn initialize_bound_create(
@@ -574,7 +1104,10 @@ impl NativeEffectDriver {
                 NativeEffectCorrelation::new(UserData::new(presentation_token)),
             )
             .map_err(translate_effect_submit_error)?;
-        pending.initialized = true;
+        pending.initialization = NativeCreateInitialization::AwaitingDispatch {
+            geometry: InitializationLane::Awaiting,
+            presentation: InitializationLane::Awaiting,
+        };
         Ok(())
     }
 }
@@ -583,9 +1116,7 @@ fn restored_create_transition(
     outcome: NativeViewportCreateDispatchOutcome,
 ) -> RestoredCreateTransition {
     match outcome {
-        NativeViewportCreateDispatchOutcome::Materialized => {
-            RestoredCreateTransition::Retain(RestoredCreatePhase::Materialized)
-        }
+        NativeViewportCreateDispatchOutcome::Materialized => RestoredCreateTransition::Materialized,
         NativeViewportCreateDispatchOutcome::Rejected => RestoredCreateTransition::Retry,
         NativeViewportCreateDispatchOutcome::Failed => {
             RestoredCreateTransition::Retain(RestoredCreatePhase::Failed)
@@ -611,7 +1142,7 @@ fn restored_create_terminal_error(
                 viewport: token.viewport,
             })
         }
-        RestoredCreatePhase::AwaitingResult | RestoredCreatePhase::Materialized => None,
+        RestoredCreatePhase::AwaitingResult => None,
     }
 }
 
@@ -670,7 +1201,9 @@ fn translate_platform_error(error: NativePlatformError) -> EffectDispatchResult 
         | NativePlatformError::IncompletePlatformRoster
         | NativePlatformError::HostIngressInFlight
         | NativePlatformError::HostIngressPoisoned
-        | NativePlatformError::HostIngressSettlementMismatch => {
+        | NativePlatformError::HostIngressSettlementMismatch
+        | NativePlatformError::BindingIngressNotQuiescent
+        | NativePlatformError::BindingIngressAlreadyQuiesced => {
             EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected)
         }
     }
@@ -769,11 +1302,84 @@ fn rounded_i32(value: f64) -> Result<i32, NativeRuntimeError> {
 mod tests {
     use super::*;
 
+    fn pending_initialization() -> NativeCreateInitialization {
+        NativeCreateInitialization::AwaitingDispatch {
+            geometry: InitializationLane::Awaiting,
+            presentation: InitializationLane::Awaiting,
+        }
+    }
+
+    #[test]
+    fn native_initialization_requires_dispatch_proof_for_both_property_lanes() {
+        let mut initialization = pending_initialization();
+        assert!(!initialization.is_publishable());
+
+        assert_eq!(
+            initialization
+                .observe(
+                    NativeEffectProperty::Geometry,
+                    NativeEffectDispatchOutcome::Dispatched,
+                )
+                .expect("the geometry receipt is valid"),
+            InitializationReceiptDisposition::Consumed,
+        );
+        assert_eq!(
+            initialization
+                .observe(
+                    NativeEffectProperty::Presentation,
+                    NativeEffectDispatchOutcome::Indeterminate,
+                )
+                .expect("the indeterminate receipt is retained"),
+            InitializationReceiptDisposition::Report(EffectDispatchResult::Indeterminate(
+                EffectIndeterminateReason::AcknowledgementLost,
+            )),
+        );
+        assert!(!initialization.is_publishable());
+
+        assert_eq!(
+            initialization
+                .observe(
+                    NativeEffectProperty::Presentation,
+                    NativeEffectDispatchOutcome::Dispatched,
+                )
+                .expect("the later dispatch proof is valid"),
+            InitializationReceiptDisposition::Consumed,
+        );
+        assert!(initialization.is_publishable());
+    }
+
+    #[test]
+    fn native_initialization_reports_only_the_first_terminal_failure() {
+        let mut initialization = pending_initialization();
+        assert_eq!(
+            initialization
+                .observe(
+                    NativeEffectProperty::Geometry,
+                    NativeEffectDispatchOutcome::Rejected,
+                )
+                .expect("the rejection is valid"),
+            InitializationReceiptDisposition::Report(EffectDispatchResult::DispatchFailed(
+                DispatchFailureReason::AdapterRejected,
+            )),
+        );
+        assert_eq!(
+            initialization
+                .observe(
+                    NativeEffectProperty::Presentation,
+                    NativeEffectDispatchOutcome::Unsupported,
+                )
+                .expect("the second terminal result is consumed"),
+            InitializationReceiptDisposition::Consumed,
+        );
+        assert!(initialization.is_failed());
+        assert!(!initialization.is_publishable());
+    }
+
     #[test]
     fn restored_create_outcomes_distinguish_retry_materialization_and_fatal_failure() {
         assert_eq!(
             restored_create_transition(NativeViewportCreateDispatchOutcome::Materialized),
-            RestoredCreateTransition::Retain(RestoredCreatePhase::Materialized)
+            RestoredCreateTransition::Materialized
         );
         assert_eq!(
             restored_create_transition(NativeViewportCreateDispatchOutcome::Rejected),
@@ -796,7 +1402,6 @@ mod tests {
         assert!(
             restored_create_terminal_error(token, RestoredCreatePhase::AwaitingResult).is_none()
         );
-        assert!(restored_create_terminal_error(token, RestoredCreatePhase::Materialized).is_none());
         assert!(matches!(
             restored_create_terminal_error(token, RestoredCreatePhase::Failed),
             Some(NativeRuntimeError::RestoredViewportCreateFailed {

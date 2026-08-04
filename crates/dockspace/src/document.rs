@@ -579,6 +579,21 @@ impl DockspaceDocumentSession {
             .create_backend_ingress_provider(presentation_host, pointer_committed_through)
     }
 
+    /// Settles one recorder-reclaimed prefix through this session owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the core's exact settlement error without publishing a partial
+    /// document-session mutation.
+    #[doc(hidden)]
+    pub fn adapter_settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut crate::backend_ingress::BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<crate::viewport::ViewportBinding>, EngineError> {
+        self.engine
+            .settle_backend_ingress_prefix_retirement(receipt)
+    }
+
     /// Starts one joined backend-provider replacement through this session owner.
     #[doc(hidden)]
     pub fn adapter_begin_backend_ingress_provider_replacement(

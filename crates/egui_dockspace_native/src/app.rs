@@ -28,7 +28,7 @@ use crate::configuration::NativeConfigurationQueue;
 use crate::error::HostedHookError;
 use crate::ingress::{
     BoundNativeRoute, NativeEffectCycle, NativeIngressBridge, NativeIngressTransaction,
-    PreparedNativeIngress,
+    PreparedNativeIngress, RouteLessNativeKeepalive,
 };
 use crate::presentation::{NativePresentationLedger, PreparedNativePresentationBatch};
 use crate::receiver::pointer_receiver_receipts;
@@ -63,6 +63,8 @@ struct ActiveNativeCycle {
     session: EguiNativePresentationSession,
     presentation_host: PresentationHostLease,
     routes: BTreeMap<ViewportId, BoundNativeRoute>,
+    effect_routes: BTreeMap<ViewportId, BoundNativeRoute>,
+    route_less_keepalives: BTreeMap<ViewportId, RouteLessNativeKeepalive>,
     expected_surfaces: BTreeSet<SurfaceId>,
     callbacks: BTreeSet<ViewportId>,
     presentation_callbacks: BTreeSet<ViewportId>,
@@ -92,6 +94,66 @@ const fn restored_viewport_publication(
     } else {
         RestoredViewportPublication::AwaitingMaterialization
     }
+}
+
+fn restored_viewport_remains_pending(
+    viewport: ViewportId,
+    routed: bool,
+    retired_bootstrap_viewports: &BTreeSet<ViewportId>,
+) -> bool {
+    !routed && !retired_bootstrap_viewports.contains(&viewport)
+}
+
+fn extend_route_less_keepalive_declarations(
+    declared: &mut BTreeMap<ViewportId, SurfaceId>,
+    keepalives: &BTreeMap<ViewportId, RouteLessNativeKeepalive>,
+) -> Result<(), NativeRuntimeError> {
+    if keepalives
+        .iter()
+        .any(|(viewport, keepalive)| keepalive.exact().viewport() != *viewport)
+    {
+        return Err(NativeRuntimeError::IngressUnavailable(
+            "one route-less keepalive changed its exact viewport identity",
+        ));
+    }
+    if keepalives
+        .keys()
+        .any(|viewport| declared.contains_key(viewport))
+    {
+        return Err(NativeRuntimeError::IngressUnavailable(
+            "one viewport declaration was both route-less keepalive and core-routed",
+        ));
+    }
+    declared.extend(
+        keepalives
+            .iter()
+            .map(|(viewport, keepalive)| (*viewport, keepalive.surface())),
+    );
+    Ok(())
+}
+
+fn route_less_keepalive_builder(
+    catalog: &NativeViewportRoster,
+    keepalive: RouteLessNativeKeepalive,
+) -> egui::ViewportBuilder {
+    catalog
+        .retained_builder(keepalive.surface())
+        .with_visible(false)
+        .with_active(false)
+}
+
+fn restored_create_candidates(
+    pending: &BTreeSet<ViewportId>,
+    effect_routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+    keepalives: &BTreeMap<ViewportId, RouteLessNativeKeepalive>,
+) -> BTreeSet<ViewportId> {
+    pending
+        .iter()
+        .copied()
+        .filter(|viewport| {
+            !effect_routes.contains_key(viewport) && !keepalives.contains_key(viewport)
+        })
+        .collect()
 }
 
 struct PreparedNativeCycle {
@@ -281,6 +343,9 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             batch,
             bindings,
             routes,
+            effect_routes,
+            route_less_keepalives,
+            retired_bootstrap_viewports,
             pointer_edges,
             presentation_host,
             transaction,
@@ -291,7 +356,13 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .pending_restored_viewports
             .iter()
             .copied()
-            .filter(|viewport| !routes.contains_key(viewport))
+            .filter(|viewport| {
+                restored_viewport_remains_pending(
+                    *viewport,
+                    routes.contains_key(viewport),
+                    &retired_bootstrap_viewports,
+                )
+            })
             .collect();
         self.next_cycle = self
             .next_cycle
@@ -343,6 +414,8 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             session,
             presentation_host,
             routes,
+            effect_routes,
+            route_less_keepalives,
             expected_surfaces,
             callbacks: BTreeSet::new(),
             presentation_callbacks: BTreeSet::new(),
@@ -372,20 +445,26 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         let first_pass = active.callbacks.insert(viewport);
         if viewport == ViewportId::ROOT {
             if first_pass {
+                let restored_create_candidates = restored_create_candidates(
+                    &active.pending_restored_viewports,
+                    &active.effect_routes,
+                    &active.route_less_keepalives,
+                );
                 NativeIngressBridge::schedule_restored_viewports(
                     &mut active.effects,
-                    &active.pending_restored_viewports,
+                    &restored_create_candidates,
                     &active.routes,
                     &self.catalog,
                     &active.create_sink,
                 )?;
             }
             let mut declared = active
-                .routes
+                .effect_routes
                 .values()
                 .filter(|route| route.exact().viewport() != ViewportId::ROOT)
                 .map(|route| (route.exact().viewport(), route.surface()))
                 .collect::<BTreeMap<_, _>>();
+            extend_route_less_keepalive_declarations(&mut declared, &active.route_less_keepalives)?;
             for viewport in &active.pending_restored_viewports {
                 let publication = restored_viewport_publication(
                     active.routes.contains_key(viewport),
@@ -405,6 +484,10 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                     self.catalog
                         .builder(viewport)
                         .unwrap_or_else(|| self.catalog.retained_builder(surface))
+                } else if let Some(route) = active.effect_routes.get(&viewport) {
+                    self.catalog.child_for_binding(route.core()).builder()
+                } else if let Some(keepalive) = active.route_less_keepalives.get(&viewport) {
+                    route_less_keepalive_builder(&self.catalog, *keepalive)
                 } else {
                     self.catalog
                         .restored_staging_builder(viewport)
@@ -413,6 +496,9 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                 ui.ctx()
                     .show_viewport_deferred(viewport, builder, |_ui, _class| {});
             }
+        }
+        if active.route_less_keepalives.contains_key(&viewport) {
+            return Ok(());
         }
         let Some(route) = active.routes.get(&viewport).copied() else {
             ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::hover());
@@ -521,14 +607,21 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             frame.abort(&mut self.dockspace);
             return Err(NativeRuntimeError::ViewportRegistrationRejected { surface });
         }
-        NativeIngressBridge::dispatch_effects(
+        if let Err(error) = NativeIngressBridge::dispatch_effects(
             &mut active.effects,
             frame.transition().platform_effects(),
-            &active.routes,
+            &active.effect_routes,
             &self.catalog,
             &active.effect_sink,
             &active.create_sink,
-        );
+        ) {
+            frame.abort(&mut self.dockspace);
+            return Err(error);
+        }
+        if let Err(error) = self.ingress.prepare_effect_cycle_adoptions(&active.effects) {
+            frame.abort(&mut self.dockspace);
+            return Err(error);
+        }
         self.prepared = Some(PreparedNativeCycle {
             frame,
             presentations: prepared_presentations,
@@ -827,6 +920,8 @@ fn _assert_exact_native_is_copy(_: ExactNativeViewport) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dockspace::viewport::WindowToken;
+    use egui_dockspace::NativeViewportIncarnation;
 
     #[test]
     fn restored_viewport_stays_undeclared_until_materialized_then_hidden_until_routed() {
@@ -842,5 +937,69 @@ mod tests {
             restored_viewport_publication(true, true),
             RestoredViewportPublication::RoutedLive
         );
+    }
+
+    #[test]
+    fn retired_unpublished_bootstrap_is_not_rescheduled() {
+        let viewport = ViewportId::from_hash_of("retired-unpublished-bootstrap");
+        assert!(restored_viewport_remains_pending(
+            viewport,
+            false,
+            &BTreeSet::new(),
+        ));
+        assert!(!restored_viewport_remains_pending(
+            viewport,
+            false,
+            &BTreeSet::from([viewport]),
+        ));
+        assert!(!restored_viewport_remains_pending(
+            viewport,
+            true,
+            &BTreeSet::new(),
+        ));
+    }
+
+    #[test]
+    fn route_less_keepalive_is_hidden_inactive_and_cannot_overlap_a_core_route() {
+        let host_surface = SurfaceId::new(1);
+        let child_surface = SurfaceId::new(2);
+        let child_viewport = ViewportId::from_hash_of("route-less-keepalive");
+        let mut catalog = NativeViewportRoster::new(crate::NativeSurfaceSpec::root(
+            host_surface,
+            WindowToken::new(1),
+        ))
+        .expect("the root viewport is valid");
+        catalog
+            .insert(crate::NativeSurfaceSpec::child(
+                child_viewport,
+                child_surface,
+                egui::ViewportBuilder::default()
+                    .with_visible(true)
+                    .with_active(true),
+            ))
+            .expect("the child viewport is valid");
+        let keepalive = RouteLessNativeKeepalive::new(
+            ExactNativeViewport::new(child_viewport, NativeViewportIncarnation::new(2)),
+            child_surface,
+        );
+        let keepalives = BTreeMap::from([(child_viewport, keepalive)]);
+        let pending = BTreeSet::from([child_viewport]);
+
+        let mut declared = BTreeMap::new();
+        extend_route_less_keepalive_declarations(&mut declared, &keepalives)
+            .expect("a route-less keepalive owns only its physical declaration");
+        assert_eq!(declared, BTreeMap::from([(child_viewport, child_surface)]));
+
+        let builder = route_less_keepalive_builder(&catalog, keepalive);
+        assert_eq!(builder.visible, Some(false));
+        assert_eq!(builder.active, Some(false));
+        assert!(restored_create_candidates(&pending, &BTreeMap::new(), &keepalives).is_empty());
+
+        let mut authoritative = BTreeMap::from([(child_viewport, child_surface)]);
+        assert!(matches!(
+            extend_route_less_keepalive_declarations(&mut authoritative, &keepalives),
+            Err(NativeRuntimeError::IngressUnavailable(_))
+        ));
+        assert_eq!(keepalive.exact().viewport(), child_viewport);
     }
 }

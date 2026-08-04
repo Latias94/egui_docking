@@ -744,7 +744,9 @@ impl DockEngine {
         } else {
             self.terminate_scroll_session(cause, key, ScrollTerminationReason::Cancelled(reason))?
         };
-        self.finish_scroll_provider_terminal(cause, key)?;
+        if reason != crate::pointer_journal::ScrollCancelReason::BindingRetired {
+            self.finish_scroll_provider_terminal(cause, key)?;
+        }
         Ok(outcomes)
     }
 

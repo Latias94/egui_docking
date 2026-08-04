@@ -337,10 +337,11 @@ stateDiagram-v2
     Owned --> Owned: Update + Unknown / no mutation
     Owned --> TerminalPending: Update + known receiver loss
     Owned --> [*]: End / optional final mutation
-    Owned --> [*]: Cancel
-    Owned --> TerminalPending: lifecycle invalidation
+    Owned --> [*]: provider-terminal Cancel
+    Owned --> TerminalPending: BindingRetired or lifecycle invalidation
     Suppressed --> Suppressed: Update
-    Suppressed --> [*]: End or Cancel
+    Suppressed --> [*]: End or provider-terminal Cancel
+    Suppressed --> TerminalPending: BindingRetired
     TerminalPending --> TerminalPending: Update / no semantic mutation
     TerminalPending --> [*]: End, Cancel, stream retirement, or provider retirement
 ```
@@ -360,7 +361,12 @@ The transition rules are:
   lifecycle reason. It never retargets.
 - `End` applies its optional final delta only if the same owner remains known,
   then terminates unconditionally. An unknown receiver still terminates.
-- `Cancel` never applies a delta and terminates unconditionally.
+- A provider-terminal `Cancel` never applies a delta and terminates
+  unconditionally.
+- `Cancel(BindingRetired)` terminates the semantic owner but retains the
+  sequence tombstone because retiring one viewport binding does not prove that
+  the physical pointer stream or provider sequence ended. Late updates are
+  inert; the exact provider `End` or terminal `Cancel` consumes the tombstone.
 - A semantic termination observed before the provider's terminal edge retains a
   sequence tombstone. Later updates cannot reopen the owner, and the exact
   provider `End` or `Cancel` consumes the tombstone without emitting a second

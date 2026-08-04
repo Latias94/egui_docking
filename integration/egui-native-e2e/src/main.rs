@@ -316,11 +316,16 @@ impl SmokeApp {
                     .runtime_retention_manifest()
                     .presentation_hosts()
                     .retained_stream_states();
+                let retained_destroyed_binding_guards = engine
+                    .runtime_retention_manifest()
+                    .bindings()
+                    .destroyed_binding_guards();
                 if status.live_viewports == 1
                     && surfaces == [ROOT_SURFACE]
                     && workspace.item_multiset() == expected_item_multiset()
                     && engine.interaction_authority(ROOT_SURFACE).is_some()
                     && retained_presentation_streams == 1
+                    && retained_destroyed_binding_guards == 0
                     && let Some(projection) = engine.interaction_projection(ROOT_SURFACE)
                 {
                     verify_surface_tab_group(workspace, ROOT_SURFACE, "recovered root")?;

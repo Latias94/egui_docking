@@ -77,7 +77,8 @@ use self::surface_vacancy::TickVacancyLedger;
 use crate::backend_ingress::{
     BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitWatermark,
     BackendIngressError, BackendIngressLease, BackendIngressOrdinal, BackendIngressPayload,
-    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
+    BackendIngressPrefixRetirementReceipt, BackendIngressProviderReplacementTicket,
+    BackendIngressRecorder,
 };
 use crate::close_plan::{
     CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCoordinator, CloseDecision,
@@ -641,6 +642,7 @@ pub struct CoreHostFrame {
     predecessor_tick: ReducerTickId,
     presentation_host_frontier: u64,
     platform_provider_frontier: PlatformProviderAuthorityFrontier,
+    runtime_retention_revision: u64,
     tick: ReducerTickId,
     /// Surface roster frozen from the published engine before observation
     /// reduction. This is the frame capability's stale-admission baseline.
@@ -754,6 +756,7 @@ struct HostFrameCommitFence {
     platform_provider_frontier: PlatformProviderAuthorityFrontier,
     pointer_provider: Option<PointerInputLease>,
     backend_ingress: Option<BackendIngressLease>,
+    runtime_retention_revision: u64,
 }
 
 /// Failure to construct or atomically reduce engine state.
@@ -1021,6 +1024,19 @@ pub enum EngineError {
         /// Provider authority frontier observed at seal or finish.
         current: u64,
     },
+    /// Retention-only state changed after an owned host frame was prepared.
+    #[error(
+        "host frame retention revision {submitted} no longer matches current revision {current}"
+    )]
+    HostFrameRuntimeRetentionStale {
+        /// Retention revision frozen by the prepared candidate.
+        submitted: u64,
+        /// Current published retention revision.
+        current: u64,
+    },
+    /// The engine-local retention revision cannot advance without wrapping.
+    #[error("runtime retention revision is exhausted")]
+    RuntimeRetentionRevisionExhausted,
     /// One physical surface was derived as both semantic content and native staging.
     #[error("physical surface {surface} appears in multiple host presentation slots")]
     HostPresentationRosterCollision {
@@ -1377,6 +1393,8 @@ pub struct DockEngine {
     last_surface_recovery_obligation: SurfaceRecoveryObligationId,
     bound_surface_recoveries: BTreeMap<crate::ids::SurfaceId, BoundSurfaceRecovery>,
     native_admission: NativeAdmissionState,
+    /// Publication fence for retention-only mutations outside reducer ticks.
+    runtime_retention_revision: u64,
     last_reducer_tick: ReducerTickId,
     semantic_input_watermark: Option<SourceSequence>,
     last_input: InputSequence,
@@ -1877,6 +1895,7 @@ impl DockEngine {
             last_surface_recovery_obligation: SurfaceRecoveryObligationId::default(),
             bound_surface_recoveries: BTreeMap::new(),
             native_admission: NativeAdmissionState::default(),
+            runtime_retention_revision: 0,
             last_reducer_tick: ReducerTickId::default(),
             semantic_input_watermark: None,
             last_input: InputSequence::default(),
@@ -2437,6 +2456,7 @@ impl DockEngine {
                 .compact_quiesced_retiring_stream(quiescence, &retained_streams)
                 .map_err(presentation_ledger_error)?;
         }
+        candidate.advance_runtime_retention_revision()?;
         self.publish_candidate(candidate);
         Ok(())
     }
@@ -4927,6 +4947,7 @@ impl DockEngine {
             last_surface_recovery_obligation: self.last_surface_recovery_obligation,
             bound_surface_recoveries: self.bound_surface_recoveries.clone(),
             native_admission: self.native_admission.clone(),
+            runtime_retention_revision: self.runtime_retention_revision,
             last_reducer_tick: self.last_reducer_tick,
             semantic_input_watermark: self.semantic_input_watermark,
             last_input: self.last_input,
@@ -4951,6 +4972,14 @@ impl DockEngine {
     fn mark_runtime_boundary_published(&mut self) {
         self.close.mark_boundary_published();
         self.viewport.mark_effect_boundary_published();
+    }
+
+    fn advance_runtime_retention_revision(&mut self) -> Result<(), EngineError> {
+        self.runtime_retention_revision = self
+            .runtime_retention_revision
+            .checked_add(1)
+            .ok_or(EngineError::RuntimeRetentionRevisionExhausted)?;
+        Ok(())
     }
 
     fn publish_candidate(&mut self, mut candidate: Self) {

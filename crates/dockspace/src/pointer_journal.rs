@@ -691,6 +691,8 @@ pub enum ScrollPhase {
 pub enum ScrollCancelReason {
     /// The platform explicitly cancelled the gesture.
     PlatformCancelled,
+    /// The delivery binding retired while the physical sequence may still emit a terminal tail.
+    BindingRetired,
     /// The scroll device was removed.
     DeviceRemoved,
     /// The provider reset its sequence namespace.

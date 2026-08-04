@@ -76,9 +76,53 @@ impl DockEngine {
     /// Returns an exact provider-bound proof suitable for recorder prefix reclamation.
     #[must_use]
     pub fn backend_ingress_commit_watermark(&self) -> Option<BackendIngressCommitWatermark> {
-        self.backend_ingress.active().map(|lease| {
-            BackendIngressCommitWatermark::new(lease, self.backend_ingress.committed_through())
-        })
+        self.backend_ingress.commit_watermark()
+    }
+
+    /// Atomically settles one recorder-reclaimed prefix and its binding quiescence facts.
+    ///
+    /// The affine receipt proves that the sole backend recorder reclaimed only a
+    /// core-committed prefix. Every binding named by that prefix must still have
+    /// a destroyed-binding guard owned by the same platform provider. A failed
+    /// validation publishes nothing and leaves the receipt available for an
+    /// exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the receipt is consumed, belongs to another active
+    /// backend, no longer ends at the exact core commit boundary, or names a
+    /// binding guard that is absent or owned by another platform provider.
+    pub fn settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<ViewportBinding>, EngineError> {
+        let mut candidate = self.candidate();
+        candidate
+            .backend_ingress
+            .commit_prefix_retirement(receipt)
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let provider = receipt
+            .lease()
+            .ok_or(EngineError::BackendIngress {
+                source: BackendIngressError::PrefixRetirementReceiptConsumed,
+            })?
+            .platform_provider();
+        let bindings = receipt.binding_quiescences().to_vec();
+        for binding in &bindings {
+            candidate
+                .viewport
+                .compact_quiesced_destroyed_binding_guard(*binding, provider)
+                .map_err(|source| EngineError::Viewport {
+                    input: candidate.last_input,
+                    source,
+                })?;
+        }
+        candidate.advance_runtime_retention_revision()?;
+        receipt
+            .consume()
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        self.publish_candidate(candidate);
+        Ok(bindings)
     }
 
     /// Records one renderer-neutral presentation fact in the active backend order.

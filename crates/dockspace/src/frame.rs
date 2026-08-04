@@ -523,6 +523,27 @@ impl ViewportCoordinator {
             .compact_destroyed_tombstones_from(provider)
     }
 
+    /// Compacts one exact binding guard after its joined producer lane proves quiescence.
+    pub(crate) fn compact_quiesced_destroyed_binding_guard(
+        &mut self,
+        binding: ViewportBinding,
+        provider: PlatformObservationLease,
+    ) -> Result<(), ViewportCoordinatorError> {
+        self.binding_retirement
+            .compact_destroyed_tombstone(binding, provider)
+            .map_err(binding_retirement_error)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_destroyed_binding_guard_for_test(
+        &mut self,
+        binding: ViewportBinding,
+        provider: PlatformObservationLease,
+    ) {
+        self.binding_retirement
+            .record_destroyed_tombstone(binding, provider);
+    }
+
     /// Releases the exact revoked effect-provider guard proven quiescent by backend drain.
     pub(crate) fn compact_quiesced_backend_effect_provider(
         &mut self,
@@ -3568,6 +3589,18 @@ fn binding_retirement_error(error: BindingRetirementLifecycleError) -> ViewportC
         BindingRetirementLifecycleError::CleanupWindowNotObserved { effect } => {
             ViewportCoordinatorError::CleanupWindowNotObserved { effect }
         }
+        BindingRetirementLifecycleError::DestroyedTombstoneMissing { binding } => {
+            ViewportCoordinatorError::DestroyedBindingGuardMissing { binding }
+        }
+        BindingRetirementLifecycleError::DestroyedTombstoneProviderMismatch {
+            binding,
+            expected,
+            submitted,
+        } => ViewportCoordinatorError::DestroyedBindingGuardProviderMismatch {
+            binding,
+            expected,
+            submitted,
+        },
     }
 }
 
@@ -3727,6 +3760,16 @@ pub enum ViewportCoordinatorError {
     },
     #[error("destroyed viewport binding is still observed: {binding:?}")]
     DestroyedSurfaceStillObserved { binding: ViewportBinding },
+    #[error("destroyed binding retention guard is missing for {binding:?}")]
+    DestroyedBindingGuardMissing { binding: ViewportBinding },
+    #[error(
+        "destroyed binding guard {binding:?} belongs to provider {expected:?}, not {submitted:?}"
+    )]
+    DestroyedBindingGuardProviderMismatch {
+        binding: ViewportBinding,
+        expected: PlatformObservationLease,
+        submitted: PlatformObservationLease,
+    },
     #[error("native recovery is not pending for surface {surface:?}")]
     MissingRecoveryPending { surface: SurfaceId },
     #[error("staging binding {binding:?} did not retain pending admission: {admission:?}")]

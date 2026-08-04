@@ -1,7 +1,8 @@
 //! Engine ownership adapters for raw and document-bound dockspace sessions.
 
 use dockspace::backend_ingress::{
-    BackendIngressDrainReceipt, BackendIngressProviderReplacementTicket, BackendIngressRecorder,
+    BackendIngressDrainReceipt, BackendIngressPrefixRetirementReceipt,
+    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
 };
 #[cfg(feature = "serde")]
 use dockspace::document::{DockspaceDocumentRestore, DockspaceDocumentSession};
@@ -14,6 +15,7 @@ use dockspace::presentation_observation::{
     HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
 };
 use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
+use dockspace::viewport::ViewportBinding;
 
 #[cfg(feature = "serde")]
 pub(super) type EguiDockEngine = DockspaceDocumentSession;
@@ -33,6 +35,11 @@ pub(super) trait EguiEngineOwner {
         presentation_host: PresentationHostLease,
         pointer_committed_through: PointerEdgeSequence,
     ) -> Result<BackendIngressRecorder, EngineError>;
+
+    fn settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<ViewportBinding>, EngineError>;
 
     fn begin_backend_ingress_provider_replacement(
         &mut self,
@@ -178,6 +185,13 @@ impl EguiEngineOwner for DockEngine {
         )
     }
 
+    fn settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<ViewportBinding>, EngineError> {
+        DockEngine::settle_backend_ingress_prefix_retirement(self, receipt)
+    }
+
     fn begin_backend_ingress_provider_replacement(
         &mut self,
         drained: BackendIngressDrainReceipt,
@@ -273,6 +287,13 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         pointer_committed_through: PointerEdgeSequence,
     ) -> Result<BackendIngressRecorder, EngineError> {
         self.adapter_create_backend_ingress_provider(presentation_host, pointer_committed_through)
+    }
+
+    fn settle_backend_ingress_prefix_retirement(
+        &mut self,
+        receipt: &mut BackendIngressPrefixRetirementReceipt,
+    ) -> Result<Vec<ViewportBinding>, EngineError> {
+        self.adapter_settle_backend_ingress_prefix_retirement(receipt)
     }
 
     fn begin_backend_ingress_provider_replacement(

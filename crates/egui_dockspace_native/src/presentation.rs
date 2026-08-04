@@ -432,12 +432,8 @@ impl NativePresentationLedger {
         &mut self,
         dockspace: &mut Dockspace,
         recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
-        binding: NativeViewportBinding,
+        exact: ExactNativeViewport,
     ) -> Result<(), NativeRuntimeError> {
-        let exact = ExactNativeViewport::new(
-            binding.viewport_id(),
-            egui_dockspace::NativeViewportIncarnation::new(binding.incarnation().get()),
-        );
         self.presented_graphs.remove(&exact);
         self.retired_bindings.insert(exact);
         if let Some(streams) = self.live_streams.remove(&exact) {

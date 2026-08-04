@@ -251,6 +251,14 @@ pub(super) enum BindingRetirementLifecycleError {
     CleanupWindowNotObserved {
         effect: EffectId,
     },
+    DestroyedTombstoneMissing {
+        binding: ViewportBinding,
+    },
+    DestroyedTombstoneProviderMismatch {
+        binding: ViewportBinding,
+        expected: PlatformObservationLease,
+        submitted: PlatformObservationLease,
+    },
 }
 
 /// Sole owner of retired binding state, effect identity, token reservations, and tombstones.
@@ -589,6 +597,31 @@ impl BindingRetirementLifecycle {
         compacted.len()
     }
 
+    /// Releases one exact guard after its producer-bound ingress lane quiesces.
+    pub(super) fn compact_destroyed_tombstone(
+        &mut self,
+        binding: ViewportBinding,
+        provider: PlatformObservationLease,
+    ) -> Result<(), BindingRetirementLifecycleError> {
+        let expected = self
+            .destroyed_tombstone_providers
+            .get(&binding)
+            .copied()
+            .ok_or(BindingRetirementLifecycleError::DestroyedTombstoneMissing { binding })?;
+        if expected != provider {
+            return Err(
+                BindingRetirementLifecycleError::DestroyedTombstoneProviderMismatch {
+                    binding,
+                    expected,
+                    submitted: provider,
+                },
+            );
+        }
+        self.destroyed_tombstone_providers.remove(&binding);
+        self.destroyed_tombstones.remove(&binding);
+        Ok(())
+    }
+
     pub(super) fn destroyed_bindings(&self) -> &BTreeSet<ViewportBinding> {
         &self.destroyed_tombstones
     }
@@ -778,6 +811,41 @@ mod tests {
         assert_eq!(
             lifecycle.retention_manifest().terminal_release_barrier(),
             None
+        );
+    }
+
+    #[test]
+    fn exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthrough() {
+        let mut lifecycle = BindingRetirementLifecycle::default();
+        let (provider, foreign_provider) = provider_pair();
+        for token in 1..=10_000 {
+            lifecycle.record_destroyed_tombstone(binding(1, token), provider);
+        }
+
+        let first = binding(1, 1);
+        assert_eq!(
+            lifecycle
+                .compact_destroyed_tombstone(first, foreign_provider)
+                .expect_err("a foreign provider cannot compact the exact guard"),
+            BindingRetirementLifecycleError::DestroyedTombstoneProviderMismatch {
+                binding: first,
+                expected: provider,
+                submitted: foreign_provider,
+            }
+        );
+        assert!(lifecycle.was_destroyed(first));
+
+        for token in 1..=10_000 {
+            lifecycle
+                .compact_destroyed_tombstone(binding(1, token), provider)
+                .expect("each exact producer proof must compact one guard");
+        }
+        assert_eq!(lifecycle.retention_manifest().destroyed_binding_guards(), 0);
+        assert_eq!(
+            lifecycle
+                .compact_destroyed_tombstone(first, provider)
+                .expect_err("one exact proof cannot compact twice"),
+            BindingRetirementLifecycleError::DestroyedTombstoneMissing { binding: first },
         );
     }
 

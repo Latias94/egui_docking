@@ -298,16 +298,21 @@ fn unavailable_receiver_receipts(
 }
 
 fn reclaim_backend_prefix(
-    dockspace: &Dockspace,
+    dockspace: &mut Dockspace,
     recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
 ) {
     let committed = dockspace
         .engine()
         .backend_ingress_commit_watermark()
         .expect("a committed native frame exposes a reclaimable prefix");
-    recorder
+    let receipt = recorder
         .retire_committed_prefix(committed)
         .expect("the recorder may reclaim the core-proven prefix");
+    if let Some(mut receipt) = receipt {
+        dockspace
+            .adapter_settle_backend_ingress_prefix_retirement(&mut receipt)
+            .expect("the reclaimed prefix must settle against the same core authority");
+    }
 }
 
 #[derive(Default)]
@@ -443,9 +448,14 @@ fn bootstrap_native_root(
         .engine()
         .backend_ingress_commit_watermark()
         .expect("bootstrap must publish a reclaimable prefix");
-    recorder
+    let receipt = recorder
         .retire_committed_prefix(committed)
         .expect("bootstrap prefix must be reclaimable");
+    if let Some(mut receipt) = receipt {
+        dockspace
+            .adapter_settle_backend_ingress_prefix_retirement(&mut receipt)
+            .expect("bootstrap prefix retirement must settle");
+    }
     let binding = dockspace
         .native_viewport_binding(SURFACE)
         .expect("bootstrap registration must mint a core binding");
@@ -516,9 +526,14 @@ fn paint_native_frame_with_context(
         .engine()
         .backend_ingress_commit_watermark()
         .expect("native frame must publish a reclaimable ingress prefix");
-    recorder
+    let receipt = recorder
         .retire_committed_prefix(committed)
         .expect("committed native ingress must be reclaimable");
+    if let Some(mut receipt) = receipt {
+        dockspace
+            .adapter_settle_backend_ingress_prefix_retirement(&mut receipt)
+            .expect("native prefix retirement must settle");
+    }
     commit
 }
 
@@ -612,7 +627,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
             .record_ready_backend_pane_focus_observations(&mut recorder)
             .expect("completed focus samples must enter the backend recorder");
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
-        reclaim_backend_prefix(&dockspace, &mut recorder);
+        reclaim_backend_prefix(&mut dockspace, &mut recorder);
         sequence += 1;
         if dockspace.engine().interaction_projection(SURFACE).is_some() {
             break;
@@ -647,7 +662,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         "a request cannot acknowledge itself in the paint that issued it",
     );
     presentation_clock.settle_and_record(&dockspace, &mut recorder, requested.into_parts().1);
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     let intent = dockspace
         .engine()
         .viewport_focus()
@@ -673,7 +688,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         "recording an observation is not the same as core acknowledgement",
     );
     presentation_clock.settle_and_record(&dockspace, &mut recorder, sampled.into_parts().1);
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
 
     let acknowledged = paint_native_focus_frame(
         &mut dockspace,
@@ -737,7 +752,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
             .record_ready_backend_pane_focus_observations(&mut recorder)
             .expect("bootstrap focus samples must enter the predecessor recorder");
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
-        reclaim_backend_prefix(&dockspace, &mut recorder);
+        reclaim_backend_prefix(&mut dockspace, &mut recorder);
         sequence += 1;
         if dockspace.engine().interaction_projection(SURFACE).is_some() {
             break;
@@ -766,7 +781,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
     for output in sampled.into_parts().1 {
         output.settle_with(|_, _| EguiPresentationResult::Dropped);
     }
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     assert!(
         recorder.recorded_through() > dockspace.engine().backend_ingress_committed_through(),
         "recorder acceptance must not masquerade as a core commit",
@@ -1025,7 +1040,7 @@ fn core_backend_publishes_actionable_accesskit_tree() {
                 })
         });
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
-        reclaim_backend_prefix(&dockspace, &mut recorder);
+        reclaim_backend_prefix(&mut dockspace, &mut recorder);
         if actionable_tab && dockspace.engine().interaction_projection(SURFACE).is_some() {
             break;
         }
@@ -1111,7 +1126,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .finish(&mut dockspace)
         .expect("source platform cycle must commit");
     presentation_clock.settle_and_record(&dockspace, &mut recorder, commit.into_parts().1);
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
 
     let mut sequence = 3;
     while dockspace.engine().interaction_projection(SURFACE).is_none() {
@@ -1229,7 +1244,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         [InteractionOutcome::DragArmed { .. }]
     ));
     presentation_clock.settle_and_record(&dockspace, &mut recorder, press.into_parts().1);
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
 
     let outside = PhysicalPoint::new(1_700.0, 900.0).expect("outside point must be valid");
@@ -1297,7 +1312,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         !preview_presented.is_empty(),
         "the moved preview must create an ordered presentation fact"
     );
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
 
     if matches!(order, ReleasePresentationOrder::PresentationBeforeRelease) {
@@ -1398,7 +1413,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         })
         .expect("both causal orders must eventually create one native saga");
     presentation_clock.settle_and_record(&dockspace, &mut recorder, released.into_parts().1);
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
 
     let target_native = ExactNativeViewport::new(
@@ -1507,7 +1522,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     for output in unavailable.into_parts().1 {
         output.settle_with(|_, _| EguiPresentationResult::Dropped);
     }
-    reclaim_backend_prefix(&dockspace, &mut recorder);
+    reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
 
     recorder
@@ -1746,9 +1761,14 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
         .engine()
         .backend_ingress_commit_watermark()
         .expect("the active provider must expose its exact committed prefix");
-    recorder
+    let receipt = recorder
         .retire_committed_prefix(committed)
         .expect("the recorder may reclaim only the core-proven prefix");
+    if let Some(mut receipt) = receipt {
+        dockspace
+            .adapter_settle_backend_ingress_prefix_retirement(&mut receipt)
+            .expect("the reclaimed prefix must settle against the committed frame");
+    }
     assert_eq!(recorder.retained_record_count(), 0);
     assert!(
         recorder
