@@ -410,6 +410,57 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
             hover: ReceiverFact::Blocked(surface),
         }
     }
+
+    /// Adds the exact framework receiver which accepted delivery.
+    ///
+    /// This composes independently with hover facts so one release can answer
+    /// a `DeliveryAndHoverHit` challenge without discarding either fact.
+    #[must_use]
+    pub const fn with_delivery(mut self, receiver: &'receiver PresentedDockReceiver) -> Self {
+        self.delivery = ReceiverFact::Dock(receiver);
+        self
+    }
+
+    /// Adds an authoritative known-empty delivery result.
+    #[must_use]
+    pub const fn with_no_delivery(mut self, surface: &'receiver PresentedDockspaceSurface) -> Self {
+        self.delivery = ReceiverFact::NoReceiver(surface);
+        self
+    }
+
+    /// Adds an authoritative higher-layer delivery blocker.
+    #[must_use]
+    pub const fn with_blocked_delivery(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.delivery = ReceiverFact::Blocked(surface);
+        self
+    }
+
+    /// Adds the exact point-bound docking receiver under the pointer.
+    #[must_use]
+    pub const fn with_hover(mut self, receiver: &'receiver PresentedDockReceiver) -> Self {
+        self.hover = ReceiverFact::Dock(receiver);
+        self
+    }
+
+    /// Adds an authoritative known-empty hover result.
+    #[must_use]
+    pub const fn with_no_hover(mut self, surface: &'receiver PresentedDockspaceSurface) -> Self {
+        self.hover = ReceiverFact::NoReceiver(surface);
+        self
+    }
+
+    /// Adds an authoritative higher-layer hover blocker.
+    #[must_use]
+    pub const fn with_blocked_hover(
+        mut self,
+        surface: &'receiver PresentedDockspaceSurface,
+    ) -> Self {
+        self.hover = ReceiverFact::Blocked(surface);
+        self
+    }
 }
 
 /// Failure at the renderer-neutral interaction boundary.

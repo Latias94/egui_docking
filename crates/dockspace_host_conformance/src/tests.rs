@@ -11,14 +11,14 @@ use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceInteractionError, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostFrameReport,
-    HostInputOutcome, HostWindowToken, NativeCloseState, NativePlatformError, NativeSurfaceLease,
-    NativeWindowFacts, PresentationSettlementRejection, PresentedDockReceiver,
-    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
-    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    UniformSurfaceMetrics,
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin,
+    HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState, NativePlatformError,
+    NativeSurfaceLease, NativeWindowFacts, PresentationSettlementRejection, PresentedDockReceiver,
+    PresentedDockspaceSurface, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, UniformSurfaceMetrics,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::{CloseDecision, CloseResolutionOutcome};
@@ -102,6 +102,244 @@ fn assert_command_applied(report: &HostFrameReport) {
             changed: true,
         }]
     ));
+}
+
+fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {
+    let (workspace, _) = tabs_workspace([A, B]);
+    let mut host = DeterministicHost::new(workspace);
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
+    let metrics =
+        UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the close fixture measures its surface");
+    });
+
+    let mut close = None;
+    let paint = host.run(|frame| {
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("the pointer phase closes before paint")
+            .expect("the measured surface is ready");
+        let close_bounds = plan
+            .tabs()
+            .find(|tab| tab.item() == A)
+            .and_then(|tab| tab.close_bounds())
+            .expect("item A exposes a close control");
+        close = plan.receivers().find(|receiver| {
+            receiver.role() == DockspaceReceiverRole::TabClose && receiver.bounds() == close_bounds
+        });
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the exact close output was painted");
+    });
+    host.observe_painted_outputs(paint);
+    host.session
+        .enable_surface_pointer(SURFACE)
+        .expect("the presented surface admits pointer input");
+    (
+        host,
+        close.expect("the close receiver is part of the public paint plan"),
+    )
+}
+
+fn press_pointer_close(
+    host: &mut DeterministicHost,
+    descriptor: &DockspaceReceiverDescriptor,
+) -> (PresentedDockReceiver, PresentedDockspaceSurface) {
+    let receiver = host
+        .session
+        .bind_presented_receiver(descriptor)
+        .expect("the close receiver belongs to the current presented output");
+    let surface = host
+        .session
+        .presented_surface(SURFACE)
+        .expect("the close surface remains presented");
+    let point = receiver.center();
+    let pressed = host.run(|frame| {
+        frame
+            .submit_surface_pointer(SurfacePointerInput::new(
+                SurfacePointerId::new(77),
+                SurfacePointerEvent::ButtonPressed(SurfacePointerButton::Primary),
+                SurfacePointerPosition::Known(point),
+                SurfacePointerCapture::ProviderEndpoint,
+                SurfacePointerReceiverFacts::delivery(&receiver),
+            ))
+            .expect("the exact close receiver accepts the press");
+    });
+    assert!(pressed.inputs().is_empty());
+    (receiver, surface)
+}
+
+fn submit_pointer_close_release(
+    frame: &mut DockspaceHostFrame<'_>,
+    receiver: PresentedDockReceiver,
+    surface: PresentedDockspaceSurface,
+) {
+    let point = receiver.center();
+    frame
+        .submit_surface_pointer(SurfacePointerInput::new(
+            SurfacePointerId::new(77),
+            SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
+            SurfacePointerPosition::Known(point),
+            SurfacePointerCapture::None,
+            SurfacePointerReceiverFacts::delivery(&receiver).with_no_hover(&surface),
+        ))
+        .expect("one release supplies delivery and hover facts together");
+}
+
+fn request_pointer_close(
+    host: &mut DeterministicHost,
+    descriptor: &DockspaceReceiverDescriptor,
+) -> dockspace::ClosePlan {
+    let (receiver, surface) = press_pointer_close(host, descriptor);
+    let released = host.run(|frame| {
+        submit_pointer_close_release(frame, receiver, surface);
+    });
+    match released.inputs() {
+        [
+            HostInputOutcome::CloseRequested {
+                plan,
+                reused: false,
+                origin: HostCloseRequestOrigin::Interaction,
+            },
+        ] => plan.clone(),
+        outcomes => panic!("expected one pointer close request, got {outcomes:?}"),
+    }
+}
+
+#[test]
+fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
+    let (mut host, close) = pointer_close_host();
+    let before = host.workspace().clone();
+
+    let veto_plan = request_pointer_close(&mut host, &close);
+    let veto_item = veto_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the pointer close plan names item A");
+    let veto = host.run(|frame| {
+        frame
+            .resolve_close(veto_plan.request(), veto_item.token(), CloseDecision::Veto)
+            .expect("the host can veto the pointer-created plan");
+    });
+    assert!(matches!(
+        veto.inputs(),
+        [HostInputOutcome::CloseDecisionProcessed {
+            resolution: CloseResolutionOutcome::Vetoed { request, item: A },
+            changed: false,
+            ..
+        }] if *request == veto_plan.request()
+    ));
+    assert_eq!(host.workspace(), &before);
+
+    let allow_plan = request_pointer_close(&mut host, &close);
+    let allow_item = allow_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the replacement close plan names item A");
+    let allow = host.run(|frame| {
+        frame
+            .resolve_close(
+                allow_plan.request(),
+                allow_item.token(),
+                CloseDecision::Allow,
+            )
+            .expect("the host can allow the pointer-created plan");
+    });
+    assert!(matches!(
+        allow.inputs(),
+        [HostInputOutcome::CloseDecisionProcessed {
+            resolution: CloseResolutionOutcome::Approved { request },
+            application: Some(Ok(CloseCommitOutcome::ItemClosed { item: A, .. })),
+            changed: true,
+            ..
+        }] if *request == allow_plan.request()
+    ));
+    assert!(!host.workspace().item_multiset().contains_key(&A));
+}
+
+#[test]
+fn host_report_preserves_application_and_pointer_close_order() {
+    let (mut host, close) = pointer_close_host();
+
+    let (receiver, surface) = press_pointer_close(&mut host, &close);
+    let select_a = host
+        .workspace()
+        .capture_item_source(ROOT, tabs_containing(host.workspace(), A), A)
+        .expect("item A remains current");
+    let application_first = host.run(|frame| {
+        frame
+            .submit_command(WorkspaceCommand::Select { source: select_a })
+            .expect("the no-op selection joins the host frame");
+        submit_pointer_close_release(frame, receiver, surface);
+    });
+    let first_plan = match application_first.inputs() {
+        [
+            HostInputOutcome::CommandApplied { changed: false, .. },
+            HostInputOutcome::CloseRequested {
+                plan,
+                reused: false,
+                origin: HostCloseRequestOrigin::Interaction,
+            },
+        ] => plan.clone(),
+        outcomes => panic!("application then pointer order changed: {outcomes:?}"),
+    };
+    let first_item = first_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the first close plan names item A");
+    host.run(|frame| {
+        frame
+            .resolve_close(
+                first_plan.request(),
+                first_item.token(),
+                CloseDecision::Veto,
+            )
+            .expect("the first close plan is retired before the next click");
+    });
+
+    let (receiver, surface) = press_pointer_close(&mut host, &close);
+    let select_a = host
+        .workspace()
+        .capture_item_source(ROOT, tabs_containing(host.workspace(), A), A)
+        .expect("item A remains current after veto");
+    let pointer_first = host.run(|frame| {
+        submit_pointer_close_release(frame, receiver, surface);
+        frame
+            .submit_command(WorkspaceCommand::Select { source: select_a })
+            .expect("the later no-op selection joins the host frame");
+    });
+    let second_plan = match pointer_first.inputs() {
+        [
+            HostInputOutcome::CloseRequested {
+                plan,
+                reused: false,
+                origin: HostCloseRequestOrigin::Interaction,
+            },
+            HostInputOutcome::CommandApplied { changed: false, .. },
+        ] => plan.clone(),
+        outcomes => panic!("pointer then application order changed: {outcomes:?}"),
+    };
+    let second_item = second_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the second close plan names item A");
+    host.run(|frame| {
+        frame
+            .resolve_close(
+                second_plan.request(),
+                second_item.token(),
+                CloseDecision::Veto,
+            )
+            .expect("the second close plan can also be retired");
+    });
 }
 
 #[test]
@@ -481,6 +719,7 @@ fn ogc_02_merge_and_close_preserve_target_local_mru_atomically() {
             HostInputOutcome::CloseRequested {
                 plan,
                 reused: false,
+                origin: HostCloseRequestOrigin::Application,
             },
         ] => plan.clone(),
         outcomes => panic!("expected one new close plan, got {outcomes:?}"),

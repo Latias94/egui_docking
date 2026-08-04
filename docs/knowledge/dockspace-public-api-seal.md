@@ -89,6 +89,16 @@ closed. The independent `dockspace_host_conformance` executor uses this boundary
 for `OGC-01` through `OGC-04` without importing engine internals, scene stamps,
 provider leases, or the core hit resolver.
 
+Pointer- and semantic-created close plans now return through the same
+`HostInputOutcome::CloseRequested` shape as application close requests, with a
+small product-level origin instead of a mirrored reducer FSM. Their decision
+tokens therefore reach a second adapter, which can veto or allow them through
+the same affine host-frame API. Delivery and hover facts are independently
+composable, including exact `DeliveryAndHoverHit` release challenges; no fact is
+discarded merely because both lanes are required by one physical edge. Other
+interaction terminals remain private until the facade defines equally narrow,
+actionable product outcomes for them.
+
 The primary docking-geometry slice is now renderer-complete. A borrowed
 `SurfacePaintPlan` exposes panes, tabs, tab bars, splitters, splitter junctions,
 contained presentations, docking-guide clusters and targets, the active

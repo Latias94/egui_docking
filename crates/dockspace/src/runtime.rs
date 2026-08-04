@@ -48,6 +48,7 @@ use crate::engine::{
 use crate::error::CommandError;
 use crate::graph::Workspace;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
+use crate::interaction::InteractionOutcome;
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
 use crate::transition::{ContentCloseRequestRejection, InputOutcome, WorkspaceVersion};
@@ -347,7 +348,7 @@ impl DockspaceHostFrame<'_> {
     }
 }
 
-/// Public result of one facade-owned application input.
+/// Public actionable result produced by one facade-owned input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostInputOutcome {
     /// One checked durable command applied or produced a valid no-op.
@@ -365,6 +366,8 @@ pub enum HostInputOutcome {
         plan: ClosePlan,
         /// Whether an unresolved plan was reused.
         reused: bool,
+        /// Product-level source of the close request.
+        origin: HostCloseRequestOrigin,
     },
     /// One content-close request was rejected without mutation.
     CloseRejected {
@@ -411,6 +414,16 @@ pub enum HostInputOutcome {
     },
 }
 
+/// Product-level origin of one close request.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCloseRequestOrigin {
+    /// The application explicitly requested a content close.
+    Application,
+    /// A presented pointer, keyboard, or accessibility receiver requested close.
+    Interaction,
+}
+
 /// High-level report from one atomically published facade frame.
 #[derive(Debug, PartialEq)]
 pub struct HostFrameReport {
@@ -426,10 +439,9 @@ impl HostFrameReport {
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
     ) -> Self {
-        let inputs = transition
-            .reduced_inputs()
-            .iter()
-            .filter_map(|reduced| match reduced.outcome() {
+        let mut ordered_inputs = Vec::new();
+        for reduced in transition.reduced_inputs() {
+            let outcome = match reduced.outcome() {
                 InputOutcome::CommandProcessed {
                     outcome, changed, ..
                 } => Some(HostInputOutcome::CommandApplied {
@@ -443,6 +455,7 @@ impl HostFrameReport {
                     Some(HostInputOutcome::CloseRequested {
                         plan: plan.clone(),
                         reused: *reused,
+                        origin: HostCloseRequestOrigin::Application,
                     })
                 }
                 InputOutcome::ContentCloseRejected { target, reason, .. } => {
@@ -490,9 +503,28 @@ impl HostFrameReport {
                     expected: *expected,
                     accepted: *accepted_base,
                 }),
+                InputOutcome::InteractionProcessed { outcome, .. } => {
+                    interaction_close_request(outcome)
+                }
                 _ => None,
-            })
-            .collect();
+            };
+            if let Some(outcome) = outcome {
+                ordered_inputs.push((reduced.causal_ordinal().get(), 0_usize, 0_usize, outcome));
+            }
+        }
+        for (edge_index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
+            for (outcome_index, outcome) in edge.interaction_outcomes().iter().enumerate() {
+                if let Some(outcome) = interaction_close_request(outcome) {
+                    ordered_inputs.push((
+                        edge.causal_ordinal().get(),
+                        edge_index,
+                        outcome_index,
+                        outcome,
+                    ));
+                }
+            }
+        }
+        let inputs = finish_ordered_inputs(ordered_inputs);
         let repaint_surfaces = transition
             .affected_surfaces()
             .collect::<BTreeSet<_>>()
@@ -519,7 +551,11 @@ impl HostFrameReport {
         self.after
     }
 
-    /// Returns facade-owned input outcomes in exact append order.
+    /// Returns facade-owned outcomes in exact reducer causal order.
+    ///
+    /// Semantic inputs and actionable pointer results share this sequence.
+    /// Pointer edge and outcome indices preserve reducer order when one journal
+    /// segment contains multiple edges or one edge produces multiple results.
     #[must_use]
     pub fn inputs(&self) -> &[HostInputOutcome] {
         &self.inputs
@@ -542,6 +578,29 @@ impl HostFrameReport {
     pub fn repaint_surfaces(&self) -> &[SurfaceId] {
         &self.repaint_surfaces
     }
+}
+
+fn interaction_close_request(outcome: &InteractionOutcome) -> Option<HostInputOutcome> {
+    match outcome {
+        InteractionOutcome::CloseRequested { plan, reused } => {
+            Some(HostInputOutcome::CloseRequested {
+                plan: plan.clone(),
+                reused: *reused,
+                origin: HostCloseRequestOrigin::Interaction,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn finish_ordered_inputs(
+    mut ordered: Vec<(u64, usize, usize, HostInputOutcome)>,
+) -> Vec<HostInputOutcome> {
+    ordered.sort_by_key(|(ordinal, edge, outcome, _)| (*ordinal, *edge, *outcome));
+    ordered
+        .into_iter()
+        .map(|(_, _, _, outcome)| outcome)
+        .collect()
 }
 
 /// Failure at the renderer-neutral facade boundary.
@@ -594,5 +653,28 @@ impl From<CoreHostFrameError> for DockspaceRuntimeError {
 impl From<SurfaceContributionPrepareError> for DockspaceRuntimeError {
     fn from(error: SurfaceContributionPrepareError) -> Self {
         Self::SurfaceContributionPrepare(Box::new(error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_pointer_ordinal_preserves_edge_then_outcome_order() {
+        let outcomes = finish_ordered_inputs(vec![
+            (7, 1, 0, HostInputOutcome::NativePlatformSnapshotStale),
+            (7, 0, 1, HostInputOutcome::NativeCloseObservationApplied),
+            (7, 0, 0, HostInputOutcome::NativePlatformSnapshotApplied),
+        ]);
+
+        assert!(matches!(
+            outcomes.as_slice(),
+            [
+                HostInputOutcome::NativePlatformSnapshotApplied,
+                HostInputOutcome::NativeCloseObservationApplied,
+                HostInputOutcome::NativePlatformSnapshotStale,
+            ]
+        ));
     }
 }
