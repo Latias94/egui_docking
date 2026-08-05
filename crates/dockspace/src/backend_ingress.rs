@@ -6,8 +6,8 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use thiserror::Error;
 
@@ -73,6 +73,124 @@ impl BackendIngressRecordIdentity {
     }
 }
 
+/// Single-writer synchronization shared by one recorder branch and every
+/// frozen batch derived from it. The lock spans the final engine swap so a
+/// concurrent rollback cannot revoke a record between validation and publish.
+#[derive(Clone, Debug)]
+struct BackendIngressCoordination(Arc<Mutex<()>>);
+
+impl BackendIngressCoordination {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(())))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl PartialEq for BackendIngressCoordination {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BackendIngressCoordination {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum BackendIngressRecordState {
+    Live = 0,
+    Publishing = 1,
+    Committed = 2,
+    Revoked = 3,
+}
+
+impl BackendIngressRecordState {
+    fn load(state: &AtomicU8) -> Self {
+        match state.load(Ordering::Acquire) {
+            0 => Self::Live,
+            1 => Self::Publishing,
+            2 => Self::Committed,
+            3 => Self::Revoked,
+            value => unreachable!("invalid backend ingress record state {value}"),
+        }
+    }
+}
+
+/// Shared publication state for one exact recorder append.
+///
+/// Immutable batches and document receipts retain the same allocation. The
+/// recorder and final host publication therefore agree on one linearized
+/// `Live -> Publishing -> Committed` or `Live -> Revoked` transition even when
+/// public ordinals are later reused by another append branch.
+#[derive(Clone, Debug)]
+struct BackendIngressRecordLiveness(Arc<AtomicU8>);
+
+impl BackendIngressRecordLiveness {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(
+            BackendIngressRecordState::Live as u8,
+        )))
+    }
+
+    fn state(&self) -> BackendIngressRecordState {
+        BackendIngressRecordState::load(&self.0)
+    }
+
+    fn is_live(&self) -> bool {
+        self.state() == BackendIngressRecordState::Live
+    }
+
+    #[cfg(feature = "serde")]
+    fn is_retained(&self) -> bool {
+        self.state() != BackendIngressRecordState::Revoked
+    }
+
+    #[cfg(feature = "serde")]
+    fn is_revoked(&self) -> bool {
+        self.state() == BackendIngressRecordState::Revoked
+    }
+
+    fn begin_publication(&self) {
+        debug_assert_eq!(self.state(), BackendIngressRecordState::Live);
+        self.0.store(
+            BackendIngressRecordState::Publishing as u8,
+            Ordering::Release,
+        );
+    }
+
+    fn commit_publication(&self) {
+        debug_assert_eq!(self.state(), BackendIngressRecordState::Publishing);
+        self.0.store(
+            BackendIngressRecordState::Committed as u8,
+            Ordering::Release,
+        );
+    }
+
+    fn abort_publication(&self) {
+        debug_assert_eq!(self.state(), BackendIngressRecordState::Publishing);
+        self.0
+            .store(BackendIngressRecordState::Live as u8, Ordering::Release);
+    }
+
+    fn revoke_live(&self) {
+        debug_assert_eq!(self.state(), BackendIngressRecordState::Live);
+        self.0
+            .store(BackendIngressRecordState::Revoked as u8, Ordering::Release);
+    }
+}
+
+impl PartialEq for BackendIngressRecordLiveness {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BackendIngressRecordLiveness {}
+
 /// Internal proof of one exact recorder append.
 ///
 /// Public ordinals may be reused after rollback. Document restoration therefore
@@ -82,7 +200,7 @@ pub(crate) struct BackendIngressRecordReceipt {
     lease: BackendIngressLease,
     ordinal: BackendIngressOrdinal,
     identity: BackendIngressRecordIdentity,
-    live: Arc<AtomicBool>,
+    liveness: BackendIngressRecordLiveness,
 }
 
 impl BackendIngressRecordReceipt {
@@ -92,7 +210,12 @@ impl BackendIngressRecordReceipt {
 
     #[cfg(any(feature = "serde", test))]
     pub(crate) fn is_live(&self) -> bool {
-        self.live.load(Ordering::Acquire)
+        self.liveness.is_live()
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn is_revoked(&self) -> bool {
+        self.liveness.is_revoked()
     }
 }
 
@@ -101,7 +224,7 @@ impl PartialEq for BackendIngressRecordReceipt {
         self.lease == other.lease
             && self.ordinal == other.ordinal
             && self.identity == other.identity
-            && Arc::ptr_eq(&self.live, &other.live)
+            && self.liveness == other.liveness
     }
 }
 
@@ -412,7 +535,7 @@ impl BackendIngressCommitWatermark {
         self.lease == receipt.lease
             && self.through == receipt.ordinal
             && self.record_identity == receipt.identity
-            && receipt.is_live()
+            && receipt.liveness.is_retained()
     }
 }
 
@@ -531,6 +654,7 @@ pub struct BackendIngressRecord {
     ordinal: BackendIngressOrdinal,
     identity: BackendIngressRecordIdentity,
     payload: BackendIngressPayload,
+    liveness: BackendIngressRecordLiveness,
 }
 
 impl BackendIngressRecord {
@@ -547,6 +671,66 @@ impl BackendIngressRecord {
     }
 }
 
+/// Commit-time proof that every record reduced by one prepared frame still
+/// belongs to the recorder branch which produced it.
+#[derive(Debug)]
+pub(crate) struct BackendIngressCommitGuard {
+    coordination: BackendIngressCoordination,
+    records: Vec<(BackendIngressOrdinal, BackendIngressRecordLiveness)>,
+}
+
+impl BackendIngressCommitGuard {
+    pub(crate) fn validate(&self) -> Result<(), BackendIngressError> {
+        let _coordination = self.coordination.lock();
+        self.validate_locked()
+    }
+
+    pub(crate) fn publish_with<T, E>(
+        self,
+        publish: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Result<T, E>, BackendIngressError> {
+        let _coordination = self.coordination.lock();
+        self.validate_locked()?;
+        for (_, liveness) in &self.records {
+            liveness.begin_publication();
+        }
+        match publish() {
+            Ok(value) => {
+                for (_, liveness) in &self.records {
+                    liveness.commit_publication();
+                }
+                Ok(Ok(value))
+            }
+            Err(error) => {
+                for (_, liveness) in &self.records {
+                    liveness.abort_publication();
+                }
+                Ok(Err(error))
+            }
+        }
+    }
+
+    fn validate_locked(&self) -> Result<(), BackendIngressError> {
+        for (ordinal, liveness) in &self.records {
+            match liveness.state() {
+                BackendIngressRecordState::Live => {}
+                BackendIngressRecordState::Publishing => {
+                    return Err(BackendIngressError::RecordPublicationInProgress {
+                        ordinal: *ordinal,
+                    });
+                }
+                BackendIngressRecordState::Committed => {
+                    return Err(BackendIngressError::RecordAlreadyCommitted { ordinal: *ordinal });
+                }
+                BackendIngressRecordState::Revoked => {
+                    return Err(BackendIngressError::RecordRevoked { ordinal: *ordinal });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Immutable complete interval of one backend ingress stream.
 ///
 /// Construction is private and validates exact lease equality plus a contiguous
@@ -554,6 +738,7 @@ impl BackendIngressRecord {
 /// no consumptive cursor, so a failed host-frame attempt may retry the same batch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackendIngressBatch {
+    coordination: BackendIngressCoordination,
     lease: BackendIngressLease,
     previous: BackendIngressOrdinal,
     previous_record_identity: BackendIngressRecordIdentity,
@@ -563,6 +748,7 @@ pub struct BackendIngressBatch {
 
 impl BackendIngressBatch {
     fn from_records(
+        coordination: BackendIngressCoordination,
         lease: BackendIngressLease,
         previous: BackendIngressOrdinal,
         previous_record_identity: BackendIngressRecordIdentity,
@@ -570,6 +756,7 @@ impl BackendIngressBatch {
         records: Vec<BackendIngressRecord>,
     ) -> Result<Self, BackendIngressError> {
         let batch = Self {
+            coordination,
             lease,
             previous,
             previous_record_identity,
@@ -640,7 +827,8 @@ impl BackendIngressBatch {
                 ordinal: committed_through,
             });
         }
-        self.validate_shape()
+        self.validate_shape()?;
+        self.validate_publishable()
     }
 
     fn validate_shape(&self) -> Result<(), BackendIngressError> {
@@ -672,6 +860,41 @@ impl BackendIngressBatch {
         }
         Ok(())
     }
+
+    fn validate_publishable(&self) -> Result<(), BackendIngressError> {
+        for record in &self.records {
+            match record.liveness.state() {
+                BackendIngressRecordState::Live => {}
+                BackendIngressRecordState::Publishing => {
+                    return Err(BackendIngressError::RecordPublicationInProgress {
+                        ordinal: record.ordinal,
+                    });
+                }
+                BackendIngressRecordState::Committed => {
+                    return Err(BackendIngressError::RecordAlreadyCommitted {
+                        ordinal: record.ordinal,
+                    });
+                }
+                BackendIngressRecordState::Revoked => {
+                    return Err(BackendIngressError::RecordRevoked {
+                        ordinal: record.ordinal,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_guard(&self) -> BackendIngressCommitGuard {
+        BackendIngressCommitGuard {
+            coordination: self.coordination.clone(),
+            records: self
+                .records
+                .iter()
+                .map(|record| (record.ordinal, record.liveness.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// Single-writer backend capture recorder.
@@ -682,6 +905,7 @@ impl BackendIngressBatch {
 /// interval retryable until the engine publishes its own commit watermark.
 #[derive(Debug)]
 pub struct BackendIngressRecorder {
+    coordination: BackendIngressCoordination,
     lease: BackendIngressLease,
     retired_through: BackendIngressOrdinal,
     retired_record_identity: BackendIngressRecordIdentity,
@@ -690,7 +914,6 @@ pub struct BackendIngressRecorder {
     last_record_identity: BackendIngressRecordIdentity,
     pointer_through: PointerEdgeSequence,
     records: Vec<BackendIngressRecord>,
-    record_liveness: Vec<Arc<AtomicBool>>,
 }
 
 /// Affine rollback boundary for one recorder-owned append transaction.
@@ -735,6 +958,7 @@ impl BackendIngressRecorder {
         pointer_committed_through: PointerEdgeSequence,
     ) -> Result<Self, BackendIngressError> {
         Ok(Self {
+            coordination: BackendIngressCoordination::new(),
             lease: BackendIngressLease::new(platform, pointer, presentation_host)?,
             retired_through: BackendIngressOrdinal::ORIGIN,
             retired_record_identity: BackendIngressRecordIdentity::ORIGIN,
@@ -742,7 +966,6 @@ impl BackendIngressRecorder {
             last_record_identity: BackendIngressRecordIdentity::ORIGIN,
             pointer_through: pointer_committed_through,
             records: Vec::new(),
-            record_liveness: Vec::new(),
         })
     }
 
@@ -819,8 +1042,24 @@ impl BackendIngressRecorder {
                 boundary: savepoint.recorded_through,
             });
         }
-        for live in self.record_liveness.drain(savepoint.record_count..) {
-            live.store(false, Ordering::Release);
+        let _coordination = self.coordination.lock();
+        for record in &self.records[savepoint.record_count..] {
+            match record.liveness.state() {
+                BackendIngressRecordState::Live => {}
+                BackendIngressRecordState::Publishing | BackendIngressRecordState::Committed => {
+                    return Err(BackendIngressError::RollbackCrossesPublishedRecord {
+                        ordinal: record.ordinal,
+                    });
+                }
+                BackendIngressRecordState::Revoked => {
+                    return Err(BackendIngressError::RecordRevoked {
+                        ordinal: record.ordinal,
+                    });
+                }
+            }
+        }
+        for record in &self.records[savepoint.record_count..] {
+            record.liveness.revoke_live();
         }
         self.records.truncate(savepoint.record_count);
         self.last_ordinal = savepoint.recorded_through;
@@ -835,6 +1074,12 @@ impl BackendIngressRecorder {
     /// the core are intentionally abandoned and cannot cross the subsequent lease replacement.
     #[must_use]
     pub fn drain(self) -> BackendIngressDrainReceipt {
+        let _coordination = self.coordination.lock();
+        for record in &self.records {
+            if record.liveness.is_live() {
+                record.liveness.revoke_live();
+            }
+        }
         BackendIngressDrainReceipt {
             lease: self.lease,
             recorded_through: self.last_ordinal,
@@ -936,7 +1181,7 @@ impl BackendIngressRecorder {
 
     #[cfg(feature = "serde")]
     pub(crate) fn retains_record(&self, receipt: &BackendIngressRecordReceipt) -> bool {
-        receipt.is_live()
+        receipt.liveness.is_retained()
             && receipt.lease == self.lease
             && self.records.iter().any(|record| {
                 record.ordinal == receipt.ordinal && record.identity == receipt.identity
@@ -1025,6 +1270,7 @@ impl BackendIngressRecorder {
     /// Returns the complete immutable stream captured so far.
     pub fn pending_batch(&self) -> Result<BackendIngressBatch, BackendIngressError> {
         BackendIngressBatch::from_records(
+            self.coordination.clone(),
             self.lease,
             self.retired_through,
             self.retired_record_identity,
@@ -1071,6 +1317,7 @@ impl BackendIngressRecorder {
             .cloned()
             .collect();
         BackendIngressBatch::from_records(
+            self.coordination.clone(),
             self.lease,
             committed_through,
             previous_record_identity,
@@ -1140,7 +1387,6 @@ impl BackendIngressRecorder {
         binding_quiescences.sort_unstable();
         binding_quiescences.dedup();
         self.records.drain(..retained);
-        self.record_liveness.drain(..retained);
         self.retired_through = committed.through;
         self.retired_record_identity = committed.record_identity;
         if binding_quiescences.is_empty() {
@@ -1181,21 +1427,21 @@ impl BackendIngressRecorder {
             .last_record_identity
             .checked_next()
             .ok_or(BackendIngressError::RecordIdentityExhausted)?;
-        let live = Arc::new(AtomicBool::new(true));
+        let liveness = BackendIngressRecordLiveness::new();
         self.records.push(BackendIngressRecord {
             lease: self.lease,
             ordinal,
             identity,
             payload,
+            liveness: liveness.clone(),
         });
-        self.record_liveness.push(Arc::clone(&live));
         self.last_ordinal = ordinal;
         self.last_record_identity = identity;
         Ok(BackendIngressRecordReceipt {
             lease: self.lease,
             ordinal,
             identity,
-            live,
+            liveness,
         })
     }
 
@@ -1679,6 +1925,30 @@ pub enum BackendIngressError {
     /// The non-reused append identity cannot advance without wrapping.
     #[error("backend ingress record identity is exhausted")]
     RecordIdentityExhausted,
+    /// Recorder rollback or drain revoked a record retained by an older batch.
+    #[error("backend ingress record {ordinal:?} was revoked before core publication")]
+    RecordRevoked {
+        /// Exact provider-local position whose append branch was abandoned.
+        ordinal: BackendIngressOrdinal,
+    },
+    /// Another publication currently owns the exact record under the recorder lock.
+    #[error("backend ingress record {ordinal:?} is already being published")]
+    RecordPublicationInProgress {
+        /// Exact provider-local position whose publication has started.
+        ordinal: BackendIngressOrdinal,
+    },
+    /// The record was already published by a successful host-frame commit.
+    #[error("backend ingress record {ordinal:?} was already committed")]
+    RecordAlreadyCommitted {
+        /// Exact provider-local position already owned by the committed engine.
+        ordinal: BackendIngressOrdinal,
+    },
+    /// Recorder rollback cannot erase input already published to the engine.
+    #[error("backend rollback would cross published record {ordinal:?}")]
+    RollbackCrossesPublishedRecord {
+        /// First suffix record whose publication started or completed.
+        ordinal: BackendIngressOrdinal,
+    },
     /// A pointer segment contained more than one receiver-bearing edge.
     #[error("backend ingress pointer segment contains {edges} edges; at most one is allowed")]
     PointerSegmentMustBeEdgewise {
@@ -2257,6 +2527,7 @@ mod tests {
         reordered.swap(0, 1);
         assert_eq!(
             BackendIngressBatch::from_records(
+                first.coordination.clone(),
                 first.lease,
                 first.previous,
                 first.previous_record_identity,
@@ -2282,6 +2553,7 @@ mod tests {
             .clone();
         assert!(matches!(
             BackendIngressBatch::from_records(
+                first.coordination.clone(),
                 first.lease,
                 first.previous,
                 first.previous_record_identity,
@@ -2420,6 +2692,135 @@ mod tests {
             },
         );
         assert_eq!(recorder.retained_record_count(), 1);
+    }
+
+    #[test]
+    fn recorder_rollback_revokes_every_previously_frozen_batch() {
+        let (authority, mut recorder) = authority_and_recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the original record must fit");
+        let frozen = recorder
+            .pending_batch()
+            .expect("the original immutable batch must freeze");
+
+        recorder
+            .rollback_to(savepoint)
+            .expect("recorder rollback must revoke the abandoned append branch");
+
+        assert_eq!(
+            authority
+                .validate_batch(&frozen)
+                .expect_err("a frozen batch cannot outlive recorder rollback"),
+            BackendIngressError::RecordRevoked {
+                ordinal: BackendIngressOrdinal::from_committed_source_sequence(1),
+            },
+        );
+    }
+
+    #[test]
+    fn rollback_preserves_a_frozen_prefix_and_revokes_its_frozen_suffix() {
+        let (mut authority, mut recorder) = authority_and_recorder(1);
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the retained prefix record must fit");
+        let prefix = recorder
+            .pending_batch()
+            .expect("the retained prefix must freeze");
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the abandoned suffix record must fit");
+        let full = recorder
+            .pending_batch()
+            .expect("the complete branch must freeze before rollback");
+
+        recorder
+            .rollback_to(savepoint)
+            .expect("rollback must preserve the exact frozen prefix");
+
+        authority
+            .validate_batch(&prefix)
+            .expect("the frozen retained prefix must remain publishable");
+        assert_eq!(
+            authority
+                .validate_batch(&full)
+                .expect_err("the frozen full batch must retain revoked suffix identity"),
+            BackendIngressError::RecordRevoked {
+                ordinal: BackendIngressOrdinal::from_committed_source_sequence(2),
+            }
+        );
+        authority
+            .commit_batch(&prefix)
+            .expect("the retained prefix must still commit exactly once");
+    }
+
+    #[test]
+    fn commit_guard_linearizes_publication_before_rollback() {
+        let mut recorder = recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the record must fit");
+        let batch = recorder
+            .pending_batch()
+            .expect("the batch must freeze before publication");
+        let coordination = batch.coordination.clone();
+
+        let published = batch
+            .commit_guard()
+            .publish_with(|| {
+                assert!(matches!(
+                    coordination.0.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                Ok::<_, ()>(())
+            })
+            .expect("the guard must publish while holding coordination");
+        assert_eq!(published, Ok(()));
+        assert!(coordination.0.try_lock().is_ok());
+
+        assert_eq!(
+            recorder
+                .rollback_to(savepoint)
+                .expect_err("rollback must not erase a published record"),
+            BackendIngressError::RollbackCrossesPublishedRecord {
+                ordinal: BackendIngressOrdinal::from_committed_source_sequence(1),
+            }
+        );
+        assert_eq!(recorder.retained_record_count(), 1);
+
+        let committed_prefix = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("a live suffix may follow the committed prefix");
+        recorder
+            .rollback_to(committed_prefix)
+            .expect("rollback may still remove only the later live suffix");
+        assert_eq!(recorder.retained_record_count(), 1);
+    }
+
+    #[test]
+    fn failed_publication_restores_record_rollback_authority() {
+        let mut recorder = recorder(1);
+        let savepoint = recorder.savepoint();
+        recorder
+            .record_semantic_input(EngineInput::ValidateWorkspace)
+            .expect("the record must fit");
+        let batch = recorder
+            .pending_batch()
+            .expect("the batch must freeze before publication");
+
+        let published = batch
+            .commit_guard()
+            .publish_with(|| Err::<(), _>("rejected"))
+            .expect("the guard itself must remain valid");
+        assert_eq!(published, Err("rejected"));
+        recorder
+            .rollback_to(savepoint)
+            .expect("failed publication must restore rollback authority");
+        assert_eq!(recorder.retained_record_count(), 0);
     }
 
     #[test]

@@ -148,12 +148,14 @@ impl DockEngine {
                 item_identity_scope: _,
             candidate,
             transition,
+            backend_ingress_commit_guard,
             surface_pointer_commit,
         } = prepared;
         Ok(PreparedHostFrameCommit {
             engine: self,
             candidate,
             transition,
+            backend_ingress_commit_guard,
             surface_pointer_commit,
         })
     }
@@ -178,6 +180,7 @@ impl DockEngine {
             backend_ingress,
             backend_ingress_batch_submitted,
             backend_ingress_complete,
+            backend_ingress_commit_guard,
             pending_backend_ingress,
             pointer_provider,
             staged_pointer_journal: _,
@@ -287,6 +290,7 @@ impl DockEngine {
             Some(_) => {
                 if !backend_ingress_batch_submitted
                     || !backend_ingress_complete
+                    || backend_ingress_commit_guard.is_none()
                     || pending_backend_ingress.is_some()
                 {
                     return Err(EngineError::HostFrameBackendIngressIncomplete);
@@ -295,11 +299,17 @@ impl DockEngine {
             None => {
                 if backend_ingress_batch_submitted
                     || backend_ingress_complete
+                    || backend_ingress_commit_guard.is_some()
                     || pending_backend_ingress.is_some()
                 {
                     return Err(EngineError::HostFrameBackendIngressUnexpected);
                 }
             }
+        }
+        if let Some(guard) = &backend_ingress_commit_guard {
+            guard
+                .validate()
+                .map_err(|source| EngineError::BackendIngress { source })?;
         }
         match pointer_provider {
             None => {
@@ -463,6 +473,7 @@ impl DockEngine {
             item_identity_scope,
             candidate,
             transition,
+            backend_ingress_commit_guard,
             surface_pointer_commit,
         })
     }

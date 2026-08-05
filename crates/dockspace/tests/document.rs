@@ -4,6 +4,7 @@ mod support;
 
 use std::cell::RefCell;
 
+use dockspace::backend_ingress::BackendIngressError;
 use dockspace::command::{DockTarget, RootContent, WorkspaceCommand};
 use dockspace::document::{
     DOCKSPACE_DOCUMENT_VERSION, DockspaceDocument, DockspaceDocumentBootstrap,
@@ -293,6 +294,24 @@ fn record_idle_backend_pointer(recorder: &mut dockspace::backend_ingress::Backen
         .expect("idle pointer interval must record");
 }
 
+fn prepare_noop_owned_session_frame(
+    session: &mut DockspaceDocumentSession,
+) -> PreparedDockspaceSessionHostCommit {
+    let mut frame = sealed_session_frame(session);
+    support::complete_host_frame_with_retained_or_unavailable(session.engine(), &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("document fixture must enter presentation phase");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("document fixture must settle every presentation obligation");
+    session
+        .adapter_prepare_owned_host_presentation_frame(frame)
+        .expect("ordinary session frame must prepare")
+}
+
 fn runtime_capabilities() -> PlatformCapabilities {
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
@@ -528,7 +547,7 @@ fn queued_backend_restore_can_be_cancelled_before_recording() {
     let mut target = session_with(DOCUMENT_ID, 1);
     let original = target.workspace().clone();
 
-    let ticket = target
+    let mut ticket = target
         .queue_restore(document, |_, _, _| true)
         .expect("document restore must queue");
     assert!(
@@ -537,7 +556,7 @@ fn queued_backend_restore_can_be_cancelled_before_recording() {
             .is_some_and(|workspace| workspace.item_multiset().contains_key(&later))
     );
     target
-        .adapter_cancel_queued_restore(ticket)
+        .adapter_cancel_queued_restore(&mut ticket)
         .expect("an unrecorded queued restore must cancel exactly");
 
     assert!(!target.has_queued_restore());
@@ -551,24 +570,100 @@ fn queued_restore_cancellation_ticket_is_bound_to_its_session() {
     let document = source.capture().expect("source document must capture");
     let mut first = session_with(DOCUMENT_ID, 1);
     let mut second = session_with(DOCUMENT_ID, 1);
-    let first_ticket = first
+    let mut first_ticket = first
         .queue_restore(document.clone(), |_, _, _| true)
         .expect("first session must queue the document");
-    let second_ticket = second
+    let mut second_ticket = second
         .queue_restore(document, |_, _, _| true)
         .expect("second session must queue the same document generation");
 
     assert_ne!(first_ticket, second_ticket);
     assert!(matches!(
-        second.adapter_cancel_queued_restore(first_ticket),
+        second.adapter_cancel_queued_restore(&mut first_ticket),
         Err(DockspaceDocumentSessionError::PublicationReceiptMismatch)
     ));
     assert!(first.has_queued_restore());
     assert!(second.has_queued_restore());
+    first
+        .adapter_cancel_queued_restore(&mut first_ticket)
+        .expect("a foreign-session failure must preserve the source ticket");
+    assert!(!first.has_queued_restore());
     second
-        .adapter_cancel_queued_restore(second_ticket)
+        .adapter_cancel_queued_restore(&mut second_ticket)
         .expect("the matching session ticket must cancel exactly");
     assert!(!second.has_queued_restore());
+    assert!(matches!(
+        second.adapter_cancel_queued_restore(&mut second_ticket),
+        Err(DockspaceDocumentSessionError::RestoreTicketConsumed)
+    ));
+}
+
+#[test]
+fn active_backend_attempt_cancel_preserves_the_ticket_for_rollback() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    let mut ticket = target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+    let savepoint = recorder.savepoint();
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("queued restore must record")
+        .expect("queued restore ordinal must exist");
+
+    assert!(matches!(
+        target.adapter_cancel_queued_restore(&mut ticket),
+        Err(DockspaceDocumentSessionError::BackendRestoreAttemptActive { .. })
+    ));
+    recorder
+        .rollback_to(savepoint)
+        .expect("failed backend cycle must revoke the attempt");
+    target.adapter_reconcile_pending_backend_restore_record();
+    target
+        .adapter_cancel_queued_restore(&mut ticket)
+        .expect("the preserved ticket must cancel after exact rollback");
+
+    assert!(!target.has_queued_restore());
+    assert!(matches!(
+        target.adapter_cancel_queued_restore(&mut ticket),
+        Err(DockspaceDocumentSessionError::RestoreTicketConsumed)
+    ));
+}
+
+#[test]
+fn drained_backend_attempt_can_be_cancelled_without_the_predecessor_recorder() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    let mut ticket = target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("queued restore must record")
+        .expect("queued restore ordinal must exist");
+    let _drained = recorder.drain();
+
+    target
+        .adapter_cancel_queued_restore(&mut ticket)
+        .expect("revoked attempt must no longer block cancellation");
+    assert!(!target.has_queued_restore());
 }
 
 #[test]
@@ -599,6 +694,67 @@ fn queued_backend_restore_must_be_the_terminal_backend_record() {
         Err(DockspaceDocumentSessionError::EnginePublicationMismatch)
     ));
     assert!(target.has_queued_restore());
+}
+
+#[test]
+fn queued_backend_restore_rejects_an_unmatched_restore_in_the_same_batch() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+
+    let mut leaked_restore = target
+        .begin_restore(document.clone(), |_, _, _| true)
+        .expect("the detached restore must validate");
+    let leaked_input = leaked_restore
+        .take_engine_input()
+        .expect("the detached restore input must exist");
+    leaked_restore
+        .abort()
+        .expect("the detached restore reservation must abort");
+
+    let mut ticket = target
+        .queue_restore(document, |_, _, _| true)
+        .expect("the queued restore must reserve its own publication");
+    let original_workspace = target.workspace().clone();
+    let original_version = target.engine().version();
+    let original_tick = target.engine().last_reducer_tick();
+    let original_watermark = target.engine().backend_ingress_commit_watermark();
+    let savepoint = recorder.savepoint();
+
+    record_idle_backend_pointer(&mut recorder);
+    recorder
+        .record_semantic_input(leaked_input)
+        .expect("the unmatched restore must fit before the queued attempt");
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("the queued restore must record after the unmatched one")
+        .expect("the queued restore ordinal must exist");
+
+    assert!(matches!(
+        try_prepare_queued_restore_frame(&mut target, host, &recorder),
+        Err(DockspaceDocumentSessionError::EnginePublicationMismatch)
+    ));
+    assert_eq!(target.workspace(), &original_workspace);
+    assert_eq!(target.engine().version(), original_version);
+    assert_eq!(target.engine().last_reducer_tick(), original_tick);
+    assert_eq!(
+        target.engine().backend_ingress_commit_watermark(),
+        original_watermark
+    );
+    assert!(target.has_queued_restore());
+
+    recorder
+        .rollback_to(savepoint)
+        .expect("the active unmatched batch suffix must remain rollback-safe");
+    target
+        .adapter_cancel_queued_restore(&mut ticket)
+        .expect("the queued reservation must remain cancellable after rejection");
 }
 
 #[test]
@@ -664,7 +820,7 @@ fn recorder_rollback_revokes_an_already_prepared_restore_publication() {
     assert_eq!(target.workspace(), &original);
     assert!(target.has_queued_restore());
 
-    target.adapter_reconcile_pending_backend_restore_record(&recorder);
+    target.adapter_reconcile_pending_backend_restore_record();
     record_idle_backend_pointer(&mut recorder);
     target
         .adapter_record_pending_backend_restore(&mut recorder)
@@ -675,6 +831,169 @@ fn recorder_rollback_revokes_an_already_prepared_restore_publication() {
         .adapter_commit_owned_host_presentation_frame(prepared)
         .expect("fresh record must publish the retained restore exactly once");
     assert!(!target.has_queued_restore());
+}
+
+#[test]
+fn recorder_rollback_after_prepare_revokes_the_core_commit_guard() {
+    let mut engine = DockEngine::new(
+        workspace([ItemId::new(1), ItemId::new(2)]),
+        DockPolicy::default(),
+    )
+    .expect("fixture engine must initialize");
+    let host = engine
+        .create_presentation_host()
+        .expect("fixture presentation host must mint");
+    let mut recorder = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("fixture backend provider must enroll");
+    let savepoint = recorder.savepoint();
+    record_idle_backend_pointer(&mut recorder);
+    recorder
+        .record_semantic_input(EngineInput::ValidateWorkspace)
+        .expect("fixture semantic input must record");
+
+    let mut prelude = engine
+        .begin_host_frame(host)
+        .expect("fixture host frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("fixture has no pending presentation output");
+    let mut frame = prelude.seal(&engine).expect("fixture host frame must seal");
+    assert_eq!(
+        frame
+            .submit_backend_ingress(
+                recorder
+                    .pending_batch()
+                    .expect("fixture backend batch must freeze"),
+            )
+            .expect("fixture backend prefix must reduce"),
+        BackendIngressProgress::ReceiverReceiptsRequired
+    );
+    assert_eq!(
+        frame
+            .submit_backend_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new(Vec::new())
+                    .expect("idle pointer interval has no receiver probes"),
+            )
+            .expect("idle pointer receipts must finish the batch"),
+        BackendIngressProgress::Complete
+    );
+    support::complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("fixture frame must enter presentation");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("fixture frame must settle presentation obligations");
+    let prepared = frame
+        .prepare_owned(&engine)
+        .expect("fixture candidate must prepare before rollback");
+    let original_workspace = engine.workspace().clone();
+    let original_tick = engine.last_reducer_tick();
+    let original_watermark = engine.backend_ingress_commit_watermark();
+
+    recorder
+        .rollback_to(savepoint)
+        .expect("recorder rollback must revoke the prepared append branch");
+    assert!(matches!(
+        prepared.commit(&mut engine),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::RecordRevoked { .. },
+        })
+    ));
+    assert_eq!(engine.workspace(), &original_workspace);
+    assert_eq!(engine.last_reducer_tick(), original_tick);
+    assert_eq!(
+        engine.backend_ingress_commit_watermark(),
+        original_watermark
+    );
+}
+
+#[test]
+fn ordinary_session_lane_rejects_an_unreserved_restore_input() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let engine = DockEngine::new(
+        workspace([ItemId::new(1), ItemId::new(2)]),
+        DockPolicy::default(),
+    )
+    .expect("unbound fixture engine must initialize");
+    let mut target = DockspaceDocumentSession::unbound(engine).expect("target session must mint");
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    let mut restore = target
+        .begin_restore(document, |_, _, _| true)
+        .expect("target restore must validate");
+    let input = restore
+        .take_engine_input()
+        .expect("validated restore input must exist");
+    restore
+        .abort()
+        .expect("unpublished restore reservation must abort unchanged");
+    record_idle_backend_pointer(&mut recorder);
+    recorder
+        .record_semantic_input(input)
+        .expect("raw backend recorder may capture the detached restore input");
+
+    let mut prelude = target
+        .adapter_begin_host_frame(host)
+        .expect("target host frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("target has no pending presentation output");
+    let mut frame = prelude
+        .seal(target.engine())
+        .expect("target host frame must seal");
+    assert_eq!(
+        frame
+            .submit_backend_ingress(
+                recorder
+                    .pending_batch()
+                    .expect("detached restore batch must freeze"),
+            )
+            .expect("detached restore batch must reduce speculatively"),
+        BackendIngressProgress::ReceiverReceiptsRequired
+    );
+    assert_eq!(
+        frame
+            .submit_backend_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new(Vec::new())
+                    .expect("idle pointer interval has no receiver probes"),
+            )
+            .expect("idle pointer receipts must finish the batch"),
+        BackendIngressProgress::Complete
+    );
+    support::complete_host_frame_with_retained_or_unavailable(target.engine(), &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("target frame must enter presentation");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("target frame must settle presentation obligations");
+
+    assert!(matches!(
+        target.adapter_prepare_owned_host_presentation_frame(frame),
+        Err(DockspaceDocumentSessionError::Engine(error))
+            if matches!(
+                *error,
+                EngineError::HostFramePoisoned {
+                    source: CoreHostFrameError::SessionOwnedPublicationRequired,
+                }
+            )
+    ));
+    assert_eq!(target.document_id(), None);
+    assert_eq!(
+        target.workspace(),
+        &workspace([ItemId::new(1), ItemId::new(2)])
+    );
 }
 
 #[test]
@@ -701,7 +1020,7 @@ fn queued_restore_reissues_after_recorder_rollback_and_provider_replacement() {
     recorder
         .rollback_to(savepoint)
         .expect("failed cycle must roll back its recorder suffix");
-    target.adapter_reconcile_pending_backend_restore_record(&recorder);
+    target.adapter_reconcile_pending_backend_restore_record();
     record_idle_backend_pointer(&mut recorder);
     let second = target
         .adapter_record_pending_backend_restore(&mut recorder)
@@ -781,16 +1100,109 @@ fn owned_frame_cannot_cross_a_new_document_binding() {
 
     assert!(matches!(
         session.adapter_commit_owned_host_presentation_frame(prepared),
-        Err(DockspaceDocumentSessionError::Engine(error))
-            if matches!(
-                *error,
-                EngineError::HostFramePoisoned {
-                    source: CoreHostFrameError::ItemIdentityScopeMismatch,
-                }
-            )
+        Err(DockspaceDocumentSessionError::DocumentAuthorityChanged)
     ));
     assert_eq!(session.workspace(), &workspace([ItemId::new(1)]));
     assert_eq!(session.external_item_key(ItemId::new(99)), None);
+}
+
+#[test]
+fn owned_frame_cannot_cross_a_viewport_placement_revision() {
+    let mut session = session_with(DOCUMENT_ID, 0);
+    let original_workspace = session.workspace().clone();
+    let prepared = prepare_noop_owned_session_frame(&mut session);
+    let replacement = ViewportPlacementPreference::new(
+        SURFACE,
+        PhysicalRect::new(125.0, 150.0, 640.0, 480.0).expect("replacement placement must be valid"),
+    )
+    .expect("replacement placement must be non-empty");
+
+    session
+        .set_viewport_placement(replacement)
+        .expect("placement mutation must succeed");
+
+    assert!(matches!(
+        session.adapter_commit_owned_host_presentation_frame(prepared),
+        Err(DockspaceDocumentSessionError::DocumentAuthorityChanged)
+    ));
+    assert_eq!(session.workspace(), &original_workspace);
+    assert_eq!(session.viewport_placement(SURFACE), Some(&replacement));
+}
+
+#[test]
+fn owned_frame_cannot_cross_a_capture_generation_revision() {
+    let mut session = session_with(DOCUMENT_ID, 7);
+    let original_workspace = session.workspace().clone();
+    let prepared = prepare_noop_owned_session_frame(&mut session);
+
+    let document = session.capture().expect("document generation must capture");
+    assert_eq!(document.generation(), 7);
+    assert_eq!(session.next_generation(), Some(8));
+
+    assert!(matches!(
+        session.adapter_commit_owned_host_presentation_frame(prepared),
+        Err(DockspaceDocumentSessionError::DocumentAuthorityChanged)
+    ));
+    assert_eq!(session.workspace(), &original_workspace);
+    assert_eq!(session.next_generation(), Some(8));
+}
+
+#[test]
+fn owned_frame_cannot_cross_an_external_item_key_revision() {
+    let mut session = session_with(DOCUMENT_ID, 0);
+    let original_workspace = session.workspace().clone();
+    let prepared = prepare_noop_owned_session_frame(&mut session);
+
+    let later = session
+        .ensure_external_item_key("pane/later")
+        .expect("session-owned key allocation must succeed");
+    assert_eq!(later, ItemId::new(4));
+
+    assert!(matches!(
+        session.adapter_commit_owned_host_presentation_frame(prepared),
+        Err(DockspaceDocumentSessionError::DocumentAuthorityChanged)
+    ));
+    assert_eq!(session.workspace(), &original_workspace);
+    assert_eq!(session.item_id("pane/later"), Some(later));
+}
+
+#[test]
+fn no_op_sidecar_calls_preserve_prepared_document_authority() {
+    let mut session = session_with(DOCUMENT_ID, 0);
+    let prepared = prepare_noop_owned_session_frame(&mut session);
+    let existing_placement = *session
+        .viewport_placement(SURFACE)
+        .expect("fixture placement must exist");
+
+    assert_eq!(
+        session
+            .ensure_external_item_key("pane/one")
+            .expect("existing key lookup must succeed"),
+        ItemId::new(1)
+    );
+    session
+        .ensure_external_item_keys(["pane/one", "pane/two", "pane/tombstone"])
+        .expect("an existing key batch must be idempotent");
+    assert_eq!(
+        session
+            .set_viewport_placement(existing_placement)
+            .expect("identical placement must be idempotent"),
+        Some(existing_placement)
+    );
+    assert_eq!(
+        session
+            .remove_viewport_placement(SurfaceId::new(999))
+            .expect("removing an absent placement must be idempotent"),
+        None
+    );
+
+    session
+        .adapter_commit_owned_host_presentation_frame(prepared)
+        .expect("no-op sidecar calls must not revoke prepared authority");
+    assert_eq!(
+        session.viewport_placement(SURFACE),
+        Some(&existing_placement)
+    );
 }
 
 #[test]

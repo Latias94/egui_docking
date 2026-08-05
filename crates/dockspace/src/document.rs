@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::Deref;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use blake3::Hasher;
@@ -357,6 +358,39 @@ impl DocumentSessionWitness {
     }
 }
 
+/// Process-local identity of one exact document-owned state revision.
+///
+/// Prepared commits retain the old allocation, so replacing this token cannot
+/// suffer allocator-address ABA while any stale capability remains live.
+#[derive(Clone, Debug)]
+struct DocumentStateRevision(Arc<()>);
+
+impl DocumentStateRevision {
+    fn new() -> Self {
+        Self(Arc::new(()))
+    }
+
+    fn successor(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for DocumentStateRevision {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for DocumentStateRevision {}
+
+/// Exact authority frozen by every detached document-session candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DocumentAuthorityStamp {
+    witness: DocumentSessionWitness,
+    engine: EngineAuthorityDomainId,
+    revision: DocumentStateRevision,
+}
+
 #[derive(Debug)]
 struct BoundDocumentState {
     document_id: DockspaceDocumentId,
@@ -459,6 +493,7 @@ impl DockspaceDocumentBootstrap {
 pub struct DockspaceDocumentSession {
     witness: DocumentSessionWitness,
     engine: DockEngine,
+    state_revision: DocumentStateRevision,
     binding: Option<BoundDocumentState>,
     pending_restore: Option<DocumentRestoreReservation>,
     next_restore_token: u64,
@@ -475,6 +510,7 @@ impl DockspaceDocumentSession {
         Ok(Self {
             witness: DocumentSessionWitness::mint()?,
             engine,
+            state_revision: DocumentStateRevision::new(),
             binding: None,
             pending_restore: None,
             next_restore_token: 0,
@@ -529,6 +565,7 @@ impl DockspaceDocumentSession {
             external_item_keys: bootstrap.external_item_keys,
             viewport_placements: bootstrap.viewport_placements,
         });
+        self.advance_document_state();
         Ok(())
     }
 
@@ -577,6 +614,7 @@ impl DockspaceDocumentSession {
             external_item_keys,
             viewport_placements,
         });
+        self.advance_document_state();
         Ok(())
     }
 
@@ -584,6 +622,18 @@ impl DockspaceDocumentSession {
     #[must_use]
     pub const fn engine(&self) -> &DockEngine {
         &self.engine
+    }
+
+    fn authority_stamp(&self) -> DocumentAuthorityStamp {
+        DocumentAuthorityStamp {
+            witness: self.witness,
+            engine: self.engine.authority_domain(),
+            revision: self.state_revision.clone(),
+        }
+    }
+
+    fn advance_document_state(&mut self) {
+        self.state_revision = self.state_revision.successor();
     }
 
     /// Creates a presentation-host lease through this session owner.
@@ -701,10 +751,7 @@ impl DockspaceDocumentSession {
 
     /// Invalidates a cycle-local restore attempt removed by recorder rollback.
     #[doc(hidden)]
-    pub fn adapter_reconcile_pending_backend_restore_record(
-        &mut self,
-        recorder: &BackendIngressRecorder,
-    ) {
+    pub fn adapter_reconcile_pending_backend_restore_record(&mut self) {
         let Some(DocumentRestoreReservation::Queued(pending)) = self.pending_restore.as_mut()
         else {
             return;
@@ -712,7 +759,7 @@ impl DockspaceDocumentSession {
         if pending
             .backend_attempt
             .as_ref()
-            .is_some_and(|attempt| !recorder.retains_record(&attempt.record))
+            .is_some_and(|attempt| attempt.record.is_revoked())
         {
             pending.backend_attempt = None;
         }
@@ -737,14 +784,24 @@ impl DockspaceDocumentSession {
     #[doc(hidden)]
     pub fn adapter_cancel_queued_restore(
         &mut self,
-        ticket: DockspaceDocumentRestoreTicket,
+        ticket: &mut DockspaceDocumentRestoreTicket,
     ) -> Result<(), DockspaceDocumentSessionError> {
-        let Some(DocumentRestoreReservation::Queued(pending)) = self.pending_restore.as_ref()
+        if !ticket.active {
+            return Err(DockspaceDocumentSessionError::RestoreTicketConsumed);
+        }
+        let Some(DocumentRestoreReservation::Queued(pending)) = self.pending_restore.as_mut()
         else {
             return Err(DockspaceDocumentSessionError::PublicationReceiptMismatch);
         };
-        if pending.ticket() != ticket {
+        if &pending.ticket() != ticket {
             return Err(DockspaceDocumentSessionError::PublicationReceiptMismatch);
+        }
+        if pending
+            .backend_attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.record.is_revoked())
+        {
+            pending.backend_attempt = None;
         }
         if pending.backend_attempt.is_some() {
             return Err(DockspaceDocumentSessionError::BackendRestoreAttemptActive {
@@ -752,6 +809,8 @@ impl DockspaceDocumentSession {
             });
         }
         self.pending_restore = None;
+        self.advance_document_state();
+        ticket.active = false;
         Ok(())
     }
 
@@ -839,7 +898,14 @@ impl DockspaceDocumentSession {
                 });
             }
         }
-        frame.prepare(&mut self.engine)
+        let prepared = frame.prepare(&mut self.engine)?;
+        if transition_contains_document_restore(prepared.transition()) {
+            drop(prepared);
+            return Err(EngineError::HostFramePoisoned {
+                source: crate::engine::CoreHostFrameError::SessionOwnedPublicationRequired,
+            });
+        }
+        Ok(prepared)
     }
 
     /// Prepares an owned presentation-phase candidate for an enclosing host transaction.
@@ -860,8 +926,17 @@ impl DockspaceDocumentSession {
         let core = frame.prepare_owned(&self.engine)?;
         let Some(DocumentRestoreReservation::Queued(pending)) = self.pending_restore.as_ref()
         else {
+            if transition_contains_document_restore(core.transition()) {
+                return Err(EngineError::HostFramePoisoned {
+                    source: crate::engine::CoreHostFrameError::SessionOwnedPublicationRequired,
+                }
+                .into());
+            }
             return Ok(PreparedDockspaceSessionHostCommit {
-                inner: PreparedDockspaceSessionHostCommitInner::Ordinary(core),
+                inner: PreparedDockspaceSessionHostCommitInner::Ordinary {
+                    core,
+                    authority_stamp: self.authority_stamp(),
+                },
             });
         };
         let attempt = pending
@@ -881,11 +956,10 @@ impl DockspaceDocumentSession {
             inner: PreparedDockspaceSessionHostCommitInner::Document(
                 PreparedDockspaceDocumentPublication {
                     core,
-                    witness: pending.witness,
+                    authority_stamp: pending.authority_stamp.clone(),
                     token: pending.token,
                     document_id: pending.restored.document_id,
                     generation: pending.restored.generation,
-                    authority_domain: self.engine.authority_domain(),
                     identity_scope: expected.unwrap_or_default(),
                     backend_record: Some(attempt.record.clone()),
                 },
@@ -900,15 +974,25 @@ impl DockspaceDocumentSession {
         prepared: PreparedDockspaceSessionHostCommit,
     ) -> Result<EngineTransition, DockspaceDocumentSessionError> {
         match prepared.inner {
-            PreparedDockspaceSessionHostCommitInner::Ordinary(prepared) => {
+            PreparedDockspaceSessionHostCommitInner::Ordinary {
+                core,
+                authority_stamp,
+            } => {
+                self.validate_authority_stamp(&authority_stamp)?;
                 let expected = self.item_identity_scope();
-                if !prepared.item_identity_scope_matches(expected.as_ref()) {
+                if !core.item_identity_scope_matches(expected.as_ref()) {
                     return Err(EngineError::HostFramePoisoned {
                         source: crate::engine::CoreHostFrameError::ItemIdentityScopeMismatch,
                     }
                     .into());
                 }
-                prepared.commit(&mut self.engine).map_err(Into::into)
+                if transition_contains_document_restore(core.transition()) {
+                    return Err(EngineError::HostFramePoisoned {
+                        source: crate::engine::CoreHostFrameError::SessionOwnedPublicationRequired,
+                    }
+                    .into());
+                }
+                core.commit(&mut self.engine).map_err(Into::into)
             }
             PreparedDockspaceSessionHostCommitInner::Document(prepared) => {
                 self.commit_queued_publication(prepared)
@@ -1026,10 +1110,23 @@ impl DockspaceDocumentSession {
         external_key: impl Into<String>,
     ) -> Result<ItemId, DockspaceDocumentSessionError> {
         self.ensure_idle()?;
-        self.binding_mut()?
+        let external_key = external_key.into();
+        if let Some(item) = self
+            .binding
+            .as_ref()
+            .ok_or(DockspaceDocumentSessionError::Unbound)?
+            .external_item_keys
+            .item_id(&external_key)
+        {
+            return Ok(item);
+        }
+        let item = self
+            .binding_mut()?
             .external_item_keys
             .ensure(external_key)
-            .map_err(Into::into)
+            .map_err(DockspaceDocumentSessionError::from)?;
+        self.advance_document_state();
+        Ok(item)
     }
 
     /// Atomically appends a batch of external pane identities.
@@ -1047,10 +1144,27 @@ impl DockspaceDocumentSession {
         K: Into<String>,
     {
         self.ensure_idle()?;
+        let external_keys = external_keys
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<_>>();
+        let changes_state = {
+            let binding = self
+                .binding
+                .as_ref()
+                .ok_or(DockspaceDocumentSessionError::Unbound)?;
+            external_keys
+                .iter()
+                .any(|external_key| binding.external_item_keys.item_id(external_key).is_none())
+        };
         self.binding_mut()?
             .external_item_keys
             .ensure_all(external_keys)
-            .map_err(Into::into)
+            .map_err(DockspaceDocumentSessionError::from)?;
+        if changes_state {
+            self.advance_document_state();
+        }
+        Ok(())
     }
 
     /// Returns one session-owned placement preference.
@@ -1085,7 +1199,12 @@ impl DockspaceDocumentSession {
                 surface: preference.surface(),
             });
         }
-        Ok(self.binding_mut()?.viewport_placements.set(preference))
+        if self.viewport_placement(preference.surface()) == Some(&preference) {
+            return Ok(Some(preference));
+        }
+        let previous = self.binding_mut()?.viewport_placements.set(preference);
+        self.advance_document_state();
+        Ok(previous)
     }
 
     /// Removes one placement preference from this document lineage.
@@ -1098,7 +1217,11 @@ impl DockspaceDocumentSession {
         surface: crate::ids::SurfaceId,
     ) -> Result<Option<ViewportPlacementPreference>, DockspaceDocumentSessionError> {
         self.ensure_idle()?;
-        Ok(self.binding_mut()?.viewport_placements.remove(surface))
+        let removed = self.binding_mut()?.viewport_placements.remove(surface);
+        if removed.is_some() {
+            self.advance_document_state();
+        }
+        Ok(removed)
     }
 
     /// Reconciles document sidecars against committed workspace and viewport facts.
@@ -1110,11 +1233,23 @@ impl DockspaceDocumentSession {
     /// and retiring child windows preserve the last confirmed placement.
     #[doc(hidden)]
     pub fn adapter_reconcile_viewport_placements(&mut self) {
+        if self.pending_restore.is_some() {
+            return;
+        }
         let Some(reconciled) = self.reconciled_viewport_placements() else {
             return;
         };
-        if let Some(binding) = &mut self.binding {
+        if self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.viewport_placements != reconciled)
+        {
+            let binding = self
+                .binding
+                .as_mut()
+                .expect("reconciliation requires the binding inspected above");
             binding.viewport_placements = reconciled;
+            self.advance_document_state();
         }
     }
 
@@ -1210,6 +1345,7 @@ impl DockspaceDocumentSession {
         let binding = self.binding_mut()?;
         binding.viewport_placements = viewport_placements;
         binding.next_generation = generation.checked_add(1);
+        self.advance_document_state();
         Ok(document)
     }
 
@@ -1309,8 +1445,9 @@ impl DockspaceDocumentSession {
             .checked_add(1)
             .ok_or(DockspaceDocumentSessionError::RestoreTokenExhausted)?;
         self.next_restore_token = token;
+        self.advance_document_state();
         Ok(PendingDockspaceDocumentRestore {
-            witness: self.witness,
+            authority_stamp: self.authority_stamp(),
             token,
             restored,
             external_item_keys,
@@ -1343,6 +1480,7 @@ impl DockspaceDocumentSession {
             .count();
         transition.authority_domain() == self.engine.authority_domain()
             && transition.before() == candidate.original_version
+            && transition_document_restore_count(transition) == 1
             && matching_restore == 1
     }
 
@@ -1370,7 +1508,8 @@ impl DockspaceDocumentSession {
             })
             .count();
         transition.authority_domain() == self.engine.authority_domain()
-            && pending.witness == self.witness
+            && pending.authority_stamp == self.authority_stamp()
+            && transition_document_restore_count(transition) == 1
             && matching_restore == 1
     }
 
@@ -1408,6 +1547,7 @@ impl DockspaceDocumentSession {
             });
         }
         self.pending_restore = None;
+        self.advance_document_state();
         DockspaceDocumentPublication {
             document_id,
             generation,
@@ -1431,11 +1571,11 @@ impl DockspaceDocumentSession {
             .iter()
             .map(|(_, item)| item)
             .collect::<BTreeSet<_>>();
-        if prepared.witness != pending.witness
+        if prepared.authority_stamp != pending.authority_stamp
+            || prepared.authority_stamp != self.authority_stamp()
             || prepared.token != pending.token
             || prepared.document_id != pending.restored.document_id
             || prepared.generation != pending.restored.generation
-            || prepared.authority_domain != self.engine.authority_domain()
             || prepared.identity_scope != expected_scope
             || prepared.backend_record.as_ref() != Some(&attempt.record)
             || !attempt.record.is_live()
@@ -1491,6 +1631,7 @@ impl DockspaceDocumentSession {
             return Err(DockspaceDocumentSessionError::EngineRollbackMismatch);
         }
         self.pending_restore = None;
+        self.advance_document_state();
         Ok(())
     }
 
@@ -1533,9 +1674,10 @@ impl DockspaceDocumentSession {
         &self,
         candidate: &PreparedDockspaceDocumentRestore,
     ) -> Result<(), DockspaceDocumentSessionError> {
-        if candidate.witness != self.witness {
+        if candidate.authority_stamp.witness != self.witness {
             return Err(DockspaceDocumentSessionError::CandidateSessionMismatch);
         }
+        self.validate_authority_stamp(&candidate.authority_stamp)?;
         let expected = self
             .pending_restore
             .as_ref()
@@ -1545,6 +1687,19 @@ impl DockspaceDocumentSession {
                 expected,
                 found: candidate.token,
             });
+        }
+        Ok(())
+    }
+
+    fn validate_authority_stamp(
+        &self,
+        stamp: &DocumentAuthorityStamp,
+    ) -> Result<(), DockspaceDocumentSessionError> {
+        if stamp.witness != self.witness {
+            return Err(DockspaceDocumentSessionError::CandidateSessionMismatch);
+        }
+        if stamp != &self.authority_stamp() {
+            return Err(DockspaceDocumentSessionError::DocumentAuthorityChanged);
         }
         Ok(())
     }
@@ -1646,11 +1801,10 @@ impl DockspaceDocumentRestore<'_> {
         }
         Ok(PreparedDockspaceDocumentPublication {
             core,
-            witness: candidate.witness,
+            authority_stamp: candidate.authority_stamp.clone(),
             token: candidate.token,
             document_id: candidate.document_id,
             generation: candidate.generation,
-            authority_domain: self.session.engine.authority_domain(),
             identity_scope: expected_scope,
             backend_record: None,
         })
@@ -1676,11 +1830,11 @@ impl DockspaceDocumentRestore<'_> {
         if candidate.restore.is_some() {
             return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
         }
-        if prepared.witness != candidate.witness
+        if prepared.authority_stamp != candidate.authority_stamp
+            || prepared.authority_stamp != self.session.authority_stamp()
             || prepared.token != candidate.token
             || prepared.document_id != candidate.document_id
             || prepared.generation != candidate.generation
-            || prepared.authority_domain != self.session.engine.authority_domain()
             || prepared.backend_record.is_some()
             || prepared.identity_scope
                 != candidate
@@ -1750,7 +1904,10 @@ pub struct PreparedDockspaceSessionHostCommit {
 }
 
 enum PreparedDockspaceSessionHostCommitInner {
-    Ordinary(OwnedPreparedHostFrameCommit),
+    Ordinary {
+        core: OwnedPreparedHostFrameCommit,
+        authority_stamp: DocumentAuthorityStamp,
+    },
     Document(PreparedDockspaceDocumentPublication),
 }
 
@@ -1759,7 +1916,7 @@ impl PreparedDockspaceSessionHostCommit {
     #[must_use]
     pub const fn transition(&self) -> &EngineTransition {
         match &self.inner {
-            PreparedDockspaceSessionHostCommitInner::Ordinary(prepared) => prepared.transition(),
+            PreparedDockspaceSessionHostCommitInner::Ordinary { core, .. } => core.transition(),
             PreparedDockspaceSessionHostCommitInner::Document(prepared) => prepared.transition(),
         }
     }
@@ -1773,11 +1930,10 @@ impl PreparedDockspaceSessionHostCommit {
 #[must_use = "a prepared document publication must be committed or explicitly dropped"]
 pub struct PreparedDockspaceDocumentPublication {
     core: OwnedPreparedHostFrameCommit,
-    witness: DocumentSessionWitness,
+    authority_stamp: DocumentAuthorityStamp,
     token: u64,
     document_id: DockspaceDocumentId,
     generation: u64,
-    authority_domain: EngineAuthorityDomainId,
     identity_scope: BTreeSet<ItemId>,
     backend_record: Option<BackendIngressRecordReceipt>,
 }
@@ -1801,6 +1957,7 @@ pub struct DockspaceDocumentRestoreTicket {
     token: u64,
     document_id: DockspaceDocumentId,
     generation: u64,
+    active: bool,
 }
 
 impl DockspaceDocumentRestoreTicket {
@@ -1854,7 +2011,7 @@ impl DockspaceDocumentRestoreCommit {
 #[must_use = "a prepared document restore must be committed or explicitly aborted"]
 #[derive(Debug)]
 struct PreparedDockspaceDocumentRestore {
-    witness: DocumentSessionWitness,
+    authority_stamp: DocumentAuthorityStamp,
     token: u64,
     document_id: DockspaceDocumentId,
     generation: u64,
@@ -1887,7 +2044,7 @@ impl PreparedDockspaceDocumentRestore {
 
 #[derive(Debug)]
 struct PendingDockspaceDocumentRestore {
-    witness: DocumentSessionWitness,
+    authority_stamp: DocumentAuthorityStamp,
     token: u64,
     restored: RestoredDockspaceDocument,
     external_item_keys: ExternalItemKeyMap,
@@ -1896,12 +2053,13 @@ struct PendingDockspaceDocumentRestore {
 }
 
 impl PendingDockspaceDocumentRestore {
-    const fn ticket(&self) -> DockspaceDocumentRestoreTicket {
+    fn ticket(&self) -> DockspaceDocumentRestoreTicket {
         DockspaceDocumentRestoreTicket {
-            witness: self.witness,
+            witness: self.authority_stamp.witness,
             token: self.token,
             document_id: self.restored.document_id,
             generation: self.restored.generation,
+            active: true,
         }
     }
 
@@ -1920,7 +2078,7 @@ impl PendingDockspaceDocumentRestore {
         let mut expected_frontier = original_frontier;
         expected_frontier.merge(self.restored.restore.presentation_identity_frontier());
         Ok(PreparedDockspaceDocumentRestore {
-            witness: self.witness,
+            authority_stamp: self.authority_stamp,
             token: self.token,
             document_id: self.restored.document_id,
             generation: self.restored.generation,
@@ -2349,6 +2507,12 @@ pub enum DockspaceDocumentSessionError {
     /// The process-local restore token space is exhausted.
     #[error("dockspace document restore token space is exhausted")]
     RestoreTokenExhausted,
+    /// A detached candidate crossed a mutation of document-owned sidecar state.
+    #[error("document-owned authority changed after the candidate was prepared")]
+    DocumentAuthorityChanged,
+    /// A queued restore cancellation ticket was already consumed successfully.
+    #[error("dockspace document restore cancellation ticket was already consumed")]
+    RestoreTicketConsumed,
     /// A prepared candidate was presented to a different session owner.
     #[error("prepared dockspace document restore belongs to another session")]
     CandidateSessionMismatch,
@@ -2416,6 +2580,26 @@ impl From<EngineError> for DockspaceDocumentSessionError {
     fn from(error: EngineError) -> Self {
         Self::Engine(Box::new(error))
     }
+}
+
+fn transition_contains_document_restore(transition: &EngineTransition) -> bool {
+    transition_document_restore_count(transition) != 0
+}
+
+fn transition_document_restore_count(transition: &EngineTransition) -> usize {
+    transition
+        .reduced_inputs()
+        .iter()
+        .filter(|reduced| {
+            matches!(
+                reduced.outcome(),
+                InputOutcome::WorkspaceReplaced {
+                    restored_identity_frontier: Some(_),
+                    ..
+                }
+            )
+        })
+        .count()
 }
 
 /// One persisted item/key association rejected by the application registry.

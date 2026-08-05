@@ -313,7 +313,7 @@ impl Dockspace {
             .rollback_backend_observations_after(lease, recorded_through);
         #[cfg(feature = "serde")]
         self.engine
-            .adapter_reconcile_pending_backend_restore_record(recorder);
+            .adapter_reconcile_pending_backend_restore_record();
         Ok(())
     }
 

@@ -298,7 +298,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         if self.cycle_in_flight() {
             return Err(NativeRuntimeError::CycleAlreadyActive);
         }
-        let ticket = self
+        let mut ticket = self
             .dockspace
             .queue_document_json(json, prove_external_item_association)
             .map_err(NativeRuntimeError::from)?;
@@ -313,7 +313,8 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             )),
         };
         if let Some(error) = roster_error {
-            self.dockspace.cancel_pending_document_restore(ticket)?;
+            self.dockspace
+                .cancel_pending_document_restore(&mut ticket)?;
             return Err(error);
         }
         Ok(ticket)

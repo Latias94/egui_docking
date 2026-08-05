@@ -943,6 +943,7 @@ impl CoreHostFrame {
             backend_ingress,
             backend_ingress_batch_submitted: false,
             backend_ingress_complete: false,
+            backend_ingress_commit_guard: None,
             pending_backend_ingress: None,
             pointer_provider,
             staged_pointer_journal: candidate.pointer_journal.clone(),
@@ -1142,6 +1143,7 @@ impl CoreHostFrame {
                         return self
                             .reject_value(CoreHostFrameError::BackendIngressRejected { source });
                     }
+                    self.backend_ingress_commit_guard = Some(batch.commit_guard());
                     self.backend_ingress_complete = true;
                     return Ok(BackendIngressProgress::Complete);
                 };
@@ -2356,20 +2358,29 @@ impl PreparedHostFrameCommit<'_> {
     pub fn commit(self) -> Result<EngineTransition, EngineError> {
         let Self {
             engine,
-            mut candidate,
+            candidate,
             transition,
+            backend_ingress_commit_guard,
             surface_pointer_commit,
         } = self;
-        candidate.mark_runtime_boundary_published();
-        if let Some(mut commit) = surface_pointer_commit {
-            let previous = commit
-                .publish_with(|| std::mem::replace(engine, candidate))
-                .map_err(|source| EngineError::SurfaceLocalPointerCommit { source })?;
-            drop(previous);
-        } else {
-            *engine = candidate;
+        match backend_ingress_commit_guard {
+            Some(guard) => guard
+                .publish_with(|| {
+                    publish_prepared_host_candidate(
+                        engine,
+                        candidate,
+                        transition,
+                        surface_pointer_commit,
+                    )
+                })
+                .map_err(|source| EngineError::BackendIngress { source })?,
+            None => publish_prepared_host_candidate(
+                engine,
+                candidate,
+                transition,
+                surface_pointer_commit,
+            ),
         }
-        Ok(transition)
     }
 }
 
@@ -2416,19 +2427,46 @@ impl OwnedPreparedHostFrameCommit {
             fence: _,
             #[cfg(feature = "serde")]
                 item_identity_scope: _,
-            mut candidate,
+            candidate,
             transition,
+            backend_ingress_commit_guard,
             surface_pointer_commit,
         } = self;
-        candidate.mark_runtime_boundary_published();
-        if let Some(mut commit) = surface_pointer_commit {
-            let previous = commit
-                .publish_with(|| std::mem::replace(engine, candidate))
-                .map_err(|source| EngineError::SurfaceLocalPointerCommit { source })?;
-            drop(previous);
-        } else {
-            *engine = candidate;
+        match backend_ingress_commit_guard {
+            Some(guard) => guard
+                .publish_with(|| {
+                    publish_prepared_host_candidate(
+                        engine,
+                        candidate,
+                        transition,
+                        surface_pointer_commit,
+                    )
+                })
+                .map_err(|source| EngineError::BackendIngress { source })?,
+            None => publish_prepared_host_candidate(
+                engine,
+                candidate,
+                transition,
+                surface_pointer_commit,
+            ),
         }
-        Ok(transition)
     }
+}
+
+fn publish_prepared_host_candidate(
+    engine: &mut DockEngine,
+    mut candidate: DockEngine,
+    transition: EngineTransition,
+    surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
+) -> Result<EngineTransition, EngineError> {
+    candidate.mark_runtime_boundary_published();
+    if let Some(mut commit) = surface_pointer_commit {
+        let previous = commit
+            .publish_with(|| std::mem::replace(engine, candidate))
+            .map_err(|source| EngineError::SurfaceLocalPointerCommit { source })?;
+        drop(previous);
+    } else {
+        *engine = candidate;
+    }
+    Ok(transition)
 }

@@ -333,7 +333,7 @@ impl Dockspace {
     #[doc(hidden)]
     pub fn cancel_pending_document_restore(
         &mut self,
-        ticket: DockspaceDocumentRestoreTicket,
+        ticket: &mut DockspaceDocumentRestoreTicket,
     ) -> Result<(), DockspaceDocumentPersistenceError> {
         self.engine
             .adapter_cancel_queued_restore(ticket)

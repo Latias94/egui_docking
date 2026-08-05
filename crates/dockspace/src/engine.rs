@@ -75,10 +75,10 @@ pub use self::surface_contribution::{
 use self::surface_vacancy::TickVacancyLedger;
 
 use crate::backend_ingress::{
-    BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitWatermark,
-    BackendIngressError, BackendIngressLease, BackendIngressOrdinal, BackendIngressPayload,
-    BackendIngressPrefixRetirementReceipt, BackendIngressProviderReplacementTicket,
-    BackendIngressRecorder,
+    BackendIngressAuthority, BackendIngressBatch, BackendIngressCommitGuard,
+    BackendIngressCommitWatermark, BackendIngressError, BackendIngressLease, BackendIngressOrdinal,
+    BackendIngressPayload, BackendIngressPrefixRetirementReceipt,
+    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
 };
 use crate::close_plan::{
     CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCoordinator, CloseDecision,
@@ -676,6 +676,7 @@ pub struct CoreHostFrame {
     backend_ingress: Option<BackendIngressLease>,
     backend_ingress_batch_submitted: bool,
     backend_ingress_complete: bool,
+    backend_ingress_commit_guard: Option<BackendIngressCommitGuard>,
     pending_backend_ingress: Option<HostBackendIngressCursor>,
     /// Sole provider lease frozen for this frame, when the host runtime has
     /// enrolled pointer delivery. A live provider makes a complete contiguous
@@ -754,6 +755,7 @@ pub struct PreparedHostFrameCommit<'a> {
     engine: &'a mut DockEngine,
     candidate: DockEngine,
     transition: EngineTransition,
+    backend_ingress_commit_guard: Option<BackendIngressCommitGuard>,
     surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
 }
 
@@ -770,6 +772,7 @@ pub struct OwnedPreparedHostFrameCommit {
     item_identity_scope: Option<BTreeSet<ItemId>>,
     candidate: DockEngine,
     transition: EngineTransition,
+    backend_ingress_commit_guard: Option<BackendIngressCommitGuard>,
     surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
 }
 
