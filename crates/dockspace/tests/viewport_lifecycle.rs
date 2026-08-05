@@ -8,9 +8,9 @@ use dockspace::command::{
     RootPresentationTarget, WorkspaceCommand,
 };
 use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason, EffectPhase,
-    EffectRequest, EffectResult, EffectTransition, EffectUnsupportedReason, PlatformEffect,
-    PlatformEffectEmission,
+    CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
+    EffectIndeterminateReason, EffectPhase, EffectRequest, EffectResult, EffectTransition,
+    EffectUnsupportedReason, PlatformEffect, PlatformEffectEmission,
 };
 use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput};
 use dockspace::frame::{
@@ -4775,7 +4775,10 @@ fn retry_cleanup_continuation(case: &mut CleanupContinuationFixture) -> EffectId
     retry
 }
 
-fn retry_failed_cleanup_continuation(case: &mut CleanupContinuationFixture, retry: EffectIdentity) {
+fn retry_failed_cleanup_continuation(
+    case: &mut CleanupContinuationFixture,
+    retry: EffectIdentity,
+) -> CleanupObservationToken {
     let input = platform_effect_input(
         &case.fixture.engine,
         EffectResult::new(
@@ -4808,9 +4811,15 @@ fn retry_failed_cleanup_continuation(case: &mut CleanupContinuationFixture, retr
         )
     });
     assert_eq!(retry_again.epoch(), case.successor.epoch);
+    retry_again
+        .cleanup_observation_token()
+        .expect("the retry must carry exact delayed-result authority")
 }
 
-fn assert_cleanup_predecessor_epoch_fence(case: &mut CleanupContinuationFixture) {
+fn assert_cleanup_predecessor_epoch_fence(
+    case: &mut CleanupContinuationFixture,
+    token: CleanupObservationToken,
+) {
     let input = platform_effect_input(
         &case.fixture.engine,
         EffectResult::new(
@@ -4843,7 +4852,30 @@ fn assert_cleanup_predecessor_epoch_fence(case: &mut CleanupContinuationFixture)
         ),
     );
     let terminal = submit_test_input(&mut case.fixture, input)
-        .expect("exact predecessor evidence must reduce");
+        .expect("an uncorrelated cross-epoch result must reduce harmlessly");
+    assert!(matches!(
+        terminal.reduced_inputs(),
+        [input]
+            if matches!(
+                input.outcome(),
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition: EffectTransition::StaleEpoch,
+                    ..
+                } if *effect == case.destructive.id
+            )
+    ));
+
+    let input = platform_effect_input(
+        &case.fixture.engine,
+        EffectResult::observed_via_cleanup(
+            token,
+            case.destructive.epoch,
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
+        ),
+    );
+    let terminal = submit_test_input(&mut case.fixture, input)
+        .expect("the exact cleanup observation token must reduce");
     assert!(matches!(
         terminal.reduced_inputs(),
         [input]
@@ -4869,8 +4901,8 @@ fn repeated_restore_across_boundaries_continues_cleanup_without_redispatch() {
     let mut case = cleanup_continuation_fixture();
     fail_cleanup_continuation_observer(&mut case);
     let retry = retry_cleanup_continuation(&mut case);
-    retry_failed_cleanup_continuation(&mut case, retry);
-    assert_cleanup_predecessor_epoch_fence(&mut case);
+    let token = retry_failed_cleanup_continuation(&mut case, retry);
+    assert_cleanup_predecessor_epoch_fence(&mut case, token);
 }
 
 struct PendingCreateTombstoneFixture {

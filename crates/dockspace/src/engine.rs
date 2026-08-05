@@ -239,7 +239,8 @@ use crate::viewport_focus::{
 };
 use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission};
 
-const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(u64::MAX);
+pub(crate) const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId =
+    StableInputSourceId::new(u64::MAX);
 
 /// Explicit phase of one core-owned host frame.
 ///

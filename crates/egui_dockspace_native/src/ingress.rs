@@ -7,10 +7,12 @@ use dockspace::backend_ingress::{
     BackendIngressBatch, BackendIngressOrdinal, BackendIngressPayload,
     BackendIngressPrefixRetirementReceipt, BackendIngressRecorder, BackendIngressSavepoint,
 };
-use dockspace::effect::{EffectId, EffectResult, PlatformEffectEmission};
+#[cfg(test)]
+use dockspace::effect::EffectResult;
+use dockspace::effect::{EffectId, PlatformEffectEmission};
 use dockspace::engine::EngineInput;
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::ids::SurfaceId;
+use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::interaction::EscapeDelivery;
 use dockspace::platform::{
@@ -34,6 +36,7 @@ use dockspace::semantic_input::{
     SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
     SemanticReceiverEvent,
 };
+use dockspace::transition::EngineTransition;
 use dockspace::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,
@@ -64,7 +67,7 @@ use egui_dockspace::{
     NativeViewportIncarnation, PaintReceiverFingerprint, PaintReceiverLookup,
 };
 
-use crate::effects::NativeEffectDriver;
+use crate::effects::{DeferredEffectResult, NativeEffectDriver};
 use crate::presentation::{
     EdgePointerGraphs, NativePresentationLedger, NativePresentationPrepareSavepoint,
     PresentedNativePointerGraph,
@@ -480,7 +483,7 @@ pub(crate) struct NativeIngressBridge {
 
 #[derive(Clone)]
 enum PostCommitRecord {
-    Effect(EffectResult),
+    Effect(DeferredEffectResult),
     Semantic(EngineInput),
 }
 
@@ -494,6 +497,12 @@ pub(crate) struct NativeEffectCycle {
     deferred_replacements: BTreeMap<SurfaceId, ExactNativeViewport>,
     adopted_replacements: BTreeMap<ExactNativeViewport, ViewportBinding>,
     post_commit_records: Vec<PostCommitRecord>,
+}
+
+impl NativeEffectCycle {
+    pub(crate) fn settle_effect_results(&mut self, transition: &EngineTransition) {
+        self.effects.settle_effect_results(transition);
+    }
 }
 
 #[derive(Clone)]
@@ -609,7 +618,7 @@ impl NativeIngressBridge {
                 .expect("the provider was enrolled before preparing native ingress");
             let _ = dockspace.record_ready_backend_pane_focus_observations(recorder)?;
         }
-        self.flush_post_commit_records()?;
+        self.flush_post_commit_records(dockspace.engine().version().epoch())?;
         let mut replacement_lineages =
             self.plan_deferred_replacement_lineages(ingress, configured)?;
         let mut routes = self.routes.clone();
@@ -853,7 +862,11 @@ impl NativeIngressBridge {
                 }
                 NativeIngressEvent::EffectResult(result) => {
                     let recorder = self.recorder.as_mut().expect("provider enrolled above");
-                    self.effects.consume_effect_result(result, recorder)?;
+                    self.effects.consume_effect_result(
+                        result,
+                        dockspace.engine().version().epoch(),
+                        recorder,
+                    )?;
                     self.quarantine_failed_native_lifetime(
                         exact_native(result.binding()),
                         &mut provisional_routes,
@@ -1272,13 +1285,16 @@ impl NativeIngressBridge {
     ) -> Result<(), NativeRuntimeError> {
         let Some(binding) = self.retired_routes.get(&exact).copied() else {
             if self.retiring_restored_bootstraps.remove(&exact) {
+                self.effects.retire_cleanup_native(exact);
                 return Ok(());
             }
             if self.deferred_replacement_retirements.remove(&exact) {
                 self.effects.retire_initialization_receipts(exact);
+                self.effects.retire_cleanup_native(exact);
                 return Ok(());
             }
             if self.external_retirements.remove(&exact) {
+                self.effects.retire_cleanup_native(exact);
                 return Ok(());
             }
             return Err(NativeRuntimeError::IngressUnavailable(
@@ -1291,6 +1307,7 @@ impl NativeIngressBridge {
             .record_platform_binding_quiescence(binding)?;
         presentations.retirement_quiesced(exact);
         self.effects.retire_initialization_receipts(exact);
+        self.effects.retire_cleanup_binding(binding, exact);
         Ok(())
     }
 
@@ -1640,7 +1657,10 @@ impl NativeIngressBridge {
         ));
     }
 
-    fn flush_post_commit_records(&mut self) -> Result<(), NativeRuntimeError> {
+    fn flush_post_commit_records(
+        &mut self,
+        current_epoch: WorkspaceEpoch,
+    ) -> Result<(), NativeRuntimeError> {
         let records = std::mem::take(&mut self.post_commit_records);
         let recorder = self
             .recorder
@@ -1649,7 +1669,8 @@ impl NativeIngressBridge {
         for record in records {
             match record {
                 PostCommitRecord::Effect(result) => {
-                    recorder.record_platform_effect_result(result)?;
+                    self.effects
+                        .record_deferred_effect_result(recorder, current_epoch, result)?;
                 }
                 PostCommitRecord::Semantic(input) => {
                     recorder.record_semantic_input(input)?;
@@ -3395,7 +3416,9 @@ mod tests {
         );
         bridge
             .post_commit_records
-            .push(PostCommitRecord::Effect(effect));
+            .push(PostCommitRecord::Effect(DeferredEffectResult::Ordinary(
+                effect,
+            )));
         let snapshot = bridge.state_snapshot();
 
         bridge.post_commit_records.clear();
@@ -3403,7 +3426,8 @@ mod tests {
 
         assert!(matches!(
             bridge.post_commit_records.as_slice(),
-            [PostCommitRecord::Effect(restored)] if *restored == effect
+            [PostCommitRecord::Effect(DeferredEffectResult::Ordinary(restored))]
+                if *restored == effect
         ));
     }
 
@@ -3414,13 +3438,76 @@ mod tests {
 
         bridge
             .post_commit_records
-            .push(PostCommitRecord::Effect(EffectResult::new(
-                EffectId::new(7),
-                WorkspaceEpoch::new(3),
-                EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+            .push(PostCommitRecord::Effect(DeferredEffectResult::Ordinary(
+                EffectResult::new(
+                    EffectId::new(7),
+                    WorkspaceEpoch::new(3),
+                    EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+                ),
             )));
 
         assert!(bridge.has_post_commit_records());
+    }
+
+    #[test]
+    fn local_destructive_result_waits_for_cleanup_observer_after_backend_handoff() {
+        let PendingRestoredFixture {
+            mut dockspace,
+            mut bridge,
+            child_binding,
+            ..
+        } = committed_pending_restored_registration();
+        let current_epoch = dockspace.engine().version().epoch();
+        let predecessor = EffectId::new(77);
+        let old_provider = bridge
+            .recorder
+            .as_ref()
+            .expect("the predecessor provider is enrolled")
+            .lease()
+            .platform_incarnation();
+        bridge.post_commit_records.push(PostCommitRecord::Effect(
+            DeferredEffectResult::local_destructive_for_test(
+                predecessor,
+                current_epoch,
+                old_provider,
+                child_binding,
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            ),
+        ));
+
+        let recorder = bridge
+            .recorder
+            .take()
+            .expect("the predecessor recorder is enrolled");
+        let mut drained = recorder.drain();
+        let replacement = dockspace
+            .begin_backend_ingress_provider_replacement(&mut drained)
+            .expect("the predecessor provider can be retired");
+        let (mut ticket, _) = replacement.into_parts();
+        let successor = dockspace
+            .finish_backend_ingress_provider_replacement(&mut ticket)
+            .expect("the successor provider can be activated");
+        assert_ne!(
+            successor.lease().platform_incarnation(),
+            old_provider,
+            "the test must cross a real provider incarnation boundary",
+        );
+        bridge.recorder = Some(successor);
+
+        bridge
+            .flush_post_commit_records(current_epoch)
+            .expect("the committed outbox remains replayable after handoff");
+        assert!(
+            bridge
+                .recorder
+                .as_ref()
+                .expect("the successor recorder remains enrolled")
+                .pending_batch()
+                .expect("the successor recorder remains valid")
+                .is_empty(),
+            "a predecessor result must not be reported as an ordinary successor-provider fact",
+        );
+        assert_eq!(bridge.effects.cleanup_retained_counts(), (0, 1, 0, 0));
     }
 
     #[test]

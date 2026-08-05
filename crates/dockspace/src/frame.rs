@@ -991,6 +991,11 @@ impl ViewportCoordinator {
                     predecessor,
                     after,
                 } => {
+                    let superseded = self
+                        .binding_retirement
+                        .get(&binding)
+                        .and_then(|retirement| retirement.status().cleanup_effect())
+                        .filter(|effect| *effect != predecessor);
                     let successor = self
                         .effects
                         .request_in(
@@ -1003,8 +1008,24 @@ impl ViewportCoordinator {
                         )
                         .map_err(ViewportCoordinatorError::Effect)?;
                     self.binding_retirement
-                        .accept_cleanup_effect(binding, successor)
+                        .accept_cleanup_observation_effect(binding, successor, predecessor)
                         .map_err(binding_retirement_error)?;
+                    if let Some(effect) = superseded
+                        && !matches!(
+                            self.effects.supersede_cleanup_observation(
+                                effect,
+                                successor,
+                                predecessor,
+                                binding,
+                            ),
+                            EffectTransition::Applied | EffectTransition::Duplicate
+                        )
+                    {
+                        return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                            effect: successor,
+                            predecessor,
+                        });
+                    }
                     cleanup_effects.push(successor);
                 }
             }
@@ -2747,8 +2768,22 @@ impl ViewportCoordinator {
             )
             .map_err(ViewportCoordinatorError::Effect)?;
         self.binding_retirement
-            .accept_cleanup_effect(retirement_binding, retry)
+            .accept_cleanup_observation_effect(retirement_binding, retry, predecessor)
             .map_err(binding_retirement_error)?;
+        if !matches!(
+            self.effects.supersede_cleanup_observation(
+                failed_effect,
+                retry,
+                predecessor,
+                retirement_binding,
+            ),
+            EffectTransition::Applied | EffectTransition::Duplicate
+        ) {
+            return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                effect: retry,
+                predecessor,
+            });
+        }
         Ok(Some(retry))
     }
 
@@ -2795,31 +2830,46 @@ impl ViewportCoordinator {
         result: EffectResult,
     ) -> Result<EffectTransition, ViewportCoordinatorError> {
         let effect = result.effect();
-        let transition = self.effects.report(provider, current_epoch, result);
-        if transition == EffectTransition::StaleEpoch
-            && let Some(binding) =
-                self.active_cleanup_continuation_for(current_epoch, result.effect())
-        {
-            let exact = self.effects.report_exact(provider, result);
-            if exact == EffectTransition::Applied {
-                let phase = self
+        if let Some(observation) = result.cleanup_observation() {
+            let mut candidate = self.clone();
+            let transition =
+                candidate
                     .effects
-                    .record(effect)
-                    .map(EffectRecord::phase)
-                    .ok_or(ViewportCoordinatorError::MissingCleanupEffect { effect })?;
-                let reduced = self
-                    .binding_retirement
-                    .reduce_effect(effect, phase)
-                    .map_err(binding_retirement_error)?;
-                if reduced != Some(binding) {
-                    return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
-                        effect,
-                        predecessor: effect,
-                    });
-                }
+                    .report_cleanup_observation(provider, current_epoch, result);
+            if transition != EffectTransition::Applied {
+                return Ok(transition);
             }
-            return Ok(exact);
+            let predecessor_phase = candidate
+                .effects
+                .record(effect)
+                .map(EffectRecord::phase)
+                .ok_or(ViewportCoordinatorError::MissingCleanupEffect { effect })?;
+            let reduced = candidate
+                .binding_retirement
+                .reduce_cleanup_observation(
+                    observation.continuation(),
+                    observation.predecessor(),
+                    predecessor_phase,
+                )
+                .map_err(binding_retirement_error)?;
+            if reduced != Some(observation.binding()) {
+                return Err(ViewportCoordinatorError::InvalidCleanupContinuation {
+                    effect: observation.continuation(),
+                    predecessor: observation.predecessor(),
+                });
+            }
+            let retirement_bindings = candidate
+                .binding_retirement
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            for binding in retirement_bindings {
+                let _ = candidate.drive_binding_retirement(binding)?;
+            }
+            *self = candidate;
+            return Ok(transition);
         }
+        let transition = self.effects.report(provider, current_epoch, result);
         if transition != EffectTransition::Applied {
             return Ok(transition);
         }
@@ -2900,45 +2950,6 @@ impl ViewportCoordinator {
             )?;
         }
         Ok(())
-    }
-
-    fn active_cleanup_continuation_for(
-        &self,
-        current_epoch: WorkspaceEpoch,
-        predecessor: EffectId,
-    ) -> Option<ViewportBinding> {
-        self.binding_retirement.values().find_map(|retirement| {
-            let active = retirement.status().cleanup_effect()?;
-            let active_record = self.effects.record(active)?;
-            if !active_record.was_emitted()
-                || active_record.request().epoch() != current_epoch
-                || matches!(
-                    active_record.phase(),
-                    EffectPhase::Invalidated { .. }
-                        | EffectPhase::ObservedApplied { .. }
-                        | EffectPhase::Destroyed { .. }
-                )
-            {
-                return None;
-            }
-            let PlatformEffect::ContinueCleanup {
-                binding,
-                predecessor: exact,
-                ..
-            } = active_record.request().effect()
-            else {
-                return None;
-            };
-            if *exact != predecessor {
-                return None;
-            }
-            let predecessor_record = self.effects.record(predecessor)?;
-            (*binding == retirement.binding()
-                && predecessor_record.was_emitted()
-                && predecessor_record.request().effect().binding() == retirement.binding()
-                && is_destructive_cleanup(predecessor_record.request().effect()))
-            .then_some(retirement.binding())
-        })
     }
 
     pub(crate) fn request_native_close_resolution(
@@ -3757,6 +3768,13 @@ fn binding_retirement_error(error: BindingRetirementLifecycleError) -> ViewportC
                 predecessor: effect,
             }
         }
+        BindingRetirementLifecycleError::CleanupObservationMismatch {
+            continuation,
+            predecessor,
+        } => ViewportCoordinatorError::InvalidCleanupContinuation {
+            effect: continuation,
+            predecessor,
+        },
         BindingRetirementLifecycleError::CleanupWindowNotObserved { effect } => {
             ViewportCoordinatorError::CleanupWindowNotObserved { effect }
         }
@@ -3824,12 +3842,7 @@ const fn pointer_passthrough_error(
 }
 
 const fn is_destructive_cleanup(effect: &PlatformEffect) -> bool {
-    matches!(
-        effect,
-        PlatformEffect::CompensatingClose { .. }
-            | PlatformEffect::ReleaseChild { .. }
-            | PlatformEffect::RequestRootClose { .. }
-    )
+    effect.is_destructive_cleanup()
 }
 
 /// Fatal platform coordinator transition failure.

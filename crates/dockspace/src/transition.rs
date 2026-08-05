@@ -1,6 +1,6 @@
 //! Atomic engine transition records returned after successful publication.
 
-use crate::backend_ingress::BackendIngressProviderReplacementTicket;
+use crate::backend_ingress::{BackendIngressOrdinal, BackendIngressProviderReplacementTicket};
 use crate::close_plan::{
     ClosePlan, CloseRequestId, CloseResolutionOutcome, NativeCloseEdge, SurfaceCloseRequest,
 };
@@ -570,6 +570,19 @@ impl ReducedInput {
     #[must_use]
     pub const fn source_sequence(&self) -> SourceSequence {
         self.source_sequence
+    }
+
+    /// Returns the exact backend-ingress ordinal when this input came from the
+    /// joined backend recorder.
+    #[must_use]
+    pub fn backend_ingress_ordinal(&self) -> Option<BackendIngressOrdinal> {
+        if self.source == crate::engine::BACKEND_INGRESS_INPUT_SOURCE {
+            Some(BackendIngressOrdinal::from_committed_source_sequence(
+                self.source_sequence.get(),
+            ))
+        } else {
+            None
+        }
     }
 
     /// Returns the normative source-class priority.

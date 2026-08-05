@@ -678,7 +678,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         &mut self,
         outputs: &mut [HostedViewportOutput<FullOutput>],
     ) -> Result<HostedViewportCommitDirective, NativeRuntimeError> {
-        let prepared = self
+        let mut prepared = self
             .prepared
             .take()
             .ok_or(NativeRuntimeError::CycleMissing)?;
@@ -696,6 +696,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .emitted_presentations
             .saturating_add(u64::try_from(emitted_presentations).unwrap_or(u64::MAX));
 
+        prepared.effects.settle_effect_results(host.transition());
         self.ingress.commit_effect_cycle(prepared.effects);
         let transaction = self
             .ingress_transaction

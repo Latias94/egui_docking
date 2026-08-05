@@ -4480,20 +4480,27 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
         coordinator
             .reconcile_workspace_epoch(second_epoch, &BTreeSet::new())
             .expect("second workspace replacement must migrate cleanup observation");
-        let migrated = coordinator.take_new_effects();
-        let cleanup_successor = migrated
+        let migrated = coordinator
+            .try_take_new_effects()
+            .expect("cleanup continuation emission must preserve authority");
+        let (cleanup_successor, _) = migrated
             .iter()
-            .find_map(|request| match request.effect() {
+            .find_map(|emission| match emission.effect() {
                 PlatformEffect::ContinueCleanup {
                     binding: actual,
                     predecessor,
                     ..
-                } if *actual == binding && *predecessor == cleanup => Some(request.id()),
+                } if *actual == binding && *predecessor == cleanup => Some((
+                    emission.id(),
+                    emission
+                        .cleanup_observation_token()
+                        .expect("continuation emission must mint correlation"),
+                )),
                 _ => None,
             })
             .expect("emitted cleanup must receive an observation-only successor");
-        assert!(migrated.iter().all(|request| !matches!(
-            request.effect(),
+        assert!(migrated.iter().all(|emission| !matches!(
+            emission.effect(),
             PlatformEffect::SetPointerPassthrough { .. }
                 | PlatformEffect::ReleaseChild { .. }
                 | PlatformEffect::RequestRootClose { .. }
@@ -4524,13 +4531,15 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
         let observation_retry = coordinator
             .retry_cleanup(cleanup_successor)
             .expect("provider recovery must retry only cleanup observation");
-        let retry_requests = coordinator.take_new_effects();
+        let retry_requests = coordinator
+            .try_take_new_effects()
+            .expect("cleanup observation retry emission must preserve authority");
         assert!(matches!(
             retry_requests.as_slice(),
-            [request]
-                if request.id() == observation_retry
+            [emission]
+                if emission.id() == observation_retry
                     && matches!(
-                        request.effect(),
+                        emission.effect(),
                         PlatformEffect::ContinueCleanup {
                             binding: actual,
                             predecessor,
@@ -4540,6 +4549,9 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
                             && *after == cleanup_successor
                     )
         ));
+        let observation = retry_requests[0]
+            .cleanup_observation_token()
+            .expect("emitted retry must mint cleanup observation authority");
 
         let failure = EffectDispatchResult::DispatchFailed(
             crate::effect::DispatchFailureReason::ProviderStopped,
@@ -4555,14 +4567,22 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
             EffectTransition::StaleEpoch
         );
         assert_eq!(
-            report_effect_result(
-                &mut coordinator,
-                second_epoch,
-                cleanup,
-                first_epoch,
-                failure,
-            ),
+            coordinator
+                .report_effect(
+                    second_epoch,
+                    EffectResult::observed_via_cleanup(observation, first_epoch, failure),
+                )
+                .expect("correlated predecessor result must reduce"),
             EffectTransition::Applied
+        );
+        assert_eq!(
+            coordinator
+                .effects()
+                .record(observation_retry)
+                .map(EffectRecord::phase),
+            Some(EffectPhase::CleanupResultObserved {
+                predecessor: cleanup,
+            })
         );
         assert_eq!(
             coordinator
@@ -4577,6 +4597,20 @@ fn repeated_restore_migrates_cleanup_only_after_the_pointer_barrier() {
             retirement(&coordinator, binding).status(),
             BindingRetirementStatus::CleanupFailed { effect: cleanup }
         );
+        let destructive_retry = coordinator
+            .retry_cleanup(cleanup)
+            .expect("definitive predecessor failure must retry destructive cleanup");
+        let retry = coordinator.take_new_effects();
+        assert!(matches!(
+            retry.as_slice(),
+            [request]
+                if request.id() == destructive_retry
+                    && matches!(
+                        request.effect(),
+                        PlatformEffect::ReleaseChild { binding: actual }
+                            if *actual == binding
+                    )
+        ));
     }
 }
 

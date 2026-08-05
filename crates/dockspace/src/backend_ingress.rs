@@ -36,6 +36,10 @@ pub struct BackendIngressOrdinal(u64);
 impl BackendIngressOrdinal {
     pub(crate) const ORIGIN: Self = Self(0);
 
+    pub(crate) const fn from_committed_source_sequence(value: u64) -> Self {
+        Self(value)
+    }
+
     const fn checked_next(self) -> Option<Self> {
         match self.0.checked_add(1) {
             Some(value) => Some(Self(value)),

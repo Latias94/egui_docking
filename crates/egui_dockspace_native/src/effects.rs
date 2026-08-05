@@ -1,16 +1,20 @@
 //! Correlation and dispatch for core effects and restored child materialization.
 
+mod cleanup;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dockspace::backend_ingress::BackendIngressRecorder;
 use dockspace::effect::{
-    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason, EffectResult,
-    EffectUnsupportedReason, NativeCloseResolution, PlatformEffect, PlatformEffectEmission,
+    CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
+    EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
+    NativeCloseResolution, PlatformEffect, PlatformEffectEmission,
 };
 use dockspace::geometry::PhysicalRect;
 use dockspace::ids::{SurfaceId, WorkspaceEpoch};
+use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, ViewportRole};
 use eframe::{
     NativeEffectCorrelation, NativeEffectDispatchOutcome, NativeEffectProperty, NativeEffectResult,
@@ -26,6 +30,11 @@ use crate::NativeRuntimeError;
 use crate::ingress::BoundNativeRoute;
 use crate::viewport::NativeViewportRoster;
 
+use self::cleanup::{
+    CleanupDelivery, CleanupDisposition, CleanupObservation, CleanupRendezvous,
+    CleanupRendezvousError, PendingCleanupResult,
+};
+
 static NEXT_EFFECT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +42,9 @@ struct CoreEffectToken {
     runtime: u64,
     effect: EffectId,
     epoch: WorkspaceEpoch,
+    provider_incarnation: u64,
+    binding: ViewportBinding,
+    destructive_cleanup: bool,
     native: Option<ExactNativeViewport>,
     property: NativeEffectProperty,
 }
@@ -42,8 +54,51 @@ struct CoreCreateToken {
     runtime: u64,
     effect: EffectId,
     epoch: WorkspaceEpoch,
+    provider_incarnation: u64,
     core: ViewportBinding,
     viewport: ViewportId,
+}
+
+type NativePendingCleanupResult = PendingCleanupResult<ViewportBinding>;
+type NativeCleanupRendezvous = CleanupRendezvous<CleanupObservationToken, u64, ViewportBinding>;
+type NativeCleanupDelivery = CleanupDelivery<CleanupObservationToken, u64, ViewportBinding>;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DeferredEffectResult {
+    Ordinary(EffectResult),
+    Destructive {
+        predecessor: EffectId,
+        provider_incarnation: u64,
+        pending: NativePendingCleanupResult,
+    },
+    Cleanup(NativeCleanupDelivery),
+}
+
+impl DeferredEffectResult {
+    fn local_destructive(
+        predecessor: EffectId,
+        epoch: WorkspaceEpoch,
+        provider_incarnation: u64,
+        binding: ViewportBinding,
+        result: EffectDispatchResult,
+    ) -> Self {
+        Self::Destructive {
+            predecessor,
+            provider_incarnation,
+            pending: PendingCleanupResult::local(epoch, result, binding),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_destructive_for_test(
+        predecessor: EffectId,
+        epoch: WorkspaceEpoch,
+        provider_incarnation: u64,
+        binding: ViewportBinding,
+        result: EffectDispatchResult,
+    ) -> Self {
+        Self::local_destructive(predecessor, epoch, provider_incarnation, binding, result)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -293,6 +348,7 @@ pub(crate) struct NativeEffectDriver {
         BTreeMap<ExactNativeViewport, InitializationReceiptTombstone>,
     restored_creates: BTreeMap<ViewportId, PendingRestoredCreate>,
     materialized_restored_viewports: BTreeMap<ViewportId, SurfaceId>,
+    cleanup: NativeCleanupRendezvous,
 }
 
 impl NativeEffectDriver {
@@ -308,6 +364,7 @@ impl NativeEffectDriver {
             initialization_receipt_tombstones: BTreeMap::new(),
             restored_creates: BTreeMap::new(),
             materialized_restored_viewports: BTreeMap::new(),
+            cleanup: NativeCleanupRendezvous::default(),
         })
     }
 
@@ -479,6 +536,21 @@ impl NativeEffectDriver {
         self.creates.retain(|_, pending| {
             pending.bound != Some(native) && pending.origin.adopted_native() != Some(native)
         });
+        self.cleanup.forget_native(native);
+    }
+
+    /// Retires duplicate-detection state after the fork proves exact ingress quiescence.
+    pub(crate) fn retire_cleanup_native(&mut self, native: ExactNativeViewport) {
+        self.cleanup.retire_native(native);
+    }
+
+    /// Retires all cleanup correlation for one exact core/native binding pair.
+    pub(crate) fn retire_cleanup_binding(
+        &mut self,
+        binding: ViewportBinding,
+        native: ExactNativeViewport,
+    ) {
+        self.cleanup.retire_binding(binding, native);
     }
 
     pub(crate) fn retain_initialization_receipts(
@@ -522,6 +594,11 @@ impl NativeEffectDriver {
     }
 
     #[cfg(test)]
+    pub(crate) fn cleanup_retained_counts(&self) -> (usize, usize, usize, usize) {
+        self.cleanup.retained_counts()
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_provisional_native_for_test(
         &mut self,
         native: ExactNativeViewport,
@@ -535,6 +612,7 @@ impl NativeEffectDriver {
                     runtime: self.runtime,
                     effect: EffectId::new(1),
                     epoch: WorkspaceEpoch::new(1),
+                    provider_incarnation: 1,
                     core,
                     viewport: native.viewport(),
                 },
@@ -585,6 +663,7 @@ impl NativeEffectDriver {
     pub(crate) fn consume_effect_result(
         &mut self,
         result: &NativeEffectResult,
+        current_epoch: WorkspaceEpoch,
         recorder: &mut BackendIngressRecorder,
     ) -> Result<(), NativeRuntimeError> {
         let Some(token) = result
@@ -625,13 +704,137 @@ impl NativeEffectDriver {
             InitializationReceiptDisposition::NotInitialization => {}
         }
         if let Some(dispatch) = translate_dispatch_outcome(result.outcome()) {
-            recorder.record_platform_effect_result(EffectResult::new(
-                token.effect,
-                token.epoch,
-                dispatch,
-            ))?;
+            if token.destructive_cleanup {
+                if token.epoch == current_epoch
+                    && token.provider_incarnation == recorder.lease().platform_incarnation()
+                {
+                    recorder.record_platform_effect_result(EffectResult::new(
+                        token.effect,
+                        token.epoch,
+                        dispatch,
+                    ))?;
+                } else {
+                    let pending =
+                        PendingCleanupResult::native(token.epoch, dispatch, token.binding, exact);
+                    match self
+                        .cleanup
+                        .record_result(
+                            token.effect,
+                            pending,
+                            current_epoch,
+                            recorder.lease().platform_incarnation(),
+                        )
+                        .map_err(cleanup_rendezvous_error)?
+                    {
+                        CleanupDisposition::Deliver(delivery) => {
+                            self.record_cleanup_delivery(recorder, delivery)?;
+                        }
+                        CleanupDisposition::Buffered | CleanupDisposition::SettledDuplicate => {}
+                    }
+                }
+            } else {
+                recorder.record_platform_effect_result(EffectResult::new(
+                    token.effect,
+                    token.epoch,
+                    dispatch,
+                ))?;
+            }
         }
         Ok(())
+    }
+
+    pub(crate) fn record_deferred_effect_result(
+        &mut self,
+        recorder: &mut BackendIngressRecorder,
+        current_epoch: WorkspaceEpoch,
+        result: DeferredEffectResult,
+    ) -> Result<(), NativeRuntimeError> {
+        match result {
+            DeferredEffectResult::Ordinary(result) => {
+                recorder.record_platform_effect_result(result)?;
+                Ok(())
+            }
+            DeferredEffectResult::Destructive {
+                predecessor,
+                provider_incarnation,
+                pending,
+            } => {
+                if pending.epoch() == current_epoch
+                    && provider_incarnation == recorder.lease().platform_incarnation()
+                {
+                    recorder.record_platform_effect_result(EffectResult::new(
+                        predecessor,
+                        pending.epoch(),
+                        pending.result(),
+                    ))?;
+                    return Ok(());
+                }
+                match self
+                    .cleanup
+                    .record_result(
+                        predecessor,
+                        pending,
+                        current_epoch,
+                        recorder.lease().platform_incarnation(),
+                    )
+                    .map_err(cleanup_rendezvous_error)?
+                {
+                    CleanupDisposition::Deliver(delivery) => {
+                        self.record_cleanup_delivery(recorder, delivery)
+                    }
+                    CleanupDisposition::Buffered | CleanupDisposition::SettledDuplicate => Ok(()),
+                }
+            }
+            DeferredEffectResult::Cleanup(delivery) => {
+                self.record_cleanup_delivery(recorder, delivery)
+            }
+        }
+    }
+
+    pub(crate) fn settle_effect_results(&mut self, transition: &EngineTransition) {
+        for input in transition.reduced_inputs() {
+            let Some(ordinal) = input.backend_ingress_ordinal() else {
+                continue;
+            };
+            let Some(delivery) = self.cleanup.take_inflight(ordinal.get()) else {
+                continue;
+            };
+            match input.outcome() {
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition:
+                        EffectTransition::Applied
+                        | EffectTransition::Duplicate
+                        | EffectTransition::RetiredTerminal,
+                    ..
+                } if *effect == delivery.predecessor() => {
+                    self.cleanup.accept_delivery(delivery);
+                }
+                _ => self.cleanup.reject_delivery(delivery),
+            }
+        }
+    }
+
+    fn record_cleanup_delivery(
+        &mut self,
+        recorder: &mut BackendIngressRecorder,
+        delivery: NativeCleanupDelivery,
+    ) -> Result<(), NativeRuntimeError> {
+        if !self
+            .cleanup
+            .delivery_is_current(delivery, recorder.lease().platform_incarnation())
+        {
+            self.cleanup.reject_delivery(delivery);
+            return Ok(());
+        }
+        let pending = delivery.pending();
+        let result =
+            EffectResult::observed_via_cleanup(delivery.token(), pending.epoch(), pending.result());
+        debug_assert_eq!(result.receipt_epoch(), delivery.receipt_epoch());
+        let ordinal = recorder.record_platform_effect_result(result)?;
+        self.cleanup
+            .mark_inflight(ordinal.get(), delivery)
+            .map_err(cleanup_rendezvous_error)
     }
 
     fn consume_initialization_result(
@@ -809,7 +1012,7 @@ impl NativeEffectDriver {
         catalog: &NativeViewportRoster,
         effect_sink: &NativeEffectSink,
         create_sink: &NativeViewportCreateSink,
-    ) -> Result<Vec<EffectResult>, NativeRuntimeError> {
+    ) -> Result<Vec<DeferredEffectResult>, NativeRuntimeError> {
         self.initialize_bound_creates(routes, effect_sink)?;
         let mut terminal = Vec::new();
         for emission in effects {
@@ -858,12 +1061,29 @@ impl NativeEffectDriver {
                         )
                     }
                 }
-                PlatformEffect::RetainChild { .. } | PlatformEffect::ContinueCleanup { .. } => {
+                PlatformEffect::RetainChild { .. } => {
                     // These are observation/ownership lanes. Keeping the live
                     // viewport in the runtime roster is the concrete action;
                     // no synthetic platform acknowledgement is emitted.
                     Ok(())
                 }
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    ..
+                } => match self.register_cleanup_observation(
+                    emission,
+                    *binding,
+                    *predecessor,
+                    routes,
+                ) {
+                    Ok(Some(delivery)) => {
+                        terminal.push(DeferredEffectResult::Cleanup(delivery));
+                        Ok(())
+                    }
+                    Ok(None) => Ok(()),
+                    Err(result) => Err(result),
+                },
                 effect => self.dispatch_effect(emission, effect, routes, effect_sink),
             };
 
@@ -871,10 +1091,68 @@ impl NativeEffectDriver {
             // rejection is retained beside the effect candidate and becomes an ordered
             // terminal result only if the enclosing core transaction commits.
             if let Err(result) = dispatch {
-                terminal.push(dispatch_result(emission.id(), emission.epoch(), result));
+                if emission.effect().is_destructive_cleanup() {
+                    terminal.push(DeferredEffectResult::local_destructive(
+                        emission.id(),
+                        emission.epoch(),
+                        emission.provider().incarnation(),
+                        emission.effect().binding(),
+                        result,
+                    ));
+                } else {
+                    terminal.push(DeferredEffectResult::Ordinary(dispatch_result(
+                        emission.id(),
+                        emission.epoch(),
+                        result,
+                    )));
+                }
             }
         }
         Ok(terminal)
+    }
+
+    fn register_cleanup_observation(
+        &mut self,
+        emission: &PlatformEffectEmission,
+        binding: ViewportBinding,
+        predecessor: EffectId,
+        routes: &BTreeMap<ViewportId, BoundNativeRoute>,
+    ) -> Result<Option<NativeCleanupDelivery>, EffectDispatchResult> {
+        let token =
+            emission
+                .cleanup_observation_token()
+                .ok_or(EffectDispatchResult::DispatchFailed(
+                    DispatchFailureReason::AdapterRejected,
+                ))?;
+        let observation = route_for_core(routes, binding).map_or_else(
+            || {
+                CleanupObservation::local(
+                    token,
+                    binding,
+                    emission.epoch(),
+                    emission.provider().incarnation(),
+                    emission.provider().incarnation(),
+                )
+            },
+            |route| {
+                CleanupObservation::new(
+                    token,
+                    binding,
+                    route.exact(),
+                    emission.epoch(),
+                    emission.provider().incarnation(),
+                    emission.provider().incarnation(),
+                )
+            },
+        );
+        match self
+            .cleanup
+            .register_observation(predecessor, observation)
+            .map_err(cleanup_dispatch_error)?
+        {
+            CleanupDisposition::Deliver(delivery) => Ok(Some(delivery)),
+            CleanupDisposition::Buffered | CleanupDisposition::SettledDuplicate => Ok(None),
+        }
     }
 
     fn dispatch_effect(
@@ -895,6 +1173,9 @@ impl NativeEffectDriver {
             runtime: self.runtime,
             effect: emission.id(),
             epoch: emission.epoch(),
+            provider_incarnation: emission.provider().incarnation(),
+            binding,
+            destructive_cleanup: effect.is_destructive_cleanup(),
             native: Some(route.exact()),
             property: native_effect_property(&native_effect),
         };
@@ -940,6 +1221,7 @@ impl NativeEffectDriver {
             runtime: self.runtime,
             effect: emission.id(),
             epoch: emission.epoch(),
+            provider_incarnation: emission.provider().incarnation(),
             core: binding,
             viewport: spec.viewport(),
         };
@@ -1008,6 +1290,7 @@ impl NativeEffectDriver {
             runtime: self.runtime,
             effect: emission.id(),
             epoch: emission.epoch(),
+            provider_incarnation: emission.provider().incarnation(),
             core: binding,
             viewport: native.viewport(),
         };
@@ -1079,6 +1362,9 @@ impl NativeEffectDriver {
             runtime: self.runtime,
             effect: pending.token.effect,
             epoch: pending.token.epoch,
+            provider_incarnation: pending.token.provider_incarnation,
+            binding: pending.token.core,
+            destructive_cleanup: false,
             native: Some(native),
             property: NativeEffectProperty::Geometry,
         };
@@ -1152,6 +1438,44 @@ fn dispatch_result(
     result: EffectDispatchResult,
 ) -> EffectResult {
     EffectResult::new(effect, epoch, result)
+}
+
+fn cleanup_rendezvous_error(error: CleanupRendezvousError) -> NativeRuntimeError {
+    let detail = match error {
+        CleanupRendezvousError::NativeMismatch => {
+            "cleanup result changed its exact native viewport lifetime"
+        }
+        CleanupRendezvousError::LocalResultUnavailable => {
+            "route-less cleanup observation did not own a matching local result"
+        }
+        CleanupRendezvousError::StaleObservation => {
+            "cleanup observation replayed an older provider authority"
+        }
+        CleanupRendezvousError::ConflictingObservation => {
+            "cleanup observation reused one authority frontier with different correlation"
+        }
+        CleanupRendezvousError::ConflictingResult => {
+            "one delayed cleanup effect produced conflicting results"
+        }
+        CleanupRendezvousError::DuplicateIngressOrdinal => {
+            "one backend ingress ordinal carried multiple cleanup results"
+        }
+    };
+    NativeRuntimeError::HostedProtocol(detail.into())
+}
+
+fn cleanup_dispatch_error(error: CleanupRendezvousError) -> EffectDispatchResult {
+    match error {
+        CleanupRendezvousError::NativeMismatch | CleanupRendezvousError::LocalResultUnavailable => {
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable)
+        }
+        CleanupRendezvousError::StaleObservation
+        | CleanupRendezvousError::ConflictingObservation
+        | CleanupRendezvousError::ConflictingResult
+        | CleanupRendezvousError::DuplicateIngressOrdinal => {
+            EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected)
+        }
+    }
 }
 
 fn translate_effect_submit_error(error: NativeEffectSubmitError) -> EffectDispatchResult {

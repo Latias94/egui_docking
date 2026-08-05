@@ -1197,7 +1197,7 @@ impl CoreHostFrame {
                         ordinal,
                         EngineInput::ReportPlatformEffect {
                             provider,
-                            expected_epoch: result.epoch(),
+                            expected_epoch: result.receipt_epoch(),
                             result,
                         },
                     )?;

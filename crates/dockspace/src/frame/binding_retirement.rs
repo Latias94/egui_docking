@@ -84,6 +84,7 @@ pub struct BindingRetirement {
     ownership: ViewportOwnership,
     origin: BindingRetirementOrigin,
     status: BindingRetirementStatus,
+    cleanup_predecessor: Option<EffectId>,
     observed: bool,
     input_observations: WindowInputObservationStream,
     close_observations: WindowCloseObservationStream,
@@ -168,6 +169,7 @@ impl From<BindingRetirementRequest> for BindingRetirement {
             ownership: request.ownership,
             origin: request.origin,
             status: request.status,
+            cleanup_predecessor: request.status.cleanup_effect(),
             observed: request.observed,
             input_observations: request.input_observations,
             close_observations: request.close_observations,
@@ -257,6 +259,10 @@ pub(super) enum BindingRetirementLifecycleError {
     CleanupEffectOwned {
         effect: EffectId,
         owner: ViewportBinding,
+    },
+    CleanupObservationMismatch {
+        continuation: EffectId,
+        predecessor: EffectId,
     },
     CleanupWindowNotObserved {
         effect: EffectId,
@@ -524,12 +530,30 @@ impl BindingRetirementLifecycle {
         )))
     }
 
-    /// Records the exact effect minted from a prior cleanup directive.
+    /// Records a newly minted destructive cleanup effect as the active lineage predecessor.
     pub(super) fn accept_cleanup_effect(
         &mut self,
         binding: ViewportBinding,
         effect: EffectId,
     ) -> Result<(), BindingRetirementLifecycleError> {
+        self.validate_cleanup_effect_owner(binding, effect)?;
+        self.set_cleanup_predecessor(binding, effect)?;
+        self.set_status(
+            binding,
+            BindingRetirementStatus::CleanupRequested { effect },
+        )
+    }
+
+    /// Records a successor observation effect without retaining superseded intermediates.
+    pub(super) fn accept_cleanup_observation_effect(
+        &mut self,
+        binding: ViewportBinding,
+        effect: EffectId,
+        predecessor: EffectId,
+    ) -> Result<(), BindingRetirementLifecycleError> {
+        self.validate_cleanup_effect_owner(binding, effect)?;
+        self.validate_cleanup_effect_owner(binding, predecessor)?;
+        self.set_cleanup_predecessor(binding, predecessor)?;
         self.set_status(
             binding,
             BindingRetirementStatus::CleanupRequested { effect },
@@ -562,6 +586,39 @@ impl BindingRetirementLifecycle {
         let Some(binding) = self.by_cleanup_effect.get(&effect).copied() else {
             return Ok(None);
         };
+        let retirement = self
+            .retirements
+            .get(&binding)
+            .ok_or(BindingRetirementLifecycleError::Missing { binding })?;
+        let active = retirement.status.cleanup_effect();
+        if active != Some(effect) {
+            if retirement.cleanup_predecessor != Some(effect) {
+                return Ok(None);
+            }
+            return match phase {
+                EffectPhase::DispatchFailed(_) => {
+                    self.set_status(binding, BindingRetirementStatus::CleanupFailed { effect })?;
+                    Ok(Some(binding))
+                }
+                EffectPhase::Unsupported(reason) => {
+                    self.set_status(
+                        binding,
+                        BindingRetirementStatus::CleanupBlocked { effect, reason },
+                    )?;
+                    Ok(Some(binding))
+                }
+                EffectPhase::Requested
+                | EffectPhase::Indeterminate(_)
+                | EffectPhase::ObservationDispatchFailed(_)
+                | EffectPhase::ObservedApplied { .. }
+                | EffectPhase::CleanupObservationIndeterminate { .. }
+                | EffectPhase::CleanupResultObserved { .. }
+                | EffectPhase::CleanupObservationSuperseded { .. }
+                | EffectPhase::ObservationUnsupported(_)
+                | EffectPhase::Destroyed { .. }
+                | EffectPhase::Invalidated { .. } => Ok(Some(binding)),
+            };
+        }
         let status = match phase {
             EffectPhase::Indeterminate(_) => {
                 BindingRetirementStatus::CleanupIndeterminate { effect }
@@ -575,8 +632,68 @@ impl BindingRetirementLifecycle {
             }
             EffectPhase::Requested
             | EffectPhase::ObservedApplied { .. }
+            | EffectPhase::CleanupObservationIndeterminate { .. }
+            | EffectPhase::CleanupResultObserved { .. }
+            | EffectPhase::CleanupObservationSuperseded { .. }
             | EffectPhase::Destroyed { .. }
             | EffectPhase::Invalidated { .. } => return Ok(Some(binding)),
+        };
+        self.set_status(binding, status)?;
+        Ok(Some(binding))
+    }
+
+    /// Rebinds one active observation continuation to the destructive
+    /// predecessor whose delayed result it authoritatively observed.
+    pub(super) fn reduce_cleanup_observation(
+        &mut self,
+        continuation: EffectId,
+        predecessor: EffectId,
+        predecessor_phase: EffectPhase,
+    ) -> Result<Option<ViewportBinding>, BindingRetirementLifecycleError> {
+        let Some(binding) = self.by_cleanup_effect.get(&continuation).copied() else {
+            return Ok(None);
+        };
+        let active = self
+            .retirements
+            .get(&binding)
+            .ok_or(BindingRetirementLifecycleError::Missing { binding })?
+            .status
+            .cleanup_effect();
+        if active != Some(continuation) {
+            return Err(
+                BindingRetirementLifecycleError::CleanupObservationMismatch {
+                    continuation,
+                    predecessor,
+                },
+            );
+        }
+        let status = match predecessor_phase {
+            EffectPhase::Indeterminate(_) => BindingRetirementStatus::CleanupIndeterminate {
+                effect: continuation,
+            },
+            EffectPhase::DispatchFailed(_) => BindingRetirementStatus::CleanupFailed {
+                effect: predecessor,
+            },
+            EffectPhase::Unsupported(reason) => BindingRetirementStatus::CleanupBlocked {
+                effect: predecessor,
+                reason,
+            },
+            EffectPhase::Requested
+            | EffectPhase::ObservationDispatchFailed(_)
+            | EffectPhase::ObservedApplied { .. }
+            | EffectPhase::CleanupObservationIndeterminate { .. }
+            | EffectPhase::CleanupResultObserved { .. }
+            | EffectPhase::CleanupObservationSuperseded { .. }
+            | EffectPhase::ObservationUnsupported(_)
+            | EffectPhase::Destroyed { .. }
+            | EffectPhase::Invalidated { .. } => {
+                return Err(
+                    BindingRetirementLifecycleError::CleanupObservationMismatch {
+                        continuation,
+                        predecessor,
+                    },
+                );
+            }
         };
         self.set_status(binding, status)?;
         Ok(Some(binding))
@@ -751,12 +868,12 @@ impl BindingRetirementLifecycle {
         binding: ViewportBinding,
         status: BindingRetirementStatus,
     ) -> Result<(), BindingRetirementLifecycleError> {
-        let old_effect = self
+        let retirement = self
             .retirements
             .get(&binding)
-            .ok_or(BindingRetirementLifecycleError::Missing { binding })?
-            .status
-            .cleanup_effect();
+            .ok_or(BindingRetirementLifecycleError::Missing { binding })?;
+        let old_effect = retirement.status.cleanup_effect();
+        let cleanup_predecessor = retirement.cleanup_predecessor;
         let new_effect = status.cleanup_effect();
         if let Some(effect) = new_effect
             && let Some(owner) = self.by_cleanup_effect.get(&effect).copied()
@@ -769,10 +886,69 @@ impl BindingRetirementLifecycle {
         {
             self.by_cleanup_effect.insert(effect, binding);
         }
+        if old_effect != new_effect
+            && let Some(effect) = old_effect
+            && Some(effect) != cleanup_predecessor
+            && self.by_cleanup_effect.get(&effect) == Some(&binding)
+        {
+            self.by_cleanup_effect.remove(&effect);
+        }
         self.retirements
             .get_mut(&binding)
             .ok_or(BindingRetirementLifecycleError::Missing { binding })?
             .status = status;
+        Ok(())
+    }
+
+    fn set_cleanup_predecessor(
+        &mut self,
+        binding: ViewportBinding,
+        predecessor: EffectId,
+    ) -> Result<(), BindingRetirementLifecycleError> {
+        let retirement = self
+            .retirements
+            .get(&binding)
+            .ok_or(BindingRetirementLifecycleError::Missing { binding })?;
+        let old_predecessor = retirement.cleanup_predecessor;
+        let active_effect = retirement.status.cleanup_effect();
+        if let Some(owner) = self.by_cleanup_effect.get(&predecessor).copied()
+            && owner != binding
+        {
+            return Err(BindingRetirementLifecycleError::CleanupEffectOwned {
+                effect: predecessor,
+                owner,
+            });
+        }
+        if old_predecessor == Some(predecessor) {
+            return Ok(());
+        }
+        self.by_cleanup_effect.insert(predecessor, binding);
+        if let Some(old) = old_predecessor
+            && Some(old) != active_effect
+            && self.by_cleanup_effect.get(&old) == Some(&binding)
+        {
+            self.by_cleanup_effect.remove(&old);
+        }
+        self.retirements
+            .get_mut(&binding)
+            .ok_or(BindingRetirementLifecycleError::Missing { binding })?
+            .cleanup_predecessor = Some(predecessor);
+        Ok(())
+    }
+
+    fn validate_cleanup_effect_owner(
+        &self,
+        binding: ViewportBinding,
+        effect: EffectId,
+    ) -> Result<(), BindingRetirementLifecycleError> {
+        if !self.retirements.contains_key(&binding) {
+            return Err(BindingRetirementLifecycleError::Missing { binding });
+        }
+        if let Some(owner) = self.by_cleanup_effect.get(&effect).copied()
+            && owner != binding
+        {
+            return Err(BindingRetirementLifecycleError::CleanupEffectOwned { effect, owner });
+        }
         Ok(())
     }
 

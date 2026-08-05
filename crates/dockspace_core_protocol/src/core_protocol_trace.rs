@@ -503,6 +503,54 @@ pub enum CoreProtocolTraceInput {
     PlatformObservation {
         observation: PlatformObservationIngress,
     },
+    /// Report a delayed destructive-cleanup result through one exact emitted
+    /// observation continuation. Replay resolves the opaque token from the
+    /// previously observed core emission rather than serializing authority.
+    CleanupObservationResult {
+        predecessor: EffectKey,
+        continuation: EffectKey,
+        result: EffectDispatchResultIngress,
+    },
+}
+
+/// Adapter dispatch result admitted by a cleanup-observation trace event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectDispatchResultIngress {
+    DispatchFailed {
+        reason: DispatchFailureReasonIngress,
+    },
+    Unsupported {
+        reason: EffectUnsupportedReasonIngress,
+    },
+    Indeterminate {
+        reason: EffectIndeterminateReasonIngress,
+    },
+}
+
+/// Stable input-side dispatch failure class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchFailureReasonIngress {
+    AdapterRejected,
+    WindowUnavailable,
+    ProviderStopped,
+}
+
+/// Stable input-side unsupported class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectUnsupportedReasonIngress {
+    BackendUnsupported,
+    CapabilityRevoked,
+}
+
+/// Stable input-side indeterminate class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectIndeterminateReasonIngress {
+    AcknowledgementLost,
+    ProviderRestarted,
 }
 
 /// Commands name structural paths, never transient runtime node identifiers.
@@ -1500,6 +1548,17 @@ pub enum ExpectedEffectPhase {
     },
     ObservedApplied {
         inventory_generation: u64,
+    },
+    CleanupObservationIndeterminate {
+        predecessor: ExpectedEffectRef,
+        reason: ExpectedEffectIndeterminateReason,
+    },
+    CleanupResultObserved {
+        predecessor: ExpectedEffectRef,
+    },
+    CleanupObservationSuperseded {
+        predecessor: ExpectedEffectRef,
+        successor: ExpectedEffectRef,
     },
     Unsupported {
         reason: ExpectedEffectUnsupportedReason,

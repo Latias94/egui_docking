@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use dockspace::command::{DockTarget, Edge, WorkspaceCommand};
 use dockspace::drop_target::DropTargetId;
 use dockspace::effect::{
-    DispatchFailureReason, EffectId, EffectIndeterminateReason, EffectInvalidation, EffectPhase,
-    EffectUnsupportedReason, NativeCloseResolution, PlatformEffect,
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
+    EffectInvalidation, EffectPhase, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
 };
 use dockspace::engine::{
     CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineInput, HostFrameView,
@@ -90,6 +91,7 @@ use crate::core_protocol_trace::{
     CanonicalSurface, CanonicalWorkspace, CoordinateGenerationIngress, CoreProtocolTrace,
     CoreProtocolTraceBoundary, CoreProtocolTraceCommand, CoreProtocolTraceError,
     CoreProtocolTraceInput, CoreProtocolTraceSuite, DesktopRouteIngress, EdgeSpec,
+    EffectDispatchResultIngress, EffectIndeterminateReasonIngress, EffectUnsupportedReasonIngress,
     ExpectedCanonicalSnapshot, ExpectedCloseTarget, ExpectedInteractionCancelReason,
     ExpectedInteractionOutcome, ExpectedInteractionState, ExpectedPointerEdge,
     ExpectedPointerEdgeCause, ExpectedPresentationObservationOutcome,
@@ -119,9 +121,9 @@ use crate::core_protocol_trace::{
     validate_provider_boundary_contract,
 };
 use crate::core_protocol_trace::{
-    EffectKey, ExpectedAcknowledgedEffectAuthority, ExpectedDispatchFailureReason,
-    ExpectedEffectIndeterminateReason, ExpectedEffectInvalidation, ExpectedEffectPhase,
-    ExpectedEffectRef, ExpectedEffectUnsupportedReason, ExpectedFocusDelta,
+    DispatchFailureReasonIngress, EffectKey, ExpectedAcknowledgedEffectAuthority,
+    ExpectedDispatchFailureReason, ExpectedEffectIndeterminateReason, ExpectedEffectInvalidation,
+    ExpectedEffectPhase, ExpectedEffectRef, ExpectedEffectUnsupportedReason, ExpectedFocusDelta,
     ExpectedFocusEffectChange, ExpectedFocusValueChange, ExpectedGlobalFocusAuthority,
     ExpectedGlobalFocusObservation, ExpectedInteractionEvent, ExpectedInteractionEventKind,
     ExpectedPaneFocusDisposition, ExpectedPaneFocusIntent, ExpectedPaneFocusIntentSource,
@@ -304,6 +306,7 @@ pub struct CoreProtocolHarness {
     bindings: BTreeMap<SurfaceKey, ViewportBinding>,
     binding_history: Vec<(ViewportBinding, SurfaceKey)>,
     effect_refs: BTreeMap<EffectId, ExpectedEffectRef>,
+    effect_emissions: BTreeMap<EffectId, PlatformEffectEmission>,
     last_effect_ref: u64,
     presentation_streams: BTreeMap<HostPresentationStreamId, PresentationStreamSidecar>,
     last_presentation_stream_sequence: BTreeMap<SurfaceKey, u64>,
@@ -341,6 +344,7 @@ impl CoreProtocolHarness {
             bindings: BTreeMap::new(),
             binding_history: Vec::new(),
             effect_refs: BTreeMap::new(),
+            effect_emissions: BTreeMap::new(),
             last_effect_ref: 0,
             presentation_streams: BTreeMap::new(),
             last_presentation_stream_sequence: BTreeMap::new(),
@@ -2319,6 +2323,52 @@ impl CoreProtocolHarness {
                 expected_epoch: view.version().epoch(),
                 snapshot: self.compile_platform_snapshot(snapshot)?,
             }),
+            CoreProtocolTraceInput::CleanupObservationResult {
+                predecessor,
+                continuation,
+                result,
+            } => {
+                let predecessor = self.effect_id(*predecessor)?;
+                let continuation = self.effect_id(*continuation)?;
+                let predecessor_emission = self.effect_emissions.get(&predecessor).ok_or_else(|| {
+                    CoreProtocolTraceError::Replay(format!(
+                        "cleanup result names predecessor effect {} without an observed emission",
+                        predecessor.get()
+                    ))
+                })?;
+                let continuation_emission =
+                    self.effect_emissions.get(&continuation).ok_or_else(|| {
+                        CoreProtocolTraceError::Replay(format!(
+                            "cleanup result names continuation effect {} without an observed emission",
+                            continuation.get()
+                        ))
+                    })?;
+                let token = continuation_emission
+                    .cleanup_observation_token()
+                    .ok_or_else(|| {
+                        CoreProtocolTraceError::Replay(format!(
+                            "effect {} is not an emitted cleanup continuation",
+                            continuation.get()
+                        ))
+                    })?;
+                let result = EffectResult::observed_via_cleanup(
+                    token,
+                    predecessor_emission.epoch(),
+                    compile_effect_dispatch_result(*result),
+                );
+                if result.effect() != predecessor {
+                    return Err(CoreProtocolTraceError::Replay(format!(
+                        "cleanup continuation {} does not observe predecessor {}",
+                        continuation.get(),
+                        predecessor.get()
+                    )));
+                }
+                Ok(EngineInput::ReportPlatformEffect {
+                    provider: self.platform_provider,
+                    expected_epoch: result.receipt_epoch(),
+                    result,
+                })
+            }
         }
     }
 
@@ -2771,6 +2821,17 @@ impl CoreProtocolHarness {
             }
             let effect = self.observe_platform_effect(emission.effect())?;
             let id = self.effect_ref(emission.id())?;
+            if let Some(previous) = self
+                .effect_emissions
+                .insert(emission.id(), emission.clone())
+                && previous != *emission
+            {
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    "one effect identity was emitted with conflicting delivery authority",
+                ));
+            }
             effects.push(ExpectedPlatformEffectEmission {
                 id,
                 epoch: emission.epoch().get(),
@@ -3163,7 +3224,7 @@ impl CoreProtocolHarness {
                 let effect = self.effect_ref(change.request().id())?;
                 let surface = self.surface_for_binding(change.request().effect().binding())?;
                 let phase =
-                    map_focus_change(change.phase(), |phase| Ok(observe_effect_phase(*phase)))?;
+                    map_focus_change(change.phase(), |phase| self.observe_effect_phase(*phase))?;
                 let observed = change
                     .observed()
                     .map(|observed| {
@@ -3198,6 +3259,81 @@ impl CoreProtocolHarness {
             pane_intent,
             surface_focus,
             effects,
+        })
+    }
+
+    fn observe_effect_phase(
+        &mut self,
+        phase: EffectPhase,
+    ) -> Result<ExpectedEffectPhase, CoreProtocolTraceError> {
+        Ok(match phase {
+            EffectPhase::Requested => ExpectedEffectPhase::Requested,
+            EffectPhase::DispatchFailed(reason) => ExpectedEffectPhase::DispatchFailed {
+                reason: observe_dispatch_failure_reason(reason),
+            },
+            EffectPhase::ObservationDispatchFailed(reason) => {
+                ExpectedEffectPhase::ObservationDispatchFailed {
+                    reason: observe_dispatch_failure_reason(reason),
+                }
+            }
+            EffectPhase::ObservedApplied {
+                inventory_generation,
+            } => ExpectedEffectPhase::ObservedApplied {
+                inventory_generation: inventory_generation.get(),
+            },
+            EffectPhase::CleanupObservationIndeterminate {
+                predecessor,
+                reason,
+            } => ExpectedEffectPhase::CleanupObservationIndeterminate {
+                predecessor: self.effect_ref(predecessor)?,
+                reason: observe_effect_indeterminate_reason(reason),
+            },
+            EffectPhase::CleanupResultObserved { predecessor } => {
+                ExpectedEffectPhase::CleanupResultObserved {
+                    predecessor: self.effect_ref(predecessor)?,
+                }
+            }
+            EffectPhase::CleanupObservationSuperseded {
+                predecessor,
+                successor,
+            } => ExpectedEffectPhase::CleanupObservationSuperseded {
+                predecessor: self.effect_ref(predecessor)?,
+                successor: self.effect_ref(successor)?,
+            },
+            EffectPhase::Unsupported(reason) => ExpectedEffectPhase::Unsupported {
+                reason: observe_effect_unsupported_reason(reason),
+            },
+            EffectPhase::ObservationUnsupported(reason) => {
+                ExpectedEffectPhase::ObservationUnsupported {
+                    reason: observe_effect_unsupported_reason(reason),
+                }
+            }
+            EffectPhase::Indeterminate(reason) => ExpectedEffectPhase::Indeterminate {
+                reason: observe_effect_indeterminate_reason(reason),
+            },
+            EffectPhase::Destroyed {
+                inventory_generation,
+            } => ExpectedEffectPhase::Destroyed {
+                inventory_generation: inventory_generation.get(),
+            },
+            EffectPhase::Invalidated { cause } => ExpectedEffectPhase::Invalidated {
+                reason: match cause {
+                    EffectInvalidation::WorkspaceReplaced { replacement_epoch } => {
+                        ExpectedEffectInvalidation::WorkspaceReplaced {
+                            replacement_epoch: replacement_epoch.get(),
+                        }
+                    }
+                    EffectInvalidation::NativeCreateAborted => {
+                        ExpectedEffectInvalidation::NativeCreateAborted
+                    }
+                    EffectInvalidation::StagingCloseCleared => {
+                        ExpectedEffectInvalidation::StagingCloseCleared
+                    }
+                    EffectInvalidation::PlatformProviderReplaced { .. } => {
+                        ExpectedEffectInvalidation::PlatformProviderReplaced
+                    }
+                },
+            },
         })
     }
 
@@ -4584,59 +4720,6 @@ const fn observe_panel_focus(focus: PanelFocus) -> ExpectedPanelFocus {
     }
 }
 
-const fn observe_effect_phase(phase: EffectPhase) -> ExpectedEffectPhase {
-    match phase {
-        EffectPhase::Requested => ExpectedEffectPhase::Requested,
-        EffectPhase::DispatchFailed(reason) => ExpectedEffectPhase::DispatchFailed {
-            reason: observe_dispatch_failure_reason(reason),
-        },
-        EffectPhase::ObservationDispatchFailed(reason) => {
-            ExpectedEffectPhase::ObservationDispatchFailed {
-                reason: observe_dispatch_failure_reason(reason),
-            }
-        }
-        EffectPhase::ObservedApplied {
-            inventory_generation,
-        } => ExpectedEffectPhase::ObservedApplied {
-            inventory_generation: inventory_generation.get(),
-        },
-        EffectPhase::Unsupported(reason) => ExpectedEffectPhase::Unsupported {
-            reason: observe_effect_unsupported_reason(reason),
-        },
-        EffectPhase::ObservationUnsupported(reason) => {
-            ExpectedEffectPhase::ObservationUnsupported {
-                reason: observe_effect_unsupported_reason(reason),
-            }
-        }
-        EffectPhase::Indeterminate(reason) => ExpectedEffectPhase::Indeterminate {
-            reason: observe_effect_indeterminate_reason(reason),
-        },
-        EffectPhase::Destroyed {
-            inventory_generation,
-        } => ExpectedEffectPhase::Destroyed {
-            inventory_generation: inventory_generation.get(),
-        },
-        EffectPhase::Invalidated { cause } => ExpectedEffectPhase::Invalidated {
-            reason: match cause {
-                EffectInvalidation::WorkspaceReplaced { replacement_epoch } => {
-                    ExpectedEffectInvalidation::WorkspaceReplaced {
-                        replacement_epoch: replacement_epoch.get(),
-                    }
-                }
-                EffectInvalidation::NativeCreateAborted => {
-                    ExpectedEffectInvalidation::NativeCreateAborted
-                }
-                EffectInvalidation::StagingCloseCleared => {
-                    ExpectedEffectInvalidation::StagingCloseCleared
-                }
-                EffectInvalidation::PlatformProviderReplaced { .. } => {
-                    ExpectedEffectInvalidation::PlatformProviderReplaced
-                }
-            },
-        },
-    }
-}
-
 const fn observe_dispatch_failure_reason(
     reason: DispatchFailureReason,
 ) -> ExpectedDispatchFailureReason {
@@ -4646,6 +4729,46 @@ const fn observe_dispatch_failure_reason(
             ExpectedDispatchFailureReason::WindowUnavailable
         }
         DispatchFailureReason::ProviderStopped => ExpectedDispatchFailureReason::ProviderStopped,
+    }
+}
+
+const fn compile_effect_dispatch_result(
+    result: EffectDispatchResultIngress,
+) -> EffectDispatchResult {
+    match result {
+        EffectDispatchResultIngress::DispatchFailed { reason } => {
+            EffectDispatchResult::DispatchFailed(match reason {
+                DispatchFailureReasonIngress::AdapterRejected => {
+                    DispatchFailureReason::AdapterRejected
+                }
+                DispatchFailureReasonIngress::WindowUnavailable => {
+                    DispatchFailureReason::WindowUnavailable
+                }
+                DispatchFailureReasonIngress::ProviderStopped => {
+                    DispatchFailureReason::ProviderStopped
+                }
+            })
+        }
+        EffectDispatchResultIngress::Unsupported { reason } => {
+            EffectDispatchResult::Unsupported(match reason {
+                EffectUnsupportedReasonIngress::BackendUnsupported => {
+                    EffectUnsupportedReason::BackendUnsupported
+                }
+                EffectUnsupportedReasonIngress::CapabilityRevoked => {
+                    EffectUnsupportedReason::CapabilityRevoked
+                }
+            })
+        }
+        EffectDispatchResultIngress::Indeterminate { reason } => {
+            EffectDispatchResult::Indeterminate(match reason {
+                EffectIndeterminateReasonIngress::AcknowledgementLost => {
+                    EffectIndeterminateReason::AcknowledgementLost
+                }
+                EffectIndeterminateReasonIngress::ProviderRestarted => {
+                    EffectIndeterminateReason::ProviderRestarted
+                }
+            })
+        }
     }
 }
 

@@ -155,10 +155,11 @@ pub enum PlatformEffect {
     /// Continue observing one already-emitted destructive cleanup after an authority change.
     ///
     /// This is an observation-only protocol request. The provider must not execute `predecessor`
-    /// again. A dispatch result for this request describes only the observation request itself;
-    /// the provider reports a terminal predecessor result with the predecessor's original effect
-    /// identity and epoch. The destructive subject may belong to a retired provider; `after`
-    /// serializes observation requests inside the current provider's delivery lane.
+    /// again. A dispatch result for this request describes only the observation request itself.
+    /// A delayed predecessor result must be correlated through the opaque cleanup observation
+    /// token carried by this exact emission. The destructive subject may belong to a retired
+    /// provider; `after` serializes observation requests inside the current provider's delivery
+    /// lane.
     ContinueCleanup {
         binding: ViewportBinding,
         predecessor: EffectId,
@@ -235,6 +236,20 @@ impl PlatformEffect {
                 }
         )
     }
+
+    /// Returns whether this operation may destroy one exact native lifetime.
+    ///
+    /// Adapters use this classification to retain a locally produced dispatch result across a
+    /// provider handoff without redispatching the destructive operation.
+    #[must_use]
+    pub const fn is_destructive_cleanup(&self) -> bool {
+        matches!(
+            self,
+            Self::CompensatingClose { .. }
+                | Self::ReleaseChild { .. }
+                | Self::RequestRootClose { .. }
+        )
+    }
 }
 
 /// One immutable request emitted to the adapter exactly once.
@@ -294,6 +309,36 @@ pub struct PlatformEffectEmission {
     delivery: EffectDelivery,
 }
 
+/// Opaque proof that one exact provider received an observation-only cleanup
+/// continuation for one destructive predecessor.
+///
+/// Adapters may retain this value while waiting for a delayed result owned by
+/// the predecessor operation. The token does not authorize redispatching that
+/// predecessor; it only lets the receiving provider correlate the late result
+/// back through the emitted continuation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CleanupObservationToken {
+    continuation: EffectId,
+    continuation_epoch: WorkspaceEpoch,
+    predecessor: EffectId,
+    binding: ViewportBinding,
+    delivery: EffectDelivery,
+}
+
+impl CleanupObservationToken {
+    pub(crate) const fn continuation(self) -> EffectId {
+        self.continuation
+    }
+
+    pub(crate) const fn predecessor(self) -> EffectId {
+        self.predecessor
+    }
+
+    pub(crate) const fn binding(self) -> ViewportBinding {
+        self.binding
+    }
+}
+
 impl PlatformEffectEmission {
     /// Returns the immutable effect request.
     #[must_use]
@@ -336,6 +381,26 @@ impl PlatformEffectEmission {
     #[must_use]
     pub const fn native_close_emission_fence(&self) -> Option<NativeCloseEmissionFence> {
         self.request.native_close_emission_fence()
+    }
+
+    /// Returns the exact delayed-result correlation carried by an emitted
+    /// cleanup continuation.
+    #[must_use]
+    pub const fn cleanup_observation_token(&self) -> Option<CleanupObservationToken> {
+        match self.request.effect() {
+            PlatformEffect::ContinueCleanup {
+                binding,
+                predecessor,
+                ..
+            } => Some(CleanupObservationToken {
+                continuation: self.request.id(),
+                continuation_epoch: self.request.epoch(),
+                predecessor: *predecessor,
+                binding: *binding,
+                delivery: self.delivery,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -396,6 +461,27 @@ pub enum EffectPhase {
     ObservedApplied {
         inventory_generation: InventoryGeneration,
     },
+    /// A cleanup continuation observed that its predecessor is still
+    /// indeterminate. The continuation remains live for a later definitive
+    /// result or provider handoff.
+    CleanupObservationIndeterminate {
+        predecessor: EffectId,
+        reason: EffectIndeterminateReason,
+    },
+    /// A successor provider observed one delayed dispatch result through the
+    /// exact cleanup continuation it received.
+    CleanupResultObserved {
+        predecessor: EffectId,
+    },
+    /// A newer cleanup continuation replaced this observation request.
+    ///
+    /// The destructive predecessor remains authoritative. This terminal phase only closes the
+    /// superseded observation identity so retention does not grow with provider or document
+    /// handoffs.
+    CleanupObservationSuperseded {
+        predecessor: EffectId,
+        successor: EffectId,
+    },
     Unsupported(EffectUnsupportedReason),
     /// An observation-only continuation is unsupported.
     ///
@@ -419,12 +505,35 @@ pub enum EffectDispatchResult {
     Indeterminate(EffectIndeterminateReason),
 }
 
+const fn dispatch_result_phase(
+    observation_only: bool,
+    result: EffectDispatchResult,
+) -> EffectPhase {
+    match (observation_only, result) {
+        (false, EffectDispatchResult::DispatchFailed(reason)) => {
+            EffectPhase::DispatchFailed(reason)
+        }
+        (true, EffectDispatchResult::DispatchFailed(reason)) => {
+            EffectPhase::ObservationDispatchFailed(reason)
+        }
+        (false, EffectDispatchResult::Unsupported(reason)) => EffectPhase::Unsupported(reason),
+        (true, EffectDispatchResult::Unsupported(reason)) => {
+            EffectPhase::ObservationUnsupported(reason)
+        }
+        (_, EffectDispatchResult::Indeterminate(reason)) => EffectPhase::Indeterminate(reason),
+    }
+}
+
 /// Correlated adapter result for one effect request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectResult {
     effect: EffectId,
+    /// Epoch in which the effect itself was issued.
     epoch: WorkspaceEpoch,
+    /// Epoch of the provider receipt authorizing this report.
+    receipt_epoch: WorkspaceEpoch,
     result: EffectDispatchResult,
+    cleanup_observation: Option<CleanupObservationToken>,
 }
 
 impl EffectResult {
@@ -437,7 +546,26 @@ impl EffectResult {
         Self {
             effect,
             epoch,
+            receipt_epoch: epoch,
             result,
+            cleanup_observation: None,
+        }
+    }
+
+    /// Correlates a predecessor result through the exact continuation emitted
+    /// to the reporting provider.
+    #[must_use]
+    pub const fn observed_via_cleanup(
+        token: CleanupObservationToken,
+        predecessor_epoch: WorkspaceEpoch,
+        result: EffectDispatchResult,
+    ) -> Self {
+        Self {
+            effect: token.predecessor,
+            epoch: predecessor_epoch,
+            receipt_epoch: token.continuation_epoch,
+            result,
+            cleanup_observation: Some(token),
         }
     }
 
@@ -451,9 +579,25 @@ impl EffectResult {
         self.epoch
     }
 
+    /// Returns the provider receipt epoch which must match the reducing host frame.
+    #[must_use]
+    pub const fn receipt_epoch(self) -> WorkspaceEpoch {
+        self.receipt_epoch
+    }
+
     #[must_use]
     pub const fn result(self) -> EffectDispatchResult {
         self.result
+    }
+
+    /// Reports whether this result is correlated through an emitted cleanup continuation.
+    #[must_use]
+    pub const fn is_cleanup_observation(self) -> bool {
+        self.cleanup_observation.is_some()
+    }
+
+    pub(crate) const fn cleanup_observation(self) -> Option<CleanupObservationToken> {
+        self.cleanup_observation
     }
 }
 
@@ -535,7 +679,13 @@ fn semantic_effect_references(record: &EffectRecord) -> [Option<EffectId>; 2] {
         PlatformEffect::CompensatingClose { compensates, .. } => Some(*compensates),
         _ => None,
     };
-    [semantic_subject, effect_delivery_predecessors(record)[0]]
+    let delivery_predecessor = match record.request.effect() {
+        // Once the successor itself was emitted, its immutable delivery proof replaces the need
+        // to retain every older observation request in the same provider lane.
+        PlatformEffect::ContinueCleanup { .. } if record.was_emitted() => None,
+        _ => effect_delivery_predecessors(record)[0],
+    };
+    [semantic_subject, delivery_predecessor]
 }
 
 /// Deterministic outcome of a stale, duplicate, or accepted ledger transition.
@@ -565,9 +715,10 @@ pub struct EffectLedger {
 impl EffectLedger {
     /// Accounts for every retained effect record and revoked provider guard.
     ///
-    /// `ObservedApplied`, `Destroyed`, and `Invalidated` records may be compacted after their
-    /// terminal state crosses a publication boundary and no lifecycle owner or causal successor
-    /// retains the identity. Other phases may still accept a later authoritative observation.
+    /// `ObservedApplied`, definitive `CleanupResultObserved`, `Destroyed`, and `Invalidated`
+    /// records may be compacted after their terminal state crosses a publication boundary and no
+    /// lifecycle owner or causal successor retains the identity. An indeterminate cleanup
+    /// observation remains live for a later definitive result.
     pub(crate) fn retention_manifest(&self) -> EffectRetentionManifest {
         let terminal_record_guards = self
             .records
@@ -924,22 +1075,99 @@ impl EffectLedger {
     /// Revokes one exact provider without transferring any delivery to its successor.
     ///
     /// Requests which were never emitted remain queued. Outstanding requests delivered to the
-    /// revoked provider become indeterminate, while terminal results and observations remain
-    /// immutable history.
+    /// revoked provider become indeterminate. A non-terminal cleanup observation is superseded:
+    /// its successor must mint fresh correlation authority from the replacement provider.
     pub(crate) fn revoke_provider_authority(&mut self, provider: PlatformObservationLease) {
         self.revoked_providers.insert(provider);
         for record in self.records.values_mut() {
             if record.provider() != Some(provider) {
                 continue;
             }
-            if matches!(
-                record.phase,
-                EffectPhase::Requested | EffectPhase::Indeterminate(_)
-            ) {
-                record.phase =
-                    EffectPhase::Indeterminate(EffectIndeterminateReason::ProviderRestarted);
+            match record.phase {
+                EffectPhase::Requested | EffectPhase::Indeterminate(_) => {
+                    record.phase =
+                        EffectPhase::Indeterminate(EffectIndeterminateReason::ProviderRestarted);
+                }
+                EffectPhase::CleanupObservationIndeterminate { .. } => {
+                    record.phase = EffectPhase::Invalidated {
+                        cause: EffectInvalidation::PlatformProviderReplaced { provider },
+                    };
+                }
+                EffectPhase::DispatchFailed(_)
+                | EffectPhase::ObservationDispatchFailed(_)
+                | EffectPhase::ObservedApplied { .. }
+                | EffectPhase::CleanupResultObserved { .. }
+                | EffectPhase::CleanupObservationSuperseded { .. }
+                | EffectPhase::Unsupported(_)
+                | EffectPhase::ObservationUnsupported(_)
+                | EffectPhase::Destroyed { .. }
+                | EffectPhase::Invalidated { .. } => {}
             }
         }
+    }
+
+    /// Closes one observation-only cleanup request after a typed successor replaces it.
+    ///
+    /// This never changes the destructive predecessor. The successor remains the only live
+    /// observation authority, while the superseded request becomes compactable after publication.
+    pub(crate) fn supersede_cleanup_observation(
+        &mut self,
+        effect: EffectId,
+        successor: EffectId,
+        predecessor: EffectId,
+        binding: ViewportBinding,
+    ) -> EffectTransition {
+        if effect == successor || effect == predecessor {
+            return EffectTransition::CausalityBarrier;
+        }
+        let Some(successor_record) = self.records.get(&successor) else {
+            return self.missing_transition(successor);
+        };
+        if !matches!(
+            successor_record.request.effect(),
+            PlatformEffect::ContinueCleanup {
+                binding: exact_binding,
+                predecessor: exact_predecessor,
+                ..
+            } if *exact_binding == binding && *exact_predecessor == predecessor
+        ) {
+            return EffectTransition::CausalityBarrier;
+        }
+
+        let missing = self.missing_transition(effect);
+        let Some(record) = self.records.get_mut(&effect) else {
+            return missing;
+        };
+        if !matches!(
+            record.request.effect(),
+            PlatformEffect::ContinueCleanup {
+                binding: exact_binding,
+                predecessor: exact_predecessor,
+                ..
+            } if *exact_binding == binding && *exact_predecessor == predecessor
+        ) {
+            return EffectTransition::BindingMismatch;
+        }
+        let superseded = EffectPhase::CleanupObservationSuperseded {
+            predecessor,
+            successor,
+        };
+        if record.phase == superseded {
+            return EffectTransition::Duplicate;
+        }
+        if !matches!(
+            record.phase,
+            EffectPhase::Requested
+                | EffectPhase::ObservationDispatchFailed(_)
+                | EffectPhase::ObservationUnsupported(_)
+                | EffectPhase::Indeterminate(_)
+                | EffectPhase::CleanupObservationIndeterminate { .. }
+                | EffectPhase::Invalidated { .. }
+        ) {
+            return EffectTransition::CausalityBarrier;
+        }
+        record.phase = superseded;
+        EffectTransition::Applied
     }
 
     /// Releases one revoked-provider guard after its sole backend producer has quiesced.
@@ -969,8 +1197,8 @@ impl EffectLedger {
 
     /// Applies a result against its exact immutable request epoch.
     ///
-    /// The viewport coordinator uses this only after proving that an active current-epoch cleanup
-    /// continuation names this exact older destructive predecessor and binding incarnation.
+    /// Cross-epoch cleanup results must use [`Self::report_cleanup_observation`]; this path only
+    /// accepts the provider which received the effect itself.
     pub(crate) fn report_exact(
         &mut self,
         provider: PlatformObservationLease,
@@ -996,19 +1224,7 @@ impl EffectLedger {
             record.request.effect,
             PlatformEffect::ContinueCleanup { .. }
         );
-        let phase = match (observation_only, result.result) {
-            (false, EffectDispatchResult::DispatchFailed(reason)) => {
-                EffectPhase::DispatchFailed(reason)
-            }
-            (true, EffectDispatchResult::DispatchFailed(reason)) => {
-                EffectPhase::ObservationDispatchFailed(reason)
-            }
-            (false, EffectDispatchResult::Unsupported(reason)) => EffectPhase::Unsupported(reason),
-            (true, EffectDispatchResult::Unsupported(reason)) => {
-                EffectPhase::ObservationUnsupported(reason)
-            }
-            (_, EffectDispatchResult::Indeterminate(reason)) => EffectPhase::Indeterminate(reason),
-        };
+        let phase = dispatch_result_phase(observation_only, result.result);
         if record.phase == phase {
             return EffectTransition::Duplicate;
         }
@@ -1025,6 +1241,143 @@ impl EffectLedger {
             return EffectTransition::Duplicate;
         }
         record.phase = phase;
+        EffectTransition::Applied
+    }
+
+    /// Applies one delayed predecessor result through the exact observation
+    /// continuation emitted to the current provider.
+    pub(crate) fn report_cleanup_observation(
+        &mut self,
+        provider: PlatformObservationLease,
+        current_epoch: WorkspaceEpoch,
+        result: EffectResult,
+    ) -> EffectTransition {
+        let Some(token) = result.cleanup_observation else {
+            return EffectTransition::CausalityBarrier;
+        };
+        if self.revoked_providers.contains(&provider) {
+            return EffectTransition::ProviderMismatch;
+        }
+
+        let Some(continuation) = self.records.get(&token.continuation) else {
+            return self.missing_transition(token.continuation);
+        };
+        if token.continuation_epoch != current_epoch
+            || continuation.request.epoch != token.continuation_epoch
+            || continuation.delivery != Some(token.delivery)
+            || token.delivery.provider() != provider
+        {
+            return EffectTransition::ProviderMismatch;
+        }
+        let PlatformEffect::ContinueCleanup {
+            binding,
+            predecessor,
+            ..
+        } = continuation.request.effect()
+        else {
+            return EffectTransition::CausalityBarrier;
+        };
+        if *binding != token.binding || *predecessor != token.predecessor {
+            return EffectTransition::BindingMismatch;
+        }
+
+        let Some(predecessor_record) = self.records.get(&token.predecessor) else {
+            return self.missing_transition(token.predecessor);
+        };
+        if result.effect != token.predecessor
+            || result.epoch != predecessor_record.request.epoch
+            || predecessor_record.request.effect.binding() != token.binding
+            || !predecessor_record.was_emitted()
+            || !predecessor_record.request.effect.is_destructive_cleanup()
+        {
+            return EffectTransition::CausalityBarrier;
+        }
+
+        let reported_predecessor_phase = dispatch_result_phase(false, result.result);
+        // An observation-only continuation owns its own indeterminate reason. If provider
+        // revocation already made the destructive predecessor indeterminate, a later cleanup
+        // observation must not erase that causal fact merely because it also cannot prove a
+        // terminal result. A definitive result may still refine the predecessor below.
+        let predecessor_phase = match (predecessor_record.phase, reported_predecessor_phase) {
+            (existing @ EffectPhase::Indeterminate(_), EffectPhase::Indeterminate(_)) => existing,
+            (_, reported) => reported,
+        };
+        let continuation_phase = match result.result {
+            EffectDispatchResult::Indeterminate(reason) => {
+                EffectPhase::CleanupObservationIndeterminate {
+                    predecessor: token.predecessor,
+                    reason,
+                }
+            }
+            EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_) => {
+                EffectPhase::CleanupResultObserved {
+                    predecessor: token.predecessor,
+                }
+            }
+        };
+        if continuation.phase == continuation_phase && predecessor_record.phase == predecessor_phase
+        {
+            return EffectTransition::Duplicate;
+        }
+        let continuation_open = matches!(
+            continuation.phase,
+            EffectPhase::Requested | EffectPhase::Indeterminate(_)
+        ) || matches!(
+            continuation.phase,
+            EffectPhase::CleanupObservationIndeterminate { predecessor, .. }
+                if predecessor == token.predecessor
+        );
+        if !continuation_open {
+            return if matches!(
+                continuation.phase,
+                EffectPhase::CleanupResultObserved {
+                    predecessor: exact,
+                } if exact == token.predecessor
+            ) && predecessor_record.phase != predecessor_phase
+            {
+                EffectTransition::CausalityBarrier
+            } else {
+                EffectTransition::Duplicate
+            };
+        }
+        if let (
+            EffectPhase::CleanupObservationIndeterminate {
+                predecessor: existing_predecessor,
+                reason: existing,
+            },
+            EffectPhase::CleanupObservationIndeterminate {
+                predecessor: reported_predecessor,
+                reason: reported,
+            },
+        ) = (continuation.phase, continuation_phase)
+            && existing_predecessor == reported_predecessor
+            && existing != reported
+        {
+            return EffectTransition::CausalityBarrier;
+        }
+        let predecessor_transition_allowed =
+            matches!(
+                predecessor_record.phase,
+                EffectPhase::Requested | EffectPhase::Indeterminate(_)
+            ) && (matches!(predecessor_record.phase, EffectPhase::Requested)
+                || matches!(
+                    predecessor_phase,
+                    EffectPhase::DispatchFailed(_)
+                        | EffectPhase::Unsupported(_)
+                        | EffectPhase::Indeterminate(_)
+                ));
+        if !predecessor_transition_allowed {
+            return EffectTransition::Duplicate;
+        }
+
+        self.records
+            .get_mut(&token.predecessor)
+            .expect("validated predecessor remains present")
+            .phase = predecessor_phase;
+        self.records
+            .get_mut(&token.continuation)
+            .expect("validated continuation remains present")
+            .phase = continuation_phase;
         EffectTransition::Applied
     }
 
@@ -1200,6 +1553,8 @@ const fn effect_phase_is_compactable(phase: EffectPhase) -> bool {
     matches!(
         phase,
         EffectPhase::ObservedApplied { .. }
+            | EffectPhase::CleanupResultObserved { .. }
+            | EffectPhase::CleanupObservationSuperseded { .. }
             | EffectPhase::Destroyed { .. }
             | EffectPhase::Invalidated { .. }
     )
@@ -1226,6 +1581,9 @@ fn apply_observation_phase(record: &mut EffectRecord, phase: EffectPhase) -> Eff
         EffectPhase::Requested
         | EffectPhase::DispatchFailed(_)
         | EffectPhase::ObservationDispatchFailed(_)
+        | EffectPhase::CleanupObservationIndeterminate { .. }
+        | EffectPhase::CleanupResultObserved { .. }
+        | EffectPhase::CleanupObservationSuperseded { .. }
         | EffectPhase::Unsupported(_)
         | EffectPhase::ObservationUnsupported(_)
         | EffectPhase::Indeterminate(_)
@@ -2015,6 +2373,425 @@ mod tests {
                 Some(EffectPhase::Requested)
             );
         }
+    }
+
+    #[test]
+    fn cleanup_observation_token_is_the_only_cross_epoch_predecessor_result_authority() {
+        let mut ledger = EffectLedger::default();
+        let (predecessor_provider, observation_provider) = test_provider_replacement();
+        let target_binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild {
+                binding: target_binding,
+            })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(predecessor_provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        let continuation = ledger
+            .request_in(
+                WorkspaceEpoch::new(2),
+                PlatformEffect::ContinueCleanup {
+                    binding: target_binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("cleanup continuation must allocate");
+        let emission = ledger
+            .take_new_requests(observation_provider, InventoryGeneration::new(2), |_| false)
+            .expect("cleanup continuation must emit")
+            .pop()
+            .expect("one cleanup continuation must be emitted");
+        let token = emission
+            .cleanup_observation_token()
+            .expect("cleanup continuation must mint observation authority");
+        let failure = EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped);
+
+        assert_eq!(
+            ledger.report(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::new(predecessor, WorkspaceEpoch::new(1), failure),
+            ),
+            EffectTransition::StaleEpoch
+        );
+        let correlated = EffectResult::observed_via_cleanup(token, WorkspaceEpoch::new(1), failure);
+        assert_eq!(correlated.receipt_epoch(), WorkspaceEpoch::new(2));
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                correlated,
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            ledger.record(predecessor).map(EffectRecord::phase),
+            Some(EffectPhase::DispatchFailed(
+                DispatchFailureReason::ProviderStopped,
+            ))
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::CleanupResultObserved { predecessor })
+        );
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                correlated,
+            ),
+            EffectTransition::Duplicate
+        );
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::observed_via_cleanup(
+                    token,
+                    WorkspaceEpoch::new(1),
+                    EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported,),
+                ),
+            ),
+            EffectTransition::CausalityBarrier
+        );
+    }
+
+    #[test]
+    fn cleanup_observation_rejects_foreign_provider_and_spliced_binding_atomically() {
+        let mut ledger = EffectLedger::default();
+        let (predecessor_provider, observation_provider) = test_provider_replacement();
+        let target_binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild {
+                binding: target_binding,
+            })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(predecessor_provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        let continuation = ledger
+            .request_in(
+                WorkspaceEpoch::new(2),
+                PlatformEffect::ContinueCleanup {
+                    binding: target_binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("cleanup continuation must allocate");
+        let emission = ledger
+            .take_new_requests(observation_provider, InventoryGeneration::new(2), |_| false)
+            .expect("cleanup continuation must emit")
+            .pop()
+            .expect("one cleanup continuation must be emitted");
+        let token = emission
+            .cleanup_observation_token()
+            .expect("cleanup continuation must mint observation authority");
+        let failure = EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped);
+
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                predecessor_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::observed_via_cleanup(token, WorkspaceEpoch::new(1), failure),
+            ),
+            EffectTransition::ProviderMismatch
+        );
+        assert_eq!(
+            ledger.record(predecessor).map(EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+
+        let spliced = CleanupObservationToken {
+            binding: binding(1, 2),
+            ..token
+        };
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::observed_via_cleanup(spliced, WorkspaceEpoch::new(1), failure),
+            ),
+            EffectTransition::BindingMismatch
+        );
+        assert_eq!(
+            ledger.record(predecessor).map(EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::Requested)
+        );
+    }
+
+    #[test]
+    fn indeterminate_cleanup_observation_remains_live_until_a_definitive_result() {
+        let mut ledger = EffectLedger::default();
+        let (predecessor_provider, observation_provider) = test_provider_replacement();
+        let binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(predecessor_provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        ledger.revoke_provider_authority(predecessor_provider);
+        let continuation = ledger
+            .request_in(
+                WorkspaceEpoch::new(2),
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("cleanup continuation must allocate");
+        let emission = ledger
+            .take_new_requests(observation_provider, InventoryGeneration::new(2), |_| false)
+            .expect("cleanup continuation must emit")
+            .pop()
+            .expect("one cleanup continuation must be emitted");
+        let token = emission
+            .cleanup_observation_token()
+            .expect("cleanup continuation must mint observation authority");
+
+        let indeterminate = EffectResult::observed_via_cleanup(
+            token,
+            WorkspaceEpoch::new(1),
+            EffectDispatchResult::Indeterminate(EffectIndeterminateReason::AcknowledgementLost),
+        );
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                indeterminate,
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::CleanupObservationIndeterminate {
+                predecessor,
+                reason: EffectIndeterminateReason::AcknowledgementLost,
+            })
+        );
+        assert_eq!(
+            ledger.record(predecessor).map(EffectRecord::phase),
+            Some(EffectPhase::Indeterminate(
+                EffectIndeterminateReason::ProviderRestarted,
+            )),
+            "the observer owns its acknowledgement-loss reason without erasing provider revocation",
+        );
+        ledger.mark_boundary_published();
+        assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 0);
+
+        let definitive = EffectResult::observed_via_cleanup(
+            token,
+            WorkspaceEpoch::new(1),
+            EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+        );
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                definitive,
+            ),
+            EffectTransition::Applied
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::CleanupResultObserved { predecessor })
+        );
+        assert_eq!(
+            ledger.record(predecessor).map(EffectRecord::phase),
+            Some(EffectPhase::Unsupported(
+                EffectUnsupportedReason::BackendUnsupported,
+            ))
+        );
+        ledger.mark_boundary_published();
+        assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 1);
+        assert!(ledger.record(continuation).is_none());
+    }
+
+    #[test]
+    fn provider_replacement_supersedes_an_indeterminate_cleanup_observer() {
+        let mut ledger = EffectLedger::default();
+        let (predecessor_provider, observation_provider) = test_provider_replacement();
+        let binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(predecessor_provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        let continuation = ledger
+            .request_in(
+                WorkspaceEpoch::new(2),
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("cleanup continuation must allocate");
+        let token = ledger
+            .take_new_requests(observation_provider, InventoryGeneration::new(2), |_| false)
+            .expect("cleanup continuation must emit")
+            .pop()
+            .and_then(|emission| emission.cleanup_observation_token())
+            .expect("cleanup continuation must mint observation authority");
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::observed_via_cleanup(
+                    token,
+                    WorkspaceEpoch::new(1),
+                    EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::AcknowledgementLost,
+                    ),
+                ),
+            ),
+            EffectTransition::Applied
+        );
+
+        ledger.revoke_provider_authority(observation_provider);
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::Invalidated {
+                cause: EffectInvalidation::PlatformProviderReplaced {
+                    provider: observation_provider,
+                },
+            })
+        );
+        ledger.mark_boundary_published();
+        assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 1);
+        assert!(ledger.record(continuation).is_none());
+        assert!(ledger.record(predecessor).is_some());
+    }
+
+    #[test]
+    fn conflicting_indeterminate_cleanup_observation_is_rejected_atomically() {
+        let mut ledger = EffectLedger::default();
+        let (predecessor_provider, observation_provider) = test_provider_replacement();
+        let binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(predecessor_provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        let continuation = ledger
+            .request_in(
+                WorkspaceEpoch::new(2),
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("cleanup continuation must allocate");
+        let token = ledger
+            .take_new_requests(observation_provider, InventoryGeneration::new(2), |_| false)
+            .expect("cleanup continuation must emit")
+            .pop()
+            .and_then(|emission| emission.cleanup_observation_token())
+            .expect("cleanup continuation must mint observation authority");
+        let first = EffectResult::observed_via_cleanup(
+            token,
+            WorkspaceEpoch::new(1),
+            EffectDispatchResult::Indeterminate(EffectIndeterminateReason::AcknowledgementLost),
+        );
+        assert_eq!(
+            ledger.report_cleanup_observation(observation_provider, WorkspaceEpoch::new(2), first,),
+            EffectTransition::Applied
+        );
+        let before = ledger.clone();
+        assert_eq!(
+            ledger.report_cleanup_observation(
+                observation_provider,
+                WorkspaceEpoch::new(2),
+                EffectResult::observed_via_cleanup(
+                    token,
+                    WorkspaceEpoch::new(1),
+                    EffectDispatchResult::Indeterminate(
+                        EffectIndeterminateReason::ProviderRestarted,
+                    ),
+                ),
+            ),
+            EffectTransition::CausalityBarrier
+        );
+        assert_eq!(ledger.records, before.records);
+        assert_eq!(
+            ledger.report_cleanup_observation(observation_provider, WorkspaceEpoch::new(2), first,),
+            EffectTransition::Duplicate
+        );
+        assert_eq!(
+            ledger.record(continuation).map(EffectRecord::phase),
+            Some(EffectPhase::CleanupObservationIndeterminate {
+                predecessor,
+                reason: EffectIndeterminateReason::AcknowledgementLost,
+            })
+        );
+    }
+
+    #[test]
+    fn cleanup_observation_churn_retains_only_subject_and_current_observer() {
+        let mut ledger = EffectLedger::default();
+        let provider = test_provider();
+        let binding = binding(1, 1);
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("destructive cleanup must allocate");
+        ledger
+            .take_new_requests(provider, InventoryGeneration::new(1), |_| false)
+            .expect("destructive cleanup must emit");
+        let mut current = ledger
+            .request_in(
+                WorkspaceEpoch::new(1),
+                PlatformEffect::ContinueCleanup {
+                    binding,
+                    predecessor,
+                    after: None,
+                },
+            )
+            .expect("first cleanup observer must allocate");
+        ledger
+            .take_new_requests(provider, InventoryGeneration::new(2), |_| false)
+            .expect("first cleanup observer must emit");
+
+        for generation in 3..=10_002 {
+            let successor = ledger
+                .request_in(
+                    WorkspaceEpoch::new(1),
+                    PlatformEffect::ContinueCleanup {
+                        binding,
+                        predecessor,
+                        after: Some(current),
+                    },
+                )
+                .expect("successor cleanup observer must allocate");
+            assert_eq!(
+                ledger.supersede_cleanup_observation(current, successor, predecessor, binding,),
+                EffectTransition::Applied
+            );
+            ledger
+                .take_new_requests(provider, InventoryGeneration::new(generation), |_| false)
+                .expect("successor cleanup observer must emit");
+            ledger.mark_boundary_published();
+            assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 1);
+            assert_eq!(ledger.records.len(), 2);
+            current = successor;
+        }
+
+        assert!(ledger.record(predecessor).is_some());
+        assert!(ledger.record(current).is_some());
     }
 
     #[test]

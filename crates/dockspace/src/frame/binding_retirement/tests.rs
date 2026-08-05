@@ -1,5 +1,5 @@
 use super::*;
-use crate::effect::DispatchFailureReason;
+use crate::effect::{DispatchFailureReason, EffectIndeterminateReason};
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
 use crate::platform::{
@@ -227,10 +227,11 @@ fn retention_accounts_for_active_quarantine_and_cleanup_indexes() {
 }
 
 #[test]
-fn cleanup_lineage_keeps_emitted_predecessors_indexed_until_terminal() {
+fn cleanup_lineage_retains_only_the_destructive_predecessor_and_current_observer() {
     let binding = binding(1, 10);
     let predecessor = EffectId::new(1);
     let successor = EffectId::new(2);
+    let latest_successor = EffectId::new(3);
     let mut lifecycle = BindingRetirementLifecycle::default();
     lifecycle
         .begin(runtime_request(
@@ -241,16 +242,64 @@ fn cleanup_lineage_keeps_emitted_predecessors_indexed_until_terminal() {
         ))
         .expect("retirement must begin");
     lifecycle
-        .accept_cleanup_effect(binding, successor)
+        .accept_cleanup_observation_effect(binding, successor, predecessor)
         .expect("cleanup continuation must become current");
+    lifecycle
+        .accept_cleanup_observation_effect(binding, latest_successor, predecessor)
+        .expect("a newer cleanup continuation must supersede the intermediate observer");
+    assert_eq!(lifecycle.retention_manifest().cleanup_lineage_entries(), 2);
+    assert_eq!(
+        lifecycle
+            .reduce_effect(
+                successor,
+                EffectPhase::DispatchFailed(DispatchFailureReason::ProviderStopped),
+            )
+            .expect("superseded observer lookup is infallible"),
+        None
+    );
 
     assert_eq!(
         lifecycle
             .reduce_effect(
                 predecessor,
+                EffectPhase::Indeterminate(EffectIndeterminateReason::ProviderRestarted),
+            )
+            .expect("the exact destructive predecessor remains indexed"),
+        Some(binding)
+    );
+    assert_eq!(
+        lifecycle.get(&binding).map(BindingRetirement::status),
+        Some(BindingRetirementStatus::CleanupRequested {
+            effect: latest_successor,
+        })
+    );
+
+    let mut direct = lifecycle.clone();
+    assert_eq!(
+        direct
+            .reduce_effect(
+                predecessor,
                 EffectPhase::DispatchFailed(DispatchFailureReason::ProviderStopped),
             )
-            .expect("late predecessor result must reduce"),
+            .expect("a definitive direct predecessor result must reduce"),
+        Some(binding)
+    );
+    assert_eq!(
+        direct.get(&binding).map(BindingRetirement::status),
+        Some(BindingRetirementStatus::CleanupFailed {
+            effect: predecessor,
+        })
+    );
+    assert_eq!(direct.retention_manifest().cleanup_lineage_entries(), 1);
+
+    assert_eq!(
+        lifecycle
+            .reduce_cleanup_observation(
+                latest_successor,
+                predecessor,
+                EffectPhase::DispatchFailed(DispatchFailureReason::ProviderStopped),
+            )
+            .expect("the active successor may correlate its exact predecessor"),
         Some(binding)
     );
     assert_eq!(
@@ -259,15 +308,42 @@ fn cleanup_lineage_keeps_emitted_predecessors_indexed_until_terminal() {
             effect: predecessor,
         })
     );
+    assert_eq!(lifecycle.retention_manifest().cleanup_lineage_entries(), 1);
+}
+
+#[test]
+fn cleanup_observation_alias_rejection_is_atomic() {
+    let first = binding(1, 10);
+    let second = binding(2, 11);
+    let first_predecessor = EffectId::new(1);
+    let second_effect = EffectId::new(2);
+    let mut lifecycle = BindingRetirementLifecycle::default();
+    lifecycle
+        .begin(runtime_request(
+            first,
+            BindingRetirementStatus::CleanupRequested {
+                effect: first_predecessor,
+            },
+        ))
+        .expect("first retirement must begin");
+    lifecycle
+        .begin(runtime_request(
+            second,
+            BindingRetirementStatus::CleanupRequested {
+                effect: second_effect,
+            },
+        ))
+        .expect("second retirement must begin");
+    let before = lifecycle.clone();
+
     assert_eq!(
-        lifecycle
-            .reduce_effect(
-                successor,
-                EffectPhase::DispatchFailed(DispatchFailureReason::ProviderStopped),
-            )
-            .expect("successor identity must remain in the same cleanup lineage"),
-        Some(binding)
+        lifecycle.accept_cleanup_observation_effect(first, second_effect, first_predecessor),
+        Err(BindingRetirementLifecycleError::CleanupEffectOwned {
+            effect: second_effect,
+            owner: second,
+        })
     );
+    assert_eq!(lifecycle, before);
 }
 
 #[test]
@@ -286,7 +362,7 @@ fn terminal_destruction_releases_token_and_complete_cleanup_lineage() {
         ))
         .expect("retirement must begin");
     lifecycle
-        .accept_cleanup_effect(binding, successor)
+        .accept_cleanup_observation_effect(binding, successor, predecessor)
         .expect("cleanup continuation must become current");
 
     let terminal = lifecycle
