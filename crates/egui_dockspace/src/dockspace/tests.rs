@@ -11,8 +11,8 @@ use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, Po
 use dockspace::interaction::{InteractionCancelReason, InteractionEventKind, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerJournalLedgerError, PointerProviderScope,
-    SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
@@ -21,7 +21,7 @@ use dockspace::pointer_receiver::{
 use dockspace::presentation_hit::PresentationHitRegionKind;
 use dockspace::presentation_observation::{
     HostPresentationCaptureGeneration, HostPresentationObservationOutcome,
-    HostPresentationObservationRejection,
+    HostPresentationObservationRejection, PresentationHostRetirementReason,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::SurfaceContributionOutcome;
@@ -256,7 +256,7 @@ fn arm_real_journal_click(
     context: &Context,
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
-) -> InteractionStatus {
+) -> (InteractionStatus, SurfaceLocalPointerProvider) {
     for _ in 0..3 {
         let _ = run_authoritative_automatic_frame(context, dockspace, panes);
     }
@@ -281,12 +281,12 @@ fn arm_real_journal_click(
         PointerReceiverDeliveryDisposition::Dock(close.id()),
     )
     .expect("the close delivery binds to the current output");
-    let provider = EguiEngineOwner::create_pointer_provider(
+    let provider = EguiEngineOwner::create_surface_local_pointer_provider(
         &mut dockspace.engine,
-        PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        SurfaceLocalPointerScope::new(
             dockspace.presentation_host,
             SurfaceLocalPointerEndpoint::Logical(SURFACE),
-        )),
+        ),
         PointerEdgeSequence::new(0),
     )
     .expect("the real surface-local provider is admitted");
@@ -318,7 +318,7 @@ fn arm_real_journal_click(
         .input_core_frame_mut()
         .expect("the framework facade owns an input capability");
     core_frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(&provider, journal)
         .expect("the real journal stages");
     let candidate = core_frame
         .pointer_receiver_candidates()
@@ -348,18 +348,21 @@ fn arm_real_journal_click(
     frame
         .end_host_frame()
         .expect("the real journal press commits");
-    dockspace.engine.interaction().status()
+    assert_eq!(provider.committed_through(), sequence);
+    (dockspace.engine.interaction().status(), provider)
 }
 
 fn submit_formal_click_escape(
     context: &Context,
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
+    provider: &dockspace::pointer_journal::SurfaceLocalPointerProvider,
 ) -> HostFrameResponse {
-    let provider = dockspace
-        .engine
-        .pointer_provider()
-        .expect("the click retains its real provider");
+    assert_eq!(
+        dockspace.engine.pointer_provider(),
+        Some(provider.lease()),
+        "the click retains its exact affine producer",
+    );
     let watermark = PointerEdgeSequence::new(1);
     let next_sequence = dockspace.last_host_frame.map_or(1, |key| {
         key.sequence()
@@ -384,7 +387,7 @@ fn submit_formal_click_escape(
         .input_core_frame_mut()
         .expect("the framework facade owns an input capability");
     core_frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             PointerEdgeJournal::new(watermark, watermark, Vec::new())
                 .expect("the no-edge journal preserves the real watermark"),
@@ -425,7 +428,7 @@ fn real_pressed_click_escape_is_callback_order_independent() {
             .build()
             .expect("facade builds");
         let mut panes = TestPanes;
-        let status = arm_real_journal_click(&host_context, &mut dockspace, &mut panes);
+        let (status, provider) = arm_real_journal_click(&host_context, &mut dockspace, &mut panes);
         let InteractionStatus::Pressed { .. } = status else {
             panic!("the real journal press must own one click session");
         };
@@ -442,7 +445,8 @@ fn real_pressed_click_escape_is_callback_order_independent() {
             escape_consumptions, 1,
             "only the core-proven source callback may consume Escape",
         );
-        let response = submit_formal_click_escape(&host_context, &mut dockspace, &mut panes);
+        let response =
+            submit_formal_click_escape(&host_context, &mut dockspace, &mut panes, &provider);
         let transition = response.transition();
         assert_eq!(
             dockspace.engine.interaction().status(),
@@ -464,33 +468,65 @@ fn real_pressed_click_escape_is_callback_order_independent() {
 }
 
 #[test]
-fn failed_pointer_abort_preserves_the_adapter_lease() {
-    let mut dockspace = Dockspace::builder("failed-pointer-abort", workspace())
+fn already_retired_pointer_abort_compacts_the_exact_tombstone() {
+    let context = multipass_context();
+    let mut dockspace = Dockspace::builder("retired-pointer-abort", workspace())
         .build()
         .expect("facade builds");
-    dockspace
-        .ensure_outer_pointer_provider()
-        .expect("the adapter enrolls one surface-local provider");
-    let provider = dockspace
+    let mut panes = TestPanes;
+    let (status, provider) = arm_real_journal_click(&context, &mut dockspace, &mut panes);
+    assert!(matches!(status, InteractionStatus::Pressed { .. }));
+    let workspace_epoch = dockspace.engine.version().epoch();
+    let reservation = dockspace
         .pointer_input
-        .provider()
-        .expect("the adapter retains its provider lease");
-    EguiEngineOwner::retire_pointer_provider(&mut dockspace.engine, provider)
-        .expect("the test retires the core lease behind the adapter");
-
-    let error = match dockspace.begin_host_frame(EguiFrameScheduleKey::new(1, 0)) {
-        Ok(_) => panic!("a stale adapter lease must fail retirement"),
-        Err(error) => error,
+        .reserve_install()
+        .expect("the adapter incarnation remains available");
+    dockspace
+        .pointer_input
+        .install_unbound(reservation, provider, SURFACE, workspace_epoch);
+    let outcome = EguiEngineOwner::retire_presentation_host_for_test(
+        &mut dockspace.engine,
+        dockspace.presentation_host,
+        PresentationHostRetirementReason::RuntimeDestroyed,
+    )
+    .expect("retiring the host also retires its surface-local pointer lease");
+    let dockspace::transition::PresentationHostRetirementOutcome::Retired {
+        affected_surfaces,
+        transition,
+        ..
+    } = outcome
+    else {
+        panic!("the first host retirement must publish its complete transition");
     };
+    assert_eq!(affected_surfaces, [SURFACE]);
+    assert!(transition.interaction_events().iter().any(|event| {
+        matches!(
+            event.kind(),
+            InteractionEventKind::Cancelled {
+                reason: InteractionCancelReason::SceneUnavailable,
+                ..
+            }
+        )
+    }));
+    let retired_at = dockspace.engine.last_reducer_tick();
+    assert_eq!(
+        dockspace
+            .engine
+            .runtime_retention_manifest()
+            .pointer()
+            .retired_lease_guards(),
+        1
+    );
 
-    assert!(matches!(
-        error,
-        DockspaceError::Engine(EngineError::PointerJournal {
-            source: PointerJournalLedgerError::RetiredLease { lease, .. },
-        }) if lease == provider
-    ));
-    assert_eq!(dockspace.pointer_input.provider(), Some(provider));
-    assert!(dockspace.pointer_input_retirements().is_empty());
+    dockspace
+        .abort_pointer_input()
+        .expect("the drained adapter producer compacts an existing tombstone");
+
+    assert_eq!(dockspace.engine.last_reducer_tick(), retired_at);
+    assert_eq!(dockspace.pointer_input.provider(), None);
+    let retention = dockspace.engine.runtime_retention_manifest().pointer();
+    assert_eq!(retention.retired_lease_guards(), 0);
+    assert_eq!(retention.compacted_retirement_ranges(), 1);
 }
 
 #[test]
@@ -562,28 +598,27 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
 }
 
 #[test]
-fn successful_pointer_abort_exposes_the_active_gesture_cancellation() {
+fn successful_pointer_abort_cancels_the_active_gesture_and_compacts_its_guard() {
     let context = multipass_context();
     let mut dockspace = Dockspace::builder("successful-pointer-abort", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
-    let status = arm_real_journal_click(&context, &mut dockspace, &mut panes);
+    let (status, provider_owner) = arm_real_journal_click(&context, &mut dockspace, &mut panes);
     assert!(matches!(status, InteractionStatus::Pressed { .. }));
     let provider = dockspace
         .engine
         .pointer_provider()
-        .expect("the active gesture retains its core provider");
+        .expect("active provider");
+    assert_eq!(provider_owner.lease(), provider);
     let workspace_epoch = dockspace.engine.version().epoch();
+    let reservation = dockspace
+        .pointer_input
+        .reserve_install()
+        .expect("the adapter incarnation remains available");
     dockspace
         .pointer_input
-        .install_unbound(
-            provider,
-            PointerEdgeSequence::new(1),
-            SURFACE,
-            workspace_epoch,
-        )
-        .expect("the adapter binds the active core provider");
+        .install_unbound(reservation, provider_owner, SURFACE, workspace_epoch);
     let next_sequence = dockspace.last_host_frame.map_or(1, |key| {
         key.sequence()
             .checked_add(1)
@@ -601,23 +636,32 @@ fn successful_pointer_abort_exposes_the_active_gesture_cancellation() {
         dockspace.engine.interaction().status(),
         InteractionStatus::Idle
     );
-    let retirements = dockspace.take_pointer_input_retirements();
-    assert!(matches!(
-        retirements.as_slice(),
-        [retirement]
-            if retirement.tick() == dockspace.engine.last_reducer_tick()
-                && matches!(
-                    retirement.interaction_events(),
-                    [event] if matches!(
-                        event.kind(),
-                        InteractionEventKind::Cancelled {
-                            status: InteractionStatus::Pressed { .. },
-                            reason: InteractionCancelReason::PointerProviderRetired,
-                        }
-                    )
-                )
-    ));
-    assert!(dockspace.pointer_input_retirements().is_empty());
+    let retention = dockspace.engine.runtime_retention_manifest().pointer();
+    assert_eq!(retention.retired_lease_guards(), 0);
+    assert_eq!(retention.compacted_retirement_ranges(), 1);
+}
+
+#[test]
+fn repeated_surface_local_abort_keeps_pointer_retention_constant() {
+    let mut dockspace = Dockspace::builder("pointer-abort-soak", workspace())
+        .build()
+        .expect("facade builds");
+
+    for _ in 0..1_000 {
+        dockspace
+            .ensure_outer_pointer_provider()
+            .expect("the surface-local producer enrolls");
+        dockspace
+            .abort_pointer_input()
+            .expect("the drained producer retires and compacts atomically");
+    }
+
+    let retention = dockspace.engine.runtime_retention_manifest().pointer();
+    assert_eq!(retention.active_provider_count(), 0);
+    assert_eq!(retention.retired_lease_guards(), 0);
+    assert_eq!(retention.compacted_retirement_ranges(), 1);
+    assert_eq!(retention.logical_compacted_leases(), 1_000);
+    assert_eq!(retention.retained_structure_count(), 1);
 }
 
 #[test]
@@ -1134,7 +1178,9 @@ fn prepared_core_and_renderer_commit_owned_sidecars_once() {
         .renderer
         .prepare_frame(prepared_core.transition(), drafts, BTreeMap::new())
         .expect("matching renderer preflights owned drafts");
-    let transition = prepared_core.commit();
+    let transition = prepared_core
+        .commit()
+        .expect("prepared core and affine pointer state commit together");
     let acceptance = prepared_renderer.commit(
         &mut dockspace.renderer,
         EguiEngineOwner::engine(&dockspace.engine),

@@ -10,10 +10,17 @@ use dockspace::engine::{
     CoreHostFramePrelude, CoreHostPresentationFrame, DockEngine, EngineError,
     OwnedPreparedHostFrameCommit, PreparedHostFrameCommit,
 };
-use dockspace::pointer_journal::{PointerEdgeSequence, PointerInputLease, PointerProviderScope};
+use dockspace::pointer_journal::{
+    PointerEdgeSequence, SurfaceLocalPointerDrainReceipt, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
+};
+#[cfg(test)]
+use dockspace::presentation_observation::PresentationHostRetirementReason;
 use dockspace::presentation_observation::{
     HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
 };
+#[cfg(test)]
+use dockspace::transition::PresentationHostRetirementOutcome;
 use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::viewport::ViewportBinding;
 
@@ -29,6 +36,13 @@ pub(super) trait EguiEngineOwner {
 
     #[cfg(test)]
     fn create_presentation_host(&mut self) -> Result<PresentationHostLease, EngineError>;
+
+    #[cfg(test)]
+    fn retire_presentation_host_for_test(
+        &mut self,
+        host: PresentationHostLease,
+        reason: PresentationHostRetirementReason,
+    ) -> Result<PresentationHostRetirementOutcome, EngineError>;
 
     fn create_backend_ingress_provider(
         &mut self,
@@ -52,16 +66,16 @@ pub(super) trait EguiEngineOwner {
         presentation_host: PresentationHostLease,
     ) -> Result<BackendIngressRecorder, EngineError>;
 
-    fn create_pointer_provider(
+    fn create_surface_local_pointer_provider(
         &mut self,
-        scope: PointerProviderScope,
+        scope: SurfaceLocalPointerScope,
         committed_through: PointerEdgeSequence,
-    ) -> Result<PointerInputLease, EngineError>;
+    ) -> Result<SurfaceLocalPointerProvider, EngineError>;
 
-    fn retire_pointer_provider(
+    fn retire_quiesced_surface_local_pointer_provider(
         &mut self,
-        provider: PointerInputLease,
-    ) -> Result<EngineTransition, EngineError>;
+        receipt: &mut SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerRetirementOutcome, EngineError>;
 
     fn begin_host_frame(
         &mut self,
@@ -173,6 +187,15 @@ impl EguiEngineOwner for DockEngine {
         DockEngine::create_presentation_host(self)
     }
 
+    #[cfg(test)]
+    fn retire_presentation_host_for_test(
+        &mut self,
+        host: PresentationHostLease,
+        reason: PresentationHostRetirementReason,
+    ) -> Result<PresentationHostRetirementOutcome, EngineError> {
+        DockEngine::retire_presentation_host(self, host, reason)
+    }
+
     fn create_backend_ingress_provider(
         &mut self,
         presentation_host: PresentationHostLease,
@@ -207,19 +230,19 @@ impl EguiEngineOwner for DockEngine {
         DockEngine::finish_backend_ingress_provider_replacement(self, ticket, presentation_host)
     }
 
-    fn create_pointer_provider(
+    fn create_surface_local_pointer_provider(
         &mut self,
-        scope: PointerProviderScope,
+        scope: SurfaceLocalPointerScope,
         committed_through: PointerEdgeSequence,
-    ) -> Result<PointerInputLease, EngineError> {
-        DockEngine::create_pointer_provider(self, scope, committed_through)
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        DockEngine::create_surface_local_pointer_provider(self, scope, committed_through)
     }
 
-    fn retire_pointer_provider(
+    fn retire_quiesced_surface_local_pointer_provider(
         &mut self,
-        provider: PointerInputLease,
-    ) -> Result<EngineTransition, EngineError> {
-        DockEngine::retire_pointer_provider(self, provider)
+        receipt: &mut SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerRetirementOutcome, EngineError> {
+        DockEngine::retire_quiesced_surface_local_pointer_provider(self, receipt)
     }
 
     fn begin_host_frame(
@@ -281,6 +304,15 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         self.adapter_create_presentation_host()
     }
 
+    #[cfg(test)]
+    fn retire_presentation_host_for_test(
+        &mut self,
+        host: PresentationHostLease,
+        reason: PresentationHostRetirementReason,
+    ) -> Result<PresentationHostRetirementOutcome, EngineError> {
+        self.adapter_retire_presentation_host(host, reason)
+    }
+
     fn create_backend_ingress_provider(
         &mut self,
         presentation_host: PresentationHostLease,
@@ -311,19 +343,19 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         self.adapter_finish_backend_ingress_provider_replacement(ticket, presentation_host)
     }
 
-    fn create_pointer_provider(
+    fn create_surface_local_pointer_provider(
         &mut self,
-        scope: PointerProviderScope,
+        scope: SurfaceLocalPointerScope,
         committed_through: PointerEdgeSequence,
-    ) -> Result<PointerInputLease, EngineError> {
-        self.adapter_create_pointer_provider(scope, committed_through)
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        self.adapter_create_surface_local_pointer_provider(scope, committed_through)
     }
 
-    fn retire_pointer_provider(
+    fn retire_quiesced_surface_local_pointer_provider(
         &mut self,
-        provider: PointerInputLease,
-    ) -> Result<EngineTransition, EngineError> {
-        self.adapter_retire_pointer_provider(provider)
+        receipt: &mut SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerRetirementOutcome, EngineError> {
+        self.adapter_retire_quiesced_surface_local_pointer_provider(receipt)
     }
 
     fn begin_host_frame(

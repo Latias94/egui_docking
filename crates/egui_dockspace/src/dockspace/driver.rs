@@ -872,7 +872,11 @@ impl DockspaceHostFrame<'_> {
         journal: dockspace::pointer_journal::PointerEdgeJournal,
         pointer_receivers_current: bool,
     ) -> Result<(), DockspaceError> {
-        core_frame.submit_pointer_journal(pointer.provider(), journal.clone())?;
+        self.dockspace.pointer_input.submit_prepared_segment(
+            core_frame,
+            pointer,
+            journal.clone(),
+        )?;
         let surface = self
             .state
             .expected_surfaces()

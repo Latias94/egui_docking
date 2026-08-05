@@ -44,8 +44,7 @@ use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
 use dockspace::interaction::InteractionStatus;
 use dockspace::pointer_journal::{
-    PointerEdgeSequence, PointerProviderScope, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::{
@@ -110,7 +109,6 @@ pub struct Dockspace {
     last_host_frame: Option<EguiFrameScheduleKey>,
     presentation_ledger: PresentationOutputLedger,
     pub(crate) pointer_input: EguiPointerInput,
-    pointer_input_retirements: Vec<EngineTransition>,
     native_bindings: Option<NativeBindingRegistry>,
     native_sessions: native_session::NativeSessionRegistry,
 }
@@ -142,7 +140,6 @@ impl Dockspace {
             last_host_frame: None,
             presentation_ledger: PresentationOutputLedger::default(),
             pointer_input: EguiPointerInput::default(),
-            pointer_input_retirements: Vec::new(),
             native_bindings: None,
             native_sessions: native_session::NativeSessionRegistry::default(),
         })
@@ -213,22 +210,6 @@ impl Dockspace {
         self.renderer
             .reconcile_core_retention(EguiEngineOwner::engine(&self.engine));
         Ok(all_reclaimed)
-    }
-
-    /// Returns adapter-initiated pointer-provider retirement transitions awaiting dispatch.
-    ///
-    /// These transitions may contain interaction cancellation, focus changes, and
-    /// platform effects. They remain available until consumed with
-    /// [`Self::take_pointer_input_retirements`].
-    #[must_use]
-    pub fn pointer_input_retirements(&self) -> &[EngineTransition] {
-        &self.pointer_input_retirements
-    }
-
-    /// Takes every adapter-initiated pointer-provider retirement transition in causal order.
-    #[must_use = "retirement transitions may contain platform effects and focus changes"]
-    pub fn take_pointer_input_retirements(&mut self) -> Vec<EngineTransition> {
-        std::mem::take(&mut self.pointer_input_retirements)
     }
 
     /// Enrolls the joined native platform and desktop-pointer ingress provider.
@@ -736,7 +717,7 @@ impl Dockspace {
                 ),
             )?;
         }
-        let transition = engine.prepare_application_host_frame(frame)?.commit();
+        let transition = engine.prepare_application_host_frame(frame)?.commit()?;
         engine.reconcile_application_sidecars();
         *semantic_source_sequence = sequence;
         pane_focus.accept_transition(&transition);
@@ -916,17 +897,18 @@ impl Dockspace {
             self.abort_pointer_input()?;
         }
         if self.pointer_input.provider().is_none() {
+            let reservation = self.pointer_input.reserve_install()?;
             let watermark = PointerEdgeSequence::new(0);
-            let provider = EguiEngineOwner::create_pointer_provider(
+            let provider = EguiEngineOwner::create_surface_local_pointer_provider(
                 &mut self.engine,
-                PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+                SurfaceLocalPointerScope::new(
                     self.presentation_host,
                     SurfaceLocalPointerEndpoint::Logical(surface),
-                )),
+                ),
                 watermark,
             )?;
             self.pointer_input
-                .install_unbound(provider, watermark, surface, workspace_epoch)?;
+                .install_unbound(reservation, provider, surface, workspace_epoch);
         }
         Ok(())
     }
@@ -1220,17 +1202,26 @@ impl Dockspace {
     }
 
     fn abort_pointer_input(&mut self) -> Result<(), DockspaceError> {
-        let Some(provider) = self.pointer_input.provider() else {
+        let Some(mut drained) = self.pointer_input.drain()? else {
             return Ok(());
         };
         // A host-frame capability that never reaches `finish` cannot publish the
         // staged journal watermark. Retire that exact lease so the next egui
         // epoch can enroll a fresh provider instead of inheriting a poisoned
         // pending journal or a cancelled stream owner.
-        let transition = EguiEngineOwner::retire_pointer_provider(&mut self.engine, provider)?;
-        self.pane_focus.accept_transition(&transition);
-        self.pointer_input.clear_after_abort();
-        self.pointer_input_retirements.push(transition);
+        let outcome = match EguiEngineOwner::retire_quiesced_surface_local_pointer_provider(
+            &mut self.engine,
+            drained.receipt_mut(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.pointer_input.restore_drained(drained);
+                return Err(error.into());
+            }
+        };
+        if outcome.repaint_required() {
+            drained.request_bound_repaint();
+        }
         Ok(())
     }
 

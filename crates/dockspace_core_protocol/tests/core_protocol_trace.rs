@@ -13,9 +13,10 @@ use dockspace_core_protocol::{
     ExpectedRecordedObserveOnlyActivation, ExpectedReducedInteractionOutcome,
     ExpectedReductionCause, ExpectedRetiredPresentation, ExpectedScrollReceiver,
     ExpectedScrollSuppressionReason, ExpectedScrollTerminationReason,
-    ExpectedSurfaceContributionOutcome, ExpectedSurfaceSceneDelta, ExpectedSurfaceSceneState,
-    ExpectedSurfaceSceneStateKind, ExpectedTabStripControl, ExpectedTransition,
-    ExpectedViewportActivationCause, ExpectedViewportActivationRequest,
+    ExpectedSurfaceContributionOutcome, ExpectedSurfaceLocalPointerMaintenance,
+    ExpectedSurfaceLocalPointerMaintenanceDisposition, ExpectedSurfaceSceneDelta,
+    ExpectedSurfaceSceneState, ExpectedSurfaceSceneStateKind, ExpectedTabStripControl,
+    ExpectedTransition, ExpectedViewportActivationCause, ExpectedViewportActivationRequest,
     ExpectedWorkspaceDeliveryKind, HostFrameEvent, IngressRef, InitialPolicyFixture, InitialRoot,
     InitialWorkspace, ItemCount, ItemKey, ItemLocation, LicenseProvenance, LifecycleIngress,
     MeasurementUnavailableReasonSpec, NodeFixture, ObservedWindowFixture, ObservedWorkAreaFixture,
@@ -956,10 +957,10 @@ fn provider_retirement_suite() -> CoreProtocolTraceSuite {
     trace.provenance.path = "docs/knowledge/pointer-edge-journal-contract.md".into();
     trace.provenance.test = "PEJ-03 provider retirement boundary".into();
     trace.provenance.retained_behavior =
-        "Pointer-provider retirement cancels its exact gesture owner and advances one reducer tick."
+        "Surface-local provider retirement reaches exact Idle state and advances one maintenance tick."
             .into();
     trace.provenance.deliberate_strengthening =
-        "Retirement is a complete transition and cannot be followed by an implicit empty host frame."
+        "Drain-backed retirement validates repaint and compacted retention without exposing a raw engine transition."
             .into();
     trace.expected_final = minimal_suite()
         .traces
@@ -969,7 +970,14 @@ fn provider_retirement_suite() -> CoreProtocolTraceSuite {
         .expected_final;
     trace.boundaries.push(CoreProtocolTraceBoundary {
         id: BoundaryId("retire-provider".into()),
-        provider: Some(PointerProviderIngress::Retire {}),
+        provider: Some(PointerProviderIngress::RetireSurfaceLocal {
+            expected: ExpectedSurfaceLocalPointerMaintenance {
+                interaction_changed: true,
+                repaint_required: true,
+                disposition: ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive,
+                terminated_scroll_sessions: 0,
+            },
+        }),
         presentation_observation: PresentationObservationIngress::NoUpdate {},
         presentation_dispositions: vec![],
         events: vec![],
@@ -990,17 +998,7 @@ fn provider_retirement_suite() -> CoreProtocolTraceSuite {
             presentation_observations: vec![],
             presentation_emissions: 0,
             surface_contributions: vec![],
-            interaction_events: vec![ExpectedInteractionEvent {
-                cause: dockspace_core_protocol::ExpectedReductionCause::PointerProviderRetirement,
-                version: VersionExpectation {
-                    epoch: 0,
-                    revision: 0,
-                },
-                event: ExpectedInteractionEventKind::Cancelled {
-                    status: ExpectedInteractionState::Armed,
-                    reason: ExpectedInteractionCancelReason::PointerProviderRetired,
-                },
-            }],
+            interaction_events: vec![],
             platform_effects: vec![],
             focus_delta: Default::default(),
             surface_scene_deltas: vec![],
@@ -1009,6 +1007,106 @@ fn provider_retirement_suite() -> CoreProtocolTraceSuite {
             published_state_changed: true,
         },
     });
+    suite
+}
+
+fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
+    let mut suite = minimal_suite();
+    let trace = &mut suite.traces[0];
+    trace.id = CoreProtocolTraceId("retired-pointer-provider-compaction".into());
+    trace.provenance.path = "docs/knowledge/pointer-edge-journal-contract.md".into();
+    trace.provenance.test = "PEJ-03 implicit host retirement followed by affine drain".into();
+    trace.provenance.retained_behavior =
+        "Presentation-host retirement revokes core pointer authority before the producer drains."
+            .into();
+    trace.provenance.deliberate_strengthening =
+        "The later drain is retention-only compaction and reuses the host-retirement reducer tick."
+            .into();
+    trace.boundaries[0].provider = Some(PointerProviderIngress::Activate {
+        scope: PointerProviderScopeIngress::SurfaceLocal {
+            surface: SurfaceKey(1),
+        },
+        committed_through: 0,
+    });
+    trace.boundaries[0].events = vec![HostFrameEvent::PointerJournal {
+        previous: 0,
+        through: 0,
+        edges: vec![],
+    }];
+    trace.boundaries.extend([
+        CoreProtocolTraceBoundary {
+            id: BoundaryId("retire-presentation-host".into()),
+            provider: Some(PointerProviderIngress::RetirePresentationHost {}),
+            presentation_observation: PresentationObservationIngress::NoUpdate {},
+            presentation_dispositions: vec![],
+            events: vec![],
+            surface_contributions: vec![],
+            expected: ExpectedTransition {
+                tick: ReducerTick(2),
+                before: VersionExpectation {
+                    epoch: 0,
+                    revision: 0,
+                },
+                after: VersionExpectation {
+                    epoch: 0,
+                    revision: 0,
+                },
+                reduced: vec![],
+                reduced_interaction_outcomes: vec![],
+                reduced_pointer_edges: vec![],
+                presentation_observations: vec![],
+                presentation_emissions: 0,
+                surface_contributions: vec![],
+                interaction_events: vec![],
+                platform_effects: vec![],
+                focus_delta: Default::default(),
+                surface_scene_deltas: vec![],
+                interaction: ExpectedInteractionState::Idle,
+                interactive_surface_roster: vec![],
+                published_state_changed: true,
+            },
+        },
+        CoreProtocolTraceBoundary {
+            id: BoundaryId("compact-retired-provider".into()),
+            provider: Some(PointerProviderIngress::RetireSurfaceLocal {
+                expected: ExpectedSurfaceLocalPointerMaintenance {
+                    interaction_changed: false,
+                    repaint_required: false,
+                    disposition:
+                        ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired,
+                    terminated_scroll_sessions: 0,
+                },
+            }),
+            presentation_observation: PresentationObservationIngress::NoUpdate {},
+            presentation_dispositions: vec![],
+            events: vec![],
+            surface_contributions: vec![],
+            expected: ExpectedTransition {
+                tick: ReducerTick(2),
+                before: VersionExpectation {
+                    epoch: 0,
+                    revision: 0,
+                },
+                after: VersionExpectation {
+                    epoch: 0,
+                    revision: 0,
+                },
+                reduced: vec![],
+                reduced_interaction_outcomes: vec![],
+                reduced_pointer_edges: vec![],
+                presentation_observations: vec![],
+                presentation_emissions: 0,
+                surface_contributions: vec![],
+                interaction_events: vec![],
+                platform_effects: vec![],
+                focus_delta: Default::default(),
+                surface_scene_deltas: vec![],
+                interaction: ExpectedInteractionState::Idle,
+                interactive_surface_roster: vec![],
+                published_state_changed: true,
+            },
+        },
+    ]);
     suite
 }
 
@@ -1357,6 +1455,60 @@ fn scroll_trace_suite() -> CoreProtocolTraceSuite {
             },
         },
     ]);
+    suite
+}
+
+fn scroll_provider_retirement_suite() -> CoreProtocolTraceSuite {
+    let mut suite = scroll_trace_suite();
+    let trace = &mut suite.traces[0];
+    trace.boundaries.pop();
+    trace.id = CoreProtocolTraceId("scroll-provider-retirement".into());
+    trace.provenance.test = "PEJ-03 surface-local retirement terminates scroll ownership".into();
+    trace.provenance.retained_behavior =
+        "Surface-local retirement reports scroll termination even while the primary interaction state remains Idle."
+            .into();
+    trace.provenance.deliberate_strengthening =
+        "The maintenance expectation carries interaction_changed and the exact scroll terminal reason instead of inferring either from InteractionState."
+            .into();
+    trace.boundaries.push(CoreProtocolTraceBoundary {
+        id: BoundaryId("retire-scroll-provider".into()),
+        provider: Some(PointerProviderIngress::RetireSurfaceLocal {
+            expected: ExpectedSurfaceLocalPointerMaintenance {
+                interaction_changed: true,
+                repaint_required: true,
+                disposition: ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive,
+                terminated_scroll_sessions: 1,
+            },
+        }),
+        presentation_observation: PresentationObservationIngress::NoUpdate {},
+        presentation_dispositions: vec![],
+        events: vec![],
+        surface_contributions: vec![],
+        expected: ExpectedTransition {
+            tick: ReducerTick(7),
+            before: VersionExpectation {
+                epoch: 0,
+                revision: 0,
+            },
+            after: VersionExpectation {
+                epoch: 0,
+                revision: 0,
+            },
+            reduced: vec![],
+            reduced_interaction_outcomes: vec![],
+            reduced_pointer_edges: vec![],
+            presentation_observations: vec![],
+            presentation_emissions: 0,
+            surface_contributions: vec![],
+            interaction_events: vec![],
+            platform_effects: vec![],
+            focus_delta: Default::default(),
+            surface_scene_deltas: vec![],
+            interaction: ExpectedInteractionState::Idle,
+            interactive_surface_roster: vec![],
+            published_state_changed: true,
+        },
+    });
     suite
 }
 
@@ -6027,7 +6179,7 @@ fn scroll_token_rejection_rolls_back_the_frame_and_completed_tokens_cannot_resur
 }
 
 #[test]
-fn provider_retirement_is_one_complete_transition_with_an_exact_tick() {
+fn surface_local_provider_retirement_is_one_narrow_maintenance_boundary() {
     let expected = provider_retirement_suite();
     let encoded = serde_json::to_string_pretty(&expected).expect("provider retirement encodes");
     let decoded =
@@ -6045,10 +6197,40 @@ fn provider_retirement_is_one_complete_transition_with_an_exact_tick() {
         assert_eq!(
             harness.engine().last_reducer_tick().get(),
             boundary.expected.tick.0,
-            "one trace boundary must publish exactly one reducer tick"
+            "one trace boundary must publish exactly one reducer or maintenance tick"
         );
     }
     assert!(harness.engine().pointer_provider().is_none());
+}
+
+#[test]
+fn surface_local_retirement_reports_scroll_only_interaction_change_explicitly() {
+    let expected = scroll_provider_retirement_suite();
+    let encoded = serde_json::to_string_pretty(&expected).expect("scroll retirement encodes");
+    let decoded =
+        decode_core_protocol_trace_suite(&encoded).expect("scroll retirement trace decodes");
+
+    assert_eq!(decoded, expected);
+    replay_core_protocol_trace_suite(&decoded).expect("scroll retirement trace replays");
+}
+
+#[test]
+fn retired_surface_local_provider_compaction_reuses_the_retirement_tick() {
+    let expected = retired_provider_compaction_suite();
+    let encoded = serde_json::to_string_pretty(&expected).expect("provider compaction encodes");
+    let decoded =
+        decode_core_protocol_trace_suite(&encoded).expect("provider compaction trace decodes");
+
+    assert_eq!(decoded, expected);
+    assert_eq!(
+        decoded.traces[0]
+            .boundaries
+            .iter()
+            .map(|boundary| boundary.expected.tick.0)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 2]
+    );
+    replay_core_protocol_trace_suite(&decoded).expect("provider compaction trace replays");
 }
 
 #[test]

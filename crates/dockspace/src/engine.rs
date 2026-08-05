@@ -97,8 +97,8 @@ use crate::drop_resolver::{
     DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop,
 };
 use crate::effect::{
-    EffectDispatchResult, EffectResult, EffectTransition, NativeCloseResolution, PlatformEffect,
-    PlatformEffectEmission,
+    EffectDispatchResult, EffectId, EffectResult, EffectTransition, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
 };
 use crate::error::{CommandError, ReferenceRole, TransactionError};
 use crate::event::{ReductionCause, WorkspaceEvent, WorkspaceEventKind};
@@ -150,8 +150,10 @@ use crate::pointer_journal::{
     PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
     PointerEventDeliveryOwner, PointerInputLease, PointerJournalLedger, PointerJournalLedgerError,
     PointerProviderScope, PointerStreamId, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
-    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
-    ValidatedDesktopRoute,
+    ScrollEdge, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerDrainReceipt,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerProviderError, SurfaceLocalPointerQuiescenceDisposition,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope, ValidatedDesktopRoute,
 };
 use crate::pointer_receiver::{
     PointerReceiverAttemptError, PointerReceiverAttemptIssuer, PointerReceiverCandidateRoster,
@@ -475,6 +477,12 @@ pub enum CoreHostFrameError {
     /// pointer provider.
     #[error("host frame has no active pointer provider for a submitted pointer journal")]
     PointerJournalUnexpected,
+    /// A surface-local journal attempted to submit through a copied raw lease.
+    #[error("surface-local pointer provider {provider:?} requires its affine producer")]
+    SurfaceLocalPointerProducerRequired {
+        /// Surface-local provider whose copied lease was rejected.
+        provider: PointerInputLease,
+    },
     /// Presentation cannot begin before a live pointer provider submits its checkpoint.
     #[error("presentation cannot begin before pointer provider {provider:?} submits its journal")]
     PointerJournalMissingBeforePresentation {
@@ -498,6 +506,13 @@ pub enum CoreHostFrameError {
         /// Exact ledger rejection retained for diagnostics.
         #[source]
         source: PointerJournalLedgerError,
+    },
+    /// The affine surface-local producer rejected this frame attempt.
+    #[error("surface-local pointer producer rejected the host frame: {source}")]
+    SurfaceLocalPointerProducerRejected {
+        /// Exact producer-lifecycle rejection.
+        #[source]
+        source: SurfaceLocalPointerProviderError,
     },
     /// Receiver questions are minted from the exact reducer prefix, so one
     /// challenge may carry at most one pointer edge.
@@ -665,6 +680,8 @@ pub struct CoreHostFrame {
     /// answered edge is reduced immediately against the rollbackable engine
     /// candidate before another receiver question can be minted.
     staged_pointer_journal: PointerJournalLedger,
+    /// Producer-side guard retained until this exact frame commits or aborts.
+    surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
     /// Interactive outputs visible after the latest accepted input prefix.
     /// Every refresh intersects presented authority with the current physical
     /// roster. Semantic inputs may revoke an output, but cannot retroactively
@@ -730,6 +747,7 @@ pub struct PreparedHostFrameCommit<'a> {
     engine: &'a mut DockEngine,
     candidate: DockEngine,
     transition: EngineTransition,
+    surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
 }
 
 /// Fully reduced host-frame candidate which does not borrow its destination engine.
@@ -743,6 +761,7 @@ pub struct OwnedPreparedHostFrameCommit {
     fence: HostFrameCommitFence,
     candidate: DockEngine,
     transition: EngineTransition,
+    surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -806,6 +825,46 @@ pub enum EngineError {
         /// Exact pointer-ledger rejection retained for diagnostics.
         #[source]
         source: PointerJournalLedgerError,
+    },
+    /// A surface-local provider attempted to bypass its affine producer lifecycle.
+    #[error("surface-local pointer providers require the affine producer API")]
+    SurfaceLocalPointerProducerRequired,
+    /// A prepared host frame lost the exact producer attempt before publication.
+    #[error("prepared host frame lost its surface-local pointer producer attempt: {source}")]
+    SurfaceLocalPointerCommit {
+        /// Exact producer-side validation failure.
+        #[source]
+        source: SurfaceLocalPointerProviderError,
+    },
+    /// Every producer-side capability disappeared before the active lane retired.
+    #[error(
+        "surface-local pointer provider {provider:?} was abandoned; reclaim it before continuing"
+    )]
+    SurfaceLocalPointerProviderAbandoned {
+        /// Exact active lease whose provider, frame guard, and drain receipt vanished.
+        provider: PointerInputLease,
+    },
+    /// A surface-local pointer provider named a host which does not own the surface output.
+    #[error(
+        "surface-local pointer host {host:?} cannot authorize surface {surface:?}; active presentation owner is {owner:?}"
+    )]
+    PointerProviderSurfaceHostMismatch {
+        /// Host frozen into the pointer provider scope.
+        host: PresentationHostLease,
+        /// Logical surface whose presentation authority is owned elsewhere.
+        surface: SurfaceId,
+        /// Host which owns the current active presentation stream.
+        owner: PresentationHostLease,
+    },
+    /// A surface-local retirement attempted to delegate work that its local adapter cannot own.
+    #[error(
+        "surface-local pointer retirement produced {platform_effect_count} platform effects or a focus change ({focus_changed})"
+    )]
+    SurfaceLocalPointerRetirementExternalObligation {
+        /// Number of platform effects that would require an external dispatcher.
+        platform_effect_count: usize,
+        /// Whether retirement would publish an adapter-visible focus delta.
+        focus_changed: bool,
     },
     /// Joined backend ingress rejected provider pairing, ordering, or replay.
     #[error("backend ingress invariant failed: {source}")]

@@ -8,7 +8,7 @@ use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::interaction::{InteractionOutcome, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -37,7 +37,7 @@ const POINTER: PointerId = PointerId::new(7);
 struct Fixture {
     engine: DockEngine,
     host: TestPresentationHost,
-    provider: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     watermark: u64,
 }
 
@@ -111,11 +111,11 @@ fn fixture(policy: DockPolicy, with_front_peer: bool) -> Fixture {
         rect(100.0, 50.0, 300.0, 200.0),
     );
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("surface-local pointer provider must be admitted");
@@ -218,8 +218,8 @@ fn submit_edge(
 ) -> EngineTransition {
     let mut frame = fixture.host.begin(&fixture.engine);
     frame
-        .submit_pointer_journal(
-            fixture.provider,
+        .submit_surface_pointer_journal(
+            &fixture.provider,
             edge_journal(fixture.watermark, kind, position, capture),
         )
         .expect("pointer edge must prepare");
@@ -238,6 +238,11 @@ fn submit_edge(
     complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.host.finish(frame, &mut fixture.engine);
     fixture.watermark += 1;
+    assert_eq!(
+        fixture.provider.committed_through(),
+        PointerEdgeSequence::new(fixture.watermark),
+        "committed pointer watermark must advance"
+    );
     transition
 }
 
@@ -283,8 +288,8 @@ fn paint_active_preview(fixture: &mut Fixture) {
     let watermark = PointerEdgeSequence::new(fixture.watermark);
     let mut frame = fixture.host.begin(&fixture.engine);
     frame
-        .submit_pointer_journal(
-            fixture.provider,
+        .submit_surface_pointer_journal(
+            &fixture.provider,
             PointerEdgeJournal::new(watermark, watermark, Vec::new())
                 .expect("empty journal must retain its watermark"),
         )

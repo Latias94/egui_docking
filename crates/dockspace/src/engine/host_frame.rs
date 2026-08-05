@@ -2,6 +2,13 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerJournalSubmissionAuthority {
+    RawLease,
+    SurfaceLocalProducer,
+    BackendIngress,
+}
+
 impl CoreHostFramePrelude {
     pub(super) fn new(
         engine: &DockEngine,
@@ -226,6 +233,9 @@ impl DockEngine {
         presentation_host: PresentationHostLease,
         observers: impl IntoIterator<Item = PresentationHostLease>,
     ) -> Result<CoreHostFramePrelude, EngineError> {
+        if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
+            return Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider });
+        }
         let mut presentation_observers = BTreeSet::from([presentation_host]);
         for observer in observers {
             if observer == presentation_host {
@@ -936,6 +946,7 @@ impl CoreHostFrame {
             pending_backend_ingress: None,
             pointer_provider,
             staged_pointer_journal: candidate.pointer_journal.clone(),
+            surface_pointer_commit: None,
             frozen_pointer_outputs: BTreeMap::new(),
             frozen_pointer_presentations: BTreeMap::new(),
             frozen_semantic_presentations: BTreeMap::new(),
@@ -1202,7 +1213,12 @@ impl CoreHostFrame {
                         .backend_ingress
                         .expect("validated backend ingress remains frozen")
                         .pointer_provider();
-                    self.submit_pointer_journal_inner(provider, segment, true)?;
+                    self.submit_pointer_journal_inner(
+                        provider,
+                        segment,
+                        PointerJournalSubmissionAuthority::BackendIngress,
+                        None,
+                    )?;
                     return Ok(BackendIngressProgress::ReceiverReceiptsRequired);
                 }
             }
@@ -1371,7 +1387,7 @@ impl CoreHostFrame {
         self.pointer_provider
     }
 
-    /// Stages one contiguous provider-ordered pointer journal segment and
+    /// Stages one contiguous desktop-global pointer journal segment and
     /// freezes the exact receiver candidate roster adapters must answer.
     ///
     /// The journal is validated against a frame-local speculative ledger. Its
@@ -1386,26 +1402,64 @@ impl CoreHostFrame {
     /// # Errors
     ///
     /// Returns a structural error and poisons this frame when the provider,
-    /// watermark, edge scope, or candidate roster is invalid.
+    /// watermark, edge scope, or candidate roster is invalid. A surface-local
+    /// lease is rejected even when it was copied from a valid affine producer.
+    #[doc(hidden)]
     pub fn submit_pointer_journal(
         &mut self,
         provider: PointerInputLease,
         journal: PointerEdgeJournal,
     ) -> Result<(), CoreHostFrameError> {
-        self.submit_pointer_journal_inner(provider, journal, false)
+        self.submit_pointer_journal_inner(
+            provider,
+            journal,
+            PointerJournalSubmissionAuthority::RawLease,
+            None,
+        )
+    }
+
+    /// Stages one surface-local journal through its affine producer capability.
+    ///
+    /// Renderer adapters should prefer this boundary over transporting a copied
+    /// lease directly. Consuming the producer into a drain receipt then makes
+    /// additional surface-local submission impossible by construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structural errors as [`Self::submit_pointer_journal`].
+    pub fn submit_surface_pointer_journal(
+        &mut self,
+        provider: &SurfaceLocalPointerProvider,
+        journal: PointerEdgeJournal,
+    ) -> Result<(), CoreHostFrameError> {
+        self.submit_pointer_journal_inner(
+            provider.lease(),
+            journal,
+            PointerJournalSubmissionAuthority::SurfaceLocalProducer,
+            Some(provider),
+        )
     }
 
     fn submit_pointer_journal_inner(
         &mut self,
         provider: PointerInputLease,
         journal: PointerEdgeJournal,
-        from_backend_ingress: bool,
+        authority: PointerJournalSubmissionAuthority,
+        surface_provider: Option<&SurfaceLocalPointerProvider>,
     ) -> Result<(), CoreHostFrameError> {
         if let Some(error) = self.poison {
             return Err(error);
         }
-        if self.backend_ingress.is_some() && !from_backend_ingress {
+        if self.backend_ingress.is_some()
+            && authority != PointerJournalSubmissionAuthority::BackendIngress
+        {
             return self.reject(CoreHostFrameError::BackendIngressRequired);
+        }
+        if provider.scope().surface_local().is_some()
+            && authority != PointerJournalSubmissionAuthority::SurfaceLocalProducer
+        {
+            return self
+                .reject(CoreHostFrameError::SurfaceLocalPointerProducerRequired { provider });
         }
         if self.configuration_phase_started {
             return self.reject(CoreHostFrameError::SemanticAfterConfiguration);
@@ -1428,6 +1482,31 @@ impl CoreHostFrame {
         }
         if journal.edges().len() > 1 {
             return self.reject(CoreHostFrameError::PointerJournalMustBeEdgewise);
+        }
+        let mut pending_surface_commit = None;
+        if authority == PointerJournalSubmissionAuthority::SurfaceLocalProducer {
+            let surface_provider =
+                surface_provider.expect("surface-local submission authority retains its producer");
+            if let Some(commit) = self.surface_pointer_commit.as_mut() {
+                if let Err(source) =
+                    commit.extend(surface_provider, journal.previous(), journal.through())
+                {
+                    return self.reject(CoreHostFrameError::SurfaceLocalPointerProducerRejected {
+                        source,
+                    });
+                }
+            } else {
+                pending_surface_commit = match surface_provider
+                    .begin_frame_submission(journal.previous(), journal.through())
+                {
+                    Ok(commit) => Some(commit),
+                    Err(source) => {
+                        return self.reject(
+                            CoreHostFrameError::SurfaceLocalPointerProducerRejected { source },
+                        );
+                    }
+                };
+            }
         }
         let prepared = match self
             .staged_pointer_journal
@@ -1487,6 +1566,9 @@ impl CoreHostFrame {
         self.pending_pointer_segment = Some(HostPointerProtocolSegment::new(
             stamp, provider, journal, candidates,
         ));
+        if let Some(commit) = pending_surface_commit {
+            self.surface_pointer_commit = Some(commit);
+        }
         self.pointer_segment_submitted = true;
         Ok(())
     }
@@ -2116,8 +2198,8 @@ impl CoreHostFrame {
     /// Prepares this capability without publishing the candidate engine state.
     ///
     /// The returned commit capability keeps the original engine exclusively
-    /// borrowed. Dropping it rolls back the complete frame; committing it is
-    /// infallible because no concurrent engine mutation can cross the borrow.
+    /// borrowed. Dropping it rolls back the complete frame. Commit still
+    /// validates the affine surface-local producer attempt before publishing.
     pub fn prepare<'a>(
         self,
         engine: &'a mut DockEngine,
@@ -2135,7 +2217,7 @@ impl CoreHostFrame {
 
     /// Atomically reduces and publishes this capability through its engine.
     pub fn finish(self, engine: &mut DockEngine) -> Result<EngineTransition, EngineError> {
-        Ok(self.prepare(engine)?.commit())
+        self.prepare(engine)?.commit()
     }
 }
 
@@ -2265,17 +2347,29 @@ impl PreparedHostFrameCommit<'_> {
         &self.transition
     }
 
-    /// Publishes the already validated candidate without another fallible step.
-    #[must_use]
-    pub fn commit(self) -> EngineTransition {
+    /// Publishes the already validated candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed producer error without changing the destination engine
+    /// if the affine surface-local frame attempt is no longer exact.
+    pub fn commit(self) -> Result<EngineTransition, EngineError> {
         let Self {
             engine,
             mut candidate,
             transition,
+            surface_pointer_commit,
         } = self;
         candidate.mark_runtime_boundary_published();
-        *engine = candidate;
-        transition
+        if let Some(mut commit) = surface_pointer_commit {
+            let previous = commit
+                .publish_with(|| std::mem::replace(engine, candidate))
+                .map_err(|source| EngineError::SurfaceLocalPointerCommit { source })?;
+            drop(previous);
+        } else {
+            *engine = candidate;
+        }
+        Ok(transition)
     }
 }
 
@@ -2298,9 +2392,17 @@ impl OwnedPreparedHostFrameCommit {
             fence: _,
             mut candidate,
             transition,
+            surface_pointer_commit,
         } = self;
         candidate.mark_runtime_boundary_published();
-        *engine = candidate;
+        if let Some(mut commit) = surface_pointer_commit {
+            let previous = commit
+                .publish_with(|| std::mem::replace(engine, candidate))
+                .map_err(|source| EngineError::SurfaceLocalPointerCommit { source })?;
+            drop(previous);
+        } else {
+            *engine = candidate;
+        }
         Ok(transition)
     }
 }

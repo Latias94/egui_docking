@@ -171,6 +171,16 @@ The following are adapter implementation detail and must not remain public:
 - Raw `EngineTransition`, `ClosePlan`, `CommandError`, and
   `InteractionOutcome` values in ordinary widget responses.
 
+Surface-local pointer shutdown follows the same seal. The egui adapter owns a
+non-cloneable producer, drains it, and atomically asks core to retire or compact
+the exact provider. Ordinary applications do not receive a raw retirement
+transition outbox: this lane is forbidden from producing platform effects or
+focus obligations, and the adapter consumes only the narrow interaction-change
+and repaint requirements before deciding whether its renderer needs invalidation.
+Core keeps only a weak lifetime monitor, so an accidentally dropped producer or
+drain receipt remains explicitly reclaimable without reopening raw lease-based
+submission or retirement.
+
 The current single-surface convenience API remains honest about its scope. A
 real multi-viewport host belongs in a dedicated native runtime crate and is not
 represented by a public egui callback-order protocol.

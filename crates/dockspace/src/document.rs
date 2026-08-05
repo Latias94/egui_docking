@@ -32,9 +32,13 @@ use crate::persistence::{
     SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
 };
-use crate::pointer_journal::{PointerEdgeSequence, PointerInputLease, PointerProviderScope};
+use crate::pointer_journal::{
+    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerDrainReceipt,
+    SurfaceLocalPointerProvider, SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
+};
 use crate::presentation_observation::{
-    HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
+    HostPresentationStreamId, PresentationHostLease, PresentationHostRetirementReason,
+    PresentationStreamQuiescence,
 };
 use crate::transition::{BackendIngressProviderReplacementStart, EngineTransition, InputOutcome};
 use crate::viewport::ViewportRole;
@@ -568,6 +572,16 @@ impl DockspaceDocumentSession {
         self.engine.create_presentation_host()
     }
 
+    /// Retires one presentation host through this document-session owner.
+    #[doc(hidden)]
+    pub fn adapter_retire_presentation_host(
+        &mut self,
+        host: PresentationHostLease,
+        reason: PresentationHostRetirementReason,
+    ) -> Result<crate::transition::PresentationHostRetirementOutcome, EngineError> {
+        self.engine.retire_presentation_host(host, reason)
+    }
+
     /// Enrolls the joined backend provider through this session owner.
     #[doc(hidden)]
     pub fn adapter_create_backend_ingress_provider(
@@ -615,7 +629,7 @@ impl DockspaceDocumentSession {
             .finish_backend_ingress_provider_replacement(ticket, presentation_host)
     }
 
-    /// Creates one pointer provider through this session owner.
+    /// Creates one desktop-global pointer provider through this session owner.
     #[doc(hidden)]
     pub fn adapter_create_pointer_provider(
         &mut self,
@@ -626,13 +640,43 @@ impl DockspaceDocumentSession {
             .create_pointer_provider(scope, committed_through)
     }
 
-    /// Retires one pointer provider through this session owner.
+    /// Creates one affine surface-local pointer producer through this session owner.
+    #[doc(hidden)]
+    pub fn adapter_create_surface_local_pointer_provider(
+        &mut self,
+        scope: SurfaceLocalPointerScope,
+        committed_through: PointerEdgeSequence,
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        self.engine
+            .create_surface_local_pointer_provider(scope, committed_through)
+    }
+
+    /// Retires one desktop-global pointer provider through this session owner.
     #[doc(hidden)]
     pub fn adapter_retire_pointer_provider(
         &mut self,
         provider: PointerInputLease,
     ) -> Result<EngineTransition, EngineError> {
         self.engine.retire_pointer_provider(provider)
+    }
+
+    /// Retires one joined surface-local pointer producer through this session owner.
+    #[doc(hidden)]
+    pub fn adapter_retire_quiesced_surface_local_pointer_provider(
+        &mut self,
+        receipt: &mut SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerRetirementOutcome, EngineError> {
+        self.engine
+            .retire_quiesced_surface_local_pointer_provider(receipt)
+    }
+
+    /// Reclaims a surface-local pointer lane whose adapter producer was dropped
+    /// without a drain receipt.
+    #[doc(hidden)]
+    pub fn adapter_reap_abandoned_surface_local_pointer_provider(
+        &mut self,
+    ) -> Result<Option<SurfaceLocalPointerRetirementOutcome>, EngineError> {
+        self.engine.reap_abandoned_surface_local_pointer_provider()
     }
 
     /// Starts a core host frame without exposing general mutable engine access.

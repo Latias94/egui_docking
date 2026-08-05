@@ -186,6 +186,7 @@ fn submit_session_input(
         .adapter_prepare_host_presentation_frame(frame)
         .expect("document fixture host frame must prepare")
         .commit()
+        .expect("document fixture host frame must commit")
 }
 
 fn submit_restore_input(
@@ -219,6 +220,7 @@ fn submit_restore_input(
         .adapter_prepare_host_presentation_frame(frame)
         .expect("document restore host frame must prepare")
         .commit()
+        .expect("document restore host frame must commit")
 }
 
 fn runtime_capabilities() -> PlatformCapabilities {

@@ -428,13 +428,20 @@ impl DockEngine {
             let source_surface = armed.source_surface;
             match self.interaction.begin_drag(session, owner, button) {
                 Ok(()) => {
-                    let _ = self
-                        .viewport
-                        .begin_drag_routing(owner.pointer(), source_surface)
-                        .map_err(|source| EngineError::Viewport {
-                            input: self.last_input,
-                            source,
-                        })?;
+                    let provider_scope = owner
+                        .stream()
+                        .expect("journal gestures retain their pointer stream")
+                        .lease()
+                        .scope();
+                    if provider_scope == PointerProviderScope::DesktopGlobal {
+                        let _ = self
+                            .viewport
+                            .begin_drag_routing(owner.pointer(), source_surface)
+                            .map_err(|source| EngineError::Viewport {
+                                input: self.last_input,
+                                source,
+                            })?;
+                    }
                     self.freeze_journal_drag_presentation_reservation(cause, session, owner)?;
                     outcomes.push(InteractionOutcome::DragBegan { session });
                 }

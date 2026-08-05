@@ -13,7 +13,7 @@ use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::interaction::InteractionOutcome;
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -35,9 +35,9 @@ const ROOT: RootId = RootId::new(2);
 const OPEN_GPUI_PRESENTATION_SOURCE: StableInputSourceId = StableInputSourceId::new(0x0A91);
 const POINTER: PointerId = PointerId::new(1);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct TestPointerStream {
-    lease: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     through: u64,
 }
 
@@ -70,19 +70,22 @@ fn create_pointer_stream(
     engine: &mut DockEngine,
     host: &TestPresentationHost,
 ) -> TestPointerStream {
-    let lease = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("the presentation fixture admits one surface-local pointer provider");
-    TestPointerStream { lease, through: 0 }
+    TestPointerStream {
+        provider,
+        through: 0,
+    }
 }
 
-fn empty_pointer_journal(pointer: TestPointerStream) -> PointerEdgeJournal {
+fn empty_pointer_journal(pointer: &TestPointerStream) -> PointerEdgeJournal {
     let watermark = PointerEdgeSequence::new(pointer.through);
     PointerEdgeJournal::new(watermark, watermark, Vec::new())
         .expect("an empty pointer journal preserves its watermark")
@@ -122,7 +125,7 @@ fn stage_pointer_edge(
     )
     .expect("one pointer edge is contiguous");
     frame
-        .submit_pointer_journal(pointer.lease, journal)
+        .submit_surface_pointer_journal(&pointer.provider, journal)
         .expect("the pointer edge follows the provider watermark");
     pointer.through = sequence.get();
 
@@ -171,7 +174,13 @@ fn submit_pointer_edge(
     let mut frame = host.begin(engine);
     stage_pointer_edge(&mut frame, pointer, kind, position, delivered_to);
     complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
-    host.finish(frame, engine)
+    let transition = host.finish(frame, engine);
+    assert_eq!(
+        pointer.provider.committed_through(),
+        PointerEdgeSequence::new(pointer.through),
+        "committed pointer watermark must advance"
+    );
+    transition
 }
 
 fn pointer_interaction_outcome(transition: &EngineTransition) -> &InteractionOutcome {
@@ -215,7 +224,7 @@ fn resize_region(
 fn republish_surface_with_active_pointer(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    pointer: TestPointerStream,
+    pointer: &TestPointerStream,
     bounds: LogicalRect,
 ) {
     let token = engine
@@ -229,7 +238,7 @@ fn republish_surface_with_active_pointer(
         .expect("the replacement surface measurements prepare");
     let mut measurement_frame = host.begin(engine);
     measurement_frame
-        .submit_pointer_journal(pointer.lease, empty_pointer_journal(pointer))
+        .submit_surface_pointer_journal(&pointer.provider, empty_pointer_journal(pointer))
         .expect("the measurement frame preserves the pointer watermark");
     measurement_frame
         .submit_pointer_receiver_receipts(
@@ -245,7 +254,7 @@ fn republish_surface_with_active_pointer(
 
     let mut paint_frame = host.begin(engine);
     paint_frame
-        .submit_pointer_journal(pointer.lease, empty_pointer_journal(pointer))
+        .submit_surface_pointer_journal(&pointer.provider, empty_pointer_journal(pointer))
         .expect("the paint frame preserves the pointer watermark");
     paint_frame
         .submit_pointer_receiver_receipts(
@@ -258,7 +267,7 @@ fn republish_surface_with_active_pointer(
 
     let mut observation_frame = host.begin(engine);
     observation_frame
-        .submit_pointer_journal(pointer.lease, empty_pointer_journal(pointer))
+        .submit_surface_pointer_journal(&pointer.provider, empty_pointer_journal(pointer))
         .expect("the observation frame preserves the pointer watermark");
     observation_frame
         .submit_pointer_receiver_receipts(
@@ -576,7 +585,7 @@ fn active_resize_override_is_the_geometry_compiled_into_the_plan() {
         InteractionOutcome::ResizeUpdated { session: actual, .. } if *actual == session
     ));
 
-    republish_surface_with_active_pointer(&mut engine, &mut host, pointer, rect(400.0, 200.0));
+    republish_surface_with_active_pointer(&mut engine, &mut host, &pointer, rect(400.0, 200.0));
     let plan = support::painted_plan(&engine, SURFACE);
     let splitter = plan
         .splitter_records()

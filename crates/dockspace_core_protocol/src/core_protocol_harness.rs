@@ -42,7 +42,8 @@ use dockspace::pointer_journal::{
     PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
     ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
     ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    SurfaceLocalPointerProvider, SurfaceLocalPointerRetirementDisposition,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
@@ -56,8 +57,8 @@ use dockspace::presentation_observation::{
     HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationObservationRejection,
     HostPresentationOutput, HostPresentationProgress, HostPresentationStreamId,
-    HostPresentationStreamObservation, PresentationHostLease, PresentedNativeStagingPresentation,
-    PresentedSurfaceAuthority,
+    HostPresentationStreamObservation, PresentationHostLease, PresentationHostRetirementReason,
+    PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
 };
 use dockspace::scene::TabBarSceneId;
 use dockspace::scene_manifest::{
@@ -67,8 +68,8 @@ use dockspace::scene_manifest::{
 };
 use dockspace::tab_strip::TabStripControlId;
 use dockspace::transition::{
-    EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceSceneStateKind,
-    WorkspaceVersion,
+    EngineTransition, InputOutcome, PresentationHostRetirementOutcome, SurfaceContributionOutcome,
+    SurfaceSceneStateKind, WorkspaceVersion,
 };
 use dockspace::viewport::{
     CapabilityObservationGeneration, CoordinateGeneration, CoordinateObservationGeneration,
@@ -95,17 +96,19 @@ use crate::core_protocol_trace::{
     ExpectedPresentationObservationRejection, ExpectedPreviewResolutionStatus,
     ExpectedReducedInteractionOutcome, ExpectedRetiredPresentation, ExpectedScrollBlocker,
     ExpectedScrollReceiver, ExpectedScrollSuppressionReason, ExpectedScrollTerminationReason,
-    ExpectedSurfaceCloseDisposition, ExpectedSurfaceContributionOutcome, ExpectedTabStripControl,
-    ExpectedTransition, FloatingPresentationKey, HostFrameEvent, IngressRef, InitialWorkspace,
-    ItemCount, ItemKey, ItemLocation, LifecycleIngress, MeasurementUnavailableReasonSpec,
-    NodeFixture, NodeLocation, ObservedWindowFixture, PlatformCapabilitiesFixture,
-    PlatformObservationIngress, PlatformRequirementSpec, PlatformSnapshotFixture,
-    PointAuthorityIngress, PointFixture, PointerCaptureIngress, PointerDeliveryIngress,
-    PointerDropTargetIngress, PointerEdgeIngress, PointerEdgeKindSpec, PointerEventDeliveryIngress,
-    PointerHoverIngress, PointerLocationIngress, PointerProviderIngress,
-    PointerProviderScopeIngress, PointerReceiverIngress, PointerReceiverUnknownReasonSpec,
-    PointerStreamCancelReasonSpec, PresentationDispositionIngress, PresentationDispositionSpec,
-    PresentationEndpointRef, PresentationObservationIngress, PresentationStreamObservationIngress,
+    ExpectedSurfaceCloseDisposition, ExpectedSurfaceContributionOutcome,
+    ExpectedSurfaceLocalPointerMaintenance, ExpectedSurfaceLocalPointerMaintenanceDisposition,
+    ExpectedTabStripControl, ExpectedTransition, FloatingPresentationKey, HostFrameEvent,
+    IngressRef, InitialWorkspace, ItemCount, ItemKey, ItemLocation, LifecycleIngress,
+    MeasurementUnavailableReasonSpec, NodeFixture, NodeLocation, ObservedWindowFixture,
+    PlatformCapabilitiesFixture, PlatformObservationIngress, PlatformRequirementSpec,
+    PlatformSnapshotFixture, PointAuthorityIngress, PointFixture, PointerCaptureIngress,
+    PointerDeliveryIngress, PointerDropTargetIngress, PointerEdgeIngress, PointerEdgeKindSpec,
+    PointerEventDeliveryIngress, PointerHoverIngress, PointerLocationIngress,
+    PointerProviderIngress, PointerProviderScopeIngress, PointerReceiverIngress,
+    PointerReceiverUnknownReasonSpec, PointerStreamCancelReasonSpec,
+    PresentationDispositionIngress, PresentationDispositionSpec, PresentationEndpointRef,
+    PresentationObservationIngress, PresentationStreamObservationIngress,
     PresentationStreamObservationSpec, PresentationStreamRef, PresentationUnavailableReasonSpec,
     ProducerId, RectFixture, ReducerTick, RetiredPresentationIngress, RootKey, RootOwner,
     ScrollCancelReasonSpec, ScrollDeliveryEndpointIngress, ScrollDeltaIngress, ScrollEdgeIngress,
@@ -251,6 +254,43 @@ impl PresentationSlotKey {
     }
 }
 
+#[derive(Debug)]
+enum HarnessPointerProvider {
+    DesktopGlobal(PointerInputLease),
+    SurfaceLocal(SurfaceLocalPointerProvider),
+}
+
+impl HarnessPointerProvider {
+    const fn lease(&self) -> PointerInputLease {
+        match self {
+            Self::DesktopGlobal(lease) => *lease,
+            Self::SurfaceLocal(provider) => provider.lease(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum HarnessPointerProviderState {
+    Absent,
+    Active(HarnessPointerProvider),
+    RetiredAwaitingDrain(SurfaceLocalPointerProvider),
+}
+
+impl HarnessPointerProviderState {
+    const fn active(&self) -> Option<&HarnessPointerProvider> {
+        match self {
+            Self::Active(provider) => Some(provider),
+            Self::Absent | Self::RetiredAwaitingDrain(_) => None,
+        }
+    }
+}
+
+enum ProviderOperationOutcome {
+    ContinueHostFrame,
+    Transition(EngineTransition),
+    SurfaceLocalMaintenance,
+}
+
 /// UI-free harness that translates renderer-neutral fixture facts into core inputs.
 ///
 /// It owns all opaque identities: bindings, provider leases, presentation streams,
@@ -260,7 +300,7 @@ pub struct CoreProtocolHarness {
     platform_provider: PlatformObservationLease,
     presentation_host: PresentationHostLease,
     producer_sources: ProducerSources,
-    pointer_provider: Option<PointerInputLease>,
+    pointer_provider: HarnessPointerProviderState,
     bindings: BTreeMap<SurfaceKey, ViewportBinding>,
     binding_history: Vec<(ViewportBinding, SurfaceKey)>,
     effect_refs: BTreeMap<EffectId, ExpectedEffectRef>,
@@ -297,7 +337,7 @@ impl CoreProtocolHarness {
             platform_provider,
             presentation_host,
             producer_sources: ProducerSources::default(),
-            pointer_provider: None,
+            pointer_provider: HarnessPointerProviderState::Absent,
             bindings: BTreeMap::new(),
             binding_history: Vec::new(),
             effect_refs: BTreeMap::new(),
@@ -327,19 +367,20 @@ impl CoreProtocolHarness {
     /// # Errors
     ///
     /// Returns [`CoreProtocolTraceError`] when the boundary cannot be reduced or
-    /// its complete transition differs from the declared expectation.
+    /// its transition or maintenance state differs from the declared expectation.
     pub fn replay_boundary(
         &mut self,
         trace: &CoreProtocolTrace,
         boundary: &CoreProtocolTraceBoundary,
     ) -> Result<(), CoreProtocolTraceError> {
         validate_provider_boundary_contract(trace, boundary)?;
-        let provider_transition = self.apply_provider_operation(trace, boundary)?;
-        let actual = if let Some(transition) = provider_transition {
-            let compiled_pointer_edges = BTreeMap::new();
-            self.observe_transition(trace, boundary, &[], &compiled_pointer_edges, &transition)?
-        } else {
-            self.reduce_boundary(trace, boundary)?
+        let actual = match self.apply_provider_operation(trace, boundary)? {
+            ProviderOperationOutcome::ContinueHostFrame => self.reduce_boundary(trace, boundary)?,
+            ProviderOperationOutcome::Transition(transition) => {
+                let compiled_pointer_edges = BTreeMap::new();
+                self.observe_transition(trace, boundary, &[], &compiled_pointer_edges, &transition)?
+            }
+            ProviderOperationOutcome::SurfaceLocalMaintenance => return Ok(()),
         };
         if actual != boundary.expected {
             return Err(replay_error(
@@ -358,51 +399,537 @@ impl CoreProtocolHarness {
         &mut self,
         trace: &CoreProtocolTrace,
         boundary: &CoreProtocolTraceBoundary,
-    ) -> Result<Option<EngineTransition>, CoreProtocolTraceError> {
+    ) -> Result<ProviderOperationOutcome, CoreProtocolTraceError> {
         let Some(operation) = &boundary.provider else {
-            return Ok(None);
+            return Ok(ProviderOperationOutcome::ContinueHostFrame);
         };
         match operation {
             PointerProviderIngress::Activate {
                 scope,
                 committed_through,
             } => {
+                if !matches!(self.pointer_provider, HarnessPointerProviderState::Absent) {
+                    return Err(replay_error(
+                        trace,
+                        &boundary.id,
+                        "cannot activate a pointer provider before draining its predecessor",
+                    ));
+                }
                 let scope = self.compile_pointer_provider_scope(*scope)?;
-                let lease = self
-                    .engine
-                    .create_pointer_provider(scope, PointerEdgeSequence::new(*committed_through))
-                    .map_err(|error| {
-                        replay_error(
-                            trace,
-                            &boundary.id,
-                            format!("cannot activate pointer provider: {error}"),
-                        )
-                    })?;
-                self.pointer_provider = Some(lease);
-                Ok(None)
-            }
-            PointerProviderIngress::Retire {} => {
-                let lease = self.pointer_provider.ok_or_else(|| {
+                let committed_through = PointerEdgeSequence::new(*committed_through);
+                let provider = match scope {
+                    PointerProviderScope::DesktopGlobal => self
+                        .engine
+                        .create_pointer_provider(scope, committed_through)
+                        .map(HarnessPointerProvider::DesktopGlobal),
+                    PointerProviderScope::SurfaceLocal(scope) => self
+                        .engine
+                        .create_surface_local_pointer_provider(scope, committed_through)
+                        .map(HarnessPointerProvider::SurfaceLocal),
+                }
+                .map_err(|error| {
                     replay_error(
                         trace,
                         &boundary.id,
-                        "cannot retire missing pointer provider",
+                        format!("cannot activate pointer provider: {error}"),
                     )
                 })?;
-                let transition = self
+                self.pointer_provider = HarnessPointerProviderState::Active(provider);
+                Ok(ProviderOperationOutcome::ContinueHostFrame)
+            }
+            PointerProviderIngress::RetireDesktopGlobal {} => {
+                let state = std::mem::replace(
+                    &mut self.pointer_provider,
+                    HarnessPointerProviderState::Absent,
+                );
+                let lease = match state {
+                    HarnessPointerProviderState::Active(HarnessPointerProvider::DesktopGlobal(
+                        lease,
+                    )) => lease,
+                    other => {
+                        self.pointer_provider = other;
+                        return Err(replay_error(
+                            trace,
+                            &boundary.id,
+                            "cannot retire a missing or non-desktop pointer provider",
+                        ));
+                    }
+                };
+                match self.engine.retire_pointer_provider(lease) {
+                    Ok(transition) => Ok(ProviderOperationOutcome::Transition(transition)),
+                    Err(error) => {
+                        self.pointer_provider = HarnessPointerProviderState::Active(
+                            HarnessPointerProvider::DesktopGlobal(lease),
+                        );
+                        Err(replay_error(
+                            trace,
+                            &boundary.id,
+                            format!("cannot retire pointer provider: {error}"),
+                        ))
+                    }
+                }
+            }
+            PointerProviderIngress::RetireSurfaceLocal { expected } => {
+                Self::validate_surface_local_maintenance_expectation(trace, boundary)?;
+                self.retire_surface_local_pointer_provider(trace, boundary, expected)
+            }
+            PointerProviderIngress::RetirePresentationHost {} => {
+                if !matches!(
+                    self.pointer_provider,
+                    HarnessPointerProviderState::Active(HarnessPointerProvider::SurfaceLocal(_))
+                ) {
+                    return Err(replay_error(
+                        trace,
+                        &boundary.id,
+                        "presentation-host retirement requires one active surface-local producer",
+                    ));
+                }
+                let outcome = self
                     .engine
-                    .retire_pointer_provider(lease)
+                    .retire_presentation_host(
+                        self.presentation_host,
+                        PresentationHostRetirementReason::RuntimeDestroyed,
+                    )
                     .map_err(|error| {
                         replay_error(
                             trace,
                             &boundary.id,
-                            format!("cannot retire pointer provider: {error}"),
+                            format!("cannot retire presentation host: {error}"),
                         )
                     })?;
-                self.pointer_provider = None;
-                Ok(Some(transition))
+                let PresentationHostRetirementOutcome::Retired { transition, .. } = outcome else {
+                    return Err(replay_error(
+                        trace,
+                        &boundary.id,
+                        "presentation host was already retired before the declared boundary",
+                    ));
+                };
+                self.reconcile_pointer_provider_state(trace, boundary)?;
+                Ok(ProviderOperationOutcome::Transition(transition))
             }
         }
+    }
+
+    fn retire_surface_local_pointer_provider(
+        &mut self,
+        trace: &CoreProtocolTrace,
+        boundary: &CoreProtocolTraceBoundary,
+        expected: &ExpectedSurfaceLocalPointerMaintenance,
+    ) -> Result<ProviderOperationOutcome, CoreProtocolTraceError> {
+        let state = std::mem::replace(
+            &mut self.pointer_provider,
+            HarnessPointerProviderState::Absent,
+        );
+        let (provider, disposition) = match state {
+            HarnessPointerProviderState::Active(HarnessPointerProvider::SurfaceLocal(provider)) => {
+                (
+                    provider,
+                    ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive,
+                )
+            }
+            HarnessPointerProviderState::RetiredAwaitingDrain(provider) => (
+                provider,
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired,
+            ),
+            other => {
+                self.pointer_provider = other;
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    "cannot drain a missing or non-surface-local pointer provider",
+                ));
+            }
+        };
+        if expected.disposition != disposition {
+            self.pointer_provider = match disposition {
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive => {
+                    HarnessPointerProviderState::Active(HarnessPointerProvider::SurfaceLocal(
+                        provider,
+                    ))
+                }
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired => {
+                    HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+                }
+            };
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local maintenance disposition mismatch: expected {:?}, got {disposition:?}",
+                    expected.disposition
+                ),
+            ));
+        }
+
+        let lease = provider.lease();
+        let core_provider = self.engine.pointer_provider();
+        let authority_matches = match disposition {
+            ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive => {
+                core_provider == Some(lease)
+            }
+            ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired => {
+                core_provider.is_none()
+            }
+        };
+        if !authority_matches {
+            self.pointer_provider = match disposition {
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive => {
+                    HarnessPointerProviderState::Active(HarnessPointerProvider::SurfaceLocal(
+                        provider,
+                    ))
+                }
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired => {
+                    HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+                }
+            };
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                "surface-local producer state does not match core pointer authority",
+            ));
+        }
+
+        let before_version = self.engine.version();
+        let before_interaction = self.observe_interaction_state();
+        let retention_before = self.engine.runtime_retention_manifest();
+        let compacted_leases_before = retention_before.pointer().logical_compacted_leases();
+        let scroll_sessions_before = retention_before.scroll().active_sessions();
+        let mut receipt = match provider.drain() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let detail = error.to_string();
+                let provider = error.into_provider();
+                self.pointer_provider = match disposition {
+                    ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive => {
+                        HarnessPointerProviderState::Active(
+                            HarnessPointerProvider::SurfaceLocal(provider),
+                        )
+                    }
+                    ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired => {
+                        HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+                    }
+                };
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    format!("cannot drain surface-local pointer provider: {detail}"),
+                ));
+            }
+        };
+        let outcome = match self
+            .engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let restored = receipt.into_provider().map_err(|restore_error| {
+                    replay_error(
+                        trace,
+                        &boundary.id,
+                        format!(
+                            "cannot restore rejected surface-local pointer retirement after `{error}`: {restore_error}"
+                        ),
+                    )
+                })?;
+                self.pointer_provider = match disposition {
+                    ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive => {
+                        HarnessPointerProviderState::Active(
+                            HarnessPointerProvider::SurfaceLocal(restored),
+                        )
+                    }
+                    ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired => {
+                        HarnessPointerProviderState::RetiredAwaitingDrain(restored)
+                    }
+                };
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    format!("cannot retire quiesced surface-local pointer provider: {error}"),
+                ));
+            }
+        };
+        self.validate_surface_local_pointer_retirement(
+            trace,
+            boundary,
+            before_version,
+            before_interaction,
+            compacted_leases_before,
+            scroll_sessions_before,
+            expected,
+            outcome,
+        )?;
+        Ok(ProviderOperationOutcome::SurfaceLocalMaintenance)
+    }
+
+    fn reconcile_pointer_provider_state(
+        &mut self,
+        trace: &CoreProtocolTrace,
+        boundary: &CoreProtocolTraceBoundary,
+    ) -> Result<(), CoreProtocolTraceError> {
+        let core_provider = self.engine.pointer_provider();
+        let state = std::mem::replace(
+            &mut self.pointer_provider,
+            HarnessPointerProviderState::Absent,
+        );
+        self.pointer_provider = match state {
+            HarnessPointerProviderState::Absent if core_provider.is_none() => {
+                HarnessPointerProviderState::Absent
+            }
+            HarnessPointerProviderState::Absent => {
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    "core retained a pointer provider which the harness does not own",
+                ));
+            }
+            HarnessPointerProviderState::Active(provider)
+                if core_provider == Some(provider.lease()) =>
+            {
+                HarnessPointerProviderState::Active(provider)
+            }
+            HarnessPointerProviderState::Active(HarnessPointerProvider::SurfaceLocal(provider))
+                if core_provider.is_none() =>
+            {
+                HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+            }
+            HarnessPointerProviderState::Active(HarnessPointerProvider::DesktopGlobal(_))
+                if core_provider.is_none() =>
+            {
+                HarnessPointerProviderState::Absent
+            }
+            HarnessPointerProviderState::Active(provider) => {
+                self.pointer_provider = HarnessPointerProviderState::Active(provider);
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    "core replaced the harness-owned pointer provider with an unknown lease",
+                ));
+            }
+            HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+                if core_provider.is_none() =>
+            {
+                HarnessPointerProviderState::RetiredAwaitingDrain(provider)
+            }
+            HarnessPointerProviderState::RetiredAwaitingDrain(provider) => {
+                self.pointer_provider = HarnessPointerProviderState::RetiredAwaitingDrain(provider);
+                return Err(replay_error(
+                    trace,
+                    &boundary.id,
+                    "core reactivated pointer authority before the retired producer drained",
+                ));
+            }
+        };
+        Ok(())
+    }
+
+    fn validate_surface_local_pointer_retirement(
+        &self,
+        trace: &CoreProtocolTrace,
+        boundary: &CoreProtocolTraceBoundary,
+        before_version: WorkspaceVersion,
+        before_interaction: ExpectedInteractionState,
+        compacted_leases_before: u64,
+        scroll_sessions_before: usize,
+        expected_maintenance: &ExpectedSurfaceLocalPointerMaintenance,
+        outcome: SurfaceLocalPointerRetirementOutcome,
+    ) -> Result<(), CoreProtocolTraceError> {
+        Self::validate_surface_local_maintenance_expectation(trace, boundary)?;
+        if outcome.interaction_changed() != expected_maintenance.interaction_changed {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement interaction-change mismatch: expected {}, got {}",
+                    expected_maintenance.interaction_changed,
+                    outcome.interaction_changed()
+                ),
+            ));
+        }
+        let disposition = match outcome.disposition() {
+            SurfaceLocalPointerRetirementDisposition::RetiredActive => {
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive
+            }
+            SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired => {
+                ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired
+            }
+        };
+        if disposition != expected_maintenance.disposition {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement disposition mismatch: expected {:?}, got {disposition:?}",
+                    expected_maintenance.disposition
+                ),
+            ));
+        }
+        if outcome.repaint_required() != expected_maintenance.repaint_required {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement repaint mismatch: expected {}, got {}",
+                    expected_maintenance.repaint_required,
+                    outcome.repaint_required()
+                ),
+            ));
+        }
+        if !matches!(self.pointer_provider, HarnessPointerProviderState::Absent)
+            || self.engine.pointer_provider().is_some()
+        {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                "surface-local retirement left a pointer provider active",
+            ));
+        }
+        if observe_version(before_version) != boundary.expected.before {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement before-version mismatch: expected {:?}, got {:?}",
+                    boundary.expected.before,
+                    observe_version(before_version)
+                ),
+            ));
+        }
+        let after_version = observe_version(self.engine.version());
+        if after_version != boundary.expected.after {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement after-version mismatch: expected {:?}, got {after_version:?}",
+                    boundary.expected.after
+                ),
+            ));
+        }
+        let tick = self.engine.last_reducer_tick().get();
+        if tick != boundary.expected.tick.0 {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement tick mismatch: expected {}, got {tick}",
+                    boundary.expected.tick.0
+                ),
+            ));
+        }
+        let interaction = self.observe_interaction_state();
+        if interaction != boundary.expected.interaction {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement interaction mismatch: expected {:?}, got {interaction:?}; before retirement it was {before_interaction:?}",
+                    boundary.expected.interaction
+                ),
+            ));
+        }
+        let interactive_surface_roster = self.interactive_surface_roster();
+        if interactive_surface_roster != boundary.expected.interactive_surface_roster {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement interactive roster mismatch: expected {:?}, got {interactive_surface_roster:?}",
+                    boundary.expected.interactive_surface_roster
+                ),
+            ));
+        }
+
+        let runtime_retention = self.engine.runtime_retention_manifest();
+        let scroll_sessions_after = runtime_retention.scroll().active_sessions();
+        if scroll_sessions_after != 0 {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement left {scroll_sessions_after} smooth-scroll sessions active"
+                ),
+            ));
+        }
+        let terminated_scroll_sessions = scroll_sessions_before
+            .checked_sub(scroll_sessions_after)
+            .ok_or_else(|| {
+                replay_error(
+                    trace,
+                    &boundary.id,
+                    format!(
+                        "surface-local retirement increased active scroll sessions from {scroll_sessions_before} to {scroll_sessions_after}"
+                    ),
+                )
+            })?;
+        if terminated_scroll_sessions != expected_maintenance.terminated_scroll_sessions {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement scroll termination mismatch: expected {}, got {terminated_scroll_sessions}",
+                    expected_maintenance.terminated_scroll_sessions
+                ),
+            ));
+        }
+
+        let retention = runtime_retention.pointer();
+        let expected_compacted_leases =
+            compacted_leases_before.checked_add(1).ok_or_else(|| {
+                replay_error(
+                    trace,
+                    &boundary.id,
+                    "surface-local pointer retirement retention count is exhausted",
+                )
+            })?;
+        if retention.active_provider_count() != 0
+            || retention.active_stream_count() != 0
+            || retention.retired_lease_guards() != 0
+            || retention.compacted_retirement_ranges() == 0
+            || retention.logical_compacted_leases() != expected_compacted_leases
+            || retention.terminal_release_barrier().is_some()
+        {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                format!(
+                    "surface-local retirement left invalid pointer retention: {retention:?}; expected {} compacted logical leases",
+                    expected_compacted_leases
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_surface_local_maintenance_expectation(
+        trace: &CoreProtocolTrace,
+        boundary: &CoreProtocolTraceBoundary,
+    ) -> Result<(), CoreProtocolTraceError> {
+        let expected = &boundary.expected;
+        if !expected.reduced.is_empty()
+            || !expected.reduced_interaction_outcomes.is_empty()
+            || !expected.reduced_pointer_edges.is_empty()
+            || !expected.presentation_observations.is_empty()
+            || expected.presentation_emissions != 0
+            || !expected.surface_contributions.is_empty()
+            || !expected.interaction_events.is_empty()
+            || !expected.platform_effects.is_empty()
+            || !expected.focus_delta.is_empty()
+            || !expected.surface_scene_deltas.is_empty()
+        {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                "surface-local pointer retirement is a maintenance boundary and cannot declare reducer, presentation, effect, focus, scene, or transition-event lanes",
+            ));
+        }
+        if !expected.published_state_changed {
+            return Err(replay_error(
+                trace,
+                &boundary.id,
+                "surface-local pointer retirement must declare its published maintenance state change",
+            ));
+        }
+        Ok(())
     }
 
     fn reduce_boundary(
@@ -438,7 +965,7 @@ impl CoreProtocolHarness {
                     through,
                     edges,
                 } => {
-                    let provider = self.pointer_provider.ok_or_else(|| {
+                    let provider = self.pointer_provider.active().ok_or_else(|| {
                         replay_error(
                             trace,
                             &boundary.id,
@@ -454,6 +981,7 @@ impl CoreProtocolHarness {
                                 format!("cannot compile pointer journal: {error}"),
                             )
                         })?;
+                    let journal_through = journal.through();
                     if journal.edges().is_empty() {
                         self.submit_pointer_segment(
                             trace, boundary, &mut frame, provider, journal, edges,
@@ -517,7 +1045,7 @@ impl CoreProtocolHarness {
                         )?;
                         segment_previous = edge.sequence();
                     }
-                    debug_assert_eq!(segment_previous, journal.through());
+                    debug_assert_eq!(segment_previous, journal_through);
                 }
                 HostFrameEvent::SemanticInput {
                     producer,
@@ -712,6 +1240,7 @@ impl CoreProtocolHarness {
         let transition = frame.finish(&mut self.engine).map_err(|error| {
             replay_error(trace, &boundary.id, format!("reducer failed: {error}"))
         })?;
+        self.reconcile_pointer_provider_state(trace, boundary)?;
         self.capture_viewport_bindings(boundary)?;
         self.reconcile_presentation_sidecar(&transition)?;
         self.observe_transition(
@@ -766,19 +1295,25 @@ impl CoreProtocolHarness {
         trace: &CoreProtocolTrace,
         boundary: &CoreProtocolTraceBoundary,
         frame: &mut CoreHostFrame,
-        provider: PointerInputLease,
+        provider: &HarnessPointerProvider,
         journal: PointerEdgeJournal,
         edges: &[PointerEdgeIngress],
     ) -> Result<(), CoreProtocolTraceError> {
-        frame
-            .submit_pointer_journal(provider, journal)
-            .map_err(|error| {
-                replay_error(
-                    trace,
-                    &boundary.id,
-                    format!("cannot submit pointer journal segment: {error}"),
-                )
-            })?;
+        let submission = match provider {
+            HarnessPointerProvider::DesktopGlobal(lease) => {
+                frame.submit_pointer_journal(*lease, journal)
+            }
+            HarnessPointerProvider::SurfaceLocal(provider) => {
+                frame.submit_surface_pointer_journal(provider, journal)
+            }
+        };
+        submission.map_err(|error| {
+            replay_error(
+                trace,
+                &boundary.id,
+                format!("cannot submit pointer journal segment: {error}"),
+            )
+        })?;
         let receipts = self
             .compile_pointer_receiver_receipts(frame, edges)
             .map_err(|error| {
@@ -1662,7 +2197,8 @@ impl CoreProtocolHarness {
         match &edge.location {
             PointerLocationIngress::SurfaceLocal { .. } => self
                 .pointer_provider
-                .and_then(|provider| provider.scope().surface_local())
+                .active()
+                .and_then(|provider| provider.lease().scope().surface_local())
                 .map(|scope| scope.surface())
                 .ok_or_else(|| {
                     CoreProtocolTraceError::Replay(
@@ -2117,16 +2653,7 @@ impl CoreProtocolHarness {
             .iter()
             .map(|outcome| self.observe_presentation_outcome(outcome))
             .collect::<Result<Vec<_>, CoreProtocolTraceError>>()?;
-        let interactive_surface_roster = self
-            .engine
-            .scene()
-            .surfaces()
-            .filter_map(|(surface, _)| {
-                self.engine
-                    .interaction_authority(*surface)
-                    .map(|_| SurfaceKey(surface.get()))
-            })
-            .collect();
+        let interactive_surface_roster = self.interactive_surface_roster();
         let platform_effects = self.observe_platform_effects(trace, boundary, transition)?;
         let interaction_events = self.observe_interaction_events(trace, boundary, transition)?;
         let focus_delta = self.observe_focus_delta(trace, boundary, transition)?;
@@ -3017,6 +3544,18 @@ impl CoreProtocolHarness {
                 ExpectedInteractionState::ContainedTransforming
             }
         }
+    }
+
+    fn interactive_surface_roster(&self) -> Vec<SurfaceKey> {
+        self.engine
+            .scene()
+            .surfaces()
+            .filter_map(|(surface, _)| {
+                self.engine
+                    .interaction_authority(*surface)
+                    .map(|_| SurfaceKey(surface.get()))
+            })
+            .collect()
     }
 }
 

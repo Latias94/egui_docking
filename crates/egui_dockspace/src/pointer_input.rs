@@ -6,12 +6,11 @@ use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease,
+    PointerEdgeSequence, PointerInputLease, SurfaceLocalPointerDrainReceipt,
+    SurfaceLocalPointerProvider,
 };
 #[cfg(test)]
-use dockspace::pointer_journal::{
-    PointerProviderScope, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
-};
+use dockspace::pointer_journal::{SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope};
 use dockspace::pointer_receiver::{
     PointerReceiverCandidateRoster, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
@@ -390,8 +389,7 @@ fn delivery_disposition(
 }
 
 pub(crate) struct EguiPointerInput {
-    provider: Option<PointerInputLease>,
-    committed_through: PointerEdgeSequence,
+    provider: Option<SurfaceLocalPointerProvider>,
     pending: Option<PendingPointerEpoch>,
     delivered_epoch: Option<EguiPointerInputEpoch>,
     binding: Option<PointerBinding>,
@@ -399,11 +397,41 @@ pub(crate) struct EguiPointerInput {
     primary_capture: Authority<PointerCaptureOwner>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct EguiPointerInstallReservation {
+    incarnation: u64,
+}
+
+/// Complete adapter-owned state detached before surface-local quiescence settlement.
+#[must_use = "drained egui pointer state must be retired or restored"]
+pub(crate) struct DrainedEguiPointerInput {
+    receipt: SurfaceLocalPointerDrainReceipt,
+    pending: Option<PendingPointerEpoch>,
+    delivered_epoch: Option<EguiPointerInputEpoch>,
+    binding: Option<PointerBinding>,
+    primary_capture: Authority<PointerCaptureOwner>,
+}
+
+impl DrainedEguiPointerInput {
+    pub(crate) const fn receipt_mut(&mut self) -> &mut SurfaceLocalPointerDrainReceipt {
+        &mut self.receipt
+    }
+
+    pub(crate) fn request_bound_repaint(&self) {
+        if let Some(context) = self
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.context.as_ref())
+        {
+            context.request_repaint();
+        }
+    }
+}
+
 impl Default for EguiPointerInput {
     fn default() -> Self {
         Self {
             provider: None,
-            committed_through: PointerEdgeSequence::new(0),
             pending: None,
             delivered_epoch: None,
             binding: None,
@@ -414,8 +442,24 @@ impl Default for EguiPointerInput {
 }
 
 impl EguiPointerInput {
-    pub(crate) const fn provider(&self) -> Option<PointerInputLease> {
+    pub(crate) fn provider(&self) -> Option<PointerInputLease> {
         self.provider
+            .as_ref()
+            .map(SurfaceLocalPointerProvider::lease)
+    }
+
+    pub(crate) fn reserve_install(
+        &mut self,
+    ) -> Result<EguiPointerInstallReservation, DockspaceError> {
+        if self.provider.is_some() {
+            return Err(DockspaceError::PointerInputProviderAlreadyInstalled);
+        }
+        let incarnation = self
+            .next_incarnation
+            .checked_add(1)
+            .ok_or(DockspaceError::PointerAdapterIncarnationExhausted)?;
+        self.next_incarnation = incarnation;
+        Ok(EguiPointerInstallReservation { incarnation })
     }
 
     pub(crate) fn scope_changed_unbound(
@@ -474,17 +518,55 @@ impl EguiPointerInput {
         Ok(())
     }
 
-    /// Drops an uncommitted input epoch after its enclosing host frame aborts.
-    ///
-    /// The core lease is retired by the owning `Dockspace`; this method only clears
-    /// adapter-side replay state so a later egui epoch can enroll a fresh lease.
-    pub(crate) fn clear_after_abort(&mut self) {
-        self.provider = None;
-        self.committed_through = PointerEdgeSequence::new(0);
-        self.pending = None;
-        self.delivered_epoch = None;
-        self.binding = None;
-        self.primary_capture = Authority::Unknown(AuthorityUnavailableReason::ProviderUnavailable);
+    /// Detaches the complete surface-local producer state before core retirement.
+    pub(crate) fn drain(&mut self) -> Result<Option<DrainedEguiPointerInput>, DockspaceError> {
+        let Some(provider) = self.provider.take() else {
+            return Ok(None);
+        };
+        let receipt = match provider.drain() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.provider = Some(error.into_provider());
+                return Err(DockspaceError::PointerInputFrameInFlight);
+            }
+        };
+        Ok(Some(DrainedEguiPointerInput {
+            receipt,
+            pending: self.pending.take(),
+            delivered_epoch: self.delivered_epoch.take(),
+            binding: self.binding.take(),
+            primary_capture: std::mem::replace(
+                &mut self.primary_capture,
+                Authority::Unknown(AuthorityUnavailableReason::ProviderUnavailable),
+            ),
+        }))
+    }
+
+    /// Restores the complete producer state after core rejects retirement atomically.
+    pub(crate) fn restore_drained(&mut self, drained: DrainedEguiPointerInput) {
+        assert!(
+            self.provider.is_none()
+                && self.pending.is_none()
+                && self.delivered_epoch.is_none()
+                && self.binding.is_none(),
+            "drained pointer state can only be restored into an empty adapter slot",
+        );
+        let DrainedEguiPointerInput {
+            receipt,
+            pending,
+            delivered_epoch,
+            binding,
+            primary_capture,
+        } = drained;
+        self.provider = Some(
+            receipt
+                .into_provider()
+                .expect("only an unconsumed retirement proof can be restored"),
+        );
+        self.pending = pending;
+        self.delivered_epoch = delivered_epoch;
+        self.binding = binding;
+        self.primary_capture = primary_capture;
     }
 
     /// Discards input staged by an uncommitted host-frame attempt.
@@ -500,15 +582,19 @@ impl EguiPointerInput {
         &self,
         frame: &mut CoreHostFrame,
     ) -> Result<(), DockspaceError> {
-        let Some(provider) = self.provider else {
+        let Some(provider) = self.provider.as_ref() else {
             return Ok(());
         };
         if self.pending.is_some() {
             return Err(DockspaceError::PointerInputControlDuringPendingEpoch);
         }
-        frame.submit_pointer_journal(
+        frame.submit_surface_pointer_journal(
             provider,
-            PointerEdgeJournal::new(self.committed_through, self.committed_through, Vec::new())?,
+            PointerEdgeJournal::new(
+                provider.committed_through(),
+                provider.committed_through(),
+                Vec::new(),
+            )?,
         )?;
         debug_assert!(
             frame
@@ -520,20 +606,39 @@ impl EguiPointerInput {
         Ok(())
     }
 
+    pub(crate) fn submit_prepared_segment(
+        &self,
+        frame: &mut CoreHostFrame,
+        prepared: &PreparedPointerInput,
+        journal: PointerEdgeJournal,
+    ) -> Result<(), DockspaceError> {
+        let provider = self
+            .provider
+            .as_ref()
+            .ok_or(DockspaceError::PointerInputBindingMissing)?;
+        if provider.lease() != prepared.provider() {
+            return Err(DockspaceError::PointerInputBindingStale);
+        }
+        frame.submit_surface_pointer_journal(provider, journal)?;
+        Ok(())
+    }
+
     pub(crate) fn install_unbound(
         &mut self,
-        provider: PointerInputLease,
-        committed_through: PointerEdgeSequence,
+        reservation: EguiPointerInstallReservation,
+        provider: SurfaceLocalPointerProvider,
         surface: SurfaceId,
         workspace_epoch: WorkspaceEpoch,
-    ) -> Result<(), DockspaceError> {
-        let incarnation = self
-            .next_incarnation
-            .checked_add(1)
-            .ok_or(DockspaceError::PointerAdapterIncarnationExhausted)?;
-        self.next_incarnation = incarnation;
+    ) {
+        assert!(
+            self.provider.is_none(),
+            "a surface-local pointer producer cannot replace a live producer",
+        );
+        assert_eq!(
+            self.next_incarnation, reservation.incarnation,
+            "only the latest adapter reservation can install a pointer producer",
+        );
         self.provider = Some(provider);
-        self.committed_through = committed_through;
         self.pending = None;
         self.delivered_epoch = None;
         self.binding = Some(PointerBinding {
@@ -541,10 +646,9 @@ impl EguiPointerInput {
             viewport: None,
             surface,
             workspace_epoch,
-            incarnation,
+            incarnation: reservation.incarnation,
         });
         self.primary_capture = Authority::Unknown(AuthorityUnavailableReason::ProviderUnavailable);
-        Ok(())
     }
 
     pub(crate) fn prepare(
@@ -573,9 +677,11 @@ impl EguiPointerInput {
         registrations: Option<&PaintReceiverRegistrations>,
         captured_events: Option<&[Event]>,
     ) -> Result<Option<PreparedPointerInput>, DockspaceError> {
-        let Some(provider) = self.provider else {
+        let Some(provider) = self.provider.as_ref() else {
             return Ok(None);
         };
+        let lease = provider.lease();
+        let committed_through = provider.committed_through();
         let Some(binding) = self.binding.as_ref() else {
             return Err(DockspaceError::PointerInputBindingMissing);
         };
@@ -598,7 +704,7 @@ impl EguiPointerInput {
             return Err(DockspaceError::PointerInputEpochAdvancedBeforeCommit);
         }
         if self.pending.is_none() && self.delivered_epoch != Some(epoch) {
-            let mut cursor = self.committed_through;
+            let mut cursor = committed_through;
             let events = captured_events.map_or_else(
                 || context.input(|input| input.events.clone()),
                 <[Event]>::to_vec,
@@ -641,7 +747,7 @@ impl EguiPointerInput {
                     edges.push(edge);
                 }
             }
-            let journal = PointerEdgeJournal::new(self.committed_through, cursor, edges)?;
+            let journal = PointerEdgeJournal::new(committed_through, cursor, edges)?;
             self.pending = Some(PendingPointerEpoch {
                 epoch,
                 journal,
@@ -657,17 +763,13 @@ impl EguiPointerInput {
             )
         } else {
             (
-                PointerEdgeJournal::new(
-                    self.committed_through,
-                    self.committed_through,
-                    Vec::new(),
-                )?,
+                PointerEdgeJournal::new(committed_through, committed_through, Vec::new())?,
                 Vec::new(),
             )
         };
         Ok(Some(PreparedPointerInput {
             epoch,
-            provider,
+            provider: lease,
             journal,
             edge_raw_event_indices,
             delivery_correlation_available: self
@@ -689,7 +791,14 @@ impl EguiPointerInput {
             .as_ref()
             .is_some_and(|pending| pending.epoch == prepared.epoch)
         {
-            self.committed_through = prepared.journal.through();
+            assert_eq!(
+                self.provider
+                    .as_ref()
+                    .expect("a prepared pointer epoch retains its producer")
+                    .committed_through(),
+                prepared.journal.through(),
+                "core commit must advance the exact surface-local producer watermark",
+            );
             self.pending = None;
             self.delivered_epoch = Some(prepared.epoch);
             self.primary_capture = prepared.primary_capture_after;
@@ -705,15 +814,14 @@ pub(crate) fn enroll_surface_local_provider(
     surface: SurfaceId,
     workspace_epoch: WorkspaceEpoch,
 ) -> Result<(), DockspaceError> {
+    let reservation = state.reserve_install()?;
     let watermark = PointerEdgeSequence::new(0);
-    let provider = engine.create_pointer_provider(
-        PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
-            host,
-            SurfaceLocalPointerEndpoint::Logical(surface),
-        )),
+    let provider = engine.create_surface_local_pointer_provider(
+        SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Logical(surface)),
         watermark,
     )?;
-    state.install_unbound(provider, watermark, surface, workspace_epoch)
+    state.install_unbound(reservation, provider, surface, workspace_epoch);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -838,9 +946,11 @@ fn to_logical_point(point: Pos2) -> Option<LogicalPoint> {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::engine::{DockEngine, HostPresentationUnavailableReason};
     use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::ids::{ItemId, RootId};
     use dockspace::presentation_observation::HostPresentationObservation;
+    use dockspace::scene_manifest::MeasurementUnavailableReason;
     use egui::{Modifiers, RawInput, Rect, pos2, vec2};
 
     use super::*;
@@ -850,6 +960,21 @@ mod tests {
     const ITEM: ItemId = ItemId::new(3);
 
     fn state(context: &Context) -> EguiPointerInput {
+        state_with_watermark(context, PointerEdgeSequence::new(0))
+    }
+
+    fn state_with_watermark(
+        context: &Context,
+        committed_through: PointerEdgeSequence,
+    ) -> EguiPointerInput {
+        let (_, _, state) = state_fixture(context, committed_through);
+        state
+    }
+
+    fn state_fixture(
+        context: &Context,
+        committed_through: PointerEdgeSequence,
+    ) -> (DockEngine, PresentationHostLease, EguiPointerInput) {
         let mut builder = Workspace::builder();
         let tabs = builder.insert_node(Node::tabs([ITEM]));
         builder.set_root(ROOT, RootRecord::new(tabs));
@@ -861,17 +986,87 @@ mod tests {
             .create_presentation_host()
             .expect("fixture presentation host is minted");
         let mut state = EguiPointerInput::default();
-        install_surface_local_provider(
-            &mut engine,
-            &mut state,
-            host,
-            SURFACE,
-            context,
-            ViewportId::ROOT,
-            WorkspaceEpoch::new(0),
-        )
-        .expect("surface-local provider is admitted");
+        let reservation = state
+            .reserve_install()
+            .expect("the adapter reserves one incarnation");
+        let provider = engine
+            .create_surface_local_pointer_provider(
+                SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Logical(SURFACE)),
+                committed_through,
+            )
+            .expect("surface-local provider is admitted");
+        state.install_unbound(reservation, provider, SURFACE, WorkspaceEpoch::new(0));
         state
+            .bind_context(context, ViewportId::ROOT, SURFACE, WorkspaceEpoch::new(0))
+            .expect("surface-local provider binds to egui");
+        (engine, host, state)
+    }
+
+    fn commit_prepared_pointer_epoch(
+        engine: &mut DockEngine,
+        host: PresentationHostLease,
+        state: &mut EguiPointerInput,
+        prepared: &PreparedPointerInput,
+    ) {
+        let mut prelude = engine
+            .begin_host_frame(host)
+            .expect("pointer commit frame begins");
+        prelude
+            .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+            .expect("the fixture has no prior presentation output to settle");
+        let mut frame = prelude
+            .seal(engine)
+            .expect("pointer commit frame seals against the current engine");
+
+        for journal in prepared
+            .journal_segments()
+            .expect("prepared pointer input has contiguous edgewise segments")
+        {
+            state
+                .submit_prepared_segment(&mut frame, prepared, journal)
+                .expect("the exact adapter producer stages its segment");
+            let receipts = prepared
+                .prepare_unavailable_receipts_for(
+                    frame
+                        .pointer_receiver_candidates()
+                        .expect("each staged segment freezes its receiver roster"),
+                )
+                .expect("the fixture explicitly reports unavailable receiver authority");
+            frame
+                .submit_pointer_receiver_receipts(receipts)
+                .expect("the exact receiver roster is settled");
+        }
+
+        let surfaces = frame.surfaces().collect::<Vec<_>>();
+        for surface in surfaces {
+            let token = frame
+                .view()
+                .begin_surface_contribution(surface)
+                .expect("the fixture surface remains in the frozen roster");
+            let contribution = frame
+                .view()
+                .prepare_surface_unavailable_contribution(
+                    token,
+                    MeasurementUnavailableReason::Deferred,
+                )
+                .expect("the fixture explicitly defers surface measurement");
+            frame
+                .push_surface_contribution(contribution)
+                .expect("each fixture surface contributes exactly once");
+        }
+
+        let mut presentation = frame
+            .into_presentation()
+            .expect("pointer input closes before presentation settlement");
+        presentation
+            .resolve_all_presentation_obligations_unavailable(
+                HostPresentationUnavailableReason::OutputNotProduced,
+            )
+            .expect("the fixture settles every unpainted output");
+        presentation
+            .finish(engine)
+            .expect("the core atomically publishes the pointer epoch");
+        state.commit(prepared);
     }
 
     fn input() -> RawInput {
@@ -891,6 +1086,50 @@ mod tests {
             .collect(),
             ..RawInput::default()
         }
+    }
+
+    #[test]
+    fn install_reservation_rejects_a_live_surface_local_producer() {
+        let context = Context::default();
+        let mut state = state(&context);
+
+        assert!(matches!(
+            state.reserve_install(),
+            Err(DockspaceError::PointerInputProviderAlreadyInstalled)
+        ));
+    }
+
+    #[test]
+    fn rejected_retirement_can_restore_the_exact_adapter_state() {
+        let context = Context::default();
+        let mut state = state(&context);
+        let provider = state.provider().expect("fixture provider is installed");
+        let epoch = EguiPointerInputEpoch::new(6, 0, ViewportId::ROOT, 1);
+        let mut staged = None;
+        let _ = context.run_ui(input(), |_ui| {
+            staged = state.prepare(&context, epoch, None).expect("input stages");
+        });
+        let staged = staged.expect("the provider produces a journal");
+
+        let drained = state
+            .drain()
+            .expect("draining is structurally valid")
+            .expect("the complete adapter state drains");
+        assert_eq!(state.provider(), None);
+        state.restore_drained(drained);
+
+        assert_eq!(state.provider(), Some(provider));
+        assert_eq!(state.current_epoch(6, 0, ViewportId::ROOT), Some(epoch));
+        let mut retry = None;
+        let _ = context.run_ui(input(), |_ui| {
+            retry = state
+                .prepare(&context, epoch, None)
+                .expect("the restored pending epoch retries");
+        });
+        assert_eq!(
+            retry.expect("the restored provider remains active").journal,
+            staged.journal
+        );
     }
 
     #[test]
@@ -918,7 +1157,7 @@ mod tests {
     #[test]
     fn committed_epoch_is_not_redelivered_on_a_later_pass() {
         let context = Context::default();
-        let mut state = state(&context);
+        let (mut engine, host, mut state) = state_fixture(&context, PointerEdgeSequence::new(0));
         let epoch = EguiPointerInputEpoch::new(11, 0, ViewportId::ROOT, 1);
         let mut first = None;
         let _ = context.run_ui(input(), |_ui| {
@@ -927,7 +1166,7 @@ mod tests {
                 .expect("first pass stages");
         });
         let first = first.expect("provider produces a journal");
-        state.commit(&first);
+        commit_prepared_pointer_epoch(&mut engine, host, &mut state, &first);
 
         let mut repeated = None;
         let _ = context.run_ui(input(), |_ui| {
@@ -944,7 +1183,7 @@ mod tests {
     #[test]
     fn captured_outer_events_survive_an_empty_final_pass_and_commit_once() {
         let context = Context::default();
-        let mut state = state(&context);
+        let (mut engine, host, mut state) = state_fixture(&context, PointerEdgeSequence::new(0));
         let epoch = EguiPointerInputEpoch::new(12, 0, ViewportId::ROOT, 1);
         #[cfg(egui_backend_event_envelope)]
         let captured = input()
@@ -962,7 +1201,7 @@ mod tests {
         });
         let first = first.expect("the provider produces a journal");
         assert_eq!(first.journal.edges().len(), 2);
-        state.commit(&first);
+        commit_prepared_pointer_epoch(&mut engine, host, &mut state, &first);
 
         let mut repeated = None;
         let _ = context.run_ui(RawInput::default(), |_ui| {
@@ -1038,14 +1277,20 @@ mod tests {
                 "the empty candidate roster is consumed with its exact empty receipt"
             );
         }
-        assert_eq!(state.committed_through, PointerEdgeSequence::new(0));
+        assert_eq!(
+            state
+                .provider
+                .as_ref()
+                .expect("the provider remains live")
+                .committed_through(),
+            PointerEdgeSequence::new(0)
+        );
     }
 
     #[test]
     fn sequence_exhaustion_rejects_the_complete_epoch_without_staging_or_advancing() {
         let context = Context::default();
-        let mut state = state(&context);
-        state.committed_through = PointerEdgeSequence::new(u64::MAX);
+        let mut state = state_with_watermark(&context, PointerEdgeSequence::new(u64::MAX));
         let epoch = EguiPointerInputEpoch::new(17, 0, ViewportId::ROOT, 1);
         let mut result = None;
         let _ = context.run_ui(input(), |_ui| {
@@ -1056,7 +1301,14 @@ mod tests {
             Err(DockspaceError::PointerEdgeSequenceExhausted { after })
                 if after == PointerEdgeSequence::new(u64::MAX)
         ));
-        assert_eq!(state.committed_through, PointerEdgeSequence::new(u64::MAX));
+        assert_eq!(
+            state
+                .provider
+                .as_ref()
+                .expect("the provider remains live")
+                .committed_through(),
+            PointerEdgeSequence::new(u64::MAX)
+        );
         assert!(state.pending.is_none());
         assert!(state.delivered_epoch.is_none());
     }

@@ -16,7 +16,8 @@ presentation-authority-bound receipt types are implemented in
 requires exactly one complete journal and exact receipt batch, validates the
 receipt against post-observation interactive output, and advances the provider
 watermark only in the successful candidate transaction. Interaction-FSM wiring
-and native provider integration remain the next cutover targets.
+and the surface-local egui producer path are implemented. Remaining work is
+native capability hardening, broader host conformance, and public API sealing.
 
 `dockspace` must be the sole authority for docking interaction semantics. A UI
 adapter supplies measured presentation facts, actual event-receiver facts, and
@@ -185,6 +186,12 @@ pub enum PointerProviderScope {
 pub struct PointerInputLease {
     /* opaque engine domain + provider incarnation + frozen scope */
 }
+pub struct SurfaceLocalPointerProvider {
+    /* non-cloneable producer ownership + last core-committed watermark */
+}
+pub struct SurfaceLocalPointerDrainReceipt {
+    /* affine proof that the sole local producer has stopped */
+}
 pub struct PointerStreamId {
     /* opaque exact lease + pointer id + core-minted stream incarnation */
 }
@@ -257,7 +264,10 @@ are intentionally narrow:
 
 ```rust
 let host: PresentationHostLease = engine.create_presentation_host()?;
-let provider = engine.create_pointer_provider(scope, committed_through)?;
+let provider = engine.create_surface_local_pointer_provider(
+    local_scope,
+    committed_through,
+)?;
 let mut frame = engine.begin_host_frame(host)?;
 
 // Future native U9a prelude. The final phase guard will permit this one
@@ -270,7 +280,8 @@ frame.submit_presentation_observation(observation)?;
 
 // Implemented HostFrame integration. The complete contiguous journal is
 // constructed by the provider; current-frame paint is ineligible here.
-frame.submit_pointer_journal(provider, journal)?;
+let submitted_through = journal.through();
+frame.submit_surface_pointer_journal(&provider, journal)?;
 let candidates = frame.pointer_receiver_candidates()
     .expect("a staged journal freezes one candidate roster");
 let receipts = adapter.collect_exact_receiver_receipts(&candidates)?;
@@ -281,6 +292,7 @@ let request = frame.record_painted_surface_contribution(token)?;
 // The retained-token call contributes its own surface. Every other rostered
 // surface receives exactly one `push_surface_contribution` before `finish`.
 let transition = frame.finish(&mut engine)?;
+assert_eq!(provider.committed_through(), submitted_through);
 
 // Current API: only now does core mint a concrete emission/key.
 let emission = transition.presentation_emissions()
@@ -291,6 +303,11 @@ let emission = transition.presentation_emissions()
 // In a later host frame, the provider reports `emission.output().key()` in a
 // `HostPresentationObservation::Batch`. Core, not the adapter, may then mint
 // `PresentedSurfaceAuthority` after validating the retired/presented fact.
+
+// Once every adapter submission path is detached, retirement and tombstone
+// compaction occur atomically. Rejected settlement leaves the receipt retryable.
+let mut drained = provider.drain()?;
+engine.retire_quiesced_surface_local_pointer_provider(&mut drained)?;
 ```
 
 The core validates the submitted journal's `previous` watermark against the
@@ -304,12 +321,39 @@ Native multiview must feed one desktop aggregator (or establish an ingress total
 order before constructing its journal); a surface-local lease is deliberately
 restricted to one endpoint.
 
-Until the journal-driven interaction FSM replaces pointer variants of
-`RendererIntent`, activating a pointer provider is a protocol/conformance
-operation rather than a product gesture path. A host frame with an active
-provider rejects `RendererIntent`, preventing one physical edge from entering
-both protocols. The future cutover must replace that rejection with the single
-journal reducer, never re-enable two pointer paths.
+Surface-local producer ownership is distinct from the copyable
+`PointerInputLease` transport identity. Renderer adapters submit through the
+non-cloneable producer. A private guard retained by the matching host frame
+advances the producer watermark only after the core candidate publishes; frame
+rollback releases the lane without acknowledging the journal. The adapter then
+consumes the producer into a drain receipt before retirement. Settlement
+accepts both an exact active provider and an exact tombstone created earlier by
+core scope reconciliation. Frame age, callback absence, and a missing current
+provider are never quiescence proof. The raw create, submit, and retirement
+entry points reject `SurfaceLocal`; copying `provider.lease()` therefore cannot
+continue production or bypass quiesced retirement after the affine owner drains.
+
+The core retains only a weak monitor for the producer state. The provider, an
+in-flight frame guard, and a drain receipt each retain the corresponding strong
+capability. If an adapter accidentally drops all three without settling the
+receipt, `reap_abandoned_surface_local_pointer_provider` can prove that no
+future journal exists and reclaim either the active lane or an implicitly
+retired detailed tombstone fail-closed. It cannot race a live frame or a
+retained receipt. Active reclamation reports the same typed presentation
+invalidation as ordinary retirement; tombstone-only reclamation advances only
+the retention revision and requests no second repaint or reducer tick.
+
+A surface-local provider also cannot establish desktop-global drag routing or
+pointer pass-through obligations. Native tear-off and cross-window docking must
+enter through the joined desktop-global backend ingress, whose ordered journal,
+platform facts, and effect acknowledgements share one host transaction.
+
+The journal-driven interaction cutover is complete: pointer variants of
+`RendererIntent` no longer exist, and the crates.io egui outer-frame path uses
+the surface-local producer directly. A host frame with an active provider has
+exactly one pointer reducer. Future adapters must not reintroduce a second
+gesture path or translate one physical edge into both semantic and journal
+input.
 
 Keyboard, accessibility, and explicit menu commands are separate semantic
 inputs. Pointer-originated close, tab, splitter, and contained-chrome actions

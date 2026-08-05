@@ -18,8 +18,8 @@ use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::interaction::{InteractionOutcome, InteractionRejection, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerRetirementDisposition, SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
@@ -39,9 +39,9 @@ const ROOT: RootId = RootId::new(1);
 const POINTER: PointerId = PointerId::new(1);
 const INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(0x51_7e_22);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct TestPointerStream {
-    lease: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     through: u64,
 }
 
@@ -189,19 +189,22 @@ fn create_pointer_stream(
     engine: &mut DockEngine,
     host: &support::TestPresentationHost,
 ) -> TestPointerStream {
-    let lease = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("surface-local pointer provider is admitted");
-    TestPointerStream { lease, through: 0 }
+    TestPointerStream {
+        provider,
+        through: 0,
+    }
 }
 
-fn empty_pointer_journal(pointer: TestPointerStream) -> PointerEdgeJournal {
+fn empty_pointer_journal(pointer: &TestPointerStream) -> PointerEdgeJournal {
     let watermark = PointerEdgeSequence::new(pointer.through);
     PointerEdgeJournal::new(watermark, watermark, Vec::new())
         .expect("empty journal preserves the provider watermark")
@@ -241,7 +244,7 @@ fn stage_pointer_edge(
     )
     .expect("single pointer edge is contiguous");
     frame
-        .submit_pointer_journal(pointer.lease, journal)
+        .submit_surface_pointer_journal(&pointer.provider, journal)
         .expect("pointer edge follows the provider watermark");
     pointer.through = sequence.get();
 
@@ -290,7 +293,13 @@ fn submit_pointer_edge(
     let mut frame = host.begin(engine);
     stage_pointer_edge(&mut frame, pointer, kind, position, delivered_to);
     support::complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
-    host.finish(frame, engine)
+    let transition = host.finish(frame, engine);
+    assert_eq!(
+        pointer.provider.committed_through(),
+        PointerEdgeSequence::new(pointer.through),
+        "committed pointer watermark advances monotonically"
+    );
+    transition
 }
 
 fn pointer_interaction_outcome(transition: &EngineTransition) -> &InteractionOutcome {
@@ -312,13 +321,13 @@ fn pointer_interaction_outcome(transition: &EngineTransition) -> &InteractionOut
 fn submit_input_with_idle_pointer(
     engine: &mut DockEngine,
     host: &mut support::TestPresentationHost,
-    pointer: TestPointerStream,
+    pointer: &mut TestPointerStream,
     input: EngineInput,
 ) -> EngineTransition {
     let mut stream = support::TestInputStream::resume(engine, INPUT_SOURCE);
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(pointer.lease, empty_pointer_journal(pointer))
+        .submit_surface_pointer_journal(&pointer.provider, empty_pointer_journal(pointer))
         .expect("semantic frame preserves the pointer watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -330,7 +339,13 @@ fn submit_input_with_idle_pointer(
         .append(&mut frame, input)
         .expect("semantic input follows pointer authority");
     support::complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
-    host.finish(frame, engine)
+    let transition = host.finish(frame, engine);
+    assert_eq!(
+        pointer.provider.committed_through(),
+        PointerEdgeSequence::new(pointer.through),
+        "committed pointer watermark advances monotonically"
+    );
+    transition
 }
 
 fn interaction_outcome(transition: &EngineTransition) -> &InteractionOutcome {
@@ -372,11 +387,12 @@ fn close_root(
     pointer: TestPointerStream,
     root: RootId,
 ) -> EngineTransition {
+    let mut pointer = pointer;
     let expected = engine.version();
     let request = submit_input_with_idle_pointer(
         engine,
         host,
-        pointer,
+        &mut pointer,
         EngineInput::RequestContentClose {
             expected,
             target: ContentCloseTarget::Root(root),
@@ -392,7 +408,7 @@ fn close_root(
         committed = Some(submit_input_with_idle_pointer(
             engine,
             host,
-            pointer,
+            &mut pointer,
             EngineInput::ResolveClose {
                 request: plan.request(),
                 token: requirement.token(),
@@ -418,6 +434,19 @@ fn close_root(
             CloseCommitOutcome::RootClosed { root: actual, .. }
         ) if *actual == root
     )));
+    let mut receipt = pointer
+        .provider
+        .drain()
+        .expect("closed-root pointer producer has no in-flight host frame");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        .expect("closed-root pointer producer compacts at its committed watermark");
+    assert_eq!(
+        retirement.disposition(),
+        SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired
+    );
+    assert!(!retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     committed
 }
 

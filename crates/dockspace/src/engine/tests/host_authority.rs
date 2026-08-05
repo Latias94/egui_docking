@@ -1,6 +1,7 @@
 //! Host-frame, provider, identity, and presentation authority tests.
 
 use super::*;
+use crate::pointer_journal::SurfaceLocalPointerRetirementDisposition;
 
 fn register_test_root_viewport(
     engine: &mut DockEngine,
@@ -77,11 +78,8 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
         )
         .expect("first native binding must register");
     let provider_a = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
-                host,
-                SurfaceLocalPointerEndpoint::Native(binding_a),
-            )),
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_a)),
             PointerEdgeSequence::new(0),
         )
         .expect("A1 pointer provider must be admitted");
@@ -117,7 +115,7 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
     ));
     assert_eq!(
         engine.pointer_provider(),
-        Some(provider_a),
+        Some(provider_a.lease()),
         "sealed frame admission must fail closed without mutating the ledger"
     );
 }
@@ -132,11 +130,11 @@ fn surface_local_pointer_host_is_admitted_only_when_the_prelude_is_sealed() {
         .create_presentation_host()
         .expect("pointer presentation host must mint");
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 pointer_host,
                 SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("surface-local pointer provider must be admitted");
@@ -153,9 +151,323 @@ fn surface_local_pointer_host_is_admitted_only_when_the_prelude_is_sealed() {
         Err(EngineError::PointerProviderHostOutsideFrameScope {
             provider: actual_provider,
             host: actual_host,
-        }) if actual_provider == provider && actual_host == pointer_host
+        }) if actual_provider == provider.lease() && actual_host == pointer_host
     ));
-    assert_eq!(engine.pointer_provider(), Some(provider));
+    assert_eq!(engine.pointer_provider(), Some(provider.lease()));
+}
+
+#[test]
+fn surface_local_pointer_host_cannot_borrow_another_hosts_active_surface() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let rendering_host = engine
+        .create_presentation_host()
+        .expect("rendering presentation host must mint");
+    let pointer_host = engine
+        .create_presentation_host()
+        .expect("foreign pointer presentation host must mint");
+    publish_surface_projection(&mut engine, rendering_host, SOURCE_SURFACE, test_rect());
+
+    assert!(matches!(
+        engine.create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                pointer_host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        ),
+        Err(EngineError::PointerProviderSurfaceHostMismatch {
+            host,
+            surface,
+            owner,
+        }) if host == pointer_host && surface == SOURCE_SURFACE && owner == rendering_host
+    ));
+    assert_eq!(engine.pointer_provider(), None);
+}
+
+#[test]
+fn surface_local_pointer_lifecycle_rejects_every_raw_lease_bypass() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let scope =
+        SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE));
+
+    assert!(matches!(
+        engine.create_pointer_provider(
+            PointerProviderScope::SurfaceLocal(scope),
+            PointerEdgeSequence::new(0),
+        ),
+        Err(EngineError::SurfaceLocalPointerProducerRequired)
+    ));
+
+    let provider = engine
+        .create_surface_local_pointer_provider(scope, PointerEdgeSequence::new(0))
+        .expect("affine surface-local producer must mint");
+    let lease = provider.lease();
+    let empty = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(0),
+        Vec::new(),
+    )
+    .expect("empty journal must preserve its watermark");
+    let mut frame = begin_test_host_frame(&engine, host);
+    assert!(matches!(
+        frame.submit_pointer_journal(lease, empty),
+        Err(CoreHostFrameError::SurfaceLocalPointerProducerRequired {
+            provider: rejected,
+        }) if rejected == lease
+    ));
+    drop(frame);
+
+    let mut receipt = provider
+        .drain()
+        .expect("raw-lease rejection leaves no affine frame attempt in flight");
+    let empty = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(0),
+        Vec::new(),
+    )
+    .expect("drained raw retry journal preserves its watermark");
+    let mut drained_frame = begin_test_host_frame(&engine, host);
+    assert!(matches!(
+        drained_frame.submit_pointer_journal(lease, empty),
+        Err(CoreHostFrameError::SurfaceLocalPointerProducerRequired {
+            provider: rejected,
+        }) if rejected == lease
+    ));
+    drop(drained_frame);
+    assert!(matches!(
+        engine.retire_pointer_provider(lease),
+        Err(EngineError::SurfaceLocalPointerProducerRequired)
+    ));
+    assert_eq!(engine.pointer_provider(), Some(lease));
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        .expect("the exact drained producer remains retireable");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
+    assert_eq!(engine.pointer_provider(), None);
+}
+
+#[test]
+fn surface_local_pointer_drain_waits_for_the_staged_host_frame_to_finish() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("surface-local pointer provider must mint");
+    let lease = provider.lease();
+    let empty = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(0),
+        Vec::new(),
+    )
+    .expect("empty journal must preserve its watermark");
+    let mut frame = begin_test_host_frame(&engine, host);
+    frame
+        .submit_surface_pointer_journal(&provider, empty)
+        .expect("surface-local journal must stage through the affine producer");
+
+    let provider = provider
+        .drain()
+        .expect_err("an uncommitted host frame must retain the producer lane")
+        .into_provider();
+    assert_eq!(provider.lease(), lease);
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(0),
+        "staging alone must not advance the committed watermark"
+    );
+
+    drop(frame);
+    let mut receipt = provider
+        .drain()
+        .expect("dropping the staged frame releases the producer lane");
+    assert_eq!(receipt.committed_through(), PointerEdgeSequence::new(0));
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        .expect("the recovered provider must remain exactly retireable");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
+    assert_eq!(engine.pointer_provider(), None);
+}
+
+#[test]
+fn surface_local_frame_guard_defers_abandonment_reaping_until_the_frame_drops() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("surface-local pointer provider must mint");
+    let lease = provider.lease();
+    let mut frame = begin_test_host_frame(&engine, host);
+    frame
+        .submit_surface_pointer_journal(
+            &provider,
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .expect("empty journal preserves its watermark"),
+        )
+        .expect("the frame retains the producer lane");
+
+    drop(provider);
+    assert_eq!(
+        engine
+            .reap_abandoned_surface_local_pointer_provider()
+            .expect("a guarded producer query is valid"),
+        None,
+        "the in-flight frame guard is still a live producer-side capability",
+    );
+    assert_eq!(engine.pointer_provider(), Some(lease));
+
+    drop(frame);
+    assert!(matches!(
+        engine.begin_host_frame(host),
+        Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider })
+            if provider == lease
+    ));
+    let outcome = engine
+        .reap_abandoned_surface_local_pointer_provider()
+        .expect("dropping the final producer-side capability permits reclamation")
+        .expect("the abandoned provider is reclaimed");
+    assert_eq!(
+        outcome.disposition(),
+        SurfaceLocalPointerRetirementDisposition::RetiredActive
+    );
+    assert!(outcome.repaint_required());
+    assert!(!outcome.interaction_changed());
+    assert_eq!(engine.pointer_provider(), None);
+}
+
+#[test]
+fn dropped_surface_local_drain_receipt_can_be_reaped_without_sticking_the_lane() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("surface-local pointer provider must mint");
+    let receipt = provider
+        .drain()
+        .expect("an idle producer drains immediately");
+
+    assert_eq!(
+        engine
+            .reap_abandoned_surface_local_pointer_provider()
+            .expect("a retained receipt query is valid"),
+        None,
+        "the affine drain receipt remains a live producer-side capability",
+    );
+    drop(receipt);
+
+    assert!(matches!(
+        engine.create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        ),
+        Err(EngineError::SurfaceLocalPointerProviderAbandoned { .. })
+    ));
+
+    let outcome = engine
+        .reap_abandoned_surface_local_pointer_provider()
+        .expect("a lost receipt is recoverable")
+        .expect("the abandoned active lane is reclaimed");
+    assert_eq!(
+        outcome.disposition(),
+        SurfaceLocalPointerRetirementDisposition::RetiredActive
+    );
+    assert!(outcome.repaint_required());
+    assert_eq!(engine.pointer_provider(), None);
+    assert_eq!(
+        engine
+            .reap_abandoned_surface_local_pointer_provider()
+            .expect("repeated reclamation is inert"),
+        None,
+    );
+}
+
+#[test]
+fn dropped_producer_of_an_implicitly_retired_lease_compacts_without_a_new_tick() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
+                host,
+                SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
+            ),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("surface-local pointer provider must mint");
+
+    let retirement = engine
+        .retire_presentation_host(host, PresentationHostRetirementReason::RuntimeDestroyed)
+        .expect("presentation host retirement is atomic");
+    assert!(matches!(
+        retirement,
+        PresentationHostRetirementOutcome::Retired { .. }
+    ));
+    assert_eq!(engine.pointer_provider(), None);
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .pointer()
+            .retired_lease_guards(),
+        1,
+    );
+    let retirement_tick = engine.last_reducer_tick();
+
+    drop(provider);
+    let outcome = engine
+        .reap_abandoned_surface_local_pointer_provider()
+        .expect("an abandoned retired producer can be compacted")
+        .expect("the retired monitor remains discoverable");
+    assert_eq!(
+        outcome.disposition(),
+        SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired
+    );
+    assert!(!outcome.repaint_required());
+    assert!(!outcome.interaction_changed());
+    assert_eq!(engine.last_reducer_tick(), retirement_tick);
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .pointer()
+            .retired_lease_guards(),
+        0,
+    );
 }
 
 #[test]
@@ -174,12 +486,9 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
             None,
         )
         .expect("first native binding must register");
-    let lease_a = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
-                host,
-                SurfaceLocalPointerEndpoint::Native(binding_a),
-            )),
+    let provider_a = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_a)),
             PointerEdgeSequence::new(0),
         )
         .expect("A1 pointer provider must be admitted");
@@ -192,7 +501,7 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
     .expect("empty journal must preserve its watermark");
     let mut stale_frame = begin_test_host_frame(&engine, host);
     stale_frame
-        .submit_pointer_journal(lease_a, empty.clone())
+        .submit_surface_pointer_journal(&provider_a, empty.clone())
         .expect("the A1 provider can stage a structurally valid journal");
     stale_frame
         .submit_pointer_receiver_receipts(
@@ -229,23 +538,25 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
         "a stale A1 journal must not mutate A2 state"
     );
 
-    engine
-        .retire_pointer_provider(lease_a)
-        .expect("the stale A1 lease can be retired exactly once");
+    let mut receipt_a = provider_a
+        .drain()
+        .expect("rejected stale frame releases the producer lane");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt_a)
+        .expect("the stale A1 provider can be retired exactly once");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     assert_eq!(engine.pointer_provider(), None);
-    let lease_b = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
-                host,
-                SurfaceLocalPointerEndpoint::Native(binding_b),
-            )),
+    let provider_b = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_b)),
             PointerEdgeSequence::new(0),
         )
         .expect("A2 pointer provider must be admitted after A1 retirement");
 
     let mut successor_frame = begin_test_host_frame(&engine, host);
     successor_frame
-        .submit_pointer_journal(lease_b, empty)
+        .submit_surface_pointer_journal(&provider_b, empty)
         .expect("A2 journal must stage");
     successor_frame
         .submit_pointer_receiver_receipts(
@@ -257,7 +568,8 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
     successor_frame
         .finish(&mut engine)
         .expect("A2 lease must continue through the host-frame reducer");
-    assert_eq!(engine.pointer_provider(), Some(lease_b));
+    assert_eq!(engine.pointer_provider(), Some(provider_b.lease()));
+    assert_eq!(provider_b.committed_through(), PointerEdgeSequence::new(0));
 }
 
 #[test]
@@ -395,11 +707,11 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
             .expect("selected tab receiver remains present"),
     );
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host,
                 SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("tab pointer provider must mint");
@@ -419,8 +731,8 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     crate::drop_resolver::structural_work::reset();
     let mut press = begin_test_host_frame(&engine, host);
     press
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             local_pointer_journal(
                 0,
                 [(
@@ -459,6 +771,11 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
         .expect("press receipt must stage");
     complete_host_frame_with_explicit_surface_roster(&engine, &mut press);
     let press_transition = press.finish(&mut engine).expect("tab press must reduce");
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(1),
+        "host-frame commit advances the affine producer watermark"
+    );
     assert!(matches!(
         press_transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::DragArmed { .. }]
@@ -500,8 +817,8 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     crate::drop_resolver::structural_work::reset();
     let mut release = begin_test_host_frame(&engine, host);
     release
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             local_pointer_journal(
                 1,
                 [(
@@ -528,6 +845,11 @@ fn real_host_frame_tab_press_and_release_have_bounded_clone_work() {
     let release_transition = release
         .finish(&mut engine)
         .expect("tab release must reduce");
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(2),
+        "the next committed host frame advances the producer watermark again"
+    );
     assert!(matches!(
         release_transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Cancelled {
@@ -610,11 +932,11 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     let released = LogicalPoint::new(press.x() + 48.0, press.y())
         .expect("splitter release point must be finite");
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host,
                 SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("splitter pointer provider must mint");
@@ -624,8 +946,8 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     crate::drop_resolver::structural_work::reset();
     let mut frame = begin_test_host_frame(&engine, host);
     frame
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             local_pointer_journal(
                 0,
                 [(
@@ -663,8 +985,8 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
         )
         .expect("splitter press receipt must stage");
     frame
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             local_pointer_journal(1, [(PointerEdgeKind::Moved, moved)]),
         )
         .expect("splitter move journal must stage");
@@ -682,8 +1004,8 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
         )
         .expect("splitter move receipt must stage");
     frame
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             local_pointer_journal(
                 2,
                 [(
@@ -710,6 +1032,11 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     let transition = frame
         .finish(&mut engine)
         .expect("splitter frame must reduce");
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(3),
+        "all staged splitter segments commit through the final edge"
+    );
     assert!(matches!(
         transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::ResizeBegan { .. }]
@@ -796,15 +1123,15 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
     )
     .expect("tab point must be finite");
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host,
                 SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("tab pointer provider must mint");
-    let owner = GestureOwner::Stream(PointerStreamId::new(provider, TEST_POINTER, 1));
+    let owner = GestureOwner::Stream(PointerStreamId::new(provider.lease(), TEST_POINTER, 1));
     let prepared = engine
         .prepare_journal_tab_gesture(&presentation, TabGestureSource::Item(*tab.id()), tab_point)
         .expect("real tab press must prepare");
@@ -877,15 +1204,15 @@ fn journal_tab_and_contained_activation_keep_one_outer_engine_clone() {
     )
     .expect("contained title point must be finite");
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host,
                 SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("contained pointer provider must mint");
-    let owner = GestureOwner::Stream(PointerStreamId::new(provider, TEST_POINTER, 1));
+    let owner = GestureOwner::Stream(PointerStreamId::new(provider.lease(), TEST_POINTER, 1));
     let prepared = engine
         .prepare_journal_contained_gesture(
             &presentation,
@@ -1087,7 +1414,8 @@ fn prepared_host_frame_rolls_back_on_drop_and_publishes_once_on_commit() {
     let transition = committed_frame
         .prepare(&mut engine)
         .expect("replacement host frame must prepare")
-        .commit();
+        .commit()
+        .expect("replacement host frame must commit");
 
     assert_eq!(transition.tick().get(), before_tick.get() + 1);
     assert_eq!(engine.last_reducer_tick(), transition.tick());

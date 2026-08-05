@@ -18,7 +18,8 @@ use dockspace::platform::{
 use dockspace::pointer_journal::{
     DesktopDockRoute, DesktopRouteFact, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
     PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerEventDeliveryOwner,
-    PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PointerProviderScope, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
@@ -288,7 +289,7 @@ fn arm_desktop_global_tab_drag(fixture: &mut Fixture) {
     ));
 }
 
-fn arm_surface_local_native_tab_drag(fixture: &mut Fixture) -> PointerInputLease {
+fn arm_surface_local_native_tab_drag(fixture: &mut Fixture) -> SurfaceLocalPointerProvider {
     publish_surface(
         &mut fixture.engine,
         &mut fixture.host,
@@ -297,11 +298,11 @@ fn arm_surface_local_native_tab_drag(fixture: &mut Fixture) -> PointerInputLease
     );
     let provider = fixture
         .engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 fixture.host.lease(),
                 SurfaceLocalPointerEndpoint::Native(fixture.binding),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("native surface-local pointer provider is admitted");
@@ -339,7 +340,7 @@ fn arm_surface_local_native_tab_drag(fixture: &mut Fixture) -> PointerInputLease
 
     let mut frame = fixture.host.begin(&fixture.engine);
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(&provider, journal)
         .expect("native surface-local press freezes its receiver candidate");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -368,6 +369,11 @@ fn arm_surface_local_native_tab_drag(fixture: &mut Fixture) -> PointerInputLease
         .expect("native surface-local press receipt stages");
     complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.host.finish(frame, &mut fixture.engine);
+    assert_eq!(
+        provider.committed_through(),
+        sequence,
+        "native press advances the committed pointer watermark"
+    );
     assert!(matches!(
         transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::DragArmed { .. }]
@@ -571,7 +577,7 @@ fn foreign_and_duplicate_replacement_tickets_are_rejected_atomically() {
 fn replacement_retires_native_surface_local_provider_and_its_owned_gesture() {
     let mut fixture = fixture();
     let retired = arm_surface_local_native_tab_drag(&mut fixture);
-    assert_eq!(fixture.engine.pointer_provider(), Some(retired));
+    assert_eq!(fixture.engine.pointer_provider(), Some(retired.lease()));
 
     let start = fixture
         .engine
@@ -595,9 +601,14 @@ fn replacement_retires_native_surface_local_provider_and_its_owned_gesture() {
                 }
             )
     ));
+    let mut receipt = retired
+        .drain()
+        .expect("retired native provider has no in-flight host frame");
     assert!(matches!(
-        fixture.engine.retire_pointer_provider(retired),
-        Err(EngineError::PointerJournal { .. })
+        fixture
+            .engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt),
+        Ok(outcome) if !outcome.interaction_changed()
     ));
 }
 
@@ -608,11 +619,11 @@ fn replacement_preserves_independent_logical_surface_local_provider() {
     let platform_provider = host.platform_provider();
     publish_surface(&mut engine, &mut host, SURFACE, logical_bounds());
     let logical_provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("logical surface-local pointer provider is admitted");
@@ -621,13 +632,13 @@ fn replacement_preserves_independent_logical_surface_local_provider() {
         .begin_platform_provider_replacement(platform_provider)
         .expect("platform provider replacement preserves logical input authority");
     assert_eq!(engine.platform_provider(), None);
-    assert_eq!(engine.pointer_provider(), Some(logical_provider));
+    assert_eq!(engine.pointer_provider(), Some(logical_provider.lease()));
     assert!(start.transition().interaction_events().is_empty());
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(
-            logical_provider,
+        .submit_surface_pointer_journal(
+            &logical_provider,
             PointerEdgeJournal::new(
                 PointerEdgeSequence::new(0),
                 PointerEdgeSequence::new(0),
@@ -644,12 +655,27 @@ fn replacement_preserves_independent_logical_surface_local_provider() {
         .expect("logical provider empty receipt batch stages");
     complete_host_frame_with_retained_or_unavailable(&engine, &mut frame);
     let transition = host.finish(frame, &mut engine);
+    assert_eq!(
+        logical_provider.committed_through(),
+        PointerEdgeSequence::new(0),
+        "empty checkpoint preserves the committed pointer watermark"
+    );
     assert!(transition.reduced_pointer_edges().is_empty());
-    assert_eq!(engine.pointer_provider(), Some(logical_provider));
+    assert_eq!(engine.pointer_provider(), Some(logical_provider.lease()));
 
     let replacement = engine
         .finish_platform_provider_replacement(start.ticket())
         .expect("exact ticket activates the successor platform provider");
     assert_eq!(engine.platform_provider(), Some(replacement));
-    assert_eq!(engine.pointer_provider(), Some(logical_provider));
+    assert_eq!(engine.pointer_provider(), Some(logical_provider.lease()));
+
+    let mut receipt = logical_provider
+        .drain()
+        .expect("logical provider has no in-flight host frame");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        .expect("logical provider retires at its committed watermark");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
+    assert_eq!(engine.pointer_provider(), None);
 }

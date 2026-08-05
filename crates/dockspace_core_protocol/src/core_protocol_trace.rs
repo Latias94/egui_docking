@@ -210,9 +210,10 @@ pub struct CoreProtocolTraceBoundary {
 
 /// Provider lifecycle operation without a caller-supplied lease identity.
 ///
-/// Activation precedes and authorizes the boundary's host frame. Retirement
-/// publishes its own complete reducer transition, so a retirement boundary has
-/// no host-frame observation, event, disposition, or contribution lanes.
+/// Activation precedes and authorizes the boundary's host frame. Desktop-global
+/// retirement and presentation-host retirement publish complete transitions.
+/// Surface-local retirement consumes its affine producer and publishes only the
+/// explicitly declared maintenance result.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PointerProviderIngress {
@@ -220,7 +221,33 @@ pub enum PointerProviderIngress {
         scope: PointerProviderScopeIngress,
         committed_through: u64,
     },
-    Retire {},
+    RetireDesktopGlobal {},
+    RetireSurfaceLocal {
+        expected: ExpectedSurfaceLocalPointerMaintenance,
+    },
+    RetirePresentationHost {},
+}
+
+/// Exact adapter-visible maintenance result of draining a surface-local producer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedSurfaceLocalPointerMaintenance {
+    /// Whether retirement invalidated an interaction or scroll presentation.
+    pub interaction_changed: bool,
+    /// Whether the adapter must rebuild the affected surface presentation.
+    pub repaint_required: bool,
+    /// Whether this call retired the active lease or only compacted an earlier tombstone.
+    pub disposition: ExpectedSurfaceLocalPointerMaintenanceDisposition,
+    /// Number of smooth-scroll sessions which must no longer remain active.
+    pub terminated_scroll_sessions: usize,
+}
+
+/// Core disposition selected by one affine surface-local producer drain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExpectedSurfaceLocalPointerMaintenanceDisposition {
+    RetiredActive,
+    CompactedPreviouslyRetired,
 }
 
 /// Declarative observation lane for one pointer provider.
@@ -2130,6 +2157,13 @@ pub fn validate_core_protocol_trace_suite(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TracePointerProviderState {
+    Absent,
+    Active(PointerProviderScopeIngress),
+    RetiredAwaitingDrain,
+}
+
 fn validate_trace(trace: &CoreProtocolTrace) -> Result<(), CoreProtocolTraceError> {
     if trace.boundaries.is_empty() {
         return Err(CoreProtocolTraceError::Invalid(format!(
@@ -2176,8 +2210,9 @@ fn validate_trace(trace: &CoreProtocolTrace) -> Result<(), CoreProtocolTraceErro
 
     let mut boundary_ids = BTreeSet::new();
     let mut producer_sequences = BTreeMap::<ProducerId, u64>::new();
-    let mut provider_live = false;
-    for (index, boundary) in trace.boundaries.iter().enumerate() {
+    let mut provider_state = TracePointerProviderState::Absent;
+    let mut previous_tick = 0_u64;
+    for boundary in &trace.boundaries {
         if !boundary_ids.insert(boundary.id.clone()) {
             return Err(CoreProtocolTraceError::Invalid(format!(
                 "trace `{}` repeats boundary `{}`",
@@ -2185,32 +2220,96 @@ fn validate_trace(trace: &CoreProtocolTrace) -> Result<(), CoreProtocolTraceErro
                 boundary.id.as_str()
             )));
         }
-        if boundary.expected.tick.0 != u64::try_from(index).unwrap_or(u64::MAX) + 1 {
+        let expected_tick = match &boundary.provider {
+            Some(PointerProviderIngress::RetireSurfaceLocal { expected })
+                if expected.disposition
+                    == ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired =>
+            {
+                previous_tick
+            }
+            _ => previous_tick.checked_add(1).ok_or_else(|| {
+                CoreProtocolTraceError::Invalid(format!(
+                    "trace `{}` exhausts the reducer tick frontier",
+                    trace.id.as_str()
+                ))
+            })?,
+        };
+        if boundary.expected.tick.0 != expected_tick {
             return Err(CoreProtocolTraceError::Invalid(format!(
-                "trace `{}` boundary `{}` has noncontiguous expected tick",
+                "trace `{}` boundary `{}` expects reducer tick {}, but this boundary class requires {}",
                 trace.id.as_str(),
-                boundary.id.as_str()
+                boundary.id.as_str(),
+                boundary.expected.tick.0,
+                expected_tick
             )));
         }
+        previous_tick = boundary.expected.tick.0;
         validate_provider_boundary_contract(trace, boundary)?;
         if let Some(provider) = &boundary.provider {
             match provider {
-                PointerProviderIngress::Activate { .. } if provider_live => {
-                    return Err(CoreProtocolTraceError::Invalid(format!(
-                        "trace `{}` activates a second live pointer provider at `{}`",
-                        trace.id.as_str(),
-                        boundary.id.as_str()
-                    )));
+                PointerProviderIngress::Activate { scope, .. } => {
+                    if provider_state != TracePointerProviderState::Absent {
+                        return Err(CoreProtocolTraceError::Invalid(format!(
+                            "trace `{}` activates a second pointer provider before draining its predecessor at `{}`",
+                            trace.id.as_str(),
+                            boundary.id.as_str()
+                        )));
+                    }
+                    provider_state = TracePointerProviderState::Active(*scope);
                 }
-                PointerProviderIngress::Activate { .. } => provider_live = true,
-                PointerProviderIngress::Retire {} if !provider_live => {
-                    return Err(CoreProtocolTraceError::Invalid(format!(
-                        "trace `{}` retires a missing pointer provider at `{}`",
-                        trace.id.as_str(),
-                        boundary.id.as_str()
-                    )));
+                PointerProviderIngress::RetireDesktopGlobal {} => {
+                    if provider_state
+                        != TracePointerProviderState::Active(
+                            PointerProviderScopeIngress::DesktopGlobal {},
+                        )
+                    {
+                        return Err(CoreProtocolTraceError::Invalid(format!(
+                            "trace `{}` retires a missing or non-desktop pointer provider at `{}`",
+                            trace.id.as_str(),
+                            boundary.id.as_str()
+                        )));
+                    }
+                    provider_state = TracePointerProviderState::Absent;
                 }
-                PointerProviderIngress::Retire {} => provider_live = false,
+                PointerProviderIngress::RetireSurfaceLocal { expected } => {
+                    let valid = matches!(
+                        (provider_state, expected.disposition),
+                        (
+                            TracePointerProviderState::Active(
+                                PointerProviderScopeIngress::SurfaceLocal { .. }
+                            ),
+                            ExpectedSurfaceLocalPointerMaintenanceDisposition::RetiredActive
+                        ) | (
+                            TracePointerProviderState::RetiredAwaitingDrain,
+                            ExpectedSurfaceLocalPointerMaintenanceDisposition::CompactedPreviouslyRetired
+                        )
+                    );
+                    if !valid {
+                        return Err(CoreProtocolTraceError::Invalid(format!(
+                            "trace `{}` surface-local retirement at `{}` does not match provider state {:?} and disposition {:?}",
+                            trace.id.as_str(),
+                            boundary.id.as_str(),
+                            provider_state,
+                            expected.disposition
+                        )));
+                    }
+                    provider_state = TracePointerProviderState::Absent;
+                }
+                PointerProviderIngress::RetirePresentationHost {} => {
+                    if !matches!(
+                        provider_state,
+                        TracePointerProviderState::Active(
+                            PointerProviderScopeIngress::SurfaceLocal { .. }
+                        )
+                    ) {
+                        return Err(CoreProtocolTraceError::Invalid(format!(
+                            "trace `{}` retires a presentation host without an active surface-local producer at `{}`",
+                            trace.id.as_str(),
+                            boundary.id.as_str()
+                        )));
+                    }
+                    provider_state = TracePointerProviderState::RetiredAwaitingDrain;
+                }
             }
         }
         let pointer_segment_count = boundary
@@ -2218,12 +2317,13 @@ fn validate_trace(trace: &CoreProtocolTrace) -> Result<(), CoreProtocolTraceErro
             .iter()
             .filter(|event| matches!(event, HostFrameEvent::PointerJournal { .. }))
             .count();
-        if provider_live != (pointer_segment_count > 0) {
+        let provider_active = matches!(provider_state, TracePointerProviderState::Active(_));
+        if provider_active != (pointer_segment_count > 0) {
             return Err(CoreProtocolTraceError::Invalid(format!(
                 "trace `{}` boundary `{}` must {} at least one complete pointer journal segment",
                 trace.id.as_str(),
                 boundary.id.as_str(),
-                if provider_live {
+                if provider_active {
                     "contain"
                 } else {
                     "not contain"
@@ -2259,7 +2359,14 @@ pub(crate) fn validate_provider_boundary_contract(
     trace: &CoreProtocolTrace,
     boundary: &CoreProtocolTraceBoundary,
 ) -> Result<(), CoreProtocolTraceError> {
-    if !matches!(boundary.provider, Some(PointerProviderIngress::Retire {})) {
+    if !matches!(
+        boundary.provider,
+        Some(
+            PointerProviderIngress::RetireDesktopGlobal {}
+                | PointerProviderIngress::RetireSurfaceLocal { .. }
+                | PointerProviderIngress::RetirePresentationHost {}
+        )
+    ) {
         return Ok(());
     }
     if !boundary.events.is_empty() {

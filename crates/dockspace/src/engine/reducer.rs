@@ -146,11 +146,13 @@ impl DockEngine {
             fence: _,
             candidate,
             transition,
+            surface_pointer_commit,
         } = prepared;
         Ok(PreparedHostFrameCommit {
             engine: self,
             candidate,
             transition,
+            surface_pointer_commit,
         })
     }
 
@@ -177,6 +179,7 @@ impl DockEngine {
             pending_backend_ingress,
             pointer_provider,
             staged_pointer_journal: _,
+            surface_pointer_commit,
             frozen_pointer_outputs: _,
             frozen_pointer_presentations: _,
             frozen_semantic_presentations: _,
@@ -298,7 +301,10 @@ impl DockEngine {
         }
         match pointer_provider {
             None => {
-                if pointer_segment_submitted || pending_pointer_segment.is_some() {
+                if pointer_segment_submitted
+                    || pending_pointer_segment.is_some()
+                    || surface_pointer_commit.is_some()
+                {
                     return Err(EngineError::ReductionCauseInvariant {
                         detail: "host frame staged pointer protocol state without a frozen provider",
                     });
@@ -310,6 +316,36 @@ impl DockEngine {
                 }
                 if pending_pointer_segment.is_some() {
                     return Err(EngineError::HostFramePointerReceiverReceiptsMissing { provider });
+                }
+                match provider.scope() {
+                    PointerProviderScope::DesktopGlobal => {
+                        if surface_pointer_commit.is_some() {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "desktop-global host frame retained a surface-local producer guard",
+                            });
+                        }
+                    }
+                    PointerProviderScope::SurfaceLocal(_) => {
+                        let Some(commit) = surface_pointer_commit.as_ref() else {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "surface-local host frame has no affine producer guard",
+                            });
+                        };
+                        if commit.lease() != provider {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "surface-local host frame producer guard names another lease",
+                            });
+                        }
+                        let candidate_through = candidate
+                            .pointer_journal
+                            .retained_committed_through(provider)
+                            .map_err(|source| EngineError::PointerJournal { source })?;
+                        if commit.through() != candidate_through {
+                            return Err(EngineError::ReductionCauseInvariant {
+                                detail: "surface-local producer guard and candidate watermark diverged",
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -423,6 +459,7 @@ impl DockEngine {
             fence,
             candidate,
             transition,
+            surface_pointer_commit,
         })
     }
 

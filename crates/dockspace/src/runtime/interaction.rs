@@ -12,10 +12,9 @@ use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, Pointe
 use crate::pointer_journal::{
     FiniteScrollVector, PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge,
     PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
-    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
-    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
+    ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider, SurfaceLocalPointerScope,
 };
 use crate::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
@@ -511,6 +510,9 @@ pub enum DockspaceInteractionError {
     /// A surface-local pointer batch was already supplied for this host frame.
     #[error("surface pointer input was already submitted for this host frame")]
     PointerInputAlreadySubmitted,
+    /// The producer cannot stop while an uncommitted host frame owns its lane.
+    #[error("surface pointer producer still belongs to an uncommitted host frame")]
+    PointerFrameInFlight,
     /// An explicit pointer batch contained no edges.
     #[error("an explicit surface pointer batch must contain at least one edge")]
     PointerBatchEmpty,
@@ -519,20 +521,56 @@ pub enum DockspaceInteractionError {
     InvalidScrollSample,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(super) struct RuntimePointerState {
-    lease: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     surface: SurfaceId,
-    committed_sequence: u64,
 }
 
 impl RuntimePointerState {
-    pub(super) const fn committed_sequence(self) -> u64 {
-        self.committed_sequence
+    pub(super) const fn new(provider: SurfaceLocalPointerProvider, surface: SurfaceId) -> Self {
+        Self { provider, surface }
     }
 
-    pub(super) fn commit_sequence(&mut self, sequence: u64) {
-        self.committed_sequence = sequence;
+    pub(super) fn committed_sequence(&self) -> u64 {
+        self.provider.committed_through().get()
+    }
+
+    const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    const fn provider(&self) -> &SurfaceLocalPointerProvider {
+        &self.provider
+    }
+}
+
+/// Exact adapter work caused by retiring one surface-local pointer producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "surface pointer retirement repaint work must be handled"]
+pub struct SurfacePointerRetirement {
+    surface: SurfaceId,
+    interaction_changed: bool,
+    repaint_required: bool,
+}
+
+impl SurfacePointerRetirement {
+    /// Returns the surface whose producer lifetime ended.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns whether the host must invalidate interaction decoration.
+    #[must_use]
+    pub const fn interaction_changed(self) -> bool {
+        self.interaction_changed
+    }
+
+    /// Returns whether the host must rebuild this surface presentation.
+    #[must_use]
+    pub const fn repaint_required(self) -> bool {
+        self.repaint_required
     }
 }
 
@@ -565,8 +603,9 @@ impl DockspaceSession {
         &mut self,
         surface: SurfaceId,
     ) -> Result<(), DockspaceRuntimeError> {
-        if let Some(pointer) = self.pointer {
-            return if pointer.surface == surface {
+        self.reconcile_surface_pointer_provider()?;
+        if let Some(pointer) = self.pointer.as_ref() {
+            return if pointer.surface() == surface {
                 Ok(())
             } else {
                 Err(DockspaceInteractionError::PointerProviderAlreadyActive.into())
@@ -577,19 +616,77 @@ impl DockspaceSession {
                 DockspaceInteractionError::PresentationAuthorityUnavailable { surface }.into(),
             );
         }
-        let lease = self.engine.create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        let provider = self.engine.create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 self.presentation_host,
                 SurfaceLocalPointerEndpoint::Logical(surface),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )?;
-        self.pointer = Some(RuntimePointerState {
-            lease,
-            surface,
-            committed_sequence: 0,
-        });
+        self.pointer = Some(RuntimePointerState::new(provider, surface));
         Ok(())
+    }
+
+    /// Disables and atomically retires the current surface-local pointer endpoint.
+    ///
+    /// The producer is drained before core retirement. A rejected retirement
+    /// restores the complete producer state so the caller can retry without
+    /// losing the committed watermark.
+    ///
+    /// # Errors
+    ///
+    /// Returns a core lifecycle error while leaving the producer active and
+    /// retryable.
+    pub fn disable_surface_pointer(
+        &mut self,
+    ) -> Result<Option<SurfacePointerRetirement>, DockspaceRuntimeError> {
+        self.retire_surface_pointer_provider()
+    }
+
+    pub(super) fn reconcile_surface_pointer_provider(
+        &mut self,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let stale = self.pointer.as_ref().is_some_and(|pointer| {
+            self.engine.pointer_provider() != Some(pointer.provider().lease())
+        });
+        if stale {
+            let retired = self.retire_surface_pointer_provider()?;
+            debug_assert!(retired.is_some());
+        }
+        Ok(())
+    }
+
+    fn retire_surface_pointer_provider(
+        &mut self,
+    ) -> Result<Option<SurfacePointerRetirement>, DockspaceRuntimeError> {
+        let Some(pointer) = self.pointer.take() else {
+            return Ok(None);
+        };
+        let RuntimePointerState { provider, surface } = pointer;
+        let mut receipt = match provider.drain() {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.pointer = Some(RuntimePointerState::new(error.into_provider(), surface));
+                return Err(DockspaceInteractionError::PointerFrameInFlight.into());
+            }
+        };
+        match self
+            .engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        {
+            Ok(outcome) => Ok(Some(SurfacePointerRetirement {
+                surface,
+                interaction_changed: outcome.interaction_changed(),
+                repaint_required: outcome.repaint_required(),
+            })),
+            Err(error) => {
+                let provider = receipt
+                    .into_provider()
+                    .expect("a rejected runtime pointer retirement preserves its drain proof");
+                self.pointer = Some(RuntimePointerState::new(provider, surface));
+                Err(error.into())
+            }
+        }
     }
 
     /// Returns the current exact presented surface capability.
@@ -799,9 +896,11 @@ impl DockspaceHostFrame<'_> {
         if inputs.is_empty() {
             return Err(DockspaceInteractionError::PointerBatchEmpty.into());
         }
-        let pointer = self
+        let surface = self
             .session
             .pointer
+            .as_ref()
+            .map(RuntimePointerState::surface)
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
         let previous = self
             .next_pointer_sequence
@@ -814,7 +913,7 @@ impl DockspaceHostFrame<'_> {
                 .checked_add(1)
                 .ok_or(DockspaceInteractionError::PointerSequenceExhausted)?;
             let edge_sequence = PointerEdgeSequence::new(sequence);
-            let kind = self.surface_pointer_kind(pointer.surface, input.event)?;
+            let kind = self.surface_pointer_kind(surface, input.event)?;
             let location = PointerEdgeLocation::SurfaceLocal {
                 position: match input.position {
                     SurfacePointerPosition::Known(position) => Authority::Known(position),
@@ -839,7 +938,7 @@ impl DockspaceHostFrame<'_> {
             prepared.push((edge_sequence, input, journal));
         }
         for (edge_sequence, input, journal) in prepared {
-            self.frame.submit_pointer_journal(pointer.lease, journal)?;
+            self.submit_runtime_pointer_journal(journal)?;
             let candidates = self
                 .frame
                 .pointer_receiver_candidates()
@@ -850,8 +949,7 @@ impl DockspaceHostFrame<'_> {
             if candidate.id().sequence() != edge_sequence {
                 return Err(DockspaceInteractionError::PointerProtocolInvariant.into());
             }
-            let observation =
-                self.pointer_observation(pointer.surface, candidate, input.receivers)?;
+            let observation = self.pointer_observation(surface, candidate, input.receivers)?;
             let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
                 .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
             self.frame.submit_pointer_receiver_receipts(receipts)?;
@@ -956,17 +1054,13 @@ impl DockspaceHostFrame<'_> {
         if self.pointer_input_submitted || self.session.pointer.is_none() {
             return Ok(());
         }
-        let pointer = self
-            .session
-            .pointer
-            .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
         let sequence = self
             .next_pointer_sequence
             .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
         let watermark = PointerEdgeSequence::new(sequence);
         let journal = PointerEdgeJournal::new(watermark, watermark, Vec::new())
             .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
-        self.frame.submit_pointer_journal(pointer.lease, journal)?;
+        self.submit_runtime_pointer_journal(journal)?;
         let candidates = self
             .frame
             .pointer_receiver_candidates()
@@ -978,6 +1072,21 @@ impl DockspaceHostFrame<'_> {
             .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant)?;
         self.frame.submit_pointer_receiver_receipts(receipts)?;
         self.pointer_input_submitted = true;
+        Ok(())
+    }
+
+    fn submit_runtime_pointer_journal(
+        &mut self,
+        journal: PointerEdgeJournal,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let provider = self
+            .session
+            .pointer
+            .as_ref()
+            .map(RuntimePointerState::provider)
+            .ok_or(DockspaceInteractionError::PointerProviderUnavailable)?;
+        self.frame
+            .submit_surface_pointer_journal(provider, journal)?;
         Ok(())
     }
 

@@ -31,7 +31,7 @@ use dockspace::intent::{Authority, CloseSceneTarget, PointerButton, PointerId};
 use dockspace::interaction::{InteractionOutcome, InteractionRejection, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -135,9 +135,9 @@ struct Harness {
     pointer: Option<TestPointerStream>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct TestPointerStream {
-    lease: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     through: u64,
 }
 
@@ -162,9 +162,12 @@ impl Harness {
     fn submit(&mut self, input: EngineInput) -> EngineTransition {
         self.source_sequence += 1;
         let mut frame = self.host.begin(&self.engine);
-        if let Some(pointer) = self.pointer {
+        if let Some(pointer) = self.pointer.as_ref() {
             frame
-                .submit_pointer_journal(pointer.lease, empty_pointer_journal(pointer.through))
+                .submit_surface_pointer_journal(
+                    &pointer.provider,
+                    empty_pointer_journal(pointer.through),
+                )
                 .expect("semantic input preserves the pointer watermark");
             frame
                 .submit_pointer_receiver_receipts(
@@ -210,34 +213,44 @@ impl Harness {
         region: PresentationHitRegionId,
         point: LogicalPoint,
     ) -> (ClosePlan, bool, EngineTransition) {
-        let pointer = match self.pointer {
-            Some(pointer) => pointer,
-            None => {
-                let lease = self
-                    .engine
-                    .create_pointer_provider(
-                        PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
-                            self.host.lease(),
-                            SurfaceLocalPointerEndpoint::Logical(SURFACE),
-                        )),
-                        PointerEdgeSequence::new(0),
-                    )
-                    .expect("the close fixture admits one surface-local pointer provider");
-                let pointer = TestPointerStream { lease, through: 0 };
-                self.pointer = Some(pointer);
-                pointer
-            }
-        };
+        if self.pointer.is_none() {
+            let provider = self
+                .engine
+                .create_surface_local_pointer_provider(
+                    SurfaceLocalPointerScope::new(
+                        self.host.lease(),
+                        SurfaceLocalPointerEndpoint::Logical(SURFACE),
+                    ),
+                    PointerEdgeSequence::new(0),
+                )
+                .expect("the close fixture admits one surface-local pointer provider");
+            self.pointer = Some(TestPointerStream {
+                provider,
+                through: 0,
+            });
+        }
 
+        let through = self
+            .pointer
+            .as_ref()
+            .expect("the close pointer provider is active")
+            .through;
         let press = pointer_journal(
-            pointer.through,
+            through,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
             point,
             PointerCaptureOwner::ProviderEndpoint,
         );
         let mut press_frame = self.host.begin(&self.engine);
         press_frame
-            .submit_pointer_journal(pointer.lease, press)
+            .submit_surface_pointer_journal(
+                &self
+                    .pointer
+                    .as_ref()
+                    .expect("the close pointer provider is active")
+                    .provider,
+                press,
+            )
             .expect("close press follows the provider watermark");
         let projection = press_frame
             .view()
@@ -277,16 +290,26 @@ impl Harness {
             self.engine.interaction().status(),
             InteractionStatus::Pressed { .. }
         ));
+        let pointer = self
+            .pointer
+            .as_mut()
+            .expect("the close pointer provider is active");
+        pointer.through = through + 1;
+        assert_eq!(
+            pointer.provider.committed_through(),
+            PointerEdgeSequence::new(pointer.through),
+            "committed close press watermark must advance"
+        );
 
         let release = pointer_journal(
-            pointer.through + 1,
+            pointer.through,
             PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             point,
             PointerCaptureOwner::None,
         );
         let mut release_frame = self.host.begin(&self.engine);
         release_frame
-            .submit_pointer_journal(pointer.lease, release)
+            .submit_surface_pointer_journal(&pointer.provider, release)
             .expect("close release follows the press watermark");
         let projection = release_frame
             .view()
@@ -320,10 +343,16 @@ impl Harness {
             .expect("the close release receipt stages");
         support::complete_host_frame_with_retained_or_unavailable(&self.engine, &mut release_frame);
         let transition = self.host.finish(release_frame, &mut self.engine);
-        self.pointer = Some(TestPointerStream {
-            lease: pointer.lease,
-            through: pointer.through + 2,
-        });
+        let pointer = self
+            .pointer
+            .as_mut()
+            .expect("the close pointer provider is active");
+        pointer.through += 1;
+        assert_eq!(
+            pointer.provider.committed_through(),
+            PointerEdgeSequence::new(pointer.through),
+            "committed close release watermark must advance"
+        );
 
         let [edge] = transition.reduced_pointer_edges() else {
             panic!(

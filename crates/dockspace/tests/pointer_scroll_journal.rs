@@ -10,9 +10,9 @@ use dockspace::interaction::{
 };
 use dockspace::pointer_journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
-    PointerEdgeLocation, PointerEdgeSequence, PointerProviderScope, ScrollCancelReason,
-    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
-    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
+    PointerEdgeLocation, PointerEdgeSequence, ScrollCancelReason, ScrollDeliveryEndpoint,
+    ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase,
+    ScrollSequenceToken, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -83,7 +83,7 @@ fn measurement_profile() -> MeasurementProfile {
 struct ScrollFixture {
     engine: DockEngine,
     host: TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
     region: PresentationHitRegionId,
     point: LogicalPoint,
     endpoint: ScrollDeliveryEndpoint,
@@ -133,11 +133,11 @@ impl ScrollFixture {
             (region.id(), point, endpoint)
         };
         let provider = engine
-            .create_pointer_provider(
-                PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+            .create_surface_local_pointer_provider(
+                SurfaceLocalPointerScope::new(
                     host.lease(),
                     SurfaceLocalPointerEndpoint::Logical(SURFACE),
-                )),
+                ),
                 PointerEdgeSequence::new(0),
             )
             .expect("surface-local scroll provider is admitted");
@@ -309,7 +309,7 @@ impl ScrollFixture {
         .expect("single-edge scroll journal is contiguous");
         let mut frame = self.host.begin(&self.engine);
         frame
-            .submit_pointer_journal(self.provider, journal)
+            .submit_surface_pointer_journal(&self.provider, journal)
             .expect("scroll journal stages");
         let candidate = frame
             .pointer_receiver_candidates()
@@ -370,7 +370,7 @@ impl ScrollFixture {
         .expect("terminal pointer journal is contiguous");
         let mut frame = self.host.begin(&self.engine);
         frame
-            .submit_pointer_journal(self.provider, journal)
+            .submit_surface_pointer_journal(&self.provider, journal)
             .expect("terminal pointer journal stages");
         let candidate = frame
             .pointer_receiver_candidates()
@@ -394,8 +394,8 @@ impl ScrollFixture {
     fn stage_empty_pointer(&self, frame: &mut CoreHostFrame) {
         let watermark = PointerEdgeSequence::new(self.watermark);
         frame
-            .submit_pointer_journal(
-                self.provider,
+            .submit_surface_pointer_journal(
+                &self.provider,
                 PointerEdgeJournal::new(watermark, watermark, Vec::new())
                     .expect("empty pointer journal preserves its watermark"),
             )
@@ -493,7 +493,7 @@ fn smooth_continuation_freezes_its_receiver_without_a_pointer_position() {
     .expect("continuation journal is contiguous");
     let mut frame = fixture.host.begin(&fixture.engine);
     frame
-        .submit_pointer_journal(fixture.provider, journal)
+        .submit_surface_pointer_journal(&fixture.provider, journal)
         .expect("continuation stages");
 
     let candidate = &frame
@@ -660,13 +660,31 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         )] if *actual != first_session && *actual != second_session
     ));
 
-    let retired = fixture
-        .engine
-        .retire_pointer_provider(fixture.provider)
-        .expect("provider retirement remains valid after the stream terminal");
+    let ScrollFixture {
+        mut engine,
+        provider,
+        watermark,
+        ..
+    } = fixture;
+    let mut receipt = provider
+        .drain()
+        .expect("a committed provider has no in-flight host frame");
     assert_eq!(
-        scroll_terminal_reasons(&retired),
-        [ScrollTerminationReason::ProviderRetired]
+        receipt.committed_through(),
+        PointerEdgeSequence::new(watermark)
+    );
+    let retired = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+        .expect("provider retirement remains valid after the stream terminal");
+    assert!(retired.interaction_changed());
+    assert!(receipt.is_consumed());
+    assert_eq!(engine.pointer_provider(), None);
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .scroll()
+            .active_sessions(),
+        0
     );
 }
 

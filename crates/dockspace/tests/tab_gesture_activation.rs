@@ -9,8 +9,7 @@ use dockspace::intent::{Authority, PointerButton, PointerId, SurfacePointer, Tab
 use dockspace::interaction::{InteractionOutcome, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerProviderScope, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
@@ -157,11 +156,11 @@ fn activate(
         .expect("gesture source has one exact pointer receiver");
     assert!(region.hit().contains(press.position()));
     let provider = engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("surface-local pointer provider must be admitted");
@@ -182,7 +181,7 @@ fn activate(
     .expect("activation pointer journal is contiguous");
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(&provider, journal)
         .expect("activation pointer edge stages");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -212,7 +211,13 @@ fn activate(
         )
         .expect("activation receipt stages");
     support::complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
-    host.finish(frame, engine)
+    let transition = host.finish(frame, engine);
+    assert_eq!(
+        provider.committed_through(),
+        sequence,
+        "committed activation watermark must advance"
+    );
+    transition
 }
 
 fn interaction_outcome(transition: &EngineTransition) -> &InteractionOutcome {

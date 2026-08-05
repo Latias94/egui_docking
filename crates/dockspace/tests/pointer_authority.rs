@@ -8,7 +8,7 @@ use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, Po
 use dockspace::pointer_journal::{
     AnyButtonDownAuthority, PointerAuthorityCheckpoint, PointerCaptureOwner, PointerEdge,
     PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
-    PointerInputLease, PointerProviderScope, PointerStateObservation, SurfaceLocalPointerEndpoint,
+    PointerStateObservation, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -25,7 +25,7 @@ const POINTER: PointerId = PointerId::new(7);
 struct Fixture {
     engine: DockEngine,
     host: TestPresentationHost,
-    provider: PointerInputLease,
+    provider: SurfaceLocalPointerProvider,
 }
 
 impl Fixture {
@@ -42,7 +42,7 @@ impl Fixture {
     }
 
     fn submit(&mut self, journal: PointerEdgeJournal) -> EngineTransition {
-        submit_journal(&mut self.engine, &mut self.host, self.provider, journal)
+        submit_journal(&mut self.engine, &mut self.host, &self.provider, journal)
     }
 }
 
@@ -54,13 +54,16 @@ fn workspace() -> Workspace {
     builder.build().expect("test workspace is valid")
 }
 
-fn create_provider(engine: &mut DockEngine, host: &TestPresentationHost) -> PointerInputLease {
+fn create_provider(
+    engine: &mut DockEngine,
+    host: &TestPresentationHost,
+) -> SurfaceLocalPointerProvider {
     engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("surface-local pointer provider is admitted")
@@ -127,7 +130,7 @@ fn with_checkpoint(
 fn submit_journal(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     journal: PointerEdgeJournal,
 ) -> EngineTransition {
     let mut frame = host.begin(engine);
@@ -135,7 +138,7 @@ fn submit_journal(
     let edges = journal.edges().to_vec();
     if edges.is_empty() {
         frame
-            .submit_pointer_journal(provider, journal)
+            .submit_surface_pointer_journal(provider, journal)
             .expect("empty pointer journal follows the provider watermark");
         let receipts = frame
             .pointer_receiver_candidates()
@@ -164,7 +167,7 @@ fn submit_journal(
             }
             let through = segment.through();
             frame
-                .submit_pointer_journal(provider, segment)
+                .submit_surface_pointer_journal(provider, segment)
                 .expect("pointer edge follows the provider watermark");
             let candidate = frame
                 .pointer_receiver_candidates()
@@ -188,11 +191,11 @@ fn submit_journal(
 
 fn submit_edge(
     frame: &mut CoreHostFrame,
-    provider: PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     journal: PointerEdgeJournal,
 ) {
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("single pointer edge follows the provider watermark");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -246,7 +249,7 @@ fn release_then_press_exposes_edge_local_button_authority_without_lookahead() {
     let mut frame = fixture.host.begin(&fixture.engine);
     submit_edge(
         &mut frame,
-        fixture.provider,
+        &fixture.provider,
         with_checkpoint(
             journal(
                 0,
@@ -261,7 +264,7 @@ fn release_then_press_exposes_edge_local_button_authority_without_lookahead() {
     );
     submit_edge(
         &mut frame,
-        fixture.provider,
+        &fixture.provider,
         journal(
             1,
             vec![edge(
@@ -304,7 +307,7 @@ fn newer_unknown_capture_never_reuses_an_older_known_owner() {
     let mut frame = fixture.host.begin(&fixture.engine);
     submit_edge(
         &mut frame,
-        fixture.provider,
+        &fixture.provider,
         with_checkpoint(
             journal(
                 0,
@@ -319,7 +322,7 @@ fn newer_unknown_capture_never_reuses_an_older_known_owner() {
     );
     submit_edge(
         &mut frame,
-        fixture.provider,
+        &fixture.provider,
         journal(1, vec![edge(2, PointerEdgeKind::Moved, unknown)]),
     );
     complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
@@ -350,16 +353,30 @@ fn retired_provider_state_is_not_inherited_by_its_successor() {
         AnyButtonDownAuthority::KnownDown
     );
 
-    fixture
-        .engine
-        .retire_pointer_provider(fixture.provider)
+    let Fixture {
+        mut engine,
+        host,
+        provider,
+    } = fixture;
+    let mut receipt = provider
+        .drain()
+        .expect("a committed provider has no in-flight host frame");
+    let retired = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("first provider retires atomically");
+    assert!(!retired.interaction_changed());
+    assert!(receipt.is_consumed());
     assert!(matches!(
-        fixture.engine.pointer_button_authority(),
+        engine.pointer_button_authority(),
         AnyButtonDownAuthority::Unknown(_)
     ));
 
-    fixture.provider = create_provider(&mut fixture.engine, &fixture.host);
+    let provider = create_provider(&mut engine, &host);
+    let mut fixture = Fixture {
+        engine,
+        host,
+        provider,
+    };
     assert!(matches!(
         fixture.engine.pointer_button_authority(),
         AnyButtonDownAuthority::Unknown(_)
@@ -389,8 +406,8 @@ fn conflicting_checkpoint_at_the_same_watermark_is_rejected_atomically() {
         )],
     );
     let mut frame = fixture.host.begin(&fixture.engine);
-    let rejected = frame.submit_pointer_journal(
-        fixture.provider,
+    let rejected = frame.submit_surface_pointer_journal(
+        &fixture.provider,
         with_checkpoint(empty_journal(0), conflicting),
     );
 

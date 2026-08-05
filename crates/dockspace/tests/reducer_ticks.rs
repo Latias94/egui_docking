@@ -13,10 +13,10 @@ use dockspace::ids::{
     ItemId, ReducerTickId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::InteractionOutcome;
+use dockspace::interaction::{InteractionCancelReason, InteractionOutcome, InteractionStatus};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerProviderScope, SurfaceLocalPointerEndpoint,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
     SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
@@ -467,13 +467,13 @@ fn explicit_unavailable_roster_frames_are_boundaries_without_input_progress() {
 fn create_resize_pointer_provider(
     engine: &mut DockEngine,
     host: &TestPresentationHost,
-) -> PointerInputLease {
+) -> SurfaceLocalPointerProvider {
     engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(RESIZE_SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("resize pointer provider is admitted")
@@ -504,12 +504,12 @@ fn pointer_edge_journal(
 
 fn stage_pointer_edge(
     frame: &mut CoreHostFrame,
-    provider: PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     journal: PointerEdgeJournal,
     delivery: Option<PointerReceiverDeliveryDisposition>,
 ) {
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("resize pointer edge follows the provider watermark");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -618,7 +618,7 @@ fn pointer_interaction_uses_tick_start_policy_before_configuration_phase() {
     let mut begin_frame = host.begin(&engine);
     stage_pointer_edge(
         &mut begin_frame,
-        provider,
+        &provider,
         pointer_edge_journal(
             0,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
@@ -642,7 +642,7 @@ fn pointer_interaction_uses_tick_start_policy_before_configuration_phase() {
     let mut frame = host.begin(&engine);
     stage_pointer_edge(
         &mut frame,
-        provider,
+        &provider,
         pointer_edge_journal(
             1,
             PointerEdgeKind::Moved,
@@ -679,17 +679,34 @@ fn pointer_interaction_uses_tick_start_policy_before_configuration_phase() {
     assert_eq!(move_edge.tick(), policy_input.tick());
     assert!(move_edge.causal_ordinal() < policy_input.causal_ordinal());
     assert!(!engine.policy().allows_splitter_resize());
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert!(transition.interaction_events().iter().any(|event| matches!(
+        event.kind(),
+        dockspace::interaction::InteractionEventKind::Cancelled {
+            status: InteractionStatus::Resizing { session: cancelled },
+            reason: InteractionCancelReason::PolicyChanged,
+        } if *cancelled == session
+    )));
 
-    engine
-        .retire_pointer_provider(provider)
-        .expect("retiring the first provider cancels its active resize session");
+    let mut provider_receipt = provider
+        .drain()
+        .expect("a committed resize provider has no in-flight host frame");
+    assert_eq!(
+        provider_receipt.committed_through(),
+        PointerEdgeSequence::new(2)
+    );
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut provider_receipt)
+        .expect("retiring the first provider releases its already-cancelled resize authority");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     let (splitter, press, _, _) = publish_resize_scene(&mut engine, &mut host, split);
     assert_eq!(active_resize_region(&engine, splitter), None);
     let successor = create_resize_pointer_provider(&mut engine, &host);
     let mut rejected_frame = host.begin(&engine);
     stage_pointer_edge(
         &mut rejected_frame,
-        successor,
+        &successor,
         pointer_edge_journal(
             0,
             PointerEdgeKind::ButtonPressed(PointerButton::Primary),
@@ -707,4 +724,16 @@ fn pointer_interaction_uses_tick_start_policy_before_configuration_phase() {
             .is_empty()
     );
     assert!(engine.interaction().active_resize_view().is_none());
+    let mut successor_receipt = successor
+        .drain()
+        .expect("a committed successor has no in-flight host frame");
+    assert_eq!(
+        successor_receipt.committed_through(),
+        PointerEdgeSequence::new(1)
+    );
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut successor_receipt)
+        .expect("idle successor provider retires at its committed watermark");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
 }

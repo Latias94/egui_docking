@@ -8,7 +8,9 @@ use dockspace::engine::{
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::interaction::InteractionRejection;
-use dockspace::pointer_journal::{PointerEdgeSequence, PointerJournalError};
+use dockspace::pointer_journal::{
+    PointerEdgeSequence, PointerJournalError, SurfaceLocalPointerProviderError,
+};
 use dockspace::pointer_receiver::{
     PointerReceiverObservationError, PointerReceiverReceiptBatchError,
 };
@@ -378,6 +380,9 @@ pub enum DockspaceError {
     /// The adapter could not encode one contiguous raw egui pointer epoch.
     #[error("egui pointer journal is invalid: {0}")]
     PointerJournal(#[from] PointerJournalError),
+    /// The affine surface-local producer lifecycle rejected an adapter transition.
+    #[error("egui surface-local pointer provider is invalid: {0}")]
+    SurfaceLocalPointerProvider(#[from] SurfaceLocalPointerProviderError),
     /// A receiver fact did not match the exact core presentation manifest.
     #[error("egui pointer receiver observation is invalid: {0}")]
     PointerReceiverObservation(#[from] PointerReceiverObservationError),
@@ -402,9 +407,15 @@ pub enum DockspaceError {
     /// The adapter could not allocate another incarnation for a pointer binding.
     #[error("egui pointer adapter incarnation exhausted")]
     PointerAdapterIncarnationExhausted,
+    /// A new producer attempted to overwrite the adapter's active producer.
+    #[error("egui pointer adapter already owns an active producer")]
+    PointerInputProviderAlreadyInstalled,
     /// An application control boundary raced an uncommitted egui pointer epoch.
     #[error("application control cannot overtake an uncommitted egui pointer epoch")]
     PointerInputControlDuringPendingEpoch,
+    /// An uncommitted host frame still owns the producer lane.
+    #[error("pointer input cannot stop while its host frame is uncommitted")]
+    PointerInputFrameInFlight,
     /// The adapter cannot assign another lossless provider-ordered edge identity.
     #[error("egui pointer edge sequence exhausted after {after}")]
     PointerEdgeSequenceExhausted { after: PointerEdgeSequence },

@@ -66,7 +66,12 @@ cannot be accepted without a corresponding trace-schema projection.
 Every boundary executes in this order:
 
 1. Apply an optional provider operation. Activation authorizes the following
-   host frame. Retirement publishes its own complete transition and ends the
+   host frame. A desktop-global retirement publishes the complete
+   `EngineTransition`. Presentation-host retirement also publishes a complete
+   transition and moves an owned surface-local producer into
+   `RetiredAwaitingDrain`. Draining an active surface-local producer publishes
+   only its narrow maintenance result; draining an already core-retired
+   producer performs retention-only compaction. All retirement classes end the
    boundary without creating an empty host frame.
 2. For non-retirement boundaries, begin a core-minted host frame and submit its
    complete presentation observation.
@@ -80,9 +85,17 @@ Every boundary executes in this order:
 4. Record actual presentation outputs against the post-input candidate.
 5. Submit the exact post-input surface roster and contributions, then finish
    atomically.
-6. Compare the trace schema's stable transition projection and, after the last
-   boundary, the canonical workspace snapshot. The harness is not a complete
-   projection of every internal transition identity.
+6. Compare either the trace schema's stable full-transition projection or its
+   explicit surface-local maintenance expectation, then compare the canonical
+   workspace snapshot after the last boundary. Maintenance expectations carry
+   `interaction_changed`, `repaint_required`, the active-versus-compaction
+   disposition, and the exact number of smooth-scroll sessions which became
+   terminal. They never infer scroll work from the primary `InteractionState`.
+
+Boundary order and reducer ticks are separate facts. Full transitions and
+active surface-local retirement advance the reducer tick. Retention-only
+compaction reuses the preceding tick because it publishes no reducer
+transition; its boundary ordinal still advances normally.
 
 `retained` is an actual paint operation, not a cached-data hint. It calls
 `record_painted_surface_contribution`, so the core pairs the frozen Ready
@@ -121,10 +134,15 @@ never falls back to a manifest-selected winner, an active token cannot be
 replaced, a rejected host frame rolls its watermark back, and a completed
 token cannot be resurrected.
 
-The checked-in provider-retirement trace proves that retirement publishes one
-transition and advances exactly one reducer tick. Retirement boundaries reject
-all host-frame events, presentation facts, and surface contributions before
-the provider lease is consumed, so a corrected boundary remains replayable.
+The checked-in provider-retirement trace proves active surface-local retirement
+advances one reducer tick while exposing only narrow maintenance. Typed traces
+also prove that a scroll-only retirement reports `interaction_changed` with an
+exact terminal session count even though the primary interaction remains
+`Idle`, and that a producer implicitly retired with its presentation host
+remains affine until a later retention-only drain compacts it without advancing
+the tick. Retirement boundaries reject all host-frame events, presentation
+facts, and surface contributions before authority is consumed, so a corrected
+boundary remains replayable.
 
 The typed popup-gate traces settle two independent surface streams in both
 A-then-B and B-then-A order. They prove that A-only, `NoUpdate`, captured

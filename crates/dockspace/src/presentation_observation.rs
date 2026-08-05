@@ -1599,6 +1599,12 @@ impl PresentationLedger {
         .then_some(state.surface)
     }
 
+    pub(crate) fn active_surface_host(&self, surface: SurfaceId) -> Option<PresentationHostLease> {
+        let stream = self.active_streams.get(&surface)?;
+        let state = self.streams.get(stream)?;
+        (state.lifecycle == PresentationStreamLifecycle::Active).then_some(state.host)
+    }
+
     /// Retires active streams whose semantic surfaces are absent from the tick-final roster.
     ///
     /// This must be called only after every workspace mutation in one reducer tick has settled.

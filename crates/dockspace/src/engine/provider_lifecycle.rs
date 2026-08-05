@@ -31,6 +31,9 @@ impl DockEngine {
         presentation_host: PresentationHostLease,
         pointer_committed_through: PointerEdgeSequence,
     ) -> Result<BackendIngressRecorder, EngineError> {
+        if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
+            return Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider });
+        }
         let mut candidate = self.candidate();
         candidate
             .presentation_authority
@@ -465,30 +468,71 @@ impl DockEngine {
         Ok(recorder)
     }
 
-    /// Creates the sole live pointer-input provider for this engine authority
-    /// domain.
+    /// Creates the sole live desktop-global pointer-input provider for this
+    /// engine authority domain.
     ///
     /// The provider owns a complete, strictly ordered edge journal across
-    /// future host frames. A surface-local provider is admitted only when its
-    /// presentation host, logical surface, and optional native binding are
-    /// currently exact. Creating a second live provider is rejected.
+    /// future host frames. Surface-local producers must use
+    /// [`Self::create_surface_local_pointer_provider`] so producer shutdown can
+    /// be proved before retirement. Creating a second live provider is
+    /// rejected.
     ///
     /// This API allocates transport authority only; a journal still becomes
     /// effective exclusively through a completed [`CoreHostFrame`].
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the local scope is stale or a provider is
-    /// already active.
+    /// Returns a typed error when `scope` is surface-local or another provider
+    /// is already active.
+    #[doc(hidden)]
     pub fn create_pointer_provider(
         &mut self,
         scope: PointerProviderScope,
         committed_through: crate::pointer_journal::PointerEdgeSequence,
     ) -> Result<PointerInputLease, EngineError> {
+        if scope.surface_local().is_some() {
+            return Err(EngineError::SurfaceLocalPointerProducerRequired);
+        }
+        self.create_pointer_provider_inner(scope, committed_through)
+    }
+
+    fn create_pointer_provider_inner(
+        &mut self,
+        scope: PointerProviderScope,
+        committed_through: PointerEdgeSequence,
+    ) -> Result<PointerInputLease, EngineError> {
+        if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
+            return Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider });
+        }
         self.validate_pointer_provider_scope(scope)?;
         self.pointer_journal
             .create_provider(scope, committed_through)
             .map_err(|source| EngineError::PointerJournal { source })
+    }
+
+    /// Creates one affine surface-local pointer producer.
+    ///
+    /// The returned producer owns the adapter-side lifetime of this provider.
+    /// It must be drained before quiesced retirement can compact the exact
+    /// provider tombstone into the monotonic incarnation frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the local scope is stale or another pointer
+    /// provider is already active.
+    pub fn create_surface_local_pointer_provider(
+        &mut self,
+        scope: SurfaceLocalPointerScope,
+        committed_through: PointerEdgeSequence,
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        let lease = self.create_pointer_provider_inner(
+            PointerProviderScope::SurfaceLocal(scope),
+            committed_through,
+        )?;
+        let provider = SurfaceLocalPointerProvider::new(lease, committed_through);
+        self.pointer_journal
+            .bind_surface_local_producer(lease, provider.monitor());
+        Ok(provider)
     }
 
     /// Returns the current sole pointer provider, if the runtime has enrolled
@@ -507,19 +551,23 @@ impl DockEngine {
         self.pointer_journal.button_authority()
     }
 
-    /// Permanently retires the exact live pointer-provider incarnation.
+    /// Permanently retires the exact live desktop-global provider incarnation.
     ///
     /// Retirement, exact-owner gesture cancellation, drag-route cleanup, and
     /// the durable lease tombstone publish in one reducer boundary. A retired
     /// lease cannot submit another journal or reuse a receiver candidate.
+    /// Surface-local producers must drain and use
+    /// [`Self::retire_quiesced_surface_local_pointer_provider`].
+    #[doc(hidden)]
     pub fn retire_pointer_provider(
         &mut self,
         provider: PointerInputLease,
     ) -> Result<EngineTransition, EngineError> {
+        if provider.scope().surface_local().is_some() {
+            return Err(EngineError::SurfaceLocalPointerProducerRequired);
+        }
         let before = self.version;
-        let before_viewport = self.viewport.clone();
-        let before_viewport_focus = self.viewport_focus.clone();
-        let effect_boundary = before_viewport.latest_effect_id();
+        let effect_boundary = self.viewport.latest_effect_id();
         let mut candidate = self.candidate();
         let tick = candidate
             .last_reducer_tick
@@ -559,9 +607,9 @@ impl DockEngine {
         candidate
             .record_emitted_native_surface_close_effects(candidate.last_input, &platform_effects)?;
         let focus_delta = FocusDelta::between(
-            &before_viewport_focus,
+            &self.viewport_focus,
             &candidate.viewport_focus,
-            before_viewport.effects(),
+            self.viewport.effects(),
             candidate.viewport.effects(),
             &[],
         );
@@ -586,6 +634,140 @@ impl DockEngine {
         Ok(transition)
     }
 
+    /// Retires and compacts one surface-local pointer provider after its sole
+    /// producer has stopped.
+    ///
+    /// The receipt remains retryable on every rejected candidate. Successful
+    /// publication consumes it only after the core validates the exact lease
+    /// and final committed watermark.
+    pub fn retire_quiesced_surface_local_pointer_provider(
+        &mut self,
+        receipt: &mut SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerRetirementOutcome, EngineError> {
+        let provider = receipt.lease();
+        let effect_boundary = self.viewport.latest_effect_id();
+        let mut candidate = self.candidate();
+        let disposition = candidate
+            .pointer_journal
+            .retire_quiesced_surface_local(receipt)
+            .map_err(|source| EngineError::PointerJournal { source })?;
+        candidate.advance_runtime_retention_revision()?;
+
+        if disposition == SurfaceLocalPointerQuiescenceDisposition::CompactedPreviouslyRetired {
+            let consumed = receipt.consume();
+            debug_assert!(consumed, "validated surface-local drain proof is affine");
+            self.publish_candidate(candidate);
+            return Ok(SurfaceLocalPointerRetirementOutcome::compacted_previously_retired());
+        }
+
+        let (candidate, outcome) = self.prepare_surface_local_pointer_retirement_candidate(
+            candidate,
+            provider,
+            effect_boundary,
+        )?;
+        let consumed = receipt.consume();
+        debug_assert!(consumed, "validated surface-local drain proof is affine");
+        self.publish_candidate(candidate);
+        Ok(outcome)
+    }
+
+    /// Reclaims one surface-local lane or tombstone after every producer-side
+    /// owner vanished.
+    ///
+    /// A live provider, an in-flight frame guard, and a drain receipt all retain
+    /// the same producer state. Reclamation is therefore admitted only when the
+    /// core's weak monitor proves that none of those capabilities still exist.
+    /// Active authority is retired first; later calls compact abandoned
+    /// detailed tombstones without manufacturing another reducer transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle error without mutation if local cancellation would
+    /// create platform or focus obligations.
+    pub fn reap_abandoned_surface_local_pointer_provider(
+        &mut self,
+    ) -> Result<Option<SurfaceLocalPointerRetirementOutcome>, EngineError> {
+        if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
+            let effect_boundary = self.viewport.latest_effect_id();
+            let mut candidate = self.candidate();
+            candidate
+                .pointer_journal
+                .retire_abandoned_active_surface_local(provider)
+                .map_err(|source| EngineError::PointerJournal { source })?;
+            candidate.advance_runtime_retention_revision()?;
+            let (candidate, outcome) = self.prepare_surface_local_pointer_retirement_candidate(
+                candidate,
+                provider,
+                effect_boundary,
+            )?;
+            self.publish_candidate(candidate);
+            return Ok(Some(outcome));
+        }
+        let Some(provider) = self
+            .pointer_journal
+            .abandoned_retired_surface_local_provider()
+        else {
+            return Ok(None);
+        };
+        let mut candidate = self.candidate();
+        candidate
+            .pointer_journal
+            .compact_abandoned_retired_surface_local(provider)
+            .map_err(|source| EngineError::PointerJournal { source })?;
+        candidate.advance_runtime_retention_revision()?;
+        self.publish_candidate(candidate);
+        Ok(Some(
+            SurfaceLocalPointerRetirementOutcome::compacted_previously_retired(),
+        ))
+    }
+
+    fn prepare_surface_local_pointer_retirement_candidate(
+        &self,
+        mut candidate: Self,
+        provider: PointerInputLease,
+        effect_boundary: EffectId,
+    ) -> Result<(Self, SurfaceLocalPointerRetirementOutcome), EngineError> {
+        let tick = candidate
+            .last_reducer_tick
+            .checked_next()
+            .ok_or(EngineError::ReducerTickExhausted)?;
+        candidate.last_reducer_tick = tick;
+        let cause = ReductionCause::PointerProviderRetirement { tick, provider };
+        let mut interaction_events = Vec::new();
+        candidate.cancel_retired_pointer_owner(
+            cause,
+            provider,
+            InteractionCancelReason::PointerProviderRetired,
+            &mut interaction_events,
+        )?;
+        let platform_effects = candidate
+            .viewport
+            .try_take_new_effects_after(effect_boundary)
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
+        let focus_delta = FocusDelta::between(
+            &self.viewport_focus,
+            &candidate.viewport_focus,
+            self.viewport.effects(),
+            candidate.viewport.effects(),
+            &[],
+        );
+        if !platform_effects.is_empty() || !focus_delta.is_empty() {
+            return Err(
+                EngineError::SurfaceLocalPointerRetirementExternalObligation {
+                    platform_effect_count: platform_effects.len(),
+                    focus_changed: !focus_delta.is_empty(),
+                },
+            );
+        }
+        Ok((
+            candidate,
+            SurfaceLocalPointerRetirementOutcome::retired_active(!interaction_events.is_empty()),
+        ))
+    }
+
     pub(super) fn validate_pointer_provider_scope(
         &self,
         scope: PointerProviderScope,
@@ -606,6 +788,18 @@ impl DockEngine {
         {
             return Err(EngineError::PointerProviderScope {
                 detail: format!("surface {surface:?} is absent from the current semantic roster"),
+            });
+        }
+        if let Some(owner) = self
+            .presentation_authority
+            .presentation
+            .active_surface_host(surface)
+            && owner != local.host()
+        {
+            return Err(EngineError::PointerProviderSurfaceHostMismatch {
+                host: local.host(),
+                surface,
+                owner,
             });
         }
         if let SurfaceLocalPointerEndpoint::Native(binding) = local.endpoint() {

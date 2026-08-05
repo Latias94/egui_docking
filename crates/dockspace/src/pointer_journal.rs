@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use thiserror::Error;
 
@@ -1183,6 +1183,483 @@ pub struct PointerInputLease {
     scope: PointerProviderScope,
 }
 
+/// Affine producer ownership for one surface-local pointer provider.
+///
+/// The provider lease remains copyable transport identity, while this value is
+/// the sole producer-lifetime capability. A specialized host frame retains an
+/// internal commit guard which advances this producer's watermark only when
+/// the matching core candidate publishes. The producer cannot be drained while
+/// that frame remains uncommitted.
+#[derive(Debug)]
+#[must_use = "a surface-local pointer producer must be retained or drained"]
+pub struct SurfaceLocalPointerProvider {
+    lease: PointerInputLease,
+    state: Arc<Mutex<SurfaceLocalPointerProducerState>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SurfaceLocalPointerProducerState {
+    committed_through: PointerEdgeSequence,
+    next_frame_attempt: u64,
+    in_flight: Option<SurfaceLocalPointerFrameAttempt>,
+}
+
+/// Weak core-side witness for one surface-local producer lifetime.
+///
+/// A live producer, an in-flight frame guard, or a drain receipt retains the
+/// strong state. Once all three disappear, the core can prove that no adapter
+/// can submit another edge for this lease and may reclaim the abandoned lane.
+#[derive(Debug, Clone)]
+pub(crate) struct SurfaceLocalPointerProducerMonitor {
+    state: Weak<Mutex<SurfaceLocalPointerProducerState>>,
+}
+
+impl SurfaceLocalPointerProducerMonitor {
+    pub(crate) fn is_abandoned(&self) -> bool {
+        self.state.upgrade().is_none()
+    }
+}
+
+impl PartialEq for SurfaceLocalPointerProducerMonitor {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for SurfaceLocalPointerProducerMonitor {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurfaceLocalPointerFrameAttempt {
+    id: u64,
+    through: PointerEdgeSequence,
+}
+
+#[derive(Debug)]
+pub(crate) struct SurfaceLocalPointerFrameCommit {
+    lease: PointerInputLease,
+    state: Arc<Mutex<SurfaceLocalPointerProducerState>>,
+    attempt: SurfaceLocalPointerFrameAttempt,
+    finalized: bool,
+}
+
+impl SurfaceLocalPointerProvider {
+    pub(crate) fn new(lease: PointerInputLease, committed_through: PointerEdgeSequence) -> Self {
+        Self::from_state(
+            lease,
+            Arc::new(Mutex::new(SurfaceLocalPointerProducerState {
+                committed_through,
+                next_frame_attempt: 0,
+                in_flight: None,
+            })),
+        )
+    }
+
+    fn from_state(
+        lease: PointerInputLease,
+        state: Arc<Mutex<SurfaceLocalPointerProducerState>>,
+    ) -> Self {
+        Self { lease, state }
+    }
+
+    pub(crate) fn monitor(&self) -> SurfaceLocalPointerProducerMonitor {
+        SurfaceLocalPointerProducerMonitor {
+            state: Arc::downgrade(&self.state),
+        }
+    }
+
+    /// Returns the exact core-minted provider lease used by pointer journals.
+    #[must_use]
+    pub const fn lease(&self) -> PointerInputLease {
+        self.lease
+    }
+
+    /// Returns the final core-committed edge watermark known by this producer.
+    #[must_use]
+    pub fn committed_through(&self) -> PointerEdgeSequence {
+        self.lock_state().committed_through
+    }
+
+    pub(crate) fn begin_frame_submission(
+        &self,
+        previous: PointerEdgeSequence,
+        through: PointerEdgeSequence,
+    ) -> Result<SurfaceLocalPointerFrameCommit, SurfaceLocalPointerProviderError> {
+        let mut state = self.lock_state();
+        if previous != state.committed_through {
+            return Err(
+                SurfaceLocalPointerProviderError::CommittedWatermarkMismatch {
+                    lease: self.lease,
+                    committed_through: state.committed_through,
+                    submitted_previous: previous,
+                },
+            );
+        }
+        if let Some(in_flight) = state.in_flight {
+            return Err(SurfaceLocalPointerProviderError::FrameSubmissionInFlight {
+                lease: self.lease,
+                attempt: in_flight.id,
+            });
+        }
+        let id = state
+            .next_frame_attempt
+            .checked_add(1)
+            .ok_or(SurfaceLocalPointerProviderError::FrameAttemptExhausted { lease: self.lease })?;
+        let attempt = SurfaceLocalPointerFrameAttempt { id, through };
+        state.next_frame_attempt = id;
+        state.in_flight = Some(attempt);
+        drop(state);
+        Ok(SurfaceLocalPointerFrameCommit {
+            lease: self.lease,
+            state: Arc::clone(&self.state),
+            attempt,
+            finalized: false,
+        })
+    }
+
+    /// Stops this producer and freezes its exact final watermark.
+    ///
+    /// # Errors
+    ///
+    /// Returns the still-owned provider when one uncommitted host frame retains
+    /// its producer lane.
+    pub fn drain(self) -> Result<SurfaceLocalPointerDrainReceipt, SurfaceLocalPointerDrainError> {
+        let (committed_through, in_flight) = {
+            let state = self.lock_state();
+            (state.committed_through, state.in_flight)
+        };
+        if let Some(in_flight) = in_flight {
+            return Err(SurfaceLocalPointerDrainError {
+                lease: self.lease,
+                attempt: in_flight.id,
+                provider: self,
+            });
+        }
+        let Self { lease, state } = self;
+        Ok(SurfaceLocalPointerDrainReceipt {
+            lease,
+            committed_through,
+            state,
+            consumed: false,
+        })
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, SurfaceLocalPointerProducerState> {
+        lock_surface_local_pointer_state(&self.state)
+    }
+}
+
+impl PartialEq for SurfaceLocalPointerProvider {
+    fn eq(&self, other: &Self) -> bool {
+        self.lease == other.lease && Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for SurfaceLocalPointerProvider {}
+
+impl SurfaceLocalPointerFrameCommit {
+    pub(crate) fn lease(&self) -> PointerInputLease {
+        self.lease
+    }
+
+    pub(crate) fn through(&self) -> PointerEdgeSequence {
+        self.attempt.through
+    }
+
+    pub(crate) fn extend(
+        &mut self,
+        provider: &SurfaceLocalPointerProvider,
+        previous: PointerEdgeSequence,
+        through: PointerEdgeSequence,
+    ) -> Result<(), SurfaceLocalPointerProviderError> {
+        if provider.lease != self.lease || !Arc::ptr_eq(&provider.state, &self.state) {
+            return Err(SurfaceLocalPointerProviderError::FrameProviderMismatch {
+                expected: self.lease,
+                submitted: provider.lease,
+            });
+        }
+        if previous != self.attempt.through {
+            return Err(SurfaceLocalPointerProviderError::FrameWatermarkMismatch {
+                lease: self.lease,
+                expected_previous: self.attempt.through,
+                submitted_previous: previous,
+            });
+        }
+        let mut state = lock_surface_local_pointer_state(&self.state);
+        if state.in_flight != Some(self.attempt) {
+            return Err(SurfaceLocalPointerProviderError::FrameSubmissionLost {
+                lease: self.lease,
+                attempt: self.attempt.id,
+            });
+        }
+        self.attempt.through = through;
+        state.in_flight = Some(self.attempt);
+        Ok(())
+    }
+
+    /// Publishes one already validated core candidate while hiding the producer
+    /// watermark behind the same lock.
+    ///
+    /// The closure must perform only the infallible destination swap. Concurrent
+    /// producer readers remain blocked until both the core state and watermark
+    /// name the same committed prefix.
+    pub(crate) fn publish_with<T>(
+        &mut self,
+        publish_core: impl FnOnce() -> T,
+    ) -> Result<T, SurfaceLocalPointerProviderError> {
+        let mut state = lock_surface_local_pointer_state(&self.state);
+        if state.in_flight != Some(self.attempt) {
+            return Err(SurfaceLocalPointerProviderError::FrameSubmissionLost {
+                lease: self.lease,
+                attempt: self.attempt.id,
+            });
+        }
+        let published = publish_core();
+        state.committed_through = self.attempt.through;
+        state.in_flight = None;
+        self.finalized = true;
+        Ok(published)
+    }
+}
+
+impl Drop for SurfaceLocalPointerFrameCommit {
+    fn drop(&mut self) {
+        if self.finalized {
+            return;
+        }
+        let mut state = lock_surface_local_pointer_state(&self.state);
+        if state.in_flight == Some(self.attempt) {
+            state.in_flight = None;
+        }
+    }
+}
+
+fn lock_surface_local_pointer_state(
+    state: &Mutex<SurfaceLocalPointerProducerState>,
+) -> MutexGuard<'_, SurfaceLocalPointerProducerState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Failed attempt to stop a producer while a host frame still owns its lane.
+#[derive(Debug, Error)]
+#[error(
+    "surface-local pointer provider {lease:?} still has uncommitted host-frame attempt {attempt}"
+)]
+pub struct SurfaceLocalPointerDrainError {
+    lease: PointerInputLease,
+    attempt: u64,
+    provider: SurfaceLocalPointerProvider,
+}
+
+impl SurfaceLocalPointerDrainError {
+    /// Returns the exact provider which remains live and retryable.
+    #[must_use]
+    pub fn into_provider(self) -> SurfaceLocalPointerProvider {
+        self.provider
+    }
+}
+
+/// Affine proof that one surface-local pointer producer has stopped.
+///
+/// The core consumes this proof only after the exact lease and final watermark
+/// match its live pointer ledger. Failed retirement leaves the proof retryable;
+/// an adapter may restore the producer with [`Self::into_provider`].
+#[derive(Debug)]
+#[must_use = "a drained surface-local pointer producer must be retired or restored"]
+pub struct SurfaceLocalPointerDrainReceipt {
+    lease: PointerInputLease,
+    committed_through: PointerEdgeSequence,
+    state: Arc<Mutex<SurfaceLocalPointerProducerState>>,
+    consumed: bool,
+}
+
+impl PartialEq for SurfaceLocalPointerDrainReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        self.lease == other.lease
+            && self.committed_through == other.committed_through
+            && self.consumed == other.consumed
+            && Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for SurfaceLocalPointerDrainReceipt {}
+
+impl SurfaceLocalPointerDrainReceipt {
+    /// Returns the exact provider incarnation whose producer stopped.
+    #[must_use]
+    pub const fn lease(&self) -> PointerInputLease {
+        self.lease
+    }
+
+    /// Returns the final edge watermark observed before producer shutdown.
+    #[must_use]
+    pub const fn committed_through(&self) -> PointerEdgeSequence {
+        self.committed_through
+    }
+
+    /// Returns whether core consumed this proof at a successful retirement boundary.
+    #[must_use]
+    pub const fn is_consumed(&self) -> bool {
+        self.consumed
+    }
+
+    /// Restores producer ownership after a rejected retirement attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after core has already consumed the proof.
+    pub fn into_provider(
+        self,
+    ) -> Result<SurfaceLocalPointerProvider, SurfaceLocalPointerProviderError> {
+        if self.consumed {
+            return Err(SurfaceLocalPointerProviderError::DrainReceiptConsumed {
+                lease: self.lease,
+            });
+        }
+        Ok(SurfaceLocalPointerProvider::from_state(
+            self.lease, self.state,
+        ))
+    }
+
+    pub(crate) fn consume(&mut self) -> bool {
+        if self.consumed {
+            false
+        } else {
+            self.consumed = true;
+            true
+        }
+    }
+}
+
+/// Result of atomically retiring one drained surface-local pointer producer.
+///
+/// Surface-local retirement cannot delegate platform effects or focus work to
+/// the renderer. The core therefore exposes only its authority disposition and
+/// the exact local invalidation requirements after cancelling local state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "surface-local retirement authority and repaint work must be handled"]
+pub struct SurfaceLocalPointerRetirementOutcome {
+    disposition: SurfaceLocalPointerRetirementDisposition,
+    interaction_changed: bool,
+    repaint_required: bool,
+}
+
+impl SurfaceLocalPointerRetirementOutcome {
+    pub(crate) const fn retired_active(interaction_changed: bool) -> Self {
+        Self {
+            disposition: SurfaceLocalPointerRetirementDisposition::RetiredActive,
+            interaction_changed,
+            repaint_required: true,
+        }
+    }
+
+    pub(crate) const fn compacted_previously_retired() -> Self {
+        Self {
+            disposition: SurfaceLocalPointerRetirementDisposition::CompactedPreviouslyRetired,
+            interaction_changed: false,
+            repaint_required: false,
+        }
+    }
+
+    /// Returns whether this call retired live authority or only compacted an
+    /// already retired provider tombstone.
+    #[must_use]
+    pub const fn disposition(self) -> SurfaceLocalPointerRetirementDisposition {
+        self.disposition
+    }
+
+    /// Returns whether retirement changed the active interaction state.
+    #[must_use]
+    pub const fn interaction_changed(self) -> bool {
+        self.interaction_changed
+    }
+
+    /// Returns whether the owning surface must rebuild its presentation.
+    #[must_use]
+    pub const fn repaint_required(self) -> bool {
+        self.repaint_required
+    }
+}
+
+/// Authority disposition published by surface-local producer settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceLocalPointerRetirementDisposition {
+    /// The receipt retired the currently active provider authority.
+    RetiredActive,
+    /// Core had already retired the provider and this call only compacted its tombstone.
+    CompactedPreviouslyRetired,
+}
+
+/// Failure in the affine surface-local pointer producer lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SurfaceLocalPointerProviderError {
+    /// A new frame did not begin at the producer's committed watermark.
+    #[error(
+        "surface-local pointer provider {lease:?} is committed through {committed_through}, but the frame begins at {submitted_previous}"
+    )]
+    CommittedWatermarkMismatch {
+        /// Exact producer whose frame interval was invalid.
+        lease: PointerInputLease,
+        /// Latest watermark published by the core for this producer.
+        committed_through: PointerEdgeSequence,
+        /// Frame interval lower bound supplied by the adapter.
+        submitted_previous: PointerEdgeSequence,
+    },
+    /// Another unresolved host frame already owns this producer lane.
+    #[error(
+        "surface-local pointer provider {lease:?} already has host-frame attempt {attempt} in flight"
+    )]
+    FrameSubmissionInFlight {
+        /// Exact producer already retained by another frame.
+        lease: PointerInputLease,
+        /// Private diagnostic identity of the unresolved frame attempt.
+        attempt: u64,
+    },
+    /// The producer cannot mint another private frame-attempt identity.
+    #[error("surface-local pointer provider {lease:?} exhausted its frame-attempt identity")]
+    FrameAttemptExhausted {
+        /// Exact producer whose private attempt identity exhausted.
+        lease: PointerInputLease,
+    },
+    /// A frame attempted to extend a different producer.
+    #[error(
+        "surface-local pointer frame belongs to {expected:?}, but received producer {submitted:?}"
+    )]
+    FrameProviderMismatch {
+        /// Producer retained by the existing frame guard.
+        expected: PointerInputLease,
+        /// Different producer supplied by the later segment.
+        submitted: PointerInputLease,
+    },
+    /// A later frame segment did not continue the staged producer interval.
+    #[error(
+        "surface-local pointer provider {lease:?} frame continues from {submitted_previous}, expected {expected_previous}"
+    )]
+    FrameWatermarkMismatch {
+        /// Exact producer whose segment interval was discontinuous.
+        lease: PointerInputLease,
+        /// Final watermark retained by the preceding segment.
+        expected_previous: PointerEdgeSequence,
+        /// Lower bound supplied by the later segment.
+        submitted_previous: PointerEdgeSequence,
+    },
+    /// The producer no longer retains the exact staged frame attempt.
+    #[error("surface-local pointer provider {lease:?} lost staged host-frame attempt {attempt}")]
+    FrameSubmissionLost {
+        /// Exact producer whose staged guard disappeared.
+        lease: PointerInputLease,
+        /// Private diagnostic identity of the missing frame attempt.
+        attempt: u64,
+    },
+    /// A consumed drain proof cannot recreate its predecessor producer.
+    #[error("surface-local pointer drain receipt for {lease:?} was already consumed")]
+    DrainReceiptConsumed {
+        /// Exact producer lease named by the consumed proof.
+        lease: PointerInputLease,
+    },
+}
+
 /// Opaque core-minted identity of one pointer stream in one provider lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PointerStreamId {
@@ -1228,6 +1705,12 @@ struct ActivePointerProvider {
 struct RetiredPointerInputLease {
     lease: PointerInputLease,
     committed_through: PointerEdgeSequence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceLocalPointerQuiescenceDisposition {
+    RetiredActive,
+    CompactedPreviouslyRetired,
 }
 
 /// Identity of one in-memory ledger instance.
@@ -1309,6 +1792,9 @@ pub(crate) struct PointerJournalLedger {
     authority: JournalPointerAuthority,
     last_checkpoint: Option<PointerAuthorityCheckpoint>,
     active: Option<ActivePointerProvider>,
+    surface_local_producer: Option<(PointerInputLease, SurfaceLocalPointerProducerMonitor)>,
+    retired_surface_local_producers:
+        BTreeMap<PointerInputLease, SurfaceLocalPointerProducerMonitor>,
     retired: BTreeMap<PointerInputLease, RetiredPointerInputLease>,
     compacted_retired_through: PointerProviderIncarnation,
 }
@@ -1357,6 +1843,20 @@ pub enum PointerJournalLedgerError {
     },
     #[error("pointer input lease {lease:?} is retired behind a quiesced provider frontier")]
     CompactedLease { lease: PointerInputLease },
+    #[error("surface-local pointer quiescence receipt for {lease:?} was already consumed")]
+    SurfaceLocalQuiescenceReceiptConsumed { lease: PointerInputLease },
+    #[error("pointer lease {lease:?} is not a surface-local producer")]
+    SurfaceLocalQuiescenceScopeMismatch { lease: PointerInputLease },
+    #[error(
+        "surface-local pointer quiescence for {lease:?} reports watermark {submitted}, but core committed through {committed_through}"
+    )]
+    SurfaceLocalQuiescenceWatermarkMismatch {
+        lease: PointerInputLease,
+        committed_through: PointerEdgeSequence,
+        submitted: PointerEdgeSequence,
+    },
+    #[error("surface-local pointer producer for {lease:?} still has a live owner")]
+    SurfaceLocalProducerNotAbandoned { lease: PointerInputLease },
     #[error(
         "pointer journal for {lease:?} replays previous watermark {submitted_previous}; committed watermark is {committed_through}"
     )]

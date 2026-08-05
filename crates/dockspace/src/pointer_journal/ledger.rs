@@ -277,6 +277,8 @@ impl Clone for PointerJournalLedger {
             authority: self.authority.clone(),
             last_checkpoint: self.last_checkpoint.clone(),
             active: self.active,
+            surface_local_producer: self.surface_local_producer.clone(),
+            retired_surface_local_producers: self.retired_surface_local_producers.clone(),
             retired: self.retired.clone(),
             compacted_retired_through: self.compacted_retired_through,
         }
@@ -293,6 +295,8 @@ impl PartialEq for PointerJournalLedger {
             && self.authority == other.authority
             && self.last_checkpoint == other.last_checkpoint
             && self.active == other.active
+            && self.surface_local_producer == other.surface_local_producer
+            && self.retired_surface_local_producers == other.retired_surface_local_producers
             && self.retired == other.retired
             && self.compacted_retired_through == other.compacted_retired_through
     }
@@ -317,6 +321,8 @@ impl PointerJournalLedger {
             ),
             last_checkpoint: None,
             active: None,
+            surface_local_producer: None,
+            retired_surface_local_producers: BTreeMap::new(),
             retired: BTreeMap::new(),
             compacted_retired_through: PointerProviderIncarnation(0),
         }
@@ -347,6 +353,53 @@ impl PointerJournalLedger {
             Some(active) => Some(active.lease),
             None => None,
         }
+    }
+
+    pub(crate) fn bind_surface_local_producer(
+        &mut self,
+        lease: PointerInputLease,
+        monitor: SurfaceLocalPointerProducerMonitor,
+    ) {
+        assert!(
+            lease.scope().surface_local().is_some(),
+            "only a surface-local lease can bind an affine producer monitor",
+        );
+        assert_eq!(
+            self.active_lease(),
+            Some(lease),
+            "only the exact active lease can bind its producer monitor",
+        );
+        assert!(
+            self.surface_local_producer.is_none(),
+            "one active pointer provider can retain only one producer monitor",
+        );
+        self.surface_local_producer = Some((lease, monitor));
+    }
+
+    pub(crate) fn abandoned_surface_local_provider(&self) -> Option<PointerInputLease> {
+        let (lease, monitor) = self.surface_local_producer.as_ref()?;
+        (self.active_lease() == Some(*lease) && monitor.is_abandoned()).then_some(*lease)
+    }
+
+    pub(crate) fn abandoned_retired_surface_local_provider(&self) -> Option<PointerInputLease> {
+        self.retired_surface_local_producers
+            .iter()
+            .find_map(|(lease, monitor)| monitor.is_abandoned().then_some(*lease))
+    }
+
+    pub(crate) fn retained_committed_through(
+        &self,
+        lease: PointerInputLease,
+    ) -> Result<PointerEdgeSequence, PointerJournalLedgerError> {
+        if let Some(active) = self.active
+            && active.lease == lease
+        {
+            return Ok(active.committed_through);
+        }
+        if let Some(retired) = self.retired.get(&lease) {
+            return Ok(retired.committed_through);
+        }
+        self.require_active(lease)
     }
 
     pub(crate) fn button_authority(&self) -> AnyButtonDownAuthority {
@@ -385,6 +438,7 @@ impl PointerJournalLedger {
             lease,
             committed_through,
         });
+        self.surface_local_producer = None;
         Ok(lease)
     }
 
@@ -400,6 +454,17 @@ impl PointerJournalLedger {
             committed_through,
         };
         self.active = None;
+        if let Some((registered, monitor)) = self.surface_local_producer.take() {
+            assert_eq!(
+                registered, lease,
+                "only the retiring surface-local lease can own its producer monitor",
+            );
+            let previous = self.retired_surface_local_producers.insert(lease, monitor);
+            assert!(
+                previous.is_none(),
+                "one lease can retain only one retired monitor"
+            );
+        }
         self.active_streams.clear();
         self.authority =
             JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
@@ -421,6 +486,120 @@ impl PointerJournalLedger {
         self.compact_retired_provider(receipt.lease().pointer_provider())
     }
 
+    /// Retires and compacts one surface-local provider after its sole producer joined.
+    ///
+    /// Unlike ordinary retirement, this boundary never materializes a detailed
+    /// tombstone. The exact lease and final producer watermark are validated in
+    /// the same candidate which advances the compacted incarnation frontier.
+    pub(crate) fn retire_quiesced_surface_local(
+        &mut self,
+        receipt: &SurfaceLocalPointerDrainReceipt,
+    ) -> Result<SurfaceLocalPointerQuiescenceDisposition, PointerJournalLedgerError> {
+        let lease = receipt.lease();
+        if receipt.is_consumed() {
+            return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceReceiptConsumed { lease });
+        }
+        if lease.scope().surface_local().is_none() {
+            return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceScopeMismatch { lease });
+        }
+        if lease.authority_domain() != self.authority_domain {
+            return Err(PointerJournalLedgerError::ForeignLease {
+                expected: self.authority_domain,
+                submitted: lease.authority_domain(),
+            });
+        }
+        let (committed_through, disposition) = if let Some(active) = self.active
+            && active.lease == lease
+        {
+            (
+                active.committed_through,
+                SurfaceLocalPointerQuiescenceDisposition::RetiredActive,
+            )
+        } else if let Some(retired) = self.retired.get(&lease) {
+            (
+                retired.committed_through,
+                SurfaceLocalPointerQuiescenceDisposition::CompactedPreviouslyRetired,
+            )
+        } else if lease.incarnation <= self.compacted_retired_through && lease.incarnation.0 != 0 {
+            return Err(PointerJournalLedgerError::CompactedLease { lease });
+        } else {
+            return Err(PointerJournalLedgerError::UnknownLease { lease });
+        };
+        if receipt.committed_through() != committed_through {
+            return Err(
+                PointerJournalLedgerError::SurfaceLocalQuiescenceWatermarkMismatch {
+                    lease,
+                    committed_through,
+                    submitted: receipt.committed_through(),
+                },
+            );
+        }
+        let next_version = self.next_version()?;
+        match disposition {
+            SurfaceLocalPointerQuiescenceDisposition::RetiredActive => {
+                self.active = None;
+                self.surface_local_producer = None;
+                self.active_streams.clear();
+                self.authority = JournalPointerAuthority::unknown(
+                    AuthorityUnavailableReason::ProviderUnavailable,
+                );
+                self.last_checkpoint = None;
+            }
+            SurfaceLocalPointerQuiescenceDisposition::CompactedPreviouslyRetired => {
+                let removed = self.retired.remove(&lease);
+                debug_assert!(removed.is_some(), "validated retirement remains present");
+                let _ = self.retired_surface_local_producers.remove(&lease);
+            }
+        }
+        self.compacted_retired_through = self.compacted_retired_through.max(lease.incarnation);
+        self.version = next_version;
+        Ok(disposition)
+    }
+
+    pub(crate) fn retire_abandoned_active_surface_local(
+        &mut self,
+        lease: PointerInputLease,
+    ) -> Result<(), PointerJournalLedgerError> {
+        if lease.scope().surface_local().is_none() {
+            return Err(PointerJournalLedgerError::SurfaceLocalQuiescenceScopeMismatch { lease });
+        }
+        if self.abandoned_surface_local_provider() != Some(lease) {
+            return Err(PointerJournalLedgerError::SurfaceLocalProducerNotAbandoned { lease });
+        }
+        let _ = self.require_active(lease)?;
+        let next_version = self.next_version()?;
+        self.active = None;
+        self.surface_local_producer = None;
+        self.active_streams.clear();
+        self.authority =
+            JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
+        self.last_checkpoint = None;
+        self.compacted_retired_through = self.compacted_retired_through.max(lease.incarnation);
+        self.version = next_version;
+        Ok(())
+    }
+
+    pub(crate) fn compact_abandoned_retired_surface_local(
+        &mut self,
+        lease: PointerInputLease,
+    ) -> Result<(), PointerJournalLedgerError> {
+        let Some(monitor) = self.retired_surface_local_producers.get(&lease) else {
+            return Err(PointerJournalLedgerError::UnknownLease { lease });
+        };
+        if !monitor.is_abandoned() {
+            return Err(PointerJournalLedgerError::SurfaceLocalProducerNotAbandoned { lease });
+        }
+        if !self.retired.contains_key(&lease) {
+            return Err(PointerJournalLedgerError::UnknownLease { lease });
+        }
+        let next_version = self.next_version()?;
+        let _ = self.retired.remove(&lease);
+        let _ = self.retired_surface_local_producers.remove(&lease);
+        self.compacted_retired_through = self.compacted_retired_through.max(lease.incarnation);
+        self.version = next_version;
+        Ok(())
+    }
+
     fn compact_retired_provider(
         &mut self,
         lease: PointerInputLease,
@@ -440,6 +619,7 @@ impl PointerJournalLedger {
         let next_version = self.next_version()?;
         let removed = self.retired.remove(&lease);
         debug_assert!(removed.is_some(), "validated retirement remains present");
+        let _ = self.retired_surface_local_producers.remove(&lease);
         self.compacted_retired_through = self.compacted_retired_through.max(lease.incarnation);
         self.version = next_version;
         Ok(())

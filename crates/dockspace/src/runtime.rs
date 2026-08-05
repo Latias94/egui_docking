@@ -15,8 +15,9 @@ pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
     SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    SurfacePointerRetirement, SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId,
+    SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
+    SurfaceScrollSequenceId,
 };
 pub use native::{
     HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformSnapshot,
@@ -119,12 +120,14 @@ impl DockspaceSession {
     /// Returns an error when presentation output is awaiting an explicit host
     /// observation or the core rejects the frame prelude.
     pub fn begin_host_frame(&mut self) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        self.reconcile_surface_pointer_provider()?;
         let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
         let submitted_presentation = self.presentation.submit_observation(&mut prelude)?;
         let frame = prelude.seal(&self.engine)?;
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer
+            .as_ref()
             .map(interaction::RuntimePointerState::committed_sequence);
         let next_native_close_generations = self.native.as_ref().map_or_else(
             Default::default,
@@ -313,8 +316,12 @@ impl DockspaceHostFrame<'_> {
         }
         let transition = frame.finish(&mut session.engine)?;
         session.committed_source_sequence = next_source_sequence;
-        if let (Some(pointer), Some(sequence)) = (&mut session.pointer, next_pointer_sequence) {
-            pointer.commit_sequence(sequence);
+        if let (Some(pointer), Some(sequence)) = (&session.pointer, next_pointer_sequence) {
+            assert_eq!(
+                pointer.committed_sequence(),
+                sequence,
+                "core commit must advance the exact runtime pointer producer watermark",
+            );
         }
         if let Some(native) = &mut session.native {
             native.commit(
@@ -660,6 +667,21 @@ impl From<SurfaceContributionPrepareError> for DockspaceRuntimeError {
 mod tests {
     use super::*;
 
+    fn single_surface_session() -> DockspaceSession {
+        let item = crate::ids::ItemId::new(1);
+        let root = crate::ids::RootId::new(1);
+        let surface = SurfaceId::new(1);
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(crate::graph::Node::tabs([item]));
+        builder.set_root(root, crate::graph::RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(surface, crate::graph::SurfacePresentation::with_main(root));
+        DockspaceSession::new(
+            builder.build().expect("runtime test workspace validates"),
+            crate::policy::DockPolicy::default(),
+        )
+        .expect("runtime test session initializes")
+    }
+
     #[test]
     fn shared_pointer_ordinal_preserves_edge_then_outcome_order() {
         let outcomes = finish_ordered_inputs(vec![
@@ -675,6 +697,44 @@ mod tests {
                 HostInputOutcome::NativeCloseObservationApplied,
                 HostInputOutcome::NativePlatformSnapshotStale,
             ]
+        ));
+    }
+
+    #[test]
+    fn runtime_surface_pointer_disable_drains_and_compacts_the_exact_producer() {
+        let mut session = single_surface_session();
+        let surface = SurfaceId::new(1);
+        let provider = session
+            .engine
+            .create_surface_local_pointer_provider(
+                crate::pointer_journal::SurfaceLocalPointerScope::new(
+                    session.presentation_host,
+                    crate::pointer_journal::SurfaceLocalPointerEndpoint::Logical(surface),
+                ),
+                crate::pointer_journal::PointerEdgeSequence::new(0),
+            )
+            .expect("runtime surface-local producer mints");
+        let lease = provider.lease();
+        session.pointer = Some(interaction::RuntimePointerState::new(provider, surface));
+
+        let retirement = session
+            .disable_surface_pointer()
+            .expect("runtime producer retires atomically")
+            .expect("the active producer returns one retirement result");
+        assert_eq!(retirement.surface(), surface);
+        assert!(!retirement.interaction_changed());
+        assert!(retirement.repaint_required());
+        assert_eq!(session.engine.pointer_provider(), None);
+        assert!(session.pointer.is_none());
+        assert_eq!(
+            session
+                .disable_surface_pointer()
+                .expect("repeated disable is an inert no-op"),
+            None
+        );
+        assert!(matches!(
+            session.engine.retire_pointer_provider(lease),
+            Err(EngineError::SurfaceLocalPointerProducerRequired)
         ));
     }
 }

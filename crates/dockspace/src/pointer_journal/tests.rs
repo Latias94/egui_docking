@@ -60,6 +60,21 @@ fn desktop_lease(domain: EngineAuthorityDomainId, incarnation: u64) -> PointerIn
     PointerInputLease::new(domain, incarnation, PointerProviderScope::DesktopGlobal)
 }
 
+fn surface_local_provider(
+    ledger: &mut PointerJournalLedger,
+    committed_through: u64,
+) -> SurfaceLocalPointerProvider {
+    let scope = PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        host(ledger.authority_domain),
+        SurfaceLocalPointerEndpoint::Logical(SurfaceId::new(9)),
+    ));
+    let committed_through = PointerEdgeSequence::new(committed_through);
+    let lease = ledger
+        .create_provider(scope, committed_through)
+        .expect("surface-local provider");
+    SurfaceLocalPointerProvider::new(lease, committed_through)
+}
+
 fn route_capabilities() -> PlatformCapabilities {
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -717,6 +732,100 @@ fn surface_local_scope_is_frozen_across_committed_watermarks() {
             committed_through: PointerEdgeSequence::new(3),
         })
     );
+}
+
+#[test]
+fn lost_surface_local_frame_attempt_rejects_before_core_publication() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let provider = surface_local_provider(&mut ledger, 7);
+    let lease = provider.lease();
+    let mut commit = provider
+        .begin_frame_submission(PointerEdgeSequence::new(7), PointerEdgeSequence::new(8))
+        .expect("the exact producer reserves one frame attempt");
+    lock_surface_local_pointer_state(&provider.state).in_flight = None;
+    let mut core_published = false;
+
+    assert_eq!(
+        commit.publish_with(|| core_published = true),
+        Err(SurfaceLocalPointerProviderError::FrameSubmissionLost { lease, attempt: 1 })
+    );
+    assert!(!core_published);
+    assert_eq!(provider.committed_through(), PointerEdgeSequence::new(7));
+}
+
+#[test]
+fn active_surface_local_quiescence_compacts_without_a_detailed_tombstone() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let provider = surface_local_provider(&mut ledger, 7);
+    let lease = provider.lease();
+    let receipt = provider
+        .drain()
+        .expect("provider has no host-frame submission in flight");
+
+    assert_eq!(
+        ledger.retire_quiesced_surface_local(&receipt),
+        Ok(SurfaceLocalPointerQuiescenceDisposition::RetiredActive)
+    );
+    assert_eq!(ledger.active_lease(), None);
+    let retention = ledger.retention_manifest();
+    assert_eq!(retention.retired_lease_guards(), 0);
+    assert_eq!(retention.compacted_retirement_ranges(), 1);
+    assert_eq!(retention.logical_compacted_leases(), 1);
+    assert!(matches!(
+        ledger.prepare_candidate(lease, local_moved_journal(7, 7)),
+        Err(PointerJournalLedgerError::CompactedLease { lease: submitted })
+            if submitted == lease
+    ));
+}
+
+#[test]
+fn surface_local_quiescence_compacts_a_previously_retired_lease_without_touching_successor() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let provider = surface_local_provider(&mut ledger, 3);
+    let retired = provider.lease();
+    ledger
+        .retire_provider(retired)
+        .expect("core retires the predecessor first");
+    let receipt = provider
+        .drain()
+        .expect("retired provider has no host-frame submission in flight");
+    let successor = surface_local_provider(&mut ledger, 11).lease();
+
+    assert_eq!(
+        ledger.retire_quiesced_surface_local(&receipt),
+        Ok(SurfaceLocalPointerQuiescenceDisposition::CompactedPreviouslyRetired)
+    );
+    assert_eq!(ledger.active_lease(), Some(successor));
+    let retention = ledger.retention_manifest();
+    assert_eq!(retention.active_provider_count(), 1);
+    assert_eq!(retention.retired_lease_guards(), 0);
+    assert_eq!(retention.compacted_retirement_ranges(), 1);
+}
+
+#[test]
+fn rejected_surface_local_quiescence_preserves_the_exact_active_watermark() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let provider = surface_local_provider(&mut ledger, 4);
+    let lease = provider.lease();
+    commit_candidate(&mut ledger, lease, local_moved_journal(4, 5))
+        .expect("core advances beyond the producer's stale watermark");
+    let receipt = provider
+        .drain()
+        .expect("stale producer watermark remains drainable without an in-flight frame");
+    let before = ledger.clone();
+
+    assert_eq!(
+        ledger.retire_quiesced_surface_local(&receipt),
+        Err(
+            PointerJournalLedgerError::SurfaceLocalQuiescenceWatermarkMismatch {
+                lease,
+                committed_through: PointerEdgeSequence::new(5),
+                submitted: PointerEdgeSequence::new(4),
+            }
+        )
+    );
+    assert_eq!(ledger, before);
+    assert!(!receipt.is_consumed());
 }
 
 #[test]

@@ -8,8 +8,8 @@ use dockspace::ids::{ItemId, NodeId, RootId, SourceSequence, StableInputSourceId
 use dockspace::intent::{Authority, PointerId};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, PointerInputLease, PointerJournalLedgerError, PointerProviderScope,
-    PointerStreamCancelReason, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+    PointerEdgeSequence, PointerStreamCancelReason, SurfaceLocalPointerEndpoint,
+    SurfaceLocalPointerProvider, SurfaceLocalPointerProviderError, SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverObservation, PointerReceiverReceiptBatch, PointerReceiverReceiptValidationError,
@@ -37,13 +37,13 @@ fn create_provider(
     engine: &mut DockEngine,
     host: &TestPresentationHost,
     committed_through: u64,
-) -> PointerInputLease {
+) -> SurfaceLocalPointerProvider {
     engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(committed_through),
         )
         .expect("property provider is admitted")
@@ -88,7 +88,7 @@ fn terminal_journal(previous: u64, pointers: &[u8]) -> PointerEdgeJournal {
 
 fn submit_terminal_segment(
     frame: &mut CoreHostFrame,
-    provider: PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pointers: &[u8],
     invalid_receipt: bool,
@@ -99,7 +99,7 @@ fn submit_terminal_segment(
         let through = edge.sequence();
         let segment = PointerEdgeJournal::new(previous, through, vec![edge])
             .expect("single property edge segment is contiguous");
-        frame.submit_pointer_journal(provider, segment)?;
+        frame.submit_surface_pointer_journal(provider, segment)?;
         let candidate = frame
             .pointer_receiver_candidates()
             .expect("property segment freezes candidates")
@@ -170,7 +170,7 @@ proptest! {
 
         if !prefix.is_empty() {
             let mut prefix_frame = host.begin(&engine);
-            submit_terminal_segment(&mut prefix_frame, provider, 0, &prefix, false)
+            submit_terminal_segment(&mut prefix_frame, &provider, 0, &prefix, false)
                 .expect("property prefix stages edgewise");
             let transition = finish(&mut engine, &mut host, prefix_frame);
             for (index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
@@ -211,7 +211,7 @@ proptest! {
             }
             let result = submit_terminal_segment(
                 &mut failed,
-                provider,
+                &provider,
                 previous,
                 segment,
                 index + 1 == segments.len(),
@@ -237,7 +237,7 @@ proptest! {
         prop_assert_eq!(engine.version(), before_version);
         prop_assert_eq!(engine.last_reducer_tick(), before_tick);
         prop_assert_eq!(engine.interaction(), &before_interaction);
-        prop_assert_eq!(engine.pointer_provider(), Some(provider));
+        prop_assert_eq!(engine.pointer_provider(), Some(provider.lease()));
 
         let mut retry = host.begin(&engine);
         previous = prefix_watermark;
@@ -254,7 +254,7 @@ proptest! {
                     )
                     .expect("failed frame did not consume the semantic source sequence");
             }
-            submit_terminal_segment(&mut retry, provider, previous, segment, false)
+            submit_terminal_segment(&mut retry, &provider, previous, segment, false)
                 .expect("property retry segment stages edgewise");
             previous += u64::try_from(segment.len()).expect("property segment fits u64");
         }
@@ -294,7 +294,7 @@ proptest! {
                 + 1;
             prop_assert_eq!(edge.edge().sequence(), PointerEdgeSequence::new(expected));
             prop_assert_eq!(edge.stream().incarnation(), expected);
-            prop_assert_eq!(edge.stream().lease(), provider);
+            prop_assert_eq!(edge.stream().lease(), provider.lease());
         }
 
         let committed_through = previous;
@@ -308,25 +308,25 @@ proptest! {
             vec![replay_edge],
         )
         .expect("replay edge segment is contiguous");
-        let replay_result = replay.submit_pointer_journal(
-            provider,
-            replay_journal,
-        );
+        let replay_result = replay.submit_surface_pointer_journal(&provider, replay_journal);
         prop_assert!(matches!(
             replay_result,
-            Err(CoreHostFrameError::PointerJournalRejected {
-                source: PointerJournalLedgerError::JournalReplay {
+            Err(CoreHostFrameError::SurfaceLocalPointerProducerRejected {
+                source: SurfaceLocalPointerProviderError::CommittedWatermarkMismatch {
+                    lease,
                     committed_through: actual,
-                    ..
+                    submitted_previous,
                 },
-            }) if actual == PointerEdgeSequence::new(committed_through)
-        ), "a successful retry must advance the watermark exactly once");
+            }) if lease == provider.lease()
+                && actual == PointerEdgeSequence::new(committed_through)
+                && submitted_previous == PointerEdgeSequence::new(prefix_watermark)
+        ), "a successful retry must advance the affine producer watermark exactly once, got {replay_result:?}");
         prop_assert_eq!(engine.last_reducer_tick(), tick_after_success);
-        prop_assert_eq!(engine.pointer_provider(), Some(provider));
+        prop_assert_eq!(engine.pointer_provider(), Some(provider.lease()));
     }
 
     #[test]
-    fn retired_provider_tombstones_prevent_aba_across_successor_incarnations(
+    fn quiesced_provider_compaction_prevents_aba_across_successor_incarnations(
         cycles in provider_cycles(),
     ) {
         let (workspace, _) = workspace();
@@ -339,37 +339,26 @@ proptest! {
         for (cycle_index, (base, pointers)) in cycles.iter().enumerate() {
             let base = u64::from(*base);
             let provider = create_provider(&mut engine, &host, base);
+            let lease = provider.lease();
             prop_assert_eq!(
-                provider.incarnation(),
+                lease.incarnation(),
                 u64::try_from(cycle_index).expect("property cycle fits u64") + 1,
             );
 
-            if let Some((previous_provider, previous_through)) = retired.last().copied() {
-                let before_tick = engine.last_reducer_tick();
-                let mut stale = host.begin(&engine);
-                prop_assert!(matches!(
-                    stale.submit_pointer_journal(
-                        previous_provider,
-                        terminal_journal(previous_through, &[1]),
-                    ),
-                    Err(CoreHostFrameError::PointerJournalProviderMismatch {
-                        expected,
-                        submitted,
-                    }) if expected == provider && submitted == previous_provider
-                ), "a retired lease must not impersonate the active successor");
-                prop_assert_eq!(engine.last_reducer_tick(), before_tick);
-                prop_assert_eq!(engine.pointer_provider(), Some(provider));
+            for previous_provider in &retired {
+                prop_assert_ne!(lease, *previous_provider);
             }
+            prop_assert_eq!(engine.pointer_provider(), Some(lease));
 
             let mut frame = host.begin(&engine);
-            submit_terminal_segment(&mut frame, provider, base, pointers, false)
+            submit_terminal_segment(&mut frame, &provider, base, pointers, false)
                 .expect("property cycle stages edgewise");
             let transition = finish(&mut engine, &mut host, frame);
             prop_assert_eq!(transition.reduced_pointer_edges().len(), pointers.len());
             for (index, edge) in transition.reduced_pointer_edges().iter().enumerate() {
                 last_stream_incarnation += 1;
                 prop_assert_eq!(edge.stream().incarnation(), last_stream_incarnation);
-                prop_assert_eq!(edge.stream().lease(), provider);
+                prop_assert_eq!(edge.stream().lease(), lease);
                 prop_assert_eq!(edge.stream().pointer(), PointerId::new(u64::from(pointers[index])));
                 prop_assert_eq!(
                     edge.edge().sequence(),
@@ -381,27 +370,28 @@ proptest! {
 
             let committed_through =
                 base + u64::try_from(pointers.len()).expect("property segment fits u64");
-            engine
-                .retire_pointer_provider(provider)
-                .expect("live property provider retires");
+            let mut receipt = provider
+                .drain()
+                .expect("a committed property provider has no in-flight host frame");
+            prop_assert_eq!(
+                receipt.committed_through(),
+                PointerEdgeSequence::new(committed_through),
+            );
+            let retirement = engine
+                .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+                .expect("live property provider retires and compacts");
+            prop_assert!(retirement.repaint_required());
+            prop_assert!(receipt.is_consumed());
             prop_assert_eq!(engine.pointer_provider(), None);
-            retired.push((provider, committed_through));
+            retired.push(lease);
 
-            for (retired_provider, retired_through) in retired.iter().copied() {
-                let before_tick = engine.last_reducer_tick();
-                prop_assert!(matches!(
-                    engine.retire_pointer_provider(retired_provider),
-                    Err(EngineError::PointerJournal {
-                        source: PointerJournalLedgerError::RetiredLease {
-                            lease,
-                            committed_through,
-                        },
-                    }) if lease == retired_provider
-                        && committed_through == PointerEdgeSequence::new(retired_through)
-                ), "every retired lease must preserve its exact terminal watermark");
-                prop_assert_eq!(engine.last_reducer_tick(), before_tick);
-                prop_assert_eq!(engine.pointer_provider(), None);
-            }
+            let retention = engine.runtime_retention_manifest().pointer();
+            prop_assert_eq!(retention.retired_lease_guards(), 0);
+            prop_assert_eq!(retention.compacted_retirement_ranges(), 1);
+            prop_assert_eq!(
+                retention.logical_compacted_leases(),
+                u64::try_from(cycle_index).expect("property cycle index fits u64") + 1,
+            );
         }
     }
 }

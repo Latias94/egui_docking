@@ -28,10 +28,9 @@ use dockspace::platform::{
 };
 use dockspace::pointer_journal::{
     FiniteScrollVector, PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind,
-    PointerEdgeLocation, PointerEdgeSequence, PointerJournalLedgerError, PointerProviderScope,
-    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
-    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerScope,
+    PointerEdgeLocation, PointerEdgeSequence, ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId,
+    ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
+    SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider, SurfaceLocalPointerScope,
 };
 use dockspace::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
@@ -448,7 +447,7 @@ fn line_delta(x: f64, y: f64) -> ScrollDelta {
 fn submit_exact_scroll_edge(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     edge: PointerEdge,
     region: dockspace::presentation_hit::PresentationHitRegionId,
@@ -458,7 +457,7 @@ fn submit_exact_scroll_edge(
         .expect("single scroll-edge journal is contiguous");
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("scroll edge journal stages");
     let projection = frame
         .view()
@@ -494,12 +493,12 @@ fn empty_journal(watermark: u64) -> PointerEdgeJournal {
 
 fn submit_pointer_edge_with_observation(
     frame: &mut CoreHostFrame,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     journal: PointerEdgeJournal,
     observation: PointerReceiverObservation,
 ) {
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("single pointer edge prepares");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -514,29 +513,32 @@ fn submit_pointer_edge_with_observation(
         .expect("single pointer edge receipt reduces");
 }
 
-fn create_local_provider(engine: &mut DockEngine, host: &TestPresentationHost) {
+fn create_local_provider(
+    engine: &mut DockEngine,
+    host: &TestPresentationHost,
+) -> SurfaceLocalPointerProvider {
     engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Logical(SURFACE),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
-        .expect("test local pointer provider is admitted");
+        .expect("test local pointer provider is admitted")
 }
 
 fn create_native_provider(
     engine: &mut DockEngine,
     host: &TestPresentationHost,
     binding: ViewportBinding,
-) -> dockspace::pointer_journal::PointerInputLease {
+) -> SurfaceLocalPointerProvider {
     engine
-        .create_pointer_provider(
-            PointerProviderScope::SurfaceLocal(SurfaceLocalPointerScope::new(
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(
                 host.lease(),
                 SurfaceLocalPointerEndpoint::Native(binding),
-            )),
+            ),
             PointerEdgeSequence::new(0),
         )
         .expect("native surface-local pointer provider is admitted")
@@ -545,13 +547,13 @@ fn create_native_provider(
 fn submit_input_with_empty_journal(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     source: StableInputSourceId,
     input: EngineInput,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("active provider publishes its complete empty journal");
     frame
         .submit_pointer_receiver_receipts(
@@ -609,7 +611,7 @@ fn interaction(engine: &DockEngine) -> dockspace::scene::SurfaceInteractionProje
 fn arm_journal_close(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     region: dockspace::presentation_hit::PresentationHitRegionId,
     point: LogicalPoint,
 ) -> ClickSessionId {
@@ -619,14 +621,14 @@ fn arm_journal_close(
 fn arm_journal_close_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     region: dockspace::presentation_hit::PresentationHitRegionId,
     point: LogicalPoint,
     previous: u64,
 ) -> ClickSessionId {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(previous, point))
+        .submit_surface_pointer_journal(provider, press_at_journal(previous, point))
         .expect("close press journal stages");
     let projection = frame
         .view()
@@ -669,14 +671,14 @@ fn arm_journal_close_after(
 fn submit_dock_press_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     region: dockspace::presentation_hit::PresentationHitRegionId,
     point: LogicalPoint,
     previous: u64,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(previous, point))
+        .submit_surface_pointer_journal(provider, press_at_journal(previous, point))
         .expect("dock press journal stages");
     let projection = frame
         .view()
@@ -710,13 +712,13 @@ fn submit_dock_press_after(
 fn submit_unknown_capture_release_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     point: LogicalPoint,
     previous: u64,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             pointer_edge_journal(
                 previous,
@@ -783,14 +785,17 @@ fn assert_unknown_capture_release_cancelled_once(
 fn release_journal_click(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     point: LogicalPoint,
     disposition: PointerReceiverDeliveryDisposition,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, release_journal(previous, Authority::Known(point)))
+        .submit_surface_pointer_journal(
+            provider,
+            release_journal(previous, Authority::Known(point)),
+        )
         .expect("click release follows the provider watermark");
     let projection = frame
         .view()
@@ -897,7 +902,7 @@ fn point_inside_click_region(
 fn submit_exact_click_edge(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
     region: dockspace::presentation_hit::PresentationHitRegionId,
@@ -910,7 +915,7 @@ fn submit_exact_click_edge(
 fn stage_exact_click_edge(
     engine: &DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
     region: dockspace::presentation_hit::PresentationHitRegionId,
@@ -925,7 +930,7 @@ fn stage_exact_click_edge(
 fn stage_exact_click_edge_with_completion(
     engine: &DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     pressed: bool,
     region: dockspace::presentation_hit::PresentationHitRegionId,
@@ -958,7 +963,7 @@ fn stage_exact_click_edge_with_completion(
     .expect("single click edge journal is contiguous");
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("click edge journal follows the provider watermark");
     let projection = frame
         .view()
@@ -990,16 +995,15 @@ fn stage_exact_click_edge_with_completion(
 fn open_overflow_menu_through_journal(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-) -> dockspace::pointer_journal::PointerInputLease {
-    create_local_provider(engine, host);
-    let provider = engine.pointer_provider().expect("pointer provider is live");
+) -> SurfaceLocalPointerProvider {
+    let provider = create_local_provider(engine, host);
     let (control, point) = point_inside_click_region(engine, |kind| {
         matches!(
             kind,
             PresentationHitRegionKind::TabStripControl(TabStripControlId::TabListMenu(_))
         )
     });
-    let pressed = submit_exact_click_edge(engine, host, provider, 0, true, control, point);
+    let pressed = submit_exact_click_edge(engine, host, &provider, 0, true, control, point);
     assert!(
         pressed.reduced_pointer_edges()[0]
             .interaction_outcomes()
@@ -1009,7 +1013,7 @@ fn open_overflow_menu_through_journal(
         engine.interaction().status(),
         InteractionStatus::Pressed { .. }
     ));
-    let released = submit_exact_click_edge(engine, host, provider, 1, false, control, point);
+    let released = submit_exact_click_edge(engine, host, &provider, 1, false, control, point);
     assert!(matches!(
         released.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::TabStripControlActivated {
@@ -1019,17 +1023,27 @@ fn open_overflow_menu_through_journal(
         }]
     ));
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(2),
+        "the committed popup frames advance the producer watermark",
+    );
     provider
 }
 
 fn republish_open_overflow_menu(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
-) -> dockspace::pointer_journal::PointerInputLease {
-    engine
-        .retire_pointer_provider(provider)
+    provider: SurfaceLocalPointerProvider,
+) -> SurfaceLocalPointerProvider {
+    let mut receipt = provider
+        .drain()
+        .expect("the idle popup producer has no frame in flight");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("idle provider retirement is valid");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     publish_surface_with(
         engine,
         host,
@@ -1037,21 +1051,18 @@ fn republish_open_overflow_menu(
         overflowing_tab_bounds(),
         overflowing_tab_profile(),
     );
-    create_local_provider(engine, host);
-    engine
-        .pointer_provider()
-        .expect("successor pointer provider is live")
+    create_local_provider(engine, host)
 }
 
 fn commit_empty_pointer_journal(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     watermark: u64,
 ) {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(watermark))
+        .submit_surface_pointer_journal(provider, empty_journal(watermark))
         .expect("empty journal must continue from the committed release watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -1079,8 +1090,7 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
         overflowing_tab_bounds(),
         overflowing_tab_profile(),
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("pointer provider is live");
+    let provider = create_local_provider(&mut engine, &host);
     let projection = engine
         .interaction_projection(SURFACE)
         .expect("overflowing strip is interactive");
@@ -1113,7 +1123,7 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     let begin = submit_exact_scroll_edge(
         &mut engine,
         &mut host,
-        provider,
+        &provider,
         0,
         local_scroll_edge(1, point, endpoint, ScrollPhase::Begin, Some(token), None),
         region_id,
@@ -1128,7 +1138,7 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     let update = submit_exact_scroll_edge(
         &mut engine,
         &mut host,
-        provider,
+        &provider,
         1,
         local_scroll_edge(
             2,
@@ -1152,8 +1162,8 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
     let end_edge = local_scroll_edge(3, point, endpoint, ScrollPhase::End, Some(token), None);
     let mut end_frame = host.begin(&engine);
     end_frame
-        .submit_pointer_journal(
-            provider,
+        .submit_surface_pointer_journal(
+            &provider,
             PointerEdgeJournal::new(
                 PointerEdgeSequence::new(2),
                 PointerEdgeSequence::new(3),
@@ -1186,9 +1196,19 @@ fn ordered_smooth_scroll_locks_one_tab_strip_and_updates_core_offset() {
         })] if *receiver == region_id
     ));
 
-    engine
-        .retire_pointer_provider(provider)
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(3),
+        "the committed scroll frames advance through the terminal edge",
+    );
+    let mut receipt = provider
+        .drain()
+        .expect("the completed scroll producer has no frame in flight");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("completed scroll provider can retire");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     publish_surface_with(
         &mut engine,
         &mut host,
@@ -1217,8 +1237,8 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
         overflowing_tab_bounds(),
         overflowing_tab_profile(),
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("pointer provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = engine
         .interaction_projection(SURFACE)
         .expect("overflowing strip is interactive");
@@ -1283,7 +1303,7 @@ fn smooth_scroll_rejects_token_replacement_until_the_active_sequence_terminates(
     let version_before_rejection = engine.version();
     let mut replacement = host.begin(&engine);
     replacement
-        .submit_pointer_journal(provider, replacement_journal)
+        .submit_surface_pointer_journal(provider, replacement_journal)
         .expect("replacement begin stages before ordered reduction");
     let projection = replacement
         .view()
@@ -1686,7 +1706,7 @@ fn point_inside_contained_close(
 fn begin_journal_drag(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     source_region: dockspace::presentation_hit::PresentationHitRegionId,
     press: LogicalPoint,
     target: LogicalPoint,
@@ -1694,7 +1714,7 @@ fn begin_journal_drag(
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(0, press))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press))
         .expect("press edge freezes one receiver challenge");
     let projection = frame
         .view()
@@ -1722,7 +1742,7 @@ fn begin_journal_drag(
         .expect("press receipt reduces before the move challenge");
 
     frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(target)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(target)))
         .expect("move edge follows the reduced press prefix");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -1744,7 +1764,7 @@ fn begin_journal_drag(
 fn paint_active_journal_drag(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
 ) {
     paint_active_journal_drag_after(engine, host, provider, 2);
 }
@@ -1752,12 +1772,12 @@ fn paint_active_journal_drag(
 fn paint_active_journal_drag_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     watermark: u64,
 ) {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(watermark))
+        .submit_surface_pointer_journal(provider, empty_journal(watermark))
         .expect("paint frame preserves the provider watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -1772,14 +1792,14 @@ fn paint_active_journal_drag_after(
 fn update_journal_drag_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(previous, Authority::Known(target)))
+        .submit_surface_pointer_journal(provider, moved_journal(previous, Authority::Known(target)))
         .expect("move follows the committed watermark");
     let projection = frame
         .view()
@@ -1811,7 +1831,7 @@ fn update_journal_drag_after(
 fn release_journal_drag(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
 ) -> dockspace::transition::EngineTransition {
@@ -1821,14 +1841,14 @@ fn release_journal_drag(
 fn release_journal_drag_after(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     previous: u64,
     target: LogicalPoint,
     target_disposition: PointerReceiverHoverHitDisposition,
 ) -> dockspace::transition::EngineTransition {
     let mut frame = host.begin(engine);
     frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             release_journal(previous, Authority::Known(target)),
         )
@@ -1866,7 +1886,7 @@ fn release_journal_drag_after(
 fn republish_surface_with_active_provider(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
-    provider: dockspace::pointer_journal::PointerInputLease,
+    provider: &SurfaceLocalPointerProvider,
     watermark: u64,
 ) {
     let token = engine
@@ -1880,7 +1900,7 @@ fn republish_surface_with_active_provider(
         .expect("fresh staging measurements prepare");
     let mut measurement_frame = host.begin(engine);
     measurement_frame
-        .submit_pointer_journal(provider, empty_journal(watermark))
+        .submit_surface_pointer_journal(provider, empty_journal(watermark))
         .expect("measurement frame preserves the provider watermark");
     measurement_frame
         .submit_pointer_receiver_receipts(
@@ -1896,7 +1916,7 @@ fn republish_surface_with_active_provider(
 
     let mut paint_frame = host.begin(engine);
     paint_frame
-        .submit_pointer_journal(provider, empty_journal(watermark))
+        .submit_surface_pointer_journal(provider, empty_journal(watermark))
         .expect("paint frame preserves the provider watermark");
     paint_frame
         .submit_pointer_receiver_receipts(
@@ -1909,7 +1929,7 @@ fn republish_surface_with_active_provider(
 
     let mut observation_frame = host.begin(engine);
     observation_frame
-        .submit_pointer_journal(provider, empty_journal(watermark))
+        .submit_surface_pointer_journal(provider, empty_journal(watermark))
         .expect("observation frame preserves the provider watermark");
     observation_frame
         .submit_pointer_receiver_receipts(
@@ -1931,8 +1951,8 @@ fn resolved_journal_preview_does_not_commit_before_presentation_proof() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_inactive_tab(projection);
     let (drop_region, target) = point_inside_center_target(projection, target_tabs);
@@ -2058,8 +2078,8 @@ fn inactive_tab_continuation_waits_for_fresh_target_authority_then_commits() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_inactive_tab(projection);
     let (stale_target_region, stale_target) = point_inside_center_target(projection, target_tabs);
@@ -2162,8 +2182,8 @@ fn surface_local_splitter_press_move_release_commits_stream_owned_resize() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (splitter, press) = point_inside_splitter(projection, split);
     let moved = LogicalPoint::new(press.x() + 24.0, press.y()).expect("moved point is finite");
@@ -2261,8 +2281,8 @@ fn unavailable_sibling_preserves_pressed_click_until_an_unknown_source_release()
         &mut host,
         [(SURFACE, bounds()), (TARGET_SURFACE, bounds())],
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -2279,7 +2299,7 @@ fn unavailable_sibling_preserves_pressed_click_until_an_unknown_source_release()
         .expect("sibling unavailability prepares");
     let mut revoke_frame = host.begin(&engine);
     revoke_frame
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("revocation frame preserves the press watermark");
     revoke_frame
         .submit_pointer_receiver_receipts(
@@ -2311,7 +2331,7 @@ fn unavailable_sibling_preserves_pressed_click_until_an_unknown_source_release()
 
     let mut release_frame = host.begin(&engine);
     release_frame
-        .submit_pointer_journal(provider, release_journal(1, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, release_journal(1, Authority::Known(point)))
         .expect("matching release journal stages");
     let release_candidate = release_frame
         .pointer_receiver_candidates()
@@ -2356,15 +2376,15 @@ fn unknown_sibling_preserves_resize_until_an_unknown_source_release() {
         &mut host,
         [(SURFACE, bounds()), (TARGET_SURFACE, bounds())],
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (splitter, press) = point_inside_splitter(projection, split);
     let released = LogicalPoint::new(press.x() + 48.0, press.y()).expect("release point is finite");
 
     let mut press_frame = host.begin(&engine);
     press_frame
-        .submit_pointer_journal(provider, press_at_journal(0, press))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press))
         .expect("splitter press journal stages");
     let press_candidate = press_frame
         .pointer_receiver_candidates()
@@ -2408,7 +2428,7 @@ fn unknown_sibling_preserves_resize_until_an_unknown_source_release() {
 
     let mut emit_frame = host.begin(&engine);
     emit_frame
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("paint pass preserves the press watermark");
     emit_frame
         .submit_pointer_receiver_receipts(
@@ -2432,7 +2452,7 @@ fn unknown_sibling_preserves_resize_until_an_unknown_source_release() {
         .seal(&engine)
         .expect("revocation frame seals after observations");
     revoke_frame
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("revocation frame preserves the press watermark");
     revoke_frame
         .submit_pointer_receiver_receipts(
@@ -2471,7 +2491,7 @@ fn unknown_sibling_preserves_resize_until_an_unknown_source_release() {
         .seal(&engine)
         .expect("release frame seals after observations");
     release_frame
-        .submit_pointer_journal(provider, release_journal(1, Authority::Known(released)))
+        .submit_surface_pointer_journal(provider, release_journal(1, Authority::Known(released)))
         .expect("matching release journal stages");
     let release_candidate = release_frame
         .pointer_receiver_candidates()
@@ -2510,7 +2530,7 @@ fn unknown_sibling_preserves_resize_until_an_unknown_source_release() {
 
     let mut watermark_probe = host.begin(&engine);
     watermark_probe
-        .submit_pointer_journal(provider, empty_journal(2))
+        .submit_surface_pointer_journal(provider, empty_journal(2))
         .expect("accepted release advances the provider watermark");
     watermark_probe
         .submit_pointer_receiver_receipts(
@@ -2528,8 +2548,8 @@ fn surface_local_splitter_press_release_uses_the_release_position_without_a_move
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (splitter, press) = point_inside_splitter(projection, split);
     let released = LogicalPoint::new(press.x() + 48.0, press.y()).expect("release point is finite");
@@ -2598,13 +2618,13 @@ fn surface_local_tab_close_requires_a_matching_release() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(0, point))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, point))
         .expect("close press freezes one receiver candidate");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -2645,7 +2665,7 @@ fn surface_local_tab_close_requires_a_matching_release() {
     let release_projection = interaction(&engine);
     let mut release_frame = host.begin(&engine);
     release_frame
-        .submit_pointer_journal(provider, release_journal(1, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, release_journal(1, Authority::Known(point)))
         .expect("matching close release follows the press watermark");
     let release_candidate = release_frame
         .pointer_receiver_candidates()
@@ -2706,8 +2726,8 @@ fn journal_close_release_outside_consumes_without_opening_a_plan() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, press) = point_inside_tab_close(projection, ItemId::new(1));
     let outside = LogicalPoint::new(560.0, 420.0).expect("outside point is finite");
@@ -2752,8 +2772,8 @@ fn journal_close_release_preserves_blocked_and_unknown_terminal_reasons() {
         let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
         let mut host = TestPresentationHost::new(&mut engine);
         publish_surface(&mut engine, &mut host, SURFACE, bounds());
-        create_local_provider(&mut engine, &host);
-        let provider = engine.pointer_provider().expect("provider is live");
+        let provider = create_local_provider(&mut engine, &host);
+        let provider = &provider;
         let projection = interaction(&engine);
         let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
         arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -2776,8 +2796,8 @@ fn journal_close_move_out_and_back_release_inside_still_activates() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, press) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, press);
@@ -2790,7 +2810,7 @@ fn journal_close_move_out_and_back_release_inside_still_activates() {
     let move_projection = interaction(&engine);
     let mut move_frame = host.begin(&engine);
     move_frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(outside)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(outside)))
         .expect("move follows the press watermark");
     let candidate = move_frame
         .pointer_receiver_candidates()
@@ -2840,8 +2860,8 @@ fn journal_close_duplicate_release_cannot_open_or_reuse_again() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -2875,8 +2895,8 @@ fn journal_close_matching_second_click_reuses_the_existing_active_plan() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -2924,15 +2944,15 @@ fn journal_close_non_primary_release_does_not_consume_the_pressed_click() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
 
     let mut secondary = host.begin(&engine);
     secondary
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             button_release_journal(1, PointerButton::Secondary, Authority::Known(point)),
         )
@@ -2987,14 +3007,14 @@ fn journal_close_release_inside_does_not_activate_after_press_on_another_receive
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, close_point) = point_inside_tab_close(projection, ItemId::new(1));
     let (other_receiver, press_point) = point_inside_tab(projection, ItemId::new(1));
     let mut press = host.begin(&engine);
     press
-        .submit_pointer_journal(provider, press_at_journal(0, press_point))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press_point))
         .expect("press on another receiver freezes one candidate");
     let candidate = press
         .pointer_receiver_candidates()
@@ -3050,8 +3070,8 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3062,7 +3082,7 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
     let journal = release_journal(1, Authority::Known(point));
     let mut failed = host.begin(&engine);
     failed
-        .submit_pointer_journal(provider, journal.clone())
+        .submit_surface_pointer_journal(provider, journal.clone())
         .expect("release journal stages provisionally");
     let candidate = failed
         .pointer_receiver_candidates()
@@ -3110,7 +3130,7 @@ fn invalid_close_release_receipt_rolls_back_session_and_watermark_before_exact_r
     let retry_projection = interaction(&engine);
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("failed frame left the provider watermark at the press sequence");
     let retry_candidate = retry
         .pointer_receiver_candidates()
@@ -3153,8 +3173,8 @@ fn journal_close_does_not_reuse_a_vetoed_terminal_plan() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3177,7 +3197,7 @@ fn journal_close_does_not_reuse_a_vetoed_terminal_plan() {
     };
 
     let mut veto = host.begin(&engine);
-    veto.submit_pointer_journal(provider, empty_journal(2))
+    veto.submit_surface_pointer_journal(provider, empty_journal(2))
         .expect("veto frame preserves the pointer watermark");
     veto.submit_pointer_receiver_receipts(
         PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
@@ -3235,8 +3255,8 @@ fn journal_close_escape_is_a_formal_engine_input() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3271,8 +3291,8 @@ fn surface_escape_cannot_cancel_a_gesture_owned_by_another_surface() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3327,8 +3347,8 @@ fn native_escape_requires_the_exact_current_viewport_incarnation() {
     assert_ne!(current, stale);
     publish_native_snapshot(&mut engine, &mut host, current);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3391,8 +3411,8 @@ fn assert_close_terminal_edge_cancels(
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3414,7 +3434,7 @@ fn assert_close_terminal_edge_cancels(
     .expect("terminal edge journal is contiguous");
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("terminal edge follows the press watermark");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -3459,8 +3479,8 @@ fn journal_close_stream_cancel_prevents_a_successor_release_from_settling_it() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3515,30 +3535,26 @@ fn retiring_click_provider_or_host_cancels_pressed_state() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
-    arm_journal_close(&mut engine, &mut host, provider, close, point);
+    arm_journal_close(&mut engine, &mut host, &provider, close, point);
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(1),
+        "the committed close press advances the producer watermark",
+    );
+    let mut receipt = provider
+        .drain()
+        .expect("the committed close producer has no frame in flight");
     let retirement = engine
-        .retire_pointer_provider(provider)
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("provider retirement succeeds");
-    assert!(matches!(
-        retirement.interaction_events(),
-        [event] if matches!(
-            event.kind(),
-            dockspace::interaction::InteractionEventKind::Cancelled {
-                status: InteractionStatus::Pressed { .. },
-                reason: InteractionCancelReason::PointerProviderRetired,
-            }
-        )
-    ));
+    assert!(retirement.interaction_changed());
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 
-    create_local_provider(&mut engine, &host);
-    let successor = engine
-        .pointer_provider()
-        .expect("successor provider is live");
+    let successor = create_local_provider(&mut engine, &host);
+    let successor = &successor;
     arm_journal_close(&mut engine, &mut host, successor, close, point);
     host.close(&mut engine)
         .expect("presentation host retirement succeeds");
@@ -3551,15 +3567,15 @@ fn click_survives_a_new_emission_with_the_same_requirement_and_coordinates() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
     let session = arm_journal_close(&mut engine, &mut host, provider, close, point);
 
     let mut emission = host.begin(&engine);
     emission
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("emission preserves the active provider watermark");
     emission
         .submit_pointer_receiver_receipts(
@@ -3599,8 +3615,8 @@ fn policy_source_and_presentation_lineage_changes_cancel_pressed_clicks() {
         let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
         let mut host = TestPresentationHost::new(&mut engine);
         publish_surface(&mut engine, &mut host, SURFACE, bounds());
-        create_local_provider(&mut engine, &host);
-        let provider = engine.pointer_provider().expect("provider is live");
+        let provider = create_local_provider(&mut engine, &host);
+        let provider = &provider;
         let projection = interaction(&engine);
         let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
         arm_journal_close(&mut engine, &mut host, provider, close, point);
@@ -3646,8 +3662,8 @@ fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observe
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_tab(projection, ItemId::new(1));
     let (drop_region, target) = point_inside_center_target(projection, target_tabs);
@@ -3724,7 +3740,7 @@ fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observe
 
     let mut paint_frame = host.begin(&engine);
     paint_frame
-        .submit_pointer_journal(provider, empty_journal(2))
+        .submit_surface_pointer_journal(provider, empty_journal(2))
         .expect("paint frame preserves the provider watermark");
     paint_frame
         .submit_pointer_receiver_receipts(
@@ -3808,8 +3824,8 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
     let target = point_without_hover_receiver(projection, press);
@@ -3890,7 +3906,7 @@ fn journal_partial_subtree_known_none_uses_core_reserved_contained_identity() {
 
     let mut paint_frame = host.begin(&engine);
     paint_frame
-        .submit_pointer_journal(provider, empty_journal(2))
+        .submit_surface_pointer_journal(provider, empty_journal(2))
         .expect("paint frame preserves the provider watermark");
     paint_frame
         .submit_pointer_receiver_receipts(
@@ -3984,8 +4000,8 @@ fn journal_known_none_contained_fallback_is_rejected_by_core_policy() {
     let mut engine = DockEngine::new(workspace, policy).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
     let target = point_without_hover_receiver(projection, press);
@@ -4029,8 +4045,8 @@ fn journal_complete_root_known_none_reuses_root_and_mints_only_floating_identity
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
     let target = point_without_hover_receiver(projection, press);
@@ -4106,8 +4122,8 @@ fn journal_partial_payload_installs_core_reserved_root_on_rootless_background() 
         .expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_tab(projection, ItemId::new(1));
     let (background_region, target) = point_inside_surface_background(projection);
@@ -4196,8 +4212,8 @@ fn journal_contained_release_waits_for_the_release_edge_preview() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_group, press) = point_inside_tab_group(projection, ItemId::new(1));
     let first_target = point_without_hover_receiver(projection, press);
@@ -4245,8 +4261,8 @@ fn journal_contained_resize_commits_only_after_its_exact_preview_is_presented() 
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid workspace");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (resize, press) = point_inside_contained_resize(
         projection,
@@ -4324,7 +4340,7 @@ fn journal_contained_resize_commits_only_after_its_exact_preview_is_presented() 
 
     let mut paint_frame = host.begin(&engine);
     paint_frame
-        .submit_pointer_journal(provider, empty_journal(2))
+        .submit_surface_pointer_journal(provider, empty_journal(2))
         .expect("paint frame preserves the provider watermark");
     paint_frame
         .submit_pointer_receiver_receipts(
@@ -4393,8 +4409,8 @@ fn journal_contained_title_drag_is_owned_by_the_pointer_stream() {
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid workspace");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (title, press) = point_inside_contained_title(projection, CONTAINED_FLOATING);
     let moved = LogicalPoint::new(press.x() + 32.0, press.y())
@@ -4492,8 +4508,8 @@ fn journal_contained_close_requires_a_matching_release() {
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid workspace");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_contained_close(projection, CONTAINED_FLOATING);
     let frame_blocker = projection
@@ -4512,7 +4528,7 @@ fn journal_contained_close_requires_a_matching_release() {
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(0, point))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, point))
         .expect("contained close press freezes one receiver candidate");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -4557,7 +4573,7 @@ fn journal_contained_close_requires_a_matching_release() {
     let release_projection = interaction(&engine);
     let mut release_frame = host.begin(&engine);
     release_frame
-        .submit_pointer_journal(provider, release_journal(1, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, release_journal(1, Authority::Known(point)))
         .expect("contained close release follows the press watermark");
     let release_candidate = release_frame
         .pointer_receiver_candidates()
@@ -4617,8 +4633,8 @@ fn surface_local_tab_press_subthreshold_move_release_is_ticket_causal() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (tab, press) = point_inside_inactive_tab(projection);
     let moved = LogicalPoint::new(press.x() + 1.0, press.y()).expect("move remains finite");
@@ -4765,6 +4781,7 @@ fn authoritative_tab_list_control_then_row_click_selects_and_closes() {
 
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let (row, point) = point_inside_click_region(&engine, |kind| {
         matches!(
             kind,
@@ -4827,6 +4844,7 @@ fn tab_list_row_click_survives_same_output_presentation_refresh() {
 
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let (row, point) = point_inside_click_region(&engine, |kind| {
         matches!(
             kind,
@@ -4899,8 +4917,8 @@ fn authoritative_selected_menu_row_closes_without_workspace_advance() {
         )
     });
     let before = engine.version();
-    submit_exact_click_edge(&mut engine, &mut host, provider, 0, true, row, point);
-    let released = submit_exact_click_edge(&mut engine, &mut host, provider, 1, false, row, point);
+    submit_exact_click_edge(&mut engine, &mut host, &provider, 0, true, row, point);
+    let released = submit_exact_click_edge(&mut engine, &mut host, &provider, 1, false, row, point);
 
     assert!(matches!(
         released.reduced_pointer_edges()[0].interaction_outcomes(),
@@ -4914,11 +4932,21 @@ fn authoritative_selected_menu_row_closes_without_workspace_advance() {
     assert!(released.events().is_empty());
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 
-    commit_empty_pointer_journal(&mut engine, &mut host, provider, 2);
+    commit_empty_pointer_journal(&mut engine, &mut host, &provider, 2);
 
-    engine
-        .retire_pointer_provider(provider)
+    assert_eq!(
+        provider.committed_through(),
+        PointerEdgeSequence::new(2),
+        "the committed menu frames advance the producer watermark",
+    );
+    let mut receipt = provider
+        .drain()
+        .expect("the idle menu producer has no frame in flight");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("idle provider retirement is valid");
+    assert!(retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
     publish_surface_with(
         &mut engine,
         &mut host,
@@ -4950,6 +4978,7 @@ fn authoritative_menu_backdrop_dismisses_the_active_menu_atomically() {
 
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let projection = interaction(&engine);
     let session = projection
         .plan()
@@ -5040,6 +5069,7 @@ fn authoritative_menu_frame_blocker_consumes_without_dismissing() {
 
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let projection = interaction(&engine);
     let session = projection
         .plan()
@@ -5121,6 +5151,7 @@ fn menu_row_wins_over_a_claimed_frame_blocker_without_advancing_watermark() {
 
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let projection = interaction(&engine);
     let session = projection
         .plan()
@@ -5154,7 +5185,7 @@ fn menu_row_wins_over_a_claimed_frame_blocker_without_advancing_watermark() {
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             pointer_edge_journal(
                 0,
@@ -5246,8 +5277,8 @@ fn policy_change_after_authoritative_control_press_cancels_atomically() {
         overflowing_tab_bounds(),
         overflowing_tab_profile(),
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("pointer provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (control, point) = point_inside_click_region(&engine, |kind| {
         matches!(
             kind,
@@ -5265,7 +5296,7 @@ fn policy_change_after_authoritative_control_press_cancels_atomically() {
     ));
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("policy frame preserves the committed pointer watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -5297,7 +5328,7 @@ fn policy_change_after_authoritative_control_press_cancels_atomically() {
 
     let mut watermark_probe = host.begin(&engine);
     watermark_probe
-        .submit_pointer_journal(provider, empty_journal(1))
+        .submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("policy cancellation neither replays nor skips the provider watermark");
     watermark_probe
         .submit_pointer_receiver_receipts(
@@ -5314,8 +5345,8 @@ fn surface_local_tab_exact_threshold_move_begins_drag() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (tab, press) = point_inside_inactive_tab(projection);
     let moved = LogicalPoint::new(press.x() + 6.0, press.y()).expect("move remains finite");
@@ -5387,8 +5418,8 @@ fn surface_local_tab_wrong_receiver_region_rejects_atomically() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (correct_tab, press) = point_inside_inactive_tab(projection);
     let wrong_tab = projection
@@ -5422,7 +5453,7 @@ fn surface_local_tab_wrong_receiver_region_rejects_atomically() {
     .expect("journal is contiguous");
     let mut failed = host.begin(&engine);
     failed
-        .submit_pointer_journal(provider, journal.clone())
+        .submit_surface_pointer_journal(provider, journal.clone())
         .expect("journal prepares");
     let failed_candidate = failed
         .pointer_receiver_candidates()
@@ -5463,7 +5494,7 @@ fn surface_local_tab_wrong_receiver_region_rejects_atomically() {
     let retry_projection = interaction(&engine);
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(provider, journal)
+        .submit_surface_pointer_journal(provider, journal)
         .expect("failed receipt did not advance the journal watermark");
     let retry_candidate = retry
         .pointer_receiver_candidates()
@@ -5501,12 +5532,12 @@ fn host_frame_commits_journal_only_after_exact_receipts() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("first journal is accepted provisionally");
     assert_eq!(
         frame
@@ -5532,7 +5563,7 @@ fn host_frame_commits_journal_only_after_exact_receipts() {
     ));
 
     let mut next = host.begin(&engine);
-    next.submit_pointer_journal(provider, empty_journal(1))
+    next.submit_surface_pointer_journal(provider, empty_journal(1))
         .expect("committed journal advanced the provider watermark");
     next.submit_pointer_receiver_receipts(
         PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
@@ -5551,8 +5582,8 @@ fn host_frame_preserves_semantic_and_pointer_journal_arrival_order() {
         let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
         let mut host = TestPresentationHost::new(&mut engine);
         publish_surface(&mut engine, &mut host, SURFACE, bounds());
-        create_local_provider(&mut engine, &host);
-        let provider = engine.pointer_provider().expect("provider is live");
+        let provider = create_local_provider(&mut engine, &host);
+        let provider = &provider;
 
         let mut frame = host.begin(&engine);
         if semantic_first {
@@ -5565,7 +5596,7 @@ fn host_frame_preserves_semantic_and_pointer_journal_arrival_order() {
                 .expect("semantic input stages before the journal");
         }
         frame
-            .submit_pointer_journal(provider, press_journal(0))
+            .submit_surface_pointer_journal(provider, press_journal(0))
             .expect("pointer journal stages at its arrival position");
         if !semantic_first {
             frame
@@ -5617,12 +5648,12 @@ fn empty_pointer_checkpoint_does_not_consume_a_raw_causal_ordinal() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(0))
+        .submit_surface_pointer_journal(provider, empty_journal(0))
         .expect("empty provider checkpoint stages");
     frame
         .submit_pointer_receiver_receipts(
@@ -5651,12 +5682,12 @@ fn semantic_input_is_rejected_while_pointer_receipt_is_pending() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("pointer challenge is staged");
 
     assert_eq!(
@@ -5690,8 +5721,8 @@ fn same_frame_menu_open_does_not_authorize_an_unpresented_popup_backdrop() {
         overflowing_tab_bounds(),
         overflowing_tab_profile(),
     );
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("pointer provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     let projection = frame
@@ -5722,7 +5753,7 @@ fn same_frame_menu_open_does_not_authorize_an_unpresented_popup_backdrop() {
         )
         .expect("menu activation is sequenced before the pointer edge");
     frame
-        .submit_pointer_journal(provider, moved_journal(0, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, moved_journal(0, Authority::Known(point)))
         .expect("same-frame pointer segment remains bound to the sealed output");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -5784,8 +5815,8 @@ fn scene_semantics_coexist_with_pointer_provider() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let ready = engine
         .scene()
         .ready_surface(SURFACE)
@@ -5812,7 +5843,7 @@ fn scene_semantics_coexist_with_pointer_provider() {
         )
         .expect("scene-bound semantic input is valid with a pointer provider");
     frame
-        .submit_pointer_journal(provider, empty_journal(0))
+        .submit_surface_pointer_journal(provider, empty_journal(0))
         .expect("provider publishes its complete empty journal");
     frame
         .submit_pointer_receiver_receipts(
@@ -5894,6 +5925,7 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
     );
     let provider = open_overflow_menu_through_journal(&mut engine, &mut host);
     let provider = republish_open_overflow_menu(&mut engine, &mut host, provider);
+    let provider = &provider;
     let projection = engine
         .interaction_projection(SURFACE)
         .expect("the presented popup has semantic authority");
@@ -5935,7 +5967,7 @@ fn clipped_menu_row_remains_an_exact_semantic_receiver() {
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, empty_journal(0))
+        .submit_surface_pointer_journal(provider, empty_journal(0))
         .expect("the provider publishes its complete empty continuation");
     frame
         .submit_pointer_receiver_receipts(
@@ -6134,12 +6166,12 @@ fn host_frame_interleaves_pointer_segments_with_semantic_facts() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("press segment stages first");
     frame
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &frame))
@@ -6154,7 +6186,7 @@ fn host_frame_interleaves_pointer_segments_with_semantic_facts() {
 
     let moved = LogicalPoint::new(320.0, 254.0).expect("finite move point");
     frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
         .expect("move segment is contiguous with the press segment");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -6189,20 +6221,20 @@ fn incomplete_later_pointer_segment_keeps_every_segment_uncommitted() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let before_version = engine.version();
     let before_interaction = engine.interaction().clone();
 
     let mut incomplete = host.begin(&engine);
     incomplete
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("first segment stages");
     incomplete
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &incomplete))
         .expect("first segment receipts stage");
     incomplete
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             moved_journal(
                 1,
@@ -6214,14 +6246,14 @@ fn incomplete_later_pointer_segment_keeps_every_segment_uncommitted() {
     assert!(matches!(
         incomplete.finish(&mut engine),
         Err(EngineError::HostFramePointerReceiverReceiptsMissing { provider: actual })
-            if actual == provider
+            if actual == provider.lease()
     ));
     assert_eq!(engine.version(), before_version);
     assert_eq!(engine.interaction(), &before_interaction);
 
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("failed later segment did not advance the first segment watermark");
     retry
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &retry))
@@ -6239,8 +6271,8 @@ fn same_segment_drag_release_requires_delivery_and_hover_probe_set() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source, press) = point_inside_inactive_tab(projection);
     let moved = point_without_hover_receiver(projection, press);
@@ -6292,7 +6324,7 @@ fn same_segment_drag_release_requires_delivery_and_hover_probe_set() {
     );
 
     frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             pointer_edge_journal(
                 2,
@@ -6345,8 +6377,8 @@ fn known_hover_must_echo_the_exact_edge_point() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source, press) = point_inside_inactive_tab(projection);
     let edge_point = point_without_hover_receiver(projection, press);
@@ -6362,7 +6394,7 @@ fn known_hover_must_echo_the_exact_edge_point() {
     republish_surface_with_active_provider(&mut engine, &mut host, provider, 2);
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(2, Authority::Known(edge_point)))
+        .submit_surface_pointer_journal(provider, moved_journal(2, Authority::Known(edge_point)))
         .expect("active drag move is provisional");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -6402,8 +6434,8 @@ fn unknown_local_point_requires_a_per_probe_unknown_hover_answer() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source, press) = point_inside_inactive_tab(projection);
     let target = point_without_hover_receiver(projection, press);
@@ -6420,7 +6452,7 @@ fn unknown_local_point_requires_a_per_probe_unknown_hover_answer() {
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             moved_journal(
                 2,
@@ -6460,7 +6492,7 @@ fn unknown_local_point_requires_a_per_probe_unknown_hover_answer() {
 
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(
+        .submit_surface_pointer_journal(
             provider,
             moved_journal(
                 2,
@@ -6502,8 +6534,8 @@ fn transition_preserves_stream_incarnation_for_cancel_then_same_pointer_reuse() 
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let point = LogicalPoint::new(96.0, 24.0).expect("test point is valid");
     let reason =
         dockspace::pointer_journal::PointerStreamCancelReason::ExplicitPlatformCancellation;
@@ -6551,8 +6583,8 @@ fn stream_cancellation_terminates_an_active_drag_exactly_once() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_inactive_tab(projection);
     let (target_region, target) = point_inside_center_target(projection, target_tabs);
@@ -6676,8 +6708,8 @@ fn assert_authoritative_capture_loss_terminates_active_drag(capture_owner: Point
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source_tab, press) = point_inside_inactive_tab(projection);
     let (target_region, target) = point_inside_center_target(projection, target_tabs);
@@ -6863,22 +6895,24 @@ fn missing_receipts_do_not_consume_the_journal_watermark() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut failed = host.begin(&engine);
     failed
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("journal prepares before receipts");
     complete(&engine, &mut failed);
     assert_eq!(
         failed.finish(&mut engine),
-        Err(EngineError::HostFramePointerReceiverReceiptsMissing { provider })
+        Err(EngineError::HostFramePointerReceiverReceiptsMissing {
+            provider: provider.lease(),
+        })
     );
 
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("failed frame did not advance the watermark");
     retry
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &retry))
@@ -6892,12 +6926,12 @@ fn failed_frame_receipts_cannot_replay_into_a_new_attempt() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut abandoned = host.begin(&engine);
     abandoned
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("journal prepares before receipts");
     let stale_receipts = primary_press_receipts(&engine, &abandoned);
     complete(&engine, &mut abandoned);
@@ -6908,7 +6942,7 @@ fn failed_frame_receipts_cannot_replay_into_a_new_attempt() {
 
     let mut replay = host.begin(&engine);
     replay
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("retry has the same uncommitted provider sequence");
     assert_eq!(
         replay.submit_pointer_receiver_receipts(stale_receipts),
@@ -6924,7 +6958,7 @@ fn failed_frame_receipts_cannot_replay_into_a_new_attempt() {
 
     let mut retry = host.begin(&engine);
     retry
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("rejected replay left the provider watermark unchanged");
     retry
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &retry))
@@ -6946,12 +6980,12 @@ fn semantically_identical_new_emission_does_not_invalidate_frame_begin_receipt()
     let emit = host.begin(&engine);
     let emit = support::complete_host_frame_with_current_outputs(&engine, emit);
     host.finish_presentation(emit, &mut engine);
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_journal(0))
+        .submit_surface_pointer_journal(provider, press_journal(0))
         .expect("journal prepares against the prior interactive authority");
     frame
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &frame))
@@ -6968,18 +7002,16 @@ fn semantically_identical_new_emission_does_not_invalidate_frame_begin_receipt()
 fn retiring_a_surface_local_presentation_host_retires_its_pointer_provider() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let host = TestPresentationHost::new(&mut engine);
-    create_local_provider(&mut engine, &host);
-    let retired = engine.pointer_provider().expect("provider is live");
+    let retired = create_local_provider(&mut engine, &host);
+    let retired = &retired;
 
     host.close(&mut engine)
         .expect("presentation host retirement succeeds");
     assert_eq!(engine.pointer_provider(), None);
 
     let successor = TestPresentationHost::new(&mut engine);
-    create_local_provider(&mut engine, &successor);
-    let replacement = engine
-        .pointer_provider()
-        .expect("successor provider is live");
+    let replacement = create_local_provider(&mut engine, &successor);
+    let replacement = &replacement;
     assert_ne!(replacement, retired);
 }
 
@@ -6993,7 +7025,7 @@ fn native_surface_local_provider_retires_when_its_binding_is_reincarnated() {
     let provider_a = create_native_provider(&mut engine, &host, binding_a);
 
     let mut arm = host.begin(&engine);
-    arm.submit_pointer_journal(provider_a, press_journal(0))
+    arm.submit_surface_pointer_journal(&provider_a, press_journal(0))
         .expect("A1 press journal is valid");
     arm.submit_pointer_receiver_receipts(primary_press_receipts(&engine, &arm))
         .expect("A1 press receipt is exact");
@@ -7006,7 +7038,7 @@ fn native_surface_local_provider_retires_when_its_binding_is_reincarnated() {
 
     let mut rebind = host.begin(&engine);
     rebind
-        .submit_pointer_journal(provider_a, empty_journal(1))
+        .submit_surface_pointer_journal(&provider_a, empty_journal(1))
         .expect("the rebind frame preserves the A1 provider watermark");
     rebind
         .submit_pointer_receiver_receipts(
@@ -7032,24 +7064,30 @@ fn native_surface_local_provider_retires_when_its_binding_is_reincarnated() {
     assert_eq!(engine.pointer_provider(), None);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
     assert!(transition.reduced_pointer_edges().is_empty());
-    assert!(matches!(
-        engine.retire_pointer_provider(provider_a),
-        Err(EngineError::PointerJournal {
-            source: PointerJournalLedgerError::RetiredLease {
-                lease,
-                committed_through,
-            },
-        }) if lease == provider_a && committed_through == PointerEdgeSequence::new(1)
-    ));
+    assert_eq!(
+        provider_a.committed_through(),
+        PointerEdgeSequence::new(1),
+        "the final committed A1 frame advances its producer watermark",
+    );
+    let provider_a_lease = provider_a.lease();
+    let mut provider_a_receipt = provider_a
+        .drain()
+        .expect("the retired A1 producer has no frame in flight");
+    let retirement = engine
+        .retire_quiesced_surface_local_pointer_provider(&mut provider_a_receipt)
+        .expect("the already-retired A1 producer compacts through its exact drain proof");
+    assert!(!retirement.repaint_required());
+    assert!(!retirement.interaction_changed());
+    assert!(provider_a_receipt.is_consumed());
 
     publish_native_snapshot(&mut engine, &mut host, binding_b);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
     let provider_b = create_native_provider(&mut engine, &host, binding_b);
-    assert_ne!(provider_b, provider_a);
+    assert_ne!(provider_b.lease(), provider_a_lease);
 
     let mut successor = host.begin(&engine);
     successor
-        .submit_pointer_journal(provider_b, press_journal(0))
+        .submit_surface_pointer_journal(&provider_b, press_journal(0))
         .expect("A2 press journal is valid");
     successor
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &successor))
@@ -7067,12 +7105,11 @@ fn retiring_a_pointer_provider_atomically_cancels_its_gesture_and_unblocks_the_s
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let retired = engine.pointer_provider().expect("provider is live");
+    let retired = create_local_provider(&mut engine, &host);
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(retired, press_journal(0))
+        .submit_surface_pointer_journal(&retired, press_journal(0))
         .expect("press journal is valid");
     frame
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &frame))
@@ -7084,43 +7121,36 @@ fn retiring_a_pointer_provider_atomically_cancels_its_gesture_and_unblocks_the_s
         InteractionStatus::Armed { .. }
     ));
 
+    assert_eq!(
+        retired.committed_through(),
+        PointerEdgeSequence::new(1),
+        "the committed press frame advances the retiring producer watermark",
+    );
+    let retired_lease = retired.lease();
+    let mut receipt = retired
+        .drain()
+        .expect("the retiring producer has no frame in flight");
     let retirement = engine
-        .retire_pointer_provider(retired)
+        .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("exact live provider retirement succeeds");
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
-    assert!(matches!(
-        retirement.interaction_events(),
-        [event]
-            if matches!(
-                event.cause(),
-                ReductionCause::PointerProviderRetirement { provider, .. }
-                    if provider == retired
-            ) && matches!(
-                event.kind(),
-                dockspace::interaction::InteractionEventKind::Cancelled {
-                    status: InteractionStatus::Armed { .. },
-                    reason: InteractionCancelReason::PointerProviderRetired,
-                }
-            )
-    ));
+    assert!(retirement.interaction_changed());
+    assert!(receipt.is_consumed());
 
     let tick_after_retirement = engine.last_reducer_tick();
-    assert!(matches!(
-        engine.retire_pointer_provider(retired),
-        Err(EngineError::PointerJournal {
-            source: PointerJournalLedgerError::RetiredLease { lease, .. },
-        }) if lease == retired
-    ));
+    assert!(
+        engine
+            .retire_quiesced_surface_local_pointer_provider(&mut receipt)
+            .is_err(),
+        "one affine drain receipt cannot be consumed twice"
+    );
     assert_eq!(engine.last_reducer_tick(), tick_after_retirement);
 
-    create_local_provider(&mut engine, &host);
-    let successor = engine
-        .pointer_provider()
-        .expect("successor provider is live");
-    assert_ne!(successor, retired);
+    let successor = create_local_provider(&mut engine, &host);
+    assert_ne!(successor.lease(), retired_lease);
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(successor, press_journal(0))
+        .submit_surface_pointer_journal(&successor, press_journal(0))
         .expect("successor press journal is valid");
     frame
         .submit_pointer_receiver_receipts(primary_press_receipts(&engine, &frame))
@@ -7138,14 +7168,14 @@ fn later_segment_candidates_follow_the_exact_reduced_receiver_prefix() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (_, press) = point_inside_inactive_tab(projection);
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, press_at_journal(0, press))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press))
         .expect("press journal stages");
     let press_candidate = frame
         .pointer_receiver_candidates()
@@ -7165,7 +7195,7 @@ fn later_segment_candidates_follow_the_exact_reduced_receiver_prefix() {
         .expect("press receipt reduces the private input prefix");
 
     frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(press)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(press)))
         .expect("move follows the reduced press prefix");
     let move_candidate = &frame
         .pointer_receiver_candidates()
@@ -7183,13 +7213,13 @@ fn idle_move_and_release_request_no_receiver_probes() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let point = LogicalPoint::new(96.0, 24.0).expect("idle point is finite");
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(0, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, moved_journal(0, Authority::Known(point)))
         .expect("idle move stages");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -7209,7 +7239,7 @@ fn idle_move_and_release_request_no_receiver_probes() {
         )
         .expect("idle move reduces");
     frame
-        .submit_pointer_journal(provider, release_journal(1, Authority::Known(point)))
+        .submit_surface_pointer_journal(provider, release_journal(1, Authority::Known(point)))
         .expect("idle release follows the move");
     let release_candidate = frame
         .pointer_receiver_candidates()
@@ -7246,8 +7276,8 @@ fn dragging_move_and_release_request_only_hover() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let projection = interaction(&engine);
     let (source, press) = point_inside_inactive_tab(projection);
     let target = point_without_hover_receiver(projection, press);
@@ -7269,7 +7299,7 @@ fn dragging_move_and_release_request_only_hover() {
 
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(2, Authority::Known(target)))
+        .submit_surface_pointer_journal(provider, moved_journal(2, Authority::Known(target)))
         .expect("active drag move stages");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -7302,7 +7332,7 @@ fn dragging_move_and_release_request_only_hover() {
         )
         .expect("active drag move reduces");
     frame
-        .submit_pointer_journal(provider, release_journal(3, Authority::Known(target)))
+        .submit_surface_pointer_journal(provider, release_journal(3, Authority::Known(target)))
         .expect("active drag release follows the move");
     let release_candidate = frame
         .pointer_receiver_candidates()
@@ -7331,7 +7361,7 @@ fn dragging_move_and_release_request_only_hover() {
 type PendingDragReleaseFixture = (
     DockEngine,
     TestPresentationHost,
-    dockspace::pointer_journal::PointerInputLease,
+    SurfaceLocalPointerProvider,
     Workspace,
     NodeId,
     (
@@ -7352,8 +7382,7 @@ fn pending_drag_release_fixture_with_evidence(
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
     let projection = interaction(&engine);
     let (source, press) = point_inside_tab(projection, ItemId::new(1));
     let first_target = point_without_hover_receiver(projection, press);
@@ -7361,13 +7390,13 @@ fn pending_drag_release_fixture_with_evidence(
     begin_journal_drag(
         &mut engine,
         &mut host,
-        provider,
+        &provider,
         source,
         press,
         first_target,
         PointerReceiverHoverHitDisposition::NoReceiver,
     );
-    paint_active_journal_drag(&mut engine, &mut host, provider);
+    paint_active_journal_drag(&mut engine, &mut host, &provider);
     let before = engine.workspace().clone();
 
     let mut frame = host.begin(&engine);
@@ -7384,7 +7413,7 @@ fn pending_drag_release_fixture_with_evidence(
     .expect("new target hover is bound to the presented output");
 
     frame
-        .submit_pointer_journal(provider, moved_journal(2, Authority::Known(target)))
+        .submit_surface_pointer_journal(&provider, moved_journal(2, Authority::Known(target)))
         .expect("move to the new target stages");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -7401,7 +7430,7 @@ fn pending_drag_release_fixture_with_evidence(
         .expect("move publishes the new preview");
 
     frame
-        .submit_pointer_journal(provider, release_journal(3, Authority::Known(target)))
+        .submit_surface_pointer_journal(&provider, release_journal(3, Authority::Known(target)))
         .expect("release follows the move");
     let release_candidate = frame
         .pointer_receiver_candidates()
@@ -7500,7 +7529,7 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
         .seal(&engine)
         .expect("unknown release-observation frame seals");
     unknown_frame
-        .submit_pointer_journal(provider, empty_journal(4))
+        .submit_surface_pointer_journal(&provider, empty_journal(4))
         .expect("unknown observation preserves the release watermark");
     unknown_frame
         .submit_pointer_receiver_receipts(
@@ -7515,7 +7544,7 @@ fn move_then_release_with_new_preview_waits_for_exact_presentation() {
 
     let mut settle_frame = host.begin(&engine);
     settle_frame
-        .submit_pointer_journal(provider, empty_journal(4))
+        .submit_surface_pointer_journal(&provider, empty_journal(4))
         .expect("settlement frame preserves the consumed release watermark");
     settle_frame
         .submit_pointer_receiver_receipts(
@@ -7542,7 +7571,7 @@ fn terminal_not_presented_output_cancels_the_release_obligation() {
         .seal(&engine)
         .expect("not-presented release-observation frame seals");
     frame
-        .submit_pointer_journal(provider, empty_journal(4))
+        .submit_surface_pointer_journal(&provider, empty_journal(4))
         .expect("terminal observation preserves the release watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -7626,7 +7655,7 @@ fn policy_change_cancels_an_unpresented_release_obligation() {
     let mut policy = engine.policy().clone();
     policy.set_close_capability(CloseCapability::Disabled);
     frame
-        .submit_pointer_journal(provider, empty_journal(4))
+        .submit_surface_pointer_journal(&provider, empty_journal(4))
         .expect("policy frame preserves the release watermark");
     frame
         .submit_pointer_receiver_receipts(
@@ -7680,7 +7709,7 @@ fn new_authoritative_press_replaces_an_unpresented_release_obligation() {
         PointerReceiverDelivery::new(projection, PointerReceiverDeliveryDisposition::Dock(source))
             .expect("replacement tab receives the press");
     frame
-        .submit_pointer_journal(provider, press_at_journal(4, point))
+        .submit_surface_pointer_journal(&provider, press_at_journal(4, point))
         .expect("replacement press journal stages");
     let candidate = frame
         .pointer_receiver_candidates()
@@ -7723,15 +7752,14 @@ fn new_authoritative_press_replaces_an_unpresented_release_obligation() {
 fn pending_contained_transform_release_fixture() -> (
     DockEngine,
     TestPresentationHost,
-    dockspace::pointer_journal::PointerInputLease,
+    SurfaceLocalPointerProvider,
     LogicalRect,
 ) {
     let mut engine =
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
     let projection = interaction(&engine);
     let (resize, press) = point_inside_contained_resize(
         projection,
@@ -7755,7 +7783,7 @@ fn pending_contained_transform_release_fixture() -> (
             .expect("contained resize handle receives the press");
     submit_pointer_edge_with_observation(
         &mut press_frame,
-        provider,
+        &provider,
         press_at_journal(0, press),
         PointerReceiverObservation::Presented(
             PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
@@ -7770,13 +7798,13 @@ fn pending_contained_transform_release_fixture() -> (
     let mut release_frame = host.begin(&engine);
     submit_pointer_edge_with_observation(
         &mut release_frame,
-        provider,
+        &provider,
         moved_journal(1, Authority::Known(moved)),
         PointerReceiverObservation::NotApplicable,
     );
     submit_pointer_edge_with_observation(
         &mut release_frame,
-        provider,
+        &provider,
         release_journal(2, Authority::Known(moved)),
         PointerReceiverObservation::NotApplicable,
     );
@@ -7838,7 +7866,7 @@ fn contained_move_then_release_with_new_preview_waits_for_exact_presentation() {
 
     let mut settle_frame = host.begin(&engine);
     settle_frame
-        .submit_pointer_journal(provider, empty_journal(3))
+        .submit_surface_pointer_journal(&provider, empty_journal(3))
         .expect("settlement frame preserves the release watermark");
     settle_frame
         .submit_pointer_receiver_receipts(
@@ -7918,13 +7946,13 @@ fn resizing_move_and_release_request_no_fresh_receiver_probes() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (splitter, press) = point_inside_splitter(interaction(&engine), split);
 
     let mut press_frame = host.begin(&engine);
     press_frame
-        .submit_pointer_journal(provider, press_at_journal(0, press))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press))
         .expect("splitter press journal stages");
     let press_candidate = press_frame
         .pointer_receiver_candidates()
@@ -7964,7 +7992,7 @@ fn resizing_move_and_release_request_no_fresh_receiver_probes() {
     let released = LogicalPoint::new(press.x() + 48.0, press.y()).expect("release point is finite");
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
         .expect("active resize move stages");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -7984,7 +8012,7 @@ fn resizing_move_and_release_request_no_fresh_receiver_probes() {
         )
         .expect("active resize move reduces");
     frame
-        .submit_pointer_journal(provider, release_journal(2, Authority::Known(released)))
+        .submit_surface_pointer_journal(provider, release_journal(2, Authority::Known(released)))
         .expect("active resize release follows the move");
     let release_candidate = frame
         .pointer_receiver_candidates()
@@ -8016,8 +8044,8 @@ fn contained_transform_move_and_release_request_no_fresh_receiver_probes() {
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (resize, press) = point_inside_contained_resize(
         interaction(&engine),
         CONTAINED_FLOATING,
@@ -8026,7 +8054,7 @@ fn contained_transform_move_and_release_request_no_fresh_receiver_probes() {
 
     let mut press_frame = host.begin(&engine);
     press_frame
-        .submit_pointer_journal(provider, press_at_journal(0, press))
+        .submit_surface_pointer_journal(provider, press_at_journal(0, press))
         .expect("contained resize press journal stages");
     let press_candidate = press_frame
         .pointer_receiver_candidates()
@@ -8064,7 +8092,7 @@ fn contained_transform_move_and_release_request_no_fresh_receiver_probes() {
     let released = LogicalPoint::new(press.x() + 48.0, press.y()).expect("release point is finite");
     let mut frame = host.begin(&engine);
     frame
-        .submit_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
+        .submit_surface_pointer_journal(provider, moved_journal(1, Authority::Known(moved)))
         .expect("active contained transform move stages");
     let move_candidate = frame
         .pointer_receiver_candidates()
@@ -8084,7 +8112,7 @@ fn contained_transform_move_and_release_request_no_fresh_receiver_probes() {
         )
         .expect("active contained transform move reduces");
     frame
-        .submit_pointer_journal(provider, release_journal(2, Authority::Known(released)))
+        .submit_surface_pointer_journal(provider, release_journal(2, Authority::Known(released)))
         .expect("active contained transform release follows the move");
     let release_candidate = frame
         .pointer_receiver_candidates()
@@ -8115,8 +8143,8 @@ fn unknown_capture_terminal_release_cancels_pressed_once_and_allows_next_press()
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (close, point) = point_inside_tab_close(interaction(&engine), ItemId::new(1));
 
     let pressed = submit_dock_press_after(&mut engine, &mut host, provider, close, point, 0);
@@ -8153,8 +8181,8 @@ fn unknown_capture_terminal_release_cancels_armed_once_and_allows_next_press() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (tab, point) = point_inside_tab(interaction(&engine), ItemId::new(1));
 
     let armed = submit_dock_press_after(&mut engine, &mut host, provider, tab, point, 0);
@@ -8190,8 +8218,8 @@ fn unknown_capture_terminal_release_cancels_resizing_once_and_allows_next_press(
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (splitter, point) = point_inside_splitter(interaction(&engine), split);
 
     let resizing = submit_dock_press_after(&mut engine, &mut host, provider, splitter, point, 0);
@@ -8227,8 +8255,8 @@ fn unknown_capture_terminal_release_cancels_contained_transform_once_and_allows_
         DockEngine::new(contained_workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    create_local_provider(&mut engine, &host);
-    let provider = engine.pointer_provider().expect("provider is live");
+    let provider = create_local_provider(&mut engine, &host);
+    let provider = &provider;
     let (resize, point) = point_inside_contained_resize(
         interaction(&engine),
         CONTAINED_FLOATING,
