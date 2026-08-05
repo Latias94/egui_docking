@@ -1,10 +1,14 @@
 //! JSON persistence helpers over the atomic dockspace document schema.
 
+use std::collections::BTreeSet;
+
+use dockspace::backend_ingress::{BackendIngressOrdinal, BackendIngressRecorder};
 use dockspace::document::{
     DockspaceDocumentBootstrap, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
-    DockspaceDocumentId, DockspaceDocumentSessionError,
+    DockspaceDocumentId, DockspaceDocumentRestoreTicket, DockspaceDocumentSessionError,
 };
 use dockspace::external_item_key::ExternalItemKeyMap;
+use dockspace::graph::Workspace;
 use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::transition::EngineTransition;
 use dockspace::viewport_persistence::{ViewportPlacementPreference, ViewportPlacementPreferences};
@@ -270,6 +274,81 @@ impl Dockspace {
             document_id: publication.document_id(),
             generation: publication.generation(),
         })
+    }
+
+    /// Queues one complete document for the next joined backend host frame.
+    ///
+    /// Unlike [`Self::load_document_json`], this path does not attempt a standalone
+    /// reducer boundary. The document remains session-owned across failed native
+    /// cycles and provider replacement until one outer commit atomically publishes
+    /// its workspace and durable sidecars.
+    ///
+    /// # Errors
+    ///
+    /// Returns a strict decode, association, lineage, or session-state failure
+    /// without changing the live workspace.
+    pub fn queue_document_json(
+        &mut self,
+        json: &str,
+        prove_external_item_association: impl Fn(DockspaceDocumentId, ItemId, &str) -> bool,
+    ) -> Result<DockspaceDocumentRestoreTicket, DockspaceDocumentPersistenceError> {
+        let envelope: DockspaceDocumentEnvelope = serde_json::from_str(json)?;
+        let document = envelope.into_document()?;
+        self.ensure_native_session_idle()?;
+        self.engine
+            .queue_restore(document, prove_external_item_association)
+            .map_err(Into::into)
+    }
+
+    /// Returns whether a backend-routed document restore awaits publication.
+    #[must_use]
+    pub const fn has_pending_document_restore(&self) -> bool {
+        self.engine.has_queued_restore()
+    }
+
+    /// Returns the validated workspace carried by the queued backend restore.
+    #[doc(hidden)]
+    pub fn pending_document_restore_workspace(&self) -> Option<&Workspace> {
+        self.engine.adapter_pending_backend_restore_workspace()
+    }
+
+    /// Compares the queued document's logical surfaces with the current workspace.
+    #[doc(hidden)]
+    pub fn pending_document_restore_matches_current_surface_roster(&self) -> Option<bool> {
+        let pending = self.pending_document_restore_workspace()?;
+        let pending = pending
+            .surfaces()
+            .map(|(surface, _)| surface)
+            .collect::<BTreeSet<_>>();
+        let current = self
+            .engine()
+            .workspace()
+            .surfaces()
+            .map(|(surface, _)| surface)
+            .collect::<BTreeSet<_>>();
+        Some(pending == current)
+    }
+
+    /// Cancels a queued restore before it is recorded into a backend batch.
+    #[doc(hidden)]
+    pub fn cancel_pending_document_restore(
+        &mut self,
+        ticket: DockspaceDocumentRestoreTicket,
+    ) -> Result<(), DockspaceDocumentPersistenceError> {
+        self.engine
+            .adapter_cancel_queued_restore(ticket)
+            .map_err(Into::into)
+    }
+
+    /// Records the queued restore as the terminal semantic input of this backend batch.
+    #[doc(hidden)]
+    pub fn record_pending_backend_document_restore(
+        &mut self,
+        recorder: &mut BackendIngressRecorder,
+    ) -> Result<Option<BackendIngressOrdinal>, DockspaceError> {
+        self.engine
+            .adapter_record_pending_backend_restore(recorder)
+            .map_err(Into::into)
     }
 }
 

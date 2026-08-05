@@ -6,6 +6,9 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use thiserror::Error;
 
 use crate::effect::EffectResult;
@@ -65,6 +68,40 @@ impl BackendIngressRecordIdentity {
         }
     }
 }
+
+/// Internal proof of one exact recorder append.
+///
+/// Public ordinals may be reused after rollback. Document restoration therefore
+/// retains this non-reused identity while one host-frame attempt is in flight.
+#[derive(Debug, Clone)]
+pub(crate) struct BackendIngressRecordReceipt {
+    lease: BackendIngressLease,
+    ordinal: BackendIngressOrdinal,
+    identity: BackendIngressRecordIdentity,
+    live: Arc<AtomicBool>,
+}
+
+impl BackendIngressRecordReceipt {
+    pub(crate) const fn ordinal(&self) -> BackendIngressOrdinal {
+        self.ordinal
+    }
+
+    #[cfg(any(feature = "serde", test))]
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+}
+
+impl PartialEq for BackendIngressRecordReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        self.lease == other.lease
+            && self.ordinal == other.ordinal
+            && self.identity == other.identity
+            && Arc::ptr_eq(&self.live, &other.live)
+    }
+}
+
+impl Eq for BackendIngressRecordReceipt {}
 
 /// Exact backend lifetime joining platform and desktop-global pointer ingress.
 ///
@@ -304,6 +341,14 @@ impl BackendIngressCommitWatermark {
     #[must_use]
     pub const fn through(self) -> BackendIngressOrdinal {
         self.through
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn authorizes(self, receipt: &BackendIngressRecordReceipt) -> bool {
+        self.lease == receipt.lease
+            && self.through == receipt.ordinal
+            && self.record_identity == receipt.identity
+            && receipt.is_live()
     }
 }
 
@@ -581,6 +626,7 @@ pub struct BackendIngressRecorder {
     last_record_identity: BackendIngressRecordIdentity,
     pointer_through: PointerEdgeSequence,
     records: Vec<BackendIngressRecord>,
+    record_liveness: Vec<Arc<AtomicBool>>,
 }
 
 /// Affine rollback boundary for one recorder-owned append transaction.
@@ -594,6 +640,7 @@ pub struct BackendIngressSavepoint {
     lease: BackendIngressLease,
     retired_through: BackendIngressOrdinal,
     recorded_through: BackendIngressOrdinal,
+    boundary_record_identity: BackendIngressRecordIdentity,
     pointer_through: PointerEdgeSequence,
     record_count: usize,
 }
@@ -631,6 +678,7 @@ impl BackendIngressRecorder {
             last_record_identity: BackendIngressRecordIdentity::ORIGIN,
             pointer_through: pointer_committed_through,
             records: Vec::new(),
+            record_liveness: Vec::new(),
         })
     }
 
@@ -653,6 +701,10 @@ impl BackendIngressRecorder {
             lease: self.lease,
             retired_through: self.retired_through,
             recorded_through: self.last_ordinal,
+            boundary_record_identity: self
+                .records
+                .last()
+                .map_or(self.retired_record_identity, |record| record.identity),
             pointer_through: self.pointer_through,
             record_count: self.records.len(),
         }
@@ -688,6 +740,23 @@ impl BackendIngressRecorder {
                 saved: savepoint.recorded_through,
                 current: self.last_ordinal,
             });
+        }
+        let current_boundary = self
+            .record_count_boundary(savepoint.record_count)
+            .map(|record| (record.ordinal, record.identity))
+            .unwrap_or((self.retired_through, self.retired_record_identity));
+        if current_boundary
+            != (
+                savepoint.recorded_through,
+                savepoint.boundary_record_identity,
+            )
+        {
+            return Err(BackendIngressError::SavepointPrefixRewritten {
+                boundary: savepoint.recorded_through,
+            });
+        }
+        for live in self.record_liveness.drain(savepoint.record_count..) {
+            live.store(false, Ordering::Release);
         }
         self.records.truncate(savepoint.record_count);
         self.last_ordinal = savepoint.recorded_through;
@@ -784,13 +853,30 @@ impl BackendIngressRecorder {
         &mut self,
         input: EngineInput,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        self.record_semantic_input_receipt(input)
+            .map(|receipt| receipt.ordinal())
+    }
+
+    pub(crate) fn record_semantic_input_receipt(
+        &mut self,
+        input: EngineInput,
+    ) -> Result<BackendIngressRecordReceipt, BackendIngressError> {
         if input.is_backend_ingress_fact() {
             return Err(BackendIngressError::SemanticInputIsBackendFact);
         }
         if input.is_configuration_commit() {
             return Err(BackendIngressError::SemanticInputIsConfiguration);
         }
-        self.push(BackendIngressPayload::SemanticInput(input))
+        self.push_with_receipt(BackendIngressPayload::SemanticInput(input))
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn retains_record(&self, receipt: &BackendIngressRecordReceipt) -> bool {
+        receipt.is_live()
+            && receipt.lease == self.lease
+            && self.records.iter().any(|record| {
+                record.ordinal == receipt.ordinal && record.identity == receipt.identity
+            })
     }
 
     pub(crate) fn record_presentation_observation(
@@ -990,6 +1076,7 @@ impl BackendIngressRecorder {
         binding_quiescences.sort_unstable();
         binding_quiescences.dedup();
         self.records.drain(..retained);
+        self.record_liveness.drain(..retained);
         self.retired_through = committed.through;
         self.retired_record_identity = committed.record_identity;
         if binding_quiescences.is_empty() {
@@ -1014,6 +1101,14 @@ impl BackendIngressRecorder {
         &mut self,
         payload: BackendIngressPayload,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        self.push_with_receipt(payload)
+            .map(|receipt| receipt.ordinal())
+    }
+
+    fn push_with_receipt(
+        &mut self,
+        payload: BackendIngressPayload,
+    ) -> Result<BackendIngressRecordReceipt, BackendIngressError> {
         let ordinal = self
             .last_ordinal
             .checked_next()
@@ -1022,15 +1117,28 @@ impl BackendIngressRecorder {
             .last_record_identity
             .checked_next()
             .ok_or(BackendIngressError::RecordIdentityExhausted)?;
+        let live = Arc::new(AtomicBool::new(true));
         self.records.push(BackendIngressRecord {
             lease: self.lease,
             ordinal,
             identity,
             payload,
         });
+        self.record_liveness.push(Arc::clone(&live));
         self.last_ordinal = ordinal;
         self.last_record_identity = identity;
-        Ok(ordinal)
+        Ok(BackendIngressRecordReceipt {
+            lease: self.lease,
+            ordinal,
+            identity,
+            live,
+        })
+    }
+
+    fn record_count_boundary(&self, record_count: usize) -> Option<&BackendIngressRecord> {
+        record_count
+            .checked_sub(1)
+            .and_then(|index| self.records.get(index))
     }
 }
 
@@ -1244,6 +1352,13 @@ pub enum BackendIngressError {
         saved: BackendIngressOrdinal,
         /// Recorder's current last ordinal.
         current: BackendIngressOrdinal,
+    },
+    /// Public ordinals were reused after an outer rollback, so this savepoint no longer
+    /// authenticates the exact recorder prefix it originally observed.
+    #[error("backend ingress savepoint prefix through {boundary:?} was rewritten")]
+    SavepointPrefixRewritten {
+        /// Public ordinal at the stale savepoint boundary.
+        boundary: BackendIngressOrdinal,
     },
     /// A presentation record named a host other than the one bound to this backend lifetime.
     #[error("backend presentation host {submitted:?} does not match bound host {expected:?}")]
@@ -1780,6 +1895,36 @@ mod tests {
                 .get(),
             2
         );
+    }
+
+    #[test]
+    fn stale_nested_savepoint_cannot_accept_a_rewritten_public_ordinal() {
+        let mut recorder = recorder(1);
+        let outer = recorder.savepoint();
+        let abandoned = recorder
+            .record_semantic_input_receipt(EngineInput::ValidateWorkspace)
+            .expect("the first branch record must fit");
+        let stale_nested = recorder.savepoint();
+
+        recorder
+            .rollback_to(outer)
+            .expect("the outer boundary must abandon the first branch");
+        assert!(!abandoned.is_live());
+        let replacement = recorder
+            .record_semantic_input_receipt(EngineInput::ValidateWorkspace)
+            .expect("the replacement may reuse only the public ordinal");
+        assert_eq!(abandoned.ordinal(), replacement.ordinal());
+
+        assert_eq!(
+            recorder
+                .rollback_to(stale_nested)
+                .expect_err("a stale nested boundary cannot authenticate the rewritten branch"),
+            BackendIngressError::SavepointPrefixRewritten {
+                boundary: BackendIngressOrdinal(1),
+            }
+        );
+        assert!(replacement.is_live());
+        assert_eq!(recorder.retained_record_count(), 1);
     }
 
     #[test]

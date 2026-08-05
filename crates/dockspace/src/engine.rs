@@ -300,6 +300,9 @@ pub enum CoreHostFrameError {
     /// A document-bound session received a frame without its exact frozen identity roster.
     #[error("host-frame application identity scope is missing or stale")]
     ItemIdentityScopeMismatch,
+    /// A session-owned sidecar publication was routed through a borrowed core commit.
+    #[error("host frame requires the session-owned atomic publication path")]
+    SessionOwnedPublicationRequired,
     /// The core-owned ordinal cannot advance without wrapping.
     #[error("core host-frame causal ordinal is exhausted")]
     CausalOrdinalExhausted,

@@ -2393,6 +2393,13 @@ impl OwnedPreparedHostFrameCommit {
     }
 
     #[cfg(feature = "serde")]
+    pub(crate) fn candidate_backend_ingress_commit_watermark(
+        &self,
+    ) -> Option<BackendIngressCommitWatermark> {
+        self.candidate.backend_ingress_commit_watermark()
+    }
+
+    #[cfg(feature = "serde")]
     pub(crate) fn item_identity_scope_matches(&self, expected: Option<&BTreeSet<ItemId>>) -> bool {
         self.item_identity_scope.as_ref() == expected
     }

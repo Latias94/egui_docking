@@ -10,9 +10,11 @@ use dockspace::document::{
     DockspaceDocumentDecodeError, DockspaceDocumentEnvelope, DockspaceDocumentId,
     DockspaceDocumentRestore, DockspaceDocumentRestoreError, DockspaceDocumentSession,
     DockspaceDocumentSessionError, PreparedDockspaceDocumentPublication,
+    PreparedDockspaceSessionHostCommit,
 };
 use dockspace::engine::{
-    CoreHostFrameError, DockEngine, EngineError, EngineInput, HostPresentationUnavailableReason,
+    BackendIngressProgress, CoreHostFrameError, CoreHostPresentationFrame, DockEngine, EngineError,
+    EngineInput, HostPresentationUnavailableReason,
 };
 use dockspace::external_item_key::{ExternalItemKeyMap, ExternalItemKeyReconcileError};
 use dockspace::geometry::{LogicalSize, PhysicalRect, ScaleFactor};
@@ -27,7 +29,8 @@ use dockspace::platform::{
     PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputState,
     WindowPresentationObservation, WindowPresentationState,
 };
-use dockspace::pointer_journal::PointerEdgeSequence;
+use dockspace::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
+use dockspace::pointer_receiver::PointerReceiverReceiptBatch;
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::{HostPresentationObservation, PresentationHostLease};
 use dockspace::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryTarget};
@@ -219,6 +222,77 @@ fn submit_restore_input(
     restore.adapter_prepare_publication(frame)
 }
 
+fn prepare_queued_restore_frame(
+    session: &mut DockspaceDocumentSession,
+    host: PresentationHostLease,
+    recorder: &dockspace::backend_ingress::BackendIngressRecorder,
+) -> PreparedDockspaceSessionHostCommit {
+    try_prepare_queued_restore_frame(session, host, recorder)
+        .expect("queued restore publication must prepare")
+}
+
+fn try_prepare_queued_restore_frame(
+    session: &mut DockspaceDocumentSession,
+    host: PresentationHostLease,
+    recorder: &dockspace::backend_ingress::BackendIngressRecorder,
+) -> Result<PreparedDockspaceSessionHostCommit, DockspaceDocumentSessionError> {
+    let frame = queued_restore_presentation_frame(session, host, recorder);
+    session.adapter_prepare_owned_host_presentation_frame(frame)
+}
+
+fn queued_restore_presentation_frame(
+    session: &mut DockspaceDocumentSession,
+    host: PresentationHostLease,
+    recorder: &dockspace::backend_ingress::BackendIngressRecorder,
+) -> CoreHostPresentationFrame {
+    let mut prelude = session
+        .adapter_begin_host_frame(host)
+        .expect("queued restore host frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("queued restore has no pending presentation output");
+    let mut frame = prelude
+        .seal(session.engine())
+        .expect("queued restore host frame must seal");
+    let progress = frame
+        .submit_backend_ingress(
+            recorder
+                .pending_batch()
+                .expect("queued restore backend batch must freeze"),
+        )
+        .expect("queued restore backend batch must reduce without receipts");
+    assert_eq!(progress, BackendIngressProgress::ReceiverReceiptsRequired);
+    assert_eq!(
+        frame
+            .submit_backend_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new(Vec::new())
+                    .expect("idle backend pointer interval has no receiver probes"),
+            )
+            .expect("idle backend pointer receipts must resume the same batch"),
+        BackendIngressProgress::Complete
+    );
+    support::complete_host_frame_with_retained_or_unavailable(session.engine(), &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("queued restore frame must enter presentation");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("queued restore frame must settle presentation obligations");
+    frame
+}
+
+fn record_idle_backend_pointer(recorder: &mut dockspace::backend_ingress::BackendIngressRecorder) {
+    let watermark = PointerEdgeSequence::new(0);
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(watermark, watermark, Vec::new())
+                .expect("idle pointer interval must be canonical"),
+        )
+        .expect("idle pointer interval must record");
+}
+
 fn runtime_capabilities() -> PlatformCapabilities {
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
@@ -384,6 +458,280 @@ fn same_lineage_restore_uses_the_reconciled_identity_scope() {
 }
 
 #[test]
+fn queued_backend_restore_publishes_workspace_and_sidecars_atomically() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let later = source
+        .ensure_external_item_key("pane/later")
+        .expect("same-lineage source must append one identity");
+    let source_host = source
+        .adapter_create_presentation_host()
+        .expect("source presentation host must mint");
+    submit_session_input(
+        &mut source,
+        source_host,
+        1,
+        EngineInput::ReplaceWorkspace(workspace([ItemId::new(1), ItemId::new(2), later])),
+    );
+    let document = source.capture().expect("expanded lineage must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+
+    let ticket = target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue without publication");
+    assert!(target.has_queued_restore());
+    assert_eq!(
+        target.workspace(),
+        &workspace([ItemId::new(1), ItemId::new(2)])
+    );
+    record_idle_backend_pointer(&mut recorder);
+    assert_eq!(
+        target
+            .adapter_record_pending_backend_restore(&mut recorder)
+            .expect("queued restore must append to the backend tail")
+            .expect("one queued restore ordinal must be present")
+            .get(),
+        2
+    );
+    let prepared = prepare_queued_restore_frame(&mut target, host, &recorder);
+    target
+        .adapter_commit_owned_host_presentation_frame(prepared)
+        .expect("queued document publication must commit atomically");
+
+    assert!(!target.has_queued_restore());
+    assert_eq!(target.item_id("pane/later"), Some(later));
+    assert!(target.workspace().item_multiset().contains_key(&later));
+    assert_eq!(ticket.document_id(), DOCUMENT_ID);
+}
+
+#[test]
+fn queued_backend_restore_can_be_cancelled_before_recording() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let later = source
+        .ensure_external_item_key("pane/later")
+        .expect("same-lineage source must append one identity");
+    let source_host = source
+        .adapter_create_presentation_host()
+        .expect("source presentation host must mint");
+    submit_session_input(
+        &mut source,
+        source_host,
+        1,
+        EngineInput::ReplaceWorkspace(workspace([ItemId::new(1), ItemId::new(2), later])),
+    );
+    let document = source.capture().expect("expanded lineage must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let original = target.workspace().clone();
+
+    let ticket = target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+    assert!(
+        target
+            .adapter_pending_backend_restore_workspace()
+            .is_some_and(|workspace| workspace.item_multiset().contains_key(&later))
+    );
+    target
+        .adapter_cancel_queued_restore(ticket)
+        .expect("an unrecorded queued restore must cancel exactly");
+
+    assert!(!target.has_queued_restore());
+    assert_eq!(target.workspace(), &original);
+    assert_eq!(target.item_id("pane/later"), None);
+}
+
+#[test]
+fn queued_restore_cancellation_ticket_is_bound_to_its_session() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut first = session_with(DOCUMENT_ID, 1);
+    let mut second = session_with(DOCUMENT_ID, 1);
+    let first_ticket = first
+        .queue_restore(document.clone(), |_, _, _| true)
+        .expect("first session must queue the document");
+    let second_ticket = second
+        .queue_restore(document, |_, _, _| true)
+        .expect("second session must queue the same document generation");
+
+    assert_ne!(first_ticket, second_ticket);
+    assert!(matches!(
+        second.adapter_cancel_queued_restore(first_ticket),
+        Err(DockspaceDocumentSessionError::PublicationReceiptMismatch)
+    ));
+    assert!(first.has_queued_restore());
+    assert!(second.has_queued_restore());
+    second
+        .adapter_cancel_queued_restore(second_ticket)
+        .expect("the matching session ticket must cancel exactly");
+    assert!(!second.has_queued_restore());
+}
+
+#[test]
+fn queued_backend_restore_must_be_the_terminal_backend_record() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("queued restore must record")
+        .expect("queued restore ordinal must exist");
+    recorder
+        .record_semantic_input(EngineInput::ValidateWorkspace)
+        .expect("a trailing semantic input can enter the recorder");
+
+    assert!(matches!(
+        try_prepare_queued_restore_frame(&mut target, host, &recorder),
+        Err(DockspaceDocumentSessionError::EnginePublicationMismatch)
+    ));
+    assert!(target.has_queued_restore());
+}
+
+#[test]
+fn queued_backend_restore_rejects_the_borrowed_core_commit_path() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("queued restore must record")
+        .expect("queued restore ordinal must exist");
+    let frame = queued_restore_presentation_frame(&mut target, host, &recorder);
+
+    assert!(matches!(
+        target.adapter_prepare_host_presentation_frame(frame),
+        Err(EngineError::HostFramePoisoned {
+            source: CoreHostFrameError::SessionOwnedPublicationRequired,
+        })
+    ));
+    assert!(target.has_queued_restore());
+}
+
+#[test]
+fn recorder_rollback_revokes_an_already_prepared_restore_publication() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let original = target.workspace().clone();
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+    let savepoint = recorder.savepoint();
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("queued restore must record")
+        .expect("queued restore ordinal must exist");
+    let prepared = prepare_queued_restore_frame(&mut target, host, &recorder);
+
+    recorder
+        .rollback_to(savepoint)
+        .expect("raw recorder rollback must revoke its removed append receipts");
+    assert!(matches!(
+        target.adapter_commit_owned_host_presentation_frame(prepared),
+        Err(DockspaceDocumentSessionError::PublicationReceiptMismatch)
+    ));
+    assert_eq!(target.workspace(), &original);
+    assert!(target.has_queued_restore());
+
+    target.adapter_reconcile_pending_backend_restore_record(&recorder);
+    record_idle_backend_pointer(&mut recorder);
+    target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("rolled-back restore must re-record")
+        .expect("replacement restore ordinal must exist");
+    let prepared = prepare_queued_restore_frame(&mut target, host, &recorder);
+    target
+        .adapter_commit_owned_host_presentation_frame(prepared)
+        .expect("fresh record must publish the retained restore exactly once");
+    assert!(!target.has_queued_restore());
+}
+
+#[test]
+fn queued_restore_reissues_after_recorder_rollback_and_provider_replacement() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut recorder = target
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("target backend provider must enroll");
+    target
+        .queue_restore(document, |_, _, _| true)
+        .expect("document restore must queue");
+
+    let savepoint = recorder.savepoint();
+    record_idle_backend_pointer(&mut recorder);
+    let first = target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("first restore attempt must record")
+        .expect("first restore ordinal must exist");
+    recorder
+        .rollback_to(savepoint)
+        .expect("failed cycle must roll back its recorder suffix");
+    target.adapter_reconcile_pending_backend_restore_record(&recorder);
+    record_idle_backend_pointer(&mut recorder);
+    let second = target
+        .adapter_record_pending_backend_restore(&mut recorder)
+        .expect("rolled-back restore must re-record")
+        .expect("second restore ordinal must exist");
+    assert_eq!(first, second, "rollback may reuse only the public ordinal");
+
+    let mut drained = recorder.drain();
+    let start = target
+        .adapter_begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined predecessor must revoke atomically");
+    let (mut ticket, _) = start.into_parts();
+    let mut successor = target
+        .adapter_finish_backend_ingress_provider_replacement(&mut ticket, host)
+        .expect("joined successor must activate atomically");
+    record_idle_backend_pointer(&mut successor);
+    let successor_ordinal = target
+        .adapter_record_pending_backend_restore(&mut successor)
+        .expect("successor must re-record the durable restore intent")
+        .expect("successor restore ordinal must exist");
+    assert_eq!(successor_ordinal.get(), 2);
+
+    let prepared = prepare_queued_restore_frame(&mut target, host, &successor);
+    target
+        .adapter_commit_owned_host_presentation_frame(prepared)
+        .expect("successor restore attempt must publish once");
+    assert!(!target.has_queued_restore());
+}
+
+#[test]
 fn owned_frame_cannot_cross_a_new_document_binding() {
     let engine = DockEngine::new(workspace([ItemId::new(1)]), DockPolicy::default())
         .expect("unbound fixture engine must initialize");
@@ -433,9 +781,13 @@ fn owned_frame_cannot_cross_a_new_document_binding() {
 
     assert!(matches!(
         session.adapter_commit_owned_host_presentation_frame(prepared),
-        Err(EngineError::HostFramePoisoned {
-            source: CoreHostFrameError::ItemIdentityScopeMismatch,
-        })
+        Err(DockspaceDocumentSessionError::Engine(error))
+            if matches!(
+                *error,
+                EngineError::HostFramePoisoned {
+                    source: CoreHostFrameError::ItemIdentityScopeMismatch,
+                }
+            )
     ));
     assert_eq!(session.workspace(), &workspace([ItemId::new(1)]));
     assert_eq!(session.external_item_key(ItemId::new(99)), None);

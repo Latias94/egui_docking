@@ -5,7 +5,9 @@ use dockspace::backend_ingress::{
     BackendIngressProviderReplacementTicket, BackendIngressRecorder,
 };
 #[cfg(feature = "serde")]
-use dockspace::document::DockspaceDocumentSession;
+use dockspace::document::{
+    DockspaceDocumentSession, DockspaceDocumentSessionError, PreparedDockspaceSessionHostCommit,
+};
 use dockspace::engine::{
     CoreHostFramePrelude, CoreHostPresentationFrame, DockEngine, EngineError,
     OwnedPreparedHostFrameCommit, PreparedHostFrameCommit,
@@ -24,12 +26,33 @@ use dockspace::transition::PresentationHostRetirementOutcome;
 use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::viewport::ViewportBinding;
 
+use crate::DockspaceError;
+
 #[cfg(feature = "serde")]
 pub(super) type EguiDockEngine = DockspaceDocumentSession;
 #[cfg(not(feature = "serde"))]
 pub(super) type EguiDockEngine = DockEngine;
 
+pub(super) type EguiPreparedHostFrameCommit =
+    <EguiDockEngine as EguiEngineOwner>::PreparedOwnedHostCommit;
+
+pub(super) fn prepared_host_transition(
+    prepared: &EguiPreparedHostFrameCommit,
+) -> &EngineTransition {
+    <EguiDockEngine as EguiEngineOwner>::prepared_host_transition(prepared)
+}
+
+#[cfg(feature = "serde")]
+fn map_document_session_error(error: DockspaceDocumentSessionError) -> DockspaceError {
+    match error {
+        DockspaceDocumentSessionError::Engine(source) => DockspaceError::Engine(*source),
+        error => DockspaceError::DocumentSession(error),
+    }
+}
+
 pub(super) trait EguiEngineOwner {
+    type PreparedOwnedHostCommit;
+
     fn engine(&self) -> &DockEngine;
 
     fn reconcile_document_sidecars(&mut self);
@@ -90,12 +113,14 @@ pub(super) trait EguiEngineOwner {
     fn prepare_owned_host_presentation_frame(
         &self,
         frame: CoreHostPresentationFrame,
-    ) -> Result<OwnedPreparedHostFrameCommit, EngineError>;
+    ) -> Result<Self::PreparedOwnedHostCommit, DockspaceError>;
+
+    fn prepared_host_transition(prepared: &Self::PreparedOwnedHostCommit) -> &EngineTransition;
 
     fn commit_owned_host_presentation_frame(
         &mut self,
-        prepared: OwnedPreparedHostFrameCommit,
-    ) -> Result<EngineTransition, EngineError>;
+        prepared: Self::PreparedOwnedHostCommit,
+    ) -> Result<EngineTransition, DockspaceError>;
 
     fn try_prepare_presentation_stream_quiescence(
         &self,
@@ -153,6 +178,8 @@ where
 }
 
 impl EguiEngineOwner for DockEngine {
+    type PreparedOwnedHostCommit = OwnedPreparedHostFrameCommit;
+
     fn engine(&self) -> &DockEngine {
         self
     }
@@ -239,15 +266,19 @@ impl EguiEngineOwner for DockEngine {
     fn prepare_owned_host_presentation_frame(
         &self,
         frame: CoreHostPresentationFrame,
-    ) -> Result<OwnedPreparedHostFrameCommit, EngineError> {
-        frame.prepare_owned(self)
+    ) -> Result<Self::PreparedOwnedHostCommit, DockspaceError> {
+        frame.prepare_owned(self).map_err(Into::into)
+    }
+
+    fn prepared_host_transition(prepared: &Self::PreparedOwnedHostCommit) -> &EngineTransition {
+        prepared.transition()
     }
 
     fn commit_owned_host_presentation_frame(
         &mut self,
-        prepared: OwnedPreparedHostFrameCommit,
-    ) -> Result<EngineTransition, EngineError> {
-        prepared.commit(self)
+        prepared: Self::PreparedOwnedHostCommit,
+    ) -> Result<EngineTransition, DockspaceError> {
+        prepared.commit(self).map_err(Into::into)
     }
 
     fn try_prepare_presentation_stream_quiescence(
@@ -268,6 +299,8 @@ impl EguiEngineOwner for DockEngine {
 
 #[cfg(feature = "serde")]
 impl EguiEngineOwner for DockspaceDocumentSession {
+    type PreparedOwnedHostCommit = PreparedDockspaceSessionHostCommit;
+
     fn engine(&self) -> &DockEngine {
         self.engine()
     }
@@ -352,15 +385,21 @@ impl EguiEngineOwner for DockspaceDocumentSession {
     fn prepare_owned_host_presentation_frame(
         &self,
         frame: CoreHostPresentationFrame,
-    ) -> Result<OwnedPreparedHostFrameCommit, EngineError> {
+    ) -> Result<Self::PreparedOwnedHostCommit, DockspaceError> {
         self.adapter_prepare_owned_host_presentation_frame(frame)
+            .map_err(map_document_session_error)
+    }
+
+    fn prepared_host_transition(prepared: &Self::PreparedOwnedHostCommit) -> &EngineTransition {
+        prepared.transition()
     }
 
     fn commit_owned_host_presentation_frame(
         &mut self,
-        prepared: OwnedPreparedHostFrameCommit,
-    ) -> Result<EngineTransition, EngineError> {
+        prepared: Self::PreparedOwnedHostCommit,
+    ) -> Result<EngineTransition, DockspaceError> {
         self.adapter_commit_owned_host_presentation_frame(prepared)
+            .map_err(map_document_session_error)
     }
 
     fn try_prepare_presentation_stream_quiescence(

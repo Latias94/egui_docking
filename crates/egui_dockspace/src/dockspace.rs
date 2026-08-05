@@ -307,6 +307,9 @@ impl Dockspace {
             .rollback_ordered_outer_after(lease, recorded_through);
         self.pane_focus
             .rollback_backend_observations_after(lease, recorded_through);
+        #[cfg(feature = "serde")]
+        self.engine
+            .adapter_reconcile_pending_backend_restore_record(recorder);
         Ok(())
     }
 

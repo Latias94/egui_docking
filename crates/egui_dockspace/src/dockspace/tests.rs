@@ -1065,7 +1065,9 @@ fn owned_core_candidate_cannot_overwrite_an_advanced_host_frontier() {
 
     assert!(matches!(
         EguiEngineOwner::commit_owned_host_presentation_frame(&mut dockspace.engine, prepared),
-        Err(EngineError::HostFramePresentationHostFrontierStale { .. })
+        Err(DockspaceError::Engine(
+            EngineError::HostFramePresentationHostFrontierStale { .. }
+        ))
     ));
     assert_eq!(dockspace.engine.last_reducer_tick(), before_tick);
 }

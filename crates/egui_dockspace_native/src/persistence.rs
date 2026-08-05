@@ -51,7 +51,9 @@ mod tests {
 
     const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"native-persist!!");
     const ROOT: RootId = RootId::new(1);
+    const CHILD_ROOT: RootId = RootId::new(2);
     const SURFACE: SurfaceId = SurfaceId::new(1);
+    const CHILD_SURFACE: SurfaceId = SurfaceId::new(2);
 
     #[derive(Default)]
     struct MemoryStorage {
@@ -113,6 +115,33 @@ mod tests {
         dockspace
     }
 
+    fn bound_two_surface_dockspace(next_generation: u64) -> Dockspace {
+        let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT, next_generation);
+        let first = bootstrap
+            .ensure_external_item_key("pane/one")
+            .expect("first native persistence identity must fit");
+        let second = bootstrap
+            .ensure_external_item_key("pane/two")
+            .expect("second native persistence identity must fit");
+        let mut builder = Workspace::builder();
+        let root_tabs = builder.insert_node(Node::tabs([first]));
+        let child_tabs = builder.insert_node(Node::tabs([second]));
+        builder.set_root(ROOT, RootRecord::new(root_tabs));
+        builder.set_root(CHILD_ROOT, RootRecord::new(child_tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+        builder.set_surface(CHILD_SURFACE, SurfacePresentation::with_main(CHILD_ROOT));
+        let workspace = builder
+            .build()
+            .expect("two-surface persistence workspace is valid");
+        let mut dockspace = Dockspace::builder("native-persistence-two", workspace)
+            .build()
+            .expect("two-surface native persistence dockspace must build");
+        dockspace
+            .bind_document_persistence(bootstrap)
+            .expect("two-surface persistence bootstrap must bind");
+        dockspace
+    }
+
     fn native_app(next_generation: u64) -> NativeDockspaceApp<EmptyPane> {
         let roster =
             NativeViewportRoster::new(NativeSurfaceSpec::root(SURFACE, WindowToken::new(1)))
@@ -169,5 +198,26 @@ mod tests {
             "an infallible eframe callback must not replace valid storage after capture failure",
         );
         assert!(app.last_persistence_error().is_some());
+    }
+
+    #[test]
+    fn live_restore_rejects_a_document_outside_the_configured_native_roster() {
+        let mut source = bound_two_surface_dockspace(7);
+        let json = source
+            .save_document_json()
+            .expect("two-surface source document must capture");
+        let mut app = native_app(1);
+
+        let result = app.queue_document_json(&json, |document, item, key| {
+            document == DOCUMENT
+                && ((item == ItemId::new(1) && key == "pane/one")
+                    || (item == ItemId::new(2) && key == "pane/two"))
+        });
+
+        assert!(matches!(
+            result,
+            Err(NativeRuntimeError::WorkspaceRosterMismatch)
+        ));
+        assert!(!app.dockspace().has_pending_document_restore());
     }
 }

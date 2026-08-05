@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use dockspace::command::WorkspaceCommand;
 use dockspace::engine::{
     CoreHostFrame, EngineInput, HostFrameView, HostPresentationDisposition, HostPresentationSlot,
-    HostPresentationUnavailableReason, OwnedPreparedHostFrameCommit, PreparedSurfaceContribution,
-    PreparedSurfacePaintCandidate, SurfaceContributionToken,
+    HostPresentationUnavailableReason, PreparedSurfaceContribution, PreparedSurfacePaintCandidate,
+    SurfaceContributionToken,
 };
 use dockspace::frame::PanelFocus;
 use dockspace::geometry::{LogicalRect, LogicalSize};
@@ -23,6 +23,7 @@ use dockspace::viewport_focus::PaneFocusIntent;
 use dockspace::viewport_focus::PaneFocusObservation;
 use egui::{Context, FullOutput, RawInput, Ui, ViewportId};
 
+use super::engine_owner::{EguiPreparedHostFrameCommit, prepared_host_transition};
 use super::host_frame::{EguiCoreFramePhase, EguiSurfacePass, HostFrameState, HostFrameStateSlot};
 use super::native_binding::PreparedNativeBindingCommit;
 use super::{
@@ -149,7 +150,7 @@ pub struct EguiOuterFrameCommit {
 /// output consolidation and platform roster commit have succeeded.
 #[must_use = "a prepared egui frame must be committed or explicitly aborted"]
 pub struct PreparedEguiOuterFrameCommit {
-    core: OwnedPreparedHostFrameCommit,
+    core: EguiPreparedHostFrameCommit,
     renderer: PreparedEguiFrameAcceptance,
     native_bindings: Option<PreparedNativeBindingCommit>,
     state: HostFrameState,
@@ -184,8 +185,8 @@ impl EguiOuterFrameCommit {
 impl PreparedEguiOuterFrameCommit {
     /// Returns the exact core transition awaiting publication.
     #[must_use]
-    pub const fn transition(&self) -> &dockspace::transition::EngineTransition {
-        self.core.transition()
+    pub fn transition(&self) -> &dockspace::transition::EngineTransition {
+        prepared_host_transition(&self.core)
     }
 
     /// Publishes the core candidate and every preflighted adapter sidecar once.
@@ -222,7 +223,7 @@ impl PreparedEguiOuterFrameCommit {
             Err(error) => {
                 dockspace.discard_pointer_input_epoch();
                 self.state.finish();
-                return Err(error.into());
+                return Err(error);
             }
         };
         dockspace.engine.reconcile_document_sidecars();
@@ -1246,8 +1247,7 @@ impl DockspaceHostFrame<'_> {
             Err(error) => return self.abort(error.into()),
         };
         if let Some(style) = self.state.staged_style_replacement() {
-            let accepted = prepared_core
-                .transition()
+            let accepted = prepared_host_transition(&prepared_core)
                 .reduced_inputs()
                 .iter()
                 .any(|input| {
@@ -1267,7 +1267,7 @@ impl DockspaceHostFrame<'_> {
             }
         }
         let prepared_renderer = match self.dockspace.renderer.prepare_frame(
-            prepared_core.transition(),
+            prepared_host_transition(&prepared_core),
             self.state.take_drafts(),
             native_staging_publications,
         ) {
@@ -1306,7 +1306,7 @@ impl DockspaceHostFrame<'_> {
                     .native_bindings
                     .as_ref()
                     .expect("a staged native binding candidate retains its registry");
-                match registry.prepare_commit(candidate) {
+                match registry.prepare_commit(candidate, prepared_host_transition(&prepared_core)) {
                     Ok(prepared) => Some(prepared),
                     Err(error) => {
                         drop(prepared_renderer);

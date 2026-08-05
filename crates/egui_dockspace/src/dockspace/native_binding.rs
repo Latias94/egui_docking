@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use dockspace::backend_ingress::BackendIngressLease;
 use dockspace::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
+use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, WindowIncarnation, WindowToken};
 use egui::ViewportId;
 use thiserror::Error;
@@ -664,6 +665,8 @@ fn resolve_candidate<B: ExactCoreBinding>(
 /// Exact registry mutation preflighted before the core transaction publishes.
 pub(super) struct PreparedNativeBindingCommit {
     registry_identity: Arc<()>,
+    base_authority: NativeRouteAuthority,
+    next_authority: NativeRouteAuthority,
     base_revision: u64,
     next_revision: u64,
     state: RouteState<ViewportBinding>,
@@ -732,8 +735,9 @@ impl NativeBindingRegistry {
     pub(super) fn prepare_commit(
         &self,
         candidate: NativeBindingCandidate,
+        transition: &EngineTransition,
     ) -> Result<PreparedNativeBindingCommit, NativeBindingRegistryError> {
-        let candidate = candidate.0;
+        let mut candidate = candidate.0;
         if !Arc::ptr_eq(&self.inner.identity, &candidate.registry_identity) {
             return Err(NativeBindingRegistryError::CandidateRegistryMismatch);
         }
@@ -744,8 +748,39 @@ impl NativeBindingRegistry {
                 submitted: candidate.base_revision,
             });
         }
+        let base_authority = candidate.authority;
+        for reduced in transition.reduced_inputs() {
+            let InputOutcome::WorkspaceReplaced {
+                before,
+                after,
+                reconciliation,
+                ..
+            } = reduced.outcome()
+            else {
+                continue;
+            };
+            if candidate.authority.workspace_epoch != before.epoch() {
+                return Err(NativeBindingRegistryError::WorkspaceRebaseEpochMismatch {
+                    expected: candidate.authority.workspace_epoch,
+                    submitted: before.epoch(),
+                });
+            }
+            candidate.state = rebase_route_state(
+                candidate.state,
+                candidate.authority.provider,
+                after.epoch(),
+                reconciliation.rebound(),
+            )?;
+            candidate.authority =
+                NativeRouteAuthority::new(candidate.authority.provider, after.epoch());
+            for route in candidate.state.live_by_native.values().copied() {
+                self.inner.validate_route(candidate.authority, route)?;
+            }
+        }
         Ok(PreparedNativeBindingCommit {
             registry_identity: candidate.registry_identity,
+            base_authority,
+            next_authority: candidate.authority,
             base_revision: candidate.base_revision,
             next_revision: candidate.next_revision,
             state: candidate.state,
@@ -756,6 +791,7 @@ impl NativeBindingRegistry {
     pub(super) fn commit_prepared(&mut self, prepared: PreparedNativeBindingCommit) {
         self.validate_prepared(&prepared)
             .expect("a prepared native binding commit remains current");
+        self.inner.authority = prepared.next_authority;
         self.inner.revision = prepared.next_revision;
         self.inner.state = prepared.state;
     }
@@ -767,6 +803,12 @@ impl NativeBindingRegistry {
         if !Arc::ptr_eq(&self.inner.identity, &prepared.registry_identity) {
             return Err(NativeBindingRegistryError::CandidateRegistryMismatch);
         }
+        if self.inner.authority != prepared.base_authority {
+            return Err(NativeBindingRegistryError::AuthorityMismatch {
+                expected: self.inner.authority,
+                submitted: prepared.base_authority,
+            });
+        }
         if self.inner.revision != prepared.base_revision {
             return Err(NativeBindingRegistryError::CandidateRevisionMismatch {
                 expected: self.inner.revision,
@@ -775,6 +817,71 @@ impl NativeBindingRegistry {
         }
         Ok(())
     }
+}
+
+fn rebase_route_state(
+    state: RouteState<ViewportBinding>,
+    provider: BackendIngressLease,
+    workspace_epoch: WorkspaceEpoch,
+    rebound: &[(ViewportBinding, ViewportBinding)],
+) -> Result<RouteState<ViewportBinding>, NativeBindingRegistryError> {
+    let rebound = rebound.iter().copied().collect::<BTreeMap<_, _>>();
+    let mut next = RouteState::empty();
+    next.retired_by_native = state.retired_by_native;
+    next.retired_by_core = state.retired_by_core;
+
+    for (native, mut route) in state.live_by_native {
+        let previous = route.core;
+        let replacement = rebound.get(&previous).copied().ok_or(
+            NativeBindingRegistryError::LiveRouteNotRebound {
+                native,
+                binding: previous,
+            },
+        )?;
+        route.core = replacement;
+        let core = route.core_identity();
+        if core.authority_domain != provider.authority_domain() {
+            return Err(NativeBindingRegistryError::CoreProviderDomainMismatch {
+                native,
+                expected: provider.authority_domain(),
+                submitted: core.authority_domain,
+            });
+        }
+        if core.workspace_epoch != workspace_epoch {
+            return Err(NativeBindingRegistryError::CoreWorkspaceEpochMismatch {
+                native,
+                expected: workspace_epoch,
+                submitted: core.workspace_epoch,
+            });
+        }
+        if core.surface != route.declared_surface {
+            return Err(NativeBindingRegistryError::SurfaceBindingMismatch {
+                native,
+                declared: route.declared_surface,
+                bound: core.surface,
+            });
+        }
+        if let Some(previous) = next.native_by_core.insert(core, native) {
+            return Err(NativeBindingRegistryError::DuplicateCoreBinding {
+                core,
+                first: previous,
+                second: native,
+            });
+        }
+        if let Some(previous) = next
+            .native_by_surface
+            .insert(route.declared_surface, native)
+        {
+            return Err(NativeBindingRegistryError::DuplicateSurface {
+                surface: route.declared_surface,
+                first: previous,
+                second: native,
+            });
+        }
+        next.live_by_native.insert(native, route);
+    }
+
+    Ok(next)
 }
 
 /// Native operation which attempted an exact route lookup.
@@ -817,6 +924,22 @@ pub(super) enum NativeBindingRegistryError {
         native: ExactNativeViewport,
         expected: WorkspaceEpoch,
         submitted: WorkspaceEpoch,
+    },
+    /// A workspace replacement did not begin at the route candidate's exact epoch.
+    #[error("native route workspace rebase expected epoch {expected:?}, submitted {submitted:?}")]
+    WorkspaceRebaseEpochMismatch {
+        /// Epoch currently carried by the candidate route authority.
+        expected: WorkspaceEpoch,
+        /// Epoch named by the workspace replacement outcome.
+        submitted: WorkspaceEpoch,
+    },
+    /// A live native route was not retained by the workspace replacement.
+    #[error("native route {native:?} for {binding:?} was not rebound by workspace replacement")]
+    LiveRouteNotRebound {
+        /// Exact native viewport which remained live in the submitted roster.
+        native: ExactNativeViewport,
+        /// Pre-replacement core binding which lacked a successor.
+        binding: ViewportBinding,
     },
     /// The runtime surface fact disagrees with the exact core binding.
     #[error(

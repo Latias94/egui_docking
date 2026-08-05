@@ -82,8 +82,12 @@ placement preferences, document lineage id, generation, and a BLAKE3 binding
 hash. First mint every pane `ItemId` from a one-time
 `DockspaceDocumentBootstrap`, build the workspace from those identities, and
 consume that bootstrap with `Dockspace::bind_document_persistence`. Then use the parameterless
-`Dockspace::save_document_json` and session-owned `load_document_json`. Its
-resolver proves every exact `(document id, item id, external key)` association,
+`Dockspace::save_document_json` and session-owned `load_document_json` while no
+joined backend is active. A native/backend host uses `queue_document_json`
+instead: the session retains the validated intent across cycle rollback and
+provider replacement, records a fresh terminal backend attempt, and publishes
+core state plus sidecars in the enclosing outer-frame commit. The resolver
+proves every exact `(document id, item id, external key)` association,
 including closed-pane history. Restore does not publish the workspace, key map,
 placement, document lineage, or generation until every component and the
 application identity registry validate. Core state and durable sidecars are then

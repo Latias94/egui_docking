@@ -2,8 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use dockspace::document::{DockspaceDocumentId, DockspaceDocumentRestoreTicket};
 use dockspace::engine::BackendIngressProgress;
-use dockspace::ids::SurfaceId;
+use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::intent::Authority;
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_observation::{
@@ -275,6 +276,47 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         storage.set_string(NATIVE_DOCKSPACE_DOCUMENT_STORAGE_KEY, json);
         self.last_persistence_error = None;
         Ok(true)
+    }
+
+    /// Queues one strict document for the next complete hosted cycle.
+    ///
+    /// The native runtime records the restore after the cycle's captured platform,
+    /// pointer, and semantic facts. Failed cycles and provider replacement retain
+    /// the session-owned intent for an exact retry. The restored document must keep
+    /// the runtime's current logical surface roster; changing that roster requires
+    /// a separately prepared native catalog transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a cycle-state, decode, association, lineage, or session failure
+    /// without changing the live workspace.
+    pub fn queue_document_json(
+        &mut self,
+        json: &str,
+        prove_external_item_association: impl Fn(DockspaceDocumentId, ItemId, &str) -> bool,
+    ) -> Result<DockspaceDocumentRestoreTicket, NativeRuntimeError> {
+        if self.cycle_in_flight() {
+            return Err(NativeRuntimeError::CycleAlreadyActive);
+        }
+        let ticket = self
+            .dockspace
+            .queue_document_json(json, prove_external_item_association)
+            .map_err(NativeRuntimeError::from)?;
+        let roster_error = match self
+            .dockspace
+            .pending_document_restore_matches_current_surface_roster()
+        {
+            Some(true) => None,
+            Some(false) => Some(NativeRuntimeError::WorkspaceRosterMismatch),
+            None => Some(NativeRuntimeError::IngressUnavailable(
+                "queued document restore lost its validated workspace",
+            )),
+        };
+        if let Some(error) = roster_error {
+            self.dockspace.cancel_pending_document_restore(ticket)?;
+            return Err(error);
+        }
+        Ok(ticket)
     }
 
     /// Returns mutable access to the application pane registry while no hosted

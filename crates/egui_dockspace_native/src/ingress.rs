@@ -966,11 +966,27 @@ impl NativeIngressBridge {
                 .filter_map(RetiredNativeRoute::adapter_retirement),
         );
         let retired_bootstrap_viewports = terminal_bootstrap_viewports;
-        let batch = self
-            .recorder
-            .as_ref()
-            .expect("the provider was enrolled above")
-            .pending_batch()?;
+        if dockspace.has_pending_document_restore() {
+            match dockspace.pending_document_restore_matches_current_surface_roster() {
+                Some(true) => {}
+                Some(false) => return Err(NativeRuntimeError::WorkspaceRosterMismatch),
+                None => {
+                    return Err(NativeRuntimeError::IngressUnavailable(
+                        "queued document restore lost its validated workspace",
+                    ));
+                }
+            }
+        }
+        let batch = {
+            let recorder = self
+                .recorder
+                .as_mut()
+                .ok_or(NativeRuntimeError::IngressUnavailable(
+                    "native backend provider was not enrolled",
+                ))?;
+            dockspace.record_pending_backend_document_restore(recorder)?;
+            recorder.pending_batch()?
+        };
         let pointer_edges = self.pending_pointer_sidecars(&batch)?;
         Ok(PreparedNativeIngressPayload {
             batch,

@@ -384,6 +384,181 @@ fn empty_native_bindings() -> NativeBindingRoster {
     NativeBindingRoster::empty()
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn queued_document_restore_commits_through_the_native_outer_frame() {
+    use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
+
+    const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes(*b"backend-doc-test");
+
+    fn document_workspace(items: impl IntoIterator<Item = ItemId>) -> Workspace {
+        let mut builder = Workspace::builder();
+        let tabs = builder.insert_node(Node::tabs(items));
+        builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+        builder.build().expect("document workspace must be valid")
+    }
+
+    let mut source_bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT, 0);
+    let current = source_bootstrap
+        .ensure_external_item_key("pane/current")
+        .expect("source identity must allocate");
+    let mut source = Dockspace::builder("backend-document-source", document_workspace([current]))
+        .build()
+        .expect("source dockspace must build");
+    source
+        .bind_document_persistence(source_bootstrap)
+        .expect("source persistence must bind");
+    let later = source
+        .ensure_external_item_key("pane/later")
+        .expect("source must append the new pane identity");
+    source
+        .replace_workspace(document_workspace([current, later]))
+        .expect("source workspace must include the new pane");
+    let json = source
+        .save_document_json()
+        .expect("source document must encode");
+
+    let mut target_bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT, 1);
+    assert_eq!(
+        target_bootstrap
+            .ensure_external_item_key("pane/current")
+            .expect("target identity must allocate"),
+        current
+    );
+    let mut target = Dockspace::builder("backend-document-target", document_workspace([current]))
+        .build()
+        .expect("target dockspace must build");
+    target
+        .bind_document_persistence(target_bootstrap)
+        .expect("target persistence must bind");
+    let mut recorder = target
+        .create_backend_ingress_provider(PointerEdgeSequence::new(0))
+        .expect("joined backend provider must enroll");
+    let route = bootstrap_native_root(&mut target, &mut recorder);
+    target
+        .queue_document_json(&json, |_, _, _| true)
+        .expect("document restore must queue without publishing");
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .expect("empty pointer checkpoint must be canonical"),
+        )
+        .expect("empty pointer checkpoint must record");
+    target
+        .record_pending_backend_document_restore(&mut recorder)
+        .expect("queued restore must append after captured input")
+        .expect("one restore ordinal must be recorded");
+    let batch = recorder
+        .pending_batch()
+        .expect("document restore batch must freeze");
+    let mut input_session = target
+        .begin_native_cycle(EguiFrameScheduleKey::new(2, 0), native_roster(route))
+        .expect("document native cycle must begin");
+    assert_eq!(
+        input_session
+            .submit_ingress(batch)
+            .expect("document ingress must validate"),
+        BackendIngressProgress::ReceiverReceiptsRequired
+    );
+    assert_eq!(
+        input_session
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([])
+                    .expect("empty pointer checkpoint has no receiver probes"),
+            )
+            .expect("document ingress must resume after pointer receipts"),
+        BackendIngressProgress::Complete
+    );
+    let mut replacement_policy = DockPolicy::default();
+    replacement_policy.set_allow_contained_floating(false);
+    let mut configuration = input_session
+        .into_configuration()
+        .expect("document ingress must enter terminal configuration");
+    configuration
+        .set_policy(&target, replacement_policy)
+        .expect("document restore and terminal policy must share one atomic frame");
+    let mut presentation = configuration
+        .into_presentation()
+        .expect("document configuration must enter presentation");
+    presentation
+        .mark_surface_unavailable(&mut target, SURFACE, MeasurementUnavailableReason::Deferred)
+        .expect("document test may omit paint");
+    let commit = presentation
+        .finish(&mut target)
+        .expect("outer frame must publish document and sidecars atomically");
+    for output in commit.into_parts().1 {
+        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+    }
+
+    assert!(!target.has_pending_document_restore());
+    assert!(!target.engine().policy().allows_contained_floating());
+    assert_eq!(target.item_id_for_external_key("pane/later"), Some(later));
+    assert!(
+        target
+            .engine()
+            .workspace()
+            .item_multiset()
+            .contains_key(&later)
+    );
+
+    let rebound = target
+        .native_viewport_binding(SURFACE)
+        .expect("restore must retain the native root in the new workspace epoch");
+    assert_ne!(rebound, route.core());
+    assert_eq!(rebound.epoch(), target.engine().version().epoch());
+    reclaim_backend_prefix(&mut target, &mut recorder);
+
+    recorder
+        .record_pointer_segment(
+            PointerEdgeJournal::new(
+                PointerEdgeSequence::new(0),
+                PointerEdgeSequence::new(0),
+                Vec::new(),
+            )
+            .expect("post-restore pointer checkpoint must be canonical"),
+        )
+        .expect("post-restore pointer checkpoint must record");
+    let batch = recorder
+        .pending_batch()
+        .expect("post-restore native batch must freeze");
+    let rebound_route = NativeCoreRoute::new(route.native(), SURFACE, rebound);
+    let mut input_session = target
+        .begin_native_cycle(
+            EguiFrameScheduleKey::new(3, 0),
+            native_roster(rebound_route),
+        )
+        .expect("native binding registry must accept its rebound workspace epoch");
+    assert_eq!(
+        input_session
+            .submit_ingress(batch)
+            .expect("post-restore ingress must validate"),
+        BackendIngressProgress::ReceiverReceiptsRequired
+    );
+    assert_eq!(
+        input_session
+            .submit_pointer_receiver_receipts(
+                PointerReceiverReceiptBatch::new([])
+                    .expect("post-restore checkpoint has no receiver probes"),
+            )
+            .expect("post-restore pointer receipts must reduce"),
+        BackendIngressProgress::Complete
+    );
+    let mut presentation = input_session
+        .into_presentation()
+        .expect("post-restore input must enter presentation");
+    presentation
+        .mark_surface_unavailable(&mut target, SURFACE, MeasurementUnavailableReason::Deferred)
+        .expect("post-restore verification may omit paint");
+    let _ = presentation
+        .finish(&mut target)
+        .expect("the rebound native route must commit in the next cycle");
+}
+
 fn native_roster(route: NativeCoreRoute) -> NativeBindingRoster {
     NativeBindingRoster::new([route], [])
 }
