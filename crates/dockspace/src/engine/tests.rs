@@ -454,6 +454,227 @@ fn failed_backend_provider_replacement_preserves_the_drain_receipt() {
 }
 
 #[test]
+fn dropped_backend_replacement_ticket_can_be_reissued_from_core_authority() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let predecessor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("predecessor backend provider must enroll");
+    let predecessor_lease = predecessor.lease();
+    let mut drained = predecessor.drain();
+    let start = engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined replacement must persist the predecessor proof");
+    let (ticket, _) = start.into_parts();
+    drop(ticket);
+
+    assert!(matches!(
+        engine.create_backend_ingress_provider(host, PointerEdgeSequence::new(0)),
+        Err(EngineError::PlatformProvider {
+            source: PlatformObservationAuthorityError::ProviderReplacementPending {
+                predecessor,
+            },
+        }) if predecessor == predecessor_lease.platform_provider()
+    ));
+
+    let mut reissued = engine
+        .reissue_backend_ingress_provider_replacement()
+        .expect("core must retain the exact pending handoff after ticket drop");
+    let successor = engine
+        .finish_backend_ingress_provider_replacement(&mut reissued, host)
+        .expect("reissued authority must activate every successor lane atomically");
+    assert!(reissued.is_consumed());
+    assert_eq!(engine.backend_ingress_provider(), Some(successor.lease()));
+    assert_ne!(successor.lease(), predecessor_lease);
+}
+
+#[test]
+fn reissuing_backend_replacement_invalidates_the_previous_ticket() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let predecessor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("predecessor backend provider must enroll");
+    let mut drained = predecessor.drain();
+    let start = engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined replacement must begin");
+    let (initial, _) = start.into_parts();
+    drop(initial);
+
+    let mut first = engine
+        .reissue_backend_ingress_provider_replacement()
+        .expect("first explicit reissue must succeed");
+    let mut latest = engine
+        .reissue_backend_ingress_provider_replacement()
+        .expect("a newer ticket generation must be issued explicitly");
+
+    assert!(matches!(
+        engine.finish_backend_ingress_provider_replacement(&mut first, host),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::UnknownReplacementTicket,
+        })
+    ));
+    assert!(!first.is_consumed());
+    assert_eq!(engine.backend_ingress_provider(), None);
+
+    let successor = engine
+        .finish_backend_ingress_provider_replacement(&mut latest, host)
+        .expect("only the latest ticket generation may publish");
+    assert!(latest.is_consumed());
+    assert_eq!(engine.backend_ingress_provider(), Some(successor.lease()));
+}
+
+#[test]
+fn backend_replacement_ticket_cannot_cross_engine_authority_domains() {
+    let mut first = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let first_host = first
+        .create_presentation_host()
+        .expect("first presentation host must mint");
+    let first_provider = first
+        .create_backend_ingress_provider(first_host, PointerEdgeSequence::new(0))
+        .expect("first backend provider must enroll");
+    let mut first_drain = first_provider.drain();
+    let first_start = first
+        .begin_backend_ingress_provider_replacement(&mut first_drain)
+        .expect("first replacement must begin");
+    let (mut first_ticket, _) = first_start.into_parts();
+
+    let mut second = single_surface_engine(TARGET_SURFACE, TARGET_ROOT, ItemId::new(2));
+    let second_host = second
+        .create_presentation_host()
+        .expect("second presentation host must mint");
+    let second_provider = second
+        .create_backend_ingress_provider(second_host, PointerEdgeSequence::new(0))
+        .expect("second backend provider must enroll");
+    let mut second_drain = second_provider.drain();
+    let second_start = second
+        .begin_backend_ingress_provider_replacement(&mut second_drain)
+        .expect("second replacement must begin");
+    let (mut second_ticket, _) = second_start.into_parts();
+
+    assert!(matches!(
+        second.finish_backend_ingress_provider_replacement(&mut first_ticket, second_host),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::ForeignAuthorityDomain { .. },
+        })
+    ));
+    assert!(!first_ticket.is_consumed());
+    assert_eq!(second.backend_ingress_provider(), None);
+
+    second
+        .finish_backend_ingress_provider_replacement(&mut second_ticket, second_host)
+        .expect("the exact second-engine ticket must remain usable");
+    first
+        .finish_backend_ingress_provider_replacement(&mut first_ticket, first_host)
+        .expect("the rejected first-engine ticket must remain usable by its owner");
+}
+
+#[test]
+fn aborting_backend_replacement_keeps_both_old_leases_revoked() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let mut predecessor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("predecessor backend provider must enroll");
+    let predecessor_lease = predecessor.lease();
+    let stale_batch = record_empty_backend_checkpoint(&mut predecessor);
+    let mut drained = predecessor.drain();
+    let start = engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined replacement must begin");
+    let (mut abandoned_ticket, _) = start.into_parts();
+
+    engine
+        .abort_backend_ingress_provider_replacement()
+        .expect("core-owned drain proof must permit explicit abandonment");
+    assert_eq!(engine.backend_ingress_provider(), None);
+    assert_eq!(engine.platform_provider(), None);
+    assert_eq!(engine.pointer_provider(), None);
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .pointer()
+            .retired_lease_guards(),
+        0
+    );
+    assert_eq!(
+        engine
+            .runtime_retention_manifest()
+            .effects()
+            .revoked_provider_guards(),
+        0
+    );
+    assert!(matches!(
+        engine.finish_backend_ingress_provider_replacement(&mut abandoned_ticket, host),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::ProviderReplacementNotPending,
+        })
+    ));
+
+    let successor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("aborted handoff must allow a fresh provider incarnation");
+    assert_ne!(successor.lease(), predecessor_lease);
+    let mut frame = begin_test_host_frame(&engine, host);
+    assert!(matches!(
+        frame.submit_backend_ingress(stale_batch),
+        Err(CoreHostFrameError::BackendIngressRejected {
+            source: BackendIngressError::BatchLeaseMismatch { .. },
+        })
+    ));
+}
+
+#[test]
+fn abandoned_backend_replacement_is_reaped_only_after_ticket_drop() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let predecessor = engine
+        .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("predecessor backend provider must enroll");
+    let mut drained = predecessor.drain();
+    let start = engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined replacement must begin");
+    let (ticket, _) = start.into_parts();
+
+    assert!(
+        engine
+            .reap_abandoned_backend_ingress_provider_replacement()
+            .expect("live ticket inspection must not fail")
+            .is_none(),
+        "a live current-generation ticket must retain the handoff",
+    );
+    drop(ticket);
+    assert!(
+        engine
+            .reap_abandoned_backend_ingress_provider_replacement()
+            .expect("abandoned handoff must reap from its stored drain proof")
+            .is_some(),
+    );
+    assert!(matches!(
+        engine.reissue_backend_ingress_provider_replacement(),
+        Err(EngineError::BackendIngress {
+            source: BackendIngressError::ProviderReplacementNotPending,
+        })
+    ));
+    assert!(
+        engine
+            .create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+            .is_ok(),
+        "reaping must leave an explicit unenrolled state",
+    );
+}
+
+#[test]
 fn backend_provider_replacement_rejects_the_predecessor_batch() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let host = engine

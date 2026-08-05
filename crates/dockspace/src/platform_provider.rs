@@ -236,6 +236,11 @@ impl PlatformObservationAuthority {
         self.active
     }
 
+    /// Returns the exact pending replacement reserved by the core.
+    pub(crate) const fn pending_replacement(&self) -> Option<PlatformProviderReplacementTicket> {
+        self.pending_replacement
+    }
+
     /// Returns the monotonic frontier of successfully published authority changes.
     pub(crate) const fn frontier(&self) -> PlatformProviderAuthorityFrontier {
         self.frontier
@@ -313,6 +318,33 @@ impl PlatformObservationAuthority {
         self.pending_replacement = None;
         self.active = Some(ticket.successor);
         Ok(ticket.successor)
+    }
+
+    /// Abandons one pending handoff without reviving either provider.
+    ///
+    /// The predecessor remains superseded and the reserved successor never
+    /// gains observation authority. A later explicit provider enrollment mints
+    /// a fresh incarnation.
+    pub(crate) fn abort_replacement(
+        &mut self,
+        ticket: PlatformProviderReplacementTicket,
+    ) -> Result<(), PlatformObservationAuthorityError> {
+        if ticket.authority_domain != self.authority_domain {
+            return Err(
+                PlatformObservationAuthorityError::ForeignReplacementTicket {
+                    expected: self.authority_domain,
+                    submitted: ticket.authority_domain,
+                },
+            );
+        }
+        if self.pending_replacement != Some(ticket) {
+            return Err(PlatformObservationAuthorityError::UnknownReplacementTicket);
+        }
+        let frontier = self.next_frontier()?;
+        debug_assert!(self.active.is_none());
+        self.frontier = frontier;
+        self.pending_replacement = None;
+        Ok(())
     }
 
     /// Permanently retires one exact active provider.

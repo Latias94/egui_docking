@@ -1,8 +1,13 @@
 use super::*;
 use crate::effect::DispatchFailureReason;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
+use crate::intent::Authority;
+use crate::platform::{
+    CloseEffectAcknowledgement, InputEffectAcknowledgement, WindowCloseObservation,
+    WindowCloseState, WindowInputObservation, WindowInputState,
+};
 use crate::platform_provider::PlatformObservationAuthority;
-use crate::viewport::WindowIncarnation;
+use crate::viewport::{CloseObservationGeneration, InputObservationGeneration, WindowIncarnation};
 
 fn binding(surface: u64, token: u64) -> ViewportBinding {
     ViewportBinding::new(
@@ -43,6 +48,87 @@ fn provider_pair() -> (PlatformObservationLease, PlatformObservationLease) {
         .finish_replacement(ticket)
         .expect("successor provider must activate");
     (first, second)
+}
+
+#[test]
+fn provider_replacement_rebases_retired_binding_observation_generations() {
+    let binding = binding(1, 10);
+    let mut input_observations = WindowInputObservationStream::default();
+    input_observations.observe(
+        binding,
+        Some(WindowInputObservation::new(
+            binding,
+            InputObservationGeneration::new(50),
+            Authority::Known(WindowInputState::ReceivesInput),
+            InputEffectAcknowledgement::known(None),
+        )),
+    );
+    let mut close_observations = WindowCloseObservationStream::default();
+    close_observations.observe(
+        binding,
+        Some(WindowCloseObservation::new(
+            binding,
+            CloseObservationGeneration::new(50),
+            Authority::Known(WindowCloseState::LiveClear),
+            CloseEffectAcknowledgement::known(None),
+        )),
+    );
+    let mut request = runtime_request(binding, BindingRetirementStatus::AwaitingAppearance);
+    request.input_observations = input_observations;
+    request.close_observations = close_observations;
+    let mut lifecycle = BindingRetirementLifecycle::default();
+    lifecycle.begin(request).expect("retirement must begin");
+
+    lifecycle.reset_for_provider_replacement();
+    assert!(
+        lifecycle
+            .plan_drive(binding, false)
+            .expect("successor provider must be able to drive the retained binding")
+            .is_none()
+    );
+    assert_eq!(
+        lifecycle.get(&binding).map(BindingRetirement::status),
+        Some(BindingRetirementStatus::AwaitingAppearance),
+    );
+    let retirement = lifecycle
+        .retirements
+        .get_mut(&binding)
+        .expect("retirement must remain owned across provider replacement");
+    assert!(!retirement.observed);
+    assert!(retirement.may_reappear);
+    retirement.input_observations.observe(
+        binding,
+        Some(WindowInputObservation::new(
+            binding,
+            InputObservationGeneration::new(1),
+            Authority::Known(WindowInputState::PassThrough),
+            InputEffectAcknowledgement::known(None),
+        )),
+    );
+    retirement.close_observations.observe(
+        binding,
+        Some(WindowCloseObservation::new(
+            binding,
+            CloseObservationGeneration::new(1),
+            Authority::Known(WindowCloseState::LiveRequested),
+            CloseEffectAcknowledgement::known(None),
+        )),
+    );
+
+    assert_eq!(
+        retirement
+            .input_observations
+            .current()
+            .map(WindowInputObservation::generation),
+        Some(InputObservationGeneration::new(1)),
+    );
+    assert_eq!(
+        retirement
+            .close_observations
+            .current()
+            .map(WindowCloseObservation::generation),
+        Some(CloseObservationGeneration::new(1)),
+    );
 }
 
 #[test]

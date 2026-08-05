@@ -83,6 +83,18 @@ pub(super) trait EguiEngineOwner {
         drained: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError>;
 
+    fn reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, EngineError>;
+
+    fn abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, EngineError>;
+
+    fn reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, EngineError>;
+
     fn finish_backend_ingress_provider_replacement(
         &mut self,
         ticket: &mut BackendIngressProviderReplacementTicket,
@@ -226,6 +238,24 @@ impl EguiEngineOwner for DockEngine {
         DockEngine::begin_backend_ingress_provider_replacement(self, drained)
     }
 
+    fn reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, EngineError> {
+        DockEngine::reissue_backend_ingress_provider_replacement(self)
+    }
+
+    fn abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, EngineError> {
+        DockEngine::abort_backend_ingress_provider_replacement(self)
+    }
+
+    fn reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, EngineError> {
+        DockEngine::reap_abandoned_backend_ingress_provider_replacement(self)
+    }
+
     fn finish_backend_ingress_provider_replacement(
         &mut self,
         ticket: &mut BackendIngressProviderReplacementTicket,
@@ -343,6 +373,24 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         drained: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         self.adapter_begin_backend_ingress_provider_replacement(drained)
+    }
+
+    fn reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, EngineError> {
+        self.adapter_reissue_backend_ingress_provider_replacement()
+    }
+
+    fn abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, EngineError> {
+        self.adapter_abort_backend_ingress_provider_replacement()
+    }
+
+    fn reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, EngineError> {
+        self.adapter_reap_abandoned_backend_ingress_provider_replacement()
     }
 
     fn finish_backend_ingress_provider_replacement(

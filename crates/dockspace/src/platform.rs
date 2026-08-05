@@ -671,6 +671,11 @@ pub(crate) struct WindowInputObservationStream {
 }
 
 impl WindowInputObservationStream {
+    /// Starts a fresh provider-local generation namespace.
+    pub(crate) fn reset_for_provider_replacement(&mut self) {
+        *self = Self::default();
+    }
+
     pub(crate) fn observe(
         &mut self,
         binding: ViewportBinding,
@@ -1173,6 +1178,20 @@ pub(crate) struct WindowCloseObservationStream {
 }
 
 impl WindowCloseObservationStream {
+    /// Starts a fresh provider-local generation namespace.
+    ///
+    /// A terminal destruction fact belongs to the provider that observed it.
+    /// Completed retirements are removed from the active lifecycle before a
+    /// replacement begins, so carrying that terminal fact into a successor
+    /// would incorrectly attribute predecessor authority to the new provider.
+    pub(crate) fn reset_for_provider_replacement(&mut self) {
+        debug_assert!(
+            !self.destroyed,
+            "destroyed close streams must leave the active lifecycle before provider replacement"
+        );
+        *self = Self::default();
+    }
+
     pub(crate) fn observe(
         &mut self,
         binding: ViewportBinding,

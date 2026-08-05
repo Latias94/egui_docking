@@ -221,6 +221,7 @@ pub struct ViewportCoordinator {
     authority_domain: EngineAuthorityDomainId,
     workspace_epoch: WorkspaceEpoch,
     platform_provider: PlatformObservationAuthority,
+    provider_reconciliation_pending: bool,
     capability_observations: CapabilityRosterObservationStream,
     capabilities: PlatformCapabilities,
     capability_generation: CapabilityGeneration,
@@ -388,6 +389,7 @@ impl ViewportCoordinator {
             authority_domain,
             workspace_epoch: WorkspaceEpoch::new(0),
             platform_provider: PlatformObservationAuthority::new(authority_domain),
+            provider_reconciliation_pending: false,
             capability_observations: CapabilityRosterObservationStream::default(),
             capabilities: PlatformCapabilities::default(),
             capability_generation: CapabilityGeneration::new(0),
@@ -410,8 +412,15 @@ impl ViewportCoordinator {
     /// Enrolls the sole platform observation provider for this coordinator.
     pub(crate) fn create_platform_provider(
         &mut self,
-    ) -> Result<PlatformObservationLease, PlatformObservationAuthorityError> {
-        self.platform_provider.create()
+    ) -> Result<PlatformObservationLease, ViewportCoordinatorError> {
+        let mut candidate = self.clone();
+        let provider = candidate
+            .platform_provider
+            .create()
+            .map_err(ViewportCoordinatorError::PlatformProvider)?;
+        candidate.reconcile_after_provider_enrollment()?;
+        *self = candidate;
+        Ok(provider)
     }
 
     /// Returns the current platform observation provider, when enrolled.
@@ -497,6 +506,14 @@ impl ViewportCoordinator {
         self.platform_provider.require_active(provider)
     }
 
+    /// Returns the core-owned platform handoff which is awaiting dispatch
+    /// quiescence, when one exists.
+    pub(crate) const fn pending_platform_provider_replacement(
+        &self,
+    ) -> Option<PlatformProviderReplacementTicket> {
+        self.platform_provider.pending_replacement()
+    }
+
     /// Revokes one provider and freezes a typed handoff ticket for its successor.
     pub(crate) fn begin_platform_provider_replacement(
         &mut self,
@@ -575,10 +592,14 @@ impl ViewportCoordinator {
             .registry
             .revoke_live_provider_authority()
             .map_err(ViewportCoordinatorError::Registry)?;
+        candidate
+            .binding_retirement
+            .reset_for_provider_replacement();
         let ticket = candidate
             .platform_provider
             .begin_replacement(provider)
             .map_err(ViewportCoordinatorError::PlatformProvider)?;
+        candidate.provider_reconciliation_pending = true;
         *self = candidate;
         Ok(ticket)
     }
@@ -593,17 +614,23 @@ impl ViewportCoordinator {
             .platform_provider
             .finish_replacement(ticket)
             .map_err(ViewportCoordinatorError::PlatformProvider)?;
-        candidate.migrate_retirement_cleanup_obligations_after_provider_replacement()?;
-        let retirements = candidate
-            .binding_retirement
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        for binding in retirements {
-            let _ = candidate.drive_binding_retirement(binding)?;
-        }
+        candidate.reconcile_after_provider_enrollment()?;
         *self = candidate;
         Ok(provider)
+    }
+
+    /// Abandons the reserved successor while preserving fail-closed platform state.
+    pub(crate) fn abort_platform_provider_replacement(
+        &mut self,
+        ticket: PlatformProviderReplacementTicket,
+    ) -> Result<(), ViewportCoordinatorError> {
+        let mut candidate = self.clone();
+        candidate
+            .platform_provider
+            .abort_replacement(ticket)
+            .map_err(ViewportCoordinatorError::PlatformProvider)?;
+        *self = candidate;
+        Ok(())
     }
 
     /// Compacts destroyed-binding guards after the exact observation producer has quiesced.
@@ -921,6 +948,19 @@ impl ViewportCoordinator {
             .flatten()
             .collect();
         self.apply_retirement_cleanup_actions(self.workspace_epoch, actions, &mut Vec::new())
+    }
+
+    fn reconcile_after_provider_enrollment(&mut self) -> Result<(), ViewportCoordinatorError> {
+        if !self.provider_reconciliation_pending {
+            return Ok(());
+        }
+        self.migrate_retirement_cleanup_obligations_after_provider_replacement()?;
+        let retirements = self.binding_retirement.keys().copied().collect::<Vec<_>>();
+        for binding in retirements {
+            let _ = self.drive_binding_retirement(binding)?;
+        }
+        self.provider_reconciliation_pending = false;
+        Ok(())
     }
 
     fn apply_retirement_cleanup_actions(

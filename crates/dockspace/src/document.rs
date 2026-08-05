@@ -640,6 +640,31 @@ impl DockspaceDocumentSession {
             .begin_backend_ingress_provider_replacement(drained)
     }
 
+    /// Reissues the exact pending joined-provider handoff through this session owner.
+    #[doc(hidden)]
+    pub fn adapter_reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, EngineError> {
+        self.engine.reissue_backend_ingress_provider_replacement()
+    }
+
+    /// Abandons the pending joined-provider handoff without reviving either lease.
+    #[doc(hidden)]
+    pub fn adapter_abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, EngineError> {
+        self.engine.abort_backend_ingress_provider_replacement()
+    }
+
+    /// Reaps an abandoned pending handoff after its current ticket was dropped.
+    #[doc(hidden)]
+    pub fn adapter_reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, EngineError> {
+        self.engine
+            .reap_abandoned_backend_ingress_provider_replacement()
+    }
+
     /// Finishes one joined backend-provider replacement through this session owner.
     #[doc(hidden)]
     pub fn adapter_finish_backend_ingress_provider_replacement(

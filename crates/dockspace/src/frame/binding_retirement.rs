@@ -282,6 +282,24 @@ pub(super) struct BindingRetirementLifecycle {
 }
 
 impl BindingRetirementLifecycle {
+    /// Revokes provider-local observation generations for every non-terminal retirement.
+    ///
+    /// Stable binding ownership and cleanup lineage remain intact, but a
+    /// successor provider must establish fresh input and close facts before an
+    /// old `observed` bit can authorize new cleanup work.
+    pub(super) fn reset_for_provider_replacement(&mut self) {
+        for retirement in self.retirements.values_mut() {
+            retirement.may_reappear |= retirement.observed;
+            retirement.observed = false;
+            retirement
+                .input_observations
+                .reset_for_provider_replacement();
+            retirement
+                .close_observations
+                .reset_for_provider_replacement();
+        }
+    }
+
     pub(super) fn extend_referenced_effects(&self, effects: &mut BTreeSet<EffectId>) {
         for retirement in self.retirements.values() {
             if let BindingRetirementOrigin::NativeCreateAborted { create } = retirement.origin {

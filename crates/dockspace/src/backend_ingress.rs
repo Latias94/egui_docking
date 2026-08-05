@@ -6,8 +6,8 @@
 //! opaque ordinals as facts are captured. Immutable batches can then be retried
 //! until a host-frame commit advances the engine-owned watermark.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use thiserror::Error;
 
@@ -173,6 +173,23 @@ impl BackendIngressDrainReceipt {
             consumed: false,
         })
     }
+
+    /// Reconstructs the core-owned copy of a proof after the original adapter
+    /// ticket was dropped. This is safe only for metadata already persisted in
+    /// [`BackendIngressAuthority::pending_replacement`]; callers cannot supply
+    /// this constructor data through the public API.
+    fn from_replacement_state(
+        lease: BackendIngressLease,
+        recorded_through: BackendIngressOrdinal,
+        pointer_through: PointerEdgeSequence,
+    ) -> Self {
+        Self {
+            lease,
+            recorded_through,
+            pointer_through,
+            consumed: false,
+        }
+    }
 }
 
 /// Affine proof that one recorder prefix has been reclaimed after core commit.
@@ -268,33 +285,76 @@ pub struct BackendIngressProviderReplacementTicket {
     authority: Option<BackendIngressProviderReplacementAuthority>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct BackendIngressProviderReplacementAuthority {
-    platform: PlatformProviderReplacementTicket,
-    predecessor: BackendIngressDrainReceipt,
+    authority_domain: EngineAuthorityDomainId,
+    handoff: BackendIngressReplacementId,
+    generation: u64,
+    _monitor: Arc<()>,
+}
+
+impl PartialEq for BackendIngressProviderReplacementAuthority {
+    fn eq(&self, other: &Self) -> bool {
+        self.authority_domain == other.authority_domain
+            && self.handoff == other.handoff
+            && self.generation == other.generation
+            && Arc::ptr_eq(&self._monitor, &other._monitor)
+    }
+}
+
+impl Eq for BackendIngressProviderReplacementAuthority {}
+
+/// Core-owned identity of one pending joined-provider handoff.
+///
+/// The identity is deliberately separate from the platform ticket. A dropped
+/// adapter ticket does not discard the quiescence proof retained by core, and a
+/// later reissued ticket still has to name this exact pending handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct BackendIngressReplacementId(u64);
+
+impl BackendIngressReplacementId {
+    const ORIGIN: Self = Self(0);
+
+    const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
 }
 
 impl BackendIngressProviderReplacementTicket {
     pub(crate) const fn new(
-        platform: PlatformProviderReplacementTicket,
-        predecessor: BackendIngressDrainReceipt,
+        authority_domain: EngineAuthorityDomainId,
+        handoff: BackendIngressReplacementId,
+        generation: u64,
+        monitor: Arc<()>,
     ) -> Self {
         Self {
             authority: Some(BackendIngressProviderReplacementAuthority {
-                platform,
-                predecessor,
+                authority_domain,
+                handoff,
+                generation,
+                _monitor: monitor,
             }),
         }
     }
 
-    pub(crate) const fn authority(
+    pub(crate) fn authority(
         &self,
     ) -> Option<(
-        PlatformProviderReplacementTicket,
-        &BackendIngressDrainReceipt,
+        EngineAuthorityDomainId,
+        BackendIngressReplacementId,
+        u64,
+        &Arc<()>,
     )> {
         match &self.authority {
-            Some(authority) => Some((authority.platform, &authority.predecessor)),
+            Some(authority) => Some((
+                authority.authority_domain,
+                authority.handoff,
+                authority.generation,
+                &authority._monitor,
+            )),
             None => None,
         }
     }
@@ -1153,6 +1213,59 @@ pub(crate) struct BackendIngressAuthority {
     active: Option<BackendIngressLease>,
     committed_through: BackendIngressOrdinal,
     committed_record_identity: BackendIngressRecordIdentity,
+    next_replacement_id: BackendIngressReplacementId,
+    pending_replacement: Option<BackendIngressReplacementState>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BackendIngressReplacementState {
+    handoff: BackendIngressReplacementId,
+    ticket_generation: u64,
+    ticket_monitor: Weak<()>,
+    platform: PlatformProviderReplacementTicket,
+    predecessor: BackendIngressLease,
+    recorded_through: BackendIngressOrdinal,
+    pointer_through: PointerEdgeSequence,
+}
+
+impl PartialEq for BackendIngressReplacementState {
+    fn eq(&self, other: &Self) -> bool {
+        self.handoff == other.handoff
+            && self.ticket_generation == other.ticket_generation
+            && Weak::ptr_eq(&self.ticket_monitor, &other.ticket_monitor)
+            && self.platform == other.platform
+            && self.predecessor == other.predecessor
+            && self.recorded_through == other.recorded_through
+            && self.pointer_through == other.pointer_through
+    }
+}
+
+impl Eq for BackendIngressReplacementState {}
+
+impl BackendIngressReplacementState {
+    pub(crate) const fn handoff(&self) -> BackendIngressReplacementId {
+        self.handoff
+    }
+
+    pub(crate) const fn platform(&self) -> PlatformProviderReplacementTicket {
+        self.platform
+    }
+
+    pub(crate) const fn predecessor(&self) -> BackendIngressLease {
+        self.predecessor
+    }
+
+    pub(crate) const fn pointer_through(&self) -> PointerEdgeSequence {
+        self.pointer_through
+    }
+
+    pub(crate) fn drain_receipt(&self) -> BackendIngressDrainReceipt {
+        BackendIngressDrainReceipt::from_replacement_state(
+            self.predecessor,
+            self.recorded_through,
+            self.pointer_through,
+        )
+    }
 }
 
 impl BackendIngressAuthority {
@@ -1162,6 +1275,8 @@ impl BackendIngressAuthority {
             active: None,
             committed_through: BackendIngressOrdinal::ORIGIN,
             committed_record_identity: BackendIngressRecordIdentity::ORIGIN,
+            next_replacement_id: BackendIngressReplacementId::ORIGIN,
+            pending_replacement: None,
         }
     }
 
@@ -1171,6 +1286,144 @@ impl BackendIngressAuthority {
 
     pub(crate) const fn committed_through(&self) -> BackendIngressOrdinal {
         self.committed_through
+    }
+
+    pub(crate) fn reserve_replacement(
+        &mut self,
+        platform: PlatformProviderReplacementTicket,
+        predecessor: &mut BackendIngressDrainReceipt,
+    ) -> Result<BackendIngressProviderReplacementTicket, BackendIngressError> {
+        if let Some(active) = self.active {
+            return Err(BackendIngressError::ProviderAlreadyActive { active });
+        }
+        if self.pending_replacement.is_some() {
+            return Err(BackendIngressError::ProviderReplacementPending);
+        }
+        predecessor.validate_active()?;
+        if predecessor.lease.authority_domain() != self.authority_domain {
+            return Err(BackendIngressError::ForeignAuthorityDomain {
+                expected: self.authority_domain,
+                submitted: predecessor.lease.authority_domain(),
+            });
+        }
+        let handoff = self
+            .next_replacement_id
+            .checked_next()
+            .ok_or(BackendIngressError::ReplacementIdentityExhausted)?;
+        let predecessor = predecessor.transfer()?;
+        self.next_replacement_id = handoff;
+        self.pending_replacement = Some(BackendIngressReplacementState {
+            handoff,
+            ticket_generation: 1,
+            ticket_monitor: Weak::new(),
+            platform,
+            predecessor: predecessor.lease,
+            recorded_through: predecessor.recorded_through,
+            pointer_through: predecessor.pointer_through,
+        });
+        let state = self
+            .pending_replacement
+            .as_mut()
+            .expect("replacement was inserted immediately above");
+        Ok(Self::issue_replacement_ticket(self.authority_domain, state))
+    }
+
+    pub(crate) fn reissue_replacement_ticket(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, BackendIngressError> {
+        let state = self
+            .pending_replacement
+            .as_mut()
+            .ok_or(BackendIngressError::ProviderReplacementNotPending)?;
+        state.ticket_generation = state
+            .ticket_generation
+            .checked_add(1)
+            .ok_or(BackendIngressError::ReplacementTicketGenerationExhausted)?;
+        Ok(Self::issue_replacement_ticket(self.authority_domain, state))
+    }
+
+    fn issue_replacement_ticket(
+        authority_domain: EngineAuthorityDomainId,
+        state: &mut BackendIngressReplacementState,
+    ) -> BackendIngressProviderReplacementTicket {
+        let monitor = Arc::new(());
+        state.ticket_monitor = Arc::downgrade(&monitor);
+        BackendIngressProviderReplacementTicket::new(
+            authority_domain,
+            state.handoff,
+            state.ticket_generation,
+            monitor,
+        )
+    }
+
+    pub(crate) fn replacement_state(
+        &self,
+        authority_domain: EngineAuthorityDomainId,
+        handoff: BackendIngressReplacementId,
+        generation: u64,
+        monitor: &Arc<()>,
+    ) -> Result<BackendIngressReplacementState, BackendIngressError> {
+        if authority_domain != self.authority_domain {
+            return Err(BackendIngressError::ForeignAuthorityDomain {
+                expected: self.authority_domain,
+                submitted: authority_domain,
+            });
+        }
+        let state = self
+            .pending_replacement
+            .as_ref()
+            .ok_or(BackendIngressError::ProviderReplacementNotPending)?;
+        if state.handoff != handoff || state.ticket_generation != generation {
+            return Err(BackendIngressError::UnknownReplacementTicket);
+        }
+        let Some(current_monitor) = state.ticket_monitor.upgrade() else {
+            return Err(BackendIngressError::UnknownReplacementTicket);
+        };
+        if !Arc::ptr_eq(&current_monitor, monitor) {
+            return Err(BackendIngressError::UnknownReplacementTicket);
+        }
+        Ok(state.clone())
+    }
+
+    pub(crate) fn replacement_ticket_abandoned(&self) -> bool {
+        self.pending_replacement
+            .as_ref()
+            .is_some_and(|state| state.ticket_monitor.upgrade().is_none())
+    }
+
+    pub(crate) fn pending_replacement_state(
+        &self,
+    ) -> Result<BackendIngressReplacementState, BackendIngressError> {
+        self.pending_replacement
+            .clone()
+            .ok_or(BackendIngressError::ProviderReplacementNotPending)
+    }
+
+    pub(crate) fn complete_replacement(
+        &mut self,
+        authority_domain: EngineAuthorityDomainId,
+        handoff: BackendIngressReplacementId,
+        generation: u64,
+        monitor: &Arc<()>,
+    ) -> Result<(), BackendIngressError> {
+        let _ = self.replacement_state(authority_domain, handoff, generation, monitor)?;
+        self.pending_replacement = None;
+        Ok(())
+    }
+
+    pub(crate) fn abort_replacement(
+        &mut self,
+        handoff: BackendIngressReplacementId,
+    ) -> Result<(), BackendIngressError> {
+        let state = self
+            .pending_replacement
+            .as_ref()
+            .ok_or(BackendIngressError::ProviderReplacementNotPending)?;
+        if state.handoff != handoff {
+            return Err(BackendIngressError::UnknownReplacementTicket);
+        }
+        self.pending_replacement = None;
+        Ok(())
     }
 
     pub(crate) fn enroll(
@@ -1290,6 +1543,22 @@ pub enum BackendIngressError {
     /// A successfully committed provider handoff ticket was submitted again.
     #[error("backend ingress provider replacement ticket was already consumed")]
     ProviderReplacementTicketConsumed,
+    /// A joined provider replacement is already pending and must be finished,
+    /// reissued, or explicitly reaped before another handoff can begin.
+    #[error("backend ingress provider replacement is already pending")]
+    ProviderReplacementPending,
+    /// No joined provider replacement is currently pending.
+    #[error("backend ingress provider replacement is not pending")]
+    ProviderReplacementNotPending,
+    /// A replacement ticket does not name the exact core-owned handoff.
+    #[error("backend ingress provider replacement ticket is not the pending handoff")]
+    UnknownReplacementTicket,
+    /// The core-owned replacement identity counter cannot advance.
+    #[error("backend ingress provider replacement identity counter is exhausted")]
+    ReplacementIdentityExhausted,
+    /// The ticket generation for one pending handoff cannot advance.
+    #[error("backend ingress provider replacement ticket generation is exhausted")]
+    ReplacementTicketGenerationExhausted,
     /// Another joined backend provider is already active.
     #[error("backend ingress provider {active:?} is already active")]
     ProviderAlreadyActive {

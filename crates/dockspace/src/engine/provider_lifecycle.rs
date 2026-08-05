@@ -43,7 +43,7 @@ impl DockEngine {
         let platform = candidate
             .viewport
             .create_platform_provider()
-            .map_err(|source| EngineError::PlatformProvider { source })?;
+            .map_err(|source| platform_enrollment_error(candidate.last_input, source))?;
         let pointer = candidate
             .pointer_journal
             .create_provider(
@@ -170,7 +170,7 @@ impl DockEngine {
     pub fn create_platform_provider(&mut self) -> Result<PlatformObservationLease, EngineError> {
         self.viewport
             .create_platform_provider()
-            .map_err(|source| EngineError::PlatformProvider { source })
+            .map_err(|source| platform_enrollment_error(self.last_input, source))
     }
 
     /// Returns the sole currently enrolled platform provider, when present.
@@ -189,17 +189,157 @@ impl DockEngine {
         drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
         let ingress = drained.lease();
-        let (candidate, start) =
+        let (mut candidate, start) =
             self.prepare_platform_provider_replacement(ingress.platform_provider(), Some(drained))?;
-        let predecessor = drained
-            .transfer()
+        let (platform_ticket, transition) = start.into_parts();
+        let ticket = candidate
+            .backend_ingress
+            .reserve_replacement(platform_ticket, drained)
             .map_err(|source| EngineError::BackendIngress { source })?;
-        let (ticket, transition) = start.into_parts();
         self.publish_candidate(candidate);
         Ok(BackendIngressProviderReplacementStart::new(
-            BackendIngressProviderReplacementTicket::new(ticket, predecessor),
-            transition,
+            ticket, transition,
         ))
+    }
+
+    /// Reissues a joined replacement ticket from the core-owned handoff state.
+    ///
+    /// The predecessor recorder was already consumed when the handoff began;
+    /// dropping an adapter ticket therefore cannot strand the engine. The
+    /// returned ticket is still guarded by the exact pending platform ticket,
+    /// provider lease, and persisted drain watermark.
+    pub fn reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, EngineError> {
+        let mut candidate = self.candidate();
+        let ticket = candidate
+            .backend_ingress
+            .reissue_replacement_ticket()
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let (authority_domain, handoff, generation, monitor) =
+            ticket.authority().ok_or(EngineError::BackendIngress {
+                source: BackendIngressError::ProviderReplacementTicketConsumed,
+            })?;
+        let platform_ticket = candidate
+            .backend_ingress
+            .replacement_state(authority_domain, handoff, generation, monitor)
+            .map_err(|source| EngineError::BackendIngress { source })?
+            .platform();
+        let pending = candidate
+            .viewport
+            .pending_platform_provider_replacement()
+            .ok_or(EngineError::BackendIngress {
+                source: BackendIngressError::ProviderReplacementNotPending,
+            })?;
+        if pending != platform_ticket {
+            return Err(EngineError::BackendIngress {
+                source: BackendIngressError::UnknownReplacementTicket,
+            });
+        }
+        candidate.advance_runtime_retention_revision()?;
+        self.publish_candidate(candidate);
+        Ok(ticket)
+    }
+
+    /// Abandons the pending joined handoff and returns the engine to an
+    /// explicitly unenrolled provider state.
+    ///
+    /// The predecessor remains permanently revoked, the reserved successor is
+    /// never activated, and the drain proof captured at begin is used to
+    /// compact predecessor retention. A later enrollment therefore receives a
+    /// fresh platform and pointer incarnation instead of reviving either side
+    /// of the abandoned handoff.
+    pub fn abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, EngineError> {
+        let before = self.version;
+        let before_viewport_focus = self.viewport_focus.clone();
+        let mut candidate = self.candidate();
+        let replacement = candidate
+            .backend_ingress
+            .pending_replacement_state()
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let predecessor = replacement.predecessor();
+        let drain = replacement.drain_receipt();
+
+        candidate
+            .viewport
+            .abort_platform_provider_replacement(replacement.platform())
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
+        let _ = candidate
+            .viewport
+            .compact_quiesced_destroyed_binding_guards(predecessor.platform_provider());
+        let _ = candidate
+            .viewport
+            .compact_quiesced_backend_effect_provider(&drain);
+        candidate
+            .pointer_journal
+            .compact_quiesced_backend(&drain)
+            .map_err(|source| EngineError::PointerJournal { source })?;
+        candidate
+            .backend_ingress
+            .abort_replacement(replacement.handoff())
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        candidate.advance_runtime_retention_revision()?;
+
+        let tick = candidate
+            .last_reducer_tick
+            .checked_next()
+            .ok_or(EngineError::ReducerTickExhausted)?;
+        candidate.last_reducer_tick = tick;
+        let platform_effects = candidate
+            .viewport
+            .try_take_new_effects()
+            .map_err(|source| EngineError::Viewport {
+                input: candidate.last_input,
+                source,
+            })?;
+        debug_assert!(platform_effects.is_empty());
+        let focus_delta = FocusDelta::between(
+            &before_viewport_focus,
+            &candidate.viewport_focus,
+            self.viewport.effects(),
+            candidate.viewport.effects(),
+            &[],
+        );
+        let transition = EngineTransition::new(EngineTransitionParts {
+            authority_domain: candidate.authority_domain,
+            tick,
+            before,
+            after: candidate.version,
+            reduced: Vec::new(),
+            reduced_pointer_edges: Vec::new(),
+            events: Vec::new(),
+            interaction_events: Vec::new(),
+            platform_effects,
+            focus_delta,
+            presentation_observations: Vec::new(),
+            presentation_emissions: Vec::new(),
+            presentation_dispositions: Vec::new(),
+            surface_contributions: Vec::new(),
+            surface_scene_deltas: Vec::new(),
+            published_state_changed: true,
+        });
+        self.publish_candidate(candidate);
+        Ok(transition)
+    }
+
+    /// Reaps an abandoned joined handoff after every live ticket for its
+    /// current generation has disappeared.
+    ///
+    /// Ticket absence is used only to decide whether recovery work may begin;
+    /// predecessor quiescence still comes from the drain proof stored by core
+    /// when replacement started.
+    pub fn reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, EngineError> {
+        if !self.backend_ingress.replacement_ticket_abandoned() {
+            return Ok(None);
+        }
+        self.abort_backend_ingress_provider_replacement().map(Some)
     }
 
     /// Atomically revokes the active platform provider and starts a typed handoff.
@@ -419,11 +559,17 @@ impl DockEngine {
         presentation_host: PresentationHostLease,
     ) -> Result<BackendIngressRecorder, EngineError> {
         let mut candidate = self.candidate();
-        let (platform_ticket, predecessor_drain) =
+        let (authority_domain, handoff, generation, monitor) =
             ticket.authority().ok_or(EngineError::BackendIngress {
                 source: BackendIngressError::ProviderReplacementTicketConsumed,
             })?;
-        let predecessor = predecessor_drain.lease();
+        let replacement = candidate
+            .backend_ingress
+            .replacement_state(authority_domain, handoff, generation, monitor)
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let platform_ticket = replacement.platform();
+        let predecessor = replacement.predecessor();
+        let predecessor_drain = replacement.drain_receipt();
         candidate
             .presentation_authority
             .presentation
@@ -446,7 +592,7 @@ impl DockEngine {
             .pointer_journal
             .compact_quiesced_backend(&predecessor_drain)
             .map_err(|source| EngineError::PointerJournal { source })?;
-        let pointer_committed_through = predecessor_drain.pointer_through();
+        let pointer_committed_through = replacement.pointer_through();
         let pointer = candidate
             .pointer_journal
             .create_provider(
@@ -462,6 +608,10 @@ impl DockEngine {
                 presentation_host,
                 pointer_committed_through,
             )
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        candidate
+            .backend_ingress
+            .complete_replacement(authority_domain, handoff, generation, monitor)
             .map_err(|source| EngineError::BackendIngress { source })?;
         let consumed = ticket.consume();
         debug_assert!(consumed);
@@ -849,5 +999,17 @@ impl DockEngine {
             interaction_events,
         )?;
         Ok(Some(provider))
+    }
+}
+
+fn platform_enrollment_error(
+    input: InputSequence,
+    source: ViewportCoordinatorError,
+) -> EngineError {
+    match source {
+        ViewportCoordinatorError::PlatformProvider(source) => {
+            EngineError::PlatformProvider { source }
+        }
+        source => EngineError::Viewport { input, source },
     }
 }

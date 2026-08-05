@@ -223,11 +223,15 @@ impl Dockspace {
         if self.pointer_input.provider().is_some() {
             self.abort_pointer_input()?;
         }
-        Ok(EguiEngineOwner::create_backend_ingress_provider(
+        let recorder = EguiEngineOwner::create_backend_ingress_provider(
             &mut self.engine,
             self.presentation_host,
             pointer_committed_through,
-        )?)
+        )?;
+        if let Some(bindings) = self.native_bindings.as_mut() {
+            bindings.rebind_provider(recorder.lease(), self.engine.version().epoch());
+        }
+        Ok(recorder)
     }
 
     /// Settles one core-committed backend prefix after the native producer reclaims it.
@@ -354,6 +358,43 @@ impl Dockspace {
             EguiEngineOwner::begin_backend_ingress_provider_replacement(&mut self.engine, drained)?;
         self.pane_focus.accept_transition(replacement.transition());
         Ok(replacement)
+    }
+
+    /// Reissues a pending joined-provider handoff after its adapter ticket was lost.
+    ///
+    /// The quiescence proof remains owned by the core from the original begin
+    /// boundary. This method recovers only the opaque finish capability; it
+    /// does not reactivate the predecessor or infer authority from ticket loss.
+    pub fn reissue_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<BackendIngressProviderReplacementTicket, DockspaceError> {
+        self.ensure_native_session_idle()?;
+        EguiEngineOwner::reissue_backend_ingress_provider_replacement(&mut self.engine)
+            .map_err(DockspaceError::from)
+    }
+
+    /// Abandons the pending joined-provider handoff and leaves no provider active.
+    pub fn abort_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<EngineTransition, DockspaceError> {
+        self.ensure_native_session_idle()?;
+        let transition =
+            EguiEngineOwner::abort_backend_ingress_provider_replacement(&mut self.engine)?;
+        self.pane_focus.accept_transition(&transition);
+        Ok(transition)
+    }
+
+    /// Reaps a pending joined handoff only after its current ticket was dropped.
+    pub fn reap_abandoned_backend_ingress_provider_replacement(
+        &mut self,
+    ) -> Result<Option<EngineTransition>, DockspaceError> {
+        self.ensure_native_session_idle()?;
+        let transition =
+            EguiEngineOwner::reap_abandoned_backend_ingress_provider_replacement(&mut self.engine)?;
+        if let Some(transition) = &transition {
+            self.pane_focus.accept_transition(transition);
+        }
+        Ok(transition)
     }
 
     /// Activates the joined successor from the predecessor's affine drain proof.

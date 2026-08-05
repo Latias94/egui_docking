@@ -3884,6 +3884,54 @@ fn provider_replacement_reissues_observation_for_emitted_cleanup() {
 }
 
 #[test]
+fn aborted_provider_handoff_reconciles_cleanup_on_fresh_enrollment() {
+    let (mut coordinator, binding, _, destructive) = runtime_child_vacancy();
+    let predecessor = coordinator
+        .platform_provider()
+        .expect("the test coordinator has one active provider");
+    let ticket = coordinator
+        .begin_platform_provider_replacement(predecessor)
+        .expect("provider replacement must revoke the old cleanup observer");
+
+    coordinator
+        .abort_platform_provider_replacement(ticket)
+        .expect("aborting the reserved successor must leave reconciliation pending");
+    let successor = coordinator
+        .create_platform_provider()
+        .expect("fresh enrollment must atomically reconcile provider-owned cleanup");
+    let BindingRetirementStatus::CleanupRequested {
+        effect: continuation,
+    } = retirement(&coordinator, binding).status()
+    else {
+        panic!("fresh enrollment must own a cleanup observation continuation");
+    };
+    assert_ne!(continuation, destructive);
+
+    let emitted = coordinator.take_new_effects();
+    assert!(matches!(
+        emitted.as_slice(),
+        [request]
+            if request.id() == continuation
+                && matches!(
+                    request.effect(),
+                    PlatformEffect::ContinueCleanup {
+                        binding: actual,
+                        predecessor: actual_predecessor,
+                        after: None,
+                    } if *actual == binding && *actual_predecessor == destructive
+                )
+    ));
+    assert_eq!(
+        coordinator
+            .effects()
+            .record(continuation)
+            .and_then(crate::effect::EffectRecord::delivery)
+            .map(crate::effect::EffectDelivery::provider),
+        Some(successor),
+    );
+}
+
+#[test]
 fn provider_replacement_rebases_a_failed_cleanup_observation_lane() {
     let (mut coordinator, binding, destructive, failed, _, _) = failed_cleanup_observation();
     assert!(matches!(
@@ -3932,6 +3980,85 @@ fn provider_replacement_rebases_a_failed_cleanup_observation_lane() {
             .map(crate::effect::EffectDelivery::provider),
         Some(successor_provider)
     );
+}
+
+#[test]
+fn provider_replacement_rebases_retired_binding_input_and_close_streams() {
+    let mut coordinator = ViewportCoordinator::default();
+    let binding = coordinator
+        .registry
+        .reserve(
+            WorkspaceEpoch::default(),
+            SurfaceId::new(2_442),
+            ViewportRole::Child,
+        )
+        .expect("test runtime child must reserve");
+    coordinator
+        .publish_snapshot(&snapshot_with_close_at(
+            50,
+            vec![observed_window_at(binding, 50).with_input_observation(
+                WindowInputObservation::new(
+                    binding,
+                    InputObservationGeneration::new(50),
+                    Authority::Known(WindowInputState::ReceivesInput),
+                    InputEffectAcknowledgement::known(None),
+                ),
+            )],
+            vec![close_observation(binding, 50, WindowCloseState::LiveClear)],
+        ))
+        .expect("predecessor observations must publish");
+    coordinator
+        .registry
+        .admit(binding)
+        .expect("test runtime child must admit");
+
+    let authority = coordinator.capture_surface_vacancy_authority(binding.surface());
+    coordinator
+        .settle_surface_vacancies(&[authority], &BTreeSet::new())
+        .expect("runtime child vacancy must begin retirement");
+    let _ = coordinator.take_new_effects();
+
+    let predecessor = coordinator
+        .platform_provider()
+        .expect("predecessor provider must be active");
+    let ticket = coordinator
+        .begin_platform_provider_replacement(predecessor)
+        .expect("provider replacement must reset provider-local streams");
+    coordinator
+        .finish_platform_provider_replacement(ticket)
+        .expect("successor provider must activate");
+    let _ = coordinator.take_new_effects();
+
+    coordinator
+        .publish_snapshot(&snapshot_with_close_at(
+            1,
+            vec![observed_window_at(binding, 1).with_input_observation(
+                WindowInputObservation::new(
+                    binding,
+                    InputObservationGeneration::new(1),
+                    Authority::Known(WindowInputState::ReceivesInput),
+                    InputEffectAcknowledgement::known(None),
+                ),
+            )],
+            vec![close_observation(binding, 1, WindowCloseState::LiveClear)],
+        ))
+        .expect("successor generation one must be authoritative");
+    assert_eq!(
+        retirement(&coordinator, binding)
+            .input_observations()
+            .current()
+            .map(WindowInputObservation::generation),
+        Some(InputObservationGeneration::new(1)),
+    );
+
+    coordinator
+        .publish_snapshot(&snapshot_with_close_at(
+            2,
+            Vec::new(),
+            vec![close_observation(binding, 2, WindowCloseState::Destroyed)],
+        ))
+        .expect("successor destruction must terminalize the retirement");
+    assert!(coordinator.binding_retirement.get(&binding).is_none());
 }
 
 #[test]
