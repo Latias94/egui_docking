@@ -9,7 +9,7 @@ use crate::command::{
     ContainedPosition, ContainedRootSource, DockTarget, MovePayload, NodeSource,
     RootPresentationTarget, SurfaceRosterSource, WorkspaceCommand,
 };
-use crate::coordinates::CoordinateSnapshot;
+use crate::coordinates::{CoordinateSnapshot, RecoveryCoordinateSnapshot};
 use crate::geometry::{GeometryError, LogicalPoint, LogicalRect, LogicalSize};
 use crate::graph::{Node, Workspace};
 use crate::ids::EngineAuthorityDomainId;
@@ -538,6 +538,9 @@ pub enum SurfaceRecoveryError {
     /// Source coordinates were not authoritative at the lifecycle edge.
     #[error("surface {surface} recovery lacks authoritative source coordinates")]
     SourceCoordinatesUnavailable { surface: SurfaceId },
+    /// No exact outer-window anchor was ever observed for a rooted source surface.
+    #[error("surface {surface} recovery lacks an authoritative source outer rectangle")]
+    SourceOuterBoundsUnavailable { surface: SurfaceId },
     /// Contained minimum measurements were not authoritative at the lifecycle edge.
     #[error("surface {surface} recovery lacks complete contained minimum measurements")]
     ContainedMinimumsUnavailable { surface: SurfaceId },
@@ -564,7 +567,9 @@ impl SurfaceRecoveryError {
     pub const fn is_authority_gap(&self) -> bool {
         matches!(
             self,
-            Self::SourceCoordinatesUnavailable { .. } | Self::ContainedMinimumsUnavailable { .. }
+            Self::SourceCoordinatesUnavailable { .. }
+                | Self::SourceOuterBoundsUnavailable { .. }
+                | Self::ContainedMinimumsUnavailable { .. }
         )
     }
 }
@@ -636,7 +641,7 @@ pub type ContainedRootDisposition = ContainedRootSource;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceRosterDisposition {
     roster: SurfaceRosterSource,
-    source_coordinates: Option<CoordinateSnapshot>,
+    source_coordinates: Option<RecoveryCoordinateSnapshot>,
     contained_minimum_authority: Option<ContainedMinimumAuthority>,
 }
 
@@ -657,7 +662,7 @@ impl SurfaceRosterDisposition {
     pub(crate) fn capture(
         workspace: &Workspace,
         surface: SurfaceId,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
     ) -> Result<Self, SurfaceRosterCaptureError> {
         let presentation = workspace
             .surface(surface)
@@ -722,7 +727,7 @@ impl SurfaceRosterDisposition {
         self.source_coordinates.is_some()
     }
 
-    pub(crate) const fn source_coordinates(&self) -> Option<CoordinateSnapshot> {
+    pub(crate) const fn source_coordinates(&self) -> Option<RecoveryCoordinateSnapshot> {
         self.source_coordinates
     }
 
@@ -882,7 +887,7 @@ impl SurfaceRosterDisposition {
         workspace: &Workspace,
         target: SurfaceRecoveryTarget,
         host: SurfaceRecoveryHostFacts,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
     ) -> Result<Option<ContainedRootPlacement>, SurfaceRecoveryError> {
         let converted = match (self.roster.main_source(), target.converted_main()) {
             (None, None) => return Ok(None),
@@ -913,11 +918,14 @@ impl SurfaceRosterDisposition {
             source_coordinates.ok_or(SurfaceRecoveryError::SourceCoordinatesUnavailable {
                 surface: self.surface(),
             })?;
-        let requested = host.coordinates().desktop_rect_to_surface(
-            source_coordinates
-                .outer_bounds()
-                .unwrap_or_else(|| source_coordinates.content_bounds()),
+        let source_outer_bounds = source_coordinates.outer_bounds().ok_or(
+            SurfaceRecoveryError::SourceOuterBoundsUnavailable {
+                surface: self.surface(),
+            },
         )?;
+        let requested = host
+            .coordinates()
+            .desktop_rect_to_surface(source_outer_bounds)?;
         let rect = clamp_recovery_rect(
             host.surface(),
             host.scene_bounds(),
@@ -934,7 +942,7 @@ impl SurfaceRosterDisposition {
     fn compile_recovery_contained_placements(
         &self,
         host: SurfaceRecoveryHostFacts,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
     ) -> Result<Vec<ContainedRootPlacement>, SurfaceRecoveryError> {
         if self.contained().is_empty() {
             return Ok(Vec::new());
@@ -961,7 +969,9 @@ impl SurfaceRosterDisposition {
                     surface: self.surface(),
                 });
             }
-            let desktop = source_coordinates.surface_rect_to_desktop(disposition.rect())?;
+            let desktop = source_coordinates
+                .content()
+                .surface_rect_to_desktop(disposition.rect())?;
             let requested = host.coordinates().desktop_rect_to_surface(desktop)?;
             let rect = clamp_recovery_rect(
                 host.surface(),

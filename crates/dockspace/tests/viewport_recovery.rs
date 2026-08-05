@@ -40,7 +40,8 @@ use dockspace::semantic_input::{
     SemanticDelivery, SemanticKey, SemanticReceiverAction, SemanticReceiverEvent,
 };
 use dockspace::surface_recovery::{
-    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryTarget,
+    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason, SurfaceRecoveryError,
+    SurfaceRecoveryTarget,
 };
 use dockspace::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::viewport::{
@@ -154,6 +155,24 @@ fn ready_window_at_generation(
             CoordinateObservationGeneration::new(generation),
             Authority::Known(physical_rect(x, 0.0, 900.0, 700.0)),
             Authority::Known(physical_rect(x - 8.0, -30.0, 916.0, 738.0)),
+            Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
+            Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
+        ))
+        .with_input_state(Authority::Known(WindowInputState::ReceivesInput))
+}
+
+fn ready_window_without_outer_at_generation(
+    binding: ViewportBinding,
+    generation: u64,
+    x: f64,
+    scale: f64,
+) -> ObservedWindow {
+    ObservedWindow::new(binding)
+        .with_coordinate_observation(WindowCoordinateObservation::new(
+            binding,
+            CoordinateObservationGeneration::new(generation),
+            Authority::Known(physical_rect(x, 0.0, 900.0, 700.0)),
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
             Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
             Authority::Known(ScaleFactor::new(scale).expect("test scale factor must be valid")),
         ))
@@ -510,6 +529,10 @@ fn make_host_current_and_retry_recovery(
 }
 
 fn fixture() -> Fixture {
+    fixture_with_child_outer(true)
+}
+
+fn fixture_with_child_outer(child_outer_available: bool) -> Fixture {
     let (workspace, child_root_node) = workspace();
     let initial_items = workspace.item_multiset();
     let mut engine =
@@ -569,10 +592,15 @@ fn fixture() -> Fixture {
         .viewport(SURFACE_HOST)
         .expect("host viewport must be registered")
         .binding();
+    let child_window = if child_outer_available {
+        child_window(child_binding)
+    } else {
+        ready_window_without_outer_at_generation(child_binding, 1, 1200.0, 1.0)
+    };
     publish_windows(
         &mut engine,
         &mut presentation_host,
-        vec![host_window(host_binding), child_window(child_binding)],
+        vec![host_window(host_binding), child_window],
     );
     publish_scene(&mut engine, &mut presentation_host);
     let expected_recovered_rect = engine
@@ -1174,6 +1202,65 @@ fn destroyed_child_recovers_after_a_transient_coordinate_gap() {
             .pending_surface_recovery(SURFACE_CHILD)
             .is_none()
     );
+}
+
+#[test]
+fn recovery_keeps_the_last_exact_outer_anchor_when_the_latest_fact_is_unknown() {
+    let mut fixture = fixture();
+    let child_binding = fixture.child_binding;
+
+    publish_windows(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        vec![
+            host_window(fixture.host_binding),
+            ready_window_without_outer_at_generation(child_binding, 2, 1400.0, 1.0),
+        ],
+    );
+    publish_scene(&mut fixture.engine, &mut fixture.presentation_host);
+
+    publish_destroyed_child(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        child_binding,
+        vec![host_window(fixture.host_binding)],
+    );
+
+    assert_whole_root_recovered(&fixture);
+}
+
+#[test]
+fn rooted_recovery_without_any_exact_outer_anchor_stays_pending() {
+    let mut fixture = fixture_with_child_outer(false);
+    let child_binding = fixture.child_binding;
+
+    publish_destroyed_child(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        child_binding,
+        vec![host_window(fixture.host_binding)],
+    );
+
+    assert!(fixture.engine.workspace().surface(SURFACE_CHILD).is_some());
+    assert!(
+        fixture
+            .engine
+            .workspace()
+            .contained_floating(RECOVERY_FLOATING)
+            .is_none()
+    );
+    assert!(
+        fixture
+            .engine
+            .pending_surface_recovery(SURFACE_CHILD)
+            .is_some()
+    );
+    assert!(matches!(
+        fixture.engine.blocked_surface_recovery(SURFACE_CHILD),
+        Some(SurfaceRecoveryBlockedReason::Compile(
+            SurfaceRecoveryError::SourceOuterBoundsUnavailable { surface }
+        )) if *surface == SURFACE_CHILD
+    ));
 }
 
 #[test]

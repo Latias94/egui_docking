@@ -214,6 +214,46 @@ pub(crate) struct CoordinateSnapshot {
     presentation_scale_factor: ScaleFactor,
 }
 
+/// Exact-binding geometry retained only for destruction recovery.
+///
+/// Content projection and the outer-window anchor are independent platform
+/// facts. A provider may temporarily lose the latter while continuing to
+/// report content coordinates. Keeping them separately prevents recovery from
+/// either fabricating an outer rectangle from content bounds or discarding the
+/// last exact outer placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RecoveryCoordinateSnapshot {
+    content: CoordinateSnapshot,
+    outer_bounds: Option<PhysicalRect>,
+}
+
+impl RecoveryCoordinateSnapshot {
+    pub(crate) const fn new(content: CoordinateSnapshot) -> Self {
+        Self {
+            outer_bounds: content.outer_bounds(),
+            content,
+        }
+    }
+
+    /// Advances current content geometry while retaining the last exact outer
+    /// anchor when the new observation reports that fact as unavailable.
+    pub(crate) const fn observe(mut self, content: CoordinateSnapshot) -> Self {
+        self.content = content;
+        if let Some(outer_bounds) = content.outer_bounds() {
+            self.outer_bounds = Some(outer_bounds);
+        }
+        self
+    }
+
+    pub(crate) const fn content(self) -> CoordinateSnapshot {
+        self.content
+    }
+
+    pub(crate) const fn outer_bounds(self) -> Option<PhysicalRect> {
+        self.outer_bounds
+    }
+}
+
 impl CoordinateSnapshot {
     pub(crate) const fn binding(self) -> ViewportBinding {
         self.binding

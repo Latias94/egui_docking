@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::close_plan::NativeCloseEdge;
-use crate::coordinates::{CoordinateSnapshot, CoordinateUnavailable, ViewportPlacementProof};
+use crate::coordinates::{
+    CoordinateSnapshot, CoordinateUnavailable, RecoveryCoordinateSnapshot, ViewportPlacementProof,
+};
 use crate::geometry::LogicalRect;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 use crate::intent::Authority;
@@ -90,7 +92,7 @@ pub struct ViewportRecord {
     admission: ViewportAdmission,
     lifecycle: ViewportLifecycle,
     coordinates: Option<CoordinateSnapshot>,
-    recovery_coordinates: Option<CoordinateSnapshot>,
+    recovery_coordinates: Option<RecoveryCoordinateSnapshot>,
     coordinate_observations: WindowCoordinateObservationStream,
     input_observations: WindowInputObservationStream,
     presentation_observations: WindowPresentationObservationStream,
@@ -218,7 +220,7 @@ impl ViewportRecord {
     /// Returns the last exact-binding coordinates retained only for destruction recovery.
     ///
     /// This is historical placement data, not current route, hit-test, or scene authority.
-    pub(crate) const fn recovery_coordinates(&self) -> Option<CoordinateSnapshot> {
+    pub(crate) const fn recovery_coordinates(&self) -> Option<RecoveryCoordinateSnapshot> {
         self.recovery_coordinates
     }
 
@@ -947,8 +949,13 @@ impl ViewportRegistry {
                     binding: record.binding,
                 });
             }
-            if record.has_coordinate_authority() {
-                record.recovery_coordinates = record.coordinates;
+            if record.has_coordinate_authority()
+                && let Some(coordinates) = record.coordinates
+            {
+                record.recovery_coordinates = Some(record.recovery_coordinates.map_or_else(
+                    || RecoveryCoordinateSnapshot::new(coordinates),
+                    |recovery| recovery.observe(coordinates),
+                ));
             }
         }
 
@@ -2604,7 +2611,7 @@ mod tests {
         assert!(gap.coordinates().is_none());
         assert_eq!(
             gap.recovery_coordinates()
-                .map(CoordinateSnapshot::observation_generation),
+                .map(|coordinates| coordinates.content().observation_generation()),
             Some(CoordinateObservationGeneration::new(2)),
             "a temporary gap must not erase the last trusted recovery anchor"
         );
@@ -2628,7 +2635,7 @@ mod tests {
         assert_eq!(
             quarantined
                 .recovery_coordinates()
-                .map(CoordinateSnapshot::observation_generation),
+                .map(|coordinates| coordinates.content().observation_generation()),
             Some(CoordinateObservationGeneration::new(2))
         );
 
@@ -2669,6 +2676,10 @@ mod tests {
             restored.coordinate_observation_generation(),
             Some(CoordinateObservationGeneration::new(5))
         );
+        let exact_outer_anchor = restored
+            .recovery_coordinates()
+            .and_then(RecoveryCoordinateSnapshot::outer_bounds)
+            .expect("ready coordinates must retain one exact outer anchor");
 
         let outer_unknown = WindowCoordinateObservation::new(
             binding,
@@ -2703,6 +2714,20 @@ mod tests {
                 .is_some_and(|coordinates| coordinates.outer_bounds().is_none())
         );
         assert!(outer_changed.coordinate_generation() > before_outer_change);
+        assert_eq!(
+            outer_changed
+                .recovery_coordinates()
+                .and_then(RecoveryCoordinateSnapshot::outer_bounds),
+            Some(exact_outer_anchor),
+            "an unavailable outer fact must not erase or replace the last exact anchor"
+        );
+        assert_eq!(
+            outer_changed
+                .recovery_coordinates()
+                .map(RecoveryCoordinateSnapshot::content),
+            outer_changed.coordinates(),
+            "recovery retains the newest exact content projection independently"
+        );
     }
 
     #[test]

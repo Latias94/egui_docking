@@ -92,7 +92,10 @@ use crate::command::{
     NodeFingerprint, NodeSource, RootContent, RootPresentationTarget, SplitResize,
     WorkspaceCommand,
 };
-use crate::coordinates::{CoordinateSnapshot, TearOffPlacementRequest, solve_tear_off_placement};
+use crate::coordinates::{
+    CoordinateSnapshot, RecoveryCoordinateSnapshot, TearOffPlacementRequest,
+    solve_tear_off_placement,
+};
 use crate::drop_resolver::{
     DropAffordance, DropResolution, DropResolutionError, resolve_presented_drop,
 };

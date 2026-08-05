@@ -1865,14 +1865,14 @@ impl DockEngine {
         let source_coordinates = self
             .viewport
             .viewport(surface)
-            .and_then(crate::viewport_registry::ViewportRecord::coordinates);
+            .and_then(crate::viewport_registry::ViewportRecord::recovery_coordinates);
         self.capture_surface_roster_with_coordinates(surface, source_coordinates)
     }
 
     fn capture_surface_roster_with_coordinates(
         &self,
         surface: crate::ids::SurfaceId,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
     ) -> Result<SurfaceRosterDisposition, SurfaceRosterCaptureError> {
         SurfaceRosterDisposition::capture(&self.workspace, surface, source_coordinates)
     }
@@ -1895,7 +1895,7 @@ impl DockEngine {
             && !matches!(
                 ready.coordinate_capture(),
                 SurfaceCoordinateCapture::NativeReady { coordinates: captured, .. }
-                    if captured == coordinates
+                    if captured == coordinates.content()
             )
         {
             return false;

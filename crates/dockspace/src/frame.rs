@@ -40,7 +40,9 @@ use self::recovery_replacement::{
 
 use crate::backend_ingress::BackendIngressDrainReceipt;
 use crate::close_plan::NativeCloseEdge;
-use crate::coordinates::{CoordinateSnapshot, CoordinateUnavailable, ViewportPlacementProof};
+use crate::coordinates::{
+    CoordinateUnavailable, RecoveryCoordinateSnapshot, ViewportPlacementProof,
+};
 #[cfg(test)]
 use crate::effect::EffectRequest;
 use crate::effect::{
@@ -138,7 +140,7 @@ pub(crate) enum ViewportLifecycleAction {
     },
     SurfaceDestroyed {
         observation: WindowCloseObservation,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
     },
     /// A retained recovery's replacement completed post-show staging and is
     /// ready for an exact first-live presentation barrier.
@@ -2030,7 +2032,7 @@ impl ViewportCoordinator {
     fn reduce_registry_events(
         &mut self,
         events: &[RegistryEvent],
-        recovery_coordinates: &BTreeMap<ViewportBinding, Option<CoordinateSnapshot>>,
+        recovery_coordinates: &BTreeMap<ViewportBinding, Option<RecoveryCoordinateSnapshot>>,
     ) -> Result<Vec<ViewportLifecycleAction>, ViewportCoordinatorError> {
         let mut actions = Vec::new();
         let mut presentation_reduced = BTreeSet::new();
@@ -2400,7 +2402,7 @@ impl ViewportCoordinator {
     fn reduce_destroyed_binding(
         &mut self,
         observation: WindowCloseObservation,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
         actions: &mut Vec<ViewportLifecycleAction>,
     ) -> Result<DestroyedBindingDisposition, ViewportCoordinatorError> {
         let binding = observation.binding();
@@ -2604,7 +2606,7 @@ impl ViewportCoordinator {
     fn push_direct_destruction(
         &self,
         observation: WindowCloseObservation,
-        source_coordinates: Option<CoordinateSnapshot>,
+        source_coordinates: Option<RecoveryCoordinateSnapshot>,
         actions: &mut Vec<ViewportLifecycleAction>,
     ) {
         actions.push(ViewportLifecycleAction::SurfaceDestroyed {
