@@ -19,7 +19,8 @@ use thiserror::Error;
 use crate::backend_ingress::{BackendIngressProviderReplacementTicket, BackendIngressRecorder};
 use crate::command::WorkspaceCommand;
 use crate::engine::{
-    CoreHostFramePrelude, CoreHostPresentationFrame, EngineError, PreparedHostFrameCommit,
+    CoreHostFramePrelude, CoreHostPresentationFrame, EngineError, OwnedPreparedHostFrameCommit,
+    PreparedHostFrameCommit,
 };
 use crate::engine::{DockEngine, EngineInput, ValidatedWorkspaceRestore};
 use crate::external_item_key::{
@@ -27,7 +28,10 @@ use crate::external_item_key::{
     ExternalItemKeyRestoreError, ExternalItemKeySnapshot, ExternalItemKeySnapshotEnvelope,
 };
 use crate::graph::Workspace;
-use crate::ids::{FloatingPresentationId, ItemId, PresentationIdentityFrontier, RootId, SurfaceId};
+use crate::ids::{
+    EngineAuthorityDomainId, FloatingPresentationId, ItemId, PresentationIdentityFrontier, RootId,
+    SurfaceId,
+};
 use crate::persistence::{
     SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
@@ -742,6 +746,18 @@ impl DockspaceDocumentSession {
         &mut self,
         prepared: crate::engine::OwnedPreparedHostFrameCommit,
     ) -> Result<EngineTransition, EngineError> {
+        let expected = self.binding.as_ref().map(|binding| {
+            binding
+                .external_item_keys
+                .iter()
+                .map(|(_, item)| item)
+                .collect::<BTreeSet<_>>()
+        });
+        if !prepared.item_identity_scope_matches(expected.as_ref()) {
+            return Err(EngineError::HostFramePoisoned {
+                source: crate::engine::CoreHostFrameError::ItemIdentityScopeMismatch,
+            });
+        }
         prepared.commit(&mut self.engine)
     }
 
@@ -939,6 +955,16 @@ impl DockspaceDocumentSession {
     /// and retiring child windows preserve the last confirmed placement.
     #[doc(hidden)]
     pub fn adapter_reconcile_viewport_placements(&mut self) {
+        let Some(reconciled) = self.reconciled_viewport_placements() else {
+            return;
+        };
+        if let Some(binding) = &mut self.binding {
+            binding.viewport_placements = reconciled;
+        }
+    }
+
+    fn reconciled_viewport_placements(&self) -> Option<ViewportPlacementPreferences> {
+        let binding = self.binding.as_ref()?;
         let surfaces = self
             .engine
             .workspace()
@@ -974,30 +1000,29 @@ impl DockspaceDocumentSession {
                 ))
             })
             .collect::<Vec<_>>();
-        if let Some(binding) = &mut self.binding {
-            let child_surfaces = surfaces
-                .difference(&root_surfaces)
-                .copied()
-                .collect::<BTreeSet<_>>();
-            binding.viewport_placements.retain_surfaces(&child_surfaces);
-            for (surface, outer_rect, inner_size, scale_factor) in authoritative {
-                let presentation = binding
-                    .viewport_placements
-                    .get(surface)
-                    .and_then(|preference| preference.presentation());
-                let Ok(preference) = ViewportPlacementPreference::new(surface, outer_rect) else {
-                    continue;
-                };
-                let Ok(mut preference) = preference.try_with_inner_size(inner_size) else {
-                    continue;
-                };
-                preference = preference.with_scale_factor(scale_factor);
-                if let Some(presentation) = presentation {
-                    preference = preference.with_presentation(presentation);
-                }
-                binding.viewport_placements.set(preference);
+        let child_surfaces = surfaces
+            .difference(&root_surfaces)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut placements = binding.viewport_placements.clone();
+        placements.retain_surfaces(&child_surfaces);
+        for (surface, outer_rect, inner_size, scale_factor) in authoritative {
+            let presentation = placements
+                .get(surface)
+                .and_then(|preference| preference.presentation());
+            let Ok(preference) = ViewportPlacementPreference::new(surface, outer_rect) else {
+                continue;
+            };
+            let Ok(mut preference) = preference.try_with_inner_size(inner_size) else {
+                continue;
+            };
+            preference = preference.with_scale_factor(scale_factor);
+            if let Some(presentation) = presentation {
+                preference = preference.with_presentation(presentation);
             }
+            placements.set(preference);
         }
+        Some(placements)
     }
 
     /// Captures the next complete document generation from this sole owner.
@@ -1010,7 +1035,9 @@ impl DockspaceDocumentSession {
     /// Returns a typed session or capture failure without advancing the generation.
     pub fn capture(&mut self) -> Result<DockspaceDocument, DockspaceDocumentSessionError> {
         self.ensure_idle()?;
-        self.adapter_reconcile_viewport_placements();
+        let viewport_placements = self
+            .reconciled_viewport_placements()
+            .ok_or(DockspaceDocumentSessionError::Unbound)?;
         let binding = self
             .binding
             .as_ref()
@@ -1023,9 +1050,11 @@ impl DockspaceDocumentSession {
             generation,
             &self.engine,
             &binding.external_item_keys,
-            &binding.viewport_placements,
+            &viewport_placements,
         )?;
-        self.binding_mut()?.next_generation = generation.checked_add(1);
+        let binding = self.binding_mut()?;
+        binding.viewport_placements = viewport_placements;
+        binding.next_generation = generation.checked_add(1);
         Ok(document)
     }
 
@@ -1034,9 +1063,9 @@ impl DockspaceDocumentSession {
     /// The returned affine transaction borrows this session, so no caller can
     /// concurrently mutate its engine or durable sidecars. It exposes only the
     /// exact restore input and the host-frame operations needed to publish that
-    /// input. Commit additionally requires the non-forgeable reducer transition
-    /// which proves that `RestoreWorkspace`, rather than an ordinary replacement,
-    /// reached this exact engine.
+    /// input. Commit additionally requires the non-copyable publication capability
+    /// minted from that host frame, which proves that `RestoreWorkspace`, rather
+    /// than an ordinary replacement, reached this exact engine candidate.
     ///
     /// A bound session accepts only its own lineage. An unbound session may adopt
     /// one complete, hash-validated document at this boundary; it never receives
@@ -1123,21 +1152,11 @@ impl DockspaceDocumentSession {
         })
     }
 
-    /// Commits sidecars after the candidate's engine input reached this exact engine.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed affine or publication mismatch and leaves the session
-    /// fail-closed when the engine did not reach the candidate's exact state.
-    fn commit_restore(
-        &mut self,
-        candidate: PreparedDockspaceDocumentRestore,
+    fn restore_transition_authorizes(
+        &self,
+        candidate: &PreparedDockspaceDocumentRestore,
         transition: &EngineTransition,
-    ) -> Result<DockspaceDocumentPublication, DockspaceDocumentSessionError> {
-        self.validate_candidate(&candidate)?;
-        if candidate.restore.is_some() {
-            return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
-        }
+    ) -> bool {
         let matching_restore = transition
             .reduced_inputs()
             .iter()
@@ -1150,20 +1169,20 @@ impl DockspaceDocumentSession {
                         restored_identity_frontier: Some(frontier),
                         ..
                     } if *before == candidate.original_version
-                        && *after == self.engine.version()
+                        && *after == transition.after()
                         && *frontier == candidate.expected_frontier
                 )
             })
             .count();
-        if WorkspaceSnapshot::capture(self.engine.workspace())? != candidate.expected_workspace
-            || self.engine.presentation_identity_frontier() != candidate.expected_frontier
-            || transition.before() != candidate.original_version
-            || transition.after() != self.engine.version()
-            || transition.tick() != self.engine.last_reducer_tick()
-            || matching_restore != 1
-        {
-            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
-        }
+        transition.authority_domain() == self.engine.authority_domain()
+            && transition.before() == candidate.original_version
+            && matching_restore == 1
+    }
+
+    fn publish_restore_sidecars(
+        &mut self,
+        candidate: PreparedDockspaceDocumentRestore,
+    ) -> DockspaceDocumentPublication {
         if let Some(binding) = self.binding.as_mut() {
             binding.external_item_keys = candidate.external_item_keys;
             binding.viewport_placements = candidate.viewport_placements;
@@ -1177,10 +1196,10 @@ impl DockspaceDocumentSession {
             });
         }
         self.pending_restore = None;
-        Ok(DockspaceDocumentPublication {
+        DockspaceDocumentPublication {
             document_id: candidate.document_id,
             generation: candidate.generation,
-        })
+        }
     }
 
     /// Cancels one candidate whose engine input did not publish.
@@ -1247,7 +1266,7 @@ impl Deref for DockspaceDocumentSession {
 /// This value exclusively borrows its owning [`DockspaceDocumentSession`]. It
 /// deliberately exposes no mutable [`DockEngine`] reference. Adapters may only
 /// take the exact restore input, run the normal rollbackable host-frame protocol,
-/// and then commit with the resulting [`EngineTransition`] or abort unchanged.
+/// and then commit the resulting affine publication capability or abort unchanged.
 #[must_use = "a document restore transaction must be committed or explicitly aborted"]
 #[derive(Debug)]
 pub struct DockspaceDocumentRestore<'session> {
@@ -1280,34 +1299,115 @@ impl DockspaceDocumentRestore<'_> {
     pub fn adapter_begin_host_frame(
         &mut self,
         presentation_host: PresentationHostLease,
-    ) -> Result<CoreHostFramePrelude, EngineError> {
-        self.session.adapter_begin_host_frame(presentation_host)
+    ) -> Result<CoreHostFramePrelude, DockspaceDocumentSessionError> {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
+        let mut prelude = self.session.engine.begin_host_frame(presentation_host)?;
+        prelude.restrict_item_identity_scope(
+            candidate.external_item_keys.iter().map(|(_, item)| item),
+        );
+        Ok(prelude)
     }
 
-    /// Prepares a rollbackable host-frame candidate against the owned engine.
+    /// Prepares an atomic document publication candidate against the owned engine.
+    ///
+    /// The core candidate and the document restore reservation remain together
+    /// until [`Self::commit_publication`] succeeds. This prevents a caller from
+    /// publishing the workspace first and then losing the external-key sidecar.
     #[doc(hidden)]
-    pub fn adapter_prepare_host_presentation_frame(
+    pub fn adapter_prepare_publication(
         &mut self,
         frame: CoreHostPresentationFrame,
-    ) -> Result<PreparedHostFrameCommit<'_>, EngineError> {
-        self.session.adapter_prepare_host_presentation_frame(frame)
+    ) -> Result<PreparedDockspaceDocumentPublication, DockspaceDocumentSessionError> {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
+        if candidate.restore.is_some() {
+            return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
+        }
+        let expected_scope = candidate
+            .external_item_keys
+            .iter()
+            .map(|(_, item)| item)
+            .collect::<BTreeSet<_>>();
+        if !frame.item_identity_scope_matches(&expected_scope) {
+            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
+        }
+        let core = frame
+            .prepare_owned(self.session.engine())
+            .map_err(DockspaceDocumentSessionError::from)?;
+        if WorkspaceSnapshot::capture(core.candidate_workspace())? != candidate.expected_workspace
+            || core.candidate_presentation_identity_frontier() != candidate.expected_frontier
+            || !self
+                .session
+                .restore_transition_authorizes(candidate, core.transition())
+        {
+            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
+        }
+        Ok(PreparedDockspaceDocumentPublication {
+            core,
+            witness: candidate.witness,
+            token: candidate.token,
+            document_id: candidate.document_id,
+            generation: candidate.generation,
+            authority_domain: self.session.engine.authority_domain(),
+            identity_scope: expected_scope,
+        })
     }
 
-    /// Publishes durable sidecars after the exact restore transition committed.
+    /// Atomically publishes the prepared core candidate and durable sidecars.
     ///
     /// # Errors
     ///
-    /// Returns a typed proof or state mismatch and leaves the session fail-closed
-    /// when `transition` did not publish this transaction's exact restore input.
-    pub fn commit(
+    /// Returns a typed mismatch and automatically aborts the still-unpublished
+    /// restore reservation when this consuming call fails. A core commit failure
+    /// restores the candidate first, so dropping `self` cannot strand the session
+    /// in `RestorePending`.
+    pub fn commit_publication(
         mut self,
-        transition: &EngineTransition,
-    ) -> Result<DockspaceDocumentPublication, DockspaceDocumentSessionError> {
+        prepared: PreparedDockspaceDocumentPublication,
+    ) -> Result<DockspaceDocumentRestoreCommit, DockspaceDocumentSessionError> {
+        let candidate = self
+            .candidate
+            .as_ref()
+            .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
+        self.session.validate_candidate(candidate)?;
+        if candidate.restore.is_some() {
+            return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
+        }
+        if prepared.witness != candidate.witness
+            || prepared.token != candidate.token
+            || prepared.document_id != candidate.document_id
+            || prepared.generation != candidate.generation
+            || prepared.authority_domain != self.session.engine.authority_domain()
+            || prepared.identity_scope
+                != candidate
+                    .external_item_keys
+                    .iter()
+                    .map(|(_, item)| item)
+                    .collect::<BTreeSet<_>>()
+        {
+            return Err(DockspaceDocumentSessionError::PublicationReceiptMismatch);
+        }
         let candidate = self
             .candidate
             .take()
             .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
-        self.session.commit_restore(candidate, transition)
+        let transition = match prepared.core.commit(&mut self.session.engine) {
+            Ok(transition) => transition,
+            Err(error) => {
+                self.candidate = Some(candidate);
+                return Err(error.into());
+            }
+        };
+        let publication = self.session.publish_restore_sidecars(candidate);
+        Ok(DockspaceDocumentRestoreCommit {
+            publication,
+            transition,
+        })
     }
 
     /// Releases this restore reservation after a failed rollbackable publication.
@@ -1317,19 +1417,76 @@ impl DockspaceDocumentRestore<'_> {
     /// Returns a typed mismatch and keeps the session fail-closed if any engine
     /// boundary committed after this transaction was prepared.
     pub fn abort(mut self) -> Result<(), DockspaceDocumentSessionError> {
+        self.abort_inner()
+    }
+
+    fn abort_inner(&mut self) -> Result<(), DockspaceDocumentSessionError> {
         let candidate = self
             .candidate
-            .take()
+            .as_ref()
             .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
-        self.session.abort_restore(&candidate)
+        self.session.abort_restore(candidate)?;
+        self.candidate = None;
+        Ok(())
     }
 }
 
 impl Drop for DockspaceDocumentRestore<'_> {
     fn drop(&mut self) {
-        if let Some(candidate) = self.candidate.take() {
-            let _ = self.session.abort_restore(&candidate);
+        if self.candidate.is_some() {
+            let _ = self.abort_inner();
         }
+    }
+}
+
+/// Prepared, non-copyable publication capability for one document restore.
+///
+/// The capability owns the core candidate and the exact restore identity. The
+/// matching [`DockspaceDocumentRestore`] retains the session reservation, so the
+/// two affine values must be reunited to publish core state and sidecars together.
+#[must_use = "a prepared document publication must be committed or explicitly dropped"]
+pub struct PreparedDockspaceDocumentPublication {
+    core: OwnedPreparedHostFrameCommit,
+    witness: DocumentSessionWitness,
+    token: u64,
+    document_id: DockspaceDocumentId,
+    generation: u64,
+    authority_domain: EngineAuthorityDomainId,
+    identity_scope: BTreeSet<ItemId>,
+}
+
+impl PreparedDockspaceDocumentPublication {
+    /// Returns the exact transition which will be published with this document.
+    #[must_use]
+    pub const fn transition(&self) -> &EngineTransition {
+        self.core.transition()
+    }
+}
+
+/// Result of one atomic document publication.
+#[derive(Debug)]
+pub struct DockspaceDocumentRestoreCommit {
+    publication: DockspaceDocumentPublication,
+    transition: EngineTransition,
+}
+
+impl DockspaceDocumentRestoreCommit {
+    /// Returns the durable document publication metadata.
+    #[must_use]
+    pub const fn publication(&self) -> DockspaceDocumentPublication {
+        self.publication
+    }
+
+    /// Returns the transition produced by the same atomic publication.
+    #[must_use]
+    pub const fn transition(&self) -> &EngineTransition {
+        &self.transition
+    }
+
+    /// Separates publication metadata from its transition report.
+    #[must_use]
+    pub fn into_parts(self) -> (DockspaceDocumentPublication, EngineTransition) {
+        (self.publication, self.transition)
     }
 }
 
@@ -1758,6 +1915,12 @@ pub enum DockspaceDocumentSessionError {
     /// The candidate's affine engine input was already consumed.
     #[error("prepared dockspace document restore input was already taken")]
     RestoreInputAlreadyTaken,
+    /// A core engine operation failed before document publication.
+    #[error("document restore host publication failed: {0}")]
+    Engine(#[source] Box<EngineError>),
+    /// A prepared publication belongs to another restore reservation or engine.
+    #[error("prepared document publication does not match this restore reservation")]
+    PublicationReceiptMismatch,
     /// The affine restore transaction was already committed or aborted.
     #[error("dockspace document restore transaction is already completed")]
     RestoreTransactionCompleted,
@@ -1782,6 +1945,12 @@ pub enum DockspaceDocumentSessionError {
     /// One session-owned external key allocation failed.
     #[error("external item identity allocation failed: {0}")]
     ExternalItemKey(#[from] ExternalItemKeyMapError),
+}
+
+impl From<EngineError> for DockspaceDocumentSessionError {
+    fn from(error: EngineError) -> Self {
+        Self::Engine(Box::new(error))
+    }
 }
 
 /// One persisted item/key association rejected by the application registry.

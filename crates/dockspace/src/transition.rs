@@ -699,6 +699,7 @@ impl ReducedPointerEdge {
 /// independent of adapter callback arrival order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineTransition {
+    authority_domain: crate::ids::EngineAuthorityDomainId,
     tick: ReducerTickId,
     before: WorkspaceVersion,
     after: WorkspaceVersion,
@@ -835,6 +836,7 @@ impl PresentationHostRetirementOutcome {
 }
 
 pub(crate) struct EngineTransitionParts {
+    pub(crate) authority_domain: crate::ids::EngineAuthorityDomainId,
     pub(crate) tick: ReducerTickId,
     pub(crate) before: WorkspaceVersion,
     pub(crate) after: WorkspaceVersion,
@@ -855,6 +857,7 @@ pub(crate) struct EngineTransitionParts {
 impl EngineTransition {
     pub(crate) fn new(parts: EngineTransitionParts) -> Self {
         let EngineTransitionParts {
+            authority_domain,
             tick,
             before,
             after,
@@ -872,6 +875,7 @@ impl EngineTransition {
             published_state_changed,
         } = parts;
         Self {
+            authority_domain,
             tick,
             before,
             after,
@@ -888,6 +892,12 @@ impl EngineTransition {
             surface_scene_deltas,
             published_state_changed,
         }
+    }
+
+    /// Returns the engine authority domain which published this transition.
+    #[must_use]
+    pub const fn authority_domain(&self) -> crate::ids::EngineAuthorityDomainId {
+        self.authority_domain
     }
 
     /// Returns the core-assigned causal reducer tick for this transition.

@@ -34,7 +34,9 @@ use dockspace::backend_ingress::{
 };
 use dockspace::command::WorkspaceCommand;
 #[cfg(feature = "serde")]
-use dockspace::document::{DockspaceDocumentRestore, DockspaceDocumentSession};
+use dockspace::document::{
+    DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
+};
 use dockspace::engine::{
     CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationUnavailableReason, PreparedSurfaceContribution,
@@ -659,17 +661,45 @@ impl Dockspace {
         presentation_host: PresentationHostLease,
         pointer_input: &mut EguiPointerInput,
         semantic_source_sequence: &mut SourceSequence,
-        pane_focus: &mut PaneFocusAdapterState,
         input: EngineInput,
-    ) -> Result<EngineTransition, DockspaceError> {
-        Self::submit_application_input_on_owner(
-            restore,
-            presentation_host,
-            pointer_input,
-            semantic_source_sequence,
-            pane_focus,
-            input,
-        )
+    ) -> Result<(PreparedDockspaceDocumentPublication, SourceSequence), DockspaceError> {
+        if restore.engine().backend_ingress_provider().is_some() {
+            return Err(DockspaceError::BackendApplicationInputRequiresIngress);
+        }
+        let sequence = semantic_source_sequence.checked_next().ok_or(
+            DockspaceError::InputSourceSequenceExhausted {
+                input_source: EGUI_APPLICATION_INPUT_SOURCE,
+            },
+        )?;
+        let mut prelude = restore.adapter_begin_host_frame(presentation_host)?;
+        prelude.submit_presentation_observation(HostPresentationObservation::NoUpdate)?;
+        let mut frame = prelude.seal(restore.engine())?;
+        pointer_input.submit_empty_interval(&mut frame)?;
+        frame.append_input(EGUI_APPLICATION_INPUT_SOURCE, sequence, input)?;
+        Self::append_unavailable_surface_contributions(
+            &mut frame,
+            MeasurementUnavailableReason::Deferred,
+        )?;
+        let mut frame = frame.into_presentation()?;
+        for obligation in frame.take_presentation_obligations()? {
+            frame.resolve_presentation_obligation(
+                obligation,
+                HostPresentationDisposition::Unavailable(
+                    HostPresentationUnavailableReason::OutputNotProduced,
+                ),
+            )?;
+        }
+        Ok((restore.adapter_prepare_publication(frame)?, sequence))
+    }
+
+    #[cfg(feature = "serde")]
+    pub(crate) fn accept_document_restore_transition(
+        &mut self,
+        sequence: SourceSequence,
+        transition: &EngineTransition,
+    ) {
+        self.semantic_source_sequence = sequence;
+        self.pane_focus.accept_transition(transition);
     }
 
     fn submit_application_input_on_owner(

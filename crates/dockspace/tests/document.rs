@@ -9,7 +9,7 @@ use dockspace::document::{
     DOCKSPACE_DOCUMENT_VERSION, DockspaceDocument, DockspaceDocumentBootstrap,
     DockspaceDocumentDecodeError, DockspaceDocumentEnvelope, DockspaceDocumentId,
     DockspaceDocumentRestore, DockspaceDocumentRestoreError, DockspaceDocumentSession,
-    DockspaceDocumentSessionError,
+    DockspaceDocumentSessionError, PreparedDockspaceDocumentPublication,
 };
 use dockspace::engine::{
     CoreHostFrameError, DockEngine, EngineError, EngineInput, HostPresentationUnavailableReason,
@@ -194,7 +194,7 @@ fn submit_restore_input(
     host: PresentationHostLease,
     sequence: u64,
     input: EngineInput,
-) -> EngineTransition {
+) -> Result<PreparedDockspaceDocumentPublication, DockspaceDocumentSessionError> {
     let mut prelude = restore
         .adapter_begin_host_frame(host)
         .expect("document restore host frame must begin");
@@ -216,11 +216,7 @@ fn submit_restore_input(
             HostPresentationUnavailableReason::OutputNotProduced,
         )
         .expect("document restore frame must settle every presentation obligation");
-    restore
-        .adapter_prepare_host_presentation_frame(frame)
-        .expect("document restore host frame must prepare")
-        .commit()
-        .expect("document restore host frame must commit")
+    restore.adapter_prepare_publication(frame)
 }
 
 fn runtime_capabilities() -> PlatformCapabilities {
@@ -279,9 +275,10 @@ fn apply_document(session: &mut DockspaceDocumentSession, document: DockspaceDoc
     let input = restore
         .take_engine_input()
         .expect("document restore must carry one exact input");
-    let transition = submit_restore_input(&mut restore, host, 1, input);
+    let prepared = submit_restore_input(&mut restore, host, 1, input)
+        .expect("document restore host frame must prepare");
     restore
-        .commit(&transition)
+        .commit_publication(prepared)
         .expect("exact document transaction must commit into its owner");
 }
 
@@ -346,7 +343,7 @@ fn document_commit_rejects_an_ordinary_workspace_replacement_without_restore_pro
     let EngineInput::RestoreWorkspace(validated) = input else {
         panic!("document transaction must carry a validated workspace restore")
     };
-    let transition = submit_restore_input(
+    let prepared = submit_restore_input(
         &mut restore,
         host,
         1,
@@ -354,9 +351,175 @@ fn document_commit_rejects_an_ordinary_workspace_replacement_without_restore_pro
     );
 
     assert!(matches!(
-        restore.commit(&transition),
+        prepared,
         Err(DockspaceDocumentSessionError::EnginePublicationMismatch)
     ));
+    restore
+        .abort()
+        .expect("rejected ordinary replacement must leave the restore abortable");
+}
+
+#[test]
+fn same_lineage_restore_uses_the_reconciled_identity_scope() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let later = source
+        .ensure_external_item_key("pane/later")
+        .expect("same-lineage source must append one identity");
+    let host = source
+        .adapter_create_presentation_host()
+        .expect("source presentation host must mint");
+    submit_session_input(
+        &mut source,
+        host,
+        1,
+        EngineInput::ReplaceWorkspace(workspace([ItemId::new(1), ItemId::new(2), later])),
+    );
+    let document = source.capture().expect("expanded lineage must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+
+    apply_document(&mut target, document);
+
+    assert_eq!(target.item_id("pane/later"), Some(later));
+    assert!(target.workspace().item_multiset().contains_key(&later));
+}
+
+#[test]
+fn owned_frame_cannot_cross_a_new_document_binding() {
+    let engine = DockEngine::new(workspace([ItemId::new(1)]), DockPolicy::default())
+        .expect("unbound fixture engine must initialize");
+    let mut session = DockspaceDocumentSession::unbound(engine).expect("unbound session must mint");
+    let host = session
+        .adapter_create_presentation_host()
+        .expect("fixture presentation host must mint");
+    let mut prelude = session
+        .adapter_begin_host_frame(host)
+        .expect("unbound host frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("fixture has no pending presentation output");
+    let mut frame = prelude
+        .seal(session.engine())
+        .expect("unbound frame must seal");
+    frame
+        .append_input(
+            RUNTIME_SOURCE,
+            SourceSequence::new(1),
+            EngineInput::ReplaceWorkspace(workspace([ItemId::new(99)])),
+        )
+        .expect("unbound frame accepts an unrestricted workspace");
+    support::complete_host_frame_with_retained_or_unavailable(session.engine(), &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("unbound frame enters presentation");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("unbound frame settles presentation obligations");
+    let prepared = session
+        .adapter_prepare_owned_host_presentation_frame(frame)
+        .expect("unbound candidate prepares without publishing");
+
+    let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT_ID, 0);
+    assert_eq!(
+        bootstrap
+            .ensure_external_item_key("pane/one")
+            .expect("bootstrap identity must fit"),
+        ItemId::new(1)
+    );
+    session
+        .bind_bootstrap(bootstrap)
+        .expect("binding validates against the still-published workspace");
+
+    assert!(matches!(
+        session.adapter_commit_owned_host_presentation_frame(prepared),
+        Err(EngineError::HostFramePoisoned {
+            source: CoreHostFrameError::ItemIdentityScopeMismatch,
+        })
+    ));
+    assert_eq!(session.workspace(), &workspace([ItemId::new(1)]));
+    assert_eq!(session.external_item_key(ItemId::new(99)), None);
+}
+
+#[test]
+fn document_publication_cannot_cross_engine_authority() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut first = session_with(DOCUMENT_ID, 1);
+    let mut second = session_with(DOCUMENT_ID, 1);
+    let first_host = first
+        .adapter_create_presentation_host()
+        .expect("first presentation host must mint");
+    let second_host = second
+        .adapter_create_presentation_host()
+        .expect("second presentation host must mint");
+    let mut first_restore = first
+        .begin_restore(document.clone(), |_, _, _| true)
+        .expect("first restore must reserve");
+    let first_input = first_restore
+        .take_engine_input()
+        .expect("first restore input must exist");
+    let first_publication = submit_restore_input(&mut first_restore, first_host, 1, first_input)
+        .expect("first publication must prepare");
+    let mut second_restore = second
+        .begin_restore(document, |_, _, _| true)
+        .expect("second restore must reserve");
+    let second_input = second_restore
+        .take_engine_input()
+        .expect("second restore input must exist");
+    let second_publication =
+        submit_restore_input(&mut second_restore, second_host, 1, second_input)
+            .expect("second publication must prepare");
+
+    assert!(matches!(
+        second_restore.commit_publication(first_publication),
+        Err(DockspaceDocumentSessionError::PublicationReceiptMismatch)
+    ));
+    drop(second_publication);
+    assert!(second.capture().is_ok(), "foreign proof must auto-abort");
+    first_restore
+        .abort()
+        .expect("unused first publication leaves its restore abortable");
+}
+
+#[test]
+fn prepare_without_taking_restore_input_leaves_the_reservation_abortable() {
+    let mut source = session_with(DOCUMENT_ID, 0);
+    let document = source.capture().expect("source document must capture");
+    let mut target = session_with(DOCUMENT_ID, 1);
+    let host = target
+        .adapter_create_presentation_host()
+        .expect("target presentation host must mint");
+    let mut restore = target
+        .begin_restore(document, |_, _, _| true)
+        .expect("restore must reserve");
+    let mut prelude = restore
+        .adapter_begin_host_frame(host)
+        .expect("restore frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("fixture has no pending output");
+    let mut frame = prelude
+        .seal(restore.engine())
+        .expect("restore frame must seal");
+    support::complete_host_frame_with_retained_or_unavailable(restore.engine(), &mut frame);
+    let mut frame = frame
+        .into_presentation()
+        .expect("restore frame enters presentation");
+    frame
+        .resolve_all_presentation_obligations_unavailable(
+            HostPresentationUnavailableReason::OutputNotProduced,
+        )
+        .expect("restore frame settles presentation obligations");
+
+    assert!(matches!(
+        restore.adapter_prepare_publication(frame),
+        Err(DockspaceDocumentSessionError::RestoreInputNotTaken)
+    ));
+    restore
+        .abort()
+        .expect("failed prepare must retain an abortable candidate");
+    assert!(target.capture().is_ok());
 }
 
 #[test]
@@ -447,9 +610,10 @@ fn restoring_a_closed_child_remaps_retired_surface_root_and_placement_identities
     );
     assert!(validated.workspace().root(remapped_child_root).is_some());
 
-    let transition = submit_restore_input(&mut restore, host, 2, input);
+    let prepared = submit_restore_input(&mut restore, host, 2, input)
+        .expect("rebased document restore host frame must prepare");
     restore
-        .commit(&transition)
+        .commit_publication(prepared)
         .expect("rebased document restore must commit");
 
     assert!(session.workspace().surface(child_surface).is_none());

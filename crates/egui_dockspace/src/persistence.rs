@@ -240,15 +240,14 @@ impl Dockspace {
             .engine
             .begin_restore(document, prove_external_item_association)?;
         let input = restore.take_engine_input()?;
-        let transition = match Self::submit_document_restore_input(
+        let (prepared, sequence) = match Self::submit_document_restore_input(
             &mut restore,
             presentation_host,
             &mut self.pointer_input,
             &mut self.semantic_source_sequence,
-            &mut self.pane_focus,
             input,
         ) {
-            Ok(transition) => transition,
+            Ok(prepared) => prepared,
             Err(publisher) => {
                 return match restore.abort() {
                     Ok(()) => Err(DockspaceDocumentPersistenceError::Publish(publisher)),
@@ -259,7 +258,12 @@ impl Dockspace {
                 };
             }
         };
-        let publication = restore.commit(&transition)?;
+        let committed = restore
+            .commit_publication(prepared)
+            .map_err(DockspaceError::from)
+            .map_err(DockspaceDocumentPersistenceError::Publish)?;
+        let (publication, transition) = committed.into_parts();
+        self.accept_document_restore_transition(sequence, &transition);
         self.engine.adapter_reconcile_viewport_placements();
         Ok(DockspaceDocumentLoad {
             transition,

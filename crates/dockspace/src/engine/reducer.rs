@@ -144,6 +144,8 @@ impl DockEngine {
         let prepared = self.prepare_host_frame_owned(frame)?;
         let OwnedPreparedHostFrameCommit {
             fence: _,
+            #[cfg(feature = "serde")]
+                item_identity_scope: _,
             candidate,
             transition,
             surface_pointer_commit,
@@ -457,6 +459,8 @@ impl DockEngine {
         )?;
         Ok(OwnedPreparedHostFrameCommit {
             fence,
+            #[cfg(feature = "serde")]
+            item_identity_scope,
             candidate,
             transition,
             surface_pointer_commit,
@@ -832,6 +836,7 @@ impl DockEngine {
         let surface_scene_deltas =
             Self::surface_scene_deltas(&before_scene, &candidate.presentation_authority.scene);
         let transition = EngineTransition::new(EngineTransitionParts {
+            authority_domain: candidate.authority_domain,
             tick,
             before,
             after: candidate.version,

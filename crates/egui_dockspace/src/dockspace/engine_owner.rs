@@ -5,7 +5,7 @@ use dockspace::backend_ingress::{
     BackendIngressProviderReplacementTicket, BackendIngressRecorder,
 };
 #[cfg(feature = "serde")]
-use dockspace::document::{DockspaceDocumentRestore, DockspaceDocumentSession};
+use dockspace::document::DockspaceDocumentSession;
 use dockspace::engine::{
     CoreHostFramePrelude, CoreHostPresentationFrame, DockEngine, EngineError,
     OwnedPreparedHostFrameCommit, PreparedHostFrameCommit,
@@ -149,29 +149,6 @@ where
         frame: CoreHostPresentationFrame,
     ) -> Result<PreparedHostFrameCommit<'_>, EngineError> {
         EguiEngineOwner::prepare_host_presentation_frame(self, frame)
-    }
-}
-
-#[cfg(feature = "serde")]
-impl EguiApplicationInputOwner for DockspaceDocumentRestore<'_> {
-    fn application_engine(&self) -> &DockEngine {
-        self.engine()
-    }
-
-    fn reconcile_application_sidecars(&mut self) {}
-
-    fn begin_application_host_frame(
-        &mut self,
-        presentation_host: PresentationHostLease,
-    ) -> Result<CoreHostFramePrelude, EngineError> {
-        self.adapter_begin_host_frame(presentation_host)
-    }
-
-    fn prepare_application_host_frame(
-        &mut self,
-        frame: CoreHostPresentationFrame,
-    ) -> Result<PreparedHostFrameCommit<'_>, EngineError> {
-        self.adapter_prepare_host_presentation_frame(frame)
     }
 }
 

@@ -360,6 +360,7 @@ impl DockEngine {
         let surface_scene_deltas =
             Self::surface_scene_deltas(&before_scene, &candidate.presentation_authority.scene);
         let transition = EngineTransition::new(EngineTransitionParts {
+            authority_domain: candidate.authority_domain,
             tick,
             before,
             after: candidate.version,
@@ -614,6 +615,7 @@ impl DockEngine {
             &[],
         );
         let transition = EngineTransition::new(EngineTransitionParts {
+            authority_domain: candidate.authority_domain,
             tick,
             before,
             after: candidate.version,

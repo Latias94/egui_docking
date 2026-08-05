@@ -86,8 +86,11 @@ consume that bootstrap with `Dockspace::bind_document_persistence`. Then use the
 resolver proves every exact `(document id, item id, external key)` association,
 including closed-pane history. Restore does not publish the workspace, key map,
 placement, document lineage, or generation until every component and the
-application identity registry validate; an unbound session can adopt one
-complete validated document at that same boundary.
+application identity registry validate. Core state and durable sidecars are then
+published through one non-copyable capability bound to the exact session,
+restore token, engine authority domain, document generation, and reconciled item
+identity scope; an unbound session can adopt one complete validated document at
+that same boundary.
 Workspace-only and placement-only snapshots are internal interchange components,
 not egui restoration APIs.
 

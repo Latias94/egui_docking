@@ -759,6 +759,8 @@ pub struct PreparedHostFrameCommit<'a> {
 #[must_use = "dropping an owned prepared host frame rolls back the candidate"]
 pub struct OwnedPreparedHostFrameCommit {
     fence: HostFrameCommitFence,
+    #[cfg(feature = "serde")]
+    item_identity_scope: Option<BTreeSet<ItemId>>,
     candidate: DockEngine,
     transition: EngineTransition,
     surface_pointer_commit: Option<SurfaceLocalPointerFrameCommit>,
@@ -1966,6 +1968,11 @@ impl DockEngine {
         &self.workspace
     }
 
+    #[cfg(feature = "serde")]
+    pub(crate) const fn authority_domain(&self) -> EngineAuthorityDomainId {
+        self.authority_domain
+    }
+
     /// Returns the durable frontier required for an atomic dockspace document capture.
     #[must_use]
     pub const fn presentation_identity_frontier(&self) -> PresentationIdentityFrontier {
@@ -2640,6 +2647,7 @@ impl DockEngine {
         // when the host never emitted a stream and no scene delta is visible.
         let published_state_changed = true;
         let transition = EngineTransition::new(EngineTransitionParts {
+            authority_domain: candidate.authority_domain,
             tick,
             before,
             after: candidate.version,
