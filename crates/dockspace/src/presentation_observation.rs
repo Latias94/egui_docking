@@ -845,6 +845,23 @@ impl HostPresentationOutputPayload {
     }
 }
 
+/// Whether a terminal renderer result must schedule another host boundary.
+///
+/// Ordinary presentation provenance does not require an immediate follow-up:
+/// the next platform or application event can observe it. Finite interaction
+/// and native-lifecycle barriers instead require one more causal boundary once
+/// the renderer supplies the exact result that can settle them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum HostPresentationContinuation {
+    /// The result records provenance only and must not drive another frame.
+    #[default]
+    None,
+    /// Continue only after the renderer proves a successful final presentation.
+    Presented,
+    /// Continue after any terminal renderer result, including rejection.
+    Terminal,
+}
+
 /// Core record returned after one actual host presentation emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostPresentationOutput {
@@ -853,6 +870,7 @@ pub struct HostPresentationOutput {
     surface: SurfaceId,
     endpoint: HostPresentationEndpoint,
     payload: HostPresentationOutputPayload,
+    continuation: HostPresentationContinuation,
 }
 
 /// Opaque request identity returned while one core host frame stages an actual
@@ -959,6 +977,12 @@ impl HostPresentationOutput {
     #[must_use]
     pub const fn payload(self) -> HostPresentationOutputPayload {
         self.payload
+    }
+
+    /// Returns the core-owned scheduling contract for this renderer result.
+    #[must_use]
+    pub const fn continuation(self) -> HostPresentationContinuation {
+        self.continuation
     }
 }
 
@@ -1949,12 +1973,30 @@ impl PresentationLedger {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn emit(
         &mut self,
         lease: PresentationHostLease,
         surface: SurfaceId,
         endpoint: HostPresentationEndpoint,
         payload: HostPresentationOutputPayload,
+    ) -> Result<HostPresentationOutput, PresentationLedgerError> {
+        self.emit_with_continuation(
+            lease,
+            surface,
+            endpoint,
+            payload,
+            HostPresentationContinuation::None,
+        )
+    }
+
+    pub(crate) fn emit_with_continuation(
+        &mut self,
+        lease: PresentationHostLease,
+        surface: SurfaceId,
+        endpoint: HostPresentationEndpoint,
+        payload: HostPresentationOutputPayload,
+        continuation: HostPresentationContinuation,
     ) -> Result<HostPresentationOutput, PresentationLedgerError> {
         self.validate_lease(lease)?;
         if let HostPresentationOutputPayload::Paint { scene, .. } = payload
@@ -1994,6 +2036,7 @@ impl PresentationLedger {
             surface,
             endpoint,
             payload,
+            continuation,
         })
     }
 

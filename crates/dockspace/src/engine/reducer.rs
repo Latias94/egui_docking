@@ -891,20 +891,148 @@ impl DockEngine {
                     detail: "presentation output request belongs to another host frame".to_owned(),
                 });
             }
+            let continuation =
+                self.presentation_continuation(staged.surface, staged.endpoint, staged.payload)?;
             let output = self
                 .presentation_authority
                 .presentation
-                .emit(
+                .emit_with_continuation(
                     presentation_host,
                     staged.surface,
                     staged.endpoint,
                     staged.payload,
+                    continuation,
                 )
                 .map_err(presentation_ledger_error)?;
             self.bind_pending_release_outputs(output)?;
             emissions.push(HostPresentationEmission::new(staged.request, output));
         }
         Ok(emissions)
+    }
+
+    fn presentation_continuation(
+        &self,
+        surface: crate::ids::SurfaceId,
+        endpoint: crate::presentation_observation::HostPresentationEndpoint,
+        payload: crate::presentation_observation::HostPresentationOutputPayload,
+    ) -> Result<crate::presentation_observation::HostPresentationContinuation, EngineError> {
+        use crate::presentation_observation::{
+            HostPresentationContinuation, HostPresentationOutputPayload,
+        };
+
+        match payload {
+            HostPresentationOutputPayload::NativeStaging { .. } => {
+                Ok(HostPresentationContinuation::Presented)
+            }
+            HostPresentationOutputPayload::Paint {
+                scene,
+                coordinate_generation,
+                interaction,
+            } => {
+                let (drag_release, contained_release) =
+                    self.pending_release_output_matches(surface, interaction)?;
+                if drag_release || contained_release {
+                    return Ok(HostPresentationContinuation::Terminal);
+                }
+                let promotion_eligible = self.paint_output_is_promotion_eligible(
+                    surface,
+                    scene,
+                    endpoint,
+                    coordinate_generation,
+                );
+                if promotion_eligible
+                    && self.native_first_live_output_requires_follow_up(scene, endpoint)?
+                {
+                    return Ok(HostPresentationContinuation::Presented);
+                }
+                if promotion_eligible
+                    && self
+                        .presentation_authority
+                        .scene
+                        .interaction_authority(surface)
+                        .is_none_or(|authority| !authority.matches_output(scene))
+                {
+                    return Ok(HostPresentationContinuation::Presented);
+                }
+                Ok(HostPresentationContinuation::None)
+            }
+            HostPresentationOutputPayload::Bootstrap
+            | HostPresentationOutputPayload::Unavailable => Ok(HostPresentationContinuation::None),
+        }
+    }
+
+    fn paint_output_is_promotion_eligible(
+        &self,
+        surface: crate::ids::SurfaceId,
+        ticket: crate::presentation_observation::SurfacePresentationOutputTicket,
+        endpoint: crate::presentation_observation::HostPresentationEndpoint,
+        coordinate_generation: crate::viewport::CoordinateGeneration,
+    ) -> bool {
+        if ticket.surface() != surface {
+            return false;
+        }
+        let Ok(capture) = self
+            .presentation_authority
+            .scene
+            .retained_output_capture(ticket)
+        else {
+            return false;
+        };
+        presentation_endpoint_from_capture(capture) == endpoint
+            && capture.authority_generation() == coordinate_generation
+            && Self::coordinate_capture_matches_current(
+                capture,
+                self.viewport.viewport(surface),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+    }
+
+    fn pending_release_output_matches(
+        &self,
+        surface: crate::ids::SurfaceId,
+        interaction: crate::presentation_observation::HostInteractionPresentation,
+    ) -> Result<(bool, bool), EngineError> {
+        let drag = if let Some(pending) = self.pending_drag_release.as_ref()
+            && interaction.drag_preview() == Some(pending.preview)
+        {
+            let expected = pending
+                .drag
+                .preview
+                .as_ref()
+                .expect("pending release retains its exact preview")
+                .public()
+                .visual()
+                .surface();
+            if surface != expected {
+                return Err(EngineError::PresentationLedger {
+                    detail: "release preview output was emitted on the wrong surface".to_owned(),
+                });
+            }
+            true
+        } else {
+            false
+        };
+        let contained = if let Some(pending) = self.pending_contained_transform_release.as_ref()
+            && interaction.contained_transform_preview() == Some(pending.preview)
+        {
+            let expected = pending
+                .transform
+                .preview
+                .as_ref()
+                .expect("pending contained release retains its exact preview")
+                .public()
+                .surface();
+            if surface != expected {
+                return Err(EngineError::PresentationLedger {
+                    detail: "contained release preview output was emitted on the wrong surface"
+                        .to_owned(),
+                });
+            }
+            true
+        } else {
+            false
+        };
+        Ok((drag, contained))
     }
 
     fn bind_pending_release_outputs(
@@ -914,40 +1042,14 @@ impl DockEngine {
         let Some(interaction) = output.payload().interaction() else {
             return Ok(());
         };
-        if let Some(pending) = self.pending_drag_release.as_mut()
-            && interaction.drag_preview() == Some(pending.preview)
-        {
-            let preview_surface = pending
-                .drag
-                .preview
-                .as_ref()
-                .expect("pending release retains its exact preview")
-                .public()
-                .visual()
-                .surface();
-            if output.surface() != preview_surface {
-                return Err(EngineError::PresentationLedger {
-                    detail: "release preview output was emitted on the wrong surface".to_owned(),
-                });
-            }
+        let (drag_release, contained_release) =
+            self.pending_release_output_matches(output.surface(), interaction)?;
+        if drag_release && let Some(pending) = self.pending_drag_release.as_mut() {
             pending.presentation_outputs.insert(output.key());
         }
-        if let Some(pending) = self.pending_contained_transform_release.as_mut()
-            && interaction.contained_transform_preview() == Some(pending.preview)
+        if contained_release
+            && let Some(pending) = self.pending_contained_transform_release.as_mut()
         {
-            let preview_surface = pending
-                .transform
-                .preview
-                .as_ref()
-                .expect("pending contained release retains its exact preview")
-                .public()
-                .surface();
-            if output.surface() != preview_surface {
-                return Err(EngineError::PresentationLedger {
-                    detail: "contained release preview output was emitted on the wrong surface"
-                        .to_owned(),
-                });
-            }
             pending.presentation_outputs.insert(output.key());
         }
         Ok(())

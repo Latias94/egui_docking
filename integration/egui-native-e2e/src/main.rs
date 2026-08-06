@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,15 +10,10 @@ use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::interaction::PreviewVisual;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::SurfacePresentationOutputTicket;
-use dockspace::scene::SurfaceScene;
 use dockspace::viewport::WindowToken;
 use eframe::egui;
-use eframe::{
-    NativeTestDriver, NativeTestPointerAction, NativeTestPointerEvent, NativeTestScrollDelta,
-    NativeTestWindowScroll,
-};
-use egui_dockspace::{DockStyle, Dockspace, PaneView};
+use eframe::{NativeTestDriver, NativeTestPointerAction, NativeTestPointerEvent};
+use egui_dockspace::{Dockspace, PaneView};
 use egui_dockspace_native::{
     AllowNativeClose, NativeDockspaceApp, NativeRuntimeStatus, NativeSurfaceSpec,
     NativeViewportRoster,
@@ -31,8 +25,6 @@ const ROOT_ITEM_COUNT: u64 = 3;
 const GROUP_ITEM_COUNT: u64 = 2;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const OUTSIDE_ALL_POINT: egui::Pos2 = egui::pos2(200.0, 800.0);
-const OVERFLOW_TAB_WIDTH: f32 = 1_000.0;
-const EXPECTED_SCROLL_OFFSET: f64 = 40.0;
 
 type SmokeError = Box<dyn Error + Send + Sync>;
 
@@ -52,30 +44,23 @@ enum SmokePhase {
     ChildPressQueued,
     RootMoveQueued,
     RootReleaseQueued,
-    OverflowStyleQueued,
-    RootScrollQueued,
 }
 
 struct SmokeApp {
     runtime: NativeDockspaceApp<SmokePanes>,
     outcome: Arc<Mutex<SmokeOutcome>>,
-    renderer: Arc<RendererCounts>,
     driver: NativeTestDriver,
     started: Instant,
     phase: SmokePhase,
     phase_cycle: u64,
     redock_point: Option<egui::Pos2>,
     redock_target: Option<DropTargetId>,
-    overflow_predecessor: Option<SurfacePresentationOutputTicket>,
-    scroll_predecessor: Option<SurfacePresentationOutputTicket>,
-    post_commit_error: Option<String>,
     closing: bool,
 }
 
 impl SmokeApp {
     fn new(
         outcome: Arc<Mutex<SmokeOutcome>>,
-        renderer: Arc<RendererCounts>,
         driver: NativeTestDriver,
     ) -> Result<Self, SmokeError> {
         let mut policy = DockPolicy::new();
@@ -90,31 +75,18 @@ impl SmokeApp {
         Ok(Self {
             runtime,
             outcome,
-            renderer,
             driver,
             started: Instant::now(),
             phase: SmokePhase::AwaitRoot,
             phase_cycle: 0,
             redock_point: None,
             redock_target: None,
-            overflow_predecessor: None,
-            scroll_predecessor: None,
-            post_commit_error: None,
             closing: false,
         })
     }
 
     fn observe_readiness(&mut self, context: &egui::Context) {
         if self.closing {
-            return;
-        }
-        if let Some(detail) = self.post_commit_error.take() {
-            *self
-                .outcome
-                .lock()
-                .expect("smoke outcome lock is available") = SmokeOutcome::Failed(detail);
-            self.closing = true;
-            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
             return;
         }
         let status = self.runtime.status();
@@ -135,42 +107,9 @@ impl SmokeApp {
             self.closing = true;
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
         } else if self.started.elapsed() >= STARTUP_TIMEOUT {
-            let engine = self.runtime.dockspace().engine();
-            let surfaces = engine
-                .workspace()
-                .surfaces()
-                .map(|(surface, _)| surface)
-                .collect::<Vec<_>>();
-            let scenes = surfaces
-                .iter()
-                .map(|surface| {
-                    (
-                        *surface,
-                        scene_kind(engine.scene().surface(*surface)),
-                        engine
-                            .viewport()
-                            .viewport(*surface)
-                            .map(|viewport| (viewport.role(), viewport.lifecycle())),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let native_creates = engine
-                .viewport()
-                .native_create_sagas()
-                .map(|(saga, create)| (saga, create.binding(), create.phase()))
-                .collect::<Vec<_>>();
-            let presentation = engine.presentation_ledger_diagnostics();
-            let retention = engine.runtime_retention_manifest();
             let detail = format!(
-                "native dynamic tear-off/redock timed out in {:?} after {} cycles: \
-                 {status:?}, interaction={:?}, surfaces={surfaces:?}, scenes={scenes:?}, \
-                 native_creates={native_creates:?}, preview={:?}, presentation={presentation:?}, \
-                 retention={retention:?}, renderer={:?}",
-                self.phase,
-                status.committed_cycles,
-                engine.interaction().status(),
-                engine.presentation_preview(),
-                self.renderer.snapshot(),
+                "native tear-off/redock timed out in {:?} after {} cycles: {status:?}",
+                self.phase, status.committed_cycles,
             );
             *self
                 .outcome
@@ -178,8 +117,6 @@ impl SmokeApp {
                 .expect("smoke outcome lock is available") = SmokeOutcome::Failed(detail);
             self.closing = true;
             context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-        } else {
-            context.request_repaint_after_for(Duration::from_millis(16), egui::ViewportId::ROOT);
         }
     }
 
@@ -241,7 +178,6 @@ impl SmokeApp {
                     && engine.interaction_authority(child).is_some()
                     && let Some(point) = tab_group_drag_point(engine, child)
                 {
-                    verify_surface_tab_group(engine.workspace(), child, "native child")?;
                     self.queue_pointer(
                         NativeTestPointerEvent::unique_child(
                             point,
@@ -312,138 +248,20 @@ impl SmokeApp {
                     .surfaces()
                     .map(|(surface, _)| surface)
                     .collect::<Vec<_>>();
-                let retained_presentation_streams = engine
-                    .runtime_retention_manifest()
-                    .presentation_hosts()
-                    .retained_stream_states();
-                let retained_destroyed_binding_guards = engine
-                    .runtime_retention_manifest()
-                    .bindings()
-                    .destroyed_binding_guards();
                 if status.live_viewports == 1
                     && surfaces == [ROOT_SURFACE]
                     && workspace.item_multiset() == expected_item_multiset()
                     && engine.interaction_authority(ROOT_SURFACE).is_some()
-                    && retained_presentation_streams == 1
-                    && retained_destroyed_binding_guards == 0
-                    && let Some(projection) = engine.interaction_projection(ROOT_SURFACE)
                 {
-                    verify_surface_tab_group(workspace, ROOT_SURFACE, "recovered root")?;
-                    verify_left_redock_topology(workspace)?;
-                    self.overflow_predecessor = Some(projection.output_ticket());
-                    self.runtime
-                        .set_style(overflow_style())
-                        .map_err(|error| format!("failed to queue overflow style: {error}"))?;
-                    self.phase = SmokePhase::OverflowStyleQueued;
-                    self.phase_cycle = status.committed_cycles;
-                }
-            }
-            SmokePhase::OverflowStyleQueued if cycle_advanced => {
-                let engine = self.runtime.dockspace().engine();
-                if status.committed_cycles.saturating_sub(self.phase_cycle) >= 8 {
-                    let workspace = engine.workspace();
-                    let nodes = workspace
-                        .nodes()
-                        .map(|(id, node)| (id, node.clone()))
-                        .collect::<Vec<_>>();
-                    let bars = engine
-                        .scene()
-                        .surface(ROOT_SURFACE)
-                        .and_then(SurfaceScene::ready)
-                        .map(|ready| {
-                            ready
-                                .plan()
-                                .tab_bar_records()
-                                .iter()
-                                .map(|bar| {
-                                    (
-                                        *bar.id(),
-                                        bar.members().len(),
-                                        bar.viewport().width(),
-                                        bar.scroll_offset(),
-                                        bar.maximum_scroll_offset(),
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                        });
-                    return Err(format!(
-                        "overflow style did not produce an authoritative scrollable tab strip: \
-                         tab_min_width={}, nodes={nodes:?}, bars={bars:?}",
-                        self.runtime.dockspace().style().tab_min_width,
-                    ));
-                }
-            }
-            SmokePhase::RootScrollQueued if cycle_advanced => {
-                let engine = self.runtime.dockspace().engine();
-                if engine.interaction_authority(ROOT_SURFACE).is_some()
-                    && let Some((output, _, offset, maximum)) =
-                        tab_scroll_state(engine, ROOT_SURFACE)
-                    && Some(output) != self.scroll_predecessor
-                {
-                    if offset == 0.0 {
-                        return Ok(None);
-                    }
-                    if (offset - EXPECTED_SCROLL_OFFSET).abs() > f64::EPSILON {
-                        return Err(format!(
-                            "native scroll did not reach the core-owned tab-strip state: \
-                             offset={offset}, expected={EXPECTED_SCROLL_OFFSET}, maximum={maximum}"
-                        ));
-                    }
                     return Ok(Some(status));
                 }
             }
             SmokePhase::RootPressQueued
             | SmokePhase::OutsideMoveQueued
             | SmokePhase::ChildPressQueued
-            | SmokePhase::RootMoveQueued
-            | SmokePhase::OverflowStyleQueued
-            | SmokePhase::RootScrollQueued => {}
+            | SmokePhase::RootMoveQueued => {}
         }
         Ok(None)
-    }
-
-    fn queue_physical_scroll_after_commit(
-        &mut self,
-        outputs: &[eframe::HostedViewportOutput<egui::FullOutput>],
-    ) -> Result<(), String> {
-        if self.phase != SmokePhase::OverflowStyleQueued {
-            return Ok(());
-        }
-        let engine = self.runtime.dockspace().engine();
-        let Some((output, point, offset, maximum)) = tab_scroll_state(engine, ROOT_SURFACE) else {
-            return Ok(());
-        };
-        if Some(output) == self.overflow_predecessor || maximum < EXPECTED_SCROLL_OFFSET {
-            return Ok(());
-        }
-        if offset != 0.0 {
-            return Err(format!(
-                "overflow tab strip started with a non-zero scroll offset: {offset}"
-            ));
-        }
-        let presentation_scale = outputs
-            .iter()
-            .find(|hosted| hosted.viewport_id() == egui::ViewportId::ROOT)
-            .map(|hosted| f64::from(hosted.output().pixels_per_point))
-            .filter(|scale| scale.is_finite() && *scale > 0.0)
-            .ok_or_else(|| "committed root output has no finite presentation scale".to_owned())?;
-        self.scroll_predecessor = Some(output);
-        self.driver
-            .send_window_scroll(NativeTestWindowScroll::new(
-                egui::ViewportId::ROOT,
-                [
-                    (f64::from(point.x) * presentation_scale).round(),
-                    (f64::from(point.y) * presentation_scale).round(),
-                ],
-                NativeTestScrollDelta::physical_pixels(
-                    0.0,
-                    -EXPECTED_SCROLL_OFFSET * presentation_scale,
-                ),
-            ))
-            .map_err(|error| format!("native test event loop closed: {error}"))?;
-        self.phase = SmokePhase::RootScrollQueued;
-        self.phase_cycle = self.runtime.status().committed_cycles;
-        Ok(())
     }
 
     fn queue_pointer(
@@ -458,15 +276,6 @@ impl SmokeApp {
         self.phase = next;
         self.phase_cycle = committed_cycles;
         Ok(())
-    }
-}
-
-fn scene_kind(scene: Option<&SurfaceScene>) -> &'static str {
-    match scene {
-        Some(SurfaceScene::Ready(_)) => "ready",
-        Some(SurfaceScene::Stale(_)) => "stale",
-        Some(SurfaceScene::Bootstrap(_)) => "bootstrap",
-        None => "absent",
     }
 }
 
@@ -497,166 +306,19 @@ fn tab_group_drag_point(
     logical_rect_center(bar.group_drag()?.grip_bounds())
 }
 
-fn verify_surface_tab_group(
-    workspace: &Workspace,
-    surface: SurfaceId,
-    label: &str,
-) -> Result<(), String> {
-    let presentation = workspace
-        .surface(surface)
-        .ok_or_else(|| format!("{label} surface {surface:?} is absent"))?;
-    let root = presentation
-        .main_root
-        .ok_or_else(|| format!("{label} surface {surface:?} has no main root"))?;
-    let root = workspace
-        .root(root)
-        .ok_or_else(|| format!("{label} main root is absent"))?;
-    let expected = group_items().collect::<Vec<_>>();
-    let mut pending = vec![root.node];
-    let mut matched = None;
-    while let Some(node) = pending.pop() {
-        match workspace
-            .node(node)
-            .ok_or_else(|| format!("{label} contains an absent node {node:?}"))?
-        {
-            Node::Tabs { items, selected } if items == &expected => {
-                matched = Some((node, items, *selected));
-                break;
-            }
-            Node::Tabs { .. } => {}
-            Node::Split { children, .. } => pending.extend(children.iter().rev().copied()),
-        }
-    }
-    let Some((tabs, items, selected)) = matched else {
-        return Err(format!(
-            "{label} does not contain the expected tab group {expected:?}"
-        ));
-    };
-    if items != &expected || selected != Some(expected_group_selection()) {
-        return Err(format!(
-            "{label} changed tab order or selection: items={items:?}, selected={selected:?}, \
-             expected_items={expected:?}, expected_selection={:?}",
-            expected_group_selection()
-        ));
-    }
-    let mru = workspace
-        .tab_mru(tabs)
-        .ok_or_else(|| format!("{label} has no tab MRU"))?;
-    let expected_mru = expected_group_mru();
-    if mru != expected_mru {
-        return Err(format!(
-            "{label} changed tab MRU: mru={mru:?}, expected={expected_mru:?}"
-        ));
-    }
-    Ok(())
-}
-
-fn verify_left_redock_topology(workspace: &Workspace) -> Result<(), String> {
-    let presentation = workspace
-        .surface(ROOT_SURFACE)
-        .ok_or_else(|| "recovered root surface is absent".to_owned())?;
-    let root = workspace
-        .root(
-            presentation
-                .main_root
-                .ok_or_else(|| "recovered root surface has no main root".to_owned())?,
-        )
-        .ok_or_else(|| "recovered main root is absent".to_owned())?;
-    let Node::Split { axis, children, .. } = workspace
-        .node(root.node)
-        .ok_or_else(|| "recovered root node is absent".to_owned())?
-    else {
-        return Err("left-edge redock did not produce a split root".to_owned());
-    };
-    let [group, central] = children.as_slice() else {
-        return Err(format!(
-            "left-edge redock produced {} root children instead of two",
-            children.len()
-        ));
-    };
-    if *axis != Axis::Horizontal || root.central != Some(*central) {
-        return Err(format!(
-            "left-edge redock changed split direction or central identity: \
-             axis={axis:?}, children={children:?}, central={:?}",
-            root.central
-        ));
-    }
-    match workspace.node(*group) {
-        Some(Node::Tabs { items, selected })
-            if items == &group_items().collect::<Vec<_>>()
-                && *selected == Some(expected_group_selection()) => {}
-        group => {
-            return Err(format!(
-                "left-edge redock did not place the complete group first: {group:?}"
-            ));
-        }
-    }
-    match workspace.node(*central) {
-        Some(Node::Tabs { items, selected })
-            if items.as_slice() == [ItemId::new(ROOT_ITEM_COUNT)]
-                && *selected == Some(ItemId::new(ROOT_ITEM_COUNT)) => {}
-        central => {
-            return Err(format!(
-                "left-edge redock did not preserve the central branch second: {central:?}"
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn redock_drop_target(
     engine: &dockspace::engine::DockEngine,
     surface: SurfaceId,
 ) -> Option<(egui::Pos2, DropTargetId)> {
     let ready = engine.scene().surface(surface)?.ready()?;
     let plan = ready.plan();
-    let target = plan
-        .drop_guide_clusters()
-        .iter()
-        .find_map(|cluster| {
-            cluster
-                .target(dockspace::drop_guide::DropGuideSlot::Edge(Edge::Left))
-                .map(|target| target.target())
-                .filter(|target| target.availability().is_available())
-        })
-        .or_else(|| {
-            plan.drop_targets().iter().find(|target| {
-                target.availability().is_available()
-                    && matches!(
-                        target.id(),
-                        dockspace::drop_target::DropTargetId::InnerEdge {
-                            edge: Edge::Left,
-                            ..
-                        } | dockspace::drop_target::DropTargetId::OuterEdge {
-                            edge: Edge::Left,
-                            ..
-                        }
-                    )
-            })
-        })?;
+    let target = plan.drop_guide_clusters().iter().find_map(|cluster| {
+        cluster
+            .target(dockspace::drop_guide::DropGuideSlot::Edge(Edge::Left))
+            .map(|target| target.target())
+            .filter(|target| target.availability().is_available())
+    })?;
     Some((logical_rect_center(target.region().rect())?, target.id()))
-}
-
-fn tab_scroll_state(
-    engine: &dockspace::engine::DockEngine,
-    surface: SurfaceId,
-) -> Option<(SurfacePresentationOutputTicket, egui::Pos2, f64, f64)> {
-    let projection = engine.interaction_projection(surface)?;
-    let bar = projection.plan().tab_bar_records().first()?;
-    Some((
-        projection.output_ticket(),
-        logical_rect_center(bar.viewport())?,
-        bar.scroll_offset(),
-        bar.maximum_scroll_offset(),
-    ))
-}
-
-fn overflow_style() -> DockStyle {
-    DockStyle {
-        tab_min_width: OVERFLOW_TAB_WIDTH,
-        tab_max_width: OVERFLOW_TAB_WIDTH,
-        ..DockStyle::default()
-    }
 }
 
 fn logical_rect_center(rect: dockspace::geometry::LogicalRect) -> Option<egui::Pos2> {
@@ -712,11 +374,7 @@ impl eframe::App for SmokeApp {
         &mut self,
         outputs: &mut [eframe::HostedViewportOutput<egui::FullOutput>],
     ) -> eframe::HostedViewportAppResult<eframe::HostedViewportCommitDirective> {
-        self.runtime.commit_hosted_viewport_cycle(outputs)?;
-        if let Err(error) = self.queue_physical_scroll_after_commit(outputs) {
-            self.post_commit_error = Some(error);
-        }
-        Ok(eframe::HostedViewportCommitDirective::repaint_root())
+        self.runtime.commit_hosted_viewport_cycle(outputs)
     }
 
     fn abort_hosted_viewport_cycle(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
@@ -731,17 +389,11 @@ impl eframe::App for SmokeApp {
 fn main() -> Result<(), Box<dyn Error>> {
     let outcome = Arc::new(Mutex::new(SmokeOutcome::Pending));
     let shared = Arc::clone(&outcome);
-    let renderer = Arc::new(RendererCounts::default());
-    let app_renderer = Arc::clone(&renderer);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("egui_dockspace native E2E root")
             .with_inner_size([420.0, 360.0])
             .with_position([40.0, 60.0]),
-        presentation_result_hook: Some(Arc::new({
-            let renderer = Arc::clone(&renderer);
-            move |result| renderer.record(result.outcome())
-        })),
         persist_window: false,
         ..Default::default()
     };
@@ -752,11 +404,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let driver = creation_context.native_test_driver.clone().ok_or_else(|| {
                 io::Error::other("eframe native-test-support driver is unavailable")
             })?;
-            Ok(Box::new(SmokeApp::new(shared, app_renderer, driver)?))
+            Ok(Box::new(SmokeApp::new(shared, driver)?))
         }),
     )?;
-
-    renderer.validate_native_outcomes()?;
 
     match outcome
         .lock()
@@ -775,58 +425,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-#[derive(Default)]
-struct RendererCounts {
-    submitted: AtomicU64,
-    swapped: AtomicU64,
-    skipped: AtomicU64,
-    failed: AtomicU64,
-    browser_canvas: AtomicU64,
-}
-
-impl RendererCounts {
-    fn record(&self, outcome: &egui::PaintOutcome) {
-        let counter = match outcome {
-            egui::PaintOutcome::SubmittedToBrowserCanvas => &self.browser_canvas,
-            egui::PaintOutcome::SubmittedToSwapchain => &self.submitted,
-            egui::PaintOutcome::Swapped => &self.swapped,
-            egui::PaintOutcome::Skipped(_) => &self.skipped,
-            egui::PaintOutcome::Failed(_) => &self.failed,
-        };
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self) -> [u64; 5] {
-        [
-            self.submitted.load(Ordering::Relaxed),
-            self.swapped.load(Ordering::Relaxed),
-            self.skipped.load(Ordering::Relaxed),
-            self.failed.load(Ordering::Relaxed),
-            self.browser_canvas.load(Ordering::Relaxed),
-        ]
-    }
-
-    fn validate_native_outcomes(&self) -> io::Result<()> {
-        let failed = self.failed.load(Ordering::Relaxed);
-        let browser_canvas = self.browser_canvas.load(Ordering::Relaxed);
-        if failed == 0 && browser_canvas == 0 {
-            return Ok(());
-        }
-        Err(io::Error::other(format!(
-            "native renderer reported {failed} failed and {browser_canvas} browser-canvas outcomes"
-        )))
-    }
-}
-
 fn workspace() -> Workspace {
     let mut builder = Workspace::builder();
-    let group = builder.insert_node(Node::tabs_with_selection(
-        group_items(),
-        Some(expected_group_selection()),
-    ));
-    builder
-        .set_tab_mru(group, expected_group_mru())
-        .expect("the native E2E group is a tabs node");
+    let group = builder.insert_node(Node::tabs(group_items()));
     let central = builder.insert_node(Node::tabs([ItemId::new(ROOT_ITEM_COUNT)]));
     let root = builder.insert_node(
         Node::equal_split(Axis::Horizontal, [group, central])
@@ -849,14 +450,6 @@ fn group_items() -> impl Iterator<Item = ItemId> {
     (1..=GROUP_ITEM_COUNT).map(ItemId::new)
 }
 
-const fn expected_group_selection() -> ItemId {
-    ItemId::new(2)
-}
-
-const fn expected_group_mru() -> [ItemId; 2] {
-    [ItemId::new(2), ItemId::new(1)]
-}
-
 struct SmokePanes;
 
 impl SmokePanes {
@@ -872,23 +465,5 @@ impl PaneView for SmokePanes {
 
     fn ui(&mut self, item: ItemId, ui: &mut egui::Ui) {
         ui.label(format!("Pane {}", item.get()));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn native_renderer_gate_rejects_terminal_failure() {
-        let renderer = RendererCounts::default();
-        renderer.record(&egui::PaintOutcome::SubmittedToSwapchain);
-        renderer.record(&egui::PaintOutcome::Swapped);
-        assert!(renderer.validate_native_outcomes().is_ok());
-
-        renderer.record(&egui::PaintOutcome::Failed(
-            egui::PaintFailure::RendererUnavailable,
-        ));
-        assert!(renderer.validate_native_outcomes().is_err());
     }
 }

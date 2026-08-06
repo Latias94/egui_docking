@@ -4,7 +4,8 @@ use crate::frame::{NativeCreatePhase, SurfaceVacancyAuthority, ViewportCoordinat
 use crate::graph::Workspace;
 use crate::ids::{NativeCreateSagaId, SurfaceId};
 use crate::presentation_observation::{
-    NativeStagingResourceId, PresentationOutputSerial, SurfacePresentationOutputTicket,
+    HostPresentationEndpoint, NativeStagingResourceId, PresentationOutputSerial,
+    SurfacePresentationOutputTicket,
 };
 use crate::scene::SurfaceCoordinateCapture;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
@@ -345,23 +346,32 @@ impl DockEngine {
         self.native_admission.source_surface_is_held(surface)
     }
 
-    pub(super) fn admit_first_live_native_output(
-        &mut self,
+    pub(super) fn native_first_live_output_requires_follow_up(
+        &self,
         ticket: SurfacePresentationOutputTicket,
-        capture: SurfaceCoordinateCapture,
-        events: &mut Vec<crate::event::WorkspaceEvent>,
-    ) -> Result<(), EngineError> {
-        let surface = ticket.surface();
-        let Some(binding) = Self::coordinate_capture_binding(capture) else {
-            return Ok(());
+        endpoint: HostPresentationEndpoint,
+    ) -> Result<bool, EngineError> {
+        let HostPresentationEndpoint::Native(binding) = endpoint else {
+            return Ok(false);
         };
+        Ok(self
+            .actionable_first_live_barrier(ticket, binding)?
+            .is_some())
+    }
+
+    fn actionable_first_live_barrier(
+        &self,
+        ticket: SurfacePresentationOutputTicket,
+        binding: ViewportBinding,
+    ) -> Result<Option<FirstLiveBarrier>, EngineError> {
+        let surface = ticket.surface();
         if binding.surface() != surface {
             return Err(EngineError::ReductionCauseInvariant {
-                detail: "presented native output binding does not match its logical surface",
+                detail: "first-live native output binding does not match its logical surface",
             });
         }
         let Some(barrier) = self.native_admission.barrier_authorized_by(binding, ticket) else {
-            return Ok(());
+            return Ok(None);
         };
         let binding_is_admissible = self.viewport.viewport(surface).is_some_and(|record| {
             record.binding() == binding
@@ -372,9 +382,22 @@ impl DockEngine {
                     .and_then(crate::platform::WindowPresentationObservation::known_state)
                     == Some(crate::platform::WindowPresentationState::Visible)
         });
-        if !binding_is_admissible {
+        Ok(binding_is_admissible.then_some(barrier))
+    }
+
+    pub(super) fn admit_first_live_native_output(
+        &mut self,
+        ticket: SurfacePresentationOutputTicket,
+        capture: SurfaceCoordinateCapture,
+        events: &mut Vec<crate::event::WorkspaceEvent>,
+    ) -> Result<(), EngineError> {
+        let surface = ticket.surface();
+        let Some(binding) = Self::coordinate_capture_binding(capture) else {
             return Ok(());
-        }
+        };
+        let Some(barrier) = self.actionable_first_live_barrier(ticket, binding)? else {
+            return Ok(());
+        };
         match barrier.owner {
             FirstLiveOwner::NativeCreate(saga) => {
                 let Some(resource) = barrier.resource else {

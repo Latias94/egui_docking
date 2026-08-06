@@ -608,9 +608,13 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
     );
     assert_eq!(settlement.surface(), ROOT_SURFACE);
     assert!(settlement.is_required());
-    assert!(
-        settlement.presentation_output().is_some(),
-        "a required renderer settlement must retain its exact core output identity",
+    let presentation = settlement
+        .presentation_output()
+        .expect("a required renderer settlement must retain its exact core output identity");
+    assert_eq!(
+        presentation.continuation(),
+        dockspace::presentation_observation::HostPresentationContinuation::Presented,
+        "the first successful paint must schedule the boundary that grants interaction authority",
     );
     assert_eq!(settlement.native_route(), None);
     assert_eq!(
@@ -665,7 +669,16 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
         1,
         "the late result must complete the exact obligation once"
     );
-    complete_presentations(outputs, EguiPresentationResult::Dropped);
+    let stable = one_presentation(outputs);
+    let stable_presentation = stable
+        .presentation_output()
+        .expect("a stable paint still retains its exact renderer obligation");
+    assert_eq!(
+        stable_presentation.continuation(),
+        dockspace::presentation_observation::HostPresentationContinuation::None,
+        "current interaction authority must not turn stable paint into a repaint loop",
+    );
+    stable.settle_with(|_, _| EguiPresentationResult::Dropped);
 }
 
 #[test]

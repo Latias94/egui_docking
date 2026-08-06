@@ -1633,6 +1633,21 @@ fn publish_surface_projection_with_transition(
     surface: SurfaceId,
     measurements: SurfaceMeasurements,
 ) -> (SurfaceSceneStamp, EngineTransition) {
+    let (stamp, _, transition) =
+        publish_surface_projection_with_output(engine, host, surface, measurements);
+    (stamp, transition)
+}
+
+fn publish_surface_projection_with_output(
+    engine: &mut DockEngine,
+    host: PresentationHostLease,
+    surface: SurfaceId,
+    measurements: SurfaceMeasurements,
+) -> (
+    SurfaceSceneStamp,
+    crate::presentation_observation::HostPresentationOutput,
+    EngineTransition,
+) {
     let contribution = engine
         .prepare_surface_contribution(
             engine
@@ -1683,6 +1698,10 @@ fn publish_surface_projection_with_transition(
         1,
         "one host frame may emit exactly one output for its explicitly painted surface"
     );
+    let surface_output = *outputs
+        .iter()
+        .find(|candidate| candidate.surface() == surface)
+        .expect("the explicitly painted surface must retain its exact output");
 
     let mut observe_prelude = engine
         .begin_host_frame(host)
@@ -1724,7 +1743,7 @@ fn publish_surface_projection_with_transition(
             }
         )
     }));
-    (stamp, observed)
+    (stamp, surface_output, observed)
 }
 
 fn assert_no_pointer_passthrough_effects(engine: &DockEngine) {

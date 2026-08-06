@@ -1173,6 +1173,11 @@ fn emit_background_native_staging(
     let [output] = outputs.as_slice() else {
         panic!("one exact native staging output must emit, got {outputs:?}");
     };
+    assert_eq!(
+        output.continuation(),
+        crate::presentation_observation::HostPresentationContinuation::Presented,
+        "native staging advances only after successful presentation",
+    );
     *output
 }
 
@@ -1286,13 +1291,18 @@ fn advance_pending_native_root_to_first_live(
     let bounds =
         LogicalRect::new(0.0, 0.0, 300.0, 220.0).expect("native target test bounds must be valid");
     let measurements = surface_measurements(&fixture.engine, surface, bounds);
-    publish_surface_projection_with_transition(
+    let (_, output, transition) = publish_surface_projection_with_output(
         &mut fixture.engine,
         fixture.presentation_host,
         surface,
         measurements,
-    )
-    .1
+    );
+    assert_eq!(
+        output.continuation(),
+        crate::presentation_observation::HostPresentationContinuation::Presented,
+        "the exact first-live output must wake only after successful presentation",
+    );
+    transition
 }
 
 #[test]

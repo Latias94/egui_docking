@@ -5,12 +5,13 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dockspace::presentation_observation::{
-    HostFrameKey, HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
-    SurfacePresentationOutputTicket,
+    HostFrameKey, HostPresentationContinuation, HostPresentationOutput, HostPresentationStreamId,
+    PresentationHostLease, SurfacePresentationOutputTicket,
 };
 use eframe::{
-    HostedNativeStagingPresentation, HostedViewportOutput, NativeHoveredWindow,
-    NativePointerDeliveryOwner, NativePointerEdge, NativePresentationResult, NativeViewportBinding,
+    HostedNativeStagingPresentation, HostedPresentationFollowUp, HostedViewportOutput,
+    NativeHoveredWindow, NativePointerDeliveryOwner, NativePointerEdge, NativePresentationResult,
+    NativeViewportBinding,
 };
 use egui::{FullOutput, PaintOutcome, PointerHitGraphSnapshot, UserData};
 use egui_dockspace::{
@@ -261,26 +262,41 @@ impl NativePresentationLedger {
             );
             assert!(output.platform_output.presentation_token.is_none());
 
-            let token = NativePresentationToken {
-                runtime: self.runtime,
-                serial: output_plan.serial,
-                native: output_plan.native,
-            };
-            output.platform_output.presentation_token = Some(UserData::new(token));
             let presentation_output = settlement.presentation_output();
-            if let Some(output) = presentation_output {
+            debug_assert_eq!(settlement.is_required(), presentation_output.is_some());
+            let follow_up = presentation_output.and_then(|output| match output.continuation() {
+                HostPresentationContinuation::None => None,
+                HostPresentationContinuation::Presented => {
+                    Some(HostedPresentationFollowUp::SuccessfulSubmission)
+                }
+                HostPresentationContinuation::Terminal => {
+                    Some(HostedPresentationFollowUp::AnyResult)
+                }
+            });
+            if let Some(presentation_output) = presentation_output {
+                let token = NativePresentationToken {
+                    runtime: self.runtime,
+                    serial: output_plan.serial,
+                    native: output_plan.native,
+                };
+                output.platform_output.presentation_token = Some(UserData::new(token));
                 self.live_streams
                     .entry(output_plan.native)
                     .or_default()
-                    .insert((prepared.presentation_host, output.stream()));
+                    .insert((prepared.presentation_host, presentation_output.stream()));
+                let pending = PendingNativePresentation {
+                    native: output_plan.native,
+                    output: Some(presentation_output),
+                    settlement,
+                };
+                assert!(self.pending.insert(output_plan.serial, pending).is_none());
             }
-            let pending = PendingNativePresentation {
-                native: output_plan.native,
-                output: presentation_output,
-                settlement,
-            };
-            assert!(self.pending.insert(output_plan.serial, pending).is_none());
             *hosted.output_mut() = output;
+            if let Some(follow_up) = follow_up {
+                hosted
+                    .require_presentation_result_follow_up(follow_up)
+                    .expect("a committed presentation obligation retains its renderer token");
+            }
             if let Some(authorization) = output_plan.staging {
                 hosted
                     .authorize_native_staging_presentation(authorization)

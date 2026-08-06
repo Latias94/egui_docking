@@ -4352,6 +4352,14 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         Some(pending.1),
         "the next output must name the exact pending preview it painted"
     );
+    assert_eq!(
+        preview_output
+            .presentation_output()
+            .expect("pending release preview must carry an exact core output")
+            .continuation(),
+        dockspace::presentation_observation::HostPresentationContinuation::Terminal,
+        "a dropped renderer result must still settle the pending release",
+    );
     assert!(
         preview_output
             .full_output()
