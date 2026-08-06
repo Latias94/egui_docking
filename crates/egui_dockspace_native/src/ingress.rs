@@ -56,10 +56,11 @@ use eframe::{
     NativeEffectSink, NativeFocusedWindow, NativeHostIngress, NativeHoveredWindow,
     NativeIngressEvent, NativeKey, NativeKeyEdgeKind, NativePhysicalPoint, NativePhysicalRect,
     NativePointerButton, NativePointerDeliveryOwner, NativePointerEdge, NativePointerEdgeKind,
-    NativePointerIdentity, NativePointerInputState, NativePresentationState,
-    NativeScrollCancelReason, NativeScrollDelta, NativeScrollEdge, NativeScrollMomentum,
-    NativeScrollPhase, NativeUnavailableReason, NativeViewportBinding, NativeViewportCreateSink,
-    NativeWindowSnapshot, NativeWorkAreaRosterObservation, NativeWorkAreaRoute,
+    NativePointerIdentity, NativePointerInputState, NativePointerStreamCancelReason,
+    NativePresentationState, NativeScrollCancelReason, NativeScrollDelta, NativeScrollEdge,
+    NativeScrollMomentum, NativeScrollPhase, NativeUnavailableReason, NativeViewportBinding,
+    NativeViewportCreateSink, NativeWindowSnapshot, NativeWorkAreaRosterObservation,
+    NativeWorkAreaRoute,
 };
 use egui::ViewportId;
 use egui_dockspace::{
@@ -2336,17 +2337,16 @@ impl NativeIngressBridge {
                 PointerEdgeKind::ButtonPressed(translate_button(button))
             }
             NativePointerEdgeKind::ButtonReleased(button) => {
-                let button = translate_button(button);
-                if edge.ends_stream() {
-                    PointerEdgeKind::ContactEnded(button)
-                } else {
-                    PointerEdgeKind::ButtonReleased(button)
-                }
+                PointerEdgeKind::ButtonReleased(translate_button(button))
             }
+            NativePointerEdgeKind::ContactEnded(button) => {
+                PointerEdgeKind::ContactEnded(translate_button(button))
+            }
+            NativePointerEdgeKind::StreamEnded => PointerEdgeKind::StreamEnded,
             NativePointerEdgeKind::CaptureChanged => PointerEdgeKind::CaptureChanged,
-            NativePointerEdgeKind::Cancelled => PointerEdgeKind::StreamCancelled(
-                PointerStreamCancelReason::ExplicitPlatformCancellation,
-            ),
+            NativePointerEdgeKind::StreamCancelled(reason) => {
+                PointerEdgeKind::StreamCancelled(translate_pointer_cancel_reason(reason))
+            }
             NativePointerEdgeKind::Scrolled(scroll) => {
                 PointerEdgeKind::Scrolled(translate_scroll_edge(
                     self.recorder
@@ -2362,11 +2362,6 @@ impl NativeIngressBridge {
                 )?)
             }
         };
-        if edge.ends_stream() && !matches!(kind, PointerEdgeKind::ContactEnded(_)) {
-            return Err(NativeRuntimeError::IngressUnavailable(
-                "a terminal native pointer edge was not a contact release",
-            ));
-        }
         let position = transpose_geometry(translate_authority(edge.position(), translate_point))?;
         let route = match edge.hovered().value() {
             Some(NativeHoveredWindow::Viewport(binding)) => routes
@@ -2416,7 +2411,9 @@ impl NativeIngressBridge {
         let delivery_owner = translate_delivery_owner(edge.delivery_owner(), routes);
         let stream_terminal = matches!(
             kind,
-            PointerEdgeKind::ContactEnded(_) | PointerEdgeKind::StreamCancelled(_)
+            PointerEdgeKind::ContactEnded(_)
+                | PointerEdgeKind::StreamEnded
+                | PointerEdgeKind::StreamCancelled(_)
         );
         let translated = PointerEdge::new_with_delivery(
             sequence,
@@ -4496,6 +4493,22 @@ mod tests {
             &accepted,
         ));
     }
+
+    #[test]
+    fn native_pointer_cancel_reasons_preserve_terminal_cause() {
+        assert_eq!(
+            translate_pointer_cancel_reason(NativePointerStreamCancelReason::PlatformCancelled),
+            PointerStreamCancelReason::ExplicitPlatformCancellation,
+        );
+        assert_eq!(
+            translate_pointer_cancel_reason(NativePointerStreamCancelReason::DeviceRemoved),
+            PointerStreamCancelReason::DeviceRemoved,
+        );
+        assert_eq!(
+            translate_pointer_cancel_reason(NativePointerStreamCancelReason::BindingRetired),
+            PointerStreamCancelReason::BindingRetired,
+        );
+    }
 }
 
 fn exact_native(binding: NativeViewportBinding) -> ExactNativeViewport {
@@ -4800,6 +4813,20 @@ const fn translate_button(button: NativePointerButton) -> PointerButton {
         NativePointerButton::Back => PointerButton::Other(4),
         NativePointerButton::Forward => PointerButton::Other(5),
         NativePointerButton::Other(button) => PointerButton::Other(button),
+    }
+}
+
+const fn translate_pointer_cancel_reason(
+    reason: NativePointerStreamCancelReason,
+) -> PointerStreamCancelReason {
+    match reason {
+        NativePointerStreamCancelReason::PlatformCancelled => {
+            PointerStreamCancelReason::ExplicitPlatformCancellation
+        }
+        NativePointerStreamCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
+        NativePointerStreamCancelReason::BindingRetired => {
+            PointerStreamCancelReason::BindingRetired
+        }
     }
 }
 
