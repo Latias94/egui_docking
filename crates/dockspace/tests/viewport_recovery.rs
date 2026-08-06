@@ -692,6 +692,40 @@ fn pending_joined_fixture() -> PendingFixture {
     pending_fixture_from(joined_fixture())
 }
 
+#[test]
+fn destroyed_child_without_exact_outer_anchor_awaits_host() {
+    let mut fixture = fixture_with_child_outer(false);
+    let child_binding = fixture.child_binding;
+
+    let destroyed = publish_destroyed_child(
+        &mut fixture.engine,
+        &mut fixture.presentation_host,
+        child_binding,
+        vec![unavailable_host_window(fixture.host_binding)],
+    );
+
+    assert_no_new_effects(&destroyed);
+    let pending = fixture
+        .engine
+        .viewport()
+        .recovery_pending(SURFACE_CHILD)
+        .expect("destroyed child must retain a host-owned recovery obligation");
+    assert_eq!(
+        pending.status(),
+        RecoveryPendingStatus::AwaitingRecoveryHost
+    );
+    assert_eq!(pending.replacement_binding(), None);
+    assert_eq!(pending.replacement_effect(), None);
+    assert_eq!(
+        effect_count(&fixture.engine, |effect| matches!(
+            effect,
+            PlatformEffect::RequestReplacement { .. }
+        )),
+        0,
+        "content bounds must never be promoted into an exact outer placement",
+    );
+}
+
 fn pending_fixture_from(mut fixture: Fixture) -> PendingFixture {
     let child_binding = fixture.child_binding;
     let destroyed = publish_destroyed_child(

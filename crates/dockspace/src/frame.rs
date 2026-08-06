@@ -3555,11 +3555,13 @@ impl ViewportCoordinator {
             return Err(ViewportCoordinatorError::DestroyedSurfaceStillObserved { binding });
         }
         let role = record.role();
-        let placement = record.coordinates().map(|coordinates| {
-            coordinates
-                .outer_bounds()
-                .unwrap_or_else(|| coordinates.content_bounds())
-        });
+        // Native replacement placement is an outer-window fact. Content bounds
+        // are not an interchangeable fallback because system decorations make
+        // the two rectangles observably different. Without an exact retained
+        // outer anchor, recovery must remain host-owned and fail closed.
+        let placement = record
+            .coordinates()
+            .and_then(|coordinates| coordinates.outer_bounds());
         let mut candidate = self.clone();
         if let Some(resource) = retained_staging_resource {
             candidate.transition_native_staging_resource(
