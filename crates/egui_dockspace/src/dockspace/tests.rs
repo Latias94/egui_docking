@@ -20,8 +20,9 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::presentation_hit::PresentationHitRegionKind;
 use dockspace::presentation_observation::{
-    HostPresentationCaptureGeneration, HostPresentationObservationOutcome,
-    HostPresentationObservationRejection, PresentationHostRetirementReason,
+    HostPresentationCaptureGeneration, HostPresentationObservation,
+    HostPresentationObservationOutcome, HostPresentationObservationRejection,
+    PresentationHostRetirementReason,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::SurfaceContributionOutcome;
@@ -69,6 +70,25 @@ fn multipass_context() -> Context {
 fn input() -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(640.0, 480.0))),
+        ..RawInput::default()
+    }
+}
+
+fn input_with_events(events: Vec<Event>) -> RawInput {
+    #[cfg(not(egui_backend_event_envelope))]
+    let events = events.into_iter().map(Into::into).collect();
+    #[cfg(egui_backend_event_envelope)]
+    let events = {
+        let mut derivation =
+            egui::BackendEventDerivation::known(egui::BackendEventSequence::new(1));
+        events
+            .into_iter()
+            .map(|event| derivation.envelope(event))
+            .collect()
+    };
+    RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(640.0, 480.0))),
+        events,
         ..RawInput::default()
     }
 }
@@ -563,6 +583,179 @@ fn already_retired_pointer_abort_compacts_the_exact_tombstone() {
     let retention = dockspace.engine.runtime_retention_manifest().pointer();
     assert_eq!(retention.retired_lease_guards(), 0);
     assert_eq!(retention.compacted_retirement_ranges(), 1);
+}
+
+#[test]
+fn dropped_outer_frame_retires_captured_pointer_instead_of_discarding_release() {
+    let context = multipass_context();
+    let mut dockspace = Dockspace::builder("dropped-outer-release", workspace())
+        .build()
+        .expect("facade builds");
+    let mut panes = TestPanes;
+    let (status, provider) = arm_real_journal_click(&context, &mut dockspace, &mut panes);
+    assert!(matches!(status, InteractionStatus::Pressed { .. }));
+
+    let reservation = dockspace
+        .pointer_input
+        .reserve_install()
+        .expect("the adapter can enroll the exact provider");
+    dockspace.pointer_input.install_unbound(
+        reservation,
+        provider,
+        SURFACE,
+        dockspace.engine.version().epoch(),
+    );
+
+    let next_sequence = dockspace
+        .last_host_frame
+        .map_or(1, |key| key.sequence() + 1);
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(next_sequence, 0))
+        .expect("the outer frame begins");
+    let release = Event::PointerButton {
+        pos: Pos2::new(32.0, 32.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    };
+    frame
+        .run_surface(
+            SURFACE,
+            &context,
+            input_with_events(vec![release]),
+            &mut panes,
+        )
+        .expect("the release is retained by the outer frame before its seal");
+
+    // Dropping the host frame must retire the provider after its core candidate
+    // is dropped. It must not merely delete the staged release from the adapter.
+    drop(frame);
+    assert_eq!(dockspace.pointer_input.provider(), None);
+    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle
+    );
+}
+
+#[test]
+fn post_pointer_prepare_error_drops_core_guard_before_retiring_provider() {
+    let context = multipass_context();
+    let mut dockspace = Dockspace::builder("post-pointer-prepare-error", workspace())
+        .build()
+        .expect("facade builds");
+    let mut panes = TestPanes;
+    let (status, provider) = arm_real_journal_click(&context, &mut dockspace, &mut panes);
+    assert!(matches!(status, InteractionStatus::Pressed { .. }));
+
+    let reservation = dockspace
+        .pointer_input
+        .reserve_install()
+        .expect("the adapter can enroll the exact provider");
+    dockspace.pointer_input.install_unbound(
+        reservation,
+        provider,
+        SURFACE,
+        dockspace.engine.version().epoch(),
+    );
+    dockspace.semantic_source_sequence = SourceSequence::new(u64::MAX);
+
+    let next_sequence = dockspace
+        .last_host_frame
+        .map_or(1, |key| key.sequence() + 1);
+    let mut frame = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(next_sequence, 0))
+        .expect("the outer frame begins");
+    let release = Event::PointerButton {
+        pos: Pos2::new(32.0, 32.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    };
+    let escape = Event::Key {
+        key: Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    frame
+        .run_surface(
+            SURFACE,
+            &context,
+            input_with_events(vec![release, escape]),
+            &mut panes,
+        )
+        .expect("the release and later semantic action are staged");
+
+    let error = frame
+        .finish()
+        .expect_err("the post-pointer semantic sequence is exhausted");
+    assert!(matches!(
+        error,
+        DockspaceError::InputSourceSequenceExhausted { .. }
+    ));
+    assert_eq!(dockspace.pointer_input.provider(), None);
+    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle
+    );
+}
+
+#[test]
+fn deferred_pointer_abort_retries_before_the_next_public_boundary() {
+    let context = multipass_context();
+    let mut dockspace = Dockspace::builder("deferred-pointer-abort", workspace())
+        .build()
+        .expect("facade builds");
+    let mut panes = TestPanes;
+    let (status, provider) = arm_real_journal_click(&context, &mut dockspace, &mut panes);
+    assert!(matches!(status, InteractionStatus::Pressed { .. }));
+
+    let reservation = dockspace
+        .pointer_input
+        .reserve_install()
+        .expect("the adapter can enroll the exact provider");
+    dockspace.pointer_input.install_unbound(
+        reservation,
+        provider,
+        SURFACE,
+        dockspace.engine.version().epoch(),
+    );
+
+    let mut prelude =
+        EguiEngineOwner::begin_host_frame(&mut dockspace.engine, dockspace.presentation_host)
+            .expect("a low-level frame begins");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("the low-level frame submits its observation");
+    let mut core_frame = prelude
+        .seal(EguiEngineOwner::engine(&dockspace.engine))
+        .expect("the low-level frame seals");
+    dockspace
+        .pointer_input
+        .submit_empty_interval(&mut core_frame)
+        .expect("the low-level frame owns one in-flight producer attempt");
+
+    let error = dockspace
+        .abort_pointer_input()
+        .expect_err("an in-flight core guard blocks provider retirement");
+    assert!(matches!(error, DockspaceError::PointerInputFrameInFlight));
+    assert!(dockspace.pending_pointer_abort);
+    assert!(dockspace.pointer_input.provider().is_some());
+
+    drop(core_frame);
+    dockspace
+        .ensure_native_session_idle()
+        .expect("the next public boundary reaps the deferred exact retirement");
+    assert!(!dockspace.pending_pointer_abort);
+    assert_eq!(dockspace.pointer_input.provider(), None);
+    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(
+        dockspace.engine().interaction().status(),
+        InteractionStatus::Idle
+    );
 }
 
 #[test]

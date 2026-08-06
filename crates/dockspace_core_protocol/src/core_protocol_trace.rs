@@ -724,17 +724,10 @@ pub struct PointerEdgeIngress {
     pub sequence: u64,
     pub pointer: u64,
     pub kind: PointerEdgeKindSpec,
-    /// Whether accepting this edge retires its exact pointer stream.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub ending_stream: bool,
     pub location: PointerLocationIngress,
     pub delivery: PointerEventDeliveryIngress,
     pub capture: PointerCaptureIngress,
     pub receiver: PointerReceiverIngress,
-}
-
-const fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Edge-local endpoint which delivered one pointer transition.
@@ -761,8 +754,11 @@ pub enum PointerEdgeKindSpec {
     Moved,
     PrimaryPressed,
     PrimaryReleased,
+    PrimaryContactEnded,
     SecondaryPressed,
     SecondaryReleased,
+    SecondaryContactEnded,
+    StreamEnded,
     CaptureChanged,
     StreamCancelled {
         reason: PointerStreamCancelReasonSpec,
@@ -963,9 +959,8 @@ pub enum PointerCaptureIngress {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PointerStreamCancelReasonSpec {
     DeviceRemoved,
-    ProviderShutdown,
     ExplicitPlatformCancellation,
-    ProviderReset,
+    BindingRetired,
 }
 
 /// Semantic response to one core-frozen receiver candidate. It never carries
@@ -1939,6 +1934,7 @@ pub enum ExpectedScrollTerminationReason {
     Completed,
     Cancelled { reason: ScrollCancelReasonSpec },
     StreamCancelled,
+    StreamEnded,
     ProviderRetired,
     ReceiverLost,
     DeliveryEndpointChanged,
@@ -1996,6 +1992,7 @@ pub enum ExpectedInteractionCancelReason {
     DeliveryAuthorityUnavailable,
     DeliveryOwnerLost,
     PointerStreamCancelled,
+    PointerStreamEnded,
     UnknownButtonState,
     UnknownTargetAuthority,
     OpaquePointerBlocker,

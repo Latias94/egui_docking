@@ -190,6 +190,23 @@ fn submit_pointer_close_release(
         .expect("one release supplies delivery and hover facts together");
 }
 
+fn submit_pointer_close_contact_end(
+    frame: &mut DockspaceHostFrame<'_>,
+    receiver: PresentedDockReceiver,
+    surface: PresentedDockspaceSurface,
+) {
+    let point = receiver.center();
+    frame
+        .submit_surface_pointer(SurfacePointerInput::new(
+            SurfacePointerId::new(77),
+            SurfacePointerEvent::ContactEnded(SurfacePointerButton::Primary),
+            SurfacePointerPosition::Known(point),
+            SurfacePointerCapture::None,
+            SurfacePointerReceiverFacts::delivery(&receiver).with_no_hover(&surface),
+        ))
+        .expect("one contact end supplies delivery and hover facts together");
+}
+
 fn request_pointer_close(
     host: &mut DeterministicHost,
     descriptor: &DockspaceReceiverDescriptor,
@@ -207,6 +224,26 @@ fn request_pointer_close(
             },
         ] => plan.clone(),
         outcomes => panic!("expected one pointer close request, got {outcomes:?}"),
+    }
+}
+
+fn request_pointer_close_with_contact_end(
+    host: &mut DeterministicHost,
+    descriptor: &DockspaceReceiverDescriptor,
+) -> dockspace::ClosePlan {
+    let (receiver, surface) = press_pointer_close(host, descriptor);
+    let released = host.run(|frame| {
+        submit_pointer_close_contact_end(frame, receiver, surface);
+    });
+    match released.inputs() {
+        [
+            HostInputOutcome::CloseRequested {
+                plan,
+                reused: false,
+                origin: HostCloseRequestOrigin::Interaction,
+            },
+        ] => plan.clone(),
+        outcomes => panic!("expected one contact-end close request, got {outcomes:?}"),
     }
 }
 
@@ -261,6 +298,51 @@ fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
         }] if *request == allow_plan.request()
     ));
     assert!(!host.workspace().item_multiset().contains_key(&A));
+}
+
+#[test]
+fn runtime_contact_end_allows_the_same_pointer_identity_to_start_a_new_gesture() {
+    let (mut host, close) = pointer_close_host();
+    let before = host.workspace().clone();
+
+    let first_plan = request_pointer_close_with_contact_end(&mut host, &close);
+    let first_item = first_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the first contact owns item A");
+    host.run(|frame| {
+        frame
+            .resolve_close(
+                first_plan.request(),
+                first_item.token(),
+                CloseDecision::Veto,
+            )
+            .expect("the first contact close plan can be retired");
+    });
+
+    let second_plan = request_pointer_close_with_contact_end(&mut host, &close);
+    assert_ne!(
+        second_plan.request(),
+        first_plan.request(),
+        "reusing the provider-local pointer ID must create a fresh gesture and close plan",
+    );
+    let second_item = second_plan
+        .items()
+        .iter()
+        .find(|item| item.item() == A)
+        .expect("the successor contact still owns item A");
+    host.run(|frame| {
+        frame
+            .resolve_close(
+                second_plan.request(),
+                second_item.token(),
+                CloseDecision::Veto,
+            )
+            .expect("the successor contact close plan can be retired");
+    });
+
+    assert_eq!(host.workspace(), &before);
 }
 
 #[test]

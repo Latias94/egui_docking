@@ -420,7 +420,6 @@ fn local_edge(
         sequence,
         pointer: 7,
         kind,
-        ending_stream: false,
         location: PointerLocationIngress::SurfaceLocal {
             position: PointAuthorityIngress::Known {
                 point: PointFixture { x, y },
@@ -442,7 +441,6 @@ fn local_not_applicable_edge(
         sequence,
         pointer: 7,
         kind,
-        ending_stream: false,
         location: PointerLocationIngress::SurfaceLocal {
             position: PointAuthorityIngress::Known {
                 point: PointFixture { x, y },
@@ -657,7 +655,6 @@ fn local_pointer_setup_suite() -> CoreProtocolTraceSuite {
                     sequence: 1,
                     pointer: 7,
                     kind: PointerEdgeKindSpec::PrimaryPressed,
-                    ending_stream: false,
                     location: PointerLocationIngress::SurfaceLocal {
                         position: dockspace_core_protocol::PointAuthorityIngress::Known {
                             point: dockspace_core_protocol::PointFixture { x: 96.0, y: 24.0 },
@@ -1176,7 +1173,6 @@ fn scroll_edge(
                 delivery: endpoint,
             },
         },
-        ending_stream: false,
         location: PointerLocationIngress::SurfaceLocal {
             position: PointAuthorityIngress::Known {
                 point: PointFixture { x: 320.0, y: 14.0 },
@@ -1547,31 +1543,30 @@ fn scroll_provider_retirement_suite() -> CoreProtocolTraceSuite {
     suite
 }
 
-fn terminal_release_scroll_trace_suite() -> CoreProtocolTraceSuite {
+fn normal_stream_end_scroll_trace_suite() -> CoreProtocolTraceSuite {
     let mut suite = scroll_trace_suite();
     let trace = &mut suite.traces[0];
-    trace.id = CoreProtocolTraceId("terminal-release-scroll-journal".into());
-    trace.provenance.test = "smooth scroll terminal pointer release and rollback".into();
+    trace.id = CoreProtocolTraceId("normal-stream-end-scroll-journal".into());
+    trace.provenance.test = "smooth scroll normal pointer-stream end and rollback".into();
     trace.provenance.retained_behavior =
-        "A normal release which ends its pointer stream terminates every smooth-scroll session owned by that stream."
+        "A normal buttonless pointer-stream end terminates every smooth-scroll session owned by that stream."
             .into();
 
     let terminal = trace
         .boundaries
         .last_mut()
         .expect("scroll trace has one terminal boundary");
-    terminal.id = BoundaryId("terminal-pointer-release".into());
+    terminal.id = BoundaryId("normal-pointer-stream-end".into());
     let HostFrameEvent::PointerJournal { edges, .. } = &mut terminal.events[0] else {
         panic!("terminal scroll boundary must contain one pointer journal")
     };
     let edge = &mut edges[0];
-    edge.kind = PointerEdgeKindSpec::SecondaryReleased;
-    edge.ending_stream = true;
+    edge.kind = PointerEdgeKindSpec::StreamEnded;
     edge.receiver = PointerReceiverIngress::NotApplicable;
     terminal.expected.reduced_pointer_edges[0].outcomes =
         vec![ExpectedInteractionOutcome::ScrollTerminated {
             receiver: Some(scroll_receiver()),
-            reason: ExpectedScrollTerminationReason::StreamCancelled,
+            reason: ExpectedScrollTerminationReason::StreamEnded,
         }];
     suite
 }
@@ -1595,7 +1590,6 @@ fn tab_close_edge(
         sequence,
         pointer: 7,
         kind,
-        ending_stream: false,
         location: PointerLocationIngress::SurfaceLocal {
             position: PointAuthorityIngress::Known {
                 point: TAB_CLOSE_POINT,
@@ -2036,7 +2030,6 @@ fn capture_change_edge(sequence: u64, capture: PointerCaptureIngress) -> Pointer
         sequence,
         pointer: 7,
         kind: PointerEdgeKindSpec::CaptureChanged,
-        ending_stream: false,
         location: PointerLocationIngress::SurfaceLocal {
             position: PointAuthorityIngress::Known {
                 point: PointFixture { x: 320.0, y: 254.0 },
@@ -3458,7 +3451,6 @@ fn popup_gate_revocation_during_resize_trace() -> CoreProtocolTrace {
                         sequence: 2,
                         pointer: 7,
                         kind: PointerEdgeKindSpec::PrimaryReleased,
-                        ending_stream: false,
                         location: PointerLocationIngress::SurfaceLocal {
                             position: PointAuthorityIngress::Known {
                                 point: PointFixture { x: 368.0, y: 240.0 },
@@ -3751,7 +3743,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 1,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::PrimaryPressed,
-                            ending_stream: false,
                             location: dock_route(1, 96.0, 24.0, 96.0, 24.0),
                             delivery: PointerEventDeliveryIngress::Native {
                                 surface: SurfaceKey(1),
@@ -3768,7 +3759,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 2,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: dock_route(2, 2_640.0, 508.0, 320.0, 254.0),
                             delivery: PointerEventDeliveryIngress::Native {
                                 surface: SurfaceKey(1),
@@ -3875,7 +3865,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 3,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::Dock {
                                     surface: SurfaceKey(2),
@@ -3902,7 +3891,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 4,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::Foreign {
                                     desktop_position: PointAuthorityIngress::Known {
@@ -3925,7 +3913,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 5,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::OutsideAll {
                                     desktop_position: PointFixture {
@@ -3947,7 +3934,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                             sequence: 6,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::Unknown {
                                     reason: AuthorityUnavailableReasonSpec::NotReported,
@@ -4034,7 +4020,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                         sequence: 7,
                         pointer: 7,
                         kind: PointerEdgeKindSpec::Moved,
-                        ending_stream: false,
                         location: dock_route(2, 2_640.0, 508.0, 320.0, 254.0),
                         delivery: PointerEventDeliveryIngress::Native {
                             surface: SurfaceKey(1),
@@ -4140,7 +4125,6 @@ fn native_pointer_setup_suite() -> CoreProtocolTraceSuite {
                         sequence: 8,
                         pointer: 7,
                         kind: PointerEdgeKindSpec::PrimaryReleased,
-                        ending_stream: false,
                         location: dock_route(2, 2_640.0, 508.0, 320.0, 254.0),
                         delivery: PointerEventDeliveryIngress::Native {
                             surface: SurfaceKey(1),
@@ -4678,7 +4662,6 @@ fn native_create_pre_show_suite() -> CoreProtocolTraceSuite {
                             sequence: 1,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::PrimaryPressed,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::DockFromDesktop {
                                     surface: SurfaceKey(1),
@@ -4700,7 +4683,6 @@ fn native_create_pre_show_suite() -> CoreProtocolTraceSuite {
                             sequence: 2,
                             pointer: 7,
                             kind: PointerEdgeKindSpec::Moved,
-                            ending_stream: false,
                             location: PointerLocationIngress::Desktop {
                                 route: DesktopRouteIngress::OutsideAll {
                                     desktop_position: PointFixture {
@@ -4846,7 +4828,6 @@ fn native_create_pre_show_suite() -> CoreProtocolTraceSuite {
                         sequence: 3,
                         pointer: 7,
                         kind: PointerEdgeKindSpec::PrimaryReleased,
-                        ending_stream: false,
                         location: PointerLocationIngress::Desktop {
                             route: DesktopRouteIngress::OutsideAll {
                                 desktop_position: PointFixture {
@@ -6071,31 +6052,31 @@ fn scroll_trace_round_trips_explicit_receipts_and_preserves_unknown_sequence_own
 }
 
 #[test]
-fn terminal_release_ends_smooth_scroll_and_rejections_remain_atomic() {
-    let expected = terminal_release_scroll_trace_suite();
+fn normal_stream_end_ends_smooth_scroll_and_rejections_remain_atomic() {
+    let expected = normal_stream_end_scroll_trace_suite();
     let encoded = serde_json::to_string_pretty(&expected).expect("terminal trace encodes");
-    assert!(encoded.contains("\"ending_stream\": true"));
+    assert!(encoded.contains("\"stream_ended\""));
     let decoded = decode_core_protocol_trace_suite(&encoded).expect("terminal trace decodes");
     assert_eq!(decoded, expected);
-    replay_core_protocol_trace_suite(&decoded).expect("terminal release trace replays");
+    replay_core_protocol_trace_suite(&decoded).expect("normal stream-end trace replays");
 
     let trace = &decoded.traces[0];
     let terminal = trace
         .boundaries
         .last()
-        .expect("terminal release trace has one final boundary");
+        .expect("normal stream-end trace has one final boundary");
     let mut harness = CoreProtocolHarness::new(&trace.initial_workspace)
         .expect("terminal release harness initializes");
     for boundary in &trace.boundaries[..trace.boundaries.len() - 1] {
         harness
             .replay_boundary(trace, boundary)
-            .expect("terminal release setup replays");
+            .expect("normal stream-end setup replays");
     }
 
     let tick_before = harness.engine().last_reducer_tick();
     let version_before = harness.engine().version();
     let mut malformed = terminal.clone();
-    malformed.id = BoundaryId("malformed-terminal-pointer-release".into());
+    malformed.id = BoundaryId("malformed-normal-pointer-stream-end".into());
     let HostFrameEvent::PointerJournal { through, .. } = &mut malformed.events[0] else {
         panic!("terminal boundary must contain one pointer journal")
     };

@@ -54,7 +54,8 @@ pub(super) fn pointer_receiver_candidate_spec(
         }
         (
             InteractionStatus::Pressed { .. },
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+            | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
         ) => (true, false),
         (
@@ -64,7 +65,8 @@ pub(super) fn pointer_receiver_candidate_spec(
         )
         | (
             InteractionStatus::Dragging { .. },
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+            | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
         ) => (false, true),
         _ => (false, false),

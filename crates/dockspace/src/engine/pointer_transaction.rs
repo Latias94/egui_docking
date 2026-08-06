@@ -59,7 +59,8 @@ impl DockEngine {
                 policy,
                 interaction_events,
             ),
-            PointerEdgeKind::ButtonReleased(PointerButton::Primary) => self
+            PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+            | PointerEdgeKind::ContactEnded(PointerButton::Primary) => self
                 .reduce_journal_primary_release(
                     cause,
                     focus_causal,
@@ -78,25 +79,63 @@ impl DockEngine {
                 capture_authority_after,
                 interaction_events,
             ),
-            PointerEdgeKind::StreamCancelled(_) => {
-                let mut outcomes = self.cancel_scroll_stream(stream);
-                outcomes.extend(self.cancel_journal_owner(
-                    cause,
-                    owner,
-                    InteractionCancelReason::PointerStreamCancelled,
-                    interaction_events,
-                ));
-                Ok(outcomes)
-            }
+            PointerEdgeKind::StreamCancelled(_) => self.terminate_journal_stream(
+                cause,
+                stream,
+                InteractionCancelReason::PointerStreamCancelled,
+                ScrollTerminationReason::StreamCancelled,
+                interaction_events,
+            ),
+            PointerEdgeKind::StreamEnded => self.terminate_journal_stream(
+                cause,
+                stream,
+                InteractionCancelReason::PointerStreamEnded,
+                ScrollTerminationReason::StreamEnded,
+                interaction_events,
+            ),
             PointerEdgeKind::Scrolled(scroll) => {
                 self.reduce_scroll_edge(cause, stream, edge, scroll, receipt, snapshot)
             }
-            PointerEdgeKind::ButtonPressed(_) | PointerEdgeKind::ButtonReleased(_) => {
-                Ok(Vec::new())
-            }
+            PointerEdgeKind::ButtonPressed(_)
+            | PointerEdgeKind::ButtonReleased(_)
+            | PointerEdgeKind::ContactEnded(_) => Ok(Vec::new()),
         }?;
-        if edge.ends_stream() && !matches!(edge.kind(), PointerEdgeKind::StreamCancelled(_)) {
-            outcomes.extend(self.cancel_scroll_stream(stream));
+        if matches!(edge.kind(), PointerEdgeKind::ContactEnded(_)) {
+            outcomes.extend(self.terminate_journal_stream(
+                cause,
+                stream,
+                InteractionCancelReason::PointerStreamEnded,
+                ScrollTerminationReason::StreamEnded,
+                interaction_events,
+            )?);
+        }
+        Ok(outcomes)
+    }
+
+    fn terminate_journal_stream(
+        &mut self,
+        cause: ReductionCause,
+        stream: PointerStreamId,
+        interaction_reason: InteractionCancelReason,
+        scroll_reason: ScrollTerminationReason,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<Vec<InteractionOutcome>, EngineError> {
+        let mut outcomes = self.terminate_scroll_stream(stream, scroll_reason);
+        if self.interaction.active_stream() == Some(stream) {
+            self.viewport
+                .end_all_drag_routing()
+                .map_err(|source| EngineError::Viewport {
+                    input: self.last_input,
+                    source,
+                })?;
+            if let Some(outcome) = self.cancel_journal_owner(
+                cause,
+                GestureOwner::Stream(stream),
+                interaction_reason,
+                interaction_events,
+            ) {
+                outcomes.push(outcome);
+            }
         }
         Ok(outcomes)
     }
@@ -2664,7 +2703,7 @@ impl DockEngine {
                 cause,
                 focus_causal,
                 accepted.stream(),
-                accepted.capture_authority_after(),
+                accepted.capture_authority_for_reduction(),
                 edge,
                 receipt,
                 &snapshot,

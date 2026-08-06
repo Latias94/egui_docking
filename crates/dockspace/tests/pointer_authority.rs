@@ -427,7 +427,7 @@ fn conflicting_checkpoint_at_the_same_watermark_is_rejected_atomically() {
 }
 
 #[test]
-fn explicit_unknown_checkpoint_revokes_all_released_authority() {
+fn midstream_unknown_checkpoint_is_rejected_without_rewriting_authority() {
     let mut fixture = Fixture::new();
     let all_released = known_checkpoint(
         0,
@@ -449,11 +449,18 @@ fn explicit_unknown_checkpoint_revokes_all_released_authority() {
         PointerEdgeSequence::new(1),
         AuthorityUnavailableReason::NotReported,
     );
+    let provider = fixture.provider.lease();
+    let mut frame = fixture.host.begin(&fixture.engine);
+    let rejected = frame.submit_surface_pointer_journal(
+        &fixture.provider,
+        with_checkpoint(empty_journal(1), unavailable),
+    );
 
-    let _ = fixture.submit(with_checkpoint(empty_journal(1), unavailable));
-
-    assert!(matches!(
+    assert!(rejected.is_err());
+    assert_eq!(fixture.engine.pointer_provider(), Some(provider));
+    assert_eq!(
         fixture.engine.pointer_button_authority(),
-        AnyButtonDownAuthority::Unknown(_)
-    ));
+        AnyButtonDownAuthority::KnownAllReleased,
+        "a rejected checkpoint cannot revoke the accepted enrollment baseline",
+    );
 }

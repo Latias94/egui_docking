@@ -202,6 +202,8 @@ pub enum PointerEdgeKind {
     Moved,
     ButtonPressed(PointerButton),
     ButtonReleased(PointerButton),
+    ContactEnded(PointerButton),
+    StreamEnded,
     CaptureChanged,
     StreamCancelled(PointerStreamCancelReason),
 }
@@ -220,7 +222,6 @@ pub struct PointerEdge {
     sequence: PointerEdgeSequence,
     pointer: PointerId,
     kind: PointerEdgeKind,
-    stream_terminal: bool,
     location: PointerEdgeLocation,
     capture_owner: Authority<PointerCaptureOwner>,
 }
@@ -237,10 +238,32 @@ edge's event-time `capture_owner: Authority<PointerCaptureOwner>` fact.
 `Known(None)` or `Known(Foreign)` may prove capture loss for the active session;
 `Unknown` keeps the session alive and blocks actions that require capture proof.
 It must never be rewritten as a move, a known owner, or `StreamCancelled`.
-An ordinary release may separately set `stream_terminal`; it keeps its release
-semantics while retiring the exact ephemeral pointer stream after acceptance.
-The protocol trace projects this as `PointerEdgeIngress.ending_stream`; omission
-means `false` for compatibility with existing fixtures.
+`ButtonReleased` is a mouse-like release whose provider-local pointer identity
+remains live. `ContactEnded` is the normal touch or pen terminal: it applies the
+release first, freezes that edge's post-release button and capture authority,
+and then retires the exact pointer stream. `StreamEnded` terminates a
+buttonless pointer identity without inventing a release. `StreamCancelled` is
+reserved for an abnormal typed lifecycle terminal. A provider reset or shutdown
+is not a pointer edge; it retires or replaces the provider lease. Terminality
+is therefore carried by the event algebra rather than by an independent
+boolean which could otherwise make `Moved` or `ButtonPressed` illegally
+terminal.
+
+When the enrollment checkpoint made button state complete, the ledger enforces
+the button algebra exactly: a known-down button cannot be pressed twice, a
+known-up button cannot be released, `ContactEnded(button)` must release that
+button, and `StreamEnded` requires no button to remain down for the pointer.
+A pointer-local cancellation removes only that pointer's known buttons and
+capture; it does not revoke completeness for unrelated pointers. Provider-wide
+reset or shutdown belongs to lease retirement and replacement, not a synthetic
+pointer-local edge.
+
+A complete pointer-authority checkpoint is an enrollment baseline only. It may
+be submitted at the provider's initial committed watermark before the first
+physical edge. Once any edge is accepted, the checkpoint lane is permanently
+closed for that provider incarnation. A later checkpoint cannot rewrite
+aggregate buttons or capture while leaving active streams and interaction
+owners unchanged; it is rejected atomically instead.
 
 `SurfaceLocalPointerEndpoint` is the sole surface authority inside a local
 scope; there is no duplicate surface field to drift. The ledger validates the
@@ -521,7 +544,7 @@ facts do not transition state until the exact receipt join succeeds.
 | Pressed/Armed + release | Delivery for click completion and a possible hover-hit probe for a same-batch drag; reducer consumes only the phase-valid fact. |
 | Active drag + move/release | Event-time route/capture plus one hover-hit receipt. |
 | Active splitter/contained transform + move/release | Event-time position/capture only; no ordinary delivery or hover target. |
-| Any active phase + `CaptureChanged`/`StreamCancelled` | No receiver probe; exact stream/capture terminal facts drive cancellation. |
+| Any active phase + `CaptureChanged`/`StreamEnded`/`StreamCancelled` | No receiver probe; exact stream/capture terminal facts drive termination. |
 
 For `release(A) -> press(B)` in one batch, the reducer settles A before it
 processes B. B therefore starts a distinct session after A's commit or cancel.

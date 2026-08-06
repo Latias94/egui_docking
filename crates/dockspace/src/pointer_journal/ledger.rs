@@ -148,30 +148,53 @@ impl JournalPointerAuthority {
         }
     }
 
-    fn apply_edge(
-        &mut self,
-        edge: &PointerEdge,
-    ) -> (AnyButtonDownAuthority, Authority<PointerCaptureOwner>) {
+    fn apply_edge(&mut self, edge: &PointerEdge) -> Result<(), PointerJournalLedgerError> {
         let pointer = edge.pointer();
         let _ = self.captures.insert(pointer, edge.capture_owner());
         match edge.kind() {
             PointerEdgeKind::ButtonPressed(button) => {
+                if self.pressed_buttons.contains(&(pointer, button)) {
+                    return Err(PointerJournalLedgerError::ButtonAlreadyPressed {
+                        pointer,
+                        button,
+                        sequence: edge.sequence(),
+                    });
+                }
                 let _ = self.pressed_buttons.insert((pointer, button));
             }
-            PointerEdgeKind::ButtonReleased(button) => {
-                let _ = self.pressed_buttons.remove(&(pointer, button));
+            PointerEdgeKind::ButtonReleased(button) | PointerEdgeKind::ContactEnded(button) => {
+                let was_pressed = self.pressed_buttons.remove(&(pointer, button));
+                if !was_pressed && self.buttons_complete {
+                    return Err(PointerJournalLedgerError::ButtonNotPressed {
+                        pointer,
+                        button,
+                        sequence: edge.sequence(),
+                    });
+                }
             }
             PointerEdgeKind::StreamCancelled(_) => {
                 self.pressed_buttons
                     .retain(|(active, _)| *active != pointer);
-                self.buttons_complete = false;
-                self.unavailable_reason = AuthorityUnavailableReason::ProviderUnavailable;
                 let _ = self.captures.remove(&pointer);
             }
             PointerEdgeKind::Moved
             | PointerEdgeKind::CaptureChanged
+            | PointerEdgeKind::StreamEnded
             | PointerEdgeKind::Scrolled(_) => {}
         }
+        Ok(())
+    }
+
+    fn retire_stream(&mut self, pointer: PointerId) {
+        self.pressed_buttons
+            .retain(|(active, _)| *active != pointer);
+        let _ = self.captures.remove(&pointer);
+    }
+
+    fn edge_authority_after(
+        &self,
+        pointer: PointerId,
+    ) -> (AnyButtonDownAuthority, Authority<PointerCaptureOwner>) {
         let capture = self
             .captures
             .get(&pointer)
@@ -180,6 +203,12 @@ impl JournalPointerAuthority {
                 AuthorityUnavailableReason::ProviderUnavailable,
             ));
         (self.button_authority(), capture)
+    }
+
+    fn pointer_has_pressed_buttons(&self, pointer: PointerId) -> bool {
+        self.pressed_buttons
+            .iter()
+            .any(|(active, _)| *active == pointer)
     }
 
     fn button_authority(&self) -> AnyButtonDownAuthority {
@@ -233,6 +262,10 @@ impl AcceptedPointerEdge {
         self.button_authority_after
     }
 
+    pub(crate) const fn capture_authority_for_reduction(&self) -> Authority<PointerCaptureOwner> {
+        self.capture_authority_for_reduction
+    }
+
     pub(crate) const fn capture_authority_after(&self) -> Authority<PointerCaptureOwner> {
         self.capture_authority_after
     }
@@ -275,6 +308,7 @@ impl Clone for PointerJournalLedger {
             last_stream_incarnation: self.last_stream_incarnation,
             active_streams: self.active_streams.clone(),
             authority: self.authority.clone(),
+            authority_checkpoint_boundary: self.authority_checkpoint_boundary,
             last_checkpoint: self.last_checkpoint.clone(),
             active: self.active,
             surface_local_producer: self.surface_local_producer.clone(),
@@ -293,6 +327,7 @@ impl PartialEq for PointerJournalLedger {
             && self.last_stream_incarnation == other.last_stream_incarnation
             && self.active_streams == other.active_streams
             && self.authority == other.authority
+            && self.authority_checkpoint_boundary == other.authority_checkpoint_boundary
             && self.last_checkpoint == other.last_checkpoint
             && self.active == other.active
             && self.surface_local_producer == other.surface_local_producer
@@ -319,6 +354,7 @@ impl PointerJournalLedger {
             authority: JournalPointerAuthority::unknown(
                 AuthorityUnavailableReason::ProviderUnavailable,
             ),
+            authority_checkpoint_boundary: None,
             last_checkpoint: None,
             active: None,
             surface_local_producer: None,
@@ -433,6 +469,7 @@ impl PointerJournalLedger {
         self.active_streams.clear();
         self.authority =
             JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
+        self.authority_checkpoint_boundary = Some(committed_through);
         self.last_checkpoint = None;
         self.active = Some(ActivePointerProvider {
             lease,
@@ -468,6 +505,7 @@ impl PointerJournalLedger {
         self.active_streams.clear();
         self.authority =
             JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
+        self.authority_checkpoint_boundary = None;
         self.last_checkpoint = None;
         let _ = self.retired.insert(lease, tombstone);
         self.version = next_version;
@@ -543,6 +581,7 @@ impl PointerJournalLedger {
                 self.authority = JournalPointerAuthority::unknown(
                     AuthorityUnavailableReason::ProviderUnavailable,
                 );
+                self.authority_checkpoint_boundary = None;
                 self.last_checkpoint = None;
             }
             SurfaceLocalPointerQuiescenceDisposition::CompactedPreviouslyRetired => {
@@ -573,6 +612,7 @@ impl PointerJournalLedger {
         self.active_streams.clear();
         self.authority =
             JournalPointerAuthority::unknown(AuthorityUnavailableReason::ProviderUnavailable);
+        self.authority_checkpoint_boundary = None;
         self.last_checkpoint = None;
         self.compacted_retired_through = self.compacted_retired_through.max(lease.incarnation);
         self.version = next_version;
@@ -730,8 +770,14 @@ impl PointerJournalLedger {
         }
 
         let next_version = self.next_version()?;
-        let (last_stream_incarnation, active_streams, authority, last_checkpoint, accepted_edges) =
-            self.plan_accepted_edges(prepared.lease, &prepared.journal)?;
+        let (
+            last_stream_incarnation,
+            active_streams,
+            authority,
+            authority_checkpoint_boundary,
+            last_checkpoint,
+            accepted_edges,
+        ) = self.plan_accepted_edges(prepared.lease, &prepared.journal)?;
 
         let Some(active) = &mut self.active else {
             return Err(PointerJournalLedgerError::UnknownLease {
@@ -747,6 +793,7 @@ impl PointerJournalLedger {
         self.last_stream_incarnation = last_stream_incarnation;
         self.active_streams = active_streams;
         self.authority = authority;
+        self.authority_checkpoint_boundary = authority_checkpoint_boundary;
         self.last_checkpoint = last_checkpoint;
         self.version = next_version;
 
@@ -924,6 +971,7 @@ impl PointerJournalLedger {
             PointerStreamIncarnation,
             BTreeMap<PointerId, PointerStreamId>,
             JournalPointerAuthority,
+            Option<PointerEdgeSequence>,
             Option<PointerAuthorityCheckpoint>,
             Vec<AcceptedPointerEdge>,
         ),
@@ -932,10 +980,19 @@ impl PointerJournalLedger {
         let mut last_stream_incarnation = self.last_stream_incarnation;
         let mut active_streams = self.active_streams.clone();
         let mut authority = self.authority.clone();
+        let mut authority_checkpoint_boundary = self.authority_checkpoint_boundary;
         let mut last_checkpoint = self.last_checkpoint.clone();
         let mut accepted_edges = Vec::with_capacity(journal.len());
 
         if let Some(checkpoint) = journal.authority_checkpoint() {
+            if authority_checkpoint_boundary != Some(checkpoint.observed_through()) {
+                return Err(
+                    PointerJournalLedgerError::AuthorityCheckpointAfterPointerEdges {
+                        lease,
+                        observed_through: checkpoint.observed_through(),
+                    },
+                );
+            }
             if last_checkpoint.as_ref().is_some_and(|retained| {
                 retained.observed_through() == checkpoint.observed_through()
             }) {
@@ -964,20 +1021,39 @@ impl PointerJournalLedger {
                     stream
                 }
             };
-            let (button_authority_after, capture_authority_after) = authority.apply_edge(edge);
+            authority.apply_edge(edge)?;
+            let stream_ended = edge.ends_stream();
+            let (button_authority_after, capture_authority_for_reduction) =
+                authority.edge_authority_after(edge.pointer());
+            if matches!(
+                edge.kind(),
+                PointerEdgeKind::ContactEnded(_) | PointerEdgeKind::StreamEnded
+            ) && authority.pointer_has_pressed_buttons(edge.pointer())
+            {
+                return Err(PointerJournalLedgerError::StreamEndLeavesButtonsPressed {
+                    pointer: edge.pointer(),
+                    sequence: edge.sequence(),
+                });
+            }
+            if stream_ended {
+                authority.retire_stream(edge.pointer());
+            }
+            let capture_authority_after = authority.edge_authority_after(edge.pointer()).1;
             accepted_edges.push(AcceptedPointerEdge {
                 stream,
                 ticket: PointerEdgeTicket::new(lease, edge.sequence()),
                 button_authority_after,
+                capture_authority_for_reduction,
                 capture_authority_after,
             });
 
-            if edge.ends_stream() || matches!(edge.kind(), PointerEdgeKind::StreamCancelled(_)) {
+            if stream_ended {
                 let _ = active_streams.remove(&edge.pointer());
             }
         }
 
         if !journal.is_empty() {
+            authority_checkpoint_boundary = None;
             last_checkpoint = None;
         }
 
@@ -985,6 +1061,7 @@ impl PointerJournalLedger {
             last_stream_incarnation,
             active_streams,
             authority,
+            authority_checkpoint_boundary,
             last_checkpoint,
             accepted_edges,
         ))

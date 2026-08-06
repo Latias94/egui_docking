@@ -1586,19 +1586,14 @@ impl CoreProtocolHarness {
         view: HostFrameView<'_>,
         fixture: &PointerEdgeIngress,
     ) -> Result<PointerEdge, CoreProtocolTraceError> {
-        let edge = PointerEdge::new_with_delivery(
+        Ok(PointerEdge::new_with_delivery(
             PointerEdgeSequence::new(fixture.sequence),
             PointerId::new(fixture.pointer),
             self.compile_pointer_edge_kind(view, &fixture.kind)?,
             self.compile_pointer_location(view, &fixture.location)?,
             self.compile_pointer_delivery(&fixture.delivery)?,
             self.compile_pointer_capture(&fixture.capture)?,
-        );
-        Ok(if fixture.ending_stream {
-            edge.ending_stream()
-        } else {
-            edge
-        })
+        ))
     }
 
     fn compile_pointer_edge_kind(
@@ -1614,12 +1609,19 @@ impl CoreProtocolHarness {
             PointerEdgeKindSpec::PrimaryReleased => {
                 PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             }
+            PointerEdgeKindSpec::PrimaryContactEnded => {
+                PointerEdgeKind::ContactEnded(PointerButton::Primary)
+            }
             PointerEdgeKindSpec::SecondaryPressed => {
                 PointerEdgeKind::ButtonPressed(PointerButton::Secondary)
             }
             PointerEdgeKindSpec::SecondaryReleased => {
                 PointerEdgeKind::ButtonReleased(PointerButton::Secondary)
             }
+            PointerEdgeKindSpec::SecondaryContactEnded => {
+                PointerEdgeKind::ContactEnded(PointerButton::Secondary)
+            }
+            PointerEdgeKindSpec::StreamEnded => PointerEdgeKind::StreamEnded,
             PointerEdgeKindSpec::CaptureChanged => PointerEdgeKind::CaptureChanged,
             PointerEdgeKindSpec::StreamCancelled { reason } => {
                 PointerEdgeKind::StreamCancelled(compile_stream_cancel_reason(reason))
@@ -3823,9 +3825,6 @@ fn validate_pointer_edge_fidelity(
     if actual.kind() != ingress.kind() {
         return Err("kind/button transition");
     }
-    if actual.ends_stream() != ingress.ends_stream() {
-        return Err("pointer stream terminality");
-    }
     if actual.location() != ingress.location() {
         return Err("location/route authority");
     }
@@ -4607,13 +4606,10 @@ const fn compile_stream_cancel_reason(
 ) -> PointerStreamCancelReason {
     match reason {
         PointerStreamCancelReasonSpec::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
-        PointerStreamCancelReasonSpec::ProviderShutdown => {
-            PointerStreamCancelReason::ProviderShutdown
-        }
         PointerStreamCancelReasonSpec::ExplicitPlatformCancellation => {
             PointerStreamCancelReason::ExplicitPlatformCancellation
         }
-        PointerStreamCancelReasonSpec::ProviderReset => PointerStreamCancelReason::ProviderReset,
+        PointerStreamCancelReasonSpec::BindingRetired => PointerStreamCancelReason::BindingRetired,
     }
 }
 
@@ -5174,6 +5170,7 @@ const fn observe_scroll_termination(
         ScrollTerminationReason::StreamCancelled => {
             ExpectedScrollTerminationReason::StreamCancelled
         }
+        ScrollTerminationReason::StreamEnded => ExpectedScrollTerminationReason::StreamEnded,
         ScrollTerminationReason::ProviderRetired => {
             ExpectedScrollTerminationReason::ProviderRetired
         }
@@ -5265,6 +5262,9 @@ const fn observe_cancel_reason(reason: InteractionCancelReason) -> ExpectedInter
         }
         InteractionCancelReason::PointerStreamCancelled => {
             ExpectedInteractionCancelReason::PointerStreamCancelled
+        }
+        InteractionCancelReason::PointerStreamEnded => {
+            ExpectedInteractionCancelReason::PointerStreamEnded
         }
         InteractionCancelReason::UnknownButtonState => {
             ExpectedInteractionCancelReason::UnknownButtonState
@@ -5471,17 +5471,6 @@ mod tests {
                     PointerCaptureOwner::ProviderEndpoint,
                 ),
                 "kind/button transition",
-            ),
-            (
-                edge(
-                    1,
-                    7,
-                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
-                    96.0,
-                    PointerCaptureOwner::ProviderEndpoint,
-                )
-                .ending_stream(),
-                "pointer stream terminality",
             ),
             (
                 edge(

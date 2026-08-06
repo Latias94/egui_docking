@@ -614,12 +614,10 @@ pub enum PointerAuthorityCheckpointError {
 pub enum PointerStreamCancelReason {
     /// The physical or virtual input device was removed.
     DeviceRemoved,
-    /// The active input provider shut down permanently.
-    ProviderShutdown,
     /// The platform explicitly cancelled this stream.
     ExplicitPlatformCancellation,
-    /// The provider reset and must continue under a new input lease.
-    ProviderReset,
+    /// The exact surface or native endpoint which owned this stream retired.
+    BindingRetired,
 }
 
 /// Provider-owned identity of one physical or virtual scroll device.
@@ -778,8 +776,16 @@ pub enum PointerEdgeKind {
     Moved,
     /// One button became pressed.
     ButtonPressed(PointerButton),
-    /// One button became released.
+    /// One button became released while the provider-local pointer remains live.
     ButtonReleased(PointerButton),
+    /// A touch or pen contact released its button and ended its pointer identity.
+    ContactEnded(PointerButton),
+    /// A buttonless pointer identity ended normally.
+    ///
+    /// This is distinct from [`Self::ContactEnded`], which must release one
+    /// button, and [`Self::StreamCancelled`], which represents abnormal
+    /// termination.
+    StreamEnded,
     /// The provider observed a capture transition.
     ///
     /// The result exists only in [`PointerEdge::capture_owner`]. A known
@@ -803,7 +809,6 @@ pub struct PointerEdge {
     sequence: PointerEdgeSequence,
     pointer: PointerId,
     kind: PointerEdgeKind,
-    stream_terminal: bool,
     location: PointerEdgeLocation,
     delivery_owner: Authority<PointerEventDeliveryOwner>,
     capture_owner: Authority<PointerCaptureOwner>,
@@ -855,23 +860,10 @@ impl PointerEdge {
             sequence,
             pointer,
             kind,
-            stream_terminal: false,
             location,
             delivery_owner,
             capture_owner,
         }
-    }
-
-    /// Marks this physical edge as the final edge of an ephemeral pointer stream.
-    ///
-    /// Touch providers use this on the normal release edge. The release keeps
-    /// its interaction semantics, while the ledger retires the stream only
-    /// after the exact edge is accepted. Core interactions owned by that exact
-    /// stream reach their terminal transition in the same ordered reduction.
-    #[must_use]
-    pub const fn ending_stream(mut self) -> Self {
-        self.stream_terminal = true;
-        self
     }
 
     /// Returns this edge's provider-owned sequence.
@@ -895,7 +887,12 @@ impl PointerEdge {
     /// Returns whether accepting this edge must retire its pointer stream.
     #[must_use]
     pub const fn ends_stream(&self) -> bool {
-        self.stream_terminal
+        matches!(
+            self.kind,
+            PointerEdgeKind::ContactEnded(_)
+                | PointerEdgeKind::StreamEnded
+                | PointerEdgeKind::StreamCancelled(_)
+        )
     }
 
     /// Returns the event-time location in this provider's frozen scope.
@@ -1758,6 +1755,7 @@ pub(crate) struct AcceptedPointerEdge {
     stream: PointerStreamId,
     ticket: PointerEdgeTicket,
     button_authority_after: AnyButtonDownAuthority,
+    capture_authority_for_reduction: Authority<PointerCaptureOwner>,
     capture_authority_after: Authority<PointerCaptureOwner>,
 }
 
@@ -1790,6 +1788,7 @@ pub(crate) struct PointerJournalLedger {
     last_stream_incarnation: PointerStreamIncarnation,
     active_streams: BTreeMap<PointerId, PointerStreamId>,
     authority: JournalPointerAuthority,
+    authority_checkpoint_boundary: Option<PointerEdgeSequence>,
     last_checkpoint: Option<PointerAuthorityCheckpoint>,
     active: Option<ActivePointerProvider>,
     surface_local_producer: Option<(PointerInputLease, SurfaceLocalPointerProducerMonitor)>,
@@ -1879,6 +1878,36 @@ pub enum PointerJournalLedgerError {
     ConflictingAuthorityCheckpoint {
         lease: PointerInputLease,
         observed_through: PointerEdgeSequence,
+    },
+    #[error(
+        "pointer provider {lease:?} submitted an authority checkpoint at {observed_through} after its enrollment baseline was closed"
+    )]
+    AuthorityCheckpointAfterPointerEdges {
+        lease: PointerInputLease,
+        observed_through: PointerEdgeSequence,
+    },
+    #[error(
+        "pointer edge {sequence} presses button {button:?} which is already down for pointer {pointer:?}"
+    )]
+    ButtonAlreadyPressed {
+        pointer: PointerId,
+        button: PointerButton,
+        sequence: PointerEdgeSequence,
+    },
+    #[error(
+        "pointer edge {sequence} releases button {button:?} which is not down for pointer {pointer:?}"
+    )]
+    ButtonNotPressed {
+        pointer: PointerId,
+        button: PointerButton,
+        sequence: PointerEdgeSequence,
+    },
+    #[error(
+        "normal stream end at pointer edge {sequence} leaves a pressed button for pointer {pointer:?}"
+    )]
+    StreamEndLeavesButtonsPressed {
+        pointer: PointerId,
+        sequence: PointerEdgeSequence,
     },
     #[error(
         "pointer edge {sequence} location lane {submitted:?} does not match provider lease {lease:?}"

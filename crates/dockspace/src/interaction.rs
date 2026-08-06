@@ -929,6 +929,8 @@ pub enum InteractionCancelReason {
     DeliveryOwnerLost,
     /// The platform explicitly terminated the owning pointer stream.
     PointerStreamCancelled,
+    /// The provider reported the normal terminal release of an ephemeral stream.
+    PointerStreamEnded,
     /// Button state became non-authoritative.
     UnknownButtonState,
     /// Hovered-target authority became unavailable.
@@ -1462,6 +1464,8 @@ pub enum ScrollTerminationReason {
     Cancelled(ScrollCancelReason),
     /// The pointer stream was explicitly cancelled.
     StreamCancelled,
+    /// The pointer stream completed with its normal terminal release.
+    StreamEnded,
     /// The pointer-provider incarnation was retired.
     ProviderRetired,
     /// Known receiver evidence no longer corroborated the locked owner.

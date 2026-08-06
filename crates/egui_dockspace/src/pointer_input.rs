@@ -145,6 +145,7 @@ impl PreparedPointerInput {
                             edge.kind(),
                             PointerEdgeKind::ButtonPressed(PointerButton::Primary)
                                 | PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+                                | PointerEdgeKind::ContactEnded(PointerButton::Primary)
                         );
                     let (click, drag) = if correlation_unavailable {
                         let unavailable = PointerReceiverDeliveryDisposition::Unknown(
@@ -307,15 +308,18 @@ fn delivery_disposition(
         PointerEdgeKind::ButtonPressed(PointerButton::Primary) => {
             Box::new(registrations.primary_press_receivers(drag_lane))
         }
-        PointerEdgeKind::ButtonReleased(PointerButton::Primary) => {
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+        | PointerEdgeKind::ContactEnded(PointerButton::Primary) => {
             Box::new(registrations.primary_release_receivers(drag_lane))
         }
         PointerEdgeKind::Moved
         | PointerEdgeKind::CaptureChanged
+        | PointerEdgeKind::StreamEnded
         | PointerEdgeKind::StreamCancelled(_)
         | PointerEdgeKind::Scrolled(_)
         | PointerEdgeKind::ButtonPressed(_)
-        | PointerEdgeKind::ButtonReleased(_) => Box::new(std::iter::empty()),
+        | PointerEdgeKind::ButtonReleased(_)
+        | PointerEdgeKind::ContactEnded(_) => Box::new(std::iter::empty()),
     };
     let lane = if drag_lane {
         PresentationPointerLane::Drag
@@ -442,6 +446,16 @@ impl Default for EguiPointerInput {
 }
 
 impl EguiPointerInput {
+    pub(crate) fn request_bound_repaint(&self) {
+        if let Some(context) = self
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.context.as_ref())
+        {
+            context.request_repaint();
+        }
+    }
+
     pub(crate) fn provider(&self) -> Option<PointerInputLease> {
         self.provider
             .as_ref()
@@ -567,15 +581,6 @@ impl EguiPointerInput {
         self.delivered_epoch = delivered_epoch;
         self.binding = binding;
         self.primary_capture = primary_capture;
-    }
-
-    /// Discards input staged by an uncommitted host-frame attempt.
-    ///
-    /// The provider lease and committed watermark stay live, so aborting an
-    /// adapter transaction does not publish an unrelated core transition.
-    pub(crate) fn discard_pending_epoch(&mut self) {
-        self.pending = None;
-        self.delivered_epoch = None;
     }
 
     pub(crate) fn submit_empty_interval(

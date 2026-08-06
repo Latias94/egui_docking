@@ -463,6 +463,7 @@ impl DockEngine {
             InteractionCancelReason::PointerStreamCancelled => {
                 ScrollTerminationReason::StreamCancelled
             }
+            InteractionCancelReason::PointerStreamEnded => ScrollTerminationReason::StreamEnded,
             InteractionCancelReason::SurfaceClosed
             | InteractionCancelReason::SourceVanished
             | InteractionCancelReason::WorkspaceRestored => ScrollTerminationReason::SurfaceRemoved,

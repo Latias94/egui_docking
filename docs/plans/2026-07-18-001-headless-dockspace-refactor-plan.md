@@ -144,8 +144,9 @@ detail. Their execution order is superseded by the active list above.
    coordinates rather than an overlay-sensitive hover result. **2B:** derive
    persistent tri-state button/capture authority from the ordered journal for
    native focus and route consumers. A new provider starts `Unknown`; an
-   optional watermark-bound complete checkpoint is the only way to prove
-   `KnownAllReleased`; every accepted edge carries its own post-edge authority
+   optional complete checkpoint at the provider enrollment watermark is the
+   only way to prove `KnownAllReleased`; the checkpoint lane closes permanently
+   after the first accepted edge, and every accepted edge carries its own post-edge authority
    so later edges cannot leak backward within a batch. Only an explicit
    `CaptureChanged` edge can terminate for capture loss. Provider replacement
    retires desktop-global and native-bound surface-local providers, and no
@@ -319,8 +320,9 @@ Verified implementation checkpoint on 2026-07-27:
   Provider replacement retires desktop-global and native-local ingress while
   preserving independent logical-local providers, and provider creation
   rejects an active legacy gesture instead of freezing it. The ordered pointer
-  ledger starts with unknown button authority, accepts only a watermark-bound
-  complete checkpoint as `KnownAllReleased`, records per-edge post-state, and
+  ledger starts with unknown button authority, accepts a complete checkpoint
+  as `KnownAllReleased` only at provider enrollment, closes that lane after the
+  first accepted edge, records per-edge post-state, and
   never lets a later edge leak authority backward. Active journal gestures
   freeze capture ownership; only explicit `CaptureChanged` can acquire or lose
   it, and exact Native(A)-to-Native(B) changes cancel even when B is otherwise a

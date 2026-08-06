@@ -687,7 +687,11 @@ impl ReducedPointerEdge {
         self.button_authority_after
     }
 
-    /// Returns this stream's capture authority immediately after this edge.
+    /// Returns retained capture authority immediately after this edge.
+    ///
+    /// A normal or cancelled stream terminal returns `Unknown` because the
+    /// stream and its capture slot no longer exist. The lossless event-time
+    /// observation remains available through [`Self::edge`].
     #[must_use]
     pub const fn capture_authority_after(&self) -> Authority<PointerCaptureOwner> {
         self.capture_authority_after

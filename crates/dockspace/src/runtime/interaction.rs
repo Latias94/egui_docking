@@ -115,12 +115,10 @@ pub enum SurfacePointerPosition {
 pub enum SurfacePointerCancelReason {
     /// The physical or virtual device was removed.
     DeviceRemoved,
-    /// The input provider shut down permanently.
-    ProviderShutdown,
     /// The platform explicitly cancelled this stream.
     ExplicitPlatformCancellation,
-    /// The provider reset its identity namespace.
-    ProviderReset,
+    /// The exact surface or native endpoint which owned this stream retired.
+    BindingRetired,
 }
 
 /// Raw two-axis scroll delta retained until core selects the receiver.
@@ -312,6 +310,10 @@ pub enum SurfacePointerEvent {
     ButtonPressed(SurfacePointerButton),
     /// One button became released.
     ButtonReleased(SurfacePointerButton),
+    /// A touch or pen contact released its button and ended its pointer identity.
+    ContactEnded(SurfacePointerButton),
+    /// A buttonless pointer identity ended normally.
+    StreamEnded,
     /// The provider observed a capture transition.
     CaptureChanged,
     /// The provider explicitly terminated the pointer stream.
@@ -977,6 +979,10 @@ impl DockspaceHostFrame<'_> {
             SurfacePointerEvent::ButtonReleased(button) => {
                 PointerEdgeKind::ButtonReleased(surface_button(button))
             }
+            SurfacePointerEvent::ContactEnded(button) => {
+                PointerEdgeKind::ContactEnded(surface_button(button))
+            }
+            SurfacePointerEvent::StreamEnded => PointerEdgeKind::StreamEnded,
             SurfacePointerEvent::CaptureChanged => PointerEdgeKind::CaptureChanged,
             SurfacePointerEvent::StreamCancelled(reason) => {
                 PointerEdgeKind::StreamCancelled(surface_cancel_reason(reason))
@@ -1165,11 +1171,10 @@ const fn surface_capture(capture: SurfacePointerCapture) -> Authority<PointerCap
 const fn surface_cancel_reason(reason: SurfacePointerCancelReason) -> PointerStreamCancelReason {
     match reason {
         SurfacePointerCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
-        SurfacePointerCancelReason::ProviderShutdown => PointerStreamCancelReason::ProviderShutdown,
         SurfacePointerCancelReason::ExplicitPlatformCancellation => {
             PointerStreamCancelReason::ExplicitPlatformCancellation
         }
-        SurfacePointerCancelReason::ProviderReset => PointerStreamCancelReason::ProviderReset,
+        SurfacePointerCancelReason::BindingRetired => PointerStreamCancelReason::BindingRetired,
     }
 }
 

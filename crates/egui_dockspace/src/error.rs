@@ -416,6 +416,17 @@ pub enum DockspaceError {
     /// An uncommitted host frame still owns the producer lane.
     #[error("pointer input cannot stop while its host frame is uncommitted")]
     PointerInputFrameInFlight,
+    /// A frame failure was followed by a second failure while retiring the exact pointer
+    /// provider which owned its staged physical edges.
+    #[error(
+        "egui host frame failed ({frame}); retiring its pointer provider also failed ({retirement})"
+    )]
+    PointerInputAbortFailed {
+        /// Original frame failure.
+        frame: Box<DockspaceError>,
+        /// Provider-retirement failure. The adapter retains the staged physical edges.
+        retirement: Box<DockspaceError>,
+    },
     /// The adapter cannot assign another lossless provider-ordered edge identity.
     #[error("egui pointer edge sequence exhausted after {after}")]
     PointerEdgeSequenceExhausted { after: PointerEdgeSequence },

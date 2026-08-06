@@ -2336,7 +2336,12 @@ impl NativeIngressBridge {
                 PointerEdgeKind::ButtonPressed(translate_button(button))
             }
             NativePointerEdgeKind::ButtonReleased(button) => {
-                PointerEdgeKind::ButtonReleased(translate_button(button))
+                let button = translate_button(button);
+                if edge.ends_stream() {
+                    PointerEdgeKind::ContactEnded(button)
+                } else {
+                    PointerEdgeKind::ButtonReleased(button)
+                }
             }
             NativePointerEdgeKind::CaptureChanged => PointerEdgeKind::CaptureChanged,
             NativePointerEdgeKind::Cancelled => PointerEdgeKind::StreamCancelled(
@@ -2357,6 +2362,11 @@ impl NativeIngressBridge {
                 )?)
             }
         };
+        if edge.ends_stream() && !matches!(kind, PointerEdgeKind::ContactEnded(_)) {
+            return Err(NativeRuntimeError::IngressUnavailable(
+                "a terminal native pointer edge was not a contact release",
+            ));
+        }
         let position = transpose_geometry(translate_authority(edge.position(), translate_point))?;
         let route = match edge.hovered().value() {
             Some(NativeHoveredWindow::Viewport(binding)) => routes
@@ -2404,9 +2414,11 @@ impl NativeIngressBridge {
             )),
         };
         let delivery_owner = translate_delivery_owner(edge.delivery_owner(), routes);
-        let stream_terminal =
-            edge.ends_stream() || matches!(kind, PointerEdgeKind::StreamCancelled(_));
-        let mut translated = PointerEdge::new_with_delivery(
+        let stream_terminal = matches!(
+            kind,
+            PointerEdgeKind::ContactEnded(_) | PointerEdgeKind::StreamCancelled(_)
+        );
+        let translated = PointerEdge::new_with_delivery(
             sequence,
             pointer,
             kind,
@@ -2415,7 +2427,6 @@ impl NativeIngressBridge {
             capture_owner,
         );
         if stream_terminal {
-            translated = translated.ending_stream();
             self.pointer_ids.remove(&(
                 edge.identity().device_id().get(),
                 edge.identity().pointer_id().get(),

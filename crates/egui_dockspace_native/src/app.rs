@@ -647,7 +647,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                 _ => None,
             })
         {
-            frame.abort(&mut self.dockspace);
+            frame.abort(&mut self.dockspace)?;
             return Err(NativeRuntimeError::ViewportRegistrationRejected { surface });
         }
         if let Err(error) = NativeIngressBridge::dispatch_effects(
@@ -658,11 +658,11 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             &active.effect_sink,
             &active.create_sink,
         ) {
-            frame.abort(&mut self.dockspace);
+            frame.abort(&mut self.dockspace)?;
             return Err(error);
         }
         if let Err(error) = self.ingress.prepare_effect_cycle_adoptions(&active.effects) {
-            frame.abort(&mut self.dockspace);
+            frame.abort(&mut self.dockspace)?;
             return Err(error);
         }
         self.prepared = Some(PreparedNativeCycle {
@@ -755,7 +755,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
     fn abort_cycle(&mut self) {
         self.active.take();
         if let Some(prepared) = self.prepared.take() {
-            prepared.frame.abort(&mut self.dockspace);
+            let _ = prepared.frame.abort(&mut self.dockspace);
         }
         if let Some(transaction) = self.ingress_transaction.take() {
             self.ingress.rollback_transaction(

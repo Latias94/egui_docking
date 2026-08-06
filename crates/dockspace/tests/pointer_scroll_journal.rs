@@ -4,7 +4,7 @@ use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerId};
 use dockspace::interaction::{
     InteractionEventKind, InteractionOutcome, ScrollReductionOutcome, ScrollTerminationReason,
 };
@@ -355,13 +355,12 @@ impl ScrollFixture {
         let edge = PointerEdge::new(
             PointerEdgeSequence::new(sequence),
             POINTER,
-            PointerEdgeKind::ButtonReleased(PointerButton::Secondary),
+            PointerEdgeKind::StreamEnded,
             PointerEdgeLocation::SurfaceLocal {
                 position: Authority::Known(self.point),
             },
             Authority::Known(PointerCaptureOwner::None),
-        )
-        .ending_stream();
+        );
         let journal = PointerEdgeJournal::new(
             PointerEdgeSequence::new(self.watermark),
             PointerEdgeSequence::new(sequence),
@@ -646,7 +645,7 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
             outcome,
             InteractionOutcome::Scroll(ScrollReductionOutcome::Terminated {
                 session: actual,
-                reason: ScrollTerminationReason::StreamCancelled,
+                reason: ScrollTerminationReason::StreamEnded,
                 ..
             }) if *actual == session
         )));

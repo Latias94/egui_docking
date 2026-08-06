@@ -364,9 +364,10 @@ impl DockEngine {
         }
     }
 
-    pub(super) fn cancel_scroll_stream(
+    pub(super) fn terminate_scroll_stream(
         &mut self,
         stream: PointerStreamId,
+        reason: ScrollTerminationReason,
     ) -> Vec<InteractionOutcome> {
         self.scroll_interaction
             .retire_stream(stream)
@@ -375,7 +376,7 @@ impl DockEngine {
                 InteractionOutcome::Scroll(ScrollReductionOutcome::Terminated {
                     session: session.id,
                     receiver: scroll_session_receiver(session),
-                    reason: ScrollTerminationReason::StreamCancelled,
+                    reason,
                 })
             })
             .collect()

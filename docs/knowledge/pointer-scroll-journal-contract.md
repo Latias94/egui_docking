@@ -582,7 +582,9 @@ provider or reducer defect. A trace scroll edge records semantic fixture names,
 not core-minted tickets or candidate IDs:
 
 - provider lease/incarnation, journal sequence, pointer stream, and device;
-- the pointer edge's `ending_stream` terminality bit;
+- the algebraic pointer edge kind, including `ContactEnded` for a normal
+  touch/pen release terminal, `StreamEnded` for a buttonless normal terminal,
+  and `StreamCancelled` for an abnormal terminal;
 - scroll sequence token and phase;
 - exact unit, both delta components, momentum, and modifiers;
 - event location, delivery endpoint, binding incarnation, and coordinate

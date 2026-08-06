@@ -1877,7 +1877,9 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
     );
     assert_eq!(dockspace.engine().version(), version_before);
     assert_eq!(dockspace.engine().last_reducer_tick(), tick_before);
-    prepared.abort(&mut dockspace);
+    prepared
+        .abort(&mut dockspace)
+        .expect("aborting the prepared frame retires any staged pointer provider");
     assert_eq!(
         dockspace.engine().backend_ingress_committed_through(),
         committed,

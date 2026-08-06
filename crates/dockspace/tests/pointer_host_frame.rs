@@ -722,7 +722,7 @@ fn submit_unknown_capture_release_after(
             provider,
             pointer_edge_journal(
                 previous,
-                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+                PointerEdgeKind::ContactEnded(PointerButton::Primary),
                 PointerEdgeLocation::SurfaceLocal {
                     position: Authority::Known(point),
                 },

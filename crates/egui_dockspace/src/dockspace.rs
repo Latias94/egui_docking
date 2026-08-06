@@ -111,6 +111,7 @@ pub struct Dockspace {
     last_host_frame: Option<EguiFrameScheduleKey>,
     presentation_ledger: PresentationOutputLedger,
     pub(crate) pointer_input: EguiPointerInput,
+    pending_pointer_abort: bool,
     native_bindings: Option<NativeBindingRegistry>,
     native_sessions: native_session::NativeSessionRegistry,
 }
@@ -142,6 +143,7 @@ impl Dockspace {
             last_host_frame: None,
             presentation_ledger: PresentationOutputLedger::default(),
             pointer_input: EguiPointerInput::default(),
+            pending_pointer_abort: false,
             native_bindings: None,
             native_sessions: native_session::NativeSessionRegistry::default(),
         })
@@ -1287,7 +1289,16 @@ impl Dockspace {
     }
 
     fn abort_pointer_input(&mut self) -> Result<(), DockspaceError> {
-        let Some(mut drained) = self.pointer_input.drain()? else {
+        let drained = match self.pointer_input.drain() {
+            Ok(drained) => drained,
+            Err(error) => {
+                self.pending_pointer_abort = true;
+                self.pointer_input.request_bound_repaint();
+                return Err(error);
+            }
+        };
+        let Some(mut drained) = drained else {
+            self.pending_pointer_abort = false;
             return Ok(());
         };
         // A host-frame capability that never reaches `finish` cannot publish the
@@ -1301,26 +1312,25 @@ impl Dockspace {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.pointer_input.restore_drained(drained);
+                self.pending_pointer_abort = true;
+                self.pointer_input.request_bound_repaint();
                 return Err(error.into());
             }
         };
         if outcome.repaint_required() {
             drained.request_bound_repaint();
         }
+        self.pending_pointer_abort = false;
         Ok(())
     }
 
-    fn discard_pointer_input_epoch(&mut self) {
-        self.pointer_input.discard_pending_epoch();
-    }
-
     pub(crate) fn ensure_native_session_idle(&mut self) -> Result<(), DockspaceError> {
+        if self.pending_pointer_abort {
+            self.abort_pointer_input()?;
+        }
         match self.native_sessions.reap_abandoned() {
             native_session::NativeSessionStatus::Idle => Ok(()),
-            native_session::NativeSessionStatus::Abandoned => {
-                self.discard_pointer_input_epoch();
-                Ok(())
-            }
+            native_session::NativeSessionStatus::Abandoned => self.abort_pointer_input(),
             native_session::NativeSessionStatus::Active => {
                 Err(DockspaceError::NativeSessionAlreadyActive)
             }

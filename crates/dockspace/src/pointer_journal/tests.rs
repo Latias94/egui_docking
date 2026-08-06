@@ -1207,41 +1207,81 @@ fn normal_terminal_release_retires_touch_stream_without_becoming_cancellation() 
         .expect("provider");
     let location = desktop_location(Authority::Known(PointerWindow::None));
     let capture = Authority::Known(PointerCaptureOwner::None);
+    let unavailable_capture = Authority::Unknown(AuthorityUnavailableReason::NotReported);
     let journal = PointerEdgeJournal::new(
         PointerEdgeSequence::new(0),
         PointerEdgeSequence::new(2),
         vec![
             edge(
                 1,
-                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-                location,
-                capture,
-            )
-            .ending_stream(),
-            edge(
-                2,
                 PointerEdgeKind::ButtonPressed(PointerButton::Primary),
                 location,
                 capture,
             ),
+            edge(
+                2,
+                PointerEdgeKind::ContactEnded(PointerButton::Primary),
+                location,
+                unavailable_capture,
+            ),
         ],
     )
-    .expect("complete reused touch journal");
+    .expect("complete touch journal")
+    .with_authority_checkpoint(
+        PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+            .expect("empty enrollment checkpoint is canonical"),
+    )
+    .expect("enrollment checkpoint belongs to the initial watermark");
 
     let commit = commit_candidate(&mut ledger, lease, journal).expect("journal commit");
     assert!(matches!(
-        commit.journal().edges()[0].kind(),
-        PointerEdgeKind::ButtonReleased(PointerButton::Primary)
+        commit.journal().edges()[1].kind(),
+        PointerEdgeKind::ContactEnded(PointerButton::Primary)
     ));
-    assert!(commit.journal().edges()[0].ends_stream());
-    assert_ne!(
+    assert!(commit.journal().edges()[1].ends_stream());
+    assert_eq!(
         commit.accepted_edges()[0].stream(),
         commit.accepted_edges()[1].stream()
     );
+    assert_eq!(
+        commit.accepted_edges()[1].capture_authority_after(),
+        Authority::Unknown(AuthorityUnavailableReason::ProviderUnavailable),
+        "terminal cleanup removes retained capture authority with the stream",
+    );
+    assert_eq!(
+        commit.journal().edges()[1].capture_owner(),
+        unavailable_capture,
+        "the lossless edge keeps its original event-time capture fact",
+    );
+    assert_eq!(
+        commit.accepted_edges()[1].button_authority_after(),
+        AnyButtonDownAuthority::KnownAllReleased,
+    );
+    assert!(ledger.active_streams.is_empty());
+    assert!(ledger.authority.pressed_buttons.is_empty());
+    assert!(ledger.authority.captures.is_empty());
+
+    let successor = commit_candidate(
+        &mut ledger,
+        lease,
+        PointerEdgeJournal::new(
+            PointerEdgeSequence::new(2),
+            PointerEdgeSequence::new(3),
+            vec![edge(
+                3,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                location,
+                capture,
+            )],
+        )
+        .expect("successor touch journal is contiguous"),
+    )
+    .expect("same pointer identity starts a successor stream");
+    assert_eq!(successor.accepted_edges()[0].stream().incarnation(), 2);
 }
 
 #[test]
-fn ten_thousand_terminal_touch_releases_leave_no_active_streams() {
+fn terminal_release_with_another_pressed_button_is_rejected_atomically() {
     let mut ledger = PointerJournalLedger::new(domain(1));
     let lease = ledger
         .create_provider(
@@ -1251,26 +1291,315 @@ fn ten_thousand_terminal_touch_releases_leave_no_active_streams() {
         .expect("provider");
     let location = desktop_location(Authority::Known(PointerWindow::None));
     let capture = Authority::Known(PointerCaptureOwner::None);
-    let edges = (1..=10_000)
-        .map(|sequence| {
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(3),
+        vec![
             edge(
-                sequence,
+                1,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                location,
+                capture,
+            ),
+            edge(
+                2,
+                PointerEdgeKind::ButtonPressed(PointerButton::Secondary),
+                location,
+                capture,
+            ),
+            edge(
+                3,
+                PointerEdgeKind::ContactEnded(PointerButton::Primary),
+                location,
+                capture,
+            ),
+        ],
+    )
+    .expect("terminal journal is structurally contiguous")
+    .with_authority_checkpoint(
+        PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+            .expect("empty enrollment checkpoint is canonical"),
+    )
+    .expect("enrollment checkpoint belongs to the initial watermark");
+
+    assert_eq!(
+        commit_candidate(&mut ledger, lease, journal),
+        Err(PointerJournalLedgerError::StreamEndLeavesButtonsPressed {
+            pointer: PointerId::new(7),
+            sequence: PointerEdgeSequence::new(3),
+        })
+    );
+    assert_eq!(
+        ledger.active,
+        Some(ActivePointerProvider {
+            lease,
+            committed_through: PointerEdgeSequence::new(0),
+        })
+    );
+    assert!(ledger.active_streams.is_empty());
+}
+
+#[test]
+fn authority_checkpoint_is_rejected_after_the_first_pointer_edge() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let lease = ledger
+        .create_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("provider");
+    commit_candidate(&mut ledger, lease, moved_journal(0, 1)).expect("first edge commits");
+    let active_streams = ledger.active_streams.clone();
+    let authority = ledger.authority.clone();
+    let checkpoint = PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(1), Vec::new())
+        .expect("empty checkpoint is canonical");
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(1),
+        PointerEdgeSequence::new(1),
+        Vec::new(),
+    )
+    .expect("empty checkpoint interval is valid")
+    .with_authority_checkpoint(checkpoint)
+    .expect("checkpoint matches the submitted watermark");
+
+    assert_eq!(
+        commit_candidate(&mut ledger, lease, journal),
+        Err(
+            PointerJournalLedgerError::AuthorityCheckpointAfterPointerEdges {
+                lease,
+                observed_through: PointerEdgeSequence::new(1),
+            }
+        )
+    );
+    assert_eq!(ledger.active_streams, active_streams);
+    assert_eq!(ledger.authority, authority);
+}
+
+#[test]
+fn complete_authority_rejects_invalid_button_transitions_atomically() {
+    let location = desktop_location(Authority::Known(PointerWindow::None));
+    let capture = Authority::Known(PointerCaptureOwner::None);
+    let cases = [
+        (
+            vec![
+                edge(
+                    1,
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    location,
+                    capture,
+                ),
+                edge(
+                    2,
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    location,
+                    capture,
+                ),
+            ],
+            PointerJournalLedgerError::ButtonAlreadyPressed {
+                pointer: PointerId::new(7),
+                button: PointerButton::Primary,
+                sequence: PointerEdgeSequence::new(2),
+            },
+        ),
+        (
+            vec![edge(
+                1,
                 PointerEdgeKind::ButtonReleased(PointerButton::Primary),
                 location,
                 capture,
+            )],
+            PointerJournalLedgerError::ButtonNotPressed {
+                pointer: PointerId::new(7),
+                button: PointerButton::Primary,
+                sequence: PointerEdgeSequence::new(1),
+            },
+        ),
+        (
+            vec![edge(
+                1,
+                PointerEdgeKind::ContactEnded(PointerButton::Primary),
+                location,
+                capture,
+            )],
+            PointerJournalLedgerError::ButtonNotPressed {
+                pointer: PointerId::new(7),
+                button: PointerButton::Primary,
+                sequence: PointerEdgeSequence::new(1),
+            },
+        ),
+    ];
+
+    for (edges, expected) in cases {
+        let mut ledger = PointerJournalLedger::new(domain(1));
+        let lease = ledger
+            .create_provider(
+                PointerProviderScope::DesktopGlobal,
+                PointerEdgeSequence::new(0),
             )
-            .ending_stream()
+            .expect("provider");
+        let through = edges
+            .last()
+            .expect("each invalid transition case has an edge")
+            .sequence();
+        let journal = PointerEdgeJournal::new(PointerEdgeSequence::new(0), through, edges)
+            .expect("invalid semantic transitions remain structurally contiguous")
+            .with_authority_checkpoint(
+                PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+                    .expect("empty enrollment checkpoint is canonical"),
+            )
+            .expect("enrollment checkpoint belongs to the initial watermark");
+
+        assert_eq!(commit_candidate(&mut ledger, lease, journal), Err(expected));
+        assert_eq!(
+            ledger.active,
+            Some(ActivePointerProvider {
+                lease,
+                committed_through: PointerEdgeSequence::new(0),
+            })
+        );
+        assert!(ledger.active_streams.is_empty());
+        assert_eq!(
+            ledger.authority.buttons_complete, false,
+            "a rejected candidate cannot publish its enrollment checkpoint",
+        );
+        assert!(ledger.authority.pressed_buttons.is_empty());
+    }
+}
+
+#[test]
+fn buttonless_stream_end_rejects_known_pressed_buttons_atomically() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let lease = ledger
+        .create_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("provider");
+    let location = desktop_location(Authority::Known(PointerWindow::None));
+    let capture = Authority::Known(PointerCaptureOwner::None);
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(2),
+        vec![
+            edge(
+                1,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                location,
+                capture,
+            ),
+            edge(2, PointerEdgeKind::StreamEnded, location, capture),
+        ],
+    )
+    .expect("stream-end journal is structurally contiguous")
+    .with_authority_checkpoint(
+        PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+            .expect("empty enrollment checkpoint is canonical"),
+    )
+    .expect("enrollment checkpoint belongs to the initial watermark");
+
+    assert_eq!(
+        commit_candidate(&mut ledger, lease, journal),
+        Err(PointerJournalLedgerError::StreamEndLeavesButtonsPressed {
+            pointer: PointerId::new(7),
+            sequence: PointerEdgeSequence::new(2),
+        })
+    );
+    assert!(ledger.active_streams.is_empty());
+}
+
+#[test]
+fn pointer_local_cancellation_preserves_complete_button_authority() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let lease = ledger
+        .create_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("provider");
+    let location = desktop_location(Authority::Known(PointerWindow::None));
+    let capture = Authority::Known(PointerCaptureOwner::None);
+    let journal = PointerEdgeJournal::new(
+        PointerEdgeSequence::new(0),
+        PointerEdgeSequence::new(2),
+        vec![
+            edge(
+                1,
+                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                location,
+                capture,
+            ),
+            edge(
+                2,
+                PointerEdgeKind::StreamCancelled(
+                    PointerStreamCancelReason::ExplicitPlatformCancellation,
+                ),
+                location,
+                capture,
+            ),
+        ],
+    )
+    .expect("cancellation journal is structurally contiguous")
+    .with_authority_checkpoint(
+        PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+            .expect("empty enrollment checkpoint is canonical"),
+    )
+    .expect("enrollment checkpoint belongs to the initial watermark");
+
+    let commit = commit_candidate(&mut ledger, lease, journal).expect("cancellation commits");
+    assert_eq!(
+        commit.accepted_edges()[1].button_authority_after(),
+        AnyButtonDownAuthority::KnownAllReleased,
+    );
+    assert_eq!(ledger.authority.buttons_complete, true,);
+    assert!(ledger.authority.pressed_buttons.is_empty());
+    assert!(ledger.active_streams.is_empty());
+}
+
+#[test]
+fn ten_thousand_terminal_touch_contacts_leave_no_active_streams() {
+    let mut ledger = PointerJournalLedger::new(domain(1));
+    let lease = ledger
+        .create_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("provider");
+    let location = desktop_location(Authority::Known(PointerWindow::None));
+    let capture = Authority::Known(PointerCaptureOwner::None);
+    let edges = (0..10_000)
+        .flat_map(|contact| {
+            let pressed = contact * 2 + 1;
+            let ended = pressed + 1;
+            [
+                edge(
+                    pressed,
+                    PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+                    location,
+                    capture,
+                ),
+                edge(
+                    ended,
+                    PointerEdgeKind::ContactEnded(PointerButton::Primary),
+                    location,
+                    capture,
+                ),
+            ]
         })
         .collect::<Vec<_>>();
     let journal = PointerEdgeJournal::new(
         PointerEdgeSequence::new(0),
-        PointerEdgeSequence::new(10_000),
+        PointerEdgeSequence::new(20_000),
         edges,
     )
-    .expect("complete terminal touch journal");
+    .expect("complete terminal touch journal")
+    .with_authority_checkpoint(
+        PointerAuthorityCheckpoint::known(PointerEdgeSequence::new(0), Vec::new())
+            .expect("empty enrollment checkpoint is canonical"),
+    )
+    .expect("enrollment checkpoint belongs to the initial watermark");
 
     let commit = commit_candidate(&mut ledger, lease, journal).expect("journal commit");
-    assert_eq!(commit.accepted_edges().len(), 10_000);
+    assert_eq!(commit.accepted_edges().len(), 20_000);
     assert!(ledger.active_streams.is_empty());
     assert_eq!(ledger.last_stream_incarnation.0, 10_000);
 }

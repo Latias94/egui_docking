@@ -196,67 +196,84 @@ impl PreparedEguiOuterFrameCommit {
     /// Returns a typed staleness error if the destination dockspace changed after
     /// this capability was prepared. No adapter sidecar is committed before the
     /// core fence succeeds.
-    pub fn commit(
-        mut self,
-        dockspace: &mut Dockspace,
-    ) -> Result<EguiOuterFrameCommit, DockspaceError> {
-        self.renderer.validate_renderer(&dockspace.renderer)?;
+    pub fn commit(self, dockspace: &mut Dockspace) -> Result<EguiOuterFrameCommit, DockspaceError> {
+        if let Err(error) = self.renderer.validate_renderer(&dockspace.renderer) {
+            return self.abort_with_error(dockspace, error);
+        }
         if let Some(style) = self.state.staged_style_replacement() {
-            dockspace
+            if let Err(error) = dockspace
                 .renderer
-                .validate_style_replacement(style.prepared())?;
+                .validate_style_replacement(style.prepared())
+            {
+                return self.abort_with_error(dockspace, error.into());
+            }
         }
         if let Some(prepared) = self.native_bindings.as_ref() {
-            dockspace
-                .native_bindings
-                .as_ref()
-                .ok_or(DockspaceError::NativeBindingRegistryUnavailable)?
-                .validate_prepared(prepared)
-                .map_err(NativeBindingError::from)?;
+            let validation = match dockspace.native_bindings.as_ref() {
+                Some(registry) => registry
+                    .validate_prepared(prepared)
+                    .map_err(NativeBindingError::from)
+                    .map_err(DockspaceError::from),
+                None => Err(DockspaceError::NativeBindingRegistryUnavailable),
+            };
+            if let Err(error) = validation {
+                return self.abort_with_error(dockspace, error);
+            }
         }
+
+        let Self {
+            core,
+            renderer,
+            native_bindings,
+            mut state,
+            pane_focus_observations,
+            backend_ordered_input,
+        } = self;
 
         let transition = match EguiEngineOwner::commit_owned_host_presentation_frame(
             &mut dockspace.engine,
-            self.core,
+            core,
         ) {
             Ok(transition) => transition,
             Err(error) => {
-                dockspace.discard_pointer_input_epoch();
-                self.state.finish();
-                return Err(error);
+                drop(renderer);
+                drop(native_bindings);
+                state.finish();
+                drop(state);
+                return abort_pointer_input_after_error(dockspace, error);
             }
         };
         dockspace.engine.reconcile_document_sidecars();
-        if let Some(prepared) = self.native_bindings {
+        if let Some(prepared) = native_bindings {
             dockspace
                 .native_bindings
                 .as_mut()
                 .expect("a prepared native binding commit retains its registry")
                 .commit_prepared(prepared);
         }
-        if let Some(pointer) = self.state.automatic_pointer() {
+        if let Some(pointer) = state.automatic_pointer() {
             dockspace.pointer_input.commit(pointer);
         }
-        self.state.pane_focus_mut().accept_transition(&transition);
+        state.pane_focus_mut().accept_transition(&transition);
         if let Some(watermark) =
             EguiEngineOwner::engine(&dockspace.engine).backend_ingress_commit_watermark()
         {
-            self.state.pane_focus_mut().accept_backend_commit(watermark);
+            state.pane_focus_mut().accept_backend_commit(watermark);
         }
-        for observation in self.pane_focus_observations {
-            if self.backend_ordered_input {
-                self.state
+        for observation in pane_focus_observations {
+            if backend_ordered_input {
+                state
                     .pane_focus_mut()
                     .queue_backend_observation(observation);
             } else {
-                self.state.pane_focus_mut().record_enqueued(observation);
+                state.pane_focus_mut().record_enqueued(observation);
             }
         }
-        let acceptance = self.renderer.commit(
+        let acceptance = renderer.commit(
             &mut dockspace.renderer,
             EguiEngineOwner::engine(&dockspace.engine),
         );
-        if let Some(style) = self.state.take_staged_style_replacement() {
+        if let Some(style) = state.take_staged_style_replacement() {
             dockspace
                 .renderer
                 .commit_style_replacement(style.into_prepared());
@@ -264,16 +281,16 @@ impl PreparedEguiOuterFrameCommit {
         let (responses, actual_presentation_outputs, contribution_rejected) =
             acceptance.into_parts();
 
-        dockspace.pane_focus = self.state.pane_focus().clone();
-        dockspace.semantic_source_sequence = self.state.semantic_source_sequence();
-        if let Some(outer) = self.state.take_outer_presentation() {
-            if self.backend_ordered_input {
+        dockspace.pane_focus = state.pane_focus().clone();
+        dockspace.semantic_source_sequence = state.semantic_source_sequence();
+        if let Some(outer) = state.take_outer_presentation() {
+            if backend_ordered_input {
                 dockspace.commit_ordered_outer_presentation_observations(&transition);
             } else {
                 dockspace.commit_outer_presentation_observation(outer, &transition);
             }
         }
-        let presentations = if let Some(automatic) = self.state.take_automatic_presentation() {
+        let presentations = if let Some(automatic) = state.take_automatic_presentation() {
             if contribution_rejected
                 || should_request_presentation_follow_up_pass(
                     transition.presentation_observations(),
@@ -301,14 +318,13 @@ impl PreparedEguiOuterFrameCommit {
             .into_iter()
             .map(|presentation| (presentation.surface(), presentation))
             .collect::<BTreeMap<_, _>>();
-        let outputs = self
-            .state
-            .take_confirmed_full_outputs()
+        let confirmed_full_outputs = state.take_confirmed_full_outputs();
+        let outputs = confirmed_full_outputs
             .into_iter()
             .map(|(surface, full_output)| {
                 EguiOuterSurfaceOutput::new(
                     surface,
-                    self.state.native_surface_pass(surface),
+                    state.native_surface_pass(surface),
                     full_output,
                     presentations_by_surface.remove(&surface),
                 )
@@ -318,8 +334,8 @@ impl PreparedEguiOuterFrameCommit {
             presentations_by_surface.is_empty(),
             "every core presentation output belongs to one retained egui FullOutput"
         );
-        dockspace.last_host_frame = Some(self.state.key());
-        self.state.finish();
+        dockspace.last_host_frame = Some(state.key());
+        state.finish();
         Ok(EguiOuterFrameCommit {
             host: HostFrameResponse {
                 transition,
@@ -329,10 +345,55 @@ impl PreparedEguiOuterFrameCommit {
         })
     }
 
-    /// Explicitly discards adapter staging after an enclosing host abort.
-    pub fn abort(mut self, dockspace: &mut Dockspace) {
-        dockspace.discard_pointer_input_epoch();
-        self.state.finish();
+    /// Rolls back adapter staging and retires the exact pointer provider which
+    /// owns any physical edges captured by this frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns the provider-retirement failure while retaining the captured
+    /// edges in the adapter, so a later retry cannot silently lose a release.
+    pub fn abort(self, dockspace: &mut Dockspace) -> Result<(), DockspaceError> {
+        let Self {
+            core,
+            renderer,
+            native_bindings,
+            mut state,
+            pane_focus_observations: _,
+            backend_ordered_input: _,
+        } = self;
+        drop(core);
+        drop(renderer);
+        drop(native_bindings);
+        state.finish();
+        drop(state);
+        dockspace.abort_pointer_input()
+    }
+
+    fn abort_with_error<T>(
+        self,
+        dockspace: &mut Dockspace,
+        error: DockspaceError,
+    ) -> Result<T, DockspaceError> {
+        match self.abort(dockspace) {
+            Ok(()) => Err(error),
+            Err(retirement) => Err(DockspaceError::PointerInputAbortFailed {
+                frame: Box::new(error),
+                retirement: Box::new(retirement),
+            }),
+        }
+    }
+}
+
+fn abort_pointer_input_after_error<T>(
+    dockspace: &mut Dockspace,
+    error: DockspaceError,
+) -> Result<T, DockspaceError> {
+    match dockspace.abort_pointer_input() {
+        Ok(()) => Err(error),
+        Err(retirement) => Err(DockspaceError::PointerInputAbortFailed {
+            frame: Box::new(error),
+            retirement: Box::new(retirement),
+        }),
     }
 }
 
@@ -724,10 +785,11 @@ impl DockspaceHostFrame<'_> {
             }
             Ok(())
         })();
-        let result = if matches!(&result, Err(DockspaceError::PointerInputBindingStale)) {
-            self.dockspace.abort_pointer_input().and(result)
-        } else {
-            result
+        let result = match result {
+            Err(error) if matches!(error, DockspaceError::PointerInputBindingStale) => {
+                abort_pointer_input_after_error(self.dockspace, error)
+            }
+            result => result,
         };
         if result.is_err() {
             self.state.poison();
@@ -925,15 +987,22 @@ impl DockspaceHostFrame<'_> {
     }
 
     pub(super) fn prepare_inner(&mut self) -> Result<PreparedEguiOuterFrameCommit, DockspaceError> {
+        match self.prepare_inner_candidate() {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => self.abort(error),
+        }
+    }
+
+    fn prepare_inner_candidate(&mut self) -> Result<PreparedEguiOuterFrameCommit, DockspaceError> {
         if let Err(error) = self.state.validate_finish() {
-            return self.abort(error);
+            return Err(error);
         }
         let missing = self.state.missing_surfaces();
         for surface in missing {
             if let Err(error) =
                 self.mark_surface_unavailable_inner(surface, MeasurementUnavailableReason::Deferred)
             {
-                return self.abort(error);
+                return Err(error);
             }
         }
 
@@ -952,7 +1021,7 @@ impl DockspaceHostFrame<'_> {
             && surface_count > 1
             && event_derived_input_count != 0
         {
-            return self.abort(
+            return Err(
                 DockspaceError::CrossViewportSemanticInputRequiresBackendAuthority {
                     surface_count,
                     input_count: event_derived_input_count,
@@ -962,7 +1031,7 @@ impl DockspaceHostFrame<'_> {
         if self.state.input_authority() == EguiInputAuthority::CoreBackend
             && !semantic_inputs.is_empty()
         {
-            return self.abort(DockspaceError::PresentationPhaseProducedSemanticInput {
+            return Err(DockspaceError::PresentationPhaseProducedSemanticInput {
                 count: semantic_inputs.len(),
             });
         }
@@ -987,7 +1056,7 @@ impl DockspaceHostFrame<'_> {
                 .pointer_input
                 .submit_empty_interval(input_frame)
             {
-                return self.abort(error);
+                return Err(error);
             }
         }
         let pointer_segments = match self
@@ -997,7 +1066,7 @@ impl DockspaceHostFrame<'_> {
             .transpose()
         {
             Ok(segments) => segments,
-            Err(error) => return self.abort(error),
+            Err(error) => return Err(error),
         };
         let pointer_receivers_current = self
             .state
@@ -1042,7 +1111,7 @@ impl DockspaceHostFrame<'_> {
                     let sequence = match semantic_sequence.checked_next() {
                         Some(sequence) => sequence,
                         None => {
-                            return self.abort(DockspaceError::InputSourceSequenceExhausted {
+                            return Err(DockspaceError::InputSourceSequenceExhausted {
                                 input_source: EGUI_RENDER_INPUT_SOURCE,
                             });
                         }
@@ -1054,7 +1123,7 @@ impl DockspaceHostFrame<'_> {
                     if let Err(error) =
                         input_frame.append_input(EGUI_RENDER_INPUT_SOURCE, sequence, input)
                     {
-                        return self.abort(error.into());
+                        return Err(error.into());
                     }
                 }
                 if let (Some(pointer), Some(segments)) =
@@ -1070,7 +1139,7 @@ impl DockspaceHostFrame<'_> {
                         segment.clone(),
                         pointer_receivers_current,
                     ) {
-                        return self.abort(error);
+                        return Err(error);
                     }
                 }
             }
@@ -1079,7 +1148,7 @@ impl DockspaceHostFrame<'_> {
         let mut core_frame = match core_frame {
             EguiCoreFramePhase::Input(frame) => match frame.into_presentation() {
                 Ok(frame) => frame,
-                Err(error) => return self.abort(error.into()),
+                Err(error) => return Err(error.into()),
             },
             EguiCoreFramePhase::Presentation(frame) => frame,
         };
@@ -1141,7 +1210,7 @@ impl DockspaceHostFrame<'_> {
                 .into_iter()
                 .map(|obligation| (obligation.slot().surface(), obligation))
                 .collect::<BTreeMap<_, _>>(),
-            Err(error) => return self.abort(error.into()),
+            Err(error) => return Err(error.into()),
         };
         if let Some(surface) = self.state.drafts().values().find_map(|draft| {
             (draft.paint().is_some()
@@ -1149,7 +1218,7 @@ impl DockspaceHostFrame<'_> {
                 && !presentation_obligations.contains_key(&draft.surface()))
             .then_some(draft.surface())
         }) {
-            return self.abort(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
         }
         let mut native_staging_publications =
             BTreeMap::<SurfaceId, EguiNativeStagingPublication>::new();
@@ -1172,7 +1241,7 @@ impl DockspaceHostFrame<'_> {
                 })
         };
         if let Some(presentation) = stale_staging {
-            return self.abort(DockspaceError::NativeStagingRequestOutsideRoster { presentation });
+            return Err(DockspaceError::NativeStagingRequestOutsideRoster { presentation });
         }
         for (surface, presentation) in native_staging_slots {
             let obligation = presentation_obligations
@@ -1192,7 +1261,7 @@ impl DockspaceHostFrame<'_> {
             let request = match core_frame.resolve_presentation_obligation(obligation, disposition)
             {
                 Ok(request) => request,
-                Err(error) => return self.abort(error.into()),
+                Err(error) => return Err(error.into()),
             };
             if let Some(request) = request {
                 native_staging_publications.insert(
@@ -1208,7 +1277,7 @@ impl DockspaceHostFrame<'_> {
                     .expect("painted draft presentation slot was prevalidated");
                 let result = draft.stage_painted_output(&mut core_frame, obligation);
                 if let Err(error) = result {
-                    return self.abort(error);
+                    return Err(error);
                 }
             }
         }
@@ -1228,13 +1297,13 @@ impl DockspaceHostFrame<'_> {
                 obligation,
                 HostPresentationDisposition::Unavailable(reason),
             ) {
-                return self.abort(error.into());
+                return Err(error.into());
             }
         }
         for draft in self.state.drafts_mut().values_mut() {
             let result = draft.stage_core_contribution(&mut core_frame);
             if let Err(error) = result {
-                return self.abort(error);
+                return Err(error);
             }
         }
 
@@ -1244,7 +1313,7 @@ impl DockspaceHostFrame<'_> {
         );
         let prepared_core = match prepared_core {
             Ok(prepared) => prepared,
-            Err(error) => return self.abort(error.into()),
+            Err(error) => return Err(error.into()),
         };
         if let Some(style) = self.state.staged_style_replacement() {
             let accepted = prepared_host_transition(&prepared_core)
@@ -1261,7 +1330,7 @@ impl DockspaceHostFrame<'_> {
             if !accepted {
                 let source_sequence = style.source_sequence();
                 drop(prepared_core);
-                return self.abort(DockspaceError::NativeStyleConfigurationNotAccepted {
+                return Err(DockspaceError::NativeStyleConfigurationNotAccepted {
                     source_sequence,
                 });
             }
@@ -1274,7 +1343,7 @@ impl DockspaceHostFrame<'_> {
             Ok(prepared) => prepared,
             Err(error) => {
                 drop(prepared_core);
-                return self.abort(error);
+                return Err(error);
             }
         };
         let unbound_surface = (self.state.mode() == EguiHostFrameMode::CompleteRoster)
@@ -1287,7 +1356,7 @@ impl DockspaceHostFrame<'_> {
         if let Some(surface) = unbound_surface {
             drop(prepared_renderer);
             drop(prepared_core);
-            return self.abort(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface });
+            return Err(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface });
         }
         let prepared_presentation_outputs =
             prepared_renderer.presentation_outputs().collect::<Vec<_>>();
@@ -1297,7 +1366,7 @@ impl DockspaceHostFrame<'_> {
         {
             drop(prepared_renderer);
             drop(prepared_core);
-            return self.abort(error);
+            return Err(error);
         }
         let prepared_native_bindings = match self.state.take_native_bindings() {
             Some(candidate) => {
@@ -1311,7 +1380,7 @@ impl DockspaceHostFrame<'_> {
                     Err(error) => {
                         drop(prepared_renderer);
                         drop(prepared_core);
-                        return self.abort(NativeBindingError::from(error).into());
+                        return Err(NativeBindingError::from(error).into());
                     }
                 }
             }
@@ -1728,9 +1797,11 @@ impl DockspaceHostFrame<'_> {
     }
 
     fn abort<T>(&mut self, error: DockspaceError) -> Result<T, DockspaceError> {
-        self.dockspace.discard_pointer_input_epoch();
-        self.state.finish();
-        Err(error)
+        if let Some(mut state) = self.state.take() {
+            state.finish();
+            drop(state);
+        }
+        abort_pointer_input_after_error(self.dockspace, error)
     }
 }
 
@@ -1747,11 +1818,20 @@ fn semantic_position_order(
 
 impl Drop for DockspaceHostFrame<'_> {
     fn drop(&mut self) {
-        if let Some(state) = self.state.as_mut()
-            && !state.is_finished()
+        if self
+            .state
+            .as_mut()
+            .is_some_and(|state| !state.is_finished())
         {
-            self.dockspace.discard_pointer_input_epoch();
+            let mut state = self
+                .state
+                .take()
+                .expect("an unfinished host frame retains its state capability");
             state.finish();
+            drop(state);
+            // Retirement failure restores the exact staged epoch. Drop cannot
+            // return an error, but it must never delete the only release edge.
+            let _ = self.dockspace.abort_pointer_input();
         }
     }
 }
