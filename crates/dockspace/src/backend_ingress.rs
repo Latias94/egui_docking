@@ -16,7 +16,7 @@ use crate::engine::EngineInput;
 use crate::ids::SurfaceId;
 use crate::ids::{EngineAuthorityDomainId, WorkspaceEpoch};
 use crate::platform::{PlatformSnapshot, WindowCloseObservation};
-use crate::platform_provider::{PlatformObservationLease, PlatformProviderReplacementTicket};
+use crate::platform_provider::{PlatformObservationLease, PlatformProviderReservation};
 use crate::pointer_journal::{
     PointerEdgeJournal, PointerEdgeSequence, PointerInputLease, PointerProviderScope,
 };
@@ -392,7 +392,7 @@ impl BackendIngressPrefixRetirementReceipt {
 /// Affine authority to finish one exact joined backend-provider handoff.
 ///
 /// This type deliberately does not implement `Clone` or `Copy`, and it never
-/// exposes the wrapped platform-only ticket. A joined replacement can therefore
+/// exposes the core-owned platform reservation. A joined replacement can therefore
 /// activate the platform, desktop-pointer, and backend-order lanes only through
 /// `DockEngine::finish_backend_ingress_provider_replacement`.
 ///
@@ -1472,7 +1472,7 @@ pub(crate) struct BackendIngressReplacementState {
     handoff: BackendIngressReplacementId,
     ticket_generation: u64,
     ticket_monitor: Weak<()>,
-    platform: PlatformProviderReplacementTicket,
+    platform: PlatformProviderReservation,
     predecessor: BackendIngressLease,
     recorded_through: BackendIngressOrdinal,
     pointer_through: PointerEdgeSequence,
@@ -1497,7 +1497,7 @@ impl BackendIngressReplacementState {
         self.handoff
     }
 
-    pub(crate) const fn platform(&self) -> PlatformProviderReplacementTicket {
+    pub(crate) const fn platform(&self) -> PlatformProviderReservation {
         self.platform
     }
 
@@ -1540,7 +1540,7 @@ impl BackendIngressAuthority {
 
     pub(crate) fn reserve_replacement(
         &mut self,
-        platform: PlatformProviderReplacementTicket,
+        platform: PlatformProviderReservation,
         predecessor: &mut BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementTicket, BackendIngressError> {
         if let Some(active) = self.active {
@@ -1839,14 +1839,6 @@ pub enum BackendIngressError {
         expected: BackendIngressLease,
         /// Provider pair supplied by the caller.
         submitted: BackendIngressLease,
-    },
-    /// Platform-only replacement cannot revoke one lane of a joined backend provider.
-    #[error(
-        "platform-only replacement cannot revoke joined backend provider {active:?}; drain the backend recorder first"
-    )]
-    PlatformReplacementRequiresDrain {
-        /// Exact joined provider whose affine producer must be drained.
-        active: BackendIngressLease,
     },
     /// A recorder rollback boundary belongs to another joined provider.
     #[error("backend ingress savepoint lease {submitted:?} does not match {expected:?}")]

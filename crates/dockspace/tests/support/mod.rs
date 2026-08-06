@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::PlatformObservationLease;
+use dockspace::backend_ingress::BackendIngressRecorder;
 use dockspace::engine::{
-    CoreHostFrame, CoreHostFrameError, CoreHostFramePrelude, CoreHostPresentationFrame, DockEngine,
-    EngineError, EngineInput, HostPresentationDisposition, HostPresentationSlot,
-    HostPresentationUnavailableReason,
+    BackendIngressProgress, CoreHostFrame, CoreHostFrameError, CoreHostFramePrelude,
+    CoreHostPresentationFrame, DockEngine, EngineError, EngineInput, HostPresentationDisposition,
+    HostPresentationSlot, HostPresentationUnavailableReason,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
@@ -15,6 +16,8 @@ use dockspace::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     WindowInventoryObservation, WorkAreaRosterObservation,
 };
+use dockspace::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
+use dockspace::pointer_receiver::PointerReceiverReceiptBatch;
 use dockspace::presentation_observation::NativeStagingPresentationPhase;
 use dockspace::presentation_observation::{
     HostInteractionPresentation, HostPresentationCaptureGeneration, HostPresentationEmission,
@@ -86,6 +89,8 @@ pub fn known_work_area_observation(
 pub struct TestPresentationHost {
     lease: PresentationHostLease,
     platform_provider: PlatformObservationLease,
+    backend_ingress: Option<BackendIngressRecorder>,
+    backend_pointer_through: PointerEdgeSequence,
     last_platform_observation_generation: u64,
     pending: BTreeMap<HostPresentationStreamId, Vec<HostPresentationOutput>>,
     capture_generations: BTreeMap<HostPresentationStreamId, HostPresentationCaptureGeneration>,
@@ -105,6 +110,31 @@ impl TestPresentationHost {
                 .create_presentation_host()
                 .expect("test presentation host lease must mint"),
             platform_provider,
+            backend_ingress: None,
+            backend_pointer_through: PointerEdgeSequence::new(0),
+            last_platform_observation_generation: 0,
+            pending: BTreeMap::new(),
+            capture_generations: BTreeMap::new(),
+            last_observed: BTreeSet::new(),
+        }
+    }
+
+    /// Creates one persistent host with a joined platform, pointer, and causal ingress owner.
+    pub fn new_joined(engine: &mut DockEngine) -> Self {
+        let lease = engine
+            .create_presentation_host()
+            .expect("test presentation host lease must mint");
+        let backend_ingress = engine
+            .create_backend_ingress_provider(lease, PointerEdgeSequence::new(0))
+            .expect("test joined backend provider must mint");
+        let platform_provider = engine
+            .platform_provider()
+            .expect("joined backend enrollment must publish its platform provider");
+        Self {
+            lease,
+            platform_provider,
+            backend_ingress: Some(backend_ingress),
+            backend_pointer_through: PointerEdgeSequence::new(0),
             last_platform_observation_generation: 0,
             pending: BTreeMap::new(),
             capture_generations: BTreeMap::new(),
@@ -124,11 +154,78 @@ impl TestPresentationHost {
         self.platform_provider
     }
 
-    /// Switches this test runtime to the exact successor returned by a
-    /// completed platform-provider handoff.
-    pub fn adopt_platform_provider_replacement(&mut self, successor: PlatformObservationLease) {
-        self.platform_provider = successor;
+    /// Returns whether this host owns the joined platform, pointer, and causal ingress lane.
+    #[must_use]
+    pub const fn has_joined_backend(&self) -> bool {
+        self.backend_ingress.is_some()
+    }
+
+    /// Takes the affine joined recorder before replacing its complete authority bundle.
+    pub fn take_backend_ingress(&mut self) -> BackendIngressRecorder {
+        self.backend_ingress
+            .take()
+            .expect("test host must own a joined backend recorder")
+    }
+
+    /// Adopts the exact joined successor returned by a completed provider handoff.
+    pub fn adopt_backend_ingress(
+        &mut self,
+        engine: &DockEngine,
+        successor: BackendIngressRecorder,
+        pointer_through: PointerEdgeSequence,
+    ) {
+        self.platform_provider = engine
+            .platform_provider()
+            .expect("joined backend replacement must publish its platform successor");
+        self.backend_ingress = Some(successor);
+        self.backend_pointer_through = pointer_through;
         self.last_platform_observation_generation = 0;
+    }
+
+    fn stage_joined_input(&mut self, input: EngineInput) -> Option<EngineInput> {
+        let Some(recorder) = self.backend_ingress.as_mut() else {
+            return Some(input);
+        };
+        match input {
+            EngineInput::PublishPlatformSnapshot {
+                provider,
+                expected_epoch,
+                snapshot,
+            } => {
+                assert_eq!(provider, self.platform_provider);
+                recorder
+                    .record_platform_snapshot(expected_epoch, snapshot)
+                    .expect("test platform snapshot must enter the joined ingress journal");
+            }
+            EngineInput::PublishNativeCloseObservation {
+                provider,
+                expected_epoch,
+                observation,
+            } => {
+                assert_eq!(provider, self.platform_provider);
+                recorder
+                    .record_native_close_observation(expected_epoch, observation)
+                    .expect("test native-close fact must enter the joined ingress journal");
+            }
+            EngineInput::ReportPlatformEffect {
+                provider,
+                expected_epoch,
+                result,
+            } => {
+                assert_eq!(provider, self.platform_provider);
+                assert_eq!(expected_epoch, result.receipt_epoch());
+                recorder
+                    .record_platform_effect_result(result)
+                    .expect("test effect result must enter the joined ingress journal");
+            }
+            input if input.priority() == InputPriority::ConfigurationCommit => return Some(input),
+            input => {
+                recorder
+                    .record_semantic_input(input)
+                    .expect("test semantic input must enter the joined ingress journal");
+            }
+        }
+        None
     }
 
     /// Allocates the next provider-owned generation without consulting core state.
@@ -147,9 +244,83 @@ impl TestPresentationHost {
             .begin_host_frame(self.lease)
             .expect("persistent test host frame must begin");
         self.submit_observation(&mut prelude);
-        prelude
+        let mut frame = prelude
             .seal(engine)
-            .expect("persistent test host frame must seal")
+            .expect("persistent test host frame must seal");
+        if let Some(recorder) = &mut self.backend_ingress {
+            let pointer = self.backend_pointer_through;
+            recorder
+                .record_pointer_segment(
+                    PointerEdgeJournal::new(pointer, pointer, Vec::new())
+                        .expect("empty joined pointer checkpoint must preserve its watermark"),
+                )
+                .expect("test joined backend must record one pointer checkpoint per frame");
+            let batch = recorder
+                .batch_after(engine.backend_ingress_committed_through())
+                .expect("test joined ingress suffix must freeze");
+            let mut progress = frame
+                .submit_backend_ingress(batch)
+                .expect("test joined ingress suffix must reduce");
+            while progress == BackendIngressProgress::ReceiverReceiptsRequired {
+                assert!(
+                    frame
+                        .pointer_receiver_candidates()
+                        .is_some_and(|roster| roster.candidates().is_empty()),
+                    "joined recovery fixtures submit only empty pointer checkpoints",
+                );
+                progress = frame
+                    .submit_backend_pointer_receiver_receipts(
+                        PointerReceiverReceiptBatch::new([])
+                            .expect("empty pointer checkpoint has no receiver probes"),
+                    )
+                    .expect("empty pointer checkpoint must resume joined replay");
+            }
+            assert_eq!(progress, BackendIngressProgress::Complete);
+        }
+        frame
+    }
+
+    /// Begins a joined frame whose next causal record is one exact pointer segment.
+    ///
+    /// The returned progress may require the caller to inspect the frozen receiver
+    /// roster and submit matching receipts before completing the frame.
+    pub fn begin_joined_pointer_frame(
+        &mut self,
+        engine: &DockEngine,
+        semantic_before_pointer: impl IntoIterator<Item = EngineInput>,
+        segment: PointerEdgeJournal,
+    ) -> (CoreHostFrame, BackendIngressProgress) {
+        for input in semantic_before_pointer {
+            assert!(
+                self.stage_joined_input(input).is_none(),
+                "joined pointer frames require every semantic input to enter the backend journal"
+            );
+        }
+        let through = segment.through();
+        self.backend_ingress
+            .as_mut()
+            .expect("joined pointer frame requires a backend recorder")
+            .record_pointer_segment(segment)
+            .expect("joined pointer segment must continue its recorder watermark");
+        self.backend_pointer_through = through;
+
+        let mut prelude = engine
+            .begin_host_frame(self.lease)
+            .expect("joined pointer host frame must begin");
+        self.submit_observation(&mut prelude);
+        let mut frame = prelude
+            .seal(engine)
+            .expect("joined pointer host frame must seal");
+        let batch = self
+            .backend_ingress
+            .as_ref()
+            .expect("joined pointer frame retains its recorder")
+            .batch_after(engine.backend_ingress_committed_through())
+            .expect("joined pointer suffix must freeze");
+        let progress = frame
+            .submit_backend_ingress(batch)
+            .expect("joined pointer suffix must reduce");
+        (frame, progress)
     }
 
     /// Submits this provider's complete pending observation into an already
@@ -800,12 +971,15 @@ impl TestInputStream {
         host: &mut TestPresentationHost,
         input: EngineInput,
     ) -> Result<EngineTransition, EngineError> {
+        let direct_input = host.stage_joined_input(input);
         let mut frame = host.begin(engine);
-        if let Err(error) = self.append(&mut frame, input) {
-            panic!(
-                "test host-frame input must be structurally valid: {error:?}; reduction: {:?}",
-                frame.input_prefix_error()
-            );
+        if let Some(input) = direct_input {
+            if let Err(error) = self.append(&mut frame, input) {
+                panic!(
+                    "test host-frame input must be structurally valid: {error:?}; reduction: {:?}",
+                    frame.input_prefix_error()
+                );
+            }
         }
         complete_host_frame_with_retained_or_unavailable(engine, &mut frame);
         Ok(host.finish(frame, engine))
@@ -830,8 +1004,12 @@ pub fn submit_inputs(
     inputs: impl IntoIterator<Item = EngineInput>,
 ) -> Result<EngineTransition, EngineError> {
     let mut stream = TestInputStream::resume(engine, source);
+    let direct_inputs = inputs
+        .into_iter()
+        .filter_map(|input| host.stage_joined_input(input))
+        .collect::<Vec<_>>();
     let mut frame = host.begin(engine);
-    for input in inputs {
+    for input in direct_inputs {
         stream
             .append(&mut frame, input)
             .expect("test host-frame input must be structurally valid");

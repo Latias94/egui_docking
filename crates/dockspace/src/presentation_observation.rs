@@ -1599,10 +1599,21 @@ impl PresentationLedger {
         .then_some(state.surface)
     }
 
-    pub(crate) fn active_surface_host(&self, surface: SurfaceId) -> Option<PresentationHostLease> {
+    pub(crate) fn active_surface_scope(
+        &self,
+        surface: SurfaceId,
+    ) -> Option<(
+        HostPresentationStreamId,
+        PresentationHostLease,
+        HostPresentationEndpoint,
+    )> {
         let stream = self.active_streams.get(&surface)?;
         let state = self.streams.get(stream)?;
-        (state.lifecycle == PresentationStreamLifecycle::Active).then_some(state.host)
+        (state.lifecycle == PresentationStreamLifecycle::Active).then_some((
+            *stream,
+            state.host,
+            state.endpoint,
+        ))
     }
 
     /// Retires active streams whose semantic surfaces are absent from the tick-final roster.

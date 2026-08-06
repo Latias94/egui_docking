@@ -946,11 +946,19 @@ fn to_logical_point(point: Pos2) -> Option<LogicalPoint> {
 
 #[cfg(test)]
 mod tests {
-    use dockspace::engine::{DockEngine, HostPresentationUnavailableReason};
+    use dockspace::engine::{DockEngine, HostFrameView, HostPresentationUnavailableReason};
+    use dockspace::geometry::{LogicalRect, LogicalSize};
     use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::ids::{ItemId, RootId};
-    use dockspace::presentation_observation::HostPresentationObservation;
-    use dockspace::scene_manifest::MeasurementUnavailableReason;
+    use dockspace::presentation_observation::{
+        HostPresentationCaptureGeneration, HostPresentationObservation,
+        HostPresentationObservationEntry, HostPresentationProgress,
+        HostPresentationStreamObservation,
+    };
+    use dockspace::scene_manifest::{
+        Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
+        TabStripMetrics,
+    };
     use egui::{Modifiers, RawInput, Rect, pos2, vec2};
 
     use super::*;
@@ -958,6 +966,170 @@ mod tests {
     const SURFACE: SurfaceId = SurfaceId::new(1);
     const ROOT: RootId = RootId::new(2);
     const ITEM: ItemId = ItemId::new(3);
+
+    fn fixture_measurements(view: HostFrameView<'_>) -> SurfaceMeasurements {
+        let requirements = view
+            .presentation_requirements()
+            .surface(SURFACE)
+            .expect("fixture surface requirements exist");
+        let mut measurements = SurfaceMeasurements::new(requirements.ticket());
+        measurements
+            .set_bounds(
+                requirements.bounds(),
+                Measurement::Measured(
+                    LogicalRect::new(0.0, 0.0, 200.0, 120.0)
+                        .expect("fixture surface bounds are valid"),
+                ),
+            )
+            .expect("fixture surface bounds answer is unique");
+        let minimum = LogicalSize::new(0.0, 0.0).expect("zero minimum is valid");
+        for key in requirements.pane_minimums() {
+            measurements
+                .insert_pane_minimum(key, Measurement::Measured(minimum))
+                .expect("fixture pane minimum answer is unique");
+        }
+        for key in requirements.tab_intrinsics() {
+            measurements
+                .insert_tab_intrinsic(
+                    key,
+                    Measurement::Measured(
+                        TabIntrinsic::new(56.0).expect("fixture tab intrinsic is valid"),
+                    ),
+                )
+                .expect("fixture tab intrinsic answer is unique");
+        }
+        for key in requirements.tab_strips() {
+            measurements
+                .insert_tab_strip(
+                    key,
+                    Measurement::Measured(
+                        TabStripMetrics::new(0.0, 0.0)
+                            .expect("fixture tab strip metrics are valid"),
+                    ),
+                )
+                .expect("fixture tab strip answer is unique");
+        }
+        measurements
+    }
+
+    fn activate_fixture_surface(engine: &mut DockEngine, host: PresentationHostLease) {
+        let mut prelude = engine
+            .begin_host_frame(host)
+            .expect("fixture measurement frame begins");
+        prelude
+            .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+            .expect("fixture measurement observation submits");
+        let mut frame = prelude
+            .seal(engine)
+            .expect("fixture measurement frame seals");
+        let contribution = {
+            let view = frame.view();
+            let token = view
+                .begin_surface_contribution(SURFACE)
+                .expect("fixture surface accepts one measurement contribution");
+            view.prepare_surface_contribution(token, fixture_measurements(view))
+                .expect("fixture measurements prepare successfully")
+        };
+        frame
+            .push_surface_contribution(contribution)
+            .expect("fixture measurement contribution is unique");
+        let mut presentation = frame
+            .into_presentation()
+            .expect("fixture measurement frame enters presentation");
+        presentation
+            .resolve_all_presentation_obligations_unavailable(
+                HostPresentationUnavailableReason::OutputNotProduced,
+            )
+            .expect("bootstrap output is explicitly unavailable");
+        presentation
+            .finish(engine)
+            .expect("fixture measurements publish atomically");
+
+        let mut prelude = engine
+            .begin_host_frame(host)
+            .expect("fixture paint frame begins");
+        prelude
+            .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+            .expect("fixture paint observation submits");
+        let frame = prelude.seal(engine).expect("fixture paint frame seals");
+        let mut presentation = frame
+            .into_presentation()
+            .expect("fixture paint frame enters presentation");
+        let mut obligations = presentation
+            .take_presentation_obligations()
+            .expect("fixture paint frame issues its exact output roster");
+        assert_eq!(obligations.len(), 1);
+        let obligation = obligations
+            .pop()
+            .expect("fixture surface has one presentation obligation");
+        assert_eq!(obligation.slot().surface(), SURFACE);
+        let token = presentation
+            .view()
+            .begin_surface_contribution(SURFACE)
+            .expect("fixture surface accepts one retained paint contribution");
+        let interaction = presentation
+            .view()
+            .presentation_interaction(SURFACE)
+            .unwrap_or_default();
+        presentation
+            .record_painted_surface_contribution(obligation, token, interaction)
+            .expect("fixture surface records an actual paint");
+        let transition = presentation
+            .finish(engine)
+            .expect("fixture paint publishes atomically");
+        assert_eq!(transition.presentation_emissions().len(), 1);
+        let output = transition.presentation_emissions()[0].output();
+        assert_eq!(
+            output.surface(),
+            SURFACE,
+            "fixture paint emits the expected surface"
+        );
+
+        let mut prelude = engine
+            .begin_host_frame(host)
+            .expect("fixture settlement frame begins");
+        prelude
+            .submit_presentation_observation(HostPresentationObservation::Batch(vec![
+                HostPresentationObservationEntry::new(
+                    output.stream(),
+                    HostPresentationStreamObservation::Captured {
+                        generation: HostPresentationCaptureGeneration::new(1),
+                        progress: HostPresentationProgress::Retired {
+                            settled_through: output.key(),
+                            presented: Authority::Known(Some(output.key())),
+                        },
+                    },
+                ),
+            ]))
+            .expect("fixture presentation settlement submits");
+        let frame = prelude
+            .seal(engine)
+            .expect("fixture settlement frame seals");
+        let mut presentation = frame
+            .into_presentation()
+            .expect("fixture settlement frame enters presentation");
+        let mut obligations = presentation
+            .take_presentation_obligations()
+            .expect("fixture settlement frame issues its output roster");
+        assert_eq!(obligations.len(), 1);
+        let obligation = obligations
+            .pop()
+            .expect("fixture settlement keeps one presentation obligation");
+        let token = presentation
+            .view()
+            .begin_surface_contribution(SURFACE)
+            .expect("fixture settlement accepts a retained paint contribution");
+        let interaction = presentation
+            .view()
+            .presentation_interaction(SURFACE)
+            .expect("presented fixture exposes interaction authority");
+        presentation
+            .record_painted_surface_contribution(obligation, token, interaction)
+            .expect("fixture settlement records the current paint");
+        presentation
+            .finish(engine)
+            .expect("fixture settlement publishes atomically");
+    }
 
     fn state(context: &Context) -> EguiPointerInput {
         state_with_watermark(context, PointerEdgeSequence::new(0))
@@ -985,6 +1157,7 @@ mod tests {
         let host = engine
             .create_presentation_host()
             .expect("fixture presentation host is minted");
+        activate_fixture_surface(&mut engine, host);
         let mut state = EguiPointerInput::default();
         let reservation = state
             .reserve_install()
@@ -1249,6 +1422,7 @@ mod tests {
         let host = engine
             .create_presentation_host()
             .expect("fixture presentation host is minted");
+        activate_fixture_surface(&mut engine, host);
         let mut state = EguiPointerInput::default();
         install_surface_local_provider(
             &mut engine,

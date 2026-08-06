@@ -804,6 +804,12 @@ impl DockEngine {
             presentation_attempt,
             staged_presentation_outputs,
         )?;
+        if !presentation_emissions.is_empty() {
+            let _ = candidate.reconcile_pointer_provider_scope(
+                ReductionCause::SurfaceContributionBatch { tick },
+                &mut interaction_events,
+            )?;
+        }
         // Native staging owns a presentation stream before workspace ownership transfers. The
         // tick-final presentation roster therefore combines semantic surfaces with every live or
         // reserved viewport binding; only absence from both domains terminates an active stream.

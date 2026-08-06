@@ -16,9 +16,7 @@ use crate::ids::{
 };
 use crate::intent::Authority;
 use crate::interaction::{InteractionEvent, InteractionOutcome};
-use crate::platform_provider::{
-    PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderReplacementTicket,
-};
+use crate::platform_provider::{PlatformObservationAuthorityError, PlatformObservationLease};
 use crate::pointer_journal::{
     AnyButtonDownAuthority, PointerCaptureOwner, PointerEdge, PointerEdgeTicket, PointerStreamId,
 };
@@ -728,44 +726,6 @@ pub struct EngineTransition {
     surface_contributions: Vec<SurfaceContributionOutcome>,
     surface_scene_deltas: Vec<SurfaceSceneDelta>,
     published_state_changed: bool,
-}
-
-/// Atomic start of one platform-provider handoff.
-///
-/// The predecessor has already lost authority when this value is returned.
-/// The runtime must stop and join its dispatch worker before consuming the
-/// ticket through `DockEngine::finish_platform_provider_replacement`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlatformProviderReplacementStart {
-    ticket: PlatformProviderReplacementTicket,
-    transition: EngineTransition,
-}
-
-impl PlatformProviderReplacementStart {
-    pub(crate) const fn new(
-        ticket: PlatformProviderReplacementTicket,
-        transition: EngineTransition,
-    ) -> Self {
-        Self { ticket, transition }
-    }
-
-    /// Returns the non-forgeable ticket reserved for the successor provider.
-    #[must_use]
-    pub const fn ticket(&self) -> PlatformProviderReplacementTicket {
-        self.ticket
-    }
-
-    /// Returns the reducer transition which revoked predecessor authority.
-    #[must_use]
-    pub const fn transition(&self) -> &EngineTransition {
-        &self.transition
-    }
-
-    /// Separates the handoff ticket from its already-published transition.
-    #[must_use]
-    pub fn into_parts(self) -> (PlatformProviderReplacementTicket, EngineTransition) {
-        (self.ticket, self.transition)
-    }
 }
 
 /// Atomic start of one joined backend-provider handoff.

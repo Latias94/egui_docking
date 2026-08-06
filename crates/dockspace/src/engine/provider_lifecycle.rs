@@ -188,10 +188,8 @@ impl DockEngine {
         &mut self,
         drained: &mut crate::backend_ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, EngineError> {
-        let ingress = drained.lease();
-        let (mut candidate, start) =
-            self.prepare_platform_provider_replacement(ingress.platform_provider(), Some(drained))?;
-        let (platform_ticket, transition) = start.into_parts();
+        let (mut candidate, platform_ticket, transition) =
+            self.prepare_joined_backend_provider_replacement(drained)?;
         let ticket = candidate
             .backend_ingress
             .reserve_replacement(platform_ticket, drained)
@@ -342,65 +340,39 @@ impl DockEngine {
         self.abort_backend_ingress_provider_replacement().map(Some)
     }
 
-    /// Atomically revokes the active platform provider and starts a typed handoff.
-    ///
-    /// The returned ticket must not be completed until the runtime has stopped
-    /// and joined every dispatch task owned by `provider`. Late callbacks are
-    /// rejected immediately after this method publishes. A platform provider
-    /// enrolled in the joined backend lane must instead use
-    /// [`Self::begin_backend_ingress_provider_replacement`], whose affine drain
-    /// receipt proves that both transport lanes are quiescent.
-    pub fn begin_platform_provider_replacement(
-        &mut self,
-        provider: PlatformObservationLease,
-    ) -> Result<PlatformProviderReplacementStart, EngineError> {
-        let (candidate, start) = self.prepare_platform_provider_replacement(provider, None)?;
-        self.publish_candidate(candidate);
-        Ok(start)
-    }
-
-    fn prepare_platform_provider_replacement(
+    fn prepare_joined_backend_provider_replacement(
         &self,
-        provider: PlatformObservationLease,
-        drained_backend: Option<&crate::backend_ingress::BackendIngressDrainReceipt>,
-    ) -> Result<(DockEngine, PlatformProviderReplacementStart), EngineError> {
-        if let Some(drained) = drained_backend {
-            drained
-                .validate_active()
-                .map_err(|source| EngineError::BackendIngress { source })?;
-        }
-        let drained_ingress = drained_backend.map(|receipt| receipt.lease());
-        match (self.backend_ingress.active(), drained_ingress) {
-            (Some(active), None) => {
-                return Err(EngineError::BackendIngress {
-                    source: BackendIngressError::PlatformReplacementRequiresDrain { active },
-                });
-            }
-            (Some(active), Some(submitted)) if active != submitted => {
+        drained_backend: &crate::backend_ingress::BackendIngressDrainReceipt,
+    ) -> Result<(DockEngine, PlatformProviderReservation, EngineTransition), EngineError> {
+        drained_backend
+            .validate_active()
+            .map_err(|source| EngineError::BackendIngress { source })?;
+        let drained_ingress = drained_backend.lease();
+        let provider = drained_ingress.platform_provider();
+        match self.backend_ingress.active() {
+            Some(active) if active != drained_ingress => {
                 return Err(EngineError::BackendIngress {
                     source: BackendIngressError::ProviderLeaseMismatch {
                         expected: active,
-                        submitted,
+                        submitted: drained_ingress,
                     },
                 });
             }
-            (None, Some(_)) => {
+            None => {
                 return Err(EngineError::BackendIngress {
                     source: BackendIngressError::ProviderUnavailable,
                 });
             }
-            (Some(_), Some(_)) | (None, None) => {}
+            Some(_) => {}
         }
-        if let Some(drained) = drained_backend {
-            let committed = self.backend_ingress.committed_through();
-            if drained.recorded_through() < committed {
-                return Err(EngineError::BackendIngress {
-                    source: BackendIngressError::CommittedWatermarkAhead {
-                        committed,
-                        recorded: drained.recorded_through(),
-                    },
-                });
-            }
+        let committed = self.backend_ingress.committed_through();
+        if drained_backend.recorded_through() < committed {
+            return Err(EngineError::BackendIngress {
+                source: BackendIngressError::CommittedWatermarkAhead {
+                    committed,
+                    recorded: drained_backend.recorded_through(),
+                },
+            });
         }
 
         let before = self.version;
@@ -416,12 +388,10 @@ impl DockEngine {
         let cause = ReductionCause::PlatformProviderReplacement { tick, provider };
         let mut interaction_events = Vec::new();
 
-        if let Some(ingress) = drained_ingress {
-            candidate
-                .backend_ingress
-                .revoke(ingress)
-                .map_err(|source| EngineError::BackendIngress { source })?;
-        }
+        candidate
+            .backend_ingress
+            .revoke(drained_ingress)
+            .map_err(|source| EngineError::BackendIngress { source })?;
 
         if let Some(pointer_provider) =
             candidate
@@ -517,31 +487,7 @@ impl DockEngine {
             surface_scene_deltas,
             published_state_changed: true,
         });
-        Ok((
-            candidate,
-            PlatformProviderReplacementStart::new(ticket, transition),
-        ))
-    }
-
-    /// Activates the exact successor reserved by a completed provider handoff.
-    ///
-    /// This method changes transport authority only. Queued effects remain
-    /// undispatched until a later reducer boundary establishes the successor's
-    /// exact observations and extracts them as provider-bound emissions.
-    pub fn finish_platform_provider_replacement(
-        &mut self,
-        ticket: PlatformProviderReplacementTicket,
-    ) -> Result<PlatformObservationLease, EngineError> {
-        let mut candidate = self.candidate();
-        let provider = candidate
-            .viewport
-            .finish_platform_provider_replacement(ticket)
-            .map_err(|source| EngineError::Viewport {
-                input: candidate.last_input,
-                source,
-            })?;
-        self.publish_candidate(candidate);
-        Ok(provider)
+        Ok((candidate, ticket, transition))
     }
 
     /// Activates a platform successor together with a fresh desktop pointer and
@@ -655,7 +601,7 @@ impl DockEngine {
         if let Some(provider) = self.pointer_journal.abandoned_surface_local_provider() {
             return Err(EngineError::SurfaceLocalPointerProviderAbandoned { provider });
         }
-        self.validate_pointer_provider_scope(scope)?;
+        self.validate_pointer_provider_enrollment_scope(scope)?;
         self.pointer_journal
             .create_provider(scope, committed_through)
             .map_err(|source| EngineError::PointerJournal { source })
@@ -684,6 +630,46 @@ impl DockEngine {
         self.pointer_journal
             .bind_surface_local_producer(lease, provider.monitor());
         Ok(provider)
+    }
+
+    pub(crate) fn create_current_surface_local_pointer_provider(
+        &mut self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+        committed_through: PointerEdgeSequence,
+    ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        let scope = self.current_surface_local_pointer_scope(host, surface)?;
+        self.create_surface_local_pointer_provider(scope, committed_through)
+    }
+
+    /// Validates whether one exact surface-local producer may be enrolled now.
+    ///
+    /// This read-only preflight uses the same authority checks as enrollment.
+    /// Callers must still handle the create operation failing if authority
+    /// changes between preflight and commit.
+    #[doc(hidden)]
+    pub fn validate_surface_local_pointer_provider_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<(), EngineError> {
+        self.validate_pointer_provider_enrollment_scope(PointerProviderScope::SurfaceLocal(scope))
+    }
+
+    pub(crate) fn current_surface_local_pointer_scope(
+        &self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+    ) -> Result<SurfaceLocalPointerScope, EngineError> {
+        let (_, active_endpoint) = self.current_surface_pointer_authority(host, surface)?;
+        let endpoint = match active_endpoint {
+            HostPresentationEndpoint::Headless => SurfaceLocalPointerEndpoint::Logical(surface),
+            HostPresentationEndpoint::Native(binding) => {
+                SurfaceLocalPointerEndpoint::Native(binding)
+            }
+        };
+        let scope = SurfaceLocalPointerScope::new(host, endpoint);
+        self.validate_pointer_provider_scope(PointerProviderScope::SurfaceLocal(scope))?;
+        Ok(scope)
     }
 
     /// Returns the current sole pointer provider, if the runtime has enrolled
@@ -927,31 +913,21 @@ impl DockEngine {
         let Some(local) = scope.surface_local() else {
             return Ok(());
         };
-        self.presentation_authority
-            .presentation
-            .validate_lease(local.host())
-            .map_err(presentation_ledger_error)?;
         let surface = local.surface();
-        if self
-            .presentation_authority
-            .presentation_requirements
-            .surface(surface)
-            .is_none()
-        {
-            return Err(EngineError::PointerProviderScope {
-                detail: format!("surface {surface:?} is absent from the current semantic roster"),
-            });
-        }
-        if let Some(owner) = self
-            .presentation_authority
-            .presentation
-            .active_surface_host(surface)
-            && owner != local.host()
-        {
-            return Err(EngineError::PointerProviderSurfaceHostMismatch {
+        let (active_stream, active_endpoint) =
+            self.active_surface_pointer_authority(local.host(), surface)?;
+        let expected_endpoint = match local.endpoint() {
+            SurfaceLocalPointerEndpoint::Logical(_) => HostPresentationEndpoint::Headless,
+            SurfaceLocalPointerEndpoint::Native(binding) => {
+                HostPresentationEndpoint::Native(binding)
+            }
+        };
+        if active_endpoint != expected_endpoint {
+            return Err(EngineError::PointerProviderSurfaceEndpointMismatch {
                 host: local.host(),
                 surface,
-                owner,
+                submitted: local.endpoint(),
+                active: active_endpoint,
             });
         }
         if let SurfaceLocalPointerEndpoint::Native(binding) = local.endpoint() {
@@ -966,6 +942,107 @@ impl DockEngine {
                     ),
                 });
             }
+        }
+        self.validate_surface_pointer_projection(
+            local.host(),
+            surface,
+            active_stream,
+            active_endpoint,
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn validate_pointer_provider_enrollment_scope(
+        &self,
+        scope: PointerProviderScope,
+    ) -> Result<(), EngineError> {
+        self.validate_pointer_provider_scope(scope)?;
+        let Some(local) = scope.surface_local() else {
+            return Ok(());
+        };
+        self.current_surface_pointer_authority(local.host(), local.surface())?;
+        Ok(())
+    }
+
+    fn active_surface_pointer_authority(
+        &self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+    ) -> Result<(HostPresentationStreamId, HostPresentationEndpoint), EngineError> {
+        self.presentation_authority
+            .presentation
+            .validate_lease(host)
+            .map_err(presentation_ledger_error)?;
+        if self
+            .presentation_authority
+            .presentation_requirements
+            .surface(surface)
+            .is_none()
+        {
+            return Err(EngineError::PointerProviderScope {
+                detail: format!("surface {surface:?} is absent from the current semantic roster"),
+            });
+        }
+        let Some((active_stream, owner, active_endpoint)) = self
+            .presentation_authority
+            .presentation
+            .active_surface_scope(surface)
+        else {
+            return Err(EngineError::PointerProviderSurfaceAuthorityUnavailable { host, surface });
+        };
+        if owner != host {
+            return Err(EngineError::PointerProviderSurfaceHostMismatch {
+                host,
+                surface,
+                owner,
+            });
+        }
+        Ok((active_stream, active_endpoint))
+    }
+
+    fn current_surface_pointer_authority(
+        &self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+    ) -> Result<(HostPresentationStreamId, HostPresentationEndpoint), EngineError> {
+        let (active_stream, active_endpoint) =
+            self.active_surface_pointer_authority(host, surface)?;
+        self.validate_surface_pointer_projection(
+            host,
+            surface,
+            active_stream,
+            active_endpoint,
+            true,
+        )?;
+        Ok((active_stream, active_endpoint))
+    }
+
+    fn validate_surface_pointer_projection(
+        &self,
+        host: PresentationHostLease,
+        surface: SurfaceId,
+        active_stream: HostPresentationStreamId,
+        active_endpoint: HostPresentationEndpoint,
+        required: bool,
+    ) -> Result<(), EngineError> {
+        let Some(projection) = self.interaction_projection(surface) else {
+            return if required {
+                Err(EngineError::PointerProviderSurfaceAuthorityUnavailable { host, surface })
+            } else {
+                Ok(())
+            };
+        };
+        let presented = projection.authority();
+        if presented.stream() != active_stream || presented.endpoint() != active_endpoint {
+            return Err(EngineError::PointerProviderSurfacePresentationMismatch {
+                host,
+                surface,
+                active_stream,
+                active_endpoint,
+                presented_stream: presented.stream(),
+                presented_endpoint: presented.endpoint(),
+            });
         }
         Ok(())
     }

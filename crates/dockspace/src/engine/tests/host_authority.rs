@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::pointer_journal::SurfaceLocalPointerRetirementDisposition;
+use crate::viewport::PresentationObservationGeneration;
 
 fn register_test_root_viewport(
     engine: &mut DockEngine,
@@ -32,6 +33,7 @@ fn register_test_root_viewport(
 
 fn platform_snapshot_for_binding(binding: ViewportBinding) -> PlatformSnapshot {
     let mut capabilities = PlatformCapabilities::default();
+    capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
     test_platform_snapshot(
         capabilities,
@@ -41,24 +43,52 @@ fn platform_snapshot_for_binding(binding: ViewportBinding) -> PlatformSnapshot {
             Authority::Unknown(AuthorityUnavailableReason::NotReported),
         ),
         vec![
-            ObservedWindow::new(binding).with_coordinate_observation(
-                WindowCoordinateObservation::new(
+            ObservedWindow::new(binding)
+                .with_coordinate_observation(WindowCoordinateObservation::new(
                     binding,
                     CoordinateObservationGeneration::new(1),
                     Authority::Known(
                         PhysicalRect::new(0.0, 0.0, 640.0, 480.0)
                             .expect("test content bounds must be valid"),
                     ),
-                    Authority::Unknown(AuthorityUnavailableReason::NotReported),
+                    Authority::Known(
+                        PhysicalRect::new(-8.0, -30.0, 656.0, 518.0)
+                            .expect("test outer bounds must be valid"),
+                    ),
                     Authority::Known(ScaleFactor::new(1.0).expect("test scale must be valid")),
                     Authority::Known(ScaleFactor::new(1.0).expect("test scale must be valid")),
-                ),
-            ),
+                ))
+                .with_presentation_observation(WindowPresentationObservation::new(
+                    binding,
+                    PresentationObservationGeneration::new(1),
+                    Authority::Known(WindowPresentationState::Visible),
+                    PresentationEffectAcknowledgement::known(None),
+                )),
         ],
         Vec::new(),
         unknown_work_area_observation(1),
     )
     .expect("test platform snapshot must be canonical")
+}
+
+fn establish_native_surface_stream(
+    engine: &mut DockEngine,
+    host: PresentationHostLease,
+    binding: ViewportBinding,
+) {
+    let provider = test_platform_provider(engine);
+    let expected_epoch = engine.version().epoch();
+    submit_test_input(
+        engine,
+        host,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot: platform_snapshot_for_binding(binding),
+        },
+    )
+    .expect("native endpoint coordinates must publish");
+    publish_surface_projection(engine, host, binding.surface(), test_rect());
 }
 
 #[test]
@@ -77,6 +107,7 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
             None,
         )
         .expect("first native binding must register");
+    establish_native_surface_stream(&mut engine, host, binding_a);
     let provider_a = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_a)),
@@ -121,7 +152,7 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
 }
 
 #[test]
-fn surface_local_pointer_host_is_admitted_only_when_the_prelude_is_sealed() {
+fn surface_local_pointer_host_must_be_the_rendering_host_at_seal() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let rendering_host = engine
         .create_presentation_host()
@@ -129,6 +160,7 @@ fn surface_local_pointer_host_is_admitted_only_when_the_prelude_is_sealed() {
     let pointer_host = engine
         .create_presentation_host()
         .expect("pointer presentation host must mint");
+    publish_surface_projection(&mut engine, pointer_host, SOURCE_SURFACE, test_rect());
     let provider = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(
@@ -190,6 +222,7 @@ fn surface_local_pointer_lifecycle_rejects_every_raw_lease_bypass() {
     let host = engine
         .create_presentation_host()
         .expect("test presentation host must mint");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, test_rect());
     let scope =
         SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Logical(SOURCE_SURFACE));
 
@@ -256,6 +289,7 @@ fn surface_local_pointer_drain_waits_for_the_staged_host_frame_to_finish() {
     let host = engine
         .create_presentation_host()
         .expect("test presentation host must mint");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, test_rect());
     let provider = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(
@@ -307,6 +341,7 @@ fn surface_local_frame_guard_defers_abandonment_reaping_until_the_frame_drops() 
     let host = engine
         .create_presentation_host()
         .expect("test presentation host must mint");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, test_rect());
     let provider = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(
@@ -365,6 +400,7 @@ fn dropped_surface_local_drain_receipt_can_be_reaped_without_sticking_the_lane()
     let host = engine
         .create_presentation_host()
         .expect("test presentation host must mint");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, test_rect());
     let provider = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(
@@ -422,6 +458,7 @@ fn dropped_producer_of_an_implicitly_retired_lease_compacts_without_a_new_tick()
     let host = engine
         .create_presentation_host()
         .expect("test presentation host must mint");
+    publish_surface_projection(&mut engine, host, SOURCE_SURFACE, test_rect());
     let provider = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(
@@ -486,6 +523,7 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
             None,
         )
         .expect("first native binding must register");
+    establish_native_surface_stream(&mut engine, host, binding_a);
     let provider_a = engine
         .create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_a)),
@@ -547,29 +585,17 @@ fn native_surface_local_lease_cannot_cross_a_workspace_binding_reincarnation() {
     assert!(retirement.repaint_required());
     assert!(!retirement.interaction_changed());
     assert_eq!(engine.pointer_provider(), None);
-    let provider_b = engine
-        .create_surface_local_pointer_provider(
+    assert!(matches!(
+        engine.create_surface_local_pointer_provider(
             SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding_b)),
             PointerEdgeSequence::new(0),
-        )
-        .expect("A2 pointer provider must be admitted after A1 retirement");
-
-    let mut successor_frame = begin_test_host_frame(&engine, host);
-    successor_frame
-        .submit_surface_pointer_journal(&provider_b, empty)
-        .expect("A2 journal must stage");
-    successor_frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
-                .expect("A2 empty journal has an empty exact receipt set"),
-        )
-        .expect("A2 empty receipt set must stage");
-    complete_host_frame_with_explicit_surface_roster(&engine, &mut successor_frame);
-    successor_frame
-        .finish(&mut engine)
-        .expect("A2 lease must continue through the host-frame reducer");
-    assert_eq!(engine.pointer_provider(), Some(provider_b.lease()));
-    assert_eq!(provider_b.committed_through(), PointerEdgeSequence::new(0));
+        ),
+        Err(EngineError::PointerProviderSurfaceEndpointMismatch {
+            submitted: SurfaceLocalPointerEndpoint::Native(submitted),
+            active: HostPresentationEndpoint::Native(active),
+            ..
+        }) if submitted == binding_b && active == binding_a
+    ));
 }
 
 #[test]
@@ -1294,24 +1320,29 @@ fn sealed_host_frame_cannot_overwrite_a_replacement_platform_provider() {
     let rendering_host = engine
         .create_presentation_host()
         .expect("rendering presentation host must mint");
-    let predecessor = engine
-        .create_platform_provider()
-        .expect("predecessor platform provider must mint");
+    let recorder = engine
+        .create_backend_ingress_provider(rendering_host, PointerEdgeSequence::new(0))
+        .expect("joined predecessor must mint");
+    let mut drained = recorder.drain();
     let replacement = engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("platform provider replacement must begin");
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined provider replacement must begin");
+    let (mut ticket, _) = replacement.into_parts();
     let frozen_tick = engine.last_reducer_tick();
     let frozen_frontier = engine.viewport.platform_provider_frontier();
     let mut frame = begin_test_host_frame(&engine, rendering_host);
     complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
 
     let successor = engine
-        .finish_platform_provider_replacement(replacement.ticket())
-        .expect("replacement platform provider must activate");
+        .finish_backend_ingress_provider_replacement(&mut ticket, rendering_host)
+        .expect("replacement joined provider must activate");
     let current_frontier = engine.viewport.platform_provider_frontier();
     assert!(current_frontier > frozen_frontier);
     assert_eq!(engine.last_reducer_tick(), frozen_tick);
-    assert_eq!(engine.platform_provider(), Some(successor));
+    assert_eq!(
+        engine.platform_provider(),
+        Some(successor.lease().platform_provider())
+    );
 
     assert!(matches!(
         frame.finish(&mut engine),
@@ -1325,7 +1356,10 @@ fn sealed_host_frame_cannot_overwrite_a_replacement_platform_provider() {
         engine.viewport.platform_provider_frontier(),
         current_frontier
     );
-    assert_eq!(engine.platform_provider(), Some(successor));
+    assert_eq!(
+        engine.platform_provider(),
+        Some(successor.lease().platform_provider())
+    );
 }
 
 #[test]
@@ -1427,12 +1461,14 @@ fn host_frame_prelude_cannot_cross_platform_provider_activation() {
     let rendering_host = engine
         .create_presentation_host()
         .expect("rendering presentation host must mint");
-    let predecessor = engine
-        .create_platform_provider()
-        .expect("predecessor platform provider must mint");
+    let recorder = engine
+        .create_backend_ingress_provider(rendering_host, PointerEdgeSequence::new(0))
+        .expect("joined predecessor must mint");
+    let mut drained = recorder.drain();
     let replacement = engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("platform provider replacement must begin");
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined provider replacement must begin");
+    let (mut ticket, _) = replacement.into_parts();
     let frozen_frontier = engine.viewport.platform_provider_frontier();
     let mut prelude = engine
         .begin_host_frame(rendering_host)
@@ -1442,8 +1478,8 @@ fn host_frame_prelude_cannot_cross_platform_provider_activation() {
         .expect("test host frame must submit an observation");
 
     let successor = engine
-        .finish_platform_provider_replacement(replacement.ticket())
-        .expect("replacement platform provider must activate");
+        .finish_backend_ingress_provider_replacement(&mut ticket, rendering_host)
+        .expect("replacement joined provider must activate");
     let current_frontier = engine.viewport.platform_provider_frontier();
 
     assert!(matches!(
@@ -1453,7 +1489,10 @@ fn host_frame_prelude_cannot_cross_platform_provider_activation() {
             current,
         }) if submitted == frozen_frontier.get() && current == current_frontier.get()
     ));
-    assert_eq!(engine.platform_provider(), Some(successor));
+    assert_eq!(
+        engine.platform_provider(),
+        Some(successor.lease().platform_provider())
+    );
 }
 
 #[test]

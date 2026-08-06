@@ -1258,7 +1258,7 @@ fn backend_provider_replacement_retries_with_a_live_presentation_host() {
 }
 
 #[test]
-fn platform_only_replacement_cannot_revoke_a_joined_backend_provider() {
+fn joined_replacement_revokes_all_lanes_and_cancels_owned_gesture() {
     let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
     let host = engine
         .create_presentation_host()
@@ -1310,34 +1310,6 @@ fn platform_only_replacement_cannot_revoke_a_joined_backend_provider() {
         )
         .expect("joined pointer stream must own the armed test gesture");
     assert!(matches!(outcome, InteractionOutcome::DragArmed { .. }));
-
-    let before_version = engine.version;
-    let before_tick = engine.last_reducer_tick;
-    let before_backend = engine.backend_ingress.clone();
-    let before_pointer = engine.pointer_journal.clone();
-    let before_interaction = engine.interaction.clone();
-    let before_viewport = engine.viewport.clone();
-    let before_focus = engine.viewport_focus.clone();
-    assert!(matches!(
-        engine.begin_platform_provider_replacement(joined.platform_provider()),
-        Err(EngineError::BackendIngress {
-            source: BackendIngressError::PlatformReplacementRequiresDrain { active },
-        }) if active == joined
-    ));
-    assert_eq!(engine.version, before_version);
-    assert_eq!(engine.last_reducer_tick, before_tick);
-    assert_eq!(engine.backend_ingress, before_backend);
-    assert_eq!(engine.pointer_journal, before_pointer);
-    assert_eq!(engine.interaction, before_interaction);
-    assert_eq!(engine.viewport, before_viewport);
-    assert_eq!(engine.viewport_focus, before_focus);
-    assert_eq!(engine.backend_ingress_provider(), Some(joined));
-    assert_eq!(engine.platform_provider(), Some(joined.platform_provider()));
-    assert_eq!(engine.pointer_provider(), Some(joined.pointer_provider()));
-    assert!(matches!(
-        engine.interaction().status(),
-        InteractionStatus::Armed { .. }
-    ));
 
     let _ = record_empty_backend_checkpoint(&mut recorder);
     let mut drained = recorder.drain();

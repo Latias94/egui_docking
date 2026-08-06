@@ -836,6 +836,16 @@ impl DockspaceDocumentSession {
             .create_surface_local_pointer_provider(scope, committed_through)
     }
 
+    /// Validates one surface-local producer scope through this session owner.
+    #[doc(hidden)]
+    pub fn adapter_validate_surface_local_pointer_provider_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<(), EngineError> {
+        self.engine
+            .validate_surface_local_pointer_provider_scope(scope)
+    }
+
     /// Retires one desktop-global pointer provider through this session owner.
     #[doc(hidden)]
     pub fn adapter_retire_pointer_provider(

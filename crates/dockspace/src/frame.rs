@@ -63,7 +63,7 @@ use crate::platform::{
 };
 use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
-    PlatformProviderAuthorityFrontier, PlatformProviderReplacementTicket,
+    PlatformProviderAuthorityFrontier, PlatformProviderReservation,
 };
 use crate::presentation_observation::{NativeStagingOwner, NativeStagingResourceId};
 use crate::retention::{BindingRetentionManifest, EffectRetentionManifest};
@@ -512,7 +512,7 @@ impl ViewportCoordinator {
     /// quiescence, when one exists.
     pub(crate) const fn pending_platform_provider_replacement(
         &self,
-    ) -> Option<PlatformProviderReplacementTicket> {
+    ) -> Option<PlatformProviderReservation> {
         self.platform_provider.pending_replacement()
     }
 
@@ -520,7 +520,7 @@ impl ViewportCoordinator {
     pub(crate) fn begin_platform_provider_replacement(
         &mut self,
         provider: PlatformObservationLease,
-    ) -> Result<PlatformProviderReplacementTicket, ViewportCoordinatorError> {
+    ) -> Result<PlatformProviderReservation, ViewportCoordinatorError> {
         let mut candidate = self.clone();
         candidate
             .platform_provider
@@ -609,7 +609,7 @@ impl ViewportCoordinator {
     /// Activates the exact successor reserved by a completed provider handoff.
     pub(crate) fn finish_platform_provider_replacement(
         &mut self,
-        ticket: PlatformProviderReplacementTicket,
+        ticket: PlatformProviderReservation,
     ) -> Result<PlatformObservationLease, ViewportCoordinatorError> {
         let mut candidate = self.clone();
         let provider = candidate
@@ -624,7 +624,7 @@ impl ViewportCoordinator {
     /// Abandons the reserved successor while preserving fail-closed platform state.
     pub(crate) fn abort_platform_provider_replacement(
         &mut self,
-        ticket: PlatformProviderReplacementTicket,
+        ticket: PlatformProviderReservation,
     ) -> Result<(), ViewportCoordinatorError> {
         let mut candidate = self.clone();
         candidate

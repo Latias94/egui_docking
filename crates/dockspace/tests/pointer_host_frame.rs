@@ -3347,7 +3347,7 @@ fn native_escape_requires_the_exact_current_viewport_incarnation() {
     assert_ne!(current, stale);
     publish_native_snapshot(&mut engine, &mut host, current);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
-    let provider = create_local_provider(&mut engine, &host);
+    let provider = create_native_provider(&mut engine, &host, current);
     let provider = &provider;
     let projection = interaction(&engine);
     let (close, point) = point_inside_tab_close(projection, ItemId::new(1));
@@ -7001,7 +7001,8 @@ fn semantically_identical_new_emission_does_not_invalidate_frame_begin_receipt()
 #[test]
 fn retiring_a_surface_local_presentation_host_retires_its_pointer_provider() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
-    let host = TestPresentationHost::new(&mut engine);
+    let mut host = TestPresentationHost::new(&mut engine);
+    publish_surface(&mut engine, &mut host, SURFACE, bounds());
     let retired = create_local_provider(&mut engine, &host);
     let retired = &retired;
 
@@ -7009,7 +7010,8 @@ fn retiring_a_surface_local_presentation_host_retires_its_pointer_provider() {
         .expect("presentation host retirement succeeds");
     assert_eq!(engine.pointer_provider(), None);
 
-    let successor = TestPresentationHost::new(&mut engine);
+    let mut successor = TestPresentationHost::new(&mut engine);
+    publish_surface(&mut engine, &mut successor, SURFACE, bounds());
     let replacement = create_local_provider(&mut engine, &successor);
     let replacement = &replacement;
     assert_ne!(replacement, retired);

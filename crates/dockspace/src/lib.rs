@@ -71,9 +71,7 @@ pub use close_plan::{
     SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
     SurfaceRehomeTarget,
 };
-pub use platform_provider::{
-    PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderReplacementTicket,
-};
+pub use platform_provider::{PlatformObservationAuthorityError, PlatformObservationLease};
 pub use scene_compiler::{PresentationCompilationError, SceneCompilationError};
 pub use surface_recovery::{
     ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason,

@@ -505,6 +505,92 @@ fn dropped_output_retires_without_granting_interaction_authority() {
 }
 
 #[test]
+fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
+    let (workspace, _) = tabs_workspace([A]);
+    let mut host = DeterministicHost::new(workspace);
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the logical surface measurements are complete");
+    });
+    let logical = host.run(|frame| {
+        assert!(
+            frame
+                .paint_plan(SURFACE)
+                .expect("the logical paint phase is available")
+                .is_some()
+        );
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the logical output was painted");
+    });
+    host.observe_painted_outputs(logical);
+
+    host.session
+        .enable_native_platform()
+        .expect("the deterministic host enrolls one native platform provider");
+    let registration = host.run(|frame| {
+        frame
+            .register_native_root(SURFACE, WINDOW)
+            .expect("the logical surface binds to one native window");
+    });
+    let lease = match registration.inputs() {
+        [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
+        outcomes => panic!("expected one native registration, got {outcomes:?}"),
+    };
+    let physical =
+        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture physical bounds are valid");
+    let scale = ScaleFactor::new(1.0).expect("the fixture scale is valid");
+    let snapshot = host
+        .session
+        .capture_native_snapshot([(lease, NativeWindowFacts::ready(physical, scale))])
+        .expect("the host captures one complete native roster");
+    host.run(|frame| {
+        frame
+            .publish_native_snapshot(snapshot)
+            .expect("the ready native snapshot joins the host frame");
+    });
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("native coordinate authority admits fresh measurements");
+    });
+    let mut native = host.run(|frame| {
+        assert!(
+            frame
+                .paint_plan(SURFACE)
+                .expect("the native paint phase is available")
+                .is_some()
+        );
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the native output was painted");
+    });
+
+    assert!(matches!(
+        host.session.enable_surface_pointer(SURFACE),
+        Err(dockspace::runtime::DockspaceRuntimeError::Interaction(
+            DockspaceInteractionError::PresentationAuthorityUnavailable { surface: SURFACE }
+        ))
+    ));
+
+    let mut outputs = native.take_painted_outputs();
+    assert_eq!(outputs.len(), 1);
+    let output = outputs.pop().expect("the native paint emits one output");
+    host.session
+        .settle_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the renderer presents the exact native output");
+    host.run(|_| {});
+    host.session
+        .enable_surface_pointer(SURFACE)
+        .expect("the finally presented native endpoint admits pointer input");
+}
+
+#[test]
 fn rejected_settlement_returns_its_affine_output_for_retry() {
     let (workspace, _) = tabs_workspace([A]);
     let mut host = DeterministicHost::new(workspace);
@@ -975,6 +1061,10 @@ impl InteractionFixture {
                 .expect("the native surface plan was painted");
         });
         self.host.observe_painted_outputs(paint);
+        self.host
+            .session
+            .enable_surface_pointer(SURFACE)
+            .expect("the presented native endpoint admits one exact local pointer provider");
         self.source = source.expect("the native source receiver is present");
         self.target = target.expect("the native target receiver is present");
         lease

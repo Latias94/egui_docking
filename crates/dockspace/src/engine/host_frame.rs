@@ -889,7 +889,7 @@ impl CoreHostFrame {
             candidate.validate_pointer_provider_scope(provider.scope())?;
         }
         if let Some(local) = pointer_provider.and_then(|lease| lease.scope().surface_local())
-            && !presentation_scopes.contains_key(&local.host())
+            && local.host() != presentation_host
         {
             return Err(EngineError::PointerProviderHostOutsideFrameScope {
                 provider: pointer_provider.expect("surface-local provider was present"),

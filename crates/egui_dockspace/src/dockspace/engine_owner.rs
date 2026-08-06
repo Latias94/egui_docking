@@ -107,6 +107,11 @@ pub(super) trait EguiEngineOwner {
         committed_through: PointerEdgeSequence,
     ) -> Result<SurfaceLocalPointerProvider, EngineError>;
 
+    fn validate_surface_local_pointer_provider_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<(), EngineError>;
+
     fn retire_quiesced_surface_local_pointer_provider(
         &mut self,
         receipt: &mut SurfaceLocalPointerDrainReceipt,
@@ -272,6 +277,13 @@ impl EguiEngineOwner for DockEngine {
         DockEngine::create_surface_local_pointer_provider(self, scope, committed_through)
     }
 
+    fn validate_surface_local_pointer_provider_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<(), EngineError> {
+        DockEngine::validate_surface_local_pointer_provider_scope(self, scope)
+    }
+
     fn retire_quiesced_surface_local_pointer_provider(
         &mut self,
         receipt: &mut SurfaceLocalPointerDrainReceipt,
@@ -407,6 +419,13 @@ impl EguiEngineOwner for DockspaceDocumentSession {
         committed_through: PointerEdgeSequence,
     ) -> Result<SurfaceLocalPointerProvider, EngineError> {
         self.adapter_create_surface_local_pointer_provider(scope, committed_through)
+    }
+
+    fn validate_surface_local_pointer_provider_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<(), EngineError> {
+        self.adapter_validate_surface_local_pointer_provider_scope(scope)
     }
 
     fn retire_quiesced_surface_local_pointer_provider(

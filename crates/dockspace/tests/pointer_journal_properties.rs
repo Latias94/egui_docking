@@ -2,7 +2,7 @@ mod support;
 
 use dockspace::command::WorkspaceCommand;
 use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput};
-use dockspace::geometry::LogicalPoint;
+use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::{Authority, PointerId};
@@ -18,12 +18,18 @@ use dockspace::pointer_receiver::{
 use dockspace::policy::DockPolicy;
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
-use support::{TestPresentationHost, complete_host_frame_with_retained_or_unavailable};
+use support::{
+    TestPresentationHost, complete_host_frame_with_retained_or_unavailable, publish_surface,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const SEMANTIC_SOURCE: StableInputSourceId = StableInputSourceId::new(401);
 const PROPERTY_SEED: u64 = 0xD0C5_5A5A_2026_0726;
+
+fn bounds() -> LogicalRect {
+    LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("property surface bounds are valid")
+}
 
 fn workspace() -> (Workspace, NodeId) {
     let mut builder = Workspace::builder();
@@ -166,6 +172,7 @@ proptest! {
         let mut engine = DockEngine::new(workspace, DockPolicy::default())
             .expect("property engine is valid");
         let mut host = TestPresentationHost::new(&mut engine);
+        publish_surface(&mut engine, &mut host, SURFACE, bounds());
         let provider = create_provider(&mut engine, &host, 0);
 
         if !prefix.is_empty() {
@@ -333,6 +340,7 @@ proptest! {
         let mut engine = DockEngine::new(workspace, DockPolicy::default())
             .expect("property engine is valid");
         let mut host = TestPresentationHost::new(&mut engine);
+        publish_surface(&mut engine, &mut host, SURFACE, bounds());
         let mut retired = Vec::new();
         let mut last_stream_incarnation = 0_u64;
 

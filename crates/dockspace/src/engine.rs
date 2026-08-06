@@ -146,7 +146,7 @@ use crate::platform::{
 };
 use crate::platform_provider::{
     PlatformObservationAuthorityError, PlatformObservationLease, PlatformProviderAuthorityFrontier,
-    PlatformProviderReplacementTicket,
+    PlatformProviderReservation,
 };
 use crate::pointer_journal::{
     DesktopRouteFact, DesktopRoutePresentationError, DesktopRouteValidation, PointerCaptureOwner,
@@ -223,10 +223,10 @@ use crate::tab_strip::{
 use crate::transaction::WorkspaceTransaction;
 use crate::transition::{
     BackendIngressProviderReplacementStart, ContentCloseRequestRejection, EngineTransition,
-    EngineTransitionParts, InputOutcome, InputPriority, PlatformProviderReplacementStart,
-    PresentationHostRetirementOutcome, ReducedInput, SurfaceCloseRequestRejection,
-    SurfaceContributionOutcome, SurfaceContributionRejection, SurfaceContributionUnavailableReason,
-    SurfaceSceneDelta, SurfaceSceneStateKind, WorkspaceVersion,
+    EngineTransitionParts, InputOutcome, InputPriority, PresentationHostRetirementOutcome,
+    ReducedInput, SurfaceCloseRequestRejection, SurfaceContributionOutcome,
+    SurfaceContributionRejection, SurfaceContributionUnavailableReason, SurfaceSceneDelta,
+    SurfaceSceneStateKind, WorkspaceVersion,
 };
 use crate::validation::WorkspaceValidationErrors;
 use crate::viewport::{ViewportBinding, ViewportRole, WindowToken};
@@ -867,6 +867,51 @@ pub enum EngineError {
         surface: SurfaceId,
         /// Host which owns the current active presentation stream.
         owner: PresentationHostLease,
+    },
+    /// A surface-local provider was requested before any presentation stream
+    /// owned the exact surface endpoint.
+    #[error(
+        "surface-local pointer host {host:?} cannot authorize surface {surface:?} before an active presentation stream exists"
+    )]
+    PointerProviderSurfaceAuthorityUnavailable {
+        /// Host requesting a local input lane.
+        host: PresentationHostLease,
+        /// Surface whose first concrete output has not established authority.
+        surface: SurfaceId,
+    },
+    /// A surface-local provider named a different endpoint incarnation from the
+    /// active presentation stream.
+    #[error(
+        "surface-local pointer endpoint {submitted:?} for host {host:?} and surface {surface:?} does not match active presentation endpoint {active:?}"
+    )]
+    PointerProviderSurfaceEndpointMismatch {
+        /// Host requesting a local input lane.
+        host: PresentationHostLease,
+        /// Surface shared by both endpoint descriptions.
+        surface: SurfaceId,
+        /// Endpoint supplied by the pointer producer.
+        submitted: SurfaceLocalPointerEndpoint,
+        /// Endpoint owned by the active presentation stream.
+        active: HostPresentationEndpoint,
+    },
+    /// The presentation stream currently owning a surface endpoint has not
+    /// crossed the final-presentation boundary for the retained hit graph.
+    #[error(
+        "surface-local pointer host {host:?} cannot authorize surface {surface:?}: active presentation {active_stream:?}/{active_endpoint:?} differs from presented interaction authority {presented_stream:?}/{presented_endpoint:?}"
+    )]
+    PointerProviderSurfacePresentationMismatch {
+        /// Host requesting a local input lane.
+        host: PresentationHostLease,
+        /// Surface whose active and finally presented streams disagree.
+        surface: SurfaceId,
+        /// Stream currently selected by the presentation ledger.
+        active_stream: HostPresentationStreamId,
+        /// Endpoint currently selected by the presentation ledger.
+        active_endpoint: HostPresentationEndpoint,
+        /// Stream which owns the retained interaction projection.
+        presented_stream: HostPresentationStreamId,
+        /// Endpoint which owns the retained interaction projection.
+        presented_endpoint: HostPresentationEndpoint,
     },
     /// A surface-local retirement attempted to delegate work that its local adapter cannot own.
     #[error(

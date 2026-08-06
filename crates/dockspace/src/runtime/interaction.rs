@@ -6,6 +6,7 @@ use super::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceRuntimeError, DockspaceSession,
     SurfacePaintPlan, UniformSurfaceMetrics,
 };
+use crate::engine::EngineError;
 use crate::geometry::{LogicalPoint, LogicalRect};
 use crate::ids::SurfaceId;
 use crate::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
@@ -14,7 +15,7 @@ use crate::pointer_journal::{
     PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
     PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
     ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
-    SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider, SurfaceLocalPointerScope,
+    SurfaceLocalPointerProvider,
 };
 use crate::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
@@ -593,7 +594,7 @@ impl DockspaceSession {
         self.presentation.settle(output, result)
     }
 
-    /// Enables one logical surface as the sole surface-local pointer endpoint.
+    /// Enables one presented surface as the sole surface-local pointer endpoint.
     ///
     /// # Errors
     ///
@@ -611,18 +612,22 @@ impl DockspaceSession {
                 Err(DockspaceInteractionError::PointerProviderAlreadyActive.into())
             };
         }
-        if self.engine.interaction_projection(surface).is_none() {
-            return Err(
-                DockspaceInteractionError::PresentationAuthorityUnavailable { surface }.into(),
-            );
-        }
-        let provider = self.engine.create_surface_local_pointer_provider(
-            SurfaceLocalPointerScope::new(
-                self.presentation_host,
-                SurfaceLocalPointerEndpoint::Logical(surface),
-            ),
+        let provider = match self.engine.create_current_surface_local_pointer_provider(
+            self.presentation_host,
+            surface,
             PointerEdgeSequence::new(0),
-        )?;
+        ) {
+            Ok(provider) => provider,
+            Err(
+                EngineError::PointerProviderSurfaceAuthorityUnavailable { .. }
+                | EngineError::PointerProviderSurfacePresentationMismatch { .. },
+            ) => {
+                return Err(
+                    DockspaceInteractionError::PresentationAuthorityUnavailable { surface }.into(),
+                );
+            }
+            Err(source) => return Err(source.into()),
+        };
         self.pointer = Some(RuntimePointerState::new(provider, surface));
         Ok(())
     }

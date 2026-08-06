@@ -1011,8 +1011,10 @@ fn provider_retirement_suite() -> CoreProtocolTraceSuite {
 }
 
 fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
-    let mut suite = minimal_suite();
+    let mut suite = local_pointer_setup_suite();
+    suite.traces.truncate(1);
     let trace = &mut suite.traces[0];
+    trace.boundaries.truncate(3);
     trace.id = CoreProtocolTraceId("retired-pointer-provider-compaction".into());
     trace.provenance.path = "docs/knowledge/pointer-edge-journal-contract.md".into();
     trace.provenance.test = "PEJ-03 implicit host retirement followed by affine drain".into();
@@ -1022,18 +1024,42 @@ fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
     trace.provenance.deliberate_strengthening =
         "The later drain is retention-only compaction and reuses the host-retirement reducer tick."
             .into();
-    trace.boundaries[0].provider = Some(PointerProviderIngress::Activate {
-        scope: PointerProviderScopeIngress::SurfaceLocal {
-            surface: SurfaceKey(1),
-        },
-        committed_through: 0,
-    });
-    trace.boundaries[0].events = vec![HostFrameEvent::PointerJournal {
-        previous: 0,
-        through: 0,
-        edges: vec![],
-    }];
+    trace.expected_final = minimal_suite()
+        .traces
+        .into_iter()
+        .next()
+        .expect("minimal suite has one trace")
+        .expected_final;
     trace.boundaries.extend([
+        CoreProtocolTraceBoundary {
+            id: BoundaryId("activate-provider".into()),
+            provider: Some(PointerProviderIngress::Activate {
+                scope: PointerProviderScopeIngress::SurfaceLocal {
+                    surface: SurfaceKey(1),
+                },
+                committed_through: 0,
+            }),
+            presentation_observation: PresentationObservationIngress::NoUpdate {},
+            presentation_dispositions: vec![painted_surface(1)],
+            events: vec![HostFrameEvent::PointerJournal {
+                previous: 0,
+                through: 0,
+                edges: vec![],
+            }],
+            surface_contributions: vec![retained()],
+            expected: ExpectedTransition {
+                interactive_surface_roster: vec![SurfaceKey(1)],
+                ..empty_expected(
+                    4,
+                    1,
+                    ExpectedSurfaceContributionOutcome::Retained {
+                        surface: SurfaceKey(1),
+                    },
+                    ExpectedInteractionState::Idle,
+                    false,
+                )
+            },
+        },
         CoreProtocolTraceBoundary {
             id: BoundaryId("retire-presentation-host".into()),
             provider: Some(PointerProviderIngress::RetirePresentationHost {}),
@@ -1042,7 +1068,7 @@ fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
             events: vec![],
             surface_contributions: vec![],
             expected: ExpectedTransition {
-                tick: ReducerTick(2),
+                tick: ReducerTick(5),
                 before: VersionExpectation {
                     epoch: 0,
                     revision: 0,
@@ -1060,7 +1086,16 @@ fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
                 interaction_events: vec![],
                 platform_effects: vec![],
                 focus_delta: Default::default(),
-                surface_scene_deltas: vec![],
+                surface_scene_deltas: vec![presentation_scene_delta(
+                    1,
+                    presented_scene_state(
+                        ExpectedSurfaceSceneStateKind::Ready,
+                        headless_stream(1),
+                        1,
+                        0,
+                    ),
+                    scene_state(ExpectedSurfaceSceneStateKind::Ready),
+                )],
                 interaction: ExpectedInteractionState::Idle,
                 interactive_surface_roster: vec![],
                 published_state_changed: true,
@@ -1082,7 +1117,7 @@ fn retired_provider_compaction_suite() -> CoreProtocolTraceSuite {
             events: vec![],
             surface_contributions: vec![],
             expected: ExpectedTransition {
-                tick: ReducerTick(2),
+                tick: ReducerTick(5),
                 before: VersionExpectation {
                     epoch: 0,
                     revision: 0,
@@ -6228,7 +6263,7 @@ fn retired_surface_local_provider_compaction_reuses_the_retirement_tick() {
             .iter()
             .map(|boundary| boundary.expected.tick.0)
             .collect::<Vec<_>>(),
-        vec![1, 2, 2]
+        vec![1, 2, 3, 4, 5, 5]
     );
     replay_core_protocol_trace_suite(&decoded).expect("provider compaction trace replays");
 }

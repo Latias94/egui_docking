@@ -533,11 +533,23 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with_child_outer(child_outer_available: bool) -> Fixture {
+    fixture_with_provider(child_outer_available, false)
+}
+
+fn joined_fixture() -> Fixture {
+    fixture_with_provider(true, true)
+}
+
+fn fixture_with_provider(child_outer_available: bool, joined: bool) -> Fixture {
     let (workspace, child_root_node) = workspace();
     let initial_items = workspace.item_multiset();
     let mut engine =
         DockEngine::new(workspace, DockPolicy::default()).expect("test engine must be valid");
-    let mut presentation_host = TestPresentationHost::new(&mut engine);
+    let mut presentation_host = if joined {
+        TestPresentationHost::new_joined(&mut engine)
+    } else {
+        TestPresentationHost::new(&mut engine)
+    };
     let provider = presentation_host.platform_provider();
     publish_scene(&mut engine, &mut presentation_host);
     let expected = engine.version();
@@ -673,7 +685,14 @@ fn request_replacement(transition: &EngineTransition) -> (EffectId, ViewportBind
 }
 
 fn pending_fixture() -> PendingFixture {
-    let mut fixture = fixture();
+    pending_fixture_from(fixture())
+}
+
+fn pending_joined_fixture() -> PendingFixture {
+    pending_fixture_from(joined_fixture())
+}
+
+fn pending_fixture_from(mut fixture: Fixture) -> PendingFixture {
     let child_binding = fixture.child_binding;
     let destroyed = publish_destroyed_child(
         &mut fixture.engine,
@@ -713,6 +732,28 @@ fn pending_fixture() -> PendingFixture {
         replacement_binding,
         replacement_effect,
     }
+}
+
+fn replace_joined_backend(fixture: &mut Fixture) -> EngineTransition {
+    let predecessor = fixture.presentation_host.take_backend_ingress();
+    let mut drained = predecessor.drain();
+    let replacement = fixture
+        .engine
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined provider replacement must preserve lifecycle authority");
+    assert!(drained.is_consumed());
+    let (mut ticket, transition) = replacement.into_parts();
+    let successor = fixture
+        .engine
+        .finish_backend_ingress_provider_replacement(&mut ticket, fixture.presentation_host.lease())
+        .expect("joined successor lanes must activate atomically");
+    assert!(ticket.is_consumed());
+    fixture.presentation_host.adopt_backend_ingress(
+        &fixture.engine,
+        successor,
+        drained.pointer_through(),
+    );
+    transition
 }
 
 fn assert_recovery_presentation_scope(
@@ -926,7 +967,7 @@ enum ProviderReplacementCheckpoint {
 fn pending_at_provider_replacement_checkpoint(
     checkpoint: ProviderReplacementCheckpoint,
 ) -> (PendingFixture, EffectId) {
-    let mut pending = pending_fixture();
+    let mut pending = pending_joined_fixture();
     match checkpoint {
         ProviderReplacementCheckpoint::AwaitingHidden => {
             let last_effect = pending.replacement_effect;
@@ -1881,7 +1922,7 @@ fn replacement_first_live_presentation_resolves_pending_without_moving_topology(
 }
 
 #[test]
-fn provider_replacement_terminates_every_pre_admission_recovery_bringup() {
+fn joined_provider_replacement_terminates_every_pre_admission_recovery_bringup() {
     for checkpoint in [
         ProviderReplacementCheckpoint::AwaitingHidden,
         ProviderReplacementCheckpoint::PreShowPresentation,
@@ -1891,16 +1932,8 @@ fn provider_replacement_terminates_every_pre_admission_recovery_bringup() {
     ] {
         let (mut pending, last_effect) = pending_at_provider_replacement_checkpoint(checkpoint);
         let replacement = pending.replacement_binding;
-        let predecessor = pending.fixture.presentation_host.platform_provider();
-
-        let start = pending
-            .fixture
-            .engine
-            .begin_platform_provider_replacement(predecessor)
-            .unwrap_or_else(|error| {
-                panic!("provider replacement must begin at {checkpoint:?}: {error}")
-            });
-        assert!(start.transition().platform_effects().is_empty());
+        let transition = replace_joined_backend(&mut pending.fixture);
+        assert!(transition.platform_effects().is_empty());
         assert_eq!(
             pending
                 .fixture
@@ -1916,15 +1949,6 @@ fn provider_replacement_terminates_every_pre_admission_recovery_bringup() {
         );
         assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 
-        let successor = pending
-            .fixture
-            .engine
-            .finish_platform_provider_replacement(start.ticket())
-            .expect("the exact handoff ticket must activate its successor");
-        pending
-            .fixture
-            .presentation_host
-            .adopt_platform_provider_replacement(successor);
         assert!(
             pending
                 .fixture

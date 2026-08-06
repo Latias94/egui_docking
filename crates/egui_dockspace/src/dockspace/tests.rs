@@ -180,6 +180,42 @@ fn run_authoritative_automatic_frame(
     run_authoritative_automatic_input(context, dockspace, panes, input())
 }
 
+fn establish_outer_pointer_provider(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut dyn PaneView,
+) {
+    let bootstrap = run_authoritative_automatic_frame(context, dockspace, panes);
+    assert!(
+        bootstrap
+            .transitions()
+            .iter()
+            .all(|transition| transition.presentation_emissions().is_empty()),
+        "the bootstrap frame measures without claiming a painted output"
+    );
+    let painted = run_authoritative_automatic_frame(context, dockspace, panes);
+    assert!(
+        painted
+            .transitions()
+            .iter()
+            .any(|transition| !transition.presentation_emissions().is_empty()),
+        "the next frame must establish one concrete presentation stream"
+    );
+    let _ = run_authoritative_automatic_frame(context, dockspace, panes);
+    assert!(
+        dockspace.pointer_input.provider().is_none(),
+        "automatic presentation does not own the explicit outer pointer lane"
+    );
+    EguiEngineOwner::validate_surface_local_pointer_provider_scope(
+        &dockspace.engine,
+        SurfaceLocalPointerScope::new(
+            dockspace.presentation_host,
+            SurfaceLocalPointerEndpoint::Logical(SURFACE),
+        ),
+    )
+    .expect("the exact active headless presentation stream authorizes outer enrollment");
+}
+
 fn run_authoritative_automatic_input(
     context: &Context,
     dockspace: &mut Dockspace,
@@ -534,8 +570,16 @@ fn outer_frame_without_a_surface_callback_submits_an_empty_pointer_interval() {
     let mut dockspace = Dockspace::builder("empty-outer-pointer-interval", workspace())
         .build()
         .expect("facade builds");
+    let context = context();
+    let mut panes = TestPanes;
+    establish_outer_pointer_provider(&context, &mut dockspace, &mut panes);
+    let next_sequence = dockspace.last_host_frame.map_or(1, |key| {
+        key.sequence()
+            .checked_add(1)
+            .expect("fixture sequence advances")
+    });
     let frame = dockspace
-        .begin_outer_frame(EguiFrameScheduleKey::new(1, 0))
+        .begin_outer_frame(EguiFrameScheduleKey::new(next_sequence, 0))
         .expect("outer frame derives its physical roster");
     let provider = frame
         .inner
@@ -560,8 +604,14 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
     let mut dockspace = Dockspace::builder("missing-outer-pointer-capture", workspace())
         .build()
         .expect("facade builds");
+    establish_outer_pointer_provider(&context, &mut dockspace, &mut panes);
+    let next_sequence = dockspace.last_host_frame.map_or(1, |key| {
+        key.sequence()
+            .checked_add(1)
+            .expect("fixture sequence advances")
+    });
     let mut frame = dockspace
-        .begin_outer_frame(EguiFrameScheduleKey::new(1, 0))
+        .begin_outer_frame(EguiFrameScheduleKey::new(next_sequence, 0))
         .expect("outer frame derives its physical roster");
     let mut paint = None;
     let raw_input = input();
@@ -646,6 +696,9 @@ fn repeated_surface_local_abort_keeps_pointer_retention_constant() {
     let mut dockspace = Dockspace::builder("pointer-abort-soak", workspace())
         .build()
         .expect("facade builds");
+    let context = context();
+    let mut panes = TestPanes;
+    establish_outer_pointer_provider(&context, &mut dockspace, &mut panes);
 
     for _ in 0..1_000 {
         dockspace

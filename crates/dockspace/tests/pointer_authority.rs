@@ -1,7 +1,7 @@
 mod support;
 
 use dockspace::engine::{CoreHostFrame, DockEngine};
-use dockspace::geometry::LogicalPoint;
+use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
@@ -16,7 +16,9 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::transition::EngineTransition;
-use support::{TestPresentationHost, complete_host_frame_with_retained_or_unavailable};
+use support::{
+    TestPresentationHost, complete_host_frame_with_retained_or_unavailable, publish_surface,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -32,7 +34,13 @@ impl Fixture {
     fn new() -> Self {
         let mut engine =
             DockEngine::new(workspace(), DockPolicy::default()).expect("test engine is valid");
-        let host = TestPresentationHost::new(&mut engine);
+        let mut host = TestPresentationHost::new(&mut engine);
+        publish_surface(
+            &mut engine,
+            &mut host,
+            SURFACE,
+            LogicalRect::new(0.0, 0.0, 320.0, 180.0).expect("fixture bounds are valid"),
+        );
         let provider = create_provider(&mut engine, &host);
         Self {
             engine,

@@ -12,7 +12,9 @@ use dockspace::effect::{
     EffectIndeterminateReason, EffectPhase, EffectRequest, EffectResult, EffectTransition,
     EffectUnsupportedReason, PlatformEffect, PlatformEffectEmission,
 };
-use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput};
+use dockspace::engine::{
+    BackendIngressProgress, CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
+};
 use dockspace::frame::{
     BindingRetirementOrigin, BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest,
     RecoveryPendingStatus,
@@ -86,6 +88,14 @@ fn submit_test_input(
     fixture: &mut Fixture,
     input: EngineInput,
 ) -> Result<EngineTransition, EngineError> {
+    if fixture.presentation_host.has_joined_backend() {
+        return support::submit_input(
+            &mut fixture.engine,
+            &mut fixture.presentation_host,
+            TEST_INPUT_SOURCE,
+            input,
+        );
+    }
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE)
         .append(&mut frame, input)
@@ -99,6 +109,14 @@ fn submit_test_inputs(
     fixture: &mut Fixture,
     inputs: impl IntoIterator<Item = EngineInput>,
 ) -> Result<EngineTransition, EngineError> {
+    if fixture.presentation_host.has_joined_backend() {
+        return support::submit_inputs(
+            &mut fixture.engine,
+            &mut fixture.presentation_host,
+            TEST_INPUT_SOURCE,
+            inputs,
+        );
+    }
     let mut stream = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
     let mut frame = fixture.presentation_host.begin(&fixture.engine);
     for input in inputs {
@@ -178,6 +196,9 @@ struct Fixture {
 }
 
 fn stage_pointer_checkpoint(fixture: &Fixture, frame: &mut CoreHostFrame) {
+    if fixture.presentation_host.has_joined_backend() {
+        return;
+    }
     let Some(provider) = fixture.engine.pointer_provider() else {
         return;
     };
@@ -296,6 +317,24 @@ fn fixture() -> Fixture {
     policy.set_allow_native_surfaces(true);
     let mut engine = DockEngine::new(workspace, policy).expect("test engine must be valid");
     let presentation_host = support::TestPresentationHost::new(&mut engine);
+    Fixture {
+        engine,
+        presentation_host,
+        source_tabs,
+        source_binding: None,
+        host_binding: None,
+        input_generation: 0,
+        pointer_sequence: 0,
+        close_generations: BTreeMap::new(),
+    }
+}
+
+fn joined_fixture() -> Fixture {
+    let (workspace, source_tabs) = base_workspace();
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut engine = DockEngine::new(workspace, policy).expect("test engine must be valid");
+    let presentation_host = support::TestPresentationHost::new_joined(&mut engine);
     Fixture {
         engine,
         presentation_host,
@@ -1066,29 +1105,44 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
             .expect("source desktop point must be finite"),
         source_point,
     ));
-    let provider = fixture
-        .engine
-        .create_pointer_provider(
-            PointerProviderScope::DesktopGlobal,
-            PointerEdgeSequence::new(fixture.pointer_sequence),
-        )
-        .expect("desktop-global pointer provider must be admitted");
-
-    let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    frame
-        .submit_pointer_journal(
-            provider,
-            pointer_journal(
-                fixture.pointer_sequence,
-                PointerEdgeKind::ButtonPressed(PointerButton::Primary),
-                PointerEdgeLocation::Desktop {
-                    route: source_route,
-                },
-                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(source_binding)),
-            ),
-        )
-        .expect("journal source press must stage");
+    let joined = fixture.presentation_host.has_joined_backend();
+    let provider = if joined {
+        fixture
+            .engine
+            .pointer_provider()
+            .expect("joined backend must retain its desktop-global pointer provider")
+    } else {
+        fixture
+            .engine
+            .create_pointer_provider(
+                PointerProviderScope::DesktopGlobal,
+                PointerEdgeSequence::new(fixture.pointer_sequence),
+            )
+            .expect("desktop-global pointer provider must be admitted")
+    };
+    let press = pointer_journal(
+        fixture.pointer_sequence,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        PointerEdgeLocation::Desktop {
+            route: source_route,
+        },
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+    );
+    let mut frame = if joined {
+        let (frame, progress) =
+            fixture
+                .presentation_host
+                .begin_joined_pointer_frame(&fixture.engine, [], press);
+        assert_eq!(progress, BackendIngressProgress::ReceiverReceiptsRequired);
+        frame
+    } else {
+        let mut frame = fixture.presentation_host.begin(&fixture.engine);
+        frame
+            .submit_pointer_journal(provider, press)
+            .expect("journal source press must stage");
+        frame
+    };
     let candidate = frame
         .pointer_receiver_candidates()
         .expect("journal source press must freeze one receiver candidate")
@@ -1103,19 +1157,27 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
         PointerReceiverDeliveryDisposition::Dock(source_receiver),
     )
     .expect("journal source press must bind to the presented tab");
-    frame
-        .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(
-                PointerReceiverObservation::Presented(
-                    PresentedPointerReceiverObservation::new([
-                        PointerReceiverProbeReceipt::Delivery(delivery),
-                    ])
-                    .expect("journal source press must answer delivery"),
-                ),
+    let receipts = PointerReceiverReceiptBatch::new([candidate.receipt(
+        PointerReceiverObservation::Presented(
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                delivery,
             )])
-            .expect("journal source press receipt set must be exact"),
-        )
-        .expect("journal source press receipt must stage");
+            .expect("journal source press must answer delivery"),
+        ),
+    )])
+    .expect("journal source press receipt set must be exact");
+    if joined {
+        assert_eq!(
+            frame
+                .submit_backend_pointer_receiver_receipts(receipts)
+                .expect("joined source press receipts must resume replay"),
+            BackendIngressProgress::Complete
+        );
+    } else {
+        frame
+            .submit_pointer_receiver_receipts(receipts)
+            .expect("journal source press receipt must stage");
+    }
     support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let pressed = fixture.presentation_host.finish(frame, &mut fixture.engine);
     let session = match pressed.reduced_pointer_edges()[0].interaction_outcomes() {
@@ -1133,24 +1195,43 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
 fn move_journal_drag_outside(fixture: &mut Fixture, drag: ActiveJournalDrag) -> EngineTransition {
     let outside =
         PhysicalPoint::new(1_850.0, 900.0).expect("outside-all desktop point must be finite");
-    let mut frame = fixture.presentation_host.begin(&fixture.engine);
-    frame
-        .submit_pointer_journal(
-            drag.provider,
-            pointer_journal(
-                fixture.pointer_sequence,
-                PointerEdgeKind::Moved,
-                PointerEdgeLocation::Desktop {
-                    route: outside_all_route(fixture, outside),
-                },
-                Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
-                Authority::Known(PointerCaptureOwner::Native(drag.source_binding)),
-            ),
-        )
-        .expect("outside-all move must stage");
-    frame
-        .submit_pointer_receiver_receipts(unknown_receiver_receipts(&frame))
-        .expect("outside-all move receiver facts must stage");
+    let joined = fixture.presentation_host.has_joined_backend();
+    let moved = pointer_journal(
+        fixture.pointer_sequence,
+        PointerEdgeKind::Moved,
+        PointerEdgeLocation::Desktop {
+            route: outside_all_route(fixture, outside),
+        },
+        Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(drag.source_binding)),
+    );
+    let mut frame = if joined {
+        let (frame, progress) =
+            fixture
+                .presentation_host
+                .begin_joined_pointer_frame(&fixture.engine, [], moved);
+        assert_eq!(progress, BackendIngressProgress::ReceiverReceiptsRequired);
+        frame
+    } else {
+        let mut frame = fixture.presentation_host.begin(&fixture.engine);
+        frame
+            .submit_pointer_journal(drag.provider, moved)
+            .expect("outside-all move must stage");
+        frame
+    };
+    let receipts = unknown_receiver_receipts(&frame);
+    if joined {
+        assert_eq!(
+            frame
+                .submit_backend_pointer_receiver_receipts(receipts)
+                .expect("joined outside-all receipts must resume replay"),
+            BackendIngressProgress::Complete
+        );
+    } else {
+        frame
+            .submit_pointer_receiver_receipts(receipts)
+            .expect("outside-all move receiver facts must stage");
+    }
     support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut frame);
     let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
     fixture.pointer_sequence += 1;
@@ -1332,34 +1413,51 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
         .preview()
         .expect("outside-all move must publish a native preview")
         .acknowledgement();
-    let mut release_frame = fixture.presentation_host.begin(&fixture.engine);
-    let mut input_stream = support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE);
-    input_stream
-        .append(
-            &mut release_frame,
-            EngineInput::AcknowledgePreview {
-                expected: fixture.engine.version(),
-                acknowledgement,
-            },
-        )
-        .expect("native preview acknowledgement must stage before release");
-    release_frame
-        .submit_pointer_journal(
-            drag.provider,
-            pointer_journal(
-                fixture.pointer_sequence,
-                PointerEdgeKind::ButtonReleased(PointerButton::Primary),
-                PointerEdgeLocation::Desktop {
-                    route: outside_all_route(fixture, outside),
-                },
-                Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
-                Authority::Known(PointerCaptureOwner::None),
-            ),
-        )
-        .expect("outside-all release must stage");
-    release_frame
-        .submit_pointer_receiver_receipts(unknown_receiver_receipts(&release_frame))
-        .expect("outside-all release receiver facts must stage");
+    let preview_acknowledgement = EngineInput::AcknowledgePreview {
+        expected: fixture.engine.version(),
+        acknowledgement,
+    };
+    let release = pointer_journal(
+        fixture.pointer_sequence,
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        PointerEdgeLocation::Desktop {
+            route: outside_all_route(fixture, outside),
+        },
+        Authority::Known(PointerEventDeliveryOwner::Native(drag.source_binding)),
+        Authority::Known(PointerCaptureOwner::None),
+    );
+    let joined = fixture.presentation_host.has_joined_backend();
+    let mut release_frame = if joined {
+        let (frame, progress) = fixture.presentation_host.begin_joined_pointer_frame(
+            &fixture.engine,
+            [preview_acknowledgement],
+            release,
+        );
+        assert_eq!(progress, BackendIngressProgress::ReceiverReceiptsRequired);
+        frame
+    } else {
+        let mut frame = fixture.presentation_host.begin(&fixture.engine);
+        support::TestInputStream::resume(&fixture.engine, TEST_INPUT_SOURCE)
+            .append(&mut frame, preview_acknowledgement)
+            .expect("native preview acknowledgement must stage before release");
+        frame
+            .submit_pointer_journal(drag.provider, release)
+            .expect("outside-all release must stage");
+        frame
+    };
+    let receipts = unknown_receiver_receipts(&release_frame);
+    if joined {
+        assert_eq!(
+            release_frame
+                .submit_backend_pointer_receiver_receipts(receipts)
+                .expect("joined outside-all release receipts must resume replay"),
+            BackendIngressProgress::Complete
+        );
+    } else {
+        release_frame
+            .submit_pointer_receiver_receipts(receipts)
+            .expect("outside-all release receiver facts must stage");
+    }
     support::complete_host_frame_with_retained_or_unavailable(&fixture.engine, &mut release_frame);
     let released = fixture
         .presentation_host
@@ -1377,10 +1475,12 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
             _ => None,
         })
         .expect("outside-all release must request one native create saga");
-    fixture
-        .engine
-        .retire_pointer_provider(drag.provider)
-        .expect("an idle pointer provider must retire after native release");
+    if !joined {
+        fixture
+            .engine
+            .retire_pointer_provider(drag.provider)
+            .expect("an idle pointer provider must retire after native release");
+    }
     assert!(
         fixture
             .engine
@@ -3073,20 +3173,19 @@ fn focus_generation_gap_does_not_orphan_native_create_activation() {
 }
 
 #[test]
-fn provider_replacement_aborts_native_create_and_its_focus_reservation() {
-    let mut fixture = fixture();
+fn joined_provider_replacement_aborts_native_create_before_ownership_transfer() {
+    let mut fixture = joined_fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
-    let provider = fixture
-        .engine
-        .platform_provider()
-        .expect("the native create must retain its platform provider");
+    let predecessor = fixture.presentation_host.take_backend_ingress();
+    let mut drained = predecessor.drain();
 
-    let _ = fixture
+    let _replacement = fixture
         .engine
-        .begin_platform_provider_replacement(provider)
-        .expect("provider replacement must abort in-flight native lifecycle work");
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined provider replacement must abort pre-transfer lifecycle work");
 
+    assert!(drained.is_consumed());
     assert!(
         fixture
             .engine
@@ -3098,17 +3197,19 @@ fn provider_replacement_aborts_native_create_and_its_focus_reservation() {
 }
 
 #[test]
-fn provider_replacement_preserves_transferred_native_create_until_first_live() {
-    let mut fixture = fixture();
+fn joined_provider_replacement_preserves_transferred_native_create_until_first_live() {
+    let mut fixture = joined_fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
     advance_native_create_to_ownership_transfer(&mut fixture, request);
-    let predecessor = fixture.presentation_host.platform_provider();
+    let predecessor = fixture.presentation_host.take_backend_ingress();
+    let mut drained = predecessor.drain();
 
     let replacement = fixture
         .engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("provider replacement must preserve transferred native ownership");
+        .begin_backend_ingress_provider_replacement(&mut drained)
+        .expect("joined provider replacement must preserve transferred native ownership");
+    assert!(drained.is_consumed());
     assert!(matches!(
         fixture
             .engine
@@ -3124,16 +3225,20 @@ fn provider_replacement_preserves_transferred_native_create_until_first_live() {
             .viewport()
             .viewport(SURFACE_NATIVE)
             .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Pending)
+        Some(ViewportAdmission::Pending)
     );
 
+    let (mut ticket, _) = replacement.into_parts();
     let successor = fixture
         .engine
-        .finish_platform_provider_replacement(replacement.ticket())
-        .expect("exact replacement ticket must activate its successor");
-    fixture
-        .presentation_host
-        .adopt_platform_provider_replacement(successor);
+        .finish_backend_ingress_provider_replacement(&mut ticket, fixture.presentation_host.lease())
+        .expect("joined successor lanes must activate atomically");
+    assert!(ticket.is_consumed());
+    fixture.presentation_host.adopt_backend_ingress(
+        &fixture.engine,
+        successor,
+        drained.pointer_through(),
+    );
     fixture.input_generation = 0;
     fixture.close_generations.clear();
 
@@ -3172,7 +3277,7 @@ fn provider_replacement_preserves_transferred_native_create_until_first_live() {
             .viewport()
             .viewport(SURFACE_NATIVE)
             .map(|record| record.admission()),
-        Some(dockspace::viewport_registry::ViewportAdmission::Admitted)
+        Some(ViewportAdmission::Admitted)
     );
 }
 

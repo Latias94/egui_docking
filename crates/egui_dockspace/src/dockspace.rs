@@ -38,7 +38,7 @@ use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
 };
 use dockspace::engine::{
-    CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineInput, HostFrameView,
+    CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineError, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationUnavailableReason, PreparedSurfaceContribution,
 };
 use dockspace::graph::Workspace;
@@ -971,14 +971,25 @@ impl Dockspace {
             self.abort_pointer_input()?;
         }
         if self.pointer_input.provider().is_none() {
+            let scope = SurfaceLocalPointerScope::new(
+                self.presentation_host,
+                SurfaceLocalPointerEndpoint::Logical(surface),
+            );
+            match EguiEngineOwner::validate_surface_local_pointer_provider_scope(
+                &self.engine,
+                scope,
+            ) {
+                Ok(()) => {}
+                Err(EngineError::PointerProviderSurfaceAuthorityUnavailable { .. }) => {
+                    return Ok(());
+                }
+                Err(source) => return Err(source.into()),
+            }
             let reservation = self.pointer_input.reserve_install()?;
             let watermark = PointerEdgeSequence::new(0);
             let provider = EguiEngineOwner::create_surface_local_pointer_provider(
                 &mut self.engine,
-                SurfaceLocalPointerScope::new(
-                    self.presentation_host,
-                    SurfaceLocalPointerEndpoint::Logical(surface),
-                ),
+                scope,
                 watermark,
             )?;
             self.pointer_input

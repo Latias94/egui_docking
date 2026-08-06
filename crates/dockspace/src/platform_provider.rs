@@ -90,13 +90,13 @@ impl PlatformObservationLease {
 /// dispatch lane and returns this ticket. The private fields prevent an
 /// adapter from manufacturing a quiescence boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PlatformProviderReplacementTicket {
+pub(crate) struct PlatformProviderReservation {
     authority_domain: EngineAuthorityDomainId,
     predecessor: PlatformObservationLease,
     successor: PlatformObservationLease,
 }
 
-impl PlatformProviderReplacementTicket {
+impl PlatformProviderReservation {
     const fn new(
         authority_domain: EngineAuthorityDomainId,
         predecessor: PlatformObservationLease,
@@ -107,12 +107,6 @@ impl PlatformProviderReplacementTicket {
             predecessor,
             successor,
         }
-    }
-
-    /// Returns the provider which was revoked when this handoff began.
-    #[must_use]
-    pub const fn predecessor(self) -> PlatformObservationLease {
-        self.predecessor
     }
 }
 
@@ -214,7 +208,7 @@ pub(crate) struct PlatformObservationAuthority {
     last_incarnation: PlatformProviderIncarnation,
     frontier: PlatformProviderAuthorityFrontier,
     active: Option<PlatformObservationLease>,
-    pending_replacement: Option<PlatformProviderReplacementTicket>,
+    pending_replacement: Option<PlatformProviderReservation>,
     terminal_retirement: Option<PlatformObservationLease>,
 }
 
@@ -237,7 +231,7 @@ impl PlatformObservationAuthority {
     }
 
     /// Returns the exact pending replacement reserved by the core.
-    pub(crate) const fn pending_replacement(&self) -> Option<PlatformProviderReplacementTicket> {
+    pub(crate) const fn pending_replacement(&self) -> Option<PlatformProviderReservation> {
         self.pending_replacement
     }
 
@@ -281,13 +275,12 @@ impl PlatformObservationAuthority {
     pub(crate) fn begin_replacement(
         &mut self,
         lease: PlatformObservationLease,
-    ) -> Result<PlatformProviderReplacementTicket, PlatformObservationAuthorityError> {
+    ) -> Result<PlatformProviderReservation, PlatformObservationAuthorityError> {
         self.require_active(lease)?;
         let incarnation = self.next_incarnation()?;
         let frontier = self.next_frontier()?;
         let successor = PlatformObservationLease::new(self.authority_domain, incarnation);
-        let ticket =
-            PlatformProviderReplacementTicket::new(self.authority_domain, lease, successor);
+        let ticket = PlatformProviderReservation::new(self.authority_domain, lease, successor);
 
         self.last_incarnation = incarnation;
         self.frontier = frontier;
@@ -299,7 +292,7 @@ impl PlatformObservationAuthority {
     /// Activates the reserved successor after typed predecessor quiescence.
     pub(crate) fn finish_replacement(
         &mut self,
-        ticket: PlatformProviderReplacementTicket,
+        ticket: PlatformProviderReservation,
     ) -> Result<PlatformObservationLease, PlatformObservationAuthorityError> {
         if ticket.authority_domain != self.authority_domain {
             return Err(
@@ -327,7 +320,7 @@ impl PlatformObservationAuthority {
     /// a fresh incarnation.
     pub(crate) fn abort_replacement(
         &mut self,
-        ticket: PlatformProviderReplacementTicket,
+        ticket: PlatformProviderReservation,
     ) -> Result<(), PlatformObservationAuthorityError> {
         if ticket.authority_domain != self.authority_domain {
             return Err(
@@ -669,7 +662,7 @@ mod tests {
             .begin_replacement(first)
             .expect("replacement must begin");
         let before = authority.clone();
-        let foreign = PlatformProviderReplacementTicket::new(
+        let foreign = PlatformProviderReservation::new(
             domain(2),
             forged_lease(domain(2), 1),
             forged_lease(domain(2), 2),

@@ -704,18 +704,54 @@ mod tests {
     fn runtime_surface_pointer_disable_drains_and_compacts_the_exact_producer() {
         let mut session = single_surface_session();
         let surface = SurfaceId::new(1);
-        let provider = session
-            .engine
-            .create_surface_local_pointer_provider(
-                crate::pointer_journal::SurfaceLocalPointerScope::new(
-                    session.presentation_host,
-                    crate::pointer_journal::SurfaceLocalPointerEndpoint::Logical(surface),
-                ),
-                crate::pointer_journal::PointerEdgeSequence::new(0),
+        let metrics = UniformSurfaceMetrics::new(
+            crate::geometry::LogicalRect::new(0.0, 0.0, 640.0, 480.0)
+                .expect("runtime test bounds validate"),
+            crate::geometry::LogicalSize::new(32.0, 24.0).expect("runtime test minimum validates"),
+            80.0,
+        )
+        .expect("runtime test metrics validate");
+        let mut measured = session
+            .begin_host_frame()
+            .expect("runtime measurement frame begins");
+        measured
+            .measure_surface(surface, metrics)
+            .expect("runtime surface measurements stage");
+        measured
+            .commit()
+            .expect("runtime surface measurements commit");
+        let mut painted = session
+            .begin_host_frame()
+            .expect("runtime paint frame begins");
+        painted
+            .confirm_surface_painted(surface)
+            .expect("runtime surface paint stages");
+        let mut report = painted.commit().expect("runtime surface paint emits");
+        let output = report
+            .take_painted_outputs()
+            .pop()
+            .expect("runtime paint emits one exact output");
+        session
+            .settle_presentation(output, SurfacePresentationResult::Presented)
+            .expect("runtime renderer presents the exact output");
+        let mut observed = session
+            .begin_host_frame()
+            .expect("runtime presentation observation frame begins");
+        observed
+            .complete_unpainted_surfaces(
+                crate::scene_manifest::MeasurementUnavailableReason::Deferred,
             )
+            .expect("runtime presentation observation settles the surface roster");
+        observed
+            .commit()
+            .expect("runtime presentation observation commits");
+        session
+            .enable_surface_pointer(surface)
             .expect("runtime surface-local producer mints");
-        let lease = provider.lease();
-        session.pointer = Some(interaction::RuntimePointerState::new(provider, surface));
+        let lease = session
+            .engine
+            .pointer_provider()
+            .expect("runtime retains the active producer lease");
 
         let retirement = session
             .disable_surface_pointer()

@@ -55,25 +55,10 @@ fn report_dispatch_failure(pending: &mut PendingFixture, effect: EffectId) -> En
 }
 
 #[test]
-fn provider_replacement_retains_an_emitted_unseen_recovery_window() {
-    let mut pending = pending_fixture();
+fn joined_provider_replacement_retains_an_emitted_unseen_recovery_window() {
+    let mut pending = pending_joined_fixture();
     let replacement = pending.replacement_binding;
-    let predecessor = pending.fixture.presentation_host.platform_provider();
-
-    let start = pending
-        .fixture
-        .engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("provider replacement must preserve an emitted create");
-    let successor = pending
-        .fixture
-        .engine
-        .finish_platform_provider_replacement(start.ticket())
-        .expect("the exact handoff ticket must activate its successor");
-    pending
-        .fixture
-        .presentation_host
-        .adopt_platform_provider_replacement(successor);
+    let _ = replace_joined_backend(&mut pending.fixture);
 
     let absent = publish_windows(
         &mut pending.fixture.engine,
@@ -118,30 +103,15 @@ fn provider_replacement_retains_an_emitted_unseen_recovery_window() {
 }
 
 #[test]
-fn provider_replacement_transfers_an_active_recovery_compensation() {
-    let mut pending = pending_fixture();
+fn joined_provider_replacement_transfers_an_active_recovery_compensation() {
+    let mut pending = pending_joined_fixture();
     let replacement = pending.replacement_binding;
     let recovered = make_host_current_and_retry_recovery(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
     );
     let predecessor_cleanup = staging_cleanup(&recovered, &pending);
-    let predecessor = pending.fixture.presentation_host.platform_provider();
-
-    let start = pending
-        .fixture
-        .engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("provider replacement must transfer active compensation ownership");
-    let successor = pending
-        .fixture
-        .engine
-        .finish_platform_provider_replacement(start.ticket())
-        .expect("the exact handoff ticket must activate its successor");
-    pending
-        .fixture
-        .presentation_host
-        .adopt_platform_provider_replacement(successor);
+    let _ = replace_joined_backend(&mut pending.fixture);
 
     let continued = publish_windows(
         &mut pending.fixture.engine,
@@ -210,20 +180,14 @@ fn provider_replacement_transfers_an_active_recovery_compensation() {
 
 #[test]
 fn workspace_restore_preserves_a_transferred_recovery_compensation() {
-    let mut pending = pending_fixture();
+    let mut pending = pending_joined_fixture();
     let replacement = pending.replacement_binding;
     let recovered = make_host_current_and_retry_recovery(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
     );
     let predecessor_cleanup = staging_cleanup(&recovered, &pending);
-    let predecessor = pending.fixture.presentation_host.platform_provider();
-
-    let start = pending
-        .fixture
-        .engine
-        .begin_platform_provider_replacement(predecessor)
-        .expect("provider replacement must transfer active compensation ownership");
+    let _ = replace_joined_backend(&mut pending.fixture);
     assert!(
         pending
             .fixture
@@ -233,16 +197,6 @@ fn workspace_restore_preserves_a_transferred_recovery_compensation() {
             .is_none(),
         "the retirement lifecycle must become the sole cleanup owner"
     );
-    let successor = pending
-        .fixture
-        .engine
-        .finish_platform_provider_replacement(start.ticket())
-        .expect("the exact handoff ticket must activate its successor");
-    pending
-        .fixture
-        .presentation_host
-        .adopt_platform_provider_replacement(successor);
-
     let restored = submit_test_input(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
