@@ -1,6 +1,6 @@
 use super::*;
 
-fn staging_cleanup(transition: &EngineTransition, pending: &PendingFixture) -> EffectId {
+fn replacement_cleanup(transition: &EngineTransition, pending: &PendingFixture) -> EffectId {
     transition
         .platform_effects()
         .iter()
@@ -15,10 +15,10 @@ fn staging_cleanup(transition: &EngineTransition, pending: &PendingFixture) -> E
             )
             .then_some(emission.id())
         })
-        .expect("staging close must own one correlated cleanup")
+        .expect("pre-admission close must own one correlated cleanup")
 }
 
-fn request_staging_close(pending: &mut PendingFixture) -> EffectId {
+fn request_pre_admission_close(pending: &mut PendingFixture) -> EffectId {
     let requested = publish_windows_with_close(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
@@ -32,10 +32,14 @@ fn request_staging_close(pending: &mut PendingFixture) -> EffectId {
             None,
         )],
     );
-    staging_cleanup(&requested, pending)
+    replacement_cleanup(&requested, pending)
 }
 
-fn report_dispatch_failure(pending: &mut PendingFixture, effect: EffectId) -> EngineTransition {
+fn report_cleanup_result(
+    pending: &mut PendingFixture,
+    effect: EffectId,
+    result: EffectDispatchResult,
+) -> EngineTransition {
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
     submit_test_input(
@@ -44,14 +48,18 @@ fn report_dispatch_failure(pending: &mut PendingFixture, effect: EffectId) -> En
         EngineInput::ReportPlatformEffect {
             provider,
             expected_epoch,
-            result: EffectResult::new(
-                effect,
-                expected_epoch,
-                EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
-            ),
+            result: EffectResult::new(effect, expected_epoch, result),
         },
     )
-    .expect("effect dispatch failure must reduce")
+    .expect("cleanup result must reduce")
+}
+
+fn report_dispatch_failure(pending: &mut PendingFixture, effect: EffectId) -> EngineTransition {
+    report_cleanup_result(
+        pending,
+        effect,
+        EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+    )
 }
 
 #[test]
@@ -88,7 +96,7 @@ fn joined_provider_replacement_retains_an_emitted_unseen_recovery_window() {
             replacement_window(replacement),
         ],
     );
-    let cleanup = staging_cleanup(&appeared, &pending);
+    let cleanup = replacement_cleanup(&appeared, &pending);
     let retirement = pending
         .fixture
         .engine
@@ -110,7 +118,7 @@ fn joined_provider_replacement_transfers_an_active_recovery_compensation() {
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
     );
-    let predecessor_cleanup = staging_cleanup(&recovered, &pending);
+    let predecessor_cleanup = replacement_cleanup(&recovered, &pending);
     let _ = replace_joined_backend(&mut pending.fixture);
 
     let continued = publish_windows(
@@ -186,7 +194,7 @@ fn workspace_restore_preserves_a_transferred_recovery_compensation() {
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
     );
-    let predecessor_cleanup = staging_cleanup(&recovered, &pending);
+    let predecessor_cleanup = replacement_cleanup(&recovered, &pending);
     let _ = replace_joined_backend(&mut pending.fixture);
     assert!(
         pending
@@ -280,10 +288,10 @@ fn workspace_restore_preserves_a_transferred_recovery_compensation() {
 }
 
 #[test]
-fn staging_close_cleanup_migrates_when_recovery_show_fails() {
+fn pre_admission_cleanup_migrates_when_recovery_show_fails() {
     let mut pending = pending_fixture();
     let show = present_replacement_pre_show(&mut pending);
-    let cleanup = request_staging_close(&mut pending);
+    let cleanup = request_pre_admission_close(&mut pending);
 
     let failed_show = report_dispatch_failure(&mut pending, show);
     assert_no_new_effects(&failed_show);
@@ -322,15 +330,41 @@ fn staging_close_cleanup_migrates_when_recovery_show_fails() {
         },
     )
     .expect("the transferred cleanup must remain explicitly retryable");
-    let retry = staging_cleanup(&retried, &pending);
+    let retry = replacement_cleanup(&retried, &pending);
     assert_ne!(retry, cleanup);
 }
 
 #[test]
-fn resumed_staging_close_does_not_transfer_its_revoked_cleanup() {
+fn failed_pre_admission_cleanup_remains_explicitly_retryable() {
+    for failure in [
+        EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+        EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+    ] {
+        let mut pending = pending_fixture();
+        let cleanup = request_pre_admission_close(&mut pending);
+        let failed = report_cleanup_result(&mut pending, cleanup, failure);
+        assert_no_new_effects(&failed);
+
+        let expected = pending.fixture.engine.version();
+        let retried = submit_test_input(
+            &mut pending.fixture.engine,
+            &mut pending.fixture.presentation_host,
+            EngineInput::RetryViewportCleanup {
+                expected,
+                failed_effect: cleanup,
+            },
+        )
+        .expect("failed pre-admission cleanup must retain one explicit retry owner");
+        let retry = replacement_cleanup(&retried, &pending);
+        assert_ne!(retry, cleanup);
+    }
+}
+
+#[test]
+fn resumed_pre_admission_close_does_not_transfer_its_revoked_cleanup() {
     let mut pending = pending_fixture();
     let show = present_replacement_pre_show(&mut pending);
-    let revoked_cleanup = request_staging_close(&mut pending);
+    let revoked_cleanup = request_pre_admission_close(&mut pending);
     let failed_cleanup = report_dispatch_failure(&mut pending, revoked_cleanup);
     assert_no_new_effects(&failed_cleanup);
 
@@ -352,8 +386,8 @@ fn resumed_staging_close_does_not_transfer_its_revoked_cleanup() {
     assert_no_new_effects(&cleared);
 
     let failed_show = report_dispatch_failure(&mut pending, show);
-    let replacement_cleanup = staging_cleanup(&failed_show, &pending);
-    assert_ne!(replacement_cleanup, revoked_cleanup);
+    let migrated_cleanup = replacement_cleanup(&failed_show, &pending);
+    assert_ne!(migrated_cleanup, revoked_cleanup);
     let retirement = pending
         .fixture
         .engine
@@ -366,22 +400,22 @@ fn resumed_staging_close_does_not_transfer_its_revoked_cleanup() {
     assert_eq!(
         retirement.status(),
         BindingRetirementStatus::CleanupRequested {
-            effect: replacement_cleanup,
+            effect: migrated_cleanup,
         }
     );
 }
 
 #[test]
-fn workspace_restore_continues_an_emitted_staging_cleanup() {
+fn workspace_restore_continues_an_emitted_pre_admission_cleanup() {
     let mut pending = pending_fixture();
-    let cleanup = request_staging_close(&mut pending);
+    let cleanup = request_pre_admission_close(&mut pending);
 
     let restored = submit_test_input(
         &mut pending.fixture.engine,
         &mut pending.fixture.presentation_host,
         EngineInput::ReplaceWorkspace(host_only_workspace()),
     )
-    .expect("workspace restore must migrate the staging cleanup owner");
+    .expect("workspace restore must migrate the pre-admission cleanup owner");
     let continuation = restored
         .platform_effects()
         .iter()
@@ -422,9 +456,9 @@ fn workspace_restore_continues_an_emitted_staging_cleanup() {
 }
 
 #[test]
-fn workspace_restore_preserves_a_failed_staging_cleanup_retry_fence() {
+fn workspace_restore_preserves_a_failed_pre_admission_cleanup_retry_fence() {
     let mut pending = pending_fixture();
-    let cleanup = request_staging_close(&mut pending);
+    let cleanup = request_pre_admission_close(&mut pending);
     let failed = report_dispatch_failure(&mut pending, cleanup);
     assert_no_new_effects(&failed);
 
@@ -459,6 +493,6 @@ fn workspace_restore_preserves_a_failed_staging_cleanup_retry_fence() {
         },
     )
     .expect("only explicit input may retry the failed destructive cleanup");
-    let retry = staging_cleanup(&retried, &pending);
+    let retry = replacement_cleanup(&retried, &pending);
     assert_ne!(retry, cleanup);
 }

@@ -288,7 +288,7 @@ impl DockEngine {
         for event in transition.registry_events() {
             match event {
                 crate::viewport_registry::RegistryEvent::CloseRequested { observation } => {
-                    if transition.staging_close_was_consumed(*observation) {
+                    if transition.pre_admission_close_was_consumed(*observation) {
                         continue;
                     }
                     native_close_edges.push(NativeCloseEdge::from_authoritative_requested(
@@ -423,7 +423,7 @@ impl DockEngine {
         for event in transition.registry_events() {
             match event {
                 crate::viewport_registry::RegistryEvent::CloseRequested { observation } => {
-                    if !transition.staging_close_was_consumed(*observation) {
+                    if !transition.pre_admission_close_was_consumed(*observation) {
                         native_close_edges.push(NativeCloseEdge::from_authoritative_requested(
                             self.authority_domain,
                             observation.binding(),
@@ -1643,8 +1643,8 @@ impl DockEngine {
                     recovery_obligation,
                 } => {
                     // The frame coordinator owns a replacement while its
-                    // staging close is unresolved. A queued retry must not
-                    // race that private cleanup and issue another close for
+                    // pre-admission cleanup is unresolved. A queued retry
+                    // must not race that cleanup and issue another close for
                     // the same native binding.
                     if self
                         .viewport

@@ -954,7 +954,7 @@ fn direct_surface_close_rejects_a_staging_native_create_without_a_plan() {
             version,
             &policy,
         )
-        .expect("staging close rejection must be a normal reducer outcome");
+        .expect("pre-admission close rejection must be a normal reducer outcome");
 
     assert!(matches!(
         outcome,

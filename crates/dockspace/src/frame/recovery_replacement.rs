@@ -11,13 +11,8 @@ use crate::viewport::{ViewportBinding, ViewportRole};
 use super::native_bringup::{NativeBringupPhase, NativeVisibleProof};
 
 mod abandoned;
-mod staging_close;
 mod status;
 pub(super) use self::abandoned::{AbandonedReplacementCause, AbandonedReplacementDetach};
-use self::staging_close::StagingCloseRetirementTransfer;
-pub(super) use self::staging_close::{
-    StagingCloseAbort, StagingCloseAbortOwner, StagingCloseAbortRequest,
-};
 use self::status::RecoveryReplacementPhase;
 pub use self::status::{RecoveryPending, RecoveryPendingStatus};
 
@@ -76,6 +71,7 @@ impl From<RecoveryPendingRequest> for RecoveryPending {
             recovery_obligation: request.recovery_obligation,
             retained_staging_resource: request.retained_staging_resource,
             phase: request.phase,
+            admission_not_before: None,
         }
     }
 }
@@ -102,32 +98,19 @@ pub(super) enum RecoveryReplacementLifecycleError {
     ReplacementEffectMissing {
         surface: SurfaceId,
     },
-    CompensationEffectMissing {
-        effect: EffectId,
-    },
     DuplicateRetainedResource {
         resource: NativeStagingResourceId,
     },
     InvalidStatus {
         surface: SurfaceId,
     },
-    StagingAbortAlreadyExists {
-        binding: ViewportBinding,
-    },
-    MissingStagingAbort {
-        binding: ViewportBinding,
-    },
-    StagingAbortOwnerMismatch {
-        binding: ViewportBinding,
-    },
 }
 
-/// Sole owner of recovery, replacement-incarnation, and pre-admission close state.
+/// Sole owner of recovery and replacement-incarnation state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct RecoveryReplacementLifecycle {
     pending: BTreeMap<SurfaceId, RecoveryPending>,
     by_replacement: BTreeMap<ViewportBinding, SurfaceId>,
-    staging_close_aborts: BTreeMap<ViewportBinding, StagingCloseAbort>,
 }
 
 impl RecoveryReplacementLifecycle {
@@ -149,20 +132,13 @@ impl RecoveryReplacementLifecycle {
                     effects.insert(replacement_effect);
                     effects.insert(last_effect);
                 }
-                RecoveryReplacementPhase::Compensating { cleanup_effect, .. } => {
-                    effects.insert(cleanup_effect);
-                }
                 RecoveryReplacementPhase::AwaitingRecoveryHost
                 | RecoveryReplacementPhase::ReplacementRequested { .. }
                 | RecoveryReplacementPhase::ReplacementIndeterminate { .. }
-                | RecoveryReplacementPhase::AwaitingFirstLive { .. } => {}
+                | RecoveryReplacementPhase::AwaitingFirstLive { .. }
+                | RecoveryReplacementPhase::AwaitingCleanup { .. } => {}
             }
         }
-        effects.extend(
-            self.staging_close_aborts
-                .values()
-                .filter_map(StagingCloseAbort::cleanup),
-        );
     }
 
     pub(super) fn pending(&self, surface: SurfaceId) -> Option<&RecoveryPending> {
@@ -192,14 +168,6 @@ impl RecoveryReplacementLifecycle {
 
     pub(super) fn contains_replacement(&self, binding: ViewportBinding) -> bool {
         self.by_replacement.contains_key(&binding)
-    }
-
-    pub(super) fn contains_staging_close(&self, binding: ViewportBinding) -> bool {
-        self.staging_close_aborts.contains_key(&binding)
-    }
-
-    pub(super) fn staging_close(&self, binding: ViewportBinding) -> Option<&StagingCloseAbort> {
-        self.staging_close_aborts.get(&binding)
     }
 
     pub(super) fn begin(
@@ -259,7 +227,7 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => None,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
     }
 
@@ -280,7 +248,7 @@ impl RecoveryReplacementLifecycle {
                 | RecoveryReplacementPhase::Failed { .. }
                 | RecoveryReplacementPhase::ProviderLost { .. }
                 | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-                | RecoveryReplacementPhase::Compensating { .. } => None,
+                | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
             })
             .collect()
     }
@@ -313,7 +281,7 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => false,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
         if !matches_expected || matches!(next, NativeBringupPhase::AwaitingHidden { .. }) {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
@@ -353,14 +321,13 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => false,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => false,
         };
         if !phase_matches {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
         if binding_was_discarded {
             self.by_replacement.remove(&binding);
-            self.staging_close_aborts.remove(&binding);
         }
         pending.phase = RecoveryReplacementPhase::ProviderLost {
             binding: (!binding_was_discarded).then_some(binding),
@@ -426,7 +393,6 @@ impl RecoveryReplacementLifecycle {
         let mut binding = pending.replacement_binding();
         if replacement_was_discarded && let Some(discarded) = binding.take() {
             self.by_replacement.remove(&discarded);
-            self.staging_close_aborts.remove(&discarded);
         }
         pending.phase = RecoveryReplacementPhase::Failed {
             binding,
@@ -434,19 +400,6 @@ impl RecoveryReplacementLifecycle {
             failed_effect: effect,
         };
         true
-    }
-
-    pub(super) fn compensation_surface(&self, effect: EffectId) -> Option<SurfaceId> {
-        self.pending.iter().find_map(|(surface, pending)| {
-            matches!(
-                pending.phase,
-                RecoveryReplacementPhase::Compensating {
-                    cleanup_effect,
-                    ..
-                } if cleanup_effect == effect
-            )
-            .then_some(*surface)
-        })
     }
 
     pub(super) fn detach_abandoned_replacement(
@@ -485,7 +438,7 @@ impl RecoveryReplacementLifecycle {
             | RecoveryReplacementPhase::Failed { binding: None, .. }
             | RecoveryReplacementPhase::ProviderLost { binding: None, .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => {
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => {
                 return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
             }
         };
@@ -493,10 +446,6 @@ impl RecoveryReplacementLifecycle {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
         self.by_replacement.remove(&binding);
-        let staging_close = self
-            .staging_close_aborts
-            .remove(&binding)
-            .map(StagingCloseAbort::into_retirement_transfer);
         pending.phase = match cause {
             AbandonedReplacementCause::DispatchFailed { failed_effect } => {
                 RecoveryReplacementPhase::Failed {
@@ -516,7 +465,6 @@ impl RecoveryReplacementLifecycle {
         Ok(AbandonedReplacementDetach {
             replacement_effect,
             cause,
-            staging_close,
         })
     }
 
@@ -532,10 +480,9 @@ impl RecoveryReplacementLifecycle {
         })
     }
 
-    pub(super) fn begin_compensation(
+    pub(super) fn begin_cleanup(
         &mut self,
         surface: SurfaceId,
-        effect: EffectId,
     ) -> Result<(), RecoveryReplacementLifecycleError> {
         let pending = self
             .pending
@@ -548,65 +495,26 @@ impl RecoveryReplacementLifecycle {
             return Err(RecoveryReplacementLifecycleError::ReplacementEffectMissing { surface });
         };
         pending.retained_staging_resource = None;
-        pending.phase = RecoveryReplacementPhase::Compensating {
+        pending.phase = RecoveryReplacementPhase::AwaitingCleanup {
             binding,
             replacement_effect,
-            cleanup_effect: effect,
         };
         Ok(())
     }
 
-    pub(super) fn retry_compensation(
-        &mut self,
-        failed_effect: EffectId,
-        retry_effect: EffectId,
-    ) -> Result<SurfaceId, RecoveryReplacementLifecycleError> {
-        let surface = self.compensation_surface(failed_effect).ok_or(
-            RecoveryReplacementLifecycleError::CompensationEffectMissing {
-                effect: failed_effect,
-            },
-        )?;
-        let pending = self
-            .pending
-            .get_mut(&surface)
-            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
-        let RecoveryReplacementPhase::Compensating {
-            binding,
-            replacement_effect,
-            cleanup_effect,
-        } = pending.phase
-        else {
-            return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
-        };
-        if cleanup_effect != failed_effect {
-            return Err(
-                RecoveryReplacementLifecycleError::CompensationEffectMissing {
-                    effect: failed_effect,
-                },
-            );
-        }
-        pending.phase = RecoveryReplacementPhase::Compensating {
-            binding,
-            replacement_effect,
-            cleanup_effect: retry_effect,
-        };
-        Ok(surface)
-    }
-
-    pub(super) fn transfer_compensation_for_provider_replacement(
+    pub(super) fn transfer_cleanup_for_provider_replacement(
         &mut self,
         surface: SurfaceId,
         binding: ViewportBinding,
-    ) -> Result<(EffectId, EffectId), RecoveryReplacementLifecycleError> {
+    ) -> Result<EffectId, RecoveryReplacementLifecycleError> {
         self.ensure_replacement(surface, binding)?;
         let pending = self
             .pending
             .get(&surface)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
-        let RecoveryReplacementPhase::Compensating {
+        let RecoveryReplacementPhase::AwaitingCleanup {
             binding: owned,
             replacement_effect,
-            cleanup_effect,
         } = pending.phase
         else {
             return Err(RecoveryReplacementLifecycleError::InvalidStatus { surface });
@@ -615,7 +523,7 @@ impl RecoveryReplacementLifecycle {
             return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
         }
         let _ = self.take(surface)?;
-        Ok((replacement_effect, cleanup_effect))
+        Ok(replacement_effect)
     }
 
     pub(super) fn reset_lost_replacement(
@@ -625,13 +533,46 @@ impl RecoveryReplacementLifecycle {
     ) -> Result<RecoveryPending, RecoveryReplacementLifecycleError> {
         self.ensure_replacement(surface, binding)?;
         self.by_replacement.remove(&binding);
-        self.staging_close_aborts.remove(&binding);
         let pending = self
             .pending
             .get_mut(&surface)
             .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
         pending.phase = RecoveryReplacementPhase::AwaitingRecoveryHost;
+        pending.admission_not_before = None;
         Ok(pending.clone())
+    }
+
+    pub(super) fn mark_admission_fence(
+        &mut self,
+        binding: ViewportBinding,
+        generation: crate::viewport::InventoryGeneration,
+    ) -> Result<(), RecoveryReplacementLifecycleError> {
+        let surface = self.replacement_owner(binding)?;
+        let pending = self
+            .pending
+            .get_mut(&surface)
+            .ok_or(RecoveryReplacementLifecycleError::MissingPending { surface })?;
+        if pending.replacement_binding() != Some(binding) {
+            return Err(RecoveryReplacementLifecycleError::PendingIdentityMismatch { surface });
+        }
+        pending.admission_not_before = Some(generation);
+        Ok(())
+    }
+
+    pub(super) fn admission_allows(
+        &self,
+        binding: ViewportBinding,
+        generation: crate::viewport::InventoryGeneration,
+    ) -> bool {
+        let Some(surface) = self.replacement_surface(binding) else {
+            return true;
+        };
+        self.pending.get(&surface).is_some_and(|pending| {
+            pending.replacement_binding() == Some(binding)
+                && pending
+                    .admission_not_before()
+                    .is_none_or(|minimum| generation > minimum)
+        })
     }
 
     pub(super) fn take_for_vacancy(
@@ -684,7 +625,6 @@ impl RecoveryReplacementLifecycle {
 
     pub(super) fn clear(&mut self) -> Vec<RecoveryPending> {
         self.by_replacement.clear();
-        self.staging_close_aborts.clear();
         let pending = std::mem::take(&mut self.pending);
         pending.into_values().collect()
     }
@@ -706,7 +646,6 @@ impl RecoveryReplacementLifecycle {
             .expect("pending recovery was validated before terminal removal");
         if let Some(binding) = pending.replacement_binding() {
             self.by_replacement.remove(&binding);
-            self.staging_close_aborts.remove(&binding);
         }
         Ok(pending)
     }

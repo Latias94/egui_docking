@@ -1210,7 +1210,7 @@ fn minimized_host_requires_fresh_visible_scene_authority_before_recovery() {
         &mut fixture.presentation_host,
         vec![host_window(fixture.host_binding)],
     );
-    let compensation = visible
+    let _compensation = visible
         .platform_effects()
         .iter()
         .find_map(|request| {
@@ -1233,9 +1233,8 @@ fn minimized_host_requires_fresh_visible_scene_authority_before_recovery() {
             .recovery_pending(SURFACE_CHILD)
             .expect("replacement compensation must remain queryable")
             .status(),
-        RecoveryPendingStatus::CompensatingReplacement {
+        RecoveryPendingStatus::AwaitingReplacementCleanup {
             replacement: replacement_effect,
-            cleanup: compensation,
         }
     );
 }
@@ -1410,7 +1409,7 @@ fn unavailable_host_keeps_recovery_pending_and_requests_one_last_outer_placement
 }
 
 #[test]
-fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans() {
+fn pre_admission_recovery_close_keeps_the_original_root_out_of_close_plans() {
     let mut pending = pending_fixture();
     let before = pending.fixture.engine.workspace().clone();
 
@@ -1441,7 +1440,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
         .engine
         .viewport()
         .viewport(SURFACE_CHILD)
-        .expect("staging replacement must remain registered until exact destruction");
+        .expect("pre-admission replacement must remain registered until exact destruction");
     assert_eq!(record.binding(), pending.replacement_binding);
     assert_eq!(record.admission(), ViewportAdmission::Retiring);
     let cleanup = requested
@@ -1458,7 +1457,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
             )
             .then_some(request.id())
         })
-        .expect("staging replacement close must issue one private compensation");
+        .expect("pre-admission replacement close must issue one compensation");
 
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
@@ -1475,7 +1474,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
             ),
         },
     )
-    .expect("staging cleanup failure must not create a regular close plan");
+    .expect("pre-admission cleanup failure must not create a regular close plan");
     assert_no_new_effects(&failed);
     assert_eq!(pending.fixture.engine.active_close_plans().count(), 0);
     assert_eq!(pending.fixture.engine.workspace(), &before);
@@ -1485,7 +1484,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
             .engine
             .viewport()
             .viewport(SURFACE_CHILD)
-            .expect("failed staging cleanup must retain a non-admitted binding")
+            .expect("failed pre-admission cleanup must retain a non-admitted binding")
             .admission(),
         ViewportAdmission::Retiring
     );
@@ -1504,7 +1503,7 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
         .engine
         .viewport()
         .recovery_pending(SURFACE_CHILD)
-        .expect("exact staging destruction must preserve the original recovery");
+        .expect("exact replacement destruction must preserve the original recovery");
     assert_eq!(recovery.replacement_binding(), None);
     assert_eq!(
         recovery.status(),
@@ -1514,13 +1513,13 @@ fn staging_recovery_replacement_close_keeps_the_original_root_out_of_close_plans
 }
 
 #[test]
-fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_edge() {
+fn pre_admission_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_edge() {
     let mut pending = pending_fixture();
     let before = pending.fixture.engine.workspace().clone();
     let replacement = pending.replacement_binding;
     let host = pending.fixture.host_binding;
 
-    // The host is deliberately ready here. Without staging-close ownership,
+    // The host is deliberately ready here. Without pre-admission cleanup ownership,
     // the same snapshot can enqueue `RetryRecovery`, recover the graph, and
     // request a second compensating close for this still-pending replacement.
     let requested = publish_windows_with_close(
@@ -1542,14 +1541,14 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
             )
             .then_some(request.id())
         })
-        .expect("staging close must issue its sole private cleanup");
+        .expect("pre-admission close must issue exactly one cleanup");
     assert_eq!(
         effect_count(&pending.fixture.engine, |effect| matches!(
             effect,
             PlatformEffect::CompensatingClose { binding, .. } if *binding == replacement
         )),
         1,
-        "the staging abort and recovery retry must not each own a close"
+        "pre-admission cleanup and recovery retry must not each own a close"
     );
     assert_eq!(pending.fixture.engine.workspace(), &before);
     let recovery = pending
@@ -1557,14 +1556,14 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
         .engine
         .viewport()
         .recovery_pending(SURFACE_CHILD)
-        .expect("the original recovery remains authoritative during staging cleanup");
+        .expect("the original recovery remains authoritative during pre-admission cleanup");
     assert_eq!(recovery.replacement_binding(), Some(replacement));
     assert_eq!(
         recovery.status(),
         RecoveryPendingStatus::ReplacementRequested {
             replacement: pending.replacement_effect,
         },
-        "a suppressed retry cannot take ownership from the staging abort"
+        "a suppressed retry cannot take ownership from pre-admission cleanup"
     );
 
     let destroyed = publish_destroyed_child(
@@ -1586,7 +1585,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
         .engine
         .viewport()
         .recovery_pending(SURFACE_CHILD)
-        .expect("destroyed staging replacement returns to the original retained recovery");
+        .expect("destroyed replacement returns to the original retained recovery");
     assert_eq!(recovery.replacement_binding(), None);
     assert_eq!(recovery.replacement_effect(), None);
     assert_eq!(
@@ -1595,7 +1594,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
     );
     assert_recovery_presentation_scope(&mut pending.fixture, None, false);
 
-    // The staging terminal deliberately removes the child viewport while the
+    // The cleanup terminal deliberately removes the child viewport while the
     // source roster is still retained. Publish only the host contribution and
     // explicitly defer the now-headless child, then let the next host snapshot
     // perform the ordinary retained-recovery retry.
@@ -1609,7 +1608,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
             request.effect(),
             PlatformEffect::CompensatingClose { binding, .. } if *binding == replacement
         )),
-        "making the host observable cannot resurrect a staging cleanup"
+        "making the host observable cannot resurrect a pre-admission cleanup"
     );
     publish_scene(
         &mut pending.fixture.engine,
@@ -1660,7 +1659,7 @@ fn staging_recovery_close_owns_one_cleanup_until_the_exact_terminal_destroyed_ed
 }
 
 #[test]
-fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentation() {
+fn failed_pre_admission_recovery_close_requires_exact_clear_and_first_live_presentation() {
     let mut pending = pending_fixture();
     let replacement = pending.replacement_binding;
     let host = pending.fixture.host_binding;
@@ -1686,7 +1685,7 @@ fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentatio
             )
             .then_some(request.id())
         })
-        .expect("staging close must issue its private cleanup");
+        .expect("pre-admission close must issue its cleanup");
 
     let expected_epoch = pending.fixture.engine.version().epoch();
     let provider = pending.fixture.presentation_host.platform_provider();
@@ -1722,7 +1721,7 @@ fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentatio
         .engine
         .viewport()
         .viewport(SURFACE_CHILD)
-        .expect("exact clear must retain the staging replacement");
+        .expect("exact clear must retain the pre-admission replacement");
     assert_eq!(record.binding(), replacement);
     assert_eq!(record.admission(), ViewportAdmission::Pending);
     assert_eq!(
@@ -1771,7 +1770,234 @@ fn failed_staging_recovery_close_requires_exact_clear_and_first_live_presentatio
 }
 
 #[test]
-fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admission() {
+fn second_close_generation_reopens_resumed_pre_admission_cleanup() {
+    let mut pending = pending_fixture();
+    let replacement = pending.replacement_binding;
+    let host = pending.fixture.host_binding;
+    let first = publish_windows_with_close(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        &[(replacement, WindowCloseState::LiveRequested, None)],
+    );
+    let first_cleanup = first
+        .platform_effects()
+        .iter()
+        .find_map(|request| {
+            matches!(
+                request.effect(),
+                PlatformEffect::CompensatingClose {
+                    binding,
+                    compensates,
+                } if *binding == replacement && *compensates == pending.replacement_effect
+            )
+            .then_some(request.id())
+        })
+        .expect("the first close generation must own one cleanup");
+    let expected_epoch = pending.fixture.engine.version().epoch();
+    let provider = pending.fixture.presentation_host.platform_provider();
+    let failed = submit_test_input(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        EngineInput::ReportPlatformEffect {
+            provider,
+            expected_epoch,
+            result: EffectResult::new(
+                first_cleanup,
+                expected_epoch,
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            ),
+        },
+    )
+    .expect("the first cleanup failure must reduce");
+    assert_no_new_effects(&failed);
+
+    let cleared = publish_windows_with_facts(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        Authority::Known(WindowPresentationState::Visible),
+        &[(replacement, WindowCloseState::LiveClear, None)],
+        platform_capabilities(),
+    );
+    assert_no_new_effects(&cleared);
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("clear must resume the replacement")
+            .admission(),
+        ViewportAdmission::Pending
+    );
+
+    let second = publish_windows_with_close(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        &[(replacement, WindowCloseState::LiveRequested, None)],
+    );
+    let second_cleanup = second
+        .platform_effects()
+        .iter()
+        .find_map(|request| {
+            matches!(
+                request.effect(),
+                PlatformEffect::CompensatingClose {
+                    binding,
+                    compensates,
+                } if *binding == replacement && *compensates == pending.replacement_effect
+            )
+            .then_some(request.id())
+        })
+        .expect("the second close generation must own a fresh cleanup");
+    assert_ne!(second_cleanup, first_cleanup);
+    assert!(second.reduced_inputs().iter().any(|input| matches!(
+        input.outcome(),
+        InputOutcome::PlatformSnapshotPublished {
+            native_close_edges,
+            ..
+        } if native_close_edges.is_empty()
+    )));
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("the second close must retire admission again")
+            .admission(),
+        ViewportAdmission::Retiring
+    );
+}
+
+#[test]
+fn second_close_generation_rearms_cleanup_before_the_first_cleanup_settles() {
+    let mut pending = pending_fixture();
+    let replacement = pending.replacement_binding;
+    let host = pending.fixture.host_binding;
+    let first = publish_windows_with_close(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        &[(replacement, WindowCloseState::LiveRequested, None)],
+    );
+    let cleanup = first
+        .platform_effects()
+        .iter()
+        .find_map(|request| {
+            matches!(
+                request.effect(),
+                PlatformEffect::CompensatingClose {
+                    binding,
+                    compensates,
+                } if *binding == replacement && *compensates == pending.replacement_effect
+            )
+            .then_some(request.id())
+        })
+        .expect("the first close generation must own one cleanup");
+
+    let first_clear = publish_windows_with_facts(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        Authority::Known(WindowPresentationState::Visible),
+        &[(replacement, WindowCloseState::LiveClear, None)],
+        platform_capabilities(),
+    );
+    assert_no_new_effects(&first_clear);
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("an emitted cleanup cannot resume from the clear alone")
+            .admission(),
+        ViewportAdmission::Retiring
+    );
+
+    let second = publish_windows_with_close(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        &[(replacement, WindowCloseState::LiveRequested, None)],
+    );
+    assert_no_new_effects(&second);
+
+    let expected_epoch = pending.fixture.engine.version().epoch();
+    let provider = pending.fixture.presentation_host.platform_provider();
+    let failed = submit_test_input(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        EngineInput::ReportPlatformEffect {
+            provider,
+            expected_epoch,
+            result: EffectResult::new(
+                cleanup,
+                expected_epoch,
+                EffectDispatchResult::DispatchFailed(DispatchFailureReason::WindowUnavailable),
+            ),
+        },
+    )
+    .expect("cleanup failure must remain owned by the second close generation");
+    assert_no_new_effects(&failed);
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("the first clear cannot release the second close generation")
+            .admission(),
+        ViewportAdmission::Retiring
+    );
+
+    let second_clear = publish_windows_with_facts(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            unavailable_host_window(host),
+            replacement_window(replacement),
+        ],
+        Authority::Known(WindowPresentationState::Visible),
+        &[(replacement, WindowCloseState::LiveClear, None)],
+        platform_capabilities(),
+    );
+    assert_no_new_effects(&second_clear);
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_CHILD)
+            .expect("the exact second clear must resume the replacement")
+            .admission(),
+        ViewportAdmission::Pending
+    );
+}
+
+#[test]
+fn same_host_frame_pre_admission_close_clear_invalidates_unemitted_cleanup() {
     let mut pending = pending_fixture();
     let replacement = pending.replacement_binding;
     let host = pending.fixture.host_binding;
@@ -1847,19 +2073,19 @@ fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admi
             )
             .then_some(effect)
         })
-        .expect("the requested staging cleanup remains auditable after its cancellation");
+        .expect("the requested pre-admission cleanup remains auditable after cancellation");
     let cleanup_record = pending
         .fixture
         .engine
         .viewport()
         .effects()
         .record(cleanup)
-        .expect("the cancelled staging cleanup record remains queryable");
+        .expect("the cancelled pre-admission cleanup record remains queryable");
     assert!(!cleanup_record.was_emitted());
     assert!(matches!(
         cleanup_record.phase(),
         EffectPhase::Invalidated {
-            cause: EffectInvalidation::StagingCloseCleared
+            cause: EffectInvalidation::PreAdmissionCloseCleared
         }
     ));
     assert_eq!(
@@ -1886,19 +2112,16 @@ fn same_host_frame_staging_close_clear_invalidates_unemitted_cleanup_before_admi
         &mut pending.fixture.presentation_host,
     );
     assert_replacement_admitted(&pending.fixture, replacement);
-    assert!(matches!(
-        pending
-            .fixture
-            .engine
-            .viewport()
-            .effects()
-            .record(cleanup)
-            .expect("the cancelled cleanup remains invalidated after admission")
-            .phase(),
-        EffectPhase::Invalidated {
-            cause: EffectInvalidation::StagingCloseCleared
-        }
-    ));
+    match pending.fixture.engine.viewport().effects().lookup(cleanup) {
+        EffectRecordLookup::Detailed(record) => assert!(matches!(
+            record.phase(),
+            EffectPhase::Invalidated {
+                cause: EffectInvalidation::PreAdmissionCloseCleared
+            }
+        )),
+        EffectRecordLookup::RetiredTerminal => {}
+        EffectRecordLookup::Unknown => panic!("the cancelled cleanup must remain auditable"),
+    }
 }
 
 #[test]
@@ -2328,7 +2551,7 @@ fn host_ready_before_replacement_rehomes_and_compensates_exactly_once() {
         compensations[0].provider(),
         pending.fixture.presentation_host.platform_provider()
     );
-    let compensation = compensations[0].id();
+    let _compensation = compensations[0].id();
     assert_whole_root_recovered(&pending.fixture);
     assert_eq!(
         pending
@@ -2338,9 +2561,8 @@ fn host_ready_before_replacement_rehomes_and_compensates_exactly_once() {
             .recovery_pending(SURFACE_CHILD)
             .expect("replacement compensation must remain queryable")
             .status(),
-        RecoveryPendingStatus::CompensatingReplacement {
+        RecoveryPendingStatus::AwaitingReplacementCleanup {
             replacement: pending.replacement_effect,
-            cleanup: compensation,
         }
     );
 
@@ -2425,6 +2647,74 @@ fn terminal_replacement_cleanup_consumes_the_recovery_obligation() {
 }
 
 #[test]
+fn live_requested_during_mandatory_cleanup_is_consumed_without_a_second_effect() {
+    let mut pending = pending_fixture();
+    let recovered = make_host_current_and_retry_recovery(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+    );
+    assert!(recovered.platform_effects().iter().any(|request| {
+        matches!(
+            request.effect(),
+            PlatformEffect::CompensatingClose { binding, .. }
+                if *binding == pending.replacement_binding
+        )
+    }));
+    let before = effect_count(&pending.fixture.engine, |effect| {
+        matches!(
+            effect,
+            PlatformEffect::CompensatingClose { binding, .. }
+                if *binding == pending.replacement_binding
+        )
+    });
+
+    let repeated = publish_windows_with_close(
+        &mut pending.fixture.engine,
+        &mut pending.fixture.presentation_host,
+        vec![
+            host_window(pending.fixture.host_binding),
+            replacement_window(pending.replacement_binding),
+        ],
+        &[(
+            pending.replacement_binding,
+            WindowCloseState::LiveRequested,
+            None,
+        )],
+    );
+
+    assert_no_new_effects(&repeated);
+    assert!(repeated.reduced_inputs().iter().any(|input| matches!(
+        input.outcome(),
+        InputOutcome::PlatformSnapshotPublished {
+            native_close_edges,
+            ..
+        } if native_close_edges.is_empty()
+    )));
+    assert_eq!(
+        effect_count(&pending.fixture.engine, |effect| {
+            matches!(
+                effect,
+                PlatformEffect::CompensatingClose { binding, .. }
+                    if *binding == pending.replacement_binding
+            )
+        }),
+        before
+    );
+    assert_eq!(
+        pending
+            .fixture
+            .engine
+            .viewport()
+            .recovery_pending(SURFACE_CHILD)
+            .expect("mandatory cleanup remains queryable")
+            .status(),
+        RecoveryPendingStatus::AwaitingReplacementCleanup {
+            replacement: pending.replacement_effect,
+        }
+    );
+}
+
+#[test]
 fn failed_replacement_compensation_retries_only_after_explicit_input() {
     let mut pending = pending_fixture();
     let recovered = make_host_current_and_retry_recovery(
@@ -2498,9 +2788,8 @@ fn failed_replacement_compensation_retries_only_after_explicit_input() {
             .recovery_pending(SURFACE_CHILD)
             .expect("replacement cleanup must remain queryable")
             .status(),
-        RecoveryPendingStatus::CompensatingReplacement {
+        RecoveryPendingStatus::AwaitingReplacementCleanup {
             replacement: pending.replacement_effect,
-            cleanup: retry,
         }
     );
 

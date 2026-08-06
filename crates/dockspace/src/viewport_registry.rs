@@ -248,6 +248,10 @@ impl ViewportRecord {
         self.input_observations.current()
     }
 
+    pub(crate) const fn input_observations(&self) -> WindowInputObservationStream {
+        self.input_observations
+    }
+
     pub(crate) const fn input_observation_generation_watermark(
         &self,
     ) -> Option<InputObservationGeneration> {
@@ -256,6 +260,14 @@ impl ViewportRecord {
 
     pub(crate) const fn presentation_observation(&self) -> Option<WindowPresentationObservation> {
         self.presentation_observations.current()
+    }
+
+    pub(crate) const fn close_observations(&self) -> WindowCloseObservationStream {
+        self.close_observations
+    }
+
+    pub(crate) const fn ever_observed(&self) -> bool {
+        self.ever_observed
     }
 
     pub(crate) const fn is_observed(&self) -> bool {
@@ -1070,7 +1082,7 @@ impl ViewportRegistry {
     /// This is intentionally narrower than [`Self::resume_after_failed_close`]. A staging
     /// replacement has never owned graph, focus, or routing authority, so restoring it must
     /// retain `Pending` admission even when live coordinates are available.
-    pub(crate) fn resume_pending_after_staging_close_clear(
+    pub(crate) fn resume_pending_after_pre_admission_close_clear(
         &mut self,
         binding: ViewportBinding,
     ) -> Result<bool, ViewportRegistryError> {

@@ -3,7 +3,7 @@
 use crate::effect::EffectId;
 use crate::presentation_observation::NativeStagingResourceId;
 use crate::surface_recovery::SurfaceRecoveryObligationId;
-use crate::viewport::{ViewportBinding, ViewportRole};
+use crate::viewport::{InventoryGeneration, ViewportBinding, ViewportRole};
 
 use super::super::native_bringup::{NativeBringupPhase, NativeVisibleProof};
 
@@ -42,9 +42,8 @@ pub enum RecoveryPendingStatus {
         show: EffectId,
     },
     AwaitingFirstLivePresentation,
-    CompensatingReplacement {
+    AwaitingReplacementCleanup {
         replacement: EffectId,
-        cleanup: EffectId,
     },
 }
 
@@ -77,10 +76,9 @@ pub(super) enum RecoveryReplacementPhase {
     AwaitingFirstLive {
         proof: NativeVisibleProof,
     },
-    Compensating {
+    AwaitingCleanup {
         binding: ViewportBinding,
         replacement_effect: EffectId,
-        cleanup_effect: EffectId,
     },
 }
 
@@ -96,7 +94,7 @@ impl RecoveryReplacementPhase {
             Self::AwaitingRecoveryHost
             | Self::ProviderLost { .. }
             | Self::AwaitingFirstLive { .. }
-            | Self::Compensating { .. } => false,
+            | Self::AwaitingCleanup { .. } => false,
         }
     }
 
@@ -106,7 +104,7 @@ impl RecoveryReplacementPhase {
             Self::ReplacementRequested { binding, .. }
             | Self::ReplacementIndeterminate { binding, .. }
             | Self::BringingUp { binding, .. }
-            | Self::Compensating { binding, .. } => Some(binding),
+            | Self::AwaitingCleanup { binding, .. } => Some(binding),
             Self::AwaitingFirstLive { proof } => Some(proof.binding()),
             Self::Failed { binding, .. } | Self::ProviderLost { binding, .. } => binding,
         }
@@ -124,7 +122,7 @@ impl RecoveryReplacementPhase {
             | Self::ProviderLost {
                 replacement_effect, ..
             }
-            | Self::Compensating {
+            | Self::AwaitingCleanup {
                 replacement_effect, ..
             } => Some(replacement_effect),
             Self::AwaitingFirstLive { proof, .. } => Some(proof.create()),
@@ -192,13 +190,10 @@ impl RecoveryReplacementPhase {
                 replacement: replacement_effect,
                 last_effect,
             },
-            Self::Compensating {
-                replacement_effect,
-                cleanup_effect,
-                ..
-            } => RecoveryPendingStatus::CompensatingReplacement {
+            Self::AwaitingCleanup {
+                replacement_effect, ..
+            } => RecoveryPendingStatus::AwaitingReplacementCleanup {
                 replacement: replacement_effect,
-                cleanup: cleanup_effect,
             },
         }
     }
@@ -212,6 +207,7 @@ pub struct RecoveryPending {
     pub(super) recovery_obligation: SurfaceRecoveryObligationId,
     pub(super) retained_staging_resource: Option<NativeStagingResourceId>,
     pub(super) phase: RecoveryReplacementPhase,
+    pub(super) admission_not_before: Option<InventoryGeneration>,
 }
 
 impl RecoveryPending {
@@ -259,7 +255,7 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
             | RecoveryReplacementPhase::AwaitingFirstLive { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => None,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
     }
 
@@ -272,7 +268,7 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => None,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => None,
         }
     }
 
@@ -285,7 +281,11 @@ impl RecoveryPending {
             | RecoveryReplacementPhase::BringingUp { .. }
             | RecoveryReplacementPhase::Failed { .. }
             | RecoveryReplacementPhase::ProviderLost { .. }
-            | RecoveryReplacementPhase::Compensating { .. } => true,
+            | RecoveryReplacementPhase::AwaitingCleanup { .. } => true,
         }
+    }
+
+    pub(in crate::frame) const fn admission_not_before(&self) -> Option<InventoryGeneration> {
+        self.admission_not_before
     }
 }

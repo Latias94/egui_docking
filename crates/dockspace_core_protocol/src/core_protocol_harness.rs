@@ -3328,8 +3328,8 @@ impl CoreProtocolHarness {
                     EffectInvalidation::NativeCreateAborted => {
                         ExpectedEffectInvalidation::NativeCreateAborted
                     }
-                    EffectInvalidation::StagingCloseCleared => {
-                        ExpectedEffectInvalidation::StagingCloseCleared
+                    EffectInvalidation::PreAdmissionCloseCleared => {
+                        ExpectedEffectInvalidation::PreAdmissionCloseCleared
                     }
                     EffectInvalidation::PlatformProviderReplaced { .. } => {
                         ExpectedEffectInvalidation::PlatformProviderReplaced

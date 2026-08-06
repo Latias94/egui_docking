@@ -15,13 +15,13 @@ use crate::viewport::{
 };
 use crate::viewport_registry::{ViewportLifecycle, ViewportRecord};
 
-use super::binding_retirement::BindingRetirementRequest;
+use super::binding_cleanup::{BindingCleanupPurpose, BindingCleanupRequest};
 use super::native_bringup::{NativeBringupPhase, NativeBringupPresentationOutcome};
 use super::native_staging_resource::NativeStagingResourceOwner;
 use super::{
-    BindingRetirementCleanup, BindingRetirementOrigin, BindingRetirementStatus,
-    NativeVisibilityProof, NativeVisibleProof, RecoveryPendingStatus, ViewportCoordinator,
-    ViewportCoordinatorError, ViewportLifecycleAction,
+    BindingCleanupAction, BindingRetirementOrigin, BindingRetirementStatus, NativeVisibilityProof,
+    NativeVisibleProof, RecoveryPendingStatus, ViewportCoordinator, ViewportCoordinatorError,
+    ViewportLifecycleAction,
 };
 
 /// Queryable owner-specific phase of one native create saga.
@@ -941,9 +941,9 @@ impl ViewportCoordinator {
         self.transition_native_staging_resource(
             resource,
             NativeStagingResourceOwner::NativeCreateSaga(saga_id),
-            NativeStagingResourceOwner::BindingRetirement(binding),
+            NativeStagingResourceOwner::BindingCleanup(binding),
         )?;
-        self.begin_binding_retirement(BindingRetirementRequest {
+        self.begin_binding_cleanup(BindingCleanupRequest {
             binding,
             role: facts.role(),
             ownership: facts.ownership(),
@@ -953,11 +953,12 @@ impl ViewportCoordinator {
             input_observations: facts.input_observations(),
             close_observations: facts.close_observations(),
             may_reappear,
-            cleanup: BindingRetirementCleanup::CompensateCreate { create },
+            cleanup: BindingCleanupAction::CompensateCreate { create },
             retained_staging_resource: Some(resource),
+            purpose: BindingCleanupPurpose::Retired,
         })?;
         let _ = self.reconcile_pointer_passthrough_saga(binding)?;
-        self.drive_binding_retirement(binding)
+        self.drive_binding_cleanup(binding)
     }
 
     #[must_use]
@@ -1171,7 +1172,7 @@ impl ViewportCoordinator {
                 obligation,
                 binding: owner_binding,
             } => obligation == recovery_obligation && owner_binding.surface() == binding.surface(),
-            NativeStagingResourceOwner::BindingRetirement(_) => return Ok(()),
+            NativeStagingResourceOwner::BindingCleanup(_) => return Ok(()),
             NativeStagingResourceOwner::NativeCreateSaga(_) => false,
         };
         if !release {
@@ -1191,7 +1192,7 @@ impl ViewportCoordinator {
         let mut references = Vec::with_capacity(
             self.native_creates.sagas.len()
                 + self.recovery_replacements.len()
-                + self.binding_retirement.len(),
+                + self.binding_cleanup.len(),
         );
         references.extend(self.native_creates.sagas.iter().map(|(saga, create)| {
             let owner = if matches!(
@@ -1230,13 +1231,13 @@ impl ViewportCoordinator {
             references.push((resource, owner));
         }
         references.extend(
-            self.binding_retirement
+            self.binding_cleanup
                 .iter()
                 .filter_map(|(binding, retirement)| {
                     retirement.retained_staging_resource().map(|resource| {
                         (
                             resource,
-                            NativeStagingResourceOwner::BindingRetirement(*binding),
+                            NativeStagingResourceOwner::BindingCleanup(*binding),
                         )
                     })
                 }),

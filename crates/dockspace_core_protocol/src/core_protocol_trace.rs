@@ -1603,7 +1603,7 @@ pub enum ExpectedEffectIndeterminateReason {
 pub enum ExpectedEffectInvalidation {
     WorkspaceReplaced { replacement_epoch: u64 },
     NativeCreateAborted,
-    StagingCloseCleared,
+    PreAdmissionCloseCleared,
     PlatformProviderReplaced,
 }
 

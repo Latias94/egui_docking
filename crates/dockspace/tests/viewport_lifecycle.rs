@@ -604,7 +604,7 @@ fn viewport_binding(fixture: &Fixture, surface: SurfaceId) -> ViewportBinding {
         .binding()
 }
 
-fn binding_retirement(
+fn binding_cleanup(
     fixture: &Fixture,
     binding: ViewportBinding,
 ) -> &dockspace::frame::BindingRetirement {
@@ -622,7 +622,7 @@ fn assert_unobserved_external_binding_quarantines_token_until_exact_destruction(
     origin: BindingRetirementOrigin,
 ) {
     let provider = fixture.presentation_host.platform_provider();
-    let retirement = binding_retirement(fixture, binding);
+    let retirement = binding_cleanup(fixture, binding);
     assert_eq!(retirement.ownership(), ViewportOwnership::External);
     assert_eq!(retirement.origin(), origin);
     assert!(!retirement.observed());
@@ -657,7 +657,7 @@ fn assert_unobserved_external_binding_quarantines_token_until_exact_destruction(
 
     publish_windows!(fixture, vec![source_window(fixture)]);
     assert_eq!(
-        binding_retirement(fixture, binding).status(),
+        binding_cleanup(fixture, binding).status(),
         BindingRetirementStatus::AwaitingExactDestruction,
         "inventory absence alone cannot release an unobserved external token"
     );
@@ -851,7 +851,7 @@ fn current_platform_snapshot(
                         | RecoveryPendingStatus::ReplacementFailed { .. }
                         | RecoveryPendingStatus::ReplacementProviderLost { .. }
                         | RecoveryPendingStatus::AwaitingFirstLivePresentation
-                        | RecoveryPendingStatus::CompensatingReplacement { .. } => None,
+                        | RecoveryPendingStatus::AwaitingReplacementCleanup { .. } => None,
                     })
                     .flatten()
             });
@@ -3578,7 +3578,7 @@ fn create_ready_with_a_stale_source_is_compensated_without_moving_content() {
             .is_none(),
         "a terminal create must not remain in the active saga map"
     );
-    let retirement = binding_retirement(&fixture, request.binding());
+    let retirement = binding_cleanup(&fixture, request.binding());
     assert_eq!(
         retirement.origin(),
         BindingRetirementOrigin::NativeCreateAborted {
@@ -3843,7 +3843,7 @@ fn indeterminate_create_can_be_cancelled_explicitly_without_a_timeout() {
             .native_create_saga(request.saga())
             .is_none()
     );
-    let retirement = binding_retirement(&fixture, request.binding());
+    let retirement = binding_cleanup(&fixture, request.binding());
     assert_eq!(
         retirement.origin(),
         BindingRetirementOrigin::NativeCreateAborted {
@@ -3884,7 +3884,7 @@ fn a_cancelled_create_which_appears_late_is_compensated_exactly_once() {
             .is_none()
     );
     assert_eq!(
-        binding_retirement(&fixture, request.binding()).status(),
+        binding_cleanup(&fixture, request.binding()).status(),
         BindingRetirementStatus::AwaitingAppearance
     );
 
@@ -3906,7 +3906,7 @@ fn a_cancelled_create_which_appears_late_is_compensated_exactly_once() {
         )
     });
     assert_eq!(
-        binding_retirement(&fixture, request.binding()).status(),
+        binding_cleanup(&fixture, request.binding()).status(),
         BindingRetirementStatus::CleanupRequested {
             effect: compensation.id(),
         }
@@ -4020,7 +4020,7 @@ fn failed_create_compensation_retries_only_after_explicit_input() {
         } if *failed_effect == failed_cleanup && *actual == retry.id()
     ));
     assert_eq!(
-        binding_retirement(&fixture, request.binding()).status(),
+        binding_cleanup(&fixture, request.binding()).status(),
         BindingRetirementStatus::CleanupRequested { effect: retry.id() }
     );
 
@@ -4089,13 +4089,13 @@ fn staging_native_create_close_never_enters_surface_close_or_admission() {
         ),
     );
     let failed = submit_test_input(&mut fixture, failure)
-        .expect("staging cleanup failure must reduce without admitting the binding");
+        .expect("pre-admission cleanup failure must reduce without admitting the binding");
     assert!(platform_effects(&fixture, &failed).is_empty());
     assert_eq!(fixture.engine.active_close_plans().count(), 0);
     assert_eq!(fixture.engine.workspace(), &before);
     assert!(fixture.engine.viewport().viewport(SURFACE_NATIVE).is_none());
     assert_eq!(
-        binding_retirement(&fixture, request.binding()).status(),
+        binding_cleanup(&fixture, request.binding()).status(),
         BindingRetirementStatus::CleanupFailed {
             effect: cleanup.id()
         }
@@ -4122,7 +4122,7 @@ fn staging_native_create_close_never_enters_surface_close_or_admission() {
 }
 
 #[test]
-fn staging_native_create_close_does_not_consume_same_snapshot_non_staging_close() {
+fn pre_admission_native_create_close_does_not_consume_same_snapshot_live_close() {
     let mut fixture = fixture();
     prepare_base_platform(&mut fixture, ViewportRole::Child);
     let request = start_native_create(&mut fixture);
@@ -4400,7 +4400,7 @@ fn restore_unbinds_an_observed_external_child_without_destroying_it_or_reusing_i
                 )
             })
     );
-    let retirement = binding_retirement(&fixture, host_binding);
+    let retirement = binding_cleanup(&fixture, host_binding);
     assert_eq!(retirement.ownership(), ViewportOwnership::External);
     assert_eq!(
         retirement.status(),
@@ -4501,7 +4501,7 @@ fn restore_removes_an_observed_runtime_child_and_requests_exact_cleanup() {
         |effect| matches!(effect, PlatformEffect::ReleaseChild { binding: actual } if *actual == binding),
     );
     assert!(reconciliation.cleanup_effects().contains(&cleanup.id()));
-    let retired = binding_retirement(&fixture, binding);
+    let retired = binding_cleanup(&fixture, binding);
     assert!(retired.observed());
     assert_eq!(retired.ownership(), ViewportOwnership::RuntimeOwned);
     assert_eq!(
@@ -4551,7 +4551,7 @@ fn failed_retired_cleanup_retries_only_after_explicit_input() {
     );
     assert_ne!(retry.id(), failed_cleanup);
     assert_eq!(retry.epoch(), fixture.engine.version().epoch());
-    let retired = binding_retirement(&fixture, host_binding);
+    let retired = binding_cleanup(&fixture, host_binding);
     assert!(retired.observed());
     assert_eq!(retired.ownership(), ViewportOwnership::RuntimeOwned);
     assert_eq!(
@@ -4579,7 +4579,7 @@ fn retired_tombstone_reserves_its_token_until_exact_destroyed_observation() {
     )
     .expect("second workspace replacement must reduce");
     assert_eq!(
-        binding_retirement(&fixture, host_binding).status(),
+        binding_cleanup(&fixture, host_binding).status(),
         BindingRetirementStatus::AwaitingExactDestruction
     );
 
@@ -4609,7 +4609,7 @@ fn retired_tombstone_reserves_its_token_until_exact_destroyed_observation() {
 
     publish_windows!(&mut fixture, vec![source_window(&fixture)]);
     assert_eq!(
-        binding_retirement(&fixture, host_binding).status(),
+        binding_cleanup(&fixture, host_binding).status(),
         BindingRetirementStatus::AwaitingExactDestruction,
         "inventory absence alone cannot release an externally owned token"
     );
@@ -4692,7 +4692,7 @@ fn repeated_restore_in_one_boundary_reissues_only_the_current_tombstone_cleanup(
     });
     assert_eq!(emitted.id(), cleanup_ids[1]);
     assert_eq!(platform_effects(&fixture, &transition).len(), 1);
-    let retired = binding_retirement(&fixture, host_binding);
+    let retired = binding_cleanup(&fixture, host_binding);
     assert_eq!(
         retired.status(),
         BindingRetirementStatus::CleanupRequested {
@@ -4807,7 +4807,7 @@ fn fail_cleanup_continuation_observer(case: &mut CleanupContinuationFixture) {
             )
     ));
     assert_eq!(
-        binding_retirement(&case.fixture, case.host_binding).status(),
+        binding_cleanup(&case.fixture, case.host_binding).status(),
         BindingRetirementStatus::CleanupBlocked {
             effect: case.successor.id,
             reason: EffectUnsupportedReason::BackendUnsupported,
@@ -4994,7 +4994,7 @@ fn assert_cleanup_predecessor_epoch_fence(
             )
     ));
     assert_eq!(
-        binding_retirement(&case.fixture, case.host_binding).status(),
+        binding_cleanup(&case.fixture, case.host_binding).status(),
         BindingRetirementStatus::CleanupFailed {
             effect: case.destructive.id,
         }
@@ -5052,7 +5052,7 @@ fn pending_create_tombstone_fixture() -> PendingCreateTombstoneFixture {
             } if *binding == request.binding() && *compensates == request.effect()
         )
     }));
-    let tombstone = binding_retirement(&fixture, request.binding());
+    let tombstone = binding_cleanup(&fixture, request.binding());
     assert!(!tombstone.observed());
     assert!(tombstone.may_reappear());
     assert_eq!(
@@ -5093,7 +5093,7 @@ fn restore_tombstones_a_pending_create_and_compensates_one_late_appearance() {
             } if *binding == request.binding() && *compensates == request.effect()
         )
     });
-    let retired = binding_retirement(&fixture, request.binding());
+    let retired = binding_cleanup(&fixture, request.binding());
     assert!(retired.observed());
     assert_eq!(
         retired.status(),

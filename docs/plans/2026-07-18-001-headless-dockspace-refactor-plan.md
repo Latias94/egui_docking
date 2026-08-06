@@ -1556,8 +1556,9 @@ authority/roster, close workflow, surface runtime, pointer transaction,
 first-live admission, and tick-final vacancy authority now live in separate
 private modules. The native-create lifecycle lives in
 `frame/native_create.rs`; retained staging resources live in
-`frame/native_staging_resource.rs`; exact binding retirement, token quarantine,
-and destroyed tombstones live in `frame/binding_retirement.rs`. The host
+`frame/native_staging_resource.rs`; exact binding cleanup, token quarantine,
+retirement projection, and destroyed tombstones live in
+`frame/binding_cleanup.rs`. The host
 presentation-attempt issuer now belongs to `PresentationAuthorityState`, while
 `frame.rs` retains only cross-lifecycle dispatch order. Frame unit tests moved to
 `frame/tests.rs` so the production coordinator is not obscured by inline tests.
@@ -1571,7 +1572,7 @@ and can be tested through that surface. Several modules still operate on the
 complete rollback candidate. Before sealing the public facade, continue moving
 their owned fields behind narrow state objects and typed deltas in this order:
 `NativeCreateLifecycle`,
-`SurfaceRecoveryLifecycle`, `BindingRetirementLifecycle`, then the remaining
+`SurfaceRecoveryLifecycle`, `BindingCleanupLifecycle`, then the remaining
 `CloseWorkflow`, `SurfaceRuntime`, and `PointerTransaction` operations.
 `DockEngine` must become the atomic orchestrator rather than a shared mutable
 namespace; physical file splitting alone does not satisfy this gate.

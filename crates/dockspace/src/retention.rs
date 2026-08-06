@@ -292,7 +292,7 @@ impl PointerRetentionManifest {
 /// Retained native-binding cleanup state, indexes, and destroyed-incarnation guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BindingRetentionManifest {
-    active_retirements: usize,
+    active_cleanup_obligations: usize,
     token_index_entries: usize,
     cleanup_lineage_entries: usize,
     destroyed_binding_guards: usize,
@@ -358,26 +358,26 @@ impl ScrollRetentionManifest {
 
 impl BindingRetentionManifest {
     pub(crate) const fn new(
-        active_retirements: usize,
+        active_cleanup_obligations: usize,
         token_index_entries: usize,
         cleanup_lineage_entries: usize,
         destroyed_binding_guards: usize,
     ) -> Self {
         Self {
-            active_retirements,
+            active_cleanup_obligations,
             token_index_entries,
             cleanup_lineage_entries,
             destroyed_binding_guards,
         }
     }
 
-    /// Returns retired bindings which still own cleanup or exact-destruction work.
+    /// Returns binding-scoped cleanup obligations which still own platform work.
     #[must_use]
-    pub const fn active_retirements(self) -> usize {
-        self.active_retirements
+    pub const fn active_cleanup_obligations(self) -> usize {
+        self.active_cleanup_obligations
     }
 
-    /// Returns window-token quarantine index entries for active retirements.
+    /// Returns window-token quarantine index entries for active cleanup obligations.
     #[must_use]
     pub const fn token_index_entries(self) -> usize {
         self.token_index_entries
@@ -395,10 +395,10 @@ impl BindingRetentionManifest {
         self.destroyed_binding_guards
     }
 
-    /// Returns all currently stored binding retirement identities and indexes.
+    /// Returns all currently stored binding cleanup identities and indexes.
     #[must_use]
     pub const fn retained_structure_count(self) -> usize {
-        self.active_retirements
+        self.active_cleanup_obligations
             + self.token_index_entries
             + self.cleanup_lineage_entries
             + self.destroyed_binding_guards

@@ -433,8 +433,8 @@ pub enum EffectInvalidation {
     WorkspaceReplaced { replacement_epoch: WorkspaceEpoch },
     /// The owning native-create transaction aborted before dispatch.
     NativeCreateAborted,
-    /// A staging close was authoritatively cleared before its private cleanup reached the adapter.
-    StagingCloseCleared,
+    /// A pre-admission close was authoritatively cleared before its cleanup reached the adapter.
+    PreAdmissionCloseCleared,
     /// The provider which owns this request's causal predecessor was replaced before dispatch.
     PlatformProviderReplaced { provider: PlatformObservationLease },
 }

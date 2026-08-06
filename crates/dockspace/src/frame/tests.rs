@@ -32,7 +32,7 @@ use crate::viewport_focus::{FocusObservationGeneration, unknown_focus_observatio
 
 fn retirement(coordinator: &ViewportCoordinator, binding: ViewportBinding) -> &BindingRetirement {
     coordinator
-        .binding_retirement
+        .binding_cleanup
         .get(&binding)
         .expect("binding retirement must remain queryable")
 }
@@ -323,7 +323,7 @@ fn runtime_child_vacancy() -> (
     assert_eq!(settlement.logical_vacated_bindings(), &[binding]);
     assert!(coordinator.registry.record(binding.surface()).is_none());
     assert!(matches!(
-        coordinator.binding_retirement.get(&binding).map(BindingRetirement::status),
+        coordinator.binding_cleanup.get(&binding).map(BindingRetirement::status),
         Some(BindingRetirementStatus::CleanupRequested { effect }) if effect == release
     ));
     let emitted = coordinator.take_new_effects();
@@ -872,7 +872,7 @@ fn recovered_host_can_preempt_first_live_without_losing_the_retained_resource() 
             .recovery_pending(destroyed.surface())
             .expect("replacement cleanup remains queryable")
             .status(),
-        RecoveryPendingStatus::CompensatingReplacement { .. }
+        RecoveryPendingStatus::AwaitingReplacementCleanup { .. }
     ));
     assert_eq!(
         coordinator
@@ -895,7 +895,7 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
         .expect("workspace replacement must retire the runtime recovery binding");
 
     let retirement = coordinator
-        .binding_retirement
+        .binding_cleanup
         .get(&replacement)
         .expect("the exact runtime replacement must remain quarantined");
     assert!(matches!(
@@ -910,7 +910,7 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
     assert!(coordinator.recovery_replacements.is_empty());
     assert_eq!(
         coordinator.native_staging_resource_owner(resource),
-        Some(NativeStagingResourceOwner::BindingRetirement(replacement))
+        Some(NativeStagingResourceOwner::BindingCleanup(replacement))
     );
     coordinator
         .validate_native_staging_resource_conservation()
@@ -928,7 +928,7 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
         ))
         .expect("exact replacement destruction must publish");
 
-    assert!(!coordinator.binding_retirement.contains_key(&replacement));
+    assert!(!coordinator.binding_cleanup.contains_key(&replacement));
     assert_eq!(coordinator.native_staging_resource_owner(resource), None);
     coordinator
         .validate_native_staging_resource_conservation()
@@ -936,7 +936,7 @@ fn workspace_replacement_quarantines_runtime_recovery_resource_until_exact_destr
 }
 
 #[test]
-fn staging_close_destruction_returns_first_live_resource_to_surface_recovery() {
+fn pre_admission_close_destruction_returns_first_live_resource_to_surface_recovery() {
     let (mut coordinator, destroyed, replacement, obligation, resource) =
         ready_recovery_replacement();
     let requested = close_observation(replacement, 4, WindowCloseState::LiveRequested);
@@ -959,13 +959,13 @@ fn staging_close_destruction_returns_first_live_resource_to_surface_recovery() {
             | RegistryEvent::CloseRequestCleared { .. }
             | RegistryEvent::Destroyed { .. } => None,
         })
-        .expect("registry must publish the exact staging close edge");
+        .expect("registry must publish the exact pre-admission close edge");
     assert_eq!(consumed.binding(), replacement);
     assert_eq!(
         consumed.known_state(),
         Some(WindowCloseState::LiveRequested)
     );
-    assert!(close.staging_close_was_consumed(consumed));
+    assert!(close.pre_admission_close_was_consumed(consumed));
 
     let destroyed_transition = coordinator
         .publish_snapshot(&snapshot_with_close_at(
@@ -977,7 +977,7 @@ fn staging_close_destruction_returns_first_live_resource_to_surface_recovery() {
                 WindowCloseState::Destroyed,
             )],
         ))
-        .expect("staging replacement destruction must publish");
+        .expect("replacement destruction must publish");
 
     assert!(matches!(
         destroyed_transition.actions(),
@@ -1887,7 +1887,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
     assert!(coordinator.registry.record(binding.surface()).is_none());
     assert!(matches!(
         coordinator
-            .binding_retirement
+            .binding_cleanup
             .get(&binding)
             .map(BindingRetirement::status),
         Some(BindingRetirementStatus::AwaitingInputRestore)
@@ -1906,7 +1906,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
         ))
         .expect("late enable acknowledgement must remain observable while vacating");
     assert!(coordinator.pointer_passthrough.contains_binding(binding));
-    assert!(coordinator.binding_retirement.contains_key(&binding));
+    assert!(coordinator.binding_cleanup.contains_key(&binding));
 
     coordinator
         .publish_snapshot(&routing_snapshot(
@@ -1922,7 +1922,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
     assert!(coordinator.registry.record(binding.surface()).is_none());
     assert!(matches!(
         coordinator
-            .binding_retirement
+            .binding_cleanup
             .get(&binding)
             .map(BindingRetirement::status),
         Some(BindingRetirementStatus::AwaitingExactDestruction)
@@ -1946,7 +1946,7 @@ fn external_vacancy_waits_for_late_input_restore_then_exact_destruction() {
             vec![close_observation(binding, 1, WindowCloseState::Destroyed)],
         ))
         .expect("exact destruction must release the external token quarantine");
-    assert!(!coordinator.binding_retirement.contains_key(&binding));
+    assert!(!coordinator.binding_cleanup.contains_key(&binding));
 }
 
 #[test]
@@ -2102,8 +2102,8 @@ fn runtime_vacancy_cleanup_retires_only_on_exact_destroyed_evidence() {
         .publish_snapshot(&snapshot_at(2, Vec::new()))
         .expect("authoritative inventory absence must not imply destruction");
     assert!(coordinator.registry.record(binding.surface()).is_none());
-    assert!(coordinator.binding_retirement.contains_key(&binding));
-    assert!(!coordinator.binding_retirement.was_destroyed(binding));
+    assert!(coordinator.binding_cleanup.contains_key(&binding));
+    assert!(!coordinator.binding_cleanup.was_destroyed(binding));
     assert_eq!(
         coordinator
             .effects()
@@ -2124,8 +2124,8 @@ fn runtime_vacancy_cleanup_retires_only_on_exact_destroyed_evidence() {
         ))
         .expect("exact destroyed evidence must publish");
     assert!(destroyed.actions().is_empty());
-    assert!(!coordinator.binding_retirement.contains_key(&binding));
-    assert!(coordinator.binding_retirement.was_destroyed(binding));
+    assert!(!coordinator.binding_cleanup.contains_key(&binding));
+    assert!(coordinator.binding_cleanup.was_destroyed(binding));
     assert!(matches!(
         coordinator
             .effects()
@@ -2159,8 +2159,8 @@ fn retired_close_stream_ignores_stale_destroyed_generation() {
         ))
         .expect("stale destroyed observation must be inert");
 
-    assert!(coordinator.binding_retirement.contains_key(&binding));
-    assert!(!coordinator.binding_retirement.was_destroyed(binding));
+    assert!(coordinator.binding_cleanup.contains_key(&binding));
+    assert!(!coordinator.binding_cleanup.was_destroyed(binding));
     assert_eq!(
         retirement(&coordinator, binding).status(),
         BindingRetirementStatus::CleanupRequested { effect: release }
@@ -2200,8 +2200,8 @@ fn terminal_tombstone_is_idempotent_after_same_token_aba_rebinding() {
     coordinator
         .publish_snapshot(&destroyed_snapshot)
         .expect("exact destruction must retire the old binding");
-    assert!(coordinator.binding_retirement.was_destroyed(old_binding));
-    assert!(!coordinator.binding_retirement.contains_key(&old_binding));
+    assert!(coordinator.binding_cleanup.was_destroyed(old_binding));
+    assert!(!coordinator.binding_cleanup.contains_key(&old_binding));
 
     let new_binding = coordinator
         .register_existing(
@@ -2258,7 +2258,7 @@ fn terminal_tombstone_is_idempotent_after_same_token_aba_rebinding() {
     assert_eq!(new_record.binding(), new_binding);
     assert_eq!(new_record.lifecycle(), ViewportLifecycle::Ready);
     assert!(new_record.coordinates().is_some());
-    assert!(coordinator.binding_retirement.was_destroyed(old_binding));
+    assert!(coordinator.binding_cleanup.was_destroyed(old_binding));
 
     let stale_window =
         observed_window(old_binding).with_input_observation(WindowInputObservation::new(
@@ -2302,7 +2302,7 @@ fn surface_aba_keeps_old_retirement_isolated_from_the_new_binding() {
             .map(ViewportRecord::binding),
         Some(new_binding)
     );
-    assert!(coordinator.binding_retirement.contains_key(&old_binding));
+    assert!(coordinator.binding_cleanup.contains_key(&old_binding));
     let old_retirement = retirement(&coordinator, old_binding).clone();
 
     coordinator
@@ -2333,8 +2333,8 @@ fn surface_aba_keeps_old_retirement_isolated_from_the_new_binding() {
             .map(ViewportRecord::binding),
         Some(new_binding)
     );
-    assert!(!coordinator.binding_retirement.contains_key(&old_binding));
-    assert!(coordinator.binding_retirement.was_destroyed(old_binding));
+    assert!(!coordinator.binding_cleanup.contains_key(&old_binding));
+    assert!(coordinator.binding_cleanup.was_destroyed(old_binding));
     assert_eq!(
         coordinator
             .effects()
@@ -4058,7 +4058,7 @@ fn provider_replacement_rebases_retired_binding_input_and_close_streams() {
             vec![close_observation(binding, 2, WindowCloseState::Destroyed)],
         ))
         .expect("successor destruction must terminalize the retirement");
-    assert!(coordinator.binding_retirement.get(&binding).is_none());
+    assert!(coordinator.binding_cleanup.get(&binding).is_none());
 }
 
 #[test]
@@ -4082,7 +4082,7 @@ fn exact_retirement_destruction_terminalizes_the_complete_binding_lineage() {
             "every effect targeting the destroyed binding must become terminal"
         );
     }
-    assert!(coordinator.binding_retirement.get(&binding).is_none());
+    assert!(coordinator.binding_cleanup.get(&binding).is_none());
 }
 
 #[test]
@@ -4252,7 +4252,7 @@ fn old_cleanup_result_requires_a_current_exact_binding_continuation() {
             .expect("test incarnation must advance"),
     );
     coordinator
-        .binding_retirement
+        .binding_cleanup
         .corrupt_binding_identity_for_test(binding, wrong_incarnation);
 
     assert_eq!(
@@ -4371,7 +4371,7 @@ fn cleanup_observation_retry_rejects_ineligible_protocol_state_atomically() {
                         .expect("test incarnation must advance"),
                 );
                 coordinator
-                    .binding_retirement
+                    .binding_cleanup
                     .corrupt_binding_identity_for_test(binding, wrong_binding);
             }
             IneligibleState::TerminalDestructivePredecessor => {
@@ -4400,7 +4400,7 @@ fn cleanup_observation_retry_rejects_ineligible_protocol_state_atomically() {
                         vec![close_observation(binding, 1, WindowCloseState::Destroyed)],
                     ))
                     .expect("exact destroyed evidence must retire cleanup ownership");
-                assert!(!coordinator.binding_retirement.contains_key(&binding));
+                assert!(!coordinator.binding_cleanup.contains_key(&binding));
             }
         }
 

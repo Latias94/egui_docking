@@ -23,7 +23,7 @@ pub(super) enum NativeStagingResourceOwner {
         obligation: SurfaceRecoveryObligationId,
         binding: ViewportBinding,
     },
-    BindingRetirement(ViewportBinding),
+    BindingCleanup(ViewportBinding),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +323,7 @@ mod tests {
         ledger
             .transition(resource, recovery, replacement)
             .expect("recovery replacement must acquire first-live ownership");
-        let retirement = NativeStagingResourceOwner::BindingRetirement(replacement_binding);
+        let retirement = NativeStagingResourceOwner::BindingCleanup(replacement_binding);
         ledger
             .transition(resource, replacement, retirement)
             .expect("replacement cleanup must transfer to binding retirement");
@@ -347,7 +347,7 @@ mod tests {
         let resource = descriptor.id();
         let actual = NativeStagingResourceOwner::NativeCreateSaga(saga);
         let wrong = NativeStagingResourceOwner::NativeCreateFirstLive(binding(10, 20, 1));
-        let next = NativeStagingResourceOwner::BindingRetirement(binding(10, 20, 1));
+        let next = NativeStagingResourceOwner::BindingCleanup(binding(10, 20, 1));
         let mut ledger = NativeStagingResourceLedger::default();
         ledger
             .insert(descriptor, actual)

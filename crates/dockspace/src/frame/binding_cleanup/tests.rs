@@ -22,8 +22,8 @@ fn binding(surface: u64, token: u64) -> ViewportBinding {
 fn runtime_request(
     binding: ViewportBinding,
     status: BindingRetirementStatus,
-) -> BindingRetirementRequest {
-    BindingRetirementRequest {
+) -> BindingCleanupRequest {
+    BindingCleanupRequest {
         binding,
         role: ViewportRole::Child,
         ownership: ViewportOwnership::RuntimeOwned,
@@ -33,8 +33,9 @@ fn runtime_request(
         input_observations: WindowInputObservationStream::default(),
         close_observations: WindowCloseObservationStream::default(),
         may_reappear: false,
-        cleanup: BindingRetirementCleanup::ReleaseOwnedWindow,
+        cleanup: BindingCleanupAction::ReleaseOwnedWindow,
         retained_staging_resource: None,
+        purpose: BindingCleanupPurpose::Retired,
     }
 }
 
@@ -76,7 +77,7 @@ fn provider_replacement_rebases_retired_binding_observation_generations() {
     let mut request = runtime_request(binding, BindingRetirementStatus::AwaitingAppearance);
     request.input_observations = input_observations;
     request.close_observations = close_observations;
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle.begin(request).expect("retirement must begin");
 
     lifecycle.reset_for_provider_replacement();
@@ -91,7 +92,7 @@ fn provider_replacement_rebases_retired_binding_observation_generations() {
         Some(BindingRetirementStatus::AwaitingAppearance),
     );
     let retirement = lifecycle
-        .retirements
+        .entries
         .get_mut(&binding)
         .expect("retirement must remain owned across provider replacement");
     assert!(!retirement.observed);
@@ -133,7 +134,7 @@ fn provider_replacement_rebases_retired_binding_observation_generations() {
 
 #[test]
 fn quiesced_producer_compacts_only_its_destroyed_binding_guards() {
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     let (first, second) = provider_pair();
 
     for token in 1..=10_000 {
@@ -142,7 +143,7 @@ fn quiesced_producer_compacts_only_its_destroyed_binding_guards() {
     }
 
     let retention = lifecycle.retention_manifest();
-    assert_eq!(retention.active_retirements(), 0);
+    assert_eq!(retention.active_cleanup_obligations(), 0);
     assert_eq!(retention.token_index_entries(), 0);
     assert_eq!(retention.cleanup_lineage_entries(), 0);
     assert_eq!(retention.destroyed_binding_guards(), 10_000);
@@ -171,7 +172,7 @@ fn quiesced_producer_compacts_only_its_destroyed_binding_guards() {
 
 #[test]
 fn exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthrough() {
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     let (provider, foreign_provider) = provider_pair();
     for token in 1..=10_000 {
         lifecycle.record_destroyed_tombstone(binding(1, token), provider);
@@ -182,7 +183,7 @@ fn exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthro
         lifecycle
             .compact_destroyed_tombstone(first, foreign_provider)
             .expect_err("a foreign provider cannot compact the exact guard"),
-        BindingRetirementLifecycleError::DestroyedTombstoneProviderMismatch {
+        BindingCleanupError::DestroyedTombstoneProviderMismatch {
             binding: first,
             expected: provider,
             submitted: foreign_provider,
@@ -200,14 +201,14 @@ fn exact_quiescence_compacts_same_provider_guards_without_cross_binding_fallthro
         lifecycle
             .compact_destroyed_tombstone(first, provider)
             .expect_err("one exact proof cannot compact twice"),
-        BindingRetirementLifecycleError::DestroyedTombstoneMissing { binding: first },
+        BindingCleanupError::DestroyedTombstoneMissing { binding: first },
     );
 }
 
 #[test]
 fn retention_accounts_for_active_quarantine_and_cleanup_indexes() {
     let binding = binding(1, 10);
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle
         .begin(runtime_request(
             binding,
@@ -218,7 +219,7 @@ fn retention_accounts_for_active_quarantine_and_cleanup_indexes() {
         .expect("retirement must begin");
 
     let retention = lifecycle.retention_manifest();
-    assert_eq!(retention.active_retirements(), 1);
+    assert_eq!(retention.active_cleanup_obligations(), 1);
     assert_eq!(retention.token_index_entries(), 1);
     assert_eq!(retention.cleanup_lineage_entries(), 1);
     assert_eq!(retention.destroyed_binding_guards(), 0);
@@ -232,7 +233,7 @@ fn cleanup_lineage_retains_only_the_destructive_predecessor_and_current_observer
     let predecessor = EffectId::new(1);
     let successor = EffectId::new(2);
     let latest_successor = EffectId::new(3);
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle
         .begin(runtime_request(
             binding,
@@ -317,7 +318,7 @@ fn cleanup_observation_alias_rejection_is_atomic() {
     let second = binding(2, 11);
     let first_predecessor = EffectId::new(1);
     let second_effect = EffectId::new(2);
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle
         .begin(runtime_request(
             first,
@@ -338,7 +339,7 @@ fn cleanup_observation_alias_rejection_is_atomic() {
 
     assert_eq!(
         lifecycle.accept_cleanup_observation_effect(first, second_effect, first_predecessor),
-        Err(BindingRetirementLifecycleError::CleanupEffectOwned {
+        Err(BindingCleanupError::CleanupEffectOwned {
             effect: second_effect,
             owner: second,
         })
@@ -352,7 +353,7 @@ fn terminal_destruction_releases_token_and_complete_cleanup_lineage() {
     let (provider, _) = provider_pair();
     let predecessor = EffectId::new(1);
     let successor = EffectId::new(2);
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle
         .begin(runtime_request(
             binding,
@@ -398,20 +399,20 @@ fn begin_rejects_token_and_cleanup_effect_aliases() {
     let other = binding(3, 11);
     let effect = EffectId::new(1);
     let status = BindingRetirementStatus::CleanupRequested { effect };
-    let mut lifecycle = BindingRetirementLifecycle::default();
+    let mut lifecycle = BindingCleanupLifecycle::default();
     lifecycle
         .begin(runtime_request(first, status))
         .expect("first retirement must begin");
 
     assert_eq!(
         lifecycle.begin(runtime_request(same_token, status)),
-        Err(BindingRetirementLifecycleError::TokenReserved {
+        Err(BindingCleanupError::TokenReserved {
             token: first.token(),
         })
     );
     assert_eq!(
         lifecycle.begin(runtime_request(other, status)),
-        Err(BindingRetirementLifecycleError::CleanupEffectOwned {
+        Err(BindingCleanupError::CleanupEffectOwned {
             effect,
             owner: first,
         })
