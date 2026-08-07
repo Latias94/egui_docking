@@ -981,6 +981,12 @@ impl BackendIngressRecorder {
         self.last_ordinal
     }
 
+    /// Returns the latest pointer edge sequence captured by this recorder.
+    #[must_use]
+    pub(crate) const fn pointer_through(&self) -> PointerEdgeSequence {
+        self.pointer_through
+    }
+
     /// Mints an affine rollback boundary for a fallible adapter append batch.
     #[must_use]
     pub fn savepoint(&self) -> BackendIngressSavepoint {
@@ -1080,6 +1086,20 @@ impl BackendIngressRecorder {
                 record.liveness.revoke_live();
             }
         }
+        BackendIngressDrainReceipt {
+            lease: self.lease,
+            recorded_through: self.last_ordinal,
+            pointer_through: self.pointer_through,
+            consumed: false,
+        }
+    }
+
+    /// Returns a non-consuming proof snapshot for core replacement preflight.
+    ///
+    /// The snapshot does not stop this recorder and must never be submitted as
+    /// the actual handoff receipt. It exists only so a runtime can validate the
+    /// core transition before consuming its sole producer.
+    pub(crate) fn drain_preview(&self) -> BackendIngressDrainReceipt {
         BackendIngressDrainReceipt {
             lease: self.lease,
             recorded_through: self.last_ordinal,

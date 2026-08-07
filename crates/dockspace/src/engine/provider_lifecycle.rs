@@ -200,6 +200,16 @@ impl DockEngine {
         ))
     }
 
+    /// Validates a joined-provider replacement without publishing or consuming
+    /// any authority. Runtime facades use this before draining their recorder.
+    pub(crate) fn validate_backend_ingress_provider_replacement(
+        &self,
+        drained: &crate::backend_ingress::BackendIngressDrainReceipt,
+    ) -> Result<(), EngineError> {
+        self.prepare_joined_backend_provider_replacement(drained)
+            .map(|_| ())
+    }
+
     /// Reissues a joined replacement ticket from the core-owned handoff state.
     ///
     /// The predecessor recorder was already consumed when the handoff began;

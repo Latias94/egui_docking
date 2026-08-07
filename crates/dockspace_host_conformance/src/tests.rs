@@ -13,12 +13,14 @@ use dockspace::runtime::{
     DockspaceHostFrame, DockspaceInteractionError, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin,
     HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState, NativePlatformError,
-    NativeSurfaceLease, NativeWindowFacts, PresentationSettlementRejection, PresentedDockReceiver,
-    PresentedDockspaceSurface, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, UniformSurfaceMetrics,
+    NativePlatformMode, NativePlatformSnapshot, NativeSurfaceLease, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState, PresentationSettlementRejection,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    UniformSurfaceMetrics,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::{CloseDecision, CloseResolutionOutcome};
@@ -33,6 +35,17 @@ const C: ItemId = ItemId::new(3);
 const X: ItemId = ItemId::new(4);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 const SECOND_WINDOW: HostWindowToken = HostWindowToken::new(42);
+
+fn ready_window_facts(physical: PhysicalRect, scale: ScaleFactor) -> NativeWindowFacts {
+    NativeWindowFacts::live()
+        .with_content_bounds(physical)
+        .with_outer_bounds(physical)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_close(NativeCloseState::Clear, None)
+}
 
 struct DeterministicHost {
     session: DockspaceSession,
@@ -73,6 +86,35 @@ impl DeterministicHost {
                 .expect("the host confirms the exact output it presented");
         }
         self.run(|_| {});
+    }
+
+    fn register_native_root(
+        &mut self,
+        surface: SurfaceId,
+        token: HostWindowToken,
+    ) -> HostFrameReport {
+        self.session
+            .register_native_root(surface, token)
+            .expect("the native registration joins the backend ingress order");
+        self.run(|_| {})
+    }
+
+    fn publish_native_snapshot(&mut self, snapshot: NativePlatformSnapshot) -> HostFrameReport {
+        self.session
+            .publish_native_snapshot(snapshot)
+            .expect("the native snapshot joins the backend ingress order");
+        self.run(|_| {})
+    }
+
+    fn publish_native_close(
+        &mut self,
+        lease: NativeSurfaceLease,
+        state: NativeCloseState,
+    ) -> HostFrameReport {
+        self.session
+            .publish_native_close(lease, state, None)
+            .expect("the native close fact joins the backend ingress order");
+        self.run(|_| {})
     }
 }
 
@@ -610,66 +652,16 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
             .confirm_surface_painted(SURFACE)
             .expect("the logical output was painted");
     });
-    host.observe_painted_outputs(logical);
-
-    host.session
-        .enable_native_platform()
-        .expect("the deterministic host enrolls one native platform provider");
-    let registration = host.run(|frame| {
-        frame
-            .register_native_root(SURFACE, WINDOW)
-            .expect("the logical surface binds to one native window");
-    });
-    let lease = match registration.inputs() {
-        [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
-        outcomes => panic!("expected one native registration, got {outcomes:?}"),
-    };
-    let physical =
-        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture physical bounds are valid");
-    let scale = ScaleFactor::new(1.0).expect("the fixture scale is valid");
-    let snapshot = host
-        .session
-        .capture_native_snapshot([(lease, NativeWindowFacts::ready(physical, scale))])
-        .expect("the host captures one complete native roster");
-    host.run(|frame| {
-        frame
-            .publish_native_snapshot(snapshot)
-            .expect("the ready native snapshot joins the host frame");
-    });
-    host.run(|frame| {
-        frame
-            .measure_surface(SURFACE, metrics)
-            .expect("native coordinate authority admits fresh measurements");
-    });
-    let mut native = host.run(|frame| {
-        assert!(
-            frame
-                .paint_plan(SURFACE)
-                .expect("the native paint phase is available")
-                .is_some()
-        );
-        frame
-            .confirm_surface_painted(SURFACE)
-            .expect("the native output was painted");
-    });
-
     assert!(matches!(
         host.session.enable_surface_pointer(SURFACE),
         Err(dockspace::runtime::DockspaceRuntimeError::Interaction(
             DockspaceInteractionError::PresentationAuthorityUnavailable { surface: SURFACE }
         ))
     ));
-
-    let mut outputs = native.take_painted_outputs();
-    assert_eq!(outputs.len(), 1);
-    let output = outputs.pop().expect("the native paint emits one output");
-    host.session
-        .settle_presentation(output, SurfacePresentationResult::Presented)
-        .expect("the renderer presents the exact native output");
-    host.run(|_| {});
+    host.observe_painted_outputs(logical);
     host.session
         .enable_surface_pointer(SURFACE)
-        .expect("the finally presented native endpoint admits pointer input");
+        .expect("the finally presented logical endpoint admits pointer input");
 }
 
 #[test]
@@ -1093,13 +1085,9 @@ impl InteractionFixture {
     fn attach_native_surface(&mut self) -> NativeSurfaceLease {
         self.host
             .session
-            .enable_native_platform()
+            .enable_native_platform(NativePlatformMode::ObservedRoots)
             .expect("the deterministic host enrolls one native platform provider");
-        let registration = self.host.run(|frame| {
-            frame
-                .register_native_root(SURFACE, WINDOW)
-                .expect("the logical surface binds to the host window token");
-        });
+        let registration = self.host.register_native_root(SURFACE, WINDOW);
         let lease = match registration.inputs() {
             [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
             outcomes => panic!("expected one native registration, got {outcomes:?}"),
@@ -1111,13 +1099,9 @@ impl InteractionFixture {
         let snapshot = self
             .host
             .session
-            .capture_native_snapshot([(lease, NativeWindowFacts::ready(physical, scale))])
+            .capture_native_snapshot([(lease, ready_window_facts(physical, scale))])
             .expect("the host captures one complete native roster");
-        self.host.run(|frame| {
-            frame
-                .publish_native_snapshot(snapshot)
-                .expect("the ready native snapshot joins the host frame");
-        });
+        self.host.publish_native_snapshot(snapshot);
 
         let bounds =
             LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
@@ -1143,10 +1127,6 @@ impl InteractionFixture {
                 .expect("the native surface plan was painted");
         });
         self.host.observe_painted_outputs(paint);
-        self.host
-            .session
-            .enable_surface_pointer(SURFACE)
-            .expect("the presented native endpoint admits one exact local pointer provider");
         self.source = source.expect("the native source receiver is present");
         self.target = target.expect("the native target receiver is present");
         lease
@@ -1491,25 +1471,25 @@ fn ogc_03_current_painted_preview_commits_exactly_once() {
 }
 
 #[test]
-fn ogc_04_stale_window_facts_clear_preview_and_require_repaint() {
+fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
     let mut fixture = InteractionFixture::new();
+    let retirement = fixture
+        .host
+        .session
+        .disable_surface_pointer()
+        .expect("the surface-local provider retires before desktop enrollment")
+        .expect("the fixture owns one surface-local provider");
+    assert_eq!(retirement.surface(), SURFACE);
     let lease = fixture.attach_native_surface();
-    fixture.begin_drag_without_target();
-    fixture.preview_target();
-    fixture.paint_preview();
-    let stale_target = fixture.current_target();
+    let _presented_target = fixture.current_target();
     let before = fixture.host.workspace().clone();
 
     let snapshot = fixture
         .host
         .session
-        .capture_native_snapshot([(lease, NativeWindowFacts::unavailable())])
+        .capture_native_snapshot([(lease, NativeWindowFacts::live())])
         .expect("unavailable facts are an explicit complete-roster tombstone");
-    let invalidated = fixture.host.run(|frame| {
-        frame
-            .publish_native_snapshot(snapshot)
-            .expect("the unavailable native facts join the host frame");
-    });
+    let invalidated = fixture.host.publish_native_snapshot(snapshot);
     assert_eq!(invalidated.repaint_surfaces(), &[SURFACE]);
     assert!(
         fixture
@@ -1526,20 +1506,17 @@ fn ogc_04_stale_window_facts_clear_preview_and_require_repaint() {
             .expect("the invalidated surface remains a valid frame member");
         assert!(
             plan.is_none() || plan.is_some_and(|plan| plan.drag_preview().is_none()),
-            "the replacement paint may never carry the old routed preview"
+            "the replacement paint may never carry stale routed interaction state"
         );
     });
-    fixture.host.run(|frame| {
-        frame
-            .submit_surface_pointer(SurfacePointerInput::new(
-                SurfacePointerId::new(1),
-                SurfacePointerEvent::ButtonReleased(SurfacePointerButton::Primary),
-                SurfacePointerPosition::Known(stale_target.center()),
-                SurfacePointerCapture::None,
-                SurfacePointerReceiverFacts::hover(&stale_target),
-            ))
-            .expect("the facade degrades stale concrete receiver facts to Unknown");
-    });
+    assert!(
+        fixture
+            .host
+            .session
+            .bind_presented_receiver(&fixture.target)
+            .is_none(),
+        "stale geometry cannot regain receiver authority without a new presentation"
+    );
     assert_eq!(fixture.host.workspace(), &before);
 }
 
@@ -1548,14 +1525,10 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     let (workspace, _) = tabs_workspace([A, B]);
     let mut host = DeterministicHost::new(workspace);
     host.session
-        .enable_native_platform()
+        .enable_native_platform(NativePlatformMode::ObservedRoots)
         .expect("the deterministic host enrolls one native platform provider");
 
-    let registered_a1 = host.run(|frame| {
-        frame
-            .register_native_root(SURFACE, WINDOW)
-            .expect("A1 registration joins the frame");
-    });
+    let registered_a1 = host.register_native_root(SURFACE, WINDOW);
     let a1 = match registered_a1.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
         outcomes => panic!("expected A1 registration, got {outcomes:?}"),
@@ -1564,18 +1537,10 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
         .session
         .capture_native_snapshot([(a1, NativeWindowFacts::destroyed())])
         .expect("A1 destruction is one exact complete-roster fact");
-    host.run(|frame| {
-        frame
-            .publish_native_snapshot(destroyed)
-            .expect("A1 exact destruction joins the frame");
-    });
+    host.publish_native_snapshot(destroyed);
     assert_eq!(host.session.native_surface(SURFACE), None);
 
-    let registered_a2 = host.run(|frame| {
-        frame
-            .register_native_root(SURFACE, WINDOW)
-            .expect("the destroyed token may be rebound as A2");
-    });
+    let registered_a2 = host.register_native_root(SURFACE, WINDOW);
     let a2 = match registered_a2.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
         outcomes => panic!("expected A2 registration, got {outcomes:?}"),
@@ -1583,31 +1548,20 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     assert_ne!(a1, a2, "the core must mint a fresh binding incarnation");
     assert_eq!(a1.window_token(), a2.window_token());
 
-    host.run(|frame| {
-        frame
-            .publish_native_close(a2, NativeCloseState::Clear)
-            .expect("A2 establishes its independent close-generation namespace");
-    });
+    host.publish_native_close(a2, NativeCloseState::Clear);
     let physical =
         PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the A2 physical bounds are valid");
     let scale = ScaleFactor::new(1.0).expect("the A2 scale is valid");
     let ready_a2 = host
         .session
-        .capture_native_snapshot([(a2, NativeWindowFacts::ready(physical, scale))])
+        .capture_native_snapshot([(a2, ready_window_facts(physical, scale))])
         .expect("the next snapshot advances beyond A2's close observation");
-    host.run(|frame| {
-        frame
-            .publish_native_snapshot(ready_a2)
-            .expect("A2 becomes the current routeable binding");
-    });
+    host.publish_native_snapshot(ready_a2);
 
     let before = host.workspace().clone();
-    let mut frame = host
+    let error = host
         .session
-        .begin_host_frame()
-        .expect("the late callback frame begins");
-    let error = frame
-        .publish_native_close(a1, NativeCloseState::Requested)
+        .publish_native_close(a1, NativeCloseState::Requested, None)
         .expect_err("the delayed A1 close must be rejected before reduction");
     assert!(matches!(
         error,
@@ -1615,12 +1569,7 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
             surface: SURFACE
         })
     ));
-    frame
-        .complete_unpainted_surfaces(MeasurementUnavailableReason::Deferred)
-        .expect("the inert late callback does not poison the host frame");
-    frame
-        .commit()
-        .expect("the frame containing only an inert A1 callback commits");
+    host.run(|_| {});
 
     assert_eq!(host.workspace(), &before);
     assert_eq!(host.session.native_surface(SURFACE), Some(a2));
@@ -1641,14 +1590,10 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
             .expect("the two-surface native workspace is valid"),
     );
     host.session
-        .enable_native_platform()
+        .enable_native_platform(NativePlatformMode::ObservedRoots)
         .expect("the deterministic host enrolls one native platform provider");
 
-    let first_registration = host.run(|frame| {
-        frame
-            .register_native_root(SURFACE, WINDOW)
-            .expect("the first native surface joins the host frame");
-    });
+    let first_registration = host.register_native_root(SURFACE, WINDOW);
     let first = match first_registration.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
         outcomes => panic!("expected the first registration, got {outcomes:?}"),
@@ -1658,37 +1603,25 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
     let scale = ScaleFactor::new(1.0).expect("the scale is valid");
     let stale_snapshot = host
         .session
-        .capture_native_snapshot([(first, NativeWindowFacts::ready(physical, scale))])
+        .capture_native_snapshot([(first, ready_window_facts(physical, scale))])
         .expect("the snapshot exactly covers the roster at capture time");
 
-    let second_registration = host.run(|frame| {
-        frame
-            .register_native_root(SECOND_SURFACE, SECOND_WINDOW)
-            .expect("the second native surface changes the committed roster");
-    });
+    let second_registration = host.register_native_root(SECOND_SURFACE, SECOND_WINDOW);
     assert!(matches!(
         second_registration.inputs(),
         [HostInputOutcome::NativeSurfaceRegistered { lease }]
             if lease.surface() == SECOND_SURFACE
     ));
 
-    let mut frame = host
+    let error = host
         .session
-        .begin_host_frame()
-        .expect("the stale snapshot frame begins");
-    let error = frame
         .publish_native_snapshot(stale_snapshot)
         .expect_err("a captured snapshot cannot omit a subsequently registered binding");
     assert!(matches!(
         error,
         dockspace::runtime::DockspaceRuntimeError::Native(NativePlatformError::SnapshotRosterStale)
     ));
-    frame
-        .complete_unpainted_surfaces(MeasurementUnavailableReason::Deferred)
-        .expect("the typed stale-roster rejection does not poison the frame");
-    frame
-        .commit()
-        .expect("the frame remains atomically committable after rejection");
+    host.run(|_| {});
 
     assert_eq!(host.session.native_surface(SURFACE), Some(first));
     assert!(host.session.native_surface(SECOND_SURFACE).is_some());

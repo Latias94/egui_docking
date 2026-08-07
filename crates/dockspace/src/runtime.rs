@@ -8,6 +8,7 @@
 
 mod interaction;
 mod native;
+mod native_effect;
 mod paint;
 mod presentation;
 
@@ -20,8 +21,17 @@ pub use interaction::{
     SurfaceScrollSequenceId,
 };
 pub use native::{
-    HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformSnapshot,
-    NativeSurfaceLease, NativeWindowFacts,
+    HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformMode,
+    NativePlatformSnapshot, NativeSurfaceCloseRequest, NativeSurfaceLease, NativeWindowFacts,
+    NativeWindowInputState, NativeWindowPresentationState,
+};
+pub use native_effect::{
+    NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseEffectAcknowledgement,
+    NativeDispatchFailure, NativeEffectCorrelation, NativeEffectHandle, NativeEffectOperation,
+    NativeEffectReceipt, NativeEffectReportOutcome, NativeEffectRequest, NativeEffectResult,
+    NativeEffectSubmissionError, NativeHiddenPresentationProof, NativeIndeterminateReason,
+    NativeInputEffectAcknowledgement, NativePreShowPresentationProof,
+    NativePresentationEffectAcknowledgement, NativeSurfaceRole, NativeUnsupportedReason,
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizePaintRecord, DockspaceDragPreview, DockspaceGuideScope,
@@ -52,11 +62,13 @@ use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::interaction::InteractionOutcome;
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
-use crate::transition::{ContentCloseRequestRejection, InputOutcome, WorkspaceVersion};
+use crate::transition::{
+    ContentCloseRequestRejection, InputOutcome, SurfaceCloseRequestRejection, WorkspaceVersion,
+};
 use crate::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
-use crate::{ClosePlan, CloseResolutionOutcome};
+use crate::{ClosePlan, CloseResolutionOutcome, SurfaceCloseRequest};
 
 const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
@@ -72,6 +84,8 @@ pub struct DockspaceSession {
     presentation: presentation::RuntimePresentationState,
     pointer: Option<interaction::RuntimePointerState>,
     native: Option<native::RuntimeNativeState>,
+    native_handoff: Option<native::RuntimeNativeHandoff>,
+    abandoned_native_effects: native_effect::NativeEffectDropQueue,
     committed_source_sequence: u64,
 }
 
@@ -94,6 +108,8 @@ impl DockspaceSession {
             presentation: presentation::RuntimePresentationState::default(),
             pointer: None,
             native: None,
+            native_handoff: None,
+            abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
             committed_source_sequence: 0,
         })
     }
@@ -120,30 +136,63 @@ impl DockspaceSession {
     /// Returns an error when presentation output is awaiting an explicit host
     /// observation or the core rejects the frame prelude.
     pub fn begin_host_frame(&mut self) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        if self.native_handoff.is_some() {
+            return Err(NativePlatformError::ProviderReplacementPending.into());
+        }
         self.reconcile_surface_pointer_provider()?;
+        if let Some(native) = self.native.as_mut() {
+            native.record_abandoned_effects(&self.abandoned_native_effects)?;
+            native.reclaim_committed_prefix(&mut self.engine)?;
+        }
         let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
-        let submitted_presentation = self.presentation.submit_observation(&mut prelude)?;
+        let submitted_presentation = if let Some(native) = self.native.as_mut() {
+            self.presentation.submit_backend_observation(
+                &mut prelude,
+                &self.engine,
+                native.recorder_mut(),
+            )?
+        } else {
+            self.presentation.submit_observation(&mut prelude)?
+        };
         let frame = prelude.seal(&self.engine)?;
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer
             .as_ref()
             .map(interaction::RuntimePointerState::committed_sequence);
-        let next_native_close_generations = self.native.as_ref().map_or_else(
-            Default::default,
-            native::RuntimeNativeState::close_generations,
-        );
-        Ok(DockspaceHostFrame {
+        let mut host_frame = DockspaceHostFrame {
             session: self,
             frame,
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: false,
-            native_snapshot_commit: None,
-            next_native_close_generations,
             submitted_presentation,
             painted_surfaces: BTreeSet::new(),
-        })
+        };
+        if host_frame.session.native.is_some() {
+            let batch = host_frame
+                .session
+                .native
+                .as_mut()
+                .expect("native state checked above")
+                .prepare_batch(&host_frame.session.engine)?;
+            let mut progress = host_frame.frame.submit_backend_ingress(batch)?;
+            while progress == crate::engine::BackendIngressProgress::ReceiverReceiptsRequired {
+                let candidates = host_frame
+                    .frame
+                    .pointer_receiver_candidates()
+                    .ok_or(NativePlatformError::ProtocolInvariant)?;
+                if !candidates.candidates().is_empty() {
+                    return Err(NativePlatformError::DesktopPointerInputUnsupported.into());
+                }
+                let receipts = crate::pointer_receiver::PointerReceiverReceiptBatch::new([])
+                    .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+                progress = host_frame
+                    .frame
+                    .submit_backend_pointer_receiver_receipts(receipts)?;
+            }
+        }
+        Ok(host_frame)
     }
 }
 
@@ -158,9 +207,6 @@ pub struct DockspaceHostFrame<'session> {
     next_source_sequence: u64,
     next_pointer_sequence: Option<u64>,
     pointer_input_submitted: bool,
-    native_snapshot_commit: Option<native::NativeSnapshotCommit>,
-    next_native_close_generations:
-        std::collections::BTreeMap<crate::viewport::ViewportBinding, u64>,
     submitted_presentation: presentation::SubmittedPresentationObservation,
     painted_surfaces: BTreeSet<SurfaceId>,
 }
@@ -284,8 +330,6 @@ impl DockspaceHostFrame<'_> {
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: _,
-            native_snapshot_commit,
-            next_native_close_generations,
             submitted_presentation,
             painted_surfaces,
         } = self;
@@ -324,12 +368,7 @@ impl DockspaceHostFrame<'_> {
             );
         }
         if let Some(native) = &mut session.native {
-            native.commit(
-                &session.engine,
-                &transition,
-                native_snapshot_commit,
-                next_native_close_generations,
-            );
+            native.commit(&session.engine);
         }
         session
             .presentation
@@ -337,9 +376,15 @@ impl DockspaceHostFrame<'_> {
         let painted_outputs = session
             .presentation
             .retain_emissions(transition.presentation_emissions());
+        let native_provider = session
+            .native
+            .as_ref()
+            .map(native::RuntimeNativeState::provider);
         Ok(HostFrameReport::from_transition(
             &transition,
             painted_outputs,
+            native_provider,
+            session.abandoned_native_effects.clone(),
         ))
     }
 
@@ -356,7 +401,7 @@ impl DockspaceHostFrame<'_> {
 }
 
 /// Public actionable result produced by one facade-owned input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
     /// One checked durable command applied or produced a valid no-op.
     CommandApplied {
@@ -405,9 +450,45 @@ pub enum HostInputOutcome {
         surface: SurfaceId,
     },
     /// One complete native platform snapshot was atomically applied.
-    NativePlatformSnapshotApplied,
+    NativePlatformSnapshotApplied {
+        /// Exact close edges newly observed in this same platform batch.
+        close_requests: Vec<NativeSurfaceCloseRequest>,
+    },
     /// One exact live-binding close observation was atomically applied.
-    NativeCloseObservationApplied,
+    NativeCloseObservationApplied {
+        /// Exact close edges newly observed by this binding-scoped fact.
+        close_requests: Vec<NativeSurfaceCloseRequest>,
+    },
+    /// One explicit native surface-close request opened a core-owned close plan.
+    NativeSurfaceCloseRequested {
+        /// Exact surface disposition accepted by the core.
+        request: SurfaceCloseRequest,
+        /// Frozen close plan shared with the ordinary decision workflow.
+        plan: ClosePlan,
+    },
+    /// One explicit native surface-close request was rejected without mutation.
+    NativeSurfaceCloseRejected {
+        /// Exact close edge which remains available for a different explicit request.
+        close: NativeSurfaceCloseRequest,
+        /// Surface disposition rejected by the core.
+        request: SurfaceCloseRequest,
+        /// Typed fail-closed rejection.
+        reason: SurfaceCloseRequestRejection,
+    },
+    /// A vetoed native close now requires an exact platform cancellation.
+    NativeSurfaceCloseCancellationRequired {
+        /// Exact close edge which must be cancelled.
+        close: NativeSurfaceCloseRequest,
+        /// Plan retaining the cancellation obligation.
+        plan: ClosePlan,
+    },
+    /// One negative or indeterminate native effect result was reduced.
+    NativeEffectResultReported {
+        /// Opaque exact effect identity.
+        effect: NativeEffectHandle,
+        /// Stable result classification.
+        outcome: NativeEffectReportOutcome,
+    },
     /// Native facts captured against an older workspace epoch were inert.
     NativePlatformSnapshotStale,
     /// Native ingress from a superseded provider was inert.
@@ -438,6 +519,7 @@ pub struct HostFrameReport {
     after: WorkspaceVersion,
     inputs: Vec<HostInputOutcome>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
+    native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
 }
 
@@ -445,6 +527,8 @@ impl HostFrameReport {
     fn from_transition(
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
+        native_provider: Option<crate::PlatformObservationLease>,
+        abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
         let mut ordered_inputs = Vec::new();
         for reduced in transition.reduced_inputs() {
@@ -484,19 +568,65 @@ impl HostFrameReport {
                     changed: *changed,
                 }),
                 InputOutcome::ViewportRegistered { binding } => {
-                    Some(HostInputOutcome::NativeSurfaceRegistered {
-                        lease: NativeSurfaceLease::from_binding(*binding),
+                    native_provider.map(|provider| HostInputOutcome::NativeSurfaceRegistered {
+                        lease: NativeSurfaceLease::from_binding(provider, *binding),
                     })
                 }
                 InputOutcome::ViewportRegistrationRejected { surface } => {
                     Some(HostInputOutcome::NativeSurfaceRegistrationRejected { surface: *surface })
                 }
-                InputOutcome::PlatformSnapshotPublished { .. } => {
-                    Some(HostInputOutcome::NativePlatformSnapshotApplied)
+                InputOutcome::PlatformSnapshotPublished {
+                    native_close_edges, ..
+                } => native_provider.map(|provider| {
+                    HostInputOutcome::NativePlatformSnapshotApplied {
+                        close_requests: native_close_edges
+                            .iter()
+                            .copied()
+                            .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
+                            .collect(),
+                    }
+                }),
+                InputOutcome::NativeCloseObservationPublished {
+                    native_close_edges, ..
+                } => native_provider.map(|provider| {
+                    HostInputOutcome::NativeCloseObservationApplied {
+                        close_requests: native_close_edges
+                            .iter()
+                            .copied()
+                            .map(|edge| NativeSurfaceCloseRequest::from_edge(provider, edge))
+                            .collect(),
+                    }
+                }),
+                InputOutcome::SurfaceCloseRequested { request, plan, .. } => {
+                    Some(HostInputOutcome::NativeSurfaceCloseRequested {
+                        request: request.clone(),
+                        plan: plan.clone(),
+                    })
                 }
-                InputOutcome::NativeCloseObservationPublished { .. } => {
-                    Some(HostInputOutcome::NativeCloseObservationApplied)
+                InputOutcome::SurfaceCloseRejected {
+                    edge,
+                    request,
+                    reason,
+                    ..
+                } => native_provider.map(|provider| HostInputOutcome::NativeSurfaceCloseRejected {
+                    close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
+                    request: request.clone(),
+                    reason: reason.clone(),
+                }),
+                InputOutcome::SurfaceCloseCancellationRequested { edge, plan, .. } => {
+                    native_provider.map(|provider| {
+                        HostInputOutcome::NativeSurfaceCloseCancellationRequired {
+                            close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
+                            plan: plan.clone(),
+                        }
+                    })
                 }
+                InputOutcome::PlatformEffectReported {
+                    effect, transition, ..
+                } => Some(HostInputOutcome::NativeEffectResultReported {
+                    effect: NativeEffectHandle::from_core(*effect),
+                    outcome: (*transition).into(),
+                }),
                 InputOutcome::PlatformSnapshotStale { .. } => {
                     Some(HostInputOutcome::NativePlatformSnapshotStale)
                 }
@@ -537,11 +667,19 @@ impl HostFrameReport {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
+        let native_effects = transition
+            .platform_effects()
+            .iter()
+            .map(|emission| {
+                NativeEffectRequest::from_emission(emission, abandoned_native_effects.clone())
+            })
+            .collect();
         Self {
             before: transition.before(),
             after: transition.after(),
             inputs,
             painted_outputs,
+            native_effects,
             repaint_surfaces,
         }
     }
@@ -575,6 +713,14 @@ impl HostFrameReport {
     /// whether that exact output was presented or dropped.
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
+    }
+
+    /// Takes the exact provider-bound native effects emitted by this frame.
+    ///
+    /// The vector preserves core order. Each request is affine and must be
+    /// dispatched, converted into a typed result, or retained explicitly.
+    pub fn take_native_effects(&mut self) -> Vec<NativeEffectRequest> {
+        std::mem::take(&mut self.native_effects)
     }
 
     /// Returns every logical surface whose presentation authority changed.
@@ -686,15 +832,29 @@ mod tests {
     fn shared_pointer_ordinal_preserves_edge_then_outcome_order() {
         let outcomes = finish_ordered_inputs(vec![
             (7, 1, 0, HostInputOutcome::NativePlatformSnapshotStale),
-            (7, 0, 1, HostInputOutcome::NativeCloseObservationApplied),
-            (7, 0, 0, HostInputOutcome::NativePlatformSnapshotApplied),
+            (
+                7,
+                0,
+                1,
+                HostInputOutcome::NativeCloseObservationApplied {
+                    close_requests: Vec::new(),
+                },
+            ),
+            (
+                7,
+                0,
+                0,
+                HostInputOutcome::NativePlatformSnapshotApplied {
+                    close_requests: Vec::new(),
+                },
+            ),
         ]);
 
         assert!(matches!(
             outcomes.as_slice(),
             [
-                HostInputOutcome::NativePlatformSnapshotApplied,
-                HostInputOutcome::NativeCloseObservationApplied,
+                HostInputOutcome::NativePlatformSnapshotApplied { .. },
+                HostInputOutcome::NativeCloseObservationApplied { .. },
                 HostInputOutcome::NativePlatformSnapshotStale,
             ]
         ));

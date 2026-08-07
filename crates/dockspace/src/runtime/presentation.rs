@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
+use crate::backend_ingress::{BackendIngressLease, BackendIngressRecorder};
 use crate::engine::CoreHostFramePrelude;
+use crate::engine::DockEngine;
 use crate::ids::SurfaceId;
 use crate::intent::Authority;
 use crate::presentation_observation::{
@@ -99,6 +101,10 @@ pub enum PresentationObservationError {
     /// A provider capture generation cannot advance without wrapping.
     #[error("presentation capture generation is exhausted")]
     CaptureGenerationExhausted,
+    /// A previously recorded backend settlement changed before core accepted
+    /// it, which would make replay ambiguous.
+    #[error("backend presentation settlement changed before core acceptance")]
+    BackendSettlementConflict,
 }
 
 #[derive(Debug, Default)]
@@ -106,12 +112,20 @@ pub(super) struct RuntimePresentationState {
     pending: BTreeMap<HostPresentationStreamId, Vec<HostPresentationOutput>>,
     settlements: BTreeMap<HostPresentationStreamId, PendingPresentationSettlement>,
     capture_generations: BTreeMap<HostPresentationStreamId, HostPresentationCaptureGeneration>,
+    backend_recorded: BTreeMap<HostPresentationStreamId, RecordedPresentationSettlement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PendingPresentationSettlement {
     settled_through: HostFrameKey,
     result: SurfacePresentationResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RecordedPresentationSettlement {
+    provider: BackendIngressLease,
+    generation: HostPresentationCaptureGeneration,
+    settlement: PendingPresentationSettlement,
 }
 
 #[derive(Debug, Default)]
@@ -126,6 +140,83 @@ pub(super) struct SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    pub(super) fn discard_uncommitted_backend_records(&mut self) {
+        self.backend_recorded.clear();
+    }
+
+    /// Submits the rendering host's bootstrap observation and records terminal
+    /// output settlements in the joined backend ingress order.
+    ///
+    /// The prelude deliberately receives `NoUpdate`: terminal presentation is
+    /// a backend fact and must be reduced in the same causal stream as native
+    /// inventory, close, and effect observations. The sidecar remembers every
+    /// accepted record until the corresponding core transition commits, so a
+    /// dropped host frame replays the exact same record instead of allocating a
+    /// second observation.
+    pub(super) fn submit_backend_observation(
+        &mut self,
+        prelude: &mut CoreHostFramePrelude,
+        engine: &DockEngine,
+        recorder: &mut BackendIngressRecorder,
+    ) -> Result<SubmittedPresentationObservation, super::DockspaceRuntimeError> {
+        let scope = prelude
+            .pending_presentation_streams()
+            .collect::<BTreeSet<_>>();
+        if scope != self.pending.keys().copied().collect() {
+            return Err(PresentationObservationError::PendingRosterMismatch.into());
+        }
+        prelude.submit_presentation_observation(HostPresentationObservation::NoUpdate)?;
+
+        let provider = recorder.lease();
+        let mut submitted = SubmittedPresentationObservation::default();
+        for stream in scope {
+            let Some(settlement) = self.settlements.get(&stream).copied() else {
+                continue;
+            };
+            let generation = self
+                .capture_generations
+                .get(&stream)
+                .copied()
+                .unwrap_or_default()
+                .checked_next()
+                .ok_or(PresentationObservationError::CaptureGenerationExhausted)?;
+
+            let recorded = self.backend_recorded.get(&stream).copied();
+            match recorded {
+                Some(recorded)
+                    if recorded.provider == provider
+                        && recorded.generation == generation
+                        && recorded.settlement == settlement => {}
+                Some(_) => {
+                    return Err(PresentationObservationError::BackendSettlementConflict.into());
+                }
+                None => {
+                    let entry = HostPresentationObservationEntry::new(
+                        stream,
+                        HostPresentationStreamObservation::Captured {
+                            generation,
+                            progress: HostPresentationProgress::Retired {
+                                settled_through: settlement.settled_through,
+                                presented: settlement.result.authority(settlement.settled_through),
+                            },
+                        },
+                    );
+                    engine.record_backend_presentation_observation(recorder, entry)?;
+                    self.backend_recorded.insert(
+                        stream,
+                        RecordedPresentationSettlement {
+                            provider,
+                            generation,
+                            settlement,
+                        },
+                    );
+                }
+            }
+            submitted.captured.insert(stream, (generation, settlement));
+        }
+        Ok(submitted)
+    }
+
     pub(super) fn submit_observation(
         &self,
         prelude: &mut CoreHostFramePrelude,
@@ -251,6 +342,7 @@ impl RuntimePresentationState {
                 self.pending.remove(stream);
             }
             self.settlements.remove(stream);
+            self.backend_recorded.remove(stream);
         }
     }
 
