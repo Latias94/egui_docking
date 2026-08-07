@@ -21,12 +21,14 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    manifest = repo_root / "integration" / "egui-native-e2e" / "Cargo.toml"
+    manifest = repo_root / "integration" / "egui-fork-workspace" / "Cargo.toml"
     command = [
         "cargo",
         "run",
         "--manifest-path",
         str(manifest),
+        "--package",
+        "egui-dockspace-native-e2e",
         "--locked",
     ]
     try:
@@ -35,7 +37,7 @@ def main() -> int:
             cwd=repo_root,
             check=False,
             timeout=args.timeout,
-            env=fork_environment(),
+            env=fork_environment(repo_root),
         ).returncode
     except subprocess.TimeoutExpired:
         print(f"native E2E timed out after {args.timeout} seconds", file=sys.stderr)

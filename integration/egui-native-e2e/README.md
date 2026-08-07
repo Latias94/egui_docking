@@ -15,7 +15,7 @@ contracts remain in focused Rust tests rather than this smoke. It does not
 simulate hardware input, transfer windows between mixed-DPI monitors, exercise
 close/focus failure matrices, or prove grab-offset preservation.
 
-Run it from the repository root against the manifest-pinned fork revision:
+Run it from the repository root against the shared fork-workspace pin:
 
 ```text
 python3 scripts/run_native_e2e.py

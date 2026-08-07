@@ -1,12 +1,10 @@
-[workspace]
-resolver = "3"
-
 [package]
 name = "egui_dockspace_native"
 description = "Unpublished fork-backed native runtime for egui_dockspace"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+workspace = "../../integration/egui-fork-workspace"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/egui_docking"
@@ -18,18 +16,6 @@ eframe = { version = "=0.35.0", default-features = false, features = ["accesskit
 egui = { version = "=0.35.0", default-features = false }
 egui_dockspace = { path = "../egui_dockspace", features = ["serde"] }
 thiserror = "2.0.18"
-
-[patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-emath = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-winit = { git = "https://github.com/Latias94/winit", rev = "ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c" }
 
 [lints.rust]
 unsafe_code = "forbid"

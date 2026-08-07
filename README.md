@@ -65,8 +65,8 @@ upstream cannot prove as `Unknown`. The release-pinned fork carries global event
 provenance, cross-viewport receiver probing, terminal renderer results, and a
 complete-roster input-before-paint hosted-cycle SPI. Native lifecycle ownership
 lives in the unpublished `egui_dockspace_native` runtime. The excluded native
-workspaces pin the public fork commit
-`20b35b03d645bc3cab68f7b26eee6be8fbc40ef0` and the event-fact Winit commit
+workspace pins the public fork commit
+`f4914624701c46bec00d8650d8cbdecb7354be39` and the event-fact Winit commit
 `ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c`; the complete two-window conformance
 matrix, bounded long-session ledgers, performance gates, an upstream-reviewable
 patch series, and the sealed public facade remain release blockers. Egui no
@@ -118,30 +118,34 @@ cargo test --manifest-path integration/egui-official-harness/Cargo.toml --locked
 ```
 
 The development fork in `repo-ref/egui-release` starts at the exact upstream
-`0.35.0` tag. The excluded fork-backed workspaces pin the complete public patch
-revision `20b35b03d645bc3cab68f7b26eee6be8fbc40ef0` and Winit revision
-`ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c`; their lockfiles make a clean
+`0.35.0` tag. The excluded fork-backed workspace pins the complete public patch
+revision `f4914624701c46bec00d8650d8cbdecb7354be39` and Winit revision
+`ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c`; its lockfile makes a clean
 checkout reproducible without either ignored local repository. The fork-backed
 runtime remains `publish = false` until its required seams are available from a
 publishable release. Launch the current two-window trial example with:
 
 ```text
-python3 scripts/run_native_multiview.py
+cargo run \
+  --manifest-path integration/egui-fork-workspace/Cargo.toml \
+  --package egui_dockspace_native \
+  --example native_multiview \
+  --target-dir target \
+  --locked
 ```
 
-A self-driving native smoke gate starts one real root window, tears a two-tab group off into a
-dynamically created child, waits for the child's first-live interaction admission, redocks the
-complete group into the root, verifies exact ownership, tab order, selection, MRU, and source
-vacancy, then scrolls an overflowing tab strip through the production Winit window-event and
-egui derivative-claim path before closing itself:
+A self-driving native smoke gate starts one real root window, tears a two-tab
+group off into a dynamically created child, waits for the child's first-live
+interaction admission, redocks the complete group into the root, verifies exact
+ownership and source vacancy, then closes itself:
 
 ```text
 python3 scripts/run_native_e2e.py
 ```
 
-This gate drives typed pointer events and a positioned `WindowEvent::MouseWheel` through the real
-native event loop and uses real OS windows. It does not simulate hardware input, transfer a window
-between mixed-DPI monitors, exercise close/focus failure matrices, or prove grab-offset
+This gate uses typed test-driver pointer events and real OS windows. It does not
+simulate hardware input, exercise wheel routing, transfer a window between
+mixed-DPI monitors, exercise close/focus failure matrices, or prove grab-offset
 preservation.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example deliberately
