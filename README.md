@@ -104,7 +104,8 @@ The workspace uses Rust 1.92 and edition 2024.
 
 ```text
 cargo nextest run --workspace --all-features --all-targets
-cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo clippy --workspace --all-features --all-targets -- \
+  -A warnings -D clippy::correctness -D clippy::suspicious
 cargo fmt --all --check
 ```
 

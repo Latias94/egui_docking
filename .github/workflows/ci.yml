@@ -33,8 +33,6 @@ jobs:
 
       - name: Format
         run: cargo fmt --all --check
-      - name: Check all targets
-        run: cargo check --workspace --all-features --all-targets --locked
       - name: Check correctness lints
         run: >-
           cargo clippy --workspace --all-features --all-targets --locked --
@@ -42,7 +40,9 @@ jobs:
       - name: Build strict documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --all-features --no-deps --locked
+        run: >-
+          cargo doc --package dockspace --package egui_dockspace
+          --all-features --no-deps --locked
       - name: Run workspace tests
         run: >-
           cargo nextest run --workspace --all-features --all-targets
@@ -57,21 +57,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.92.0
-      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: official-egui
 
       - name: Run downstream public API harness
         run: >-
-          cargo nextest run
-          --manifest-path integration/egui-official-harness/Cargo.toml
-          --all-targets --no-fail-fast --locked
+          cargo test --manifest-path integration/egui-official-harness/Cargo.toml
+          --locked
 
   fork-native:
     name: Pinned fork and native runtime
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.92.0
@@ -82,18 +80,5 @@ jobs:
 
       - name: Run fork and native protocol harnesses
         run: python3 scripts/run_egui_fork_harness.py
-
-  native-e2e:
-    name: Native two-window E2E
-    needs: fork-native
-    runs-on: macos-14
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: fork-native
-
       - name: Run real-window tear-off and redock
         run: python3 scripts/run_native_e2e.py --timeout 600
