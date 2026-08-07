@@ -7,13 +7,13 @@ members = [
 ]
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-emath = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
-epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "f4914624701c46bec00d8650d8cbdecb7354be39" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+egui = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+emath = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
+epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "94ff163ce106187d1dd4ea091ede872b88ac0735" }
 winit = { git = "https://github.com/Latias94/winit", rev = "ae4e6c5ee0af4b68c4ea1c2a2763b97e3ab7ae4c" }

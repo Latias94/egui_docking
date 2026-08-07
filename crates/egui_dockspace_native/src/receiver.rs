@@ -13,7 +13,7 @@ use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointer
 use dockspace::scene::SurfaceInteractionProjection;
 use eframe::{
     NativePhysicalPoint, NativePointerEdge, NativePointerEdgeKind, NativePointerSequence,
-    NativePointerSource, NativeViewportBinding,
+    NativeViewportBinding,
 };
 use egui::{
     PointerHit, PointerReceiverAuthority, Pos2, ScrollProbe, ScrollReceiver, Sense, WidgetReceiver,
@@ -44,15 +44,10 @@ impl PointerReceiverResolution {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NativeScrollDerivativeClaim {
-    binding: NativeViewportBinding,
     pointer_sequence: NativePointerSequence,
 }
 
 impl NativeScrollDerivativeClaim {
-    pub(crate) const fn binding(self) -> NativeViewportBinding {
-        self.binding
-    }
-
     pub(crate) const fn pointer_sequence(self) -> NativePointerSequence {
         self.pointer_sequence
     }
@@ -99,9 +94,7 @@ fn resolve_candidate(
     let retained = pointer_edges.get(&candidate.id().sequence().get());
     let locked_claim = match challenge {
         Some(ScrollReceiverChallenge::Locked { .. } | ScrollReceiverChallenge::OwnedTerminal) => {
-            retained
-                .map(|retained| scroll_derivative_claim(retained.edge()))
-                .transpose()?
+            retained.map(|retained| scroll_derivative_claim(retained.edge()))
         }
         Some(
             ScrollReceiverChallenge::Spatial { .. }
@@ -229,7 +222,7 @@ fn resolve_candidate(
                 delivery.scroll(),
                 PointerReceiverDeliveryDisposition::Dock(_)
             ) {
-            Some(scroll_derivative_claim(edge)?)
+            Some(scroll_derivative_claim(edge))
         } else {
             None
         };
@@ -754,18 +747,10 @@ const fn resolved_unknown_with_claim(
     }
 }
 
-fn scroll_derivative_claim(
-    edge: &NativePointerEdge,
-) -> Result<NativeScrollDerivativeClaim, NativeRuntimeError> {
-    let NativePointerSource::Viewport(binding) = edge.source() else {
-        return Err(NativeRuntimeError::IngressUnavailable(
-            "core-owned scroll derivative has no exact source viewport",
-        ));
-    };
-    Ok(NativeScrollDerivativeClaim {
-        binding,
+const fn scroll_derivative_claim(edge: &NativePointerEdge) -> NativeScrollDerivativeClaim {
+    NativeScrollDerivativeClaim {
         pointer_sequence: edge.sequence(),
-    })
+    }
 }
 
 fn _assert_native_binding_is_copy(_: NativeViewportBinding) {}

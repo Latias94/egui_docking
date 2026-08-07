@@ -426,8 +426,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                 Err(source) => return Err(core_ingress_error(&input, source)),
             };
             for claim in scroll_claims {
-                if !cycle.claim_native_scroll_derivative(claim.binding(), claim.pointer_sequence())
-                {
+                if !cycle.claim_native_scroll_derivative(claim.pointer_sequence()) {
                     return Err(NativeRuntimeError::IngressUnavailable(
                         "core accepted a native scroll receiver without one exact egui wheel derivative",
                     ));
