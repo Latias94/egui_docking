@@ -556,6 +556,9 @@ impl DockEngine {
         let Ok(drag) = self.interaction.armed_drag(session) else {
             return;
         };
+        if drag.presentation.presented().is_none() {
+            return;
+        }
         if let Some(surface) = self.payload_surface(&drag.payload) {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, surface);
         }
@@ -572,7 +575,14 @@ impl DockEngine {
         let Ok(drag) = self.interaction.active_drag(session) else {
             return;
         };
-        if let Some(binding) = self.viewport.drag_source(drag.owner.pointer()) {
+        if drag.presentation.presented().is_none() {
+            return;
+        }
+        if let Some(binding) = drag
+            .owner
+            .pointer_if_physical()
+            .and_then(|pointer| self.viewport.drag_source(pointer))
+        {
             dependencies.owner_bindings.insert(binding);
         } else if let Some(surface) = self.payload_surface(&drag.payload) {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, surface);

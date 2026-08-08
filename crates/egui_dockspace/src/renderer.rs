@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use dockspace::backend::engine::{
-    LocalSplitterGesturePhase, TabListMenuNavigation, TabScrollAdjustment,
+    LocalSplitterGesturePhase, LocalTabGesturePhase, TabListMenuNavigation, TabScrollAdjustment,
 };
 use dockspace::backend::interaction::{
     ActiveDragView, ActiveResizeView, ContainedTransformPreview, ContainedTransformPreviewToken,
@@ -109,6 +109,11 @@ pub(crate) enum RenderAction {
         target: SplitterResizeTarget,
         phase: LocalSplitterGesturePhase,
     },
+    LocalTabGesture {
+        surface: SurfaceId,
+        source: TabSceneId,
+        phase: LocalTabGesturePhase,
+    },
     AdjustContainedResize {
         scene: SurfaceSceneStamp,
         surface: SurfaceId,
@@ -168,6 +173,10 @@ impl RenderInteractionScenes {
             Some(scene) => Some(scene),
             None => self.accepted_snapshot,
         }
+    }
+
+    const fn local_tabs(self) -> Option<SurfaceSceneStamp> {
+        self.local_response
     }
 
     const fn splitters(self) -> Option<SurfaceSceneStamp> {
@@ -955,6 +964,7 @@ fn paint_root(
     output: &mut RenderOutput,
 ) {
     let tab_interaction_scene = interaction_scenes.tabs();
+    let local_tab_gesture_scene = interaction_scenes.local_tabs();
     let retained_control_scene = interaction_scenes.retained_controls();
     let contained = is_contained
         .then(|| {
@@ -1003,6 +1013,7 @@ fn paint_root(
             retained_control_scene.is_some(),
             pane_content_current,
             tab_interaction_scene,
+            local_tab_gesture_scene,
             plan,
             authoritative_hit_manifest,
             output,

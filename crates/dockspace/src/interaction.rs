@@ -773,10 +773,10 @@ impl<'state> ActiveDragView<'state> {
         self.session
     }
 
-    /// Returns the pointer which owns the drag.
+    /// Returns the physical pointer which owns the drag, when journal-backed.
     #[must_use]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
+    pub const fn pointer(self) -> Option<PointerId> {
+        self.owner.pointer_if_physical()
     }
 
     /// Returns the exact journal stream when this drag came from the
@@ -844,10 +844,10 @@ impl<'state> ActiveContainedTransformView<'state> {
         self.session
     }
 
-    /// Returns the pointer which owns the transform.
+    /// Returns the physical pointer which owns the transform, when journal-backed.
     #[must_use]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
+    pub const fn pointer(self) -> Option<PointerId> {
+        self.owner.pointer_if_physical()
     }
 
     /// Returns the exact journal stream when this transform came from the
@@ -1879,6 +1879,38 @@ impl ResizeGestureAuthority {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum DragGestureAuthority {
+    Presented(FrozenPresentationAuthority),
+    LocalReady {
+        surface: SurfaceId,
+        coordinates: SurfaceCoordinateCapture,
+    },
+}
+
+impl DragGestureAuthority {
+    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
+        match self {
+            Self::Presented(authority) => Some(authority),
+            Self::LocalReady { .. } => None,
+        }
+    }
+
+    pub(crate) const fn surface(self) -> SurfaceId {
+        match self {
+            Self::Presented(authority) => authority.surface(),
+            Self::LocalReady { surface, .. } => surface,
+        }
+    }
+
+    pub(crate) const fn local_coordinates(self) -> Option<SurfaceCoordinateCapture> {
+        match self {
+            Self::Presented(_) => None,
+            Self::LocalReady { coordinates, .. } => Some(coordinates),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArmedDrag {
     pub(crate) session: DragSessionId,
@@ -1893,7 +1925,7 @@ pub(crate) struct ArmedDrag {
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) presentation: DragGestureAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
@@ -1951,7 +1983,7 @@ pub(crate) struct DragArmStart {
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) presentation: DragGestureAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuationDraft>,
@@ -1970,7 +2002,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
     pub(crate) source_validated_at: WorkspaceVersion,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) presentation: DragGestureAuthority,
     pub(crate) source_layout_facts: Option<Arc<PresentationLayoutFacts>>,
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
@@ -2251,8 +2283,8 @@ impl InteractionState {
         match &self.active {
             ActiveGesture::Idle => None,
             ActiveGesture::Pressed(click) => Some(click.presentation),
-            ActiveGesture::Armed(drag) => Some(drag.presentation),
-            ActiveGesture::Dragging(drag) => Some(drag.presentation),
+            ActiveGesture::Armed(drag) => drag.presentation.presented(),
+            ActiveGesture::Dragging(drag) => drag.presentation.presented(),
             ActiveGesture::Resizing(resize) => resize.authority.presented(),
             ActiveGesture::ContainedTransforming(transform) => Some(transform.presentation),
         }

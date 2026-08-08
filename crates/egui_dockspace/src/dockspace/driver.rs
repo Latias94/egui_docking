@@ -1722,6 +1722,16 @@ impl DockspaceHostFrame<'_> {
                 target: *target,
                 phase: *phase,
             },
+            RenderAction::LocalTabGesture {
+                surface,
+                source,
+                phase,
+            } => EngineInput::LocalTabGesture {
+                expected,
+                surface: *surface,
+                source: *source,
+                phase: *phase,
+            },
             RenderAction::AdjustContainedResize {
                 scene,
                 surface,

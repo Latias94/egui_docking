@@ -27,7 +27,9 @@ impl DockEngine {
             emissions.insert(active.presented.emission());
         }
         if let Some(pending) = &self.pending_drag_release {
-            emissions.insert(pending.drag.presentation.presented.emission());
+            if let Some(presentation) = pending.drag.presentation.presented() {
+                emissions.insert(presentation.presented.emission());
+            }
             emissions.extend(pending.presentation_outputs.iter().copied());
             emissions.extend(pending.presented_output);
         }

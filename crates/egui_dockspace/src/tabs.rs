@@ -1,6 +1,8 @@
 //! Tab chrome, keyboard navigation, accessibility, and pane dispatch.
 
-use dockspace::backend::engine::{TabListMenuNavigation, TabScrollAdjustment};
+use dockspace::backend::engine::{
+    LocalTabGesturePhase, TabListMenuNavigation, TabScrollAdjustment,
+};
 use dockspace::backend::interaction::{ActiveDragView, DragPhase};
 use dockspace::backend::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
 use dockspace::backend::scene::{
@@ -31,6 +33,7 @@ use crate::projection::{
 };
 use crate::renderer::{
     RenderAction, RenderOutput, accesskit_bounds, from_logical_rect, paint_centered_label,
+    to_logical_point,
 };
 use crate::style::DockStyle;
 
@@ -78,6 +81,7 @@ pub(crate) fn paint_tabs(
     retained_controls_current: bool,
     pane_content_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
+    local_gesture_scene: Option<SurfaceSceneStamp>,
     authoritative_plan: &PresentationPlan,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     output: &mut RenderOutput,
@@ -202,6 +206,7 @@ pub(crate) fn paint_tabs(
             style,
             tab_interactions_current,
             interaction_scene,
+            local_gesture_scene,
             authoritative_plan,
             output,
         );
@@ -1077,6 +1082,7 @@ fn paint_tab(
     style: &DockStyle,
     interactions_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
+    local_gesture_scene: Option<SurfaceSceneStamp>,
     authoritative_plan: &PresentationPlan,
     output: &mut RenderOutput,
 ) {
@@ -1124,6 +1130,14 @@ fn paint_tab(
     }
     let selected = tab.selected();
     paint_tab_body(ui, tab, resource, rect, style, selected, hovered, focused);
+
+    capture_local_tab_gesture(
+        &response,
+        surface,
+        tab_scene,
+        local_gesture_scene.filter(|_| interactions_current),
+        output,
+    );
 
     if let Some(close_bounds) = tab.close_bounds()
         && let Some(close_rect) = from_logical_rect(close_bounds)
@@ -1215,6 +1229,53 @@ fn paint_tab(
             output,
         );
     }
+}
+
+fn capture_local_tab_gesture(
+    response: &Response,
+    surface: SurfaceId,
+    source: TabSceneId,
+    scene: Option<SurfaceSceneStamp>,
+    output: &mut RenderOutput,
+) {
+    let Some(scene) = scene else {
+        return;
+    };
+    let current = response
+        .interact_pointer_pos()
+        .and_then(|position| to_logical_point(position).ok());
+    let phase = if response.drag_started_by(egui::PointerButton::Primary) {
+        let (Some(current), Some(initial)) = (
+            current,
+            response
+                .interact_pointer_pos()
+                .map(|position| position - response.total_drag_delta().unwrap_or_default())
+                .and_then(|position| to_logical_point(position).ok()),
+        ) else {
+            return;
+        };
+        LocalTabGesturePhase::Begin {
+            scene,
+            initial,
+            current,
+        }
+    } else if response.drag_stopped_by(egui::PointerButton::Primary) {
+        current.map_or(LocalTabGesturePhase::Cancel, |current| {
+            LocalTabGesturePhase::Release { current }
+        })
+    } else if response.dragged_by(egui::PointerButton::Primary) {
+        let Some(current) = current else {
+            return;
+        };
+        LocalTabGesturePhase::Move { current }
+    } else {
+        return;
+    };
+    output.push_local_response_action(RenderAction::LocalTabGesture {
+        surface,
+        source,
+        phase,
+    });
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

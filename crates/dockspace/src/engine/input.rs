@@ -1,6 +1,7 @@
 //! Public engine input protocol and opaque prepared interaction proofs.
 
 use super::*;
+use crate::scene::TabSceneId;
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -268,6 +269,32 @@ pub enum LocalSplitterGesturePhase {
     Cancel,
 }
 
+/// One current-frame tab drag fact produced by an egui `Response`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LocalTabGesturePhase {
+    /// Begin a drag from the exact tab response and scene.
+    Begin {
+        /// Ready scene which owned the source response.
+        scene: SurfaceSceneStamp,
+        /// Pointer location when the framework crossed its drag threshold.
+        initial: LogicalPoint,
+        /// Current pointer location in the source surface.
+        current: LogicalPoint,
+    },
+    /// Update the active drag at an absolute logical point.
+    Move {
+        /// Current pointer location in the source surface.
+        current: LogicalPoint,
+    },
+    /// Release the active drag at an absolute logical point.
+    Release {
+        /// Current pointer location in the source surface.
+        current: LogicalPoint,
+    },
+    /// Cancel the active local drag without changing durable layout.
+    Cancel,
+}
+
 /// Input accepted by the U3 engine boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
@@ -462,6 +489,17 @@ pub enum EngineInput {
         /// Press, motion, release, or explicit cancellation fact.
         phase: LocalSplitterGesturePhase,
     },
+    /// Drive one local-response tab drag through the core drag/drop resolver.
+    LocalTabGesture {
+        /// Workspace version current when the framework response was captured.
+        expected: WorkspaceVersion,
+        /// Logical surface which owns the framework response.
+        surface: SurfaceId,
+        /// Stable tab identity which owns the response.
+        source: TabSceneId,
+        /// Begin, move, release, or cancellation fact.
+        phase: LocalTabGesturePhase,
+    },
     /// Activate one exact current tab-strip control without fabricating pointer delivery.
     ActivateTabStripControl {
         /// Opaque proof prepared from a sealed, receiver-authoritative presentation.
@@ -615,6 +653,7 @@ impl EngineInput {
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::LocalSplitterGesture { .. }
+            | Self::LocalTabGesture { .. }
             | Self::ActivateTabStripControl { .. }
             | Self::ActivateTabListMenuRow { .. }
             | Self::DismissTabListMenu { .. }

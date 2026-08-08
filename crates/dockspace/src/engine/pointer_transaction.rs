@@ -532,13 +532,9 @@ impl DockEngine {
             desktop_route,
             policy,
         )?;
-        if let Some(outcome) = self.apply_journal_preview_evaluation(
-            cause,
-            owner,
-            session,
-            evaluation,
-            interaction_events,
-        )? {
+        if let Some(outcome) =
+            self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?
+        {
             outcomes.push(outcome);
         }
         Ok(outcomes)
@@ -757,7 +753,7 @@ impl DockEngine {
                     }
                     _ => None,
                 };
-                if let Some(outcome) = self.apply_journal_preview_evaluation(
+                if let Some(outcome) = self.apply_preview_evaluation(
                     cause,
                     owner,
                     session,
@@ -1583,11 +1579,16 @@ impl DockEngine {
                 proposal.surface(),
             ),
             PreviewProof::Native { command, offer } => {
+                let Some(presentation) = drag.presentation.presented() else {
+                    return Err(EngineError::ReductionCauseInvariant {
+                        detail: "local drag produced a native delivery proof",
+                    });
+                };
                 return self.finish_journal_native_delivery(
                     cause,
                     focus_causal,
                     session,
-                    drag.presentation.presented,
+                    presentation.presented,
                     drag.payload.clone(),
                     pane_focus,
                     command,
@@ -2185,7 +2186,7 @@ impl DockEngine {
         })
     }
 
-    fn apply_journal_preview_evaluation(
+    pub(super) fn apply_preview_evaluation(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
@@ -2261,7 +2262,46 @@ impl DockEngine {
     ) -> Result<PreparedTabGesture, InteractionRejection> {
         let surface = presentation.surface();
         let plan = presentation.plan();
-        if presentation.scene().requirement().workspace_epoch() != self.version.epoch() {
+        self.prepare_tab_gesture(
+            surface,
+            presentation.scene(),
+            plan,
+            source,
+            point,
+            DragGestureAuthority::Presented(Self::freeze_journal_presentation(presentation)),
+        )
+    }
+
+    pub(super) fn prepare_local_tab_gesture(
+        &self,
+        candidate: &crate::scene::SurfacePlanScene,
+        source: TabGestureSource,
+        point: crate::geometry::LogicalPoint,
+    ) -> Result<PreparedTabGesture, InteractionRejection> {
+        let surface = candidate.stamp().surface();
+        self.prepare_tab_gesture(
+            surface,
+            candidate.stamp(),
+            candidate.plan(),
+            source,
+            point,
+            DragGestureAuthority::LocalReady {
+                surface,
+                coordinates: candidate.coordinate_capture(),
+            },
+        )
+    }
+
+    fn prepare_tab_gesture(
+        &self,
+        surface: SurfaceId,
+        scene: SurfaceSceneStamp,
+        plan: &crate::scene::PresentationPlan,
+        source: TabGestureSource,
+        point: crate::geometry::LogicalPoint,
+        presentation: DragGestureAuthority,
+    ) -> Result<PreparedTabGesture, InteractionRejection> {
+        if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
         }
         if !plan.bounds().contains(point) {
@@ -2386,7 +2426,7 @@ impl DockEngine {
             source_geometry,
             contained,
             initial_pointer: point,
-            presentation: Self::freeze_journal_presentation(presentation),
+            presentation,
             source_layout_facts: plan.layout_facts().cloned().map(std::sync::Arc::new),
         })
     }
@@ -2398,6 +2438,30 @@ impl DockEngine {
         owner: GestureOwner,
         capture_authority: Authority<PointerCaptureOwner>,
         threshold_origin: JournalDragThresholdOrigin,
+        prepared: PreparedTabGesture,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        self.activate_prepared_tab_gesture(
+            cause,
+            focus_causal,
+            owner,
+            Some(capture_authority),
+            Some(threshold_origin),
+            prepared,
+            policy,
+            events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn activate_prepared_tab_gesture(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        owner: GestureOwner,
+        capture_authority: Option<Authority<PointerCaptureOwner>>,
+        threshold_origin: Option<JournalDragThresholdOrigin>,
         prepared: PreparedTabGesture,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -2543,29 +2607,31 @@ impl DockEngine {
         } else {
             FrozenDragOrigin::Workspace
         };
-        let continuation = self.scene_gesture_continuation_draft(
-            cause,
-            owner,
-            prepared.presentation,
-            SceneGestureContinuationSource::Drag {
-                payload: payload.clone(),
-                source_surface: drag_source.source_surface,
-                complete_root: drag_source.complete_root.clone(),
-                origin: origin.clone(),
-                coordinates: self.capture_surface_coordinates(drag_source.source_surface),
-            },
-        );
+        let continuation = prepared.presentation.presented().and_then(|presentation| {
+            self.scene_gesture_continuation_draft(
+                cause,
+                owner,
+                presentation,
+                SceneGestureContinuationSource::Drag {
+                    payload: payload.clone(),
+                    source_surface: drag_source.source_surface,
+                    complete_root: drag_source.complete_root.clone(),
+                    origin: origin.clone(),
+                    coordinates: self.capture_surface_coordinates(drag_source.source_surface),
+                },
+            )
+        });
         let (session, replaced) = self
             .interaction
             .arm_drag(DragArmStart {
                 epoch: self.version.epoch(),
                 owner,
-                journal_capture_authority: Some(capture_authority),
+                journal_capture_authority: capture_authority,
                 button: PointerButton::Primary,
                 payload,
                 source_surface: drag_source.source_surface,
                 initial_pointer: Some(prepared.initial_pointer),
-                journal_threshold_origin: Some(threshold_origin),
+                journal_threshold_origin: threshold_origin,
                 complete_root: drag_source.complete_root,
                 partial_detachable: drag_source.partial_detachable,
                 origin,
@@ -2581,7 +2647,7 @@ impl DockEngine {
             })?;
         if replaced.is_some() {
             return Err(EngineError::ReductionCauseInvariant {
-                detail: "journal press replaced an active gesture after busy validation",
+                detail: "tab gesture replaced an active gesture after busy validation",
             });
         }
         events.extend(candidate_events);

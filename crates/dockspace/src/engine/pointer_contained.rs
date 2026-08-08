@@ -246,7 +246,7 @@ impl DockEngine {
                         partial_detachable: drag_source.partial_detachable,
                         origin,
                         source_validated_at: self.version,
-                        presentation: prepared.presentation,
+                        presentation: DragGestureAuthority::Presented(prepared.presentation),
                         source_layout_facts: prepared.source_layout_facts,
                         journal_source_geometry: None,
                         continuation,

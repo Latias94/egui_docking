@@ -46,7 +46,7 @@ use self::contained_geometry::{
 };
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
-    EngineInput, LocalSplitterGesturePhase, PreparedTabListMenuDismiss,
+    EngineInput, LocalSplitterGesturePhase, LocalTabGesturePhase, PreparedTabListMenuDismiss,
     PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation, PreparedTabListMenuScroll,
     PreparedTabStripControlActivation, PreparedTabStripScroll, TabListMenuNavigation,
     TabScrollAdjustment, TabScrollAdjustmentError, ValidatedWorkspaceRestore,
@@ -126,18 +126,18 @@ use crate::intent::{
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart,
     ContainedTransformPaintAcknowledgement, ContainedTransformPlacement, ContainedTransformPreview,
-    ContainedTransformSessionId, ContainedTransformStart, DragArmStart, EscapeDelivery,
-    FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin,
-    FrozenPresentationAuthority, FrozenResizeHandle, FrozenTabListMenuBackdropClick,
-    FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick, FrozenTabStripControlClick,
-    GestureOwner, InteractionCancelReason, InteractionCounterError, InteractionDelivery,
-    InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
-    InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
-    PaintAcknowledgement, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus,
-    PreviewVisual, ResizeGestureAuthority, ResizeStart, SceneGestureContinuation,
-    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
-    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
-    ScrollTerminationReason, WorkspaceDeliveryKind,
+    ContainedTransformSessionId, ContainedTransformStart, DragArmStart, DragGestureAuthority,
+    EscapeDelivery, FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin,
+    FrozenDragOrigin, FrozenPresentationAuthority, FrozenResizeHandle,
+    FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
+    FrozenTabStripControlClick, GestureOwner, InteractionCancelReason, InteractionCounterError,
+    InteractionDelivery, InteractionEvent, InteractionEventKind, InteractionOutcome,
+    InteractionRejection, InteractionState, InteractionStatus, JournalDragSourceGeometry,
+    JournalDragThresholdOrigin, PaintAcknowledgement, PreparedNativeTearOff, PreviewProof,
+    PreviewResolutionStatus, PreviewVisual, ResizeGestureAuthority, ResizeStart,
+    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
+    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
+    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::ProductAction;
@@ -1789,7 +1789,7 @@ struct PreparedTabGesture {
     source_geometry: JournalDragSourceGeometry,
     contained: Option<PreparedContainedTabOrigin>,
     initial_pointer: crate::geometry::LogicalPoint,
-    presentation: FrozenPresentationAuthority,
+    presentation: DragGestureAuthority,
     source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
@@ -2227,7 +2227,7 @@ impl DockEngine {
                                 && drag.source_surface == *source_surface
                                 && drag.complete_root == *complete_root
                                 && drag.origin == *origin
-                                && drag.presentation == draft.origin
+                                && drag.presentation.presented() == Some(draft.origin)
                         })
                     }
                     InteractionStatus::Dragging { session: active } if active == *session => {
@@ -2236,7 +2236,7 @@ impl DockEngine {
                                 && drag.source_surface == *source_surface
                                 && drag.complete_root == *complete_root
                                 && drag.origin == *origin
-                                && drag.presentation == draft.origin
+                                && drag.presentation.presented() == Some(draft.origin)
                         })
                     }
                     InteractionStatus::Idle
@@ -3661,6 +3661,25 @@ impl DockEngine {
         &self,
         drag: &crate::interaction::ActiveDrag,
     ) -> bool {
+        if let Some(coordinates) = drag.presentation.local_coordinates() {
+            let surface = drag.presentation.surface();
+            return surface == drag.source_surface
+                && Self::coordinate_capture_matches_current(
+                    coordinates,
+                    self.viewport.viewport(surface),
+                    self.viewport.surface_coordinate_authority(surface),
+                )
+                && self
+                    .presentation_authority
+                    .scene
+                    .surface(surface)
+                    .and_then(SurfaceScene::ready)
+                    .map(crate::scene::ReadySurfaceScene::candidate)
+                    .is_some_and(|candidate| {
+                        candidate.stamp().requirement().workspace_epoch() == self.version.epoch()
+                            && candidate.coordinate_capture() == coordinates
+                    });
+        }
         if !matches!(drag.origin, FrozenDragOrigin::Workspace) {
             return true;
         }
@@ -3967,7 +3986,7 @@ impl DockEngine {
             .interaction
             .active_drag(session)
             .ok()
-            .map(|drag| drag.owner.pointer());
+            .and_then(|drag| drag.owner.pointer_if_physical());
         match self.interaction.cancel_drag(session) {
             Ok(status) => {
                 if let Some(pointer) = pointer {

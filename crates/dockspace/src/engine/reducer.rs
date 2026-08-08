@@ -1413,6 +1413,24 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::LocalTabGesture {
+                expected,
+                surface,
+                source,
+                phase,
+            } => self.reduce_local_tab_gesture(
+                input.sequence,
+                cause,
+                focus_causal,
+                *expected,
+                *application_base,
+                *surface,
+                *source,
+                *phase,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::ActivateTabStripControl { prepared } => {
                 self.reduce_prepared_tab_strip_control(cause, prepared)
             }
