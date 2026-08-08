@@ -2758,12 +2758,6 @@ fn source_coordinate_change_retains_journal_drag_but_requires_fresh_source_prese
         engine.interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    assert!(
-        engine
-            .interaction()
-            .active_drag_view()
-            .is_some_and(|drag| drag.target().is_none())
-    );
     assert!(engine.interaction().preview().is_none());
 
     let target_projection = interaction(&engine, TARGET_SURFACE);

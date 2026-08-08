@@ -748,7 +748,7 @@ impl DockEngine {
                         },
                     ));
                 } else if matches!(status, InteractionStatus::Dragging { .. })
-                    && self.interaction.clear_drag_target(session).map_err(|_| {
+                    && self.interaction.clear_drag_feedback(session).map_err(|_| {
                         EngineError::Interaction {
                             input,
                             source: InteractionCounterError::StateInvariant,

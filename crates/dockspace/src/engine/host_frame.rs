@@ -752,18 +752,6 @@ impl<'frame> HostFrameView<'frame> {
             .map(SurfaceInteractionProjection::authority)
     }
 
-    /// Captures a migration-only local target proof against this frame.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn capture_local_target_observation(
-        &self,
-        observer: SurfaceId,
-        target: Authority<SurfacePointer>,
-    ) -> TargetAuthority {
-        self.engine
-            .capture_local_target_observation(observer, target)
-    }
-
     /// Returns this frame's read-only viewport coordinator.
     #[must_use]
     pub const fn viewport(&self) -> &'frame ViewportCoordinator {

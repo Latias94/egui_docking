@@ -354,11 +354,11 @@ impl DockEngine {
             &invalidated_scene_authorities.bindings,
         ) {
             PlatformInteractionReconciliation::Preserve => {}
-            PlatformInteractionReconciliation::ClearDragTarget {
+            PlatformInteractionReconciliation::ClearDragFeedback {
                 workspace_changed,
                 end_routing,
             } => {
-                self.clear_platform_drag_target(
+                self.clear_platform_drag_feedback(
                     input,
                     workspace_changed,
                     end_routing,
@@ -476,10 +476,10 @@ impl DockEngine {
             &invalidated_scene_authorities.bindings,
         ) {
             PlatformInteractionReconciliation::Preserve => {}
-            PlatformInteractionReconciliation::ClearDragTarget {
+            PlatformInteractionReconciliation::ClearDragFeedback {
                 workspace_changed,
                 end_routing,
-            } => self.clear_platform_drag_target(
+            } => self.clear_platform_drag_feedback(
                 input,
                 workspace_changed,
                 end_routing,

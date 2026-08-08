@@ -119,9 +119,9 @@ use crate::ids::{
 };
 use crate::intent::{
     Authority, CloseActivation, CloseSceneTarget, ContainedGestureKind, ContainedPlacementProof,
-    ContainedPlacementUnavailable, ContainedTransformKind, LocalTargetAuthorityProof,
-    LocalTargetObservation, NativePlacementProof, NativePresentationOffer, NativeTearOffProposal,
-    PointerButton, SurfacePointer, TabGestureSource, TargetAuthority,
+    ContainedPlacementUnavailable, ContainedTransformKind, NativePlacementProof,
+    NativePresentationOffer, NativeTearOffProposal, PointerButton, SurfacePointer,
+    TabGestureSource,
 };
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart,
@@ -1818,7 +1818,7 @@ struct InvalidatedSurfaceSceneAuthorities {
 
 enum PlatformInteractionReconciliation {
     Preserve,
-    ClearDragTarget {
+    ClearDragFeedback {
         workspace_changed: bool,
         end_routing: bool,
     },
@@ -1828,7 +1828,7 @@ enum PlatformInteractionReconciliation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PresentationHostRetirementInteractionImpact {
     None,
-    ClearTarget { end_routing: bool },
+    ClearFeedback { end_routing: bool },
     CancelOwner,
 }
 
@@ -2091,42 +2091,6 @@ impl DockEngine {
         self.presentation_authority
             .scene
             .interaction_authority(surface)
-    }
-
-    /// Captures one legacy local target observation against the exact current
-    /// gate-authorized presentation projection.
-    ///
-    /// This is a migration-only adapter API and will be removed with
-    /// [`TargetAuthority`]. A returned value without a valid current proof stays
-    /// fail-closed when reduced; the target point is never reinterpreted against
-    /// a later projection.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn capture_local_target_observation(
-        &self,
-        observer: SurfaceId,
-        target: Authority<SurfacePointer>,
-    ) -> TargetAuthority {
-        let target_matches_observer = !matches!(
-            &target,
-            Authority::Known(pointer) if pointer.surface() != observer
-        );
-        let proof = if target_matches_observer {
-            self.presentation_authority
-                .scene
-                .interaction_projection(observer)
-                .filter(|projection| {
-                    Self::coordinate_capture_matches_current(
-                        projection.output().coordinate_capture(),
-                        self.viewport.viewport(observer),
-                        self.viewport.surface_coordinate_authority(observer),
-                    )
-                })
-                .map(|projection| LocalTargetAuthorityProof::capture(observer, projection))
-        } else {
-            None
-        };
-        TargetAuthority::Local(LocalTargetObservation::captured(observer, target, proof))
     }
 
     fn freeze_interaction_projection(

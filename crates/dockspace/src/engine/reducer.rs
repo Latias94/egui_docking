@@ -770,7 +770,7 @@ impl DockEngine {
                 &mut interaction_events,
             )?;
         } else if target_vacated {
-            candidate.clear_platform_drag_target(
+            candidate.clear_platform_drag_feedback(
                 candidate.last_input,
                 before != candidate.version,
                 false,

@@ -580,18 +580,6 @@ impl DockEngine {
         if let FrozenDragOrigin::Contained(origin) = &drag.origin {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, origin.surface);
         }
-        if let Some(TargetAuthority::Local(local)) = &drag.target {
-            self.insert_current_viewport_binding(
-                &mut dependencies.target_bindings,
-                local.observer(),
-            );
-            if let Authority::Known(target) = local.target() {
-                self.insert_current_viewport_binding(
-                    &mut dependencies.target_bindings,
-                    target.surface(),
-                );
-            }
-        }
         if let Some(offer) = drag.contained_offer {
             self.insert_current_viewport_binding(
                 &mut dependencies.target_bindings,
@@ -697,7 +685,7 @@ impl DockEngine {
             end_routing = true;
         }
         if target_authority_lost {
-            PlatformInteractionReconciliation::ClearDragTarget {
+            PlatformInteractionReconciliation::ClearDragFeedback {
                 workspace_changed: self.version != version_before_actions,
                 end_routing,
             }
@@ -708,7 +696,7 @@ impl DockEngine {
         }
     }
 
-    pub(super) fn clear_platform_drag_target(
+    pub(super) fn clear_platform_drag_feedback(
         &mut self,
         input: InputSequence,
         workspace_changed: bool,
@@ -736,7 +724,7 @@ impl DockEngine {
         }
         let preview_was_present = self.interaction.preview().is_some();
         self.interaction
-            .clear_drag_target(session)
+            .clear_drag_feedback(session)
             .map_err(|_| EngineError::Interaction {
                 input,
                 source: InteractionCounterError::StateInvariant,
@@ -1071,7 +1059,7 @@ impl DockEngine {
         }
         match self.presentation_host_retirement_interaction_impact(affected_surfaces) {
             PresentationHostRetirementInteractionImpact::None => {}
-            PresentationHostRetirementInteractionImpact::ClearTarget { end_routing } => {
+            PresentationHostRetirementInteractionImpact::ClearFeedback { end_routing } => {
                 let InteractionStatus::Dragging { session } = self.interaction.status() else {
                     return Err(Self::contribution_invariant(
                         cause,
@@ -1080,7 +1068,7 @@ impl DockEngine {
                 };
                 let preview_was_present = self.interaction.preview().is_some();
                 self.interaction
-                    .clear_drag_target(session)
+                    .clear_drag_feedback(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?;
                 if preview_was_present {
                     interaction_events.push(InteractionEvent::new_caused(
@@ -1158,29 +1146,20 @@ impl DockEngine {
                         PresentationHostRetirementInteractionImpact::CancelOwner
                     }
                     Ok(drag) => {
-                        let target_affected = drag.target.as_ref().is_some_and(|target| {
-                            let TargetAuthority::Local(local) = target;
-                            surfaces.contains(&local.observer())
-                                || matches!(
-                                    local.target(),
-                                    Authority::Known(pointer)
-                                        if surfaces.contains(&pointer.surface())
-                                )
-                        });
                         let end_routing = false;
-                        let target_resource_affected = target_affected
-                            || drag
-                                .contained_offer
+                        let target_resource_affected =
+                            drag.contained_offer
                                 .is_some_and(|offer| surfaces.contains(&offer.anchor().surface()))
-                            || drag
-                                .affordance
-                                .as_ref()
-                                .is_some_and(|affordance| surfaces.contains(&affordance.surface()))
-                            || drag.preview.as_ref().is_some_and(|preview| {
-                                surfaces.contains(&preview.public().visual().surface())
-                            });
+                                || drag.affordance.as_ref().is_some_and(|affordance| {
+                                    surfaces.contains(&affordance.surface())
+                                })
+                                || drag.preview.as_ref().is_some_and(|preview| {
+                                    surfaces.contains(&preview.public().visual().surface())
+                                });
                         if target_resource_affected {
-                            PresentationHostRetirementInteractionImpact::ClearTarget { end_routing }
+                            PresentationHostRetirementInteractionImpact::ClearFeedback {
+                                end_routing,
+                            }
                         } else {
                             PresentationHostRetirementInteractionImpact::None
                         }
@@ -1663,7 +1642,7 @@ impl DockEngine {
                 if affected {
                     let changed =
                         self.interaction
-                            .clear_drag_target(session)
+                            .clear_drag_feedback(session)
                             .map_err(|source| {
                                 Self::contribution_invariant(cause, format!("{source:?}"))
                             })?;

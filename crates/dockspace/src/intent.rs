@@ -8,11 +8,7 @@ use crate::command::ContainedPosition;
 use crate::coordinates::{TearOffPlacementProof, ViewportPlacementProof};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::ids::{FloatingPresentationId, RootId, SurfaceId};
-use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
-use crate::scene::{
-    ContainedResizeDirection, PopupInteractionGateRevision, SurfaceCoordinateCapture,
-    SurfaceInteractionProjection, SurfaceSceneStamp, TabBarSceneId, TabSceneId,
-};
+use crate::scene::{ContainedResizeDirection, SurfaceSceneStamp, TabBarSceneId, TabSceneId};
 use crate::surface_recovery::ConvertedMainRecovery;
 
 /// Authority attached to a provider observation.
@@ -342,82 +338,6 @@ impl SurfaceBackgroundRootOffer {
     #[must_use]
     pub const fn root(self) -> RootId {
         self.root
-    }
-}
-
-/// Legacy renderer-local target observation and its provenance.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TargetAuthority {
-    /// Legacy migration-only local authority. Instances can only be captured by
-    /// a core-minted local-target observation capability, and this
-    /// variant will be removed with the legacy target protocol.
-    #[doc(hidden)]
-    Local(LocalTargetObservation),
-}
-
-/// Core-minted proof that binds one legacy local target observation to an exact
-/// gate-authorized presentation projection.
-///
-/// This is intentionally an internal migration detail. It must disappear with
-/// [`TargetAuthority`] rather than becoming a stable adapter capability.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LocalTargetAuthorityProof {
-    observer: SurfaceId,
-    scene: SurfaceSceneStamp,
-    output: SurfacePresentationOutputTicket,
-    presentation: PresentedSurfaceAuthority,
-    popup_gate_revision: PopupInteractionGateRevision,
-    coordinates: SurfaceCoordinateCapture,
-}
-
-impl LocalTargetAuthorityProof {
-    pub(crate) fn capture(
-        observer: SurfaceId,
-        projection: SurfaceInteractionProjection<'_>,
-    ) -> Self {
-        Self {
-            observer,
-            scene: projection.plan_stamp(),
-            output: projection.output_ticket(),
-            presentation: projection.authority(),
-            popup_gate_revision: projection.popup_gate_revision(),
-            coordinates: projection.output().coordinate_capture(),
-        }
-    }
-}
-
-/// Renderer-local target facts bound to one exact callback surface.
-///
-/// This legacy migration type has no public constructor. Adapters must obtain
-/// it through [`crate::engine::DockEngine::capture_local_target_observation`]
-/// and must not retain it across presentation callbacks.
-#[derive(Debug, Clone, PartialEq)]
-#[doc(hidden)]
-pub struct LocalTargetObservation {
-    observer: SurfaceId,
-    target: Authority<SurfacePointer>,
-    proof: Option<LocalTargetAuthorityProof>,
-}
-
-impl LocalTargetObservation {
-    pub(crate) const fn captured(
-        observer: SurfaceId,
-        target: Authority<SurfacePointer>,
-        proof: Option<LocalTargetAuthorityProof>,
-    ) -> Self {
-        Self {
-            observer,
-            target,
-            proof,
-        }
-    }
-
-    pub(crate) const fn observer(&self) -> SurfaceId {
-        self.observer
-    }
-
-    pub(crate) const fn target(&self) -> &Authority<SurfacePointer> {
-        &self.target
     }
 }
 

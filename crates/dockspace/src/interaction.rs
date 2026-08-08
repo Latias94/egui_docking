@@ -23,7 +23,6 @@ use crate::intent::{
     Authority, CloseSceneTarget, ContainedGestureKind, ContainedPresentationOffer,
     ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer,
     NativeTearOffProposal, PointerButton, PointerId, SurfaceBackgroundRootOffer, TabGestureSource,
-    TargetAuthority,
 };
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
@@ -684,7 +683,6 @@ pub struct ActiveDragView<'state> {
     owner: GestureOwner,
     button: PointerButton,
     payload: &'state MovePayload,
-    target: Option<&'state TargetAuthority>,
     contained_offer: Option<&'state ContainedPresentationOffer>,
     surface_background_offer: Option<&'state SurfaceBackgroundRootOffer>,
     native_offer: Option<&'state NativePresentationOffer>,
@@ -798,14 +796,6 @@ impl<'state> ActiveDragView<'state> {
     #[must_use]
     pub const fn payload(self) -> &'state MovePayload {
         self.payload
-    }
-
-    /// Returns the last authoritative target observation for an active drag.
-    ///
-    /// Armed drags and active drags without an observation return `None`.
-    #[must_use]
-    pub const fn target(self) -> Option<&'state TargetAuthority> {
-        self.target
     }
 
     /// Returns the first contained-presentation offer frozen for this session.
@@ -1985,7 +1975,6 @@ pub(crate) struct ActiveDrag {
     pub(crate) journal_source_geometry: Option<JournalDragSourceGeometry>,
     pub(crate) continuation: Option<SceneGestureContinuation>,
     pub(crate) journal_presentation_reservation: Option<JournalPresentationReservation>,
-    pub(crate) target: Option<TargetAuthority>,
     pub(crate) contained_offer: Option<ContainedPresentationOffer>,
     pub(crate) surface_background_offer: Option<SurfaceBackgroundRootOffer>,
     pub(crate) native_offer: Option<NativePresentationOffer>,
@@ -2368,7 +2357,6 @@ impl InteractionState {
                 owner: drag.owner,
                 button: drag.button,
                 payload: &drag.payload,
-                target: None,
                 contained_offer: None,
                 surface_background_offer: None,
                 native_offer: None,
@@ -2379,7 +2367,6 @@ impl InteractionState {
                 owner: drag.owner,
                 button: drag.button,
                 payload: &drag.payload,
-                target: drag.target.as_ref(),
                 contained_offer: drag.contained_offer.as_ref(),
                 surface_background_offer: drag.surface_background_offer.as_ref(),
                 native_offer: drag.native_offer.as_ref(),
@@ -2570,7 +2557,6 @@ impl InteractionState {
             journal_source_geometry: armed.journal_source_geometry,
             continuation: armed.continuation.clone(),
             journal_presentation_reservation: None,
-            target: None,
             contained_offer: None,
             surface_background_offer: None,
             native_offer: None,
@@ -2602,7 +2588,6 @@ impl InteractionState {
             || drag.contained_offer.is_some()
             || drag.surface_background_offer.is_some()
             || drag.native_offer.is_some()
-            || drag.target.is_some()
         {
             return Err(InteractionCounterError::StateInvariant);
         }
@@ -2737,15 +2722,14 @@ impl InteractionState {
         Ok(self.active_drag_mut(session)?.preview.take().is_some())
     }
 
-    pub(crate) fn clear_drag_target(
+    pub(crate) fn clear_drag_feedback(
         &mut self,
         session: DragSessionId,
     ) -> Result<bool, InteractionRejection> {
         let drag = self.active_drag_mut(session)?;
-        let target_cleared = drag.target.take().is_some();
         let affordance_cleared = drag.affordance.take().is_some();
         let preview_cleared = drag.preview.take().is_some();
-        Ok(target_cleared || affordance_cleared || preview_cleared)
+        Ok(affordance_cleared || preview_cleared)
     }
 
     pub(crate) fn set_drop_affordance(
