@@ -4,10 +4,13 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use dockspace::backend::engine::{TabListMenuNavigation, TabScrollAdjustment};
+use dockspace::backend::engine::{
+    LocalSplitterGesturePhase, TabListMenuNavigation, TabScrollAdjustment,
+};
 use dockspace::backend::interaction::{
-    ActiveDragView, ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase,
-    InteractionPreview, InteractionState, InteractionStatus, PreviewToken, PreviewVisual,
+    ActiveDragView, ActiveResizeView, ContainedTransformPreview, ContainedTransformPreviewToken,
+    DragPhase, InteractionPreview, InteractionState, InteractionStatus, PreviewToken,
+    PreviewVisual,
 };
 use dockspace::backend::presentation_hit::{
     PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
@@ -101,6 +104,11 @@ pub(crate) enum RenderAction {
         splitter: SplitterSceneId,
         delta: f64,
     },
+    LocalSplitterGesture {
+        surface: SurfaceId,
+        target: SplitterResizeTarget,
+        phase: LocalSplitterGesturePhase,
+    },
     AdjustContainedResize {
         scene: SurfaceSceneStamp,
         surface: SurfaceId,
@@ -164,6 +172,10 @@ impl RenderInteractionScenes {
 
     const fn splitters(self) -> Option<SurfaceSceneStamp> {
         self.accepted_snapshot
+    }
+
+    const fn local_splitters(self) -> Option<SurfaceSceneStamp> {
+        self.local_response
     }
 
     const fn retained_controls(self) -> Option<SurfaceSceneStamp> {
@@ -401,7 +413,7 @@ impl RenderOutput {
         }
     }
 
-    fn push_local_response_action(&mut self, action: RenderAction) {
+    pub(crate) fn push_local_response_action(&mut self, action: RenderAction) {
         self.actions.push(PositionedRenderAction::new(
             action,
             RenderActionPosition::LocalResponseAction,
@@ -674,6 +686,7 @@ pub(crate) fn paint_surface(
     pane_content_current: bool,
     interaction_scenes: RenderInteractionScenes,
     action_capture: RenderActionCapture,
+    local_gesture_hit_manifest: Option<&PresentationHitManifest>,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     is_gesture_source_surface: bool,
 ) -> RenderOutput {
@@ -736,6 +749,7 @@ pub(crate) fn paint_surface(
             pane_content_current,
             interaction_scenes,
             hovered_splitter,
+            interaction.active_resize_view(),
             authoritative_hit_manifest,
             &mut output,
         );
@@ -760,6 +774,7 @@ pub(crate) fn paint_surface(
             pane_content_current,
             interaction_scenes,
             hovered_splitter,
+            interaction.active_resize_view(),
             authoritative_hit_manifest,
             &mut output,
         );
@@ -776,7 +791,16 @@ pub(crate) fn paint_surface(
         &mut output,
     );
 
-    register_manifest_overlay_receivers(ui, instance_id, authoritative_hit_manifest, &mut output);
+    register_manifest_overlay_receivers(
+        ui,
+        instance_id,
+        surface,
+        interaction_scenes.local_splitters(),
+        interaction.active_resize_view(),
+        local_gesture_hit_manifest,
+        authoritative_hit_manifest,
+        &mut output,
+    );
 
     output.painted_drag_preview = paint_preview(
         ui,
@@ -816,10 +840,14 @@ pub(crate) fn paint_surface(
 fn register_manifest_overlay_receivers(
     ui: &Ui,
     instance_id: Id,
-    manifest: Option<&PresentationHitManifest>,
+    surface: SurfaceId,
+    local_scene: Option<SurfaceSceneStamp>,
+    active_resize: Option<ActiveResizeView<'_>>,
+    local_manifest: Option<&PresentationHitManifest>,
+    authoritative_manifest: Option<&PresentationHitManifest>,
     output: &mut RenderOutput,
 ) {
-    let Some(manifest) = manifest else {
+    let Some(manifest) = authoritative_manifest.or(local_manifest) else {
         return;
     };
     let mut regions = manifest
@@ -860,7 +888,19 @@ fn register_manifest_overlay_receivers(
             )),
             sense,
         );
-        output.register_receiver(&response, region.id().kind());
+        if authoritative_manifest.is_some() {
+            output.register_receiver(&response, region.id().kind());
+        }
+        if let PresentationHitRegionKind::SplitterJunction(junction) = region.id().kind() {
+            splits::capture_local_splitter_gesture(
+                &response,
+                surface,
+                SplitterResizeTarget::Junction(junction),
+                local_scene,
+                active_resize,
+                output,
+            );
+        }
     }
 
     let mut hover_regions = manifest
@@ -910,6 +950,7 @@ fn paint_root(
     pane_content_current: bool,
     interaction_scenes: RenderInteractionScenes,
     hovered_splitter: Option<SplitterResizeTarget>,
+    active_resize: Option<ActiveResizeView<'_>>,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     output: &mut RenderOutput,
 ) {
@@ -979,8 +1020,10 @@ fn paint_root(
             surface,
             splitter,
             style,
+            interaction_scenes.local_splitters(),
             interaction_scenes.splitters(),
             interaction_scenes.splitters(),
+            active_resize,
             splitter_target_contains(hovered_splitter, *splitter.id()),
             output,
         );
@@ -1640,6 +1683,7 @@ mod tests {
                     true,
                     RenderInteractionScenes::default(),
                     RenderActionCapture::CorrelatedRawEvents,
+                    None,
                     None,
                     false,
                 );

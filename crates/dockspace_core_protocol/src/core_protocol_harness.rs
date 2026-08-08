@@ -5266,6 +5266,9 @@ const fn observe_cancel_reason(reason: InteractionCancelReason) -> ExpectedInter
         InteractionCancelReason::PointerStreamCancelled => {
             ExpectedInteractionCancelReason::PointerStreamCancelled
         }
+        InteractionCancelReason::LocalResponseCancelled => {
+            ExpectedInteractionCancelReason::LocalResponseCancelled
+        }
         InteractionCancelReason::PointerStreamEnded => {
             ExpectedInteractionCancelReason::PointerStreamEnded
         }

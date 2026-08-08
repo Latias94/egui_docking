@@ -1,4 +1,4 @@
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
@@ -31,6 +31,19 @@ fn workspace() -> Workspace {
     builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("the interaction workspace is valid")
+}
+
+fn split_workspace() -> Workspace {
+    let mut builder = Workspace::builder();
+    let first = builder.insert_node(Node::tabs([FIRST]));
+    let second = builder.insert_node(Node::tabs([SECOND]));
+    let split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [first, second])
+            .expect("two panes form one horizontal split"),
+    );
+    builder.set_root(ROOT, RootRecord::new(split));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    builder.build().expect("the split workspace is valid")
 }
 
 fn input(events: Vec<Event>) -> RawInput {
@@ -119,6 +132,21 @@ fn selected_item(dockspace: &Dockspace) -> Option<ItemId> {
     match dockspace.workspace().node(root.node)? {
         Node::Tabs { selected, .. } => *selected,
         Node::Split { .. } => None,
+    }
+}
+
+fn split_weights(dockspace: &Dockspace) -> Vec<f32> {
+    let root = dockspace
+        .workspace()
+        .root(ROOT)
+        .expect("the split root exists");
+    match dockspace
+        .workspace()
+        .node(root.node)
+        .expect("the split node exists")
+    {
+        Node::Split { weights, .. } => weights.iter().map(|weight| weight.get()).collect(),
+        Node::Tabs { .. } => panic!("the fixture root must remain split"),
     }
 }
 
@@ -342,6 +370,65 @@ fn production_single_surface_keyboard_navigation_uses_local_actions() {
     );
     assert!(!end.local_actions_current);
     assert_eq!(selected_item(&dockspace), Some(SECOND));
+}
+
+#[test]
+fn production_single_surface_splitter_drag_commits_only_on_release() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("official-egui-splitter", split_workspace())
+        .build()
+        .expect("the public facade accepts a valid split workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let pointer = node_center(accesskit_node(&stable.output, Role::Splitter, "Resize panes").1);
+    let initial = split_weights(&dockspace);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(pointer),
+            Event::PointerButton {
+                pos: pointer,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    assert_eq!(split_weights(&dockspace), initial);
+
+    let moved = Pos2::new(pointer.x + 80.0, pointer.y);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+    assert_eq!(split_weights(&dockspace), initial);
+
+    let released = Pos2::new(pointer.x + 120.0, pointer.y);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(released),
+            Event::PointerButton {
+                pos: released,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let committed = split_weights(&dockspace);
+    assert!(committed[0] > initial[0]);
+    assert!(committed[1] < initial[1]);
 }
 
 #[test]

@@ -1992,6 +1992,7 @@ pub enum ExpectedInteractionCancelReason {
     DeliveryAuthorityUnavailable,
     DeliveryOwnerLost,
     PointerStreamCancelled,
+    LocalResponseCancelled,
     PointerStreamEnded,
     UnknownButtonState,
     UnknownTargetAuthority,

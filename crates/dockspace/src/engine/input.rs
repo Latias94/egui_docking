@@ -242,6 +242,32 @@ impl PreparedTabListMenuNavigation {
     }
 }
 
+/// One exact current-frame splitter gesture phase from a framework response.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LocalSplitterGesturePhase {
+    /// Begin one resize from an exact Ready scene and absolute logical points.
+    Press {
+        /// Exact Ready candidate which owned the pressed splitter target.
+        scene: SurfaceSceneStamp,
+        /// Absolute logical point at which the drag began.
+        initial: LogicalPoint,
+        /// Absolute logical point observed by the current response.
+        current: LogicalPoint,
+    },
+    /// Update the active resize at one absolute logical point.
+    Move {
+        /// Current absolute logical point in the owner surface.
+        current: LogicalPoint,
+    },
+    /// Commit the active resize using this release-time logical point.
+    Release {
+        /// Exact absolute release point in the owner surface.
+        current: LogicalPoint,
+    },
+    /// Cancel the matching local resize without changing durable layout.
+    Cancel,
+}
+
 /// Input accepted by the U3 engine boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
@@ -425,6 +451,17 @@ pub enum EngineInput {
         /// Signed displacement along the split axis in logical surface units.
         delta: f64,
     },
+    /// Drive one local-response splitter or junction gesture through the core resize FSM.
+    LocalSplitterGesture {
+        /// Workspace version current when the framework response was captured.
+        expected: WorkspaceVersion,
+        /// Logical surface which owns the framework response.
+        surface: SurfaceId,
+        /// Exact structural handle or junction identity owned by the response.
+        target: SplitterResizeTarget,
+        /// Press, motion, release, or explicit cancellation fact.
+        phase: LocalSplitterGesturePhase,
+    },
     /// Activate one exact current tab-strip control without fabricating pointer delivery.
     ActivateTabStripControl {
         /// Opaque proof prepared from a sealed, receiver-authoritative presentation.
@@ -577,6 +614,7 @@ impl EngineInput {
             | Self::SelectLocalSceneTab { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
+            | Self::LocalSplitterGesture { .. }
             | Self::ActivateTabStripControl { .. }
             | Self::ActivateTabListMenuRow { .. }
             | Self::DismissTabListMenu { .. }

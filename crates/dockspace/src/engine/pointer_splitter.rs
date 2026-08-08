@@ -13,14 +13,7 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
     ) -> Result<ResizeStart, InteractionRejection> {
         let surface = presentation.surface();
-        if presentation.scene().requirement().workspace_epoch() != self.version.epoch() {
-            return Err(InteractionRejection::StaleScene);
-        }
-        let plan = presentation.plan();
-        if !plan.bounds().contains(point) {
-            return Err(InteractionRejection::SplitterGesturePointerOutsideSurface { surface });
-        }
-        let expected = match region.kind() {
+        let target = match region.kind() {
             PresentationHitRegionKind::SplitterHandle(splitter) => {
                 SplitterResizeTarget::Handle(splitter)
             }
@@ -31,24 +24,58 @@ impl DockEngine {
                 return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
             }
         };
+        self.prepare_splitter_resize(
+            presentation.plan(),
+            presentation.scene(),
+            presentation.coordinate_capture(),
+            target,
+            owner,
+            Some(capture_authority),
+            ResizeGestureAuthority::Presented(Self::freeze_journal_presentation(presentation)),
+            point,
+            policy,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_splitter_resize(
+        &self,
+        plan: &PresentationPlan,
+        scene: SurfaceSceneStamp,
+        coordinate_capture: SurfaceCoordinateCapture,
+        target: SplitterResizeTarget,
+        owner: GestureOwner,
+        journal_capture_authority: Option<Authority<PointerCaptureOwner>>,
+        authority: ResizeGestureAuthority,
+        point: crate::geometry::LogicalPoint,
+        policy: &DockPolicySnapshot,
+    ) -> Result<ResizeStart, InteractionRejection> {
+        let surface = plan.surface();
+        if scene.requirement().workspace_epoch() != self.version.epoch() {
+            return Err(InteractionRejection::StaleScene);
+        }
+        if !plan.bounds().contains(point) {
+            return Err(InteractionRejection::SplitterGesturePointerOutsideSurface { surface });
+        }
         let resolved = plan
             .splitter_resize_target_at(point)
             .map_err(InteractionRejection::SplitterGestureHitAmbiguous)?
             .ok_or(InteractionRejection::SplitterGestureHitUnavailable { surface })?;
-        if resolved != expected {
+        if resolved != target {
             return Err(InteractionRejection::SplitterGestureHitUnavailable { surface });
         }
-        let handles = self.prepare_splitter_resize_handles(plan, resolved, point, policy)?;
+        let handles = self.prepare_splitter_resize_handles(plan, target, point, policy)?;
         let axis_groups = prepare_resize_axis_groups(handles)
             .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
         Ok(ResizeStart {
             owner,
-            journal_capture_authority: Some(capture_authority),
+            journal_capture_authority,
             button: PointerButton::Primary,
             surface,
-            scene: presentation.scene(),
-            coordinate_capture: presentation.coordinate_capture(),
-            presentation: Self::freeze_journal_presentation(presentation),
+            scene,
+            target,
+            coordinate_capture,
+            authority,
             initial_pointer: point,
             axis_groups,
         })
@@ -111,6 +138,34 @@ impl DockEngine {
             Ok(point) => point,
             Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
+        self.update_resize_at_point(cause, owner, session, resize.target, point, policy)
+    }
+
+    pub(super) fn update_resize_at_point(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        session: crate::interaction::ResizeSessionId,
+        target: SplitterResizeTarget,
+        point: crate::geometry::LogicalPoint,
+        policy: &DockPolicySnapshot,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let resize = self
+            .interaction
+            .active_resize(session)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("{source:?}"),
+            })?
+            .clone();
+        if resize.owner != owner || resize.target != target {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SessionMismatch,
+            ));
+        }
+        if let Err(rejection) = self.validate_resize_coordinate_authority(&resize) {
+            return Ok(InteractionOutcome::Rejected(rejection));
+        }
         let updates = match split_resize_updates(&resize, point) {
             Some(updates) => updates,
             None => {
@@ -161,7 +216,48 @@ impl DockEngine {
                 InteractionRejection::SessionMismatch,
             ));
         }
-        let proposal = self.journal_resize_updates(&resize, edge, policy);
+        let point = match self.journal_resize_point(&resize, edge) {
+            Ok(point) => point,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        self.finish_resize_at_point(
+            cause,
+            owner,
+            session,
+            resize.target,
+            point,
+            policy,
+            events,
+            interaction_events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn finish_resize_at_point(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        session: crate::interaction::ResizeSessionId,
+        target: SplitterResizeTarget,
+        point: crate::geometry::LogicalPoint,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let resize = self
+            .interaction
+            .active_resize(session)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("{source:?}"),
+            })?
+            .clone();
+        if resize.owner != owner || resize.target != target {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::SessionMismatch,
+            ));
+        }
+        let proposal = self.resize_updates_at_point(&resize, point, policy);
         self.interaction
             .take_resize_for_release(session, owner, PointerButton::Primary)
             .map_err(|source| EngineError::PointerInteractionInvariant {
@@ -194,13 +290,13 @@ impl DockEngine {
         })
     }
 
-    fn journal_resize_updates(
+    fn resize_updates_at_point(
         &self,
         resize: &ActiveResize,
-        edge: &PointerEdge,
+        point: crate::geometry::LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<Vec<crate::command::SplitResize>, InteractionRejection> {
-        let point = self.journal_resize_point(resize, edge)?;
+        self.validate_resize_coordinate_authority(resize)?;
         let updates = split_resize_updates(resize, point)
             .ok_or(InteractionRejection::SplitterResizeGeometryUnavailable)?;
         crate::operation::validate_split_resizes(&self.workspace, policy, &updates)
@@ -208,22 +304,31 @@ impl DockEngine {
         Ok(updates)
     }
 
+    fn validate_resize_coordinate_authority(
+        &self,
+        resize: &ActiveResize,
+    ) -> Result<(), InteractionRejection> {
+        if Self::coordinate_capture_matches_current(
+            resize.coordinate_capture,
+            self.viewport.viewport(resize.surface),
+            self.viewport.surface_coordinate_authority(resize.surface),
+        ) {
+            Ok(())
+        } else {
+            Err(
+                InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable {
+                    surface: resize.surface,
+                },
+            )
+        }
+    }
+
     fn journal_resize_point(
         &self,
         resize: &ActiveResize,
         edge: &PointerEdge,
     ) -> Result<crate::geometry::LogicalPoint, InteractionRejection> {
-        if !Self::coordinate_capture_matches_current(
-            resize.coordinate_capture,
-            self.viewport.viewport(resize.surface),
-            self.viewport.surface_coordinate_authority(resize.surface),
-        ) {
-            return Err(
-                InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable {
-                    surface: resize.surface,
-                },
-            );
-        }
+        self.validate_resize_coordinate_authority(resize)?;
         let stream = resize
             .owner
             .stream()

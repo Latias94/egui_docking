@@ -46,10 +46,10 @@ use self::contained_geometry::{
 };
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
-    EngineInput, PreparedTabListMenuDismiss, PreparedTabListMenuNavigation,
-    PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
-    PreparedTabStripScroll, TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
-    ValidatedWorkspaceRestore,
+    EngineInput, LocalSplitterGesturePhase, PreparedTabListMenuDismiss,
+    PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation, PreparedTabListMenuScroll,
+    PreparedTabStripControlActivation, PreparedTabStripScroll, TabListMenuNavigation,
+    TabScrollAdjustment, TabScrollAdjustmentError, ValidatedWorkspaceRestore,
 };
 use self::native_admission::NativeAdmissionState;
 use self::presentation_authority::PresentationAuthorityState;
@@ -134,9 +134,10 @@ use crate::interaction::{
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
     InteractionState, InteractionStatus, JournalDragSourceGeometry, JournalDragThresholdOrigin,
     PaintAcknowledgement, PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus,
-    PreviewVisual, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
-    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
-    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    PreviewVisual, ResizeGestureAuthority, ResizeStart, SceneGestureContinuation,
+    SceneGestureContinuationDraft, SceneGestureContinuationSource, SceneGestureSession,
+    ScrollApplication, ScrollReductionOutcome, ScrollSessionId, ScrollSuppressionReason,
+    ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::ProductAction;
@@ -2162,7 +2163,7 @@ impl DockEngine {
         let Ok(resize) = self.interaction.active_resize(session) else {
             return false;
         };
-        if resize.presentation != frozen
+        if resize.authority.presented() != Some(frozen)
             || resize.surface != frozen.surface()
             || self
                 .presentation_authority

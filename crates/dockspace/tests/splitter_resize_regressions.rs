@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use dockspace::command::{
     CloseCommitOutcome, CommandOutcome, ContentCloseTarget, SplitResize, WorkspaceCommand,
 };
-use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
+use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput, LocalSplitterGesturePhase};
 use dockspace::error::{CommandError, ReferenceRole, TransactionError};
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::graph::{
@@ -15,7 +15,9 @@ use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{InteractionOutcome, InteractionRejection, InteractionStatus};
+use dockspace::interaction::{
+    InteractionCancelReason, InteractionOutcome, InteractionRejection, InteractionStatus,
+};
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
@@ -28,7 +30,7 @@ use dockspace::pointer_receiver::{
 };
 use dockspace::policy::{DockPolicy, PolicyRejection, PolicyRevision};
 use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
-use dockspace::scene::{SplitterRecord, SurfaceSceneStamp};
+use dockspace::scene::{SplitterRecord, SplitterResizeTarget, SurfaceSceneStamp};
 use dockspace::transaction::WorkspaceTransaction;
 use dockspace::transition::{
     EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
@@ -356,6 +358,234 @@ fn interaction_outcome(transition: &EngineTransition) -> &InteractionOutcome {
         },
         inputs => panic!("expected one semantic input, got {inputs:?}"),
     }
+}
+
+fn submit_local_splitter_gesture(
+    engine: &mut DockEngine,
+    host: &mut support::TestPresentationHost,
+    surface: SurfaceId,
+    target: SplitterResizeTarget,
+    phase: LocalSplitterGesturePhase,
+) -> EngineTransition {
+    let expected = engine.version();
+    support::submit_input(
+        engine,
+        host,
+        INPUT_SOURCE,
+        EngineInput::LocalSplitterGesture {
+            expected,
+            surface,
+            target,
+            phase,
+        },
+    )
+    .expect("local splitter gesture reduces")
+}
+
+#[test]
+fn local_splitter_gesture_commits_only_on_release() {
+    let (workspace, split) = simple_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = support::TestPresentationHost::new(&mut engine);
+    publish(
+        &mut engine,
+        &mut host,
+        support::MeasurementProfile::default(),
+    );
+
+    let (scene, record) = splitter(&engine, split);
+    let target = SplitterResizeTarget::Handle(*record.id());
+    let press = center(record.hit().rect());
+    let moved =
+        LogicalPoint::new(press.x() + 24.0, press.y()).expect("local splitter move point is valid");
+    let released = LogicalPoint::new(press.x() + 48.0, press.y())
+        .expect("local splitter release point is valid");
+    let initial_workspace = engine.workspace().clone();
+    let initial_version = engine.version();
+
+    let pressed = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Press {
+            scene,
+            initial: press,
+            current: press,
+        },
+    );
+    assert!(matches!(
+        interaction_outcome(&pressed),
+        InteractionOutcome::ResizeBegan { .. }
+    ));
+
+    let moved_transition = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Move { current: moved },
+    );
+    assert!(matches!(
+        interaction_outcome(&moved_transition),
+        InteractionOutcome::ResizeUpdated { .. }
+    ));
+    assert_eq!(engine.workspace(), &initial_workspace);
+    assert_eq!(engine.version(), initial_version);
+
+    let released_transition = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Release { current: released },
+    );
+    assert!(matches!(
+        interaction_outcome(&released_transition),
+        InteractionOutcome::ResizeDelivered { changed: true, .. }
+    ));
+    assert_ne!(node_weights(engine.workspace(), split), weights(0.5, 0.5));
+    assert_eq!(
+        engine.version().revision().get(),
+        initial_version.revision().get() + 1
+    );
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+}
+
+#[test]
+fn local_splitter_cancel_preserves_the_durable_layout() {
+    let (workspace, split) = simple_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = support::TestPresentationHost::new(&mut engine);
+    publish(
+        &mut engine,
+        &mut host,
+        support::MeasurementProfile::default(),
+    );
+
+    let (scene, record) = splitter(&engine, split);
+    let target = SplitterResizeTarget::Handle(*record.id());
+    let press = center(record.hit().rect());
+    let moved =
+        LogicalPoint::new(press.x() + 24.0, press.y()).expect("local splitter move point is valid");
+    let initial_workspace = engine.workspace().clone();
+    let initial_version = engine.version();
+
+    let pressed = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Press {
+            scene,
+            initial: press,
+            current: press,
+        },
+    );
+    assert!(matches!(
+        interaction_outcome(&pressed),
+        InteractionOutcome::ResizeBegan { .. }
+    ));
+    let moved_transition = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Move { current: moved },
+    );
+    assert!(matches!(
+        interaction_outcome(&moved_transition),
+        InteractionOutcome::ResizeUpdated { .. }
+    ));
+
+    let cancelled = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Cancel,
+    );
+    assert!(matches!(
+        interaction_outcome(&cancelled),
+        InteractionOutcome::Cancelled {
+            reason: InteractionCancelReason::LocalResponseCancelled,
+            ..
+        }
+    ));
+    assert_eq!(engine.workspace(), &initial_workspace);
+    assert_eq!(engine.version(), initial_version);
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+}
+
+#[test]
+fn local_junction_gesture_commits_one_atomic_resize_batch() {
+    let (workspace, horizontal, vertical) = junction_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = support::TestPresentationHost::new(&mut engine);
+    publish(
+        &mut engine,
+        &mut host,
+        support::MeasurementProfile::default(),
+    );
+
+    let ready = engine
+        .scene()
+        .ready_surface(SURFACE)
+        .expect("surface has painted authority");
+    let [junction] = ready.plan().splitter_junction_records() else {
+        panic!("fixture exposes one splitter junction");
+    };
+    let scene = ready.stamp();
+    let target = SplitterResizeTarget::Junction(junction.id());
+    let press = center(junction.hit().rect());
+    let released = LogicalPoint::new(press.x() + 32.0, press.y() + 32.0)
+        .expect("local junction release point is valid");
+    let initial_horizontal = node_weights(engine.workspace(), horizontal).to_vec();
+    let initial_vertical = node_weights(engine.workspace(), vertical).to_vec();
+    let initial_version = engine.version();
+
+    let pressed = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Press {
+            scene,
+            initial: press,
+            current: press,
+        },
+    );
+    assert!(matches!(
+        interaction_outcome(&pressed),
+        InteractionOutcome::ResizeBegan { .. }
+    ));
+
+    let released_transition = submit_local_splitter_gesture(
+        &mut engine,
+        &mut host,
+        SURFACE,
+        target,
+        LocalSplitterGesturePhase::Release { current: released },
+    );
+    let InteractionOutcome::ResizeDelivered {
+        changed: true,
+        outcome: CommandOutcome::SplitsResized { splits, .. },
+        ..
+    } = interaction_outcome(&released_transition)
+    else {
+        panic!("local junction release must commit one split batch: {released_transition:?}");
+    };
+    assert_eq!(splits.len(), 2);
+    assert_ne!(
+        node_weights(engine.workspace(), horizontal),
+        initial_horizontal
+    );
+    assert_ne!(node_weights(engine.workspace(), vertical), initial_vertical);
+    assert_eq!(
+        engine.version().revision().get(),
+        initial_version.revision().get() + 1
+    );
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 }
 
 fn adjust_splitter(

@@ -1,13 +1,17 @@
 //! Splitter painting and scene-bound non-pointer actions.
 
+use dockspace::backend::engine::LocalSplitterGesturePhase;
+use dockspace::backend::interaction::ActiveResizeView;
 use dockspace::backend::presentation_hit::PresentationHitRegionKind;
-use dockspace::backend::scene::{SplitterRecord, SurfaceSceneStamp};
+use dockspace::backend::scene::{SplitterRecord, SplitterResizeTarget, SurfaceSceneStamp};
 use dockspace::ids::SurfaceId;
 use egui::accesskit::{Action, Orientation, Role};
-use egui::{EventFilter, FocusDirection, Id, Key, Sense, Ui};
+use egui::{EventFilter, FocusDirection, Id, Key, PointerButton, Sense, Ui};
 
 use crate::hit::interact_rect;
-use crate::renderer::{RenderAction, RenderOutput, accesskit_bounds, from_logical_rect};
+use crate::renderer::{
+    RenderAction, RenderOutput, accesskit_bounds, from_logical_rect, to_logical_point,
+};
 use crate::style::DockStyle;
 
 #[allow(clippy::too_many_arguments)]
@@ -17,8 +21,10 @@ pub(crate) fn paint_splitter(
     surface: SurfaceId,
     plan: &SplitterRecord,
     style: &DockStyle,
-    interaction_scene: Option<SurfaceSceneStamp>,
+    local_gesture_scene: Option<SurfaceSceneStamp>,
+    retained_scene: Option<SurfaceSceneStamp>,
     semantic_scene: Option<SurfaceSceneStamp>,
+    active_resize: Option<ActiveResizeView<'_>>,
     authoritative_hovered: bool,
     output: &mut RenderOutput,
 ) {
@@ -51,7 +57,7 @@ pub(crate) fn paint_splitter(
             PresentationHitRegionKind::SplitterHandle(splitter),
         );
     }
-    let interactions_current = interaction_scene.is_some();
+    let interactions_current = retained_scene.is_some();
     if plan.operable() {
         configure_accessibility(ui, &response, plan, hit_rect, interactions_current);
     } else if response.has_focus() {
@@ -62,13 +68,26 @@ pub(crate) fn paint_splitter(
     if focused {
         lock_splitter_navigation_focus(ui, response.id, horizontal);
     }
-    let emphasized = focused || plan.operable() && interactions_current && authoritative_hovered;
+    let local_hovered = local_gesture_scene.is_some() && response.hovered();
+    let emphasized = focused
+        || local_hovered
+        || plan.operable() && interactions_current && authoritative_hovered;
     let color = if emphasized {
         style.splitter_hover_color
     } else {
         style.splitter_color
     };
     ui.painter().rect_filled(draw_rect, 0.0, color);
+    if plan.operable() {
+        capture_local_splitter_gesture(
+            &response,
+            surface,
+            SplitterResizeTarget::Handle(splitter),
+            local_gesture_scene,
+            active_resize,
+            output,
+        );
+    }
     if plan.operable()
         && let Some(scene) = semantic_scene
         && let Some(adjustment) = adjustment_direction(ui, response.id, horizontal, focused)
@@ -88,6 +107,71 @@ pub(crate) fn paint_splitter(
             }
         }
     }
+}
+
+pub(crate) fn capture_local_splitter_gesture(
+    response: &egui::Response,
+    surface: SurfaceId,
+    target: SplitterResizeTarget,
+    scene: Option<SurfaceSceneStamp>,
+    active_resize: Option<ActiveResizeView<'_>>,
+    output: &mut RenderOutput,
+) {
+    let owns_active = active_resize.is_some_and(|resize| {
+        resize.local_response_surface() == Some(surface) && resize.target() == target
+    });
+    let current = response
+        .interact_pointer_pos()
+        .and_then(|position| to_logical_point(position).ok());
+
+    if response.drag_started_by(PointerButton::Primary) {
+        let Some(scene) = scene else {
+            return;
+        };
+        let Some(current) = current else {
+            return;
+        };
+        let total = response.total_drag_delta().unwrap_or_default();
+        let Some(initial) = response
+            .interact_pointer_pos()
+            .map(|position| position - total)
+            .and_then(|position| to_logical_point(position).ok())
+        else {
+            return;
+        };
+        output.push_local_response_action(RenderAction::LocalSplitterGesture {
+            surface,
+            target,
+            phase: LocalSplitterGesturePhase::Press {
+                scene,
+                initial,
+                current,
+            },
+        });
+        return;
+    }
+
+    if !owns_active {
+        return;
+    }
+    let phase = if response.drag_stopped_by(PointerButton::Primary) {
+        match current {
+            Some(current) => LocalSplitterGesturePhase::Release { current },
+            None => LocalSplitterGesturePhase::Cancel,
+        }
+    } else if response.dragged_by(PointerButton::Primary) {
+        let Some(current) = current else {
+            return;
+        };
+        LocalSplitterGesturePhase::Move { current }
+    } else {
+        return;
+    };
+    output.push_local_response_action(RenderAction::LocalSplitterGesture {
+        surface,
+        target,
+        phase,
+    });
 }
 
 #[derive(Clone, Copy)]

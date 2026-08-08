@@ -549,6 +549,12 @@ impl DockspaceHostFrame<'_> {
             let view = self.view();
             Dockspace::is_gesture_source_surface(view, surface)
         };
+        let local_resize_continuation = {
+            let view = self.view();
+            view.interaction()
+                .active_resize_view()
+                .is_some_and(|resize| resize.local_response_surface() == Some(surface))
+        };
         let contribution = match contribution_measurements {
             Some(measurements) => EguiSurfaceContribution::Prepared(
                 self.prepare_surface_contribution(surface, measurements)?,
@@ -621,6 +627,9 @@ impl DockspaceHostFrame<'_> {
             && framework_actions_enabled
             && self.state.mode() == EguiHostFrameMode::SingleSurface
             && !presentation_authority_available;
+        let local_resize_continuation_current = framework_actions_enabled
+            && self.state.mode() == EguiHostFrameMode::SingleSurface
+            && local_resize_continuation;
         let pointer_receivers_current =
             !projection_changed && scene_ready && chrome_matches_scene && painted_authority_current;
         let interaction_capabilities = crate::response::DockspaceInteractionCapabilities::new(
@@ -630,7 +639,7 @@ impl DockspaceHostFrame<'_> {
         );
         let action_capture = if !framework_actions_enabled {
             RenderActionCapture::Disabled
-        } else if local_response_current {
+        } else if local_response_current || local_resize_continuation_current {
             RenderActionCapture::LocalResponseOrder
         } else {
             RenderActionCapture::CorrelatedRawEvents
@@ -657,6 +666,10 @@ impl DockspaceHostFrame<'_> {
                 .expect("current pointer receivers require a paint projection")
                 .3
         });
+        let local_gesture_hit_manifest = paint_projection
+            .as_ref()
+            .filter(|_| local_response_current || local_resize_continuation_current)
+            .map(|(_, _, _, manifest)| manifest);
         let mut output = {
             let view = self.view();
             let (measured_resources, tab_strip_states) = projection.paint_parts();
@@ -678,6 +691,7 @@ impl DockspaceHostFrame<'_> {
                 pane_content_current,
                 interaction_scenes,
                 action_capture,
+                local_gesture_hit_manifest,
                 authoritative_hit_manifest,
                 is_gesture_source_surface,
             )
@@ -1697,6 +1711,16 @@ impl DockspaceHostFrame<'_> {
                 scene: *scene,
                 splitter: *splitter,
                 delta: *delta,
+            },
+            RenderAction::LocalSplitterGesture {
+                surface,
+                target,
+                phase,
+            } => EngineInput::LocalSplitterGesture {
+                expected,
+                surface: *surface,
+                target: *target,
+                phase: *phase,
             },
             RenderAction::AdjustContainedResize {
                 scene,

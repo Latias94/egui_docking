@@ -35,7 +35,7 @@ use crate::presentation_config::PresentationConfigRevision;
 use crate::presentation_hit::PresentationHitRegionId;
 use crate::presentation_observation::PresentedSurfaceAuthority;
 use crate::scene::{
-    PopupInteractionGateRevision, PresentationLayoutFacts, SplitterRecord,
+    PopupInteractionGateRevision, PresentationLayoutFacts, SplitterRecord, SplitterResizeTarget,
     SurfaceCoordinateCapture, SurfaceSceneStamp, TabBarSceneId, TabListMenuBackdropRecord,
     TabListMenuRecord, TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
 };
@@ -698,6 +698,7 @@ pub struct ActiveResizeView<'state> {
     button: PointerButton,
     surface: SurfaceId,
     scene: SurfaceSceneStamp,
+    target: SplitterResizeTarget,
     updates: &'state [SplitResize],
 }
 
@@ -708,10 +709,10 @@ impl<'state> ActiveResizeView<'state> {
         self.session
     }
 
-    /// Returns the pointer which owns this resize.
+    /// Returns the physical pointer which owns this resize, when journal-backed.
     #[must_use]
-    pub const fn pointer(self) -> PointerId {
-        self.owner.pointer()
+    pub const fn pointer(self) -> Option<PointerId> {
+        self.owner.pointer_if_physical()
     }
 
     /// Returns the exact journal stream when this resize came from the
@@ -737,6 +738,21 @@ impl<'state> ActiveResizeView<'state> {
     #[must_use]
     pub const fn scene(self) -> SurfaceSceneStamp {
         self.scene
+    }
+
+    /// Returns the exact structural splitter target frozen at press time.
+    #[must_use]
+    pub const fn target(self) -> SplitterResizeTarget {
+        self.target
+    }
+
+    /// Returns the local-response owner surface when no pointer provider owns the gesture.
+    #[must_use]
+    pub const fn local_response_surface(self) -> Option<SurfaceId> {
+        match self.owner {
+            GestureOwner::Stream(_) => None,
+            GestureOwner::LocalResponse { surface } => Some(surface),
+        }
     }
 
     /// Returns the latest validated atomic transient updates.
@@ -929,6 +945,8 @@ pub enum InteractionCancelReason {
     DeliveryOwnerLost,
     /// The platform explicitly terminated the owning pointer stream.
     PointerStreamCancelled,
+    /// The current framework response explicitly cancelled its local gesture.
+    LocalResponseCancelled,
     /// The provider reported the normal terminal release of an ephemeral stream.
     PointerStreamEnded,
     /// Button state became non-authoritative.
@@ -1215,6 +1233,11 @@ impl InteractionRejection {
         match (expected, actual) {
             (GestureOwner::Stream(expected), GestureOwner::Stream(actual)) => {
                 Self::PointerStreamMismatch { expected, actual }
+            }
+            (GestureOwner::LocalResponse { .. }, GestureOwner::LocalResponse { .. })
+            | (GestureOwner::Stream(_), GestureOwner::LocalResponse { .. })
+            | (GestureOwner::LocalResponse { .. }, GestureOwner::Stream(_)) => {
+                Self::SessionMismatch
             }
         }
     }
@@ -1823,18 +1846,45 @@ impl PublishedPreview {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GestureOwner {
     Stream(PointerStreamId),
+    LocalResponse { surface: SurfaceId },
 }
 
 impl GestureOwner {
     pub(crate) const fn pointer(self) -> PointerId {
         match self {
             Self::Stream(stream) => stream.pointer(),
+            Self::LocalResponse { .. } => {
+                panic!("a local-response gesture has no physical pointer identity")
+            }
+        }
+    }
+
+    pub(crate) const fn pointer_if_physical(self) -> Option<PointerId> {
+        match self {
+            Self::Stream(stream) => Some(stream.pointer()),
+            Self::LocalResponse { .. } => None,
         }
     }
 
     pub(crate) const fn stream(self) -> Option<PointerStreamId> {
         match self {
             Self::Stream(stream) => Some(stream),
+            Self::LocalResponse { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResizeGestureAuthority {
+    Presented(FrozenPresentationAuthority),
+    LocalReady,
+}
+
+impl ResizeGestureAuthority {
+    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
+        match self {
+            Self::Presented(authority) => Some(authority),
+            Self::LocalReady => None,
         }
     }
 }
@@ -1959,8 +2009,9 @@ pub(crate) struct ActiveResize {
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) scene: SurfaceSceneStamp,
+    pub(crate) target: SplitterResizeTarget,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) authority: ResizeGestureAuthority,
     pub(crate) initial_pointer: LogicalPoint,
     pub(crate) current_pointer: LogicalPoint,
     pub(crate) axis_groups: Vec<FrozenResizeAxisGroup>,
@@ -1994,8 +2045,9 @@ pub(crate) struct ResizeStart {
     pub(crate) button: PointerButton,
     pub(crate) surface: SurfaceId,
     pub(crate) scene: SurfaceSceneStamp,
+    pub(crate) target: SplitterResizeTarget,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) authority: ResizeGestureAuthority,
     pub(crate) initial_pointer: LogicalPoint,
     pub(crate) axis_groups: Vec<FrozenResizeAxisGroup>,
 }
@@ -2212,7 +2264,7 @@ impl InteractionState {
             ActiveGesture::Pressed(click) => Some(click.presentation),
             ActiveGesture::Armed(drag) => Some(drag.presentation),
             ActiveGesture::Dragging(drag) => Some(drag.presentation),
-            ActiveGesture::Resizing(resize) => Some(resize.presentation),
+            ActiveGesture::Resizing(resize) => resize.authority.presented(),
             ActiveGesture::ContainedTransforming(transform) => Some(transform.presentation),
         }
     }
@@ -2375,6 +2427,7 @@ impl InteractionState {
                 button: resize.button,
                 surface: resize.surface,
                 scene: resize.scene,
+                target: resize.target,
                 updates: &resize.updates,
             }),
             ActiveGesture::Idle
@@ -2783,8 +2836,9 @@ impl InteractionState {
             button: start.button,
             surface: start.surface,
             scene: start.scene,
+            target: start.target,
             coordinate_capture: start.coordinate_capture,
-            presentation: start.presentation,
+            authority: start.authority,
             initial_pointer: start.initial_pointer,
             current_pointer: start.initial_pointer,
             axis_groups: start.axis_groups,

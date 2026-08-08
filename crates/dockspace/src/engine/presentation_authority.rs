@@ -524,10 +524,16 @@ impl DockEngine {
             }
             InteractionStatus::Resizing { session } => {
                 if let Ok(resize) = self.interaction.active_resize(session) {
-                    self.insert_current_viewport_binding(
-                        &mut dependencies.owner_bindings,
-                        resize.surface,
-                    );
+                    // A framework-local response is already bound to the
+                    // current Ready scene and has no native provider whose
+                    // binding needs to be kept alive. Only journal-owned
+                    // resizes participate in platform reconciliation.
+                    if resize.authority.presented().is_some() {
+                        self.insert_current_viewport_binding(
+                            &mut dependencies.owner_bindings,
+                            resize.surface,
+                        );
+                    }
                 }
             }
             InteractionStatus::ContainedTransforming { session } => {
