@@ -155,10 +155,6 @@ impl RenderInteractionScenes {
         }
     }
 
-    const fn any(self) -> bool {
-        self.local_response.is_some() || self.accepted_snapshot.is_some()
-    }
-
     const fn tabs(self) -> Option<SurfaceSceneStamp> {
         match self.local_response {
             Some(scene) => Some(scene),
@@ -650,15 +646,15 @@ impl<'a> PresentationPaintIndex<'a> {
 
 /// Paints one already validated surface plan and reports semantic input.
 ///
-/// This function never mutates the workspace or the interaction state. When
-/// `interactions_current` is false, chrome remains painted but cannot publish
-/// geometry-derived response events, focus, or accessibility actions. Pane
-/// callbacks resolve from the current measured plan, while stale, bootstrap,
-/// and projection-changing content is painted through a disabled child UI. A
-/// superseded or relocated pane is never invoked through retained geometry. A
-/// current pane remains enabled even when presentation authority is
-/// unavailable. Global Escape and matching release edges still terminate an
-/// active core session.
+/// This function never mutates the workspace or the interaction state. Local
+/// tab actions may use the exact current egui response, while splitters,
+/// contained controls, overflow controls, and pointer receivers require an
+/// accepted retained snapshot. Pane callbacks resolve from the current measured
+/// plan, while stale, bootstrap, and projection-changing content is painted
+/// through a disabled child UI. A superseded or relocated pane is never invoked
+/// through retained geometry. A current pane remains enabled even when retained
+/// presentation authority is unavailable. Global Escape and matching release
+/// edges still terminate an active core session.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_surface(
     ui: &mut Ui,
@@ -688,7 +684,6 @@ pub(crate) fn paint_surface(
         )),
         ..RenderOutput::from_ui_with_action_capture(ui, action_capture)
     };
-    let _interactions_current = plan.is_some() && interaction_scenes.any();
     let escape_pressed = action_capture.enabled()
         && interaction_scenes.retained_controls().is_some()
         && consume_gesture_escape(ui, interaction.status(), is_gesture_source_surface);

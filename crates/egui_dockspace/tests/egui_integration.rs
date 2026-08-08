@@ -1889,14 +1889,14 @@ fn keyboard_opening_overflow_menu_does_not_activate_its_first_item() {
                 .all(|(_, node)| node.role() != Role::MenuItem)
         );
 
-        let (painted, local_actions_current) = run_accesskit_frame_with_authority(
+        let (painted, retained_presentation_current) = run_accesskit_frame_with_authority(
             &context,
             &mut dockspace,
             &mut panes,
             size,
             Vec::new(),
         );
-        assert!(!local_actions_current);
+        assert!(!retained_presentation_current);
         let (_, painted_overflow) =
             accesskit_node_by_label(&painted, Role::Button, "Show hidden tabs");
         assert_eq!(painted_overflow.is_expanded(), Some(true));
@@ -2152,7 +2152,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         Pos2::new(tiny_screen.max.x - dock.width(), tiny_screen.min.y),
         dock.size(),
     );
-    let (tiny, local_actions_current) = run_accesskit_frame_in_rect_with_authority(
+    let (tiny, retained_presentation_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2160,7 +2160,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         tiny_dock,
         Vec::new(),
     );
-    assert!(!local_actions_current);
+    assert!(!retained_presentation_current);
     assert!(
         tiny.nodes
             .iter()
@@ -2275,7 +2275,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
     assert!(narrow_screen.width() > frame_width);
     assert!(narrow_screen.width() < frame_width + scrollbar_width);
 
-    let (narrow, local_actions_current) = run_accesskit_frame_in_rect_with_authority(
+    let (narrow, retained_presentation_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2283,7 +2283,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
         narrow_dock,
         Vec::new(),
     );
-    assert!(!local_actions_current);
+    assert!(!retained_presentation_current);
     assert!(
         narrow
             .nodes
@@ -3395,7 +3395,7 @@ fn stale_selection_accessibility_uses_current_pane_identity() {
     context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
-    let (tree, local_actions_current) = run_accesskit_frame_with_authority(
+    let (tree, retained_presentation_current) = run_accesskit_frame_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -3403,7 +3403,7 @@ fn stale_selection_accessibility_uses_current_pane_identity() {
         Vec::new(),
     );
 
-    assert!(!local_actions_current);
+    assert!(!retained_presentation_current);
     let a_label = format!("Pane {}", ITEM_A.get());
     let b_label = format!("Pane {}", ITEM_B.get());
     let (_, tab_a) = accesskit_node_by_label(&tree, Role::Tab, &a_label);
@@ -3937,7 +3937,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
     let before_stale_action = stale_dockspace.core_engine().version();
-    let (stale_tree, local_actions_current) = run_accesskit_frame_with_authority(
+    let (stale_tree, retained_presentation_current) = run_accesskit_frame_with_authority(
         &stale_context,
         &mut stale_dockspace,
         &mut stale_panes,
@@ -3945,7 +3945,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
         vec![accesskit_action(stale_right, Action::Increment)],
     );
 
-    assert!(!local_actions_current);
+    assert!(!retained_presentation_current);
     assert_eq!(contained_rect(&stale_dockspace), replacement);
     assert_eq!(stale_dockspace.core_engine().version(), before_stale_action);
     let stale_node = stale_tree

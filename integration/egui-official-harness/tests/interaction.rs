@@ -1,7 +1,7 @@
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
-use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
+use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -153,6 +153,19 @@ fn node_center(node: &egui::accesskit::Node) -> Pos2 {
     )
 }
 
+fn key_press(key: Key) -> Vec<Event> {
+    [true, false]
+        .into_iter()
+        .map(|pressed| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        })
+        .collect()
+}
+
 #[test]
 fn production_single_surface_click_selects_a_tab() {
     let context = Context::default();
@@ -261,6 +274,73 @@ fn production_single_surface_preserves_a_click_across_discard_passes() {
     );
 
     assert!(passes >= 2, "the fixture must execute a replacement pass");
+    assert_eq!(selected_item(&dockspace), Some(SECOND));
+}
+
+#[test]
+fn production_single_surface_keyboard_navigation_uses_local_actions() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("official-egui-keyboard", workspace())
+        .build()
+        .expect("the public facade accepts a valid workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let pointer = node_center(accesskit_node(&stable.output, Role::Tab, "First").1);
+    let focused = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(pointer),
+            Event::PointerButton {
+                pos: pointer,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: pointer,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    assert!(focused.local_actions_current);
+    assert_eq!(selected_item(&dockspace), Some(FIRST));
+
+    let right = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::ArrowRight),
+    );
+    assert!(!right.local_actions_current);
+    assert_eq!(selected_item(&dockspace), Some(SECOND));
+    let stable_after_right = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(stable_after_right.local_actions_current);
+
+    let home = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::Home),
+    );
+    assert!(!home.local_actions_current);
+    assert_eq!(selected_item(&dockspace), Some(FIRST));
+    let stable_after_home = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert!(stable_after_home.local_actions_current);
+
+    let end = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::End),
+    );
+    assert!(!end.local_actions_current);
     assert_eq!(selected_item(&dockspace), Some(SECOND));
 }
 

@@ -444,8 +444,9 @@ pub struct SurfacePaintResponse {
 /// Exact interaction lanes available for one painted surface.
 ///
 /// Current-frame egui actions, retained presentation freshness, and core-owned
-/// pointer receivers are independent facts. Callers must not infer one from
-/// another.
+/// pointer receivers are distinct capabilities. The retained backend currently
+/// promotes the latter two together, but callers must not infer either one from
+/// the local-action capability.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DockspaceInteractionCapabilities {
     local_actions_current: bool,
@@ -468,9 +469,9 @@ impl DockspaceInteractionCapabilities {
 
     /// Returns whether current-pass egui responses may emit supported local actions.
     ///
-    /// This currently covers tab selection, keyboard navigation, and close
-    /// requests. It does not authorize drag/drop, splitter, or contained-window
-    /// pointer gestures.
+    /// This currently covers tab selection, tab keyboard navigation, and tab
+    /// close requests. It does not authorize overflow controls, splitters,
+    /// contained-window controls, or pointer gestures.
     #[must_use]
     pub const fn local_actions_current(self) -> bool {
         self.local_actions_current
