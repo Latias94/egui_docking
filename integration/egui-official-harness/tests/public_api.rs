@@ -73,14 +73,17 @@ fn official_egui_consumes_the_public_single_surface_facade() {
     let mut panes = SmokePanes::default();
     let mut last_repaint_delay = Duration::ZERO;
     let mut last_tree = None;
-    let mut saw_interactive_pass = false;
+    let mut saw_local_actions_pass = false;
 
     for _ in 0..4 {
         let mut output = context.run_ui(raw_input(), |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
-            saw_interactive_pass |= response.interactions_current();
+            let capabilities = response.interaction_capabilities();
+            saw_local_actions_pass |= capabilities.local_actions_current();
+            assert!(!capabilities.retained_presentation_current());
+            assert!(!capabilities.pointer_receivers_current());
             assert!(response.missing_panes().is_empty());
             assert!(response.capture_errors().is_empty());
         });
@@ -100,7 +103,7 @@ fn official_egui_consumes_the_public_single_surface_facade() {
         "a stable local-response frame must not spin",
     );
     assert!(
-        saw_interactive_pass,
+        saw_local_actions_pass,
         "a Ready official-egui frame must accept local Response actions",
     );
 

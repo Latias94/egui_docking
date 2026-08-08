@@ -623,7 +623,11 @@ impl DockspaceHostFrame<'_> {
             && !presentation_authority_available;
         let pointer_receivers_current =
             !projection_changed && scene_ready && chrome_matches_scene && painted_authority_current;
-        let interactions_current = local_response_current || pointer_receivers_current;
+        let interaction_capabilities = crate::response::DockspaceInteractionCapabilities::new(
+            local_response_current,
+            pointer_receivers_current,
+            pointer_receivers_current,
+        );
         let action_capture = if !framework_actions_enabled {
             RenderActionCapture::Disabled
         } else if local_response_current {
@@ -631,7 +635,7 @@ impl DockspaceHostFrame<'_> {
         } else {
             RenderActionCapture::CorrelatedRawEvents
         };
-        let current_scene = interactions_current.then(|| {
+        let current_scene = (local_response_current || pointer_receivers_current).then(|| {
             paint_projection
                 .as_ref()
                 .expect("current interactions require a paint projection")
@@ -750,7 +754,7 @@ impl DockspaceHostFrame<'_> {
             surface,
             missing_panes: projection.resources.missing_items().collect(),
             capture_errors: output.capture_errors,
-            interactions_current,
+            interaction_capabilities,
             surface_status,
             contained_capability: self.contained_capability(surface, &adapter_measurements),
             pane_focus_capability,

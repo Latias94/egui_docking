@@ -985,9 +985,19 @@ fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
     for frame in 0..64 {
         let response = run_automatic_frame(&context, &mut dockspace, &mut panes);
         assert_eq!(
-            response.interactions_current(),
+            response.interaction_capabilities().local_actions_current(),
             frame > 0,
             "only the bootstrap frame lacks a current local response scene",
+        );
+        assert!(
+            !response
+                .interaction_capabilities()
+                .retained_presentation_current()
+        );
+        assert!(
+            !response
+                .interaction_capabilities()
+                .pointer_receivers_current()
         );
     }
     let diagnostics = dockspace.core_engine().presentation_ledger_diagnostics();

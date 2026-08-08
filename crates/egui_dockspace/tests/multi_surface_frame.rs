@@ -217,7 +217,7 @@ fn bootstrap_paints_the_application_pane_in_a_disabled_scope() {
     let response = paint_crates_io_frame(&context, &mut dockspace, &mut panes);
 
     assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Bootstrap);
-    assert!(!response.interactions_current());
+    assert_eq!(response.interaction_capabilities(), Default::default());
     assert_eq!(panes.ui_calls, 1);
     assert_eq!(panes.disabled_ui_calls, 1);
 }
@@ -243,11 +243,14 @@ fn crates_io_facade_uses_local_responses_without_synthesizing_presentation_autho
         assert_eq!(panes.ui_calls, frame + 1);
         if frame == 0 {
             assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Bootstrap);
-            assert!(!response.interactions_current());
+            assert_eq!(response.interaction_capabilities(), Default::default());
             assert_eq!(panes.disabled_ui_calls, 1);
         } else {
             assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Ready);
-            assert!(response.interactions_current());
+            let capabilities = response.interaction_capabilities();
+            assert!(capabilities.local_actions_current());
+            assert!(!capabilities.retained_presentation_current());
+            assert!(!capabilities.pointer_receivers_current());
             assert_eq!(
                 panes.disabled_ui_calls, 1,
                 "a current pane remains enabled while local Response actions are authoritative"
@@ -786,12 +789,13 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
     )
     .into_parts();
     assert_eq!(response.presentation_summary().retired_dropped(), 1);
-    assert!(
-        !response
+    assert_eq!(
+        response
             .surface(ROOT_SURFACE)
             .and_then(|surface| surface.paint())
             .expect("second surface paints")
-            .interactions_current()
+            .interaction_capabilities(),
+        Default::default(),
     );
     submit_outputs(pending, EguiRendererOutputDisposition::Accepted);
 }
@@ -861,7 +865,10 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
         response.surface_commit_status(),
         DockspaceSurfaceCommitStatus::Ready | DockspaceSurfaceCommitStatus::Retained
     ));
-    assert!(response.interactions_current());
+    let capabilities = response.interaction_capabilities();
+    assert!(capabilities.local_actions_current());
+    assert!(!capabilities.retained_presentation_current());
+    assert!(!capabilities.pointer_receivers_current());
 }
 
 #[test]
@@ -901,13 +908,14 @@ fn explicit_single_surface_host_frames_use_local_responses_without_presentation_
             .status(),
         DockspaceSurfaceCommitStatus::Retained,
     );
-    assert!(
-        second
-            .surface(ROOT_SURFACE)
-            .and_then(|surface| surface.paint())
-            .expect("second surface paints")
-            .interactions_current()
-    );
+    let second_capabilities = second
+        .surface(ROOT_SURFACE)
+        .and_then(|surface| surface.paint())
+        .expect("second surface paints")
+        .interaction_capabilities();
+    assert!(second_capabilities.local_actions_current());
+    assert!(!second_capabilities.retained_presentation_current());
+    assert!(!second_capabilities.pointer_receivers_current());
 
     let third = paint_frame(
         &context,
@@ -923,13 +931,14 @@ fn explicit_single_surface_host_frames_use_local_responses_without_presentation_
             .status(),
         DockspaceSurfaceCommitStatus::Retained,
     );
-    assert!(
-        third
-            .surface(ROOT_SURFACE)
-            .and_then(|surface| surface.paint())
-            .expect("third surface paints")
-            .interactions_current()
-    );
+    let third_capabilities = third
+        .surface(ROOT_SURFACE)
+        .and_then(|surface| surface.paint())
+        .expect("third surface paints")
+        .interaction_capabilities();
+    assert!(third_capabilities.local_actions_current());
+    assert!(!third_capabilities.retained_presentation_current());
+    assert!(!third_capabilities.pointer_receivers_current());
 }
 
 #[test]

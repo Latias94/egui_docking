@@ -32,7 +32,7 @@ impl PaneView for TestPanes {
 
 #[derive(Debug)]
 struct FrameObservation {
-    interactions_current: bool,
+    pointer_receivers_current: bool,
     saw_stale_pass: bool,
     status: InteractionStatus,
     rect: LogicalRect,
@@ -108,7 +108,7 @@ fn run_frame(
     let paint = frame
         .run_surface(SURFACE, context, input, panes)
         .expect("outer host owns the complete surface pass");
-    let interactions_current = paint.interactions_current();
+    let pointer_receivers_current = paint.interaction_capabilities().pointer_receivers_current();
     let (_, outputs) = frame
         .finish()
         .expect("outer egui frame commits")
@@ -138,8 +138,8 @@ fn run_frame(
         )
         .filter(|(from, to)| from != to);
     FrameObservation {
-        interactions_current,
-        saw_stale_pass: !interactions_current,
+        pointer_receivers_current,
+        saw_stale_pass: !pointer_receivers_current,
         status: dockspace.core_engine().interaction().status(),
         rect: floating.rect,
         contained,
@@ -165,9 +165,9 @@ fn run_frame(
 fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) {
     let first = run_frame(context, dockspace, panes, Vec::new());
     assert!(first.saw_stale_pass);
-    assert!(!first.interactions_current);
+    assert!(!first.pointer_receivers_current);
     let _ = run_frame(context, dockspace, panes, Vec::new());
-    assert!(run_frame(context, dockspace, panes, Vec::new()).interactions_current);
+    assert!(run_frame(context, dockspace, panes, Vec::new()).pointer_receivers_current);
 }
 
 #[allow(
@@ -279,7 +279,7 @@ fn activate_rear_and_cross_drag_threshold(
                 InteractionStatus::ContainedTransforming { .. }
             )),
         }
-        if settlement.interactions_current {
+        if settlement.pointer_receivers_current {
             projection_became_current = true;
             break;
         }
@@ -298,7 +298,7 @@ fn activate_rear_and_cross_drag_threshold(
     );
 
     assert!(!threshold_move.saw_stale_pass);
-    assert!(threshold_move.interactions_current);
+    assert!(threshold_move.pointer_receivers_current);
     match gesture {
         Gesture::Move => {
             assert_eq!(threshold_move.raised, None);
@@ -337,7 +337,7 @@ fn activate_rear_and_cross_drag_threshold(
         panes,
         vec![Event::PointerMoved(current)],
     );
-    assert!(active.interactions_current);
+    assert!(active.pointer_receivers_current);
     match gesture {
         Gesture::Move => assert!(matches!(active.status, InteractionStatus::Dragging { .. })),
         Gesture::ResizeWest => assert!(matches!(

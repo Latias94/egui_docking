@@ -435,10 +435,58 @@ pub struct SurfacePaintResponse {
     pub(crate) surface: SurfaceId,
     pub(crate) missing_panes: Vec<ItemId>,
     pub(crate) capture_errors: Vec<CommandError>,
-    pub(crate) interactions_current: bool,
+    pub(crate) interaction_capabilities: DockspaceInteractionCapabilities,
     pub(crate) surface_status: DockspaceSurfaceStatus,
     pub(crate) contained_capability: DockspaceCapability,
     pub(crate) pane_focus_capability: DockspaceCapability,
+}
+
+/// Exact interaction lanes available for one painted surface.
+///
+/// Current-frame egui actions, retained presentation freshness, and core-owned
+/// pointer receivers are independent facts. Callers must not infer one from
+/// another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DockspaceInteractionCapabilities {
+    local_actions_current: bool,
+    retained_presentation_current: bool,
+    pointer_receivers_current: bool,
+}
+
+impl DockspaceInteractionCapabilities {
+    pub(crate) const fn new(
+        local_actions_current: bool,
+        retained_presentation_current: bool,
+        pointer_receivers_current: bool,
+    ) -> Self {
+        Self {
+            local_actions_current,
+            retained_presentation_current,
+            pointer_receivers_current,
+        }
+    }
+
+    /// Returns whether current-pass egui responses may emit supported local actions.
+    ///
+    /// This currently covers tab selection, keyboard navigation, and close
+    /// requests. It does not authorize drag/drop, splitter, or contained-window
+    /// pointer gestures.
+    #[must_use]
+    pub const fn local_actions_current(self) -> bool {
+        self.local_actions_current
+    }
+
+    /// Returns whether this paint matches the latest accepted retained presentation.
+    #[must_use]
+    pub const fn retained_presentation_current(self) -> bool {
+        self.retained_presentation_current
+    }
+
+    /// Returns whether core-owned pointer receivers are authoritative for this paint.
+    #[must_use]
+    pub const fn pointer_receivers_current(self) -> bool {
+        self.pointer_receivers_current
+    }
 }
 
 impl SurfacePaintResponse {
@@ -460,14 +508,10 @@ impl SurfacePaintResponse {
         &self.capture_errors
     }
 
-    /// Returns whether this paint exposed at least one current docking interaction lane.
-    ///
-    /// In the ordinary single-surface facade this can mean current-frame local
-    /// tab or splitter responses. Retained/native controls still require an
-    /// accepted interaction snapshot and may remain disabled independently.
+    /// Returns the exact independent interaction capabilities for this paint.
     #[must_use]
-    pub const fn interactions_current(&self) -> bool {
-        self.interactions_current
+    pub const fn interaction_capabilities(&self) -> DockspaceInteractionCapabilities {
+        self.interaction_capabilities
     }
 
     /// Returns the exact core lifecycle state used for this paint.
@@ -836,10 +880,10 @@ impl DockspaceResponse {
         self.paint.capture_errors()
     }
 
-    /// Returns whether egui's prior-pass hit geometry exactly matched this projection.
+    /// Returns the exact independent interaction capabilities for this paint.
     #[must_use]
-    pub const fn interactions_current(&self) -> bool {
-        self.paint.interactions_current()
+    pub const fn interaction_capabilities(&self) -> DockspaceInteractionCapabilities {
+        self.paint.interaction_capabilities()
     }
 
     /// Returns the exact core lifecycle state used for this paint.

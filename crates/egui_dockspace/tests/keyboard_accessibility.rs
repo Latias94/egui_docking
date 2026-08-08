@@ -29,7 +29,7 @@ struct FrameObservation {
     splitter_id: Id,
     selected: Option<ItemId>,
     weights: Vec<f32>,
-    interactions_current: bool,
+    retained_presentation_current: bool,
     saw_stale_pass: bool,
     close_requests: Vec<DockspaceClosePlan>,
 }
@@ -128,7 +128,8 @@ fn run_frame(
             .show_single_surface(SURFACE, ui, panes)
             .expect("fixture frame must advance");
         close_requests.extend(response.close_requests().cloned());
-        saw_stale_pass |= !response.interactions_current();
+        let interaction_capabilities = response.interaction_capabilities();
+        saw_stale_pass |= !interaction_capabilities.retained_presentation_current();
         let root_node = dockspace
             .core_engine()
             .workspace()
@@ -148,7 +149,7 @@ fn run_frame(
             splitter_id,
             selected,
             weights,
-            interactions_current: response.interactions_current(),
+            retained_presentation_current: interaction_capabilities.retained_presentation_current(),
             saw_stale_pass,
             close_requests: Vec::new(),
         });
@@ -183,7 +184,7 @@ fn warm_tabs(
         None,
         Vec::new(),
     );
-    assert!(stable.interactions_current);
+    assert!(stable.retained_presentation_current);
     stable
 }
 
@@ -212,7 +213,7 @@ fn warm_split(
         Some(split),
         Vec::new(),
     );
-    assert!(stable.interactions_current);
+    assert!(stable.retained_presentation_current);
     stable
 }
 
@@ -263,7 +264,7 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         arrow_projection_painted.focused,
         Some(arrow_projection_painted.tab_ids[1])
     );
-    assert!(!arrow_projection_painted.interactions_current);
+    assert!(!arrow_projection_painted.retained_presentation_current);
     let arrow_acknowledged = run_frame(
         &context,
         &mut dockspace,
@@ -278,7 +279,7 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         arrow_acknowledged.focused,
         Some(arrow_acknowledged.tab_ids[1])
     );
-    assert!(arrow_acknowledged.interactions_current);
+    assert!(arrow_acknowledged.retained_presentation_current);
 
     let home = run_frame(
         &context,
@@ -305,7 +306,7 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         home_projection_painted.focused,
         Some(home_projection_painted.tab_ids[0])
     );
-    assert!(!home_projection_painted.interactions_current);
+    assert!(!home_projection_painted.retained_presentation_current);
     let home_acknowledged = run_frame(
         &context,
         &mut dockspace,
@@ -320,7 +321,7 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
         home_acknowledged.focused,
         Some(home_acknowledged.tab_ids[0])
     );
-    assert!(home_acknowledged.interactions_current);
+    assert!(home_acknowledged.retained_presentation_current);
 
     let end = run_frame(
         &context,
@@ -460,7 +461,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
     );
     assert!(first_input.weights[0] > stable.weights[0]);
     assert_eq!(first_input.focused, Some(first_input.splitter_id));
-    assert!(!first_input.interactions_current);
+    assert!(!first_input.retained_presentation_current);
     assert!(first_input.saw_stale_pass);
 
     let first_projection_painted = run_frame(
@@ -473,7 +474,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
         Vec::new(),
     );
     assert_eq!(first_projection_painted.weights, first_input.weights);
-    assert!(!first_projection_painted.interactions_current);
+    assert!(!first_projection_painted.retained_presentation_current);
     assert!(first_projection_painted.saw_stale_pass);
 
     let first_projection_acknowledged = run_frame(
@@ -490,7 +491,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
         first_projection_acknowledged.focused,
         Some(first_projection_acknowledged.splitter_id)
     );
-    assert!(first_projection_acknowledged.interactions_current);
+    assert!(first_projection_acknowledged.retained_presentation_current);
 
     let second_input = run_frame(
         &context,
@@ -503,7 +504,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
     );
     assert!(second_input.weights[0] > first_input.weights[0]);
     assert_eq!(second_input.focused, Some(second_input.splitter_id));
-    assert!(!second_input.interactions_current);
+    assert!(!second_input.retained_presentation_current);
     assert!(second_input.saw_stale_pass);
 
     let second_projection_painted = run_frame(
@@ -516,7 +517,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
         Vec::new(),
     );
     assert_eq!(second_projection_painted.weights, second_input.weights);
-    assert!(!second_projection_painted.interactions_current);
+    assert!(!second_projection_painted.retained_presentation_current);
     assert!(second_projection_painted.saw_stale_pass);
 
     let second_stable = run_frame(
@@ -530,7 +531,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
     );
     assert_eq!(second_stable.weights, second_projection_painted.weights);
     assert_eq!(second_stable.focused, Some(second_stable.splitter_id));
-    assert!(second_stable.interactions_current);
+    assert!(second_stable.retained_presentation_current);
 }
 
 #[derive(Clone, Copy)]
@@ -698,7 +699,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
             None,
             events,
         );
-        assert!(!stale_frame.interactions_current);
+        assert!(!stale_frame.retained_presentation_current);
         assert_eq!(stale_frame.selected, Some(ITEM_A));
         if matches!(activation, StableTabActivation::ArrowRight) {
             assert_eq!(stale_frame.focused, Some(stale_frame.tab_ids[1]));
@@ -716,7 +717,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
             None,
             Vec::new(),
         );
-        assert!(!projection_painted.interactions_current);
+        assert!(!projection_painted.retained_presentation_current);
         assert_eq!(projection_painted.selected, Some(ITEM_A));
 
         let projection_acknowledged = run_frame(
@@ -728,7 +729,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
             None,
             Vec::new(),
         );
-        assert!(projection_acknowledged.interactions_current);
+        assert!(projection_acknowledged.retained_presentation_current);
         assert_eq!(projection_acknowledged.selected, Some(ITEM_A));
 
         let activation_events = match activation {
@@ -806,7 +807,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
             None,
             events,
         );
-        assert!(!stale.interactions_current);
+        assert!(!stale.retained_presentation_current);
         assert!(stale.close_requests.is_empty());
         assert_eq!(stale.selected, Some(ITEM_A));
         assert!(
@@ -847,7 +848,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
         None,
         vec![accesskit_action(stable.close_ids[1], Action::Click)],
     );
-    assert!(!stale.interactions_current);
+    assert!(!stale.retained_presentation_current);
     assert!(stale.close_requests.is_empty());
     assert_eq!(stale.selected, Some(ITEM_A));
 }
@@ -888,6 +889,6 @@ fn same_tick_selection_supersedes_before_submission_and_disables_the_painted_res
     );
 
     assert_eq!(selected.selected, Some(ITEM_B));
-    assert!(!selected.interactions_current);
+    assert!(!selected.retained_presentation_current);
     assert!(selected.saw_stale_pass);
 }

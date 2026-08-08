@@ -109,7 +109,9 @@ impl PaneView for TestPanes {
 #[derive(Debug)]
 struct Observation {
     pass: usize,
-    interactions_current: bool,
+    local_actions_current: bool,
+    retained_presentation_current: bool,
+    pointer_receivers_current: bool,
     surface_status: DockspaceSurfaceStatus,
     missing: Vec<ItemId>,
     close_requests: Vec<DockspaceClosePlan>,
@@ -237,9 +239,12 @@ fn run_frame_with_size(
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("egui frame must advance");
+        let capabilities = response.interaction_capabilities();
         observations.push(Observation {
             pass: ui.ctx().current_pass_index(),
-            interactions_current: response.interactions_current(),
+            local_actions_current: capabilities.local_actions_current(),
+            retained_presentation_current: capabilities.retained_presentation_current(),
+            pointer_receivers_current: capabilities.pointer_receivers_current(),
             surface_status: response.surface_status(),
             missing: response.missing_panes().to_vec(),
             close_requests: response.close_requests().cloned().collect(),
@@ -268,6 +273,7 @@ fn run_outer_frame_with_size(
     let paint = frame
         .run_surface(SURFACE, context, input_with_size(events, size), panes)
         .expect("outer host must paint the surface");
+    let capabilities = paint.interaction_capabilities();
     let (host, outputs) = frame
         .finish()
         .expect("outer frame must commit atomically")
@@ -275,7 +281,9 @@ fn run_outer_frame_with_size(
     outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     Observation {
         pass: context.current_pass_index(),
-        interactions_current: paint.interactions_current(),
+        local_actions_current: capabilities.local_actions_current(),
+        retained_presentation_current: capabilities.retained_presentation_current(),
+        pointer_receivers_current: capabilities.pointer_receivers_current(),
         surface_status: paint.surface_status(),
         missing: paint.missing_panes().to_vec(),
         close_requests: host.close_requests().cloned().collect(),
@@ -292,7 +300,7 @@ fn warm_outer_with_size(
 ) {
     for _ in 0..8 {
         let observation = run_outer_frame_with_size(context, dockspace, panes, size, Vec::new());
-        if observation.interactions_current && paint_projection_is_authoritative(dockspace) {
+        if observation.pointer_receivers_current && paint_projection_is_authoritative(dockspace) {
             return;
         }
     }
@@ -309,7 +317,7 @@ fn run_authoritative_frame_with_size(
         let observations = run_frame_with_size(context, dockspace, panes, size, Vec::new());
         if observations
             .last()
-            .is_some_and(|observation| observation.interactions_current)
+            .is_some_and(|observation| observation.pointer_receivers_current)
             && paint_projection_is_authoritative(dockspace)
         {
             return observations;
@@ -366,18 +374,20 @@ fn run_accesskit_frame_with_authority(
     size: egui::Vec2,
     events: Vec<Event>,
 ) -> (TreeUpdate, bool) {
-    let mut interactions_current = false;
+    let mut retained_presentation_current = false;
     let output = crate::test_support::run_ui(context, input_with_size(events, size), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("AccessKit frame must advance");
-        interactions_current = response.interactions_current();
+        retained_presentation_current = response
+            .interaction_capabilities()
+            .retained_presentation_current();
     });
     let update = output
         .platform_output
         .accesskit_update
         .expect("AccessKit output is enabled");
-    (update, interactions_current)
+    (update, retained_presentation_current)
 }
 
 fn run_authoritative_accesskit_frame(
@@ -387,9 +397,9 @@ fn run_authoritative_accesskit_frame(
     size: egui::Vec2,
 ) -> TreeUpdate {
     for _ in 0..4 {
-        let (update, interactions_current) =
+        let (update, retained_presentation_current) =
             run_accesskit_frame_with_authority(context, dockspace, panes, size, Vec::new());
-        if interactions_current {
+        if retained_presentation_current {
             return update;
         }
     }
@@ -423,19 +433,21 @@ fn run_accesskit_frame_in_rect_with_authority(
     dock_rect: Rect,
     events: Vec<Event>,
 ) -> (TreeUpdate, bool) {
-    let mut interactions_current = false;
+    let mut retained_presentation_current = false;
     let output = crate::test_support::run_ui(context, input_with_rect(events, screen_rect), |ui| {
         let mut child = ui.new_child(UiBuilder::new().max_rect(dock_rect));
         let response = dockspace
             .show_single_surface(SURFACE, &mut child, panes)
             .expect("positioned AccessKit frame must advance");
-        interactions_current = response.interactions_current();
+        retained_presentation_current = response
+            .interaction_capabilities()
+            .retained_presentation_current();
     });
     let update = output
         .platform_output
         .accesskit_update
         .expect("AccessKit output is enabled");
-    (update, interactions_current)
+    (update, retained_presentation_current)
 }
 
 fn run_authoritative_accesskit_frame_in_rect(
@@ -446,7 +458,7 @@ fn run_authoritative_accesskit_frame_in_rect(
     dock_rect: Rect,
 ) -> TreeUpdate {
     for _ in 0..4 {
-        let (update, interactions_current) = run_accesskit_frame_in_rect_with_authority(
+        let (update, retained_presentation_current) = run_accesskit_frame_in_rect_with_authority(
             context,
             dockspace,
             panes,
@@ -454,7 +466,7 @@ fn run_authoritative_accesskit_frame_in_rect(
             dock_rect,
             Vec::new(),
         );
-        if interactions_current {
+        if retained_presentation_current {
             return update;
         }
     }
@@ -617,12 +629,12 @@ fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) -> 
     assert!(
         first
             .iter()
-            .all(|observation| !observation.interactions_current),
+            .all(|observation| !observation.retained_presentation_current),
         "no pass may acknowledge output from its own host sequence"
     );
     let second = run_frame(context, dockspace, panes, Vec::new());
     let stable = second.into_iter().last().expect("one authoritative pass");
-    assert!(stable.interactions_current);
+    assert!(stable.retained_presentation_current);
     stable
 }
 
@@ -1057,7 +1069,7 @@ fn painted_prepared_contribution_requires_a_later_host_sequence_acknowledgement(
     assert_eq!(
         observations
             .iter()
-            .map(|observation| observation.interactions_current)
+            .map(|observation| observation.retained_presentation_current)
             .collect::<Vec<_>>(),
         vec![false, false]
     );
@@ -1083,7 +1095,7 @@ fn painted_prepared_contribution_requires_a_later_host_sequence_acknowledgement(
         current
             .last()
             .expect("next host sequence acknowledges the final painted pass")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(paint_projection_is_authoritative(&dockspace));
     assert_eq!(panes.ui_calls(ITEM_A), observations.len() + current.len());
@@ -1114,7 +1126,12 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("multipass dockspace frame must advance");
-            sequence_passes.push((pass, response.interactions_current()));
+            sequence_passes.push((
+                pass,
+                response
+                    .interaction_capabilities()
+                    .retained_presentation_current(),
+            ));
             if pass == 1 && !discard_before_dockspace {
                 ui.ctx()
                     .request_discard("external widget changed after dockspace");
@@ -1141,7 +1158,7 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
             accepted
                 .last()
                 .expect("the next host sequence observes the acknowledgement")
-                .interactions_current
+                .retained_presentation_current
         );
         assert_eq!(
             dockspace
@@ -1196,7 +1213,7 @@ fn omitted_final_pass_cannot_acknowledge_an_earlier_dockspace_pass() {
     assert!(
         unconfirmed
             .last()
-            .is_some_and(|observation| !observation.interactions_current)
+            .is_some_and(|observation| !observation.retained_presentation_current)
     );
     assert!(
         !paint_projection_is_authoritative(&dockspace),
@@ -1310,7 +1327,7 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
         !painted_selection
             .last()
             .expect("the selected candidate paints")
-            .interactions_current
+            .retained_presentation_current
     );
     let acknowledged_selection =
         run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1318,7 +1335,7 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
         acknowledged_selection
             .last()
             .expect("the next host sequence acknowledges the selected candidate")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(
         published_tab_rect(&dockspace, ITEM_C).map(LogicalRect::width),
@@ -1609,13 +1626,13 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
         vec![Event::PointerMoved(edge)],
     );
     assert!(
-        edge_scroll.interactions_current,
+        edge_scroll.pointer_receivers_current,
         "the edge action is reduced against the prior authoritative receiver view"
     );
     let projected =
         run_outer_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
-        !projected.interactions_current,
+        !projected.pointer_receivers_current,
         "the changed scroll projection remains fail-closed until it is presented"
     );
     warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
@@ -1651,7 +1668,7 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
         stable
             .last()
             .expect("stable frame paints")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
@@ -1665,20 +1682,20 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
         !added
             .first()
             .expect("addition paints one stale pass")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(
         !added
             .last()
             .expect("addition paints its candidate without same-sequence authority")
-            .interactions_current
+            .retained_presentation_current
     );
     let added_current = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
         added_current
             .last()
             .expect("addition reaches a later authoritative frame")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(published_tab_rect(&dockspace, ITEM_D).is_none());
 
@@ -1692,13 +1709,13 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
         !removed
             .first()
             .expect("removal paints one stale pass")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(
         !removed
             .last()
             .expect("removal paints its candidate without same-sequence authority")
-            .interactions_current
+            .retained_presentation_current
     );
     let removed_current =
         run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1706,7 +1723,7 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
         removed_current
             .last()
             .expect("removal reaches a later authoritative frame")
-            .interactions_current
+            .retained_presentation_current
     );
 }
 
@@ -1740,7 +1757,7 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
             !pre_open_painted
                 .last()
                 .expect("the changed pre-open projection paints")
-                .interactions_current
+                .local_actions_current
         );
         let pre_open_current =
             run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1872,14 +1889,14 @@ fn keyboard_opening_overflow_menu_does_not_activate_its_first_item() {
                 .all(|(_, node)| node.role() != Role::MenuItem)
         );
 
-        let (painted, interactions_current) = run_accesskit_frame_with_authority(
+        let (painted, local_actions_current) = run_accesskit_frame_with_authority(
             &context,
             &mut dockspace,
             &mut panes,
             size,
             Vec::new(),
         );
-        assert!(!interactions_current);
+        assert!(!local_actions_current);
         let (_, painted_overflow) =
             accesskit_node_by_label(&painted, Role::Button, "Show hidden tabs");
         assert_eq!(painted_overflow.is_expanded(), Some(true));
@@ -2135,7 +2152,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         Pos2::new(tiny_screen.max.x - dock.width(), tiny_screen.min.y),
         dock.size(),
     );
-    let (tiny, interactions_current) = run_accesskit_frame_in_rect_with_authority(
+    let (tiny, local_actions_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2143,7 +2160,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
         tiny_dock,
         Vec::new(),
     );
-    assert!(!interactions_current);
+    assert!(!local_actions_current);
     assert!(
         tiny.nodes
             .iter()
@@ -2258,7 +2275,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
     assert!(narrow_screen.width() > frame_width);
     assert!(narrow_screen.width() < frame_width + scrollbar_width);
 
-    let (narrow, interactions_current) = run_accesskit_frame_in_rect_with_authority(
+    let (narrow, local_actions_current) = run_accesskit_frame_in_rect_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -2266,7 +2283,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
         narrow_dock,
         Vec::new(),
     );
-    assert!(!interactions_current);
+    assert!(!local_actions_current);
     assert!(
         narrow
             .nodes
@@ -2839,7 +2856,7 @@ fn stale_overflow_clicks_cannot_activate_or_dismiss_a_remeasured_popup() {
         );
 
         assert_eq!(stale_frame.len(), 1, "the one-pass budget must fail closed");
-        assert!(!stale_frame[0].interactions_current);
+        assert!(!stale_frame[0].local_actions_current);
         assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
 
         context.options_mut(|options| {
@@ -2975,7 +2992,7 @@ fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
         stale_observations[0].surface_status,
         DockspaceSurfaceStatus::Stale
     );
-    assert!(!stale_observations[0].interactions_current);
+    assert!(!stale_observations[0].retained_presentation_current);
     assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 1);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
     assert_eq!(panes.pane_clicks(ITEM_A), clicks_before);
@@ -2985,7 +3002,7 @@ fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
         !recovered_observations
             .last()
             .expect("the recovered candidate paints without same-sequence authority")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 2);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
@@ -2995,7 +3012,7 @@ fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
         current_observations
             .last()
             .expect("the sealed frame observes presentation authority before painting")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 3);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
@@ -3005,7 +3022,7 @@ fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
         authoritative_observations
             .last()
             .expect("the following host sequence observes accepted authority")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_A), ui_calls_before + 4);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), disabled_calls_before + 1);
@@ -3058,7 +3075,7 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
         ],
     );
     assert_eq!(stale_frame.len(), 1, "the one-pass budget must fail closed");
-    assert!(!stale_frame[0].interactions_current);
+    assert!(!stale_frame[0].retained_presentation_current);
     assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), a_disabled_before);
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 1);
@@ -3071,7 +3088,7 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
         !recovered_frame
             .last()
             .expect("the selected candidate paints without same-sequence authority")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 2);
     assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
@@ -3091,7 +3108,7 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
         stable_frame
             .last()
             .expect("the sealed frame observes selection authority before input")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 3);
     assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
@@ -3103,7 +3120,7 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
         authoritative_frame
             .last()
             .expect("the following host sequence observes accepted selection authority")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_B), b_ui_before + 4);
     assert_eq!(panes.disabled_ui_calls(ITEM_B), b_disabled_before + 1);
@@ -3378,7 +3395,7 @@ fn stale_selection_accessibility_uses_current_pane_identity() {
     context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
-    let (tree, interactions_current) = run_accesskit_frame_with_authority(
+    let (tree, local_actions_current) = run_accesskit_frame_with_authority(
         &context,
         &mut dockspace,
         &mut panes,
@@ -3386,7 +3403,7 @@ fn stale_selection_accessibility_uses_current_pane_identity() {
         Vec::new(),
     );
 
-    assert!(!interactions_current);
+    assert!(!local_actions_current);
     let a_label = format!("Pane {}", ITEM_A.get());
     let b_label = format!("Pane {}", ITEM_B.get());
     let (_, tab_a) = accesskit_node_by_label(&tree, Role::Tab, &a_label);
@@ -3428,14 +3445,14 @@ fn missing_pane_is_reported_and_recovers_without_topology_changes() {
         !recovered
             .last()
             .expect("the recovered pane candidate paints")
-            .interactions_current
+            .retained_presentation_current
     );
     let acknowledged = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
         acknowledged
             .last()
             .expect("the next host sequence acknowledges the recovered pane")
-            .interactions_current
+            .retained_presentation_current
     );
     assert_eq!(panes.ui_calls(ITEM_A), 4);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), 1);
@@ -3920,7 +3937,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
     let before_stale_action = stale_dockspace.core_engine().version();
-    let (stale_tree, interactions_current) = run_accesskit_frame_with_authority(
+    let (stale_tree, local_actions_current) = run_accesskit_frame_with_authority(
         &stale_context,
         &mut stale_dockspace,
         &mut stale_panes,
@@ -3928,7 +3945,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
         vec![accesskit_action(stale_right, Action::Increment)],
     );
 
-    assert!(!interactions_current);
+    assert!(!local_actions_current);
     assert_eq!(contained_rect(&stale_dockspace), replacement);
     assert_eq!(stale_dockspace.core_engine().version(), before_stale_action);
     let stale_node = stale_tree
@@ -4092,7 +4109,10 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
         let response = dockspace
             .show_single_surface(SURFACE, &mut child, &mut panes)
             .expect("collapsed host remains projectable");
-        statuses.push((response.surface_status(), response.interactions_current()));
+        statuses.push((
+            response.surface_status(),
+            response.interaction_capabilities().local_actions_current(),
+        ));
     });
     assert_eq!(
         statuses,
@@ -4108,9 +4128,16 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
         let response = dockspace
             .show_single_surface(SURFACE, &mut child, &mut panes)
             .expect("collapsed host remains projectable");
-        current = Some((response.surface_status(), response.interactions_current()));
+        current = Some((
+            response.surface_status(),
+            response.interaction_capabilities(),
+        ));
     });
-    assert_eq!(current, Some((DockspaceSurfaceStatus::Ready, true)));
+    let (status, capabilities) = current.expect("the ready pass must return capabilities");
+    assert_eq!(status, DockspaceSurfaceStatus::Ready);
+    assert!(!capabilities.local_actions_current());
+    assert!(capabilities.retained_presentation_current());
+    assert!(capabilities.pointer_receivers_current());
 
     let degraded_plan = dockspace
         .core_engine()
@@ -4531,7 +4558,7 @@ fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
         vec2(560.0, 360.0),
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(!released.interactions_current);
+    assert!(!released.pointer_receivers_current);
     assert_eq!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
@@ -4595,7 +4622,7 @@ fn stale_projection_still_releases_active_split_resize() {
         vec2(600.0, 400.0),
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(!released.interactions_current);
+    assert!(!released.pointer_receivers_current);
     assert_ne!(dockspace.core_engine().version(), version_before_release);
     assert_eq!(
         dockspace.core_engine().interaction().status(),
@@ -4623,14 +4650,14 @@ fn stale_projection_still_releases_active_split_resize() {
         !settled
             .last()
             .expect("the next host sequence paints the replacement candidate")
-            .interactions_current
+            .retained_presentation_current
     );
     let acknowledged = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
         acknowledged
             .last()
             .expect("the later host sequence acknowledges the replacement candidate")
-            .interactions_current
+            .retained_presentation_current
     );
     assert!(paint_projection_is_authoritative(&dockspace));
 }

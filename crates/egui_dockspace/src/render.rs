@@ -808,7 +808,7 @@ impl EguiSurfaceDraft {
         self.superseded = true;
         self.semantic_inputs.clear();
         if let Some(paint) = self.paint.as_mut() {
-            paint.interactions_current = false;
+            paint.interaction_capabilities = Default::default();
             paint.contained_capability = DockspaceCapability::Unavailable(
                 DockspaceUnavailableReason::SurfaceBoundsUnavailable,
             );
@@ -1670,7 +1670,7 @@ impl EguiDockRenderer {
         let status = DockspaceSurfaceCommitStatus::from_contribution(&outcome);
         if let Some(paint) = draft.paint.as_mut() {
             if rejected {
-                paint.interactions_current = false;
+                paint.interaction_capabilities = Default::default();
                 paint.surface_status = self.committed_surface_status(engine, draft.surface);
             } else if engine.workspace().surface(draft.surface).is_none() {
                 paint.surface_status = DockspaceSurfaceStatus::Absent;

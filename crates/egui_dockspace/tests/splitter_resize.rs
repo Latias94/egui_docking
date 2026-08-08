@@ -28,7 +28,7 @@ impl PaneView for TestPanes {
 
 #[derive(Debug)]
 struct FrameObservation {
-    interactions_current: bool,
+    retained_presentation_current: bool,
     version: WorkspaceVersion,
     accesskit: Option<TreeUpdate>,
 }
@@ -77,15 +77,17 @@ fn run_frame(
     panes: &mut TestPanes,
     events: Vec<Event>,
 ) -> FrameObservation {
-    let mut interactions_current = false;
+    let mut retained_presentation_current = false;
     let output = crate::test_support::run_ui(context, input(events), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("egui frame must advance");
-        interactions_current = response.interactions_current();
+        retained_presentation_current = response
+            .interaction_capabilities()
+            .retained_presentation_current();
     });
     FrameObservation {
-        interactions_current,
+        retained_presentation_current,
         version: dockspace.core_engine().version(),
         accesskit: output.platform_output.accesskit_update,
     }
@@ -94,7 +96,7 @@ fn run_frame(
 fn settle(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) -> FrameObservation {
     let _ = run_frame(context, dockspace, panes, Vec::new());
     let stable = run_frame(context, dockspace, panes, Vec::new());
-    assert!(stable.interactions_current);
+    assert!(stable.retained_presentation_current);
     stable
 }
 
@@ -246,7 +248,7 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
         .set_style(style)
         .expect("style change invalidates the presentation");
     let painted = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert!(!painted.interactions_current);
+    assert!(!painted.retained_presentation_current);
     assert!(
         dockspace
             .core_engine()
@@ -267,7 +269,7 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
     );
 
     assert!(
-        !acknowledgement_pass.interactions_current,
+        !acknowledgement_pass.retained_presentation_current,
         "the accepted adjustment immediately invalidates the painted projection"
     );
     assert_ne!(acknowledgement_pass.version, before_version);

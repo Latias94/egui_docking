@@ -55,7 +55,7 @@ pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
 pub use response::{
     DockspaceCapability, DockspaceCloseItem, DockspaceCloseOutcome, DockspaceClosePlan,
     DockspaceCloseRequest, DockspaceCloseResult, DockspaceCommandOutcome, DockspaceCommandResult,
-    DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
-    DockspaceUnavailableReason,
+    DockspaceInteractionCapabilities, DockspaceMutation, DockspaceResponse,
+    DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, DockspaceUnavailableReason,
 };
 pub use style::{DockStyle, DockStyleError};

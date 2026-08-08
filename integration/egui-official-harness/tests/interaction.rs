@@ -48,12 +48,14 @@ fn run_frame(
     events: Vec<Event>,
 ) -> FrameObservation {
     let mut close_items = Vec::new();
-    let mut interactions_current = false;
+    let mut local_actions_current = false;
     let mut output = context.run_ui(input(events), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the official-egui frame advances");
-        interactions_current = response.interactions_current();
+        local_actions_current = response
+            .interaction_capabilities()
+            .local_actions_current();
         close_items.extend(
             response
                 .close_requests()
@@ -64,7 +66,7 @@ fn run_frame(
     FrameObservation {
         output,
         close_items,
-        interactions_current,
+        local_actions_current,
     }
 }
 
@@ -75,13 +77,15 @@ fn run_frame_with_discard_after_dockspace(
     events: Vec<Event>,
 ) -> (FrameObservation, usize) {
     let mut close_items = Vec::new();
-    let mut interactions_current = false;
+    let mut local_actions_current = false;
     let mut passes = 0;
     let mut output = context.run_ui(input(events), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the official-egui multipass frame advances");
-        interactions_current = response.interactions_current();
+        local_actions_current = response
+            .interaction_capabilities()
+            .local_actions_current();
         close_items.extend(
             response
                 .close_requests()
@@ -98,7 +102,7 @@ fn run_frame_with_discard_after_dockspace(
         FrameObservation {
             output,
             close_items,
-            interactions_current,
+            local_actions_current,
         },
         passes,
     )
@@ -107,7 +111,7 @@ fn run_frame_with_discard_after_dockspace(
 struct FrameObservation {
     output: egui::FullOutput,
     close_items: Vec<ItemId>,
-    interactions_current: bool,
+    local_actions_current: bool,
 }
 
 fn selected_item(dockspace: &Dockspace) -> Option<ItemId> {
@@ -160,7 +164,7 @@ fn production_single_surface_click_selects_a_tab() {
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert!(stable.interactions_current);
+    assert!(stable.local_actions_current);
     let pointer = node_center(accesskit_node(&stable.output, Role::Tab, "Second").1);
 
     let press = vec![
@@ -327,7 +331,7 @@ fn production_single_surface_close_button_requests_the_exact_tab() {
         ],
     );
 
-    assert!(released.interactions_current);
+    assert!(released.local_actions_current);
     assert_eq!(selected_item(&dockspace), Some(FIRST));
     assert_eq!(released.close_items, [SECOND]);
 }
