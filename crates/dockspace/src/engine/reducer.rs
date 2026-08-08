@@ -1134,6 +1134,8 @@ impl DockEngine {
                     | InputOutcome::WorkspaceReplaced { .. }
                     | InputOutcome::CommandProcessed { .. }
                     | InputOutcome::CommandRejected { .. }
+                    | InputOutcome::ProductActionProcessed { .. }
+                    | InputOutcome::ProductActionRejected { .. }
                     | InputOutcome::ContentCloseRequested { .. }
                     | InputOutcome::ContentCloseRejected { .. }
                     | InputOutcome::SurfaceCloseRequested { .. }
@@ -1280,6 +1282,47 @@ impl DockEngine {
                 *expected,
                 *application_base,
                 command,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::SelectItem { expected, item } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                *application_base,
+                ProductAction::SelectItem { item: *item },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::OpenItem {
+                expected,
+                item,
+                placement,
+            } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                *application_base,
+                ProductAction::OpenItem {
+                    item: *item,
+                    placement: *placement,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::DockItem {
+                expected,
+                item,
+                placement,
+            } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                *application_base,
+                ProductAction::DockItem {
+                    item: *item,
+                    placement: *placement,
+                },
                 tick_start.policy,
                 events,
                 interaction_events,

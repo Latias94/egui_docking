@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::model::{DockPlacement, DockspaceActionOutcome};
+
 mod staging_resource;
 
 #[test]
@@ -810,6 +812,47 @@ fn install_pending_native_root_reservation_with_work_area(
         ),
     ));
     request
+}
+
+#[test]
+fn product_main_root_skips_a_pending_native_root_reservation() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let reserved_root = RootId::new(94);
+    install_pending_native_root_reservation(&mut fixture, reserved_root);
+    let expected = fixture.engine.version();
+
+    let transition = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::OpenItem {
+            expected,
+            item: ItemId::new(99),
+            placement: DockPlacement::Main(TARGET_SURFACE),
+        },
+    )
+    .expect("product main-root action must reduce beside the pending native saga");
+    let prepared_root = RootId::new(reserved_root.get() + 1);
+
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::Opened {
+                item,
+                root,
+            },
+            ..
+        } if *item == ItemId::new(99) && *root == prepared_root
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .surface(TARGET_SURFACE)
+            .and_then(|surface| surface.main_root),
+        Some(prepared_root),
+    );
 }
 
 #[test]

@@ -69,6 +69,10 @@ mod presentation_compiler;
 mod presentation_hit_manifest;
 #[path = "../tests/presentation_manifest.rs"]
 mod presentation_manifest;
+#[path = "../tests/product_actions.rs"]
+mod product_actions;
+#[path = "../tests/product_model.rs"]
+mod product_model;
 #[path = "../tests/recovery_policy_authority.rs"]
 mod recovery_policy_authority;
 #[path = "../tests/reducer_ticks.rs"]

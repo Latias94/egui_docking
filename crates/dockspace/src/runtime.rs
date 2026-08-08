@@ -63,6 +63,9 @@ use crate::error::CommandError;
 use crate::graph::Workspace;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::interaction::InteractionOutcome;
+use crate::model::{
+    DockPlacement, DockspaceActionOutcome, DockspaceActionRejection, DockspaceLayout, DockspaceView,
+};
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
 use crate::transition::InputOutcome;
@@ -91,6 +94,20 @@ pub struct DockspaceSession {
 }
 
 impl DockspaceSession {
+    /// Creates one product session from stable item, root, and surface layout data.
+    ///
+    /// Runtime node identities are allocated privately while compiling the layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the core cannot mint its private presentation-host identity.
+    pub fn from_layout(
+        layout: DockspaceLayout,
+        policy: crate::policy::DockPolicy,
+    ) -> Result<Self, DockspaceRuntimeError> {
+        Self::new(layout.into_workspace(), policy)
+    }
+
     /// Creates one session from a strictly validated workspace and policy.
     ///
     /// # Errors
@@ -119,6 +136,12 @@ impl DockspaceSession {
     #[must_use]
     pub const fn workspace(&self) -> &Workspace {
         self.engine.workspace()
+    }
+
+    /// Returns the published item/surface-centric product view.
+    #[must_use]
+    pub fn view(&self) -> DockspaceView<'_> {
+        DockspaceView::new(self.engine.workspace())
     }
 
     /// Returns the current durable workspace version.
@@ -156,6 +179,7 @@ impl DockspaceSession {
             self.presentation.submit_observation(&mut prelude)?
         };
         let frame = prelude.seal(&self.engine)?;
+        let application_base = frame.view().version();
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer
@@ -164,6 +188,7 @@ impl DockspaceSession {
         let mut host_frame = DockspaceHostFrame {
             session: self,
             frame,
+            application_base,
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: false,
@@ -205,6 +230,7 @@ impl DockspaceSession {
 pub struct DockspaceHostFrame<'session> {
     session: &'session mut DockspaceSession,
     frame: CoreHostFrame,
+    application_base: WorkspaceVersion,
     next_source_sequence: u64,
     next_pointer_sequence: Option<u64>,
     pointer_input_submitted: bool,
@@ -213,6 +239,12 @@ pub struct DockspaceHostFrame<'session> {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Returns the post-input product view without exposing runtime node identities.
+    #[must_use]
+    pub fn view(&self) -> DockspaceView<'_> {
+        DockspaceView::new(self.frame.view().workspace())
+    }
+
     /// Returns the post-input candidate workspace visible inside this frame.
     #[must_use]
     pub fn workspace(&self) -> &Workspace {
@@ -238,8 +270,56 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         command: WorkspaceCommand,
     ) -> Result<(), DockspaceRuntimeError> {
-        let expected = self.frame.view().version();
-        self.append(EngineInput::WorkspaceCommand { expected, command })
+        self.append(EngineInput::WorkspaceCommand {
+            expected: self.application_base,
+            command,
+        })
+    }
+
+    /// Selects one currently open item by stable identity.
+    ///
+    /// The reducer resolves the current tabs source inside this rollback candidate.
+    pub fn select_item(&mut self, item: crate::ids::ItemId) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::SelectItem {
+            expected: self.application_base,
+            item,
+        })
+    }
+
+    /// Opens one item at a stable product placement.
+    ///
+    /// Opening an already owned item is a valid no-op and does not reposition it.
+    pub fn open_item(
+        &mut self,
+        item: crate::ids::ItemId,
+        placement: DockPlacement,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::OpenItem {
+            expected: self.application_base,
+            item,
+            placement,
+        })
+    }
+
+    /// Docks one currently open item at a stable product placement.
+    pub fn dock_item(
+        &mut self,
+        item: crate::ids::ItemId,
+        placement: DockPlacement,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::DockItem {
+            expected: self.application_base,
+            item,
+            placement,
+        })
+    }
+
+    /// Opens or reuses one core-owned close plan for an item.
+    pub fn request_close_item(
+        &mut self,
+        item: crate::ids::ItemId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.request_close(ContentCloseTarget::Item(item))
     }
 
     /// Opens one core-owned close plan for stable application content.
@@ -251,8 +331,10 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         target: ContentCloseTarget,
     ) -> Result<(), DockspaceRuntimeError> {
-        let expected = self.frame.view().version();
-        self.append(EngineInput::RequestContentClose { expected, target })
+        self.append(EngineInput::RequestContentClose {
+            expected: self.application_base,
+            target,
+        })
     }
 
     /// Resolves one initial close decision token.
@@ -328,6 +410,7 @@ impl DockspaceHostFrame<'_> {
         let Self {
             session,
             frame,
+            application_base: _,
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: _,
@@ -404,6 +487,10 @@ impl DockspaceHostFrame<'_> {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// One item-centric product action committed or produced a valid no-op.
+    ProductActionApplied(DockspaceActionOutcome),
+    /// One item-centric product action was rejected without mutation.
+    ProductActionRejected(DockspaceActionRejection),
     /// One checked durable command applied or produced a valid no-op.
     CommandApplied {
         /// Structured command result.
@@ -542,6 +629,12 @@ impl HostFrameReport {
                 }),
                 InputOutcome::CommandRejected { error, .. } => {
                     Some(HostInputOutcome::CommandRejected(error.clone()))
+                }
+                InputOutcome::ProductActionProcessed { outcome, .. } => {
+                    Some(HostInputOutcome::ProductActionApplied(outcome.clone()))
+                }
+                InputOutcome::ProductActionRejected { reason, .. } => {
+                    Some(HostInputOutcome::ProductActionRejected(*reason))
                 }
                 InputOutcome::ContentCloseRequested { plan, reused, .. } => {
                     Some(HostInputOutcome::CloseRequested {

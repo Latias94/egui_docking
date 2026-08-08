@@ -24,6 +24,7 @@ use dockspace::ids::{
     FloatingPresentationId, ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::Authority;
+use dockspace::model::{DockAnchor, DockPlacement};
 use dockspace::persistence::WorkspaceSnapshot;
 use dockspace::platform::{
     ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformSnapshot,
@@ -1654,6 +1655,27 @@ fn raw_session_host_frame_cannot_open_an_unbound_item() {
 }
 
 #[test]
+fn raw_session_host_frame_cannot_product_open_an_unbound_item() {
+    let mut session = session_with(DOCUMENT_ID, 0);
+    let mut frame = sealed_session_frame(&mut session);
+
+    assert_eq!(
+        frame.append_input(
+            StableInputSourceId::new(93),
+            SourceSequence::new(1),
+            EngineInput::OpenItem {
+                expected: frame.view().version(),
+                item: ItemId::new(99),
+                placement: DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+            },
+        ),
+        Err(CoreHostFrameError::ItemIdentityOutsideScope {
+            item: ItemId::new(99),
+        })
+    );
+}
+
+#[test]
 fn backend_ingress_cannot_replace_a_bound_session_with_an_unbound_item() {
     let mut session = session_with(DOCUMENT_ID, 0);
     let host = session
@@ -1689,6 +1711,44 @@ fn backend_ingress_cannot_replace_a_bound_session_with_an_unbound_item() {
         session.engine().workspace(),
         &workspace([ItemId::new(1), ItemId::new(2)]),
         "rejected backend replay must not publish its speculative replacement"
+    );
+}
+
+#[test]
+fn backend_ingress_cannot_product_open_an_unbound_item() {
+    let mut session = session_with(DOCUMENT_ID, 0);
+    let host = session
+        .adapter_create_presentation_host()
+        .expect("fixture presentation host must mint");
+    let mut recorder = session
+        .adapter_create_backend_ingress_provider(host, PointerEdgeSequence::new(0))
+        .expect("fixture backend provider must enroll");
+    recorder
+        .record_semantic_input(EngineInput::OpenItem {
+            expected: session.engine().version(),
+            item: ItemId::new(99),
+            placement: DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        })
+        .expect("backend recorder accepts product semantic input");
+    let mut prelude = session
+        .adapter_begin_host_frame(host)
+        .expect("session host frame must begin");
+    prelude
+        .submit_presentation_observation(HostPresentationObservation::NoUpdate)
+        .expect("empty presentation observation must submit");
+    let mut frame = prelude
+        .seal(session.engine())
+        .expect("session host frame must seal");
+
+    assert_eq!(
+        frame.submit_backend_ingress(
+            recorder
+                .pending_batch()
+                .expect("fixture backend batch must freeze"),
+        ),
+        Err(CoreHostFrameError::ItemIdentityOutsideScope {
+            item: ItemId::new(99),
+        })
     );
 }
 

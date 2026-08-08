@@ -344,6 +344,31 @@ pub enum EngineInput {
         /// Checked durable mutation.
         command: WorkspaceCommand,
     },
+    /// Select one item by stable application identity.
+    SelectItem {
+        /// Frozen application base for this reducer tick.
+        expected: WorkspaceVersion,
+        /// Stable application item.
+        item: ItemId,
+    },
+    /// Open one item at a stable product placement.
+    OpenItem {
+        /// Frozen application base for this reducer tick.
+        expected: WorkspaceVersion,
+        /// Stable application item.
+        item: ItemId,
+        /// Item-, root-, or surface-centric destination.
+        placement: crate::model::DockPlacement,
+    },
+    /// Move one open item to a stable product placement.
+    DockItem {
+        /// Frozen application base for this reducer tick.
+        expected: WorkspaceVersion,
+        /// Stable application item.
+        item: ItemId,
+        /// Item-, root-, or surface-centric destination.
+        placement: crate::model::DockPlacement,
+    },
     /// Request a core-owned close plan for stable application content.
     RequestContentClose {
         /// Version from which the stable target was selected.
@@ -525,6 +550,9 @@ impl EngineInput {
             Self::PublishPaneFocusObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
             | Self::WorkspaceCommand { .. }
+            | Self::SelectItem { .. }
+            | Self::OpenItem { .. }
+            | Self::DockItem { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::ActivateSemanticReceiver { .. }

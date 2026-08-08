@@ -75,6 +75,7 @@ pub mod layout;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod layout;
+pub mod model;
 mod operation;
 #[cfg(feature = "serde")]
 pub mod persistence;

@@ -141,6 +141,11 @@ impl PresentationIdentityAuthority {
             })
     }
 
+    pub(super) fn prepare_root(&self) -> Option<RootId> {
+        let mut candidate = self.frontier;
+        candidate.reserve_root()
+    }
+
     #[cfg(test)]
     pub(super) fn reserve_root(&mut self) -> Result<RootId, EngineError> {
         self.frontier
@@ -338,9 +343,10 @@ impl DockEngine {
         Ok(())
     }
 
-    fn observe_pending_native_identity_reservations(&mut self) {
-        let reservations = self
-            .viewport
+    fn pending_native_identity_reservations(
+        &self,
+    ) -> Vec<(SurfaceId, RootId, FloatingPresentationId)> {
+        self.viewport
             .native_create_sagas()
             .map(|(_, saga)| {
                 (
@@ -349,9 +355,20 @@ impl DockEngine {
                     saga.prepared().proposal().converted_main().floating(),
                 )
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn observe_pending_native_identity_reservations(&mut self) {
+        let reservations = self.pending_native_identity_reservations();
         self.presentation_identity
             .observe_native_reservations(reservations);
+    }
+
+    pub(super) fn prepare_presentation_root_identity(&self) -> Option<RootId> {
+        let mut authority = self.presentation_identity;
+        authority.observe_workspace(&self.workspace);
+        authority.observe_native_reservations(self.pending_native_identity_reservations());
+        authority.prepare_root()
     }
 
     #[cfg(test)]

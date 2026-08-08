@@ -13,6 +13,7 @@ mod pointer_transaction;
 mod presentation_authority;
 mod presentation_identity;
 mod presentation_roster;
+mod product_action;
 mod provider_lifecycle;
 mod reducer;
 mod retention;
@@ -137,6 +138,7 @@ use crate::interaction::{
     ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
+use crate::model::ProductAction;
 use crate::operation::{
     PreparedContentClose, PreparedSurfaceContentClose, prepare_content_close,
     prepare_surface_content_close,
