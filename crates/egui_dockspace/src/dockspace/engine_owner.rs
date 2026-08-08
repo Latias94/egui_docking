@@ -17,13 +17,13 @@ use dockspace::backend::presentation_observation::PresentationHostRetirementReas
 use dockspace::backend::presentation_observation::{
     HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
 };
+#[cfg(test)]
+use dockspace::backend::transition::PresentationHostRetirementOutcome;
+use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 #[cfg(feature = "serde")]
 use dockspace::document::{
     DockspaceDocumentSession, DockspaceDocumentSessionError, PreparedDockspaceSessionHostCommit,
 };
-#[cfg(test)]
-use dockspace::transition::PresentationHostRetirementOutcome;
-use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::viewport::ViewportBinding;
 
 use crate::DockspaceError;

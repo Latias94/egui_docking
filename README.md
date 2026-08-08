@@ -81,10 +81,10 @@ complete-roster input-before-paint hosted-cycle SPI. Native lifecycle ownership
 lives in the unpublished `egui_dockspace_native` runtime. The excluded native
 workspace pins the public fork commit
 `5016206ba71228d11e594ff2c1dd1887da904486` and the event-fact Winit commit
-`c4e37f29ca448d0bfb10f5d223479154091c5898`; the complete two-window conformance
-matrix, bounded long-session ledgers, performance gates, an upstream-reviewable
-patch series, and the sealed public facade remain release blockers. Egui no
-longer computes a second docking geometry plan: it submits intrinsic
+`c4e37f29ca448d0bfb10f5d223479154091c5898`; the single native smoke,
+deterministic conformance suites, bounded long-session ledgers, performance
+gates, an upstream-reviewable patch series, and the sealed public facade remain
+release blockers. Egui no longer computes a second docking geometry plan: it submits intrinsic
 measurements and paint resources, then paints the core-owned
 `PresentationPlan` directly.
 

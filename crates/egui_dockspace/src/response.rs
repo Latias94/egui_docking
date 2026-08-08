@@ -2,13 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::backend::interaction::InteractionOutcome;
+use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::command::{CloseCommitOutcome, CommandOutcome};
 use dockspace::error::CommandError;
 use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
-use dockspace::interaction::InteractionOutcome;
-use dockspace::transition::{
-    EngineTransition, InputOutcome, SurfaceContributionOutcome, WorkspaceVersion,
-};
+use dockspace::runtime::WorkspaceVersion;
 use dockspace::{ClosePlan, CloseResolutionOutcome};
 
 /// Product-level summary of one atomic docking publication.

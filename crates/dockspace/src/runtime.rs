@@ -12,6 +12,9 @@ mod native_effect;
 mod paint;
 mod presentation;
 
+pub use crate::transition::{
+    ContentCloseRequestRejection, SurfaceCloseRequestRejection, WorkspaceVersion,
+};
 pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
@@ -62,9 +65,7 @@ use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::interaction::InteractionOutcome;
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
-use crate::transition::{
-    ContentCloseRequestRejection, InputOutcome, SurfaceCloseRequestRejection, WorkspaceVersion,
-};
+use crate::transition::InputOutcome;
 use crate::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };

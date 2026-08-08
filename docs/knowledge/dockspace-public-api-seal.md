@@ -201,14 +201,17 @@ represented by a public egui callback-order protocol.
 The first two breaking slices are complete. The egui whole-crate re-export and
 raw engine accessor are gone. Ordinary egui mutation and paint responses now
 return product-level command, close, surface, and mutation outcomes instead of
-raw `EngineTransition` or surface-contribution FSM values. The renderer-neutral crate no longer exposes its
-backend FSM modules at their former root paths; adapters use the explicit
-`dockspace::backend` feature and namespace. Examples and the official-egui
-harness declare `dockspace` directly when they intentionally exercise core
-contracts, so rustc rather than an API-classification script owns dependency
-and name resolution. The low-level backend host response still carries a raw
-transition for native migration; remaining model/transition exposure and
-facade migration keep this seal open.
+raw `EngineTransition` or surface-contribution FSM values. The renderer-neutral
+crate no longer exposes reducer events, transitions, interaction state, hit
+regions, or its other backend FSM modules at their former root paths; adapters
+use the explicit `dockspace::backend` feature and namespace. Product callers
+obtain `WorkspaceVersion` and typed close rejections through
+`dockspace::runtime`. Examples and the official-egui harness declare
+`dockspace` directly when they intentionally exercise core contracts, so rustc
+rather than an API-classification script owns dependency and name resolution.
+The low-level backend host response still carries a raw transition for native
+migration; remaining model/error consolidation and backend-host migration keep
+this seal open.
 
 ## Protocol Tests
 
@@ -236,12 +239,13 @@ the default API.
 
 ## CI Guard
 
-The seal needs an API-surface guard in addition to behavior tests:
+The seal needs a small API-surface guard in addition to behavior tests:
 
 - Keep a tiny downstream compile fixture that imports only allowed facade items.
-- Diff `cargo public-api` (or rustdoc's structured public-item output) against an
-  intentional baseline. The command is the authority for Rust item resolution;
-  a repository script must not parse Rust source to reconstruct exports.
+- Build strict public rustdoc and inspect the crate roots during this breaking
+  refactor. Once the facade is intentionally stable, an established tool such
+  as `cargo public-api` or `cargo-semver-checks` may own a release baseline; do
+  not build a repository-specific substitute.
 - Keep core-minted constructors private and prove the supported construction
   path with the downstream fixture. Add a compile-fail test only when a
   specific forbidden import is a product contract and no public-item diff can

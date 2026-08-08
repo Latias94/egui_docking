@@ -14,7 +14,7 @@ use dockspace::backend::engine::EngineInput;
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::interaction::EscapeDelivery;
+use dockspace::backend::interaction::EscapeDelivery;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
@@ -36,7 +36,7 @@ use dockspace::backend::semantic_input::{
     SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
     SemanticReceiverEvent,
 };
-use dockspace::transition::EngineTransition;
+use dockspace::backend::transition::EngineTransition;
 use dockspace::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,

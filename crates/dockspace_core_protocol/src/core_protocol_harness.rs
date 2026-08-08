@@ -10,7 +10,13 @@ use dockspace::backend::engine::{
     HostPresentationDisposition, HostPresentationSlot, HostPresentationUnavailableReason,
     PreparedSurfaceContribution, SurfaceContributionToken,
 };
+use dockspace::backend::event::ReductionCause;
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::interaction::{
+    EscapeDelivery, InteractionCancelReason, InteractionEventKind, InteractionOutcome,
+    InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
+    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+};
 use dockspace::backend::platform::PlatformObservationLease;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
@@ -44,6 +50,10 @@ use dockspace::backend::presentation_observation::{
     PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
 };
 use dockspace::backend::scene::TabBarSceneId;
+use dockspace::backend::transition::{
+    EngineTransition, InputOutcome, PresentationHostRetirementOutcome, SurfaceContributionOutcome,
+    SurfaceSceneStateKind, WorkspaceVersion,
+};
 use dockspace::backend::viewport_focus::{
     FocusObservationEnvelope, FocusObservationGeneration, FocusValueChange, GlobalFocusedWindow,
     PaneFocusDisposition, PaneFocusIntent, PaneFocusIntentSource, PanelFocusRecord,
@@ -53,7 +63,6 @@ use dockspace::backend::viewport_focus::{
 };
 use dockspace::command::{DockTarget, Edge, WorkspaceCommand};
 use dockspace::drop_target::DropTargetId;
-use dockspace::event::ReductionCause;
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
@@ -64,11 +73,6 @@ use dockspace::ids::{
     FloatingPresentationId, ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::interaction::{
-    EscapeDelivery, InteractionCancelReason, InteractionEventKind, InteractionOutcome,
-    InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
-    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
-};
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::{
     Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
@@ -76,10 +80,6 @@ use dockspace::scene_manifest::{
     TabStripMetrics,
 };
 use dockspace::tab_strip::TabStripControlId;
-use dockspace::transition::{
-    EngineTransition, InputOutcome, PresentationHostRetirementOutcome, SurfaceContributionOutcome,
-    SurfaceSceneStateKind, WorkspaceVersion,
-};
 use dockspace::viewport::{
     CapabilityObservationGeneration, CoordinateGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryObservationGeneration, PresentationObservationGeneration,

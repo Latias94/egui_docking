@@ -8,7 +8,7 @@ use dockspace::command::Edge;
 use dockspace::drop_target::DropTargetId;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::interaction::PreviewVisual;
+use dockspace::backend::interaction::PreviewVisual;
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::WindowToken;
 use eframe::egui;

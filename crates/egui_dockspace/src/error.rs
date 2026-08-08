@@ -5,6 +5,7 @@ use dockspace::backend::engine::{
     SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
 use dockspace::backend::ingress::BackendIngressError;
+use dockspace::backend::interaction::InteractionRejection;
 use dockspace::backend::pointer_journal::{
     PointerEdgeSequence, PointerJournalError, SurfaceLocalPointerProviderError,
 };
@@ -17,7 +18,6 @@ use dockspace::backend::presentation_observation::NativeStagingPresentation;
 use dockspace::backend::scene::SurfaceSceneStamp;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
-use dockspace::interaction::InteractionRejection;
 use dockspace::presentation_config::DockPresentationConfigError;
 use egui::ViewportId;
 use thiserror::Error;

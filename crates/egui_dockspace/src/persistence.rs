@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use dockspace::backend::ingress::{BackendIngressOrdinal, BackendIngressRecorder};
+use dockspace::backend::transition::EngineTransition;
 use dockspace::document::{
     DockspaceDocumentBootstrap, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
     DockspaceDocumentId, DockspaceDocumentRestoreTicket, DockspaceDocumentSessionError,
@@ -10,7 +11,6 @@ use dockspace::document::{
 use dockspace::external_item_key::ExternalItemKeyMap;
 use dockspace::graph::Workspace;
 use dockspace::ids::{ItemId, SurfaceId};
-use dockspace::transition::EngineTransition;
 use dockspace::viewport_persistence::{ViewportPlacementPreference, ViewportPlacementPreferences};
 use thiserror::Error;
 

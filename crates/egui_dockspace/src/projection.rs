@@ -12,13 +12,13 @@ use dockspace::geometry::{GeometryError, LogicalRect, LogicalSize};
 use dockspace::graph::{Node, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::policy::TabBarVisibility;
+use dockspace::runtime::WorkspaceVersion;
 use dockspace::scene_manifest::{
     Measurement, MeasurementSubmissionError, MeasurementValueError,
     PaneMinimumKey as CorePaneMinimumKey, SurfaceMeasurements, SurfaceRequirements, TabIntrinsic,
     TabIntrinsicKey, TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics,
     TabStripControlPlacement, TabStripKey as CoreTabStripKey, TabStripMetrics,
 };
-use dockspace::transition::WorkspaceVersion;
 use egui::emath::GuiRounding as _;
 use egui::{FontSelection, Galley, Id, Rect, TextStyle, TextWrapMode, Ui, Vec2};
 use thiserror::Error;

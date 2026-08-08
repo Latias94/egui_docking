@@ -44,7 +44,11 @@ pub mod engine;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod engine;
 pub mod error;
+#[cfg(test)]
 pub mod event;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod event;
 pub mod external_item_key;
 #[cfg(test)]
 pub mod frame;
@@ -53,10 +57,18 @@ pub mod frame;
 mod frame;
 pub mod geometry;
 pub mod graph;
+#[cfg(test)]
 pub mod hit_region;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod hit_region;
 pub mod ids;
 pub mod intent;
+#[cfg(test)]
 pub mod interaction;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod interaction;
 mod journal_presentation;
 #[cfg(test)]
 pub mod layout;
@@ -125,7 +137,11 @@ pub mod surface_recovery;
 mod surface_recovery;
 pub mod tab_strip;
 pub mod transaction;
+#[cfg(test)]
 pub mod transition;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod transition;
 pub mod validation;
 pub mod viewport;
 #[cfg(test)]

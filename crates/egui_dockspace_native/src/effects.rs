@@ -14,7 +14,7 @@ use dockspace::backend::effect::{
 };
 use dockspace::geometry::PhysicalRect;
 use dockspace::ids::{SurfaceId, WorkspaceEpoch};
-use dockspace::transition::{EngineTransition, InputOutcome};
+use dockspace::backend::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, ViewportRole};
 use eframe::{
     NativeEffectCorrelation, NativeEffectDispatchOutcome, NativeEffectProperty, NativeEffectResult,

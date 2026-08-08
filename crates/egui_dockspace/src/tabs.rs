@@ -1,6 +1,7 @@
 //! Tab chrome, keyboard navigation, accessibility, and pane dispatch.
 
 use dockspace::backend::engine::{TabListMenuNavigation, TabScrollAdjustment};
+use dockspace::backend::interaction::{ActiveDragView, DragPhase};
 use dockspace::backend::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
 use dockspace::backend::scene::{
     PaneRecord, PresentationPlan, SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord,
@@ -10,7 +11,6 @@ use dockspace::command::MovePayload;
 use dockspace::graph::{Node, Workspace};
 use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::intent::CloseSceneTarget;
-use dockspace::interaction::{ActiveDragView, DragPhase};
 use dockspace::policy::TabBarInteraction;
 use dockspace::tab_strip::TabStripControlId;
 use egui::accesskit::{Action, HasPopup, Orientation, Role};

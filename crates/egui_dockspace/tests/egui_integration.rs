@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
 
+use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
 use dockspace::backend::scene::{SplitterGapPresentation, SurfaceScene};
+use dockspace::backend::transition::WorkspaceVersion;
 use dockspace::drop_target::DropTargetId;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::interaction::{InteractionStatus, PreviewVisual};
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
 use dockspace::tab_strip::TabStripControlId;
-use dockspace::transition::WorkspaceVersion;
 use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
 use egui::accesskit::{
     Action, ActionRequest, NodeId as AccessKitNodeId, Orientation, Role, TreeUpdate,
@@ -4295,7 +4295,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
     assert!(
         outcomes.iter().any(|outcome| matches!(
             outcome,
-            dockspace::interaction::InteractionOutcome::ReleasePending { .. }
+            dockspace::backend::interaction::InteractionOutcome::ReleasePending { .. }
         )),
         "release must wait for its newly sampled preview: {outcomes:#?}"
     );

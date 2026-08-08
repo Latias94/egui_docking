@@ -4,6 +4,9 @@ use dockspace::backend::engine::{
     CoreHostPresentationFrame, EngineError, HostPresentationDisposition,
     HostPresentationUnavailableReason,
 };
+use dockspace::backend::interaction::{
+    InteractionCancelReason, InteractionEventKind, InteractionStatus,
+};
 use dockspace::backend::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
@@ -19,14 +22,13 @@ use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationObservationRejection,
     PresentationHostRetirementReason,
 };
+use dockspace::backend::transition::SurfaceContributionOutcome;
 use dockspace::command::{RootContent, WorkspaceCommand};
 use dockspace::geometry::LogicalPoint;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::interaction::{InteractionCancelReason, InteractionEventKind, InteractionStatus};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::transition::SurfaceContributionOutcome;
 use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
 
 use super::{
@@ -53,7 +55,7 @@ fn workspace() -> Workspace {
 }
 
 #[test]
-fn command_result_reports_rejection_without_exposing_the_reducer_transition() {
+fn command_result_separates_rejection_from_published_protocol_state() {
     let mut dockspace = Dockspace::builder("command-result", workspace())
         .build()
         .expect("facade builds");
@@ -70,7 +72,7 @@ fn command_result_reports_rejection_without_exposing_the_reducer_transition() {
         DockspaceCommandOutcome::Rejected(_)
     ));
     assert!(!result.mutation().workspace_changed());
-    assert!(!result.mutation().published_state_changed());
+    assert!(result.mutation().published_state_changed());
     assert_eq!(dockspace.workspace().item_multiset().len(), 1);
 }
 
@@ -571,7 +573,7 @@ fn already_retired_pointer_abort_compacts_the_exact_tombstone() {
         PresentationHostRetirementReason::RuntimeDestroyed,
     )
     .expect("retiring the host also retires its surface-local pointer lease");
-    let dockspace::transition::PresentationHostRetirementOutcome::Retired {
+    let dockspace::backend::transition::PresentationHostRetirementOutcome::Retired {
         affected_surfaces,
         transition,
         ..
@@ -1027,7 +1029,7 @@ fn accepted_terminal_watermarks_bound_the_automatic_emission_map() {
         observed_multi_emission_boundary |= responses.len() > 1;
         for outcome in responses
             .iter()
-            .flat_map(DockspaceResponse::transitions)
+            .map(DockspaceResponse::backend_transition)
             .flat_map(|transition| transition.presentation_observations())
         {
             match outcome {

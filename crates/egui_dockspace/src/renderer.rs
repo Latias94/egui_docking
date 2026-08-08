@@ -5,6 +5,10 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use dockspace::backend::engine::{TabListMenuNavigation, TabScrollAdjustment};
+use dockspace::backend::interaction::{
+    ActiveDragView, ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase,
+    InteractionPreview, InteractionState, InteractionStatus, PreviewToken, PreviewVisual,
+};
 use dockspace::backend::presentation_hit::{
     PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
 };
@@ -19,10 +23,6 @@ use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Workspace};
 use dockspace::ids::{FloatingPresentationId, RootId, SurfaceId};
 use dockspace::intent::CloseSceneTarget;
-use dockspace::interaction::{
-    ActiveDragView, ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase,
-    InteractionPreview, InteractionState, InteractionStatus, PreviewToken, PreviewVisual,
-};
 use dockspace::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use egui::accesskit::Action;
 use egui::{

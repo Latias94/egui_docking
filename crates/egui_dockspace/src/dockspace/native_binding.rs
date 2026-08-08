@@ -10,8 +10,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use dockspace::backend::ingress::BackendIngressLease;
+use dockspace::backend::transition::{EngineTransition, InputOutcome};
 use dockspace::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
-use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, WindowIncarnation, WindowToken};
 use egui::ViewportId;
 use thiserror::Error;

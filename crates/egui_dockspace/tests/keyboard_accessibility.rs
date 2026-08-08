@@ -1,11 +1,11 @@
+use dockspace::backend::interaction::InteractionOutcome;
 use dockspace::backend::pointer_journal::PointerEdgeKind;
+use dockspace::backend::transition::{
+    InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
+};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::PointerButton as DockPointerButton;
-use dockspace::interaction::InteractionOutcome;
-use dockspace::transition::{
-    InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
-};
 use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
 use egui::{Context, Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};

@@ -2,11 +2,11 @@
 
 use dockspace::ClosePlan;
 use dockspace::backend::ingress::BackendIngressCommitWatermark;
+use dockspace::backend::interaction::InteractionPreview;
 use dockspace::backend::platform::ObservedWorkArea;
 use dockspace::backend::platform::PlatformObservationLease;
 use dockspace::backend::scene::PresentationPlan;
 use dockspace::ids::SurfaceId;
-use dockspace::interaction::InteractionPreview;
 use dockspace::viewport::{ViewportBinding, WorkAreaGeneration};
 
 use super::Dockspace;

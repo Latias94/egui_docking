@@ -39,6 +39,7 @@ use dockspace::backend::ingress::{
     BackendIngressError, BackendIngressOrdinal, BackendIngressProviderReplacementTicket,
     BackendIngressRecorder,
 };
+use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::pointer_journal::{
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
 };
@@ -48,6 +49,7 @@ use dockspace::backend::presentation_observation::{
     SurfacePresentationOutputTicket,
 };
 use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
+use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::backend::viewport_focus::GlobalFocusedWindow;
 use dockspace::command::WorkspaceCommand;
 #[cfg(feature = "serde")]
@@ -57,10 +59,8 @@ use dockspace::document::{
 use dockspace::graph::Workspace;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
-use dockspace::interaction::InteractionStatus;
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
 use dockspace::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
@@ -171,7 +171,7 @@ impl Dockspace {
 
     /// Returns the current durable workspace version.
     #[must_use]
-    pub fn version(&self) -> dockspace::transition::WorkspaceVersion {
+    pub fn version(&self) -> dockspace::runtime::WorkspaceVersion {
         self.core_engine().version()
     }
 

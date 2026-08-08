@@ -1,7 +1,7 @@
 use egui::{Context, FullOutput, Id, RawInput, Ui};
 
-use dockspace::interaction::InteractionOutcome;
-use dockspace::transition::{EngineTransition, InputOutcome};
+use dockspace::backend::interaction::InteractionOutcome;
+use dockspace::backend::transition::{EngineTransition, InputOutcome};
 
 fn presentation_provider_state_id() -> Id {
     Id::new("egui_dockspace_test_presentation_provider")

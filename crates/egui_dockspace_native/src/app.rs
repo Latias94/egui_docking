@@ -11,7 +11,7 @@ use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, PresentationHostLease,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::transition::{EngineTransition, InputOutcome};
+use dockspace::backend::transition::{EngineTransition, InputOutcome};
 use dockspace::{CloseDecisionToken, CloseItemDecisionState, DeferredCloseToken, NativeCloseEdge};
 use eframe::{
     HostedNativeStagingPresentation, HostedViewportCommitDirective, HostedViewportCycle,

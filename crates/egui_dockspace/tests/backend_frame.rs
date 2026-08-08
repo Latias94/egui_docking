@@ -5,6 +5,9 @@ use dockspace::backend::engine::{
     HostPresentationUnavailableReason,
 };
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::interaction::{
+    InteractionDelivery, InteractionEventKind, InteractionOutcome,
+};
 use dockspace::backend::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
@@ -35,7 +38,6 @@ use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalRect, ScaleFactor
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{InteractionDelivery, InteractionEventKind, InteractionOutcome};
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{
@@ -2091,7 +2093,10 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
             .any(|input| {
                 matches!(
                     input.outcome(),
-                    dockspace::transition::InputOutcome::PolicyReplaced { changed: true, .. }
+                    dockspace::backend::transition::InputOutcome::PolicyReplaced {
+                        changed: true,
+                        ..
+                    }
                 )
             })
     );

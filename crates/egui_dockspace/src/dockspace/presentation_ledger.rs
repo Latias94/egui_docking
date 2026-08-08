@@ -12,9 +12,9 @@ use dockspace::backend::presentation_observation::{
     HostPresentationStreamId, HostPresentationStreamObservation,
 };
 use dockspace::backend::retention::PresentationRetentionManifest;
+use dockspace::backend::transition::EngineTransition;
 use dockspace::ids::SurfaceId;
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
-use dockspace::transition::EngineTransition;
 use egui::{Context, ViewportId};
 
 use crate::error::DockspaceError;

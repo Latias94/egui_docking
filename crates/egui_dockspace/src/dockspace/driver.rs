@@ -8,19 +8,19 @@ use dockspace::backend::engine::{
     SurfaceContributionToken,
 };
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::interaction::EscapeDelivery;
 use dockspace::backend::presentation_observation::{
     NativeStagingPresentation, SurfacePresentationOutputTicket,
 };
 use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp};
+use dockspace::backend::transition::InputOutcome;
 use dockspace::backend::viewport_focus::PaneFocusIntent;
 use dockspace::backend::viewport_focus::PaneFocusObservation;
 use dockspace::command::WorkspaceCommand;
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::ids::{RootId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
-use dockspace::interaction::EscapeDelivery;
 use dockspace::scene_manifest::{MeasurementUnavailableReason, SurfaceMeasurements};
-use dockspace::transition::InputOutcome;
 use egui::{Context, FullOutput, RawInput, Ui, ViewportId};
 
 use super::engine_owner::{EguiPreparedHostFrameCommit, prepared_host_transition};
@@ -185,7 +185,7 @@ impl EguiOuterFrameCommit {
 impl PreparedEguiOuterFrameCommit {
     /// Returns the exact core transition awaiting publication.
     #[must_use]
-    pub fn transition(&self) -> &dockspace::transition::EngineTransition {
+    pub fn transition(&self) -> &dockspace::backend::transition::EngineTransition {
         prepared_host_transition(&self.core)
     }
 

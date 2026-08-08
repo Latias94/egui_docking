@@ -1,8 +1,8 @@
 use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
+use dockspace::backend::transition::SurfaceContributionOutcome;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::transition::SurfaceContributionOutcome;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{
     EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult,

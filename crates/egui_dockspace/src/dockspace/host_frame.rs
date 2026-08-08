@@ -8,7 +8,7 @@ use dockspace::backend::presentation_observation::{
 };
 use dockspace::backend::scene::SurfaceScene;
 use dockspace::ids::{SourceSequence, SurfaceId};
-use dockspace::transition::WorkspaceVersion;
+use dockspace::runtime::WorkspaceVersion;
 #[cfg(egui_backend_event_envelope)]
 use egui::UserData;
 use egui::{Context, FullOutput, ViewportId};

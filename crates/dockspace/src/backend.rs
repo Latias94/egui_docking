@@ -24,6 +24,11 @@ pub mod effect {
     pub use crate::effect::*;
 }
 
+/// Committed reducer events and their exact causes.
+pub mod event {
+    pub use crate::event::*;
+}
+
 /// Reducer and host-frame engine protocol.
 pub mod engine {
     pub use crate::engine::*;
@@ -32,6 +37,16 @@ pub mod engine {
 /// Native lifecycle frame state machines.
 pub mod frame {
     pub use crate::frame::*;
+}
+
+/// Internal geometric hit regions.
+pub mod hit_region {
+    pub use crate::hit_region::*;
+}
+
+/// Core-owned interaction state machines and outcomes.
+pub mod interaction {
+    pub use crate::interaction::*;
 }
 
 /// Internal layout solver records.
@@ -92,6 +107,11 @@ pub mod semantic_manifest {
 /// Native surface recovery protocol.
 pub mod surface_recovery {
     pub use crate::surface_recovery::*;
+}
+
+/// Complete reducer transition diagnostics.
+pub mod transition {
+    pub use crate::transition::*;
 }
 
 /// Cross-viewport focus state machine.

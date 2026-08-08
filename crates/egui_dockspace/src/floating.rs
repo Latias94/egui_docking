@@ -1,5 +1,6 @@
 //! Explicit contained-floating chrome without `Area` or `Window` state.
 
+use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::presentation_hit::PresentationHitRegionKind;
 use dockspace::backend::scene::{
     ContainedRecord, ContainedResizeDirection, PresentationPlan, SurfaceSceneStamp,
@@ -8,7 +9,6 @@ use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::graph::Workspace;
 use dockspace::ids::{FloatingPresentationId, RootId, SurfaceId};
 use dockspace::intent::CloseSceneTarget;
-use dockspace::interaction::InteractionStatus;
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{
     CursorIcon, EventFilter, FocusDirection, Id, Key, Rect, Sense, Stroke, StrokeKind, TextStyle,

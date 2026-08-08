@@ -1,3 +1,4 @@
+use dockspace::backend::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
 use dockspace::command::{CommandOutcome, MovePayload};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
@@ -5,7 +6,6 @@ use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::intent::{
     ContainedHorizontalResizeEdge, ContainedResizeEdges, ContainedTransformKind,
 };
-use dockspace::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
 use egui_dockspace::{Dockspace, PaneView};
@@ -124,7 +124,7 @@ fn run_frame(
     let mut raised_across_passes = None;
     let mut gesture_events = GestureEvents::default();
     for event in response.transition().events() {
-        if let dockspace::event::WorkspaceEventKind::CommandCommitted(
+        if let dockspace::backend::event::WorkspaceEventKind::CommandCommitted(
             CommandOutcome::ContainedRaised {
                 floating,
                 from,

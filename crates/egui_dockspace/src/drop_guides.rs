@@ -229,25 +229,25 @@ mod tests {
     use dockspace::backend::engine::{
         DockEngine, HostFrameView, HostPresentationDisposition, HostPresentationUnavailableReason,
     };
+    use dockspace::backend::interaction::{DragGeneration, DragSessionId};
     use dockspace::backend::presentation_observation::{
         HostPresentationCaptureGeneration, HostPresentationObservation,
         HostPresentationObservationEntry, HostPresentationProgress,
         HostPresentationStreamObservation,
     };
     use dockspace::backend::scene::{PresentationPlan, SurfaceScene};
+    use dockspace::backend::transition::SurfaceContributionOutcome;
     use dockspace::command::MovePayload;
     use dockspace::drop_guide::DropGuideScope;
     use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
     use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::ids::{ItemId, RootId};
     use dockspace::intent::Authority;
-    use dockspace::interaction::{DragGeneration, DragSessionId};
     use dockspace::policy::DockPolicy;
     use dockspace::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,
     };
-    use dockspace::transition::SurfaceContributionOutcome;
     use egui::{Painter, Pos2, RawInput, Shape, pos2};
 
     use super::*;
