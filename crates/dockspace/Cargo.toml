@@ -1,6 +1,7 @@
 [package]
 name = "dockspace"
 description = "Renderer-neutral docking workspace, layout, interaction, and viewport state engine"
+autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

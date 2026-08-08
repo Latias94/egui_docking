@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::drop_target::DropTargetId;
 use dockspace::effect::PlatformEffect;

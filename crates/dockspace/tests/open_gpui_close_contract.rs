@@ -16,7 +16,7 @@
 //! acknowledged core scene, freezing the complete decision roster, and making
 //! the final topology mutation an all-or-none reducer transaction.
 
-mod support;
+use super::support;
 
 use support::TestPresentationHost;
 

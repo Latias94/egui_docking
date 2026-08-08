@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::CloseDecision;
 use dockspace::command::{

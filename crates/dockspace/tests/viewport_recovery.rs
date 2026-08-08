@@ -1,6 +1,6 @@
 #[path = "viewport_recovery/cleanup_ownership.rs"]
 mod cleanup_ownership;
-mod support;
+use super::support;
 
 use support::{
     TestPresentationHost, complete_host_frame_with_current_outputs,

@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::engine::{CoreHostFrame, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};

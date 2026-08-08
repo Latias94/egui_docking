@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::command::Edge;
 use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};

@@ -15,7 +15,7 @@
 //! pointer-journal contract, so these tests stay focused on Open GPUI's topology
 //! and state-preservation guarantees.
 
-mod support;
+use super::support;
 
 use dockspace::command::{
     CommandOutcome, DockFraction, DockTarget, Edge, MovePayload, WorkspaceCommand,

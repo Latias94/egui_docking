@@ -1,6 +1,6 @@
 //! Presentation authority contracts for the core-owned host observation protocol.
 
-mod support;
+use super::support;
 
 use std::collections::BTreeSet;
 

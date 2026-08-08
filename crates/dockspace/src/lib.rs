@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate self as dockspace;
+
 pub mod backend_ingress;
 pub mod canonical;
 mod close_plan;
@@ -60,6 +63,9 @@ pub mod viewport_focus;
 pub mod viewport_persistence;
 pub mod viewport_registry;
 mod workspace;
+
+#[cfg(test)]
+mod behavior_tests;
 
 pub use close_plan::{
     CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCancellationState,

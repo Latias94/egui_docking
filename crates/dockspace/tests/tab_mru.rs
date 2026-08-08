@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::command::{
     ContentCloseTarget, DockTarget, MovePayload, RootPresentationTarget, WorkspaceCommand,

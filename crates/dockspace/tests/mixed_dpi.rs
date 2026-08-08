@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::geometry::{LogicalRect, PhysicalRect, ScaleFactor};

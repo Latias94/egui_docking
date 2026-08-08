@@ -1,6 +1,6 @@
 #![cfg(feature = "serde")]
 
-mod support;
+use super::support;
 
 use std::cell::RefCell;
 

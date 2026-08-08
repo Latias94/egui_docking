@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::command::WorkspaceCommand;
 use dockspace::engine::{DockEngine, EngineInput};

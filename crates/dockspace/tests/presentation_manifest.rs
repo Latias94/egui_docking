@@ -1,4 +1,4 @@
-mod support;
+use super::support;
 
 use dockspace::PresentationCompilationError;
 use dockspace::command::{DockTarget, WorkspaceCommand};

@@ -5,7 +5,7 @@
 //! that exact edge with a complete [`SurfaceCloseRequest`], and a later typed
 //! close observation proves the platform outcome.
 
-mod support;
+use super::support;
 
 use support::TestPresentationHost;
 

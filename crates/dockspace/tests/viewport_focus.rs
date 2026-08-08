@@ -2,7 +2,7 @@
 //!
 //! This target is activated when `viewport_focus` becomes part of the crate facade.
 
-mod support;
+use super::support;
 
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
