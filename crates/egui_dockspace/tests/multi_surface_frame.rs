@@ -229,7 +229,7 @@ fn bootstrap_paints_the_application_pane_in_a_disabled_scope() {
 }
 
 #[test]
-fn crates_io_facade_never_synthesizes_presentation_authority() {
+fn crates_io_facade_uses_local_responses_without_synthesizing_presentation_authority() {
     // This integration target links `egui_dockspace` without `cfg(test)`, so no
     // test-only terminal-presentation provider can authorize these frames.
     let context = one_pass_context();
@@ -246,16 +246,17 @@ fn crates_io_facade_never_synthesizes_presentation_authority() {
             response.surface_commit_status(),
             DockspaceSurfaceCommitStatus::Ready | DockspaceSurfaceCommitStatus::Retained
         ));
-        assert!(!response.interactions_current());
         assert_eq!(panes.ui_calls, frame + 1);
         if frame == 0 {
             assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Bootstrap);
+            assert!(!response.interactions_current());
             assert_eq!(panes.disabled_ui_calls, 1);
         } else {
             assert_eq!(response.surface_status(), DockspaceSurfaceStatus::Ready);
+            assert!(response.interactions_current());
             assert_eq!(
                 panes.disabled_ui_calls, 1,
-                "a current paint-only pane must remain enabled without docking authority"
+                "a current pane remains enabled while local Response actions are authoritative"
             );
         }
     }
@@ -968,11 +969,11 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
         response.surface_commit_status(),
         DockspaceSurfaceCommitStatus::Ready | DockspaceSurfaceCommitStatus::Retained
     ));
-    assert!(!response.interactions_current());
+    assert!(response.interactions_current());
 }
 
 #[test]
-fn explicit_host_frames_remain_fail_closed_without_automatic_presentation_facts() {
+fn explicit_single_surface_host_frames_use_local_responses_without_presentation_facts() {
     let context = one_pass_context();
     let mut dockspace = Dockspace::builder("retained-surface-slot", single_workspace())
         .build()
@@ -1009,7 +1010,7 @@ fn explicit_host_frames_remain_fail_closed_without_automatic_presentation_facts(
         DockspaceSurfaceCommitStatus::Retained,
     );
     assert!(
-        !second
+        second
             .surface(ROOT_SURFACE)
             .and_then(|surface| surface.paint())
             .expect("second surface paints")
@@ -1031,7 +1032,7 @@ fn explicit_host_frames_remain_fail_closed_without_automatic_presentation_facts(
         DockspaceSurfaceCommitStatus::Retained,
     );
     assert!(
-        !third
+        third
             .surface(ROOT_SURFACE)
             .and_then(|surface| surface.paint())
             .expect("third surface paints")

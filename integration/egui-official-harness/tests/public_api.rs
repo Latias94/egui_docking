@@ -46,7 +46,7 @@ fn raw_input() -> RawInput {
 }
 
 #[test]
-fn official_egui_consumes_the_public_paint_only_facade() {
+fn official_egui_consumes_the_public_single_surface_facade() {
     let _native_options = eframe::NativeOptions::default();
     let context = Context::default();
     context.enable_accesskit();
@@ -73,13 +73,14 @@ fn official_egui_consumes_the_public_paint_only_facade() {
     let mut panes = SmokePanes::default();
     let mut last_repaint_delay = Duration::ZERO;
     let mut last_tree = None;
+    let mut saw_interactive_pass = false;
 
     for _ in 0..4 {
         let mut output = context.run_ui(raw_input(), |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
-            assert!(!response.interactions_current());
+            saw_interactive_pass |= response.interactions_current();
             assert!(response.missing_panes().is_empty());
             assert!(response.capture_errors().is_empty());
         });
@@ -96,28 +97,25 @@ fn official_egui_consumes_the_public_paint_only_facade() {
     assert_ne!(
         last_repaint_delay,
         Duration::ZERO,
-        "paint-only mode must not spin while authority is unavailable",
+        "a stable local-response frame must not spin",
+    );
+    assert!(
+        saw_interactive_pass,
+        "a Ready official-egui frame must accept local Response actions",
     );
 
     let tree = last_tree.expect("AccessKit output is enabled");
-    let mut disabled_chrome = 0;
+    let mut actionable_tabs = 0;
     for (_, node) in &tree.nodes {
-        if node.is_disabled() && matches!(node.role(), Role::Tab | Role::TabList | Role::Button) {
-            disabled_chrome += 1;
-            for action in [
-                Action::Focus,
-                Action::Click,
-                Action::Increment,
-                Action::Decrement,
-                Action::ScrollIntoView,
-            ] {
-                assert!(!node.supports_action(action));
-            }
+        if node.role() == Role::Tab && !node.is_disabled() {
+            actionable_tabs += 1;
+            assert!(node.supports_action(Action::Focus));
+            assert!(node.supports_action(Action::Click));
         }
     }
     assert!(
-        disabled_chrome > 0,
-        "the smoke must cover disabled docking chrome",
+        actionable_tabs > 0,
+        "the smoke must expose actionable docking tabs",
     );
 }
 

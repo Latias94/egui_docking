@@ -59,7 +59,11 @@ pub(crate) enum ContainedResizeEdge {
 /// submits them in generation order at the current callback boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RenderAction {
-    Select(ItemSource),
+    Select {
+        scene: SurfaceSceneStamp,
+        tab: TabSceneId,
+        source: ItemSource,
+    },
     ActivateTabStripControl {
         surface: SurfaceId,
         control: TabStripControlId,
@@ -107,6 +111,26 @@ pub(crate) enum RenderAction {
         edge: ContainedResizeEdge,
         delta: f64,
     },
+}
+
+/// How one egui paint pass records semantic docking actions.
+///
+/// Local responses already identify the winning widget inside the current
+/// callback, so they preserve renderer encounter order and reduce at frame end.
+/// Retained/native paths still correlate actions with their ordered backend
+/// event stream until that transport is replaced by the narrow host contract.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RenderActionCapture {
+    #[default]
+    Disabled,
+    LocalResponseOrder,
+    CorrelatedRawEvents,
+}
+
+impl RenderActionCapture {
+    const fn enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
 }
 
 /// Exact position of one renderer-observed action in the host event batch.
@@ -173,7 +197,7 @@ pub(crate) struct RenderOutput {
     pub(crate) actions: Vec<PositionedRenderAction>,
     pub(crate) capture_errors: Vec<CommandError>,
     pub(crate) receivers: Option<PaintReceiverRegistrations>,
-    capture_semantic_actions: bool,
+    action_capture: RenderActionCapture,
     primary_button_event_count: usize,
     #[cfg(not(egui_backend_event_envelope))]
     raw_events: Vec<Event>,
@@ -189,17 +213,17 @@ impl RenderOutput {
     fn with_raw_events(raw_events: Vec<Event>) -> Self {
         Self {
             raw_events,
-            capture_semantic_actions: true,
+            action_capture: RenderActionCapture::CorrelatedRawEvents,
             ..Self::default()
         }
     }
 
     #[cfg(all(test, egui_backend_event_envelope))]
     fn from_ui(ui: &Ui) -> Self {
-        Self::from_ui_with_semantic_action_capture(ui, true)
+        Self::from_ui_with_action_capture(ui, RenderActionCapture::CorrelatedRawEvents)
     }
 
-    fn from_ui_with_semantic_action_capture(ui: &Ui, capture_semantic_actions: bool) -> Self {
+    fn from_ui_with_action_capture(ui: &Ui, action_capture: RenderActionCapture) -> Self {
         let primary_button_event_count = ui.input(|input| {
             input
                 .events
@@ -219,7 +243,7 @@ impl RenderOutput {
         {
             let _ = ui;
             Self {
-                capture_semantic_actions,
+                action_capture,
                 primary_button_event_count,
                 ..Self::default()
             }
@@ -227,7 +251,7 @@ impl RenderOutput {
         #[cfg(not(egui_backend_event_envelope))]
         {
             Self {
-                capture_semantic_actions,
+                action_capture,
                 primary_button_event_count,
                 raw_events: ui.input(|input| input.events.clone()),
                 ..Self::default()
@@ -289,6 +313,10 @@ impl RenderOutput {
         keyboard_focused: bool,
         activation: SemanticActivation,
     ) {
+        if self.action_capture == RenderActionCapture::LocalResponseOrder {
+            self.push_post_batch_continuation(action);
+            return;
+        }
         match activation {
             SemanticActivation::Pointer(position) => {
                 if self.primary_button_event_count <= 1 {
@@ -327,7 +355,7 @@ impl RenderOutput {
     }
 
     pub(crate) fn push_post_batch_continuation(&mut self, action: RenderAction) {
-        if !self.capture_semantic_actions {
+        if !self.action_capture.enabled() {
             return;
         }
         self.actions.push(PositionedRenderAction::new(
@@ -347,8 +375,13 @@ impl RenderOutput {
         action: RenderAction,
         matches_event: impl Fn(&Event) -> bool,
     ) {
-        if !self.capture_semantic_actions {
-            return;
+        match self.action_capture {
+            RenderActionCapture::Disabled => return,
+            RenderActionCapture::LocalResponseOrder => {
+                self.push_post_batch_continuation(action);
+                return;
+            }
+            RenderActionCapture::CorrelatedRawEvents => {}
         }
         let mut matching = self
             .raw_events
@@ -378,8 +411,13 @@ impl RenderOutput {
         action: RenderAction,
         matches_event: impl Fn(&Event) -> bool,
     ) {
-        if !self.capture_semantic_actions {
-            return;
+        match self.action_capture {
+            RenderActionCapture::Disabled => return,
+            RenderActionCapture::LocalResponseOrder => {
+                self.push_post_batch_continuation(action);
+                return;
+            }
+            RenderActionCapture::CorrelatedRawEvents => {}
         }
         // egui reports one frame-aggregated widget outcome. Claim every exact contributing
         // derivative and place that aggregate at the final derivative instead of guessing one
@@ -582,7 +620,7 @@ pub(crate) fn paint_surface(
     pane_content_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
     semantic_scene: Option<SurfaceSceneStamp>,
-    capture_framework_actions: bool,
+    action_capture: RenderActionCapture,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     is_gesture_source_surface: bool,
 ) -> RenderOutput {
@@ -591,10 +629,10 @@ pub(crate) fn paint_surface(
             ui.ctx().viewport_id(),
             ui.ctx().cumulative_pass_nr(),
         )),
-        ..RenderOutput::from_ui_with_semantic_action_capture(ui, capture_framework_actions)
+        ..RenderOutput::from_ui_with_action_capture(ui, action_capture)
     };
     let interactions_current = plan.is_some() && interaction_scene.is_some();
-    let escape_pressed = capture_framework_actions
+    let escape_pressed = action_capture.enabled()
         && semantic_scene.is_some()
         && consume_gesture_escape(ui, interaction.status(), is_gesture_source_surface);
     let accept_events = interactions_current && !escape_pressed;
@@ -1263,7 +1301,8 @@ mod tests {
             ..RawInput::default()
         };
         let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
-            let mut output = RenderOutput::from_ui_with_semantic_action_capture(ui, false);
+            let mut output =
+                RenderOutput::from_ui_with_action_capture(ui, RenderActionCapture::Disabled);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert!(output.actions.is_empty());
             assert_eq!(output.semantic_causality_error(), None);
@@ -1282,7 +1321,8 @@ mod tests {
         };
         let mut unclaimed = None;
         let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
-            let mut output = RenderOutput::from_ui_with_semantic_action_capture(ui, false);
+            let mut output =
+                RenderOutput::from_ui_with_action_capture(ui, RenderActionCapture::Disabled);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert!(output.actions.is_empty());
             assert_eq!(output.semantic_causality_error(), None);
@@ -1545,7 +1585,7 @@ mod tests {
                     true,
                     None,
                     None,
-                    true,
+                    RenderActionCapture::CorrelatedRawEvents,
                     None,
                     false,
                 );

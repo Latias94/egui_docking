@@ -95,15 +95,18 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
         let surface = scene.surface();
-        let painted = self
-            .presentation_authority
-            .scene
-            .ready_surface(surface)
-            .filter(|painted| {
-                painted.stamp() == scene
-                    && scene.requirement().workspace_epoch() == self.version.epoch()
-            })
-            .ok_or(InteractionRejection::StaleScene);
+        let painted = match activation {
+            CloseActivation::LocalResponse => self.local_response_candidate(scene),
+            CloseActivation::Pointer { .. } | CloseActivation::Semantic => self
+                .presentation_authority
+                .scene
+                .ready_surface(surface)
+                .filter(|painted| {
+                    painted.stamp() == scene
+                        && scene.requirement().workspace_epoch() == self.version.epoch()
+                })
+                .ok_or(InteractionRejection::StaleScene),
+        };
         let painted = match painted {
             Ok(painted) => painted,
             Err(error) => return Ok(InteractionOutcome::Rejected(error)),
@@ -188,7 +191,7 @@ impl DockEngine {
                     ));
                 }
             }
-            CloseActivation::Semantic => {
+            CloseActivation::Semantic | CloseActivation::LocalResponse => {
                 if !plan.region_is_operable(close_bounds, layer) {
                     return Ok(InteractionOutcome::Rejected(
                         InteractionRejection::CloseActivationOccluded { target },

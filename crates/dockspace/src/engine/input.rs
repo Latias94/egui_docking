@@ -389,6 +389,24 @@ pub enum EngineInput {
         /// Stable close-control identity exposed by that scene.
         target: CloseSceneTarget,
     },
+    /// Request a close from one exact current-frame framework response.
+    RequestLocalSceneClose {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable close-control identity exposed by that candidate.
+        target: CloseSceneTarget,
+    },
+    /// Select one exact tab activated by a current-frame framework response.
+    SelectLocalSceneTab {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable tab identity exposed by that candidate.
+        tab: crate::scene::TabSceneId,
+    },
     /// Deliver one keyboard or accessibility action to an exact presented receiver.
     ActivateSemanticReceiver {
         /// Workspace version current when the host captured the semantic event.
@@ -555,6 +573,8 @@ impl EngineInput {
             | Self::DockItem { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
+            | Self::RequestLocalSceneClose { .. }
+            | Self::SelectLocalSceneTab { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::ActivateTabStripControl { .. }

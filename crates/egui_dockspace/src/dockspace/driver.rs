@@ -45,7 +45,9 @@ use crate::render::{
     EguiSurfacePublicationMode, PreparedEguiFrameAcceptance, SemanticInputPosition,
     StagedSemanticInput,
 };
-use crate::renderer::{ContainedResizeEdge, RenderAction, RenderActionPosition, paint_surface};
+use crate::renderer::{
+    ContainedResizeEdge, RenderAction, RenderActionCapture, RenderActionPosition, paint_surface,
+};
 use crate::response::{
     DockspaceCapability, DockspaceSurfaceStatus, DockspaceUnavailableReason, HostFrameResponse,
     SurfacePaintResponse,
@@ -603,11 +605,24 @@ impl DockspaceHostFrame<'_> {
                 },
             );
         let pane_content_current = !projection_changed && scene_ready && chrome_matches_scene;
-        let pointer_receivers_current =
-            !projection_changed && scene_ready && chrome_matches_scene && painted_authority_current;
-        let interactions_current = pointer_receivers_current;
         let framework_actions_enabled =
             self.state.input_authority() == EguiInputAuthority::FrameworkResponses;
+        let local_response_current = !projection_changed
+            && scene_ready
+            && chrome_matches_scene
+            && framework_actions_enabled
+            && self.state.mode() == EguiHostFrameMode::SingleSurface
+            && !presentation_authority_available;
+        let pointer_receivers_current =
+            !projection_changed && scene_ready && chrome_matches_scene && painted_authority_current;
+        let interactions_current = local_response_current || pointer_receivers_current;
+        let action_capture = if !framework_actions_enabled {
+            RenderActionCapture::Disabled
+        } else if local_response_current {
+            RenderActionCapture::LocalResponseOrder
+        } else {
+            RenderActionCapture::CorrelatedRawEvents
+        };
         let interaction_scene = interactions_current.then(|| {
             paint_projection
                 .as_ref()
@@ -647,7 +662,7 @@ impl DockspaceHostFrame<'_> {
                 pane_content_current,
                 interaction_scene,
                 semantic_scene,
-                framework_actions_enabled,
+                action_capture,
                 authoritative_hit_manifest,
                 is_gesture_source_surface,
             )
@@ -706,7 +721,7 @@ impl DockspaceHostFrame<'_> {
         }
         for positioned in output.actions {
             let (action, position) = positioned.into_parts();
-            let input = self.semantic_render_action_input(&action)?;
+            let input = self.semantic_render_action_input(&action, local_response_current)?;
             semantic_inputs.push(match position {
                 RenderActionPosition::RawEvent(raw_event_index) => {
                     StagedSemanticInput::at_raw_event(raw_event_index, input)
@@ -1556,11 +1571,19 @@ impl DockspaceHostFrame<'_> {
     fn semantic_render_action_input(
         &self,
         action: &RenderAction,
+        local_response: bool,
     ) -> Result<EngineInput, DockspaceError> {
         let view = self.view();
         let expected = self.state.sealed_workspace();
         let input = match action {
-            RenderAction::Select(source) => EngineInput::WorkspaceCommand {
+            RenderAction::Select { scene, tab, source } if local_response => {
+                EngineInput::SelectLocalSceneTab {
+                    expected,
+                    scene: *scene,
+                    tab: *tab,
+                }
+            }
+            RenderAction::Select { source, .. } => EngineInput::WorkspaceCommand {
                 expected,
                 command: WorkspaceCommand::Select {
                     source: source.clone(),
@@ -1617,6 +1640,13 @@ impl DockspaceHostFrame<'_> {
                     .prepare_tab_list_menu_dismiss(*surface, *session)
                     .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::DismissTabListMenu { prepared }
+            }
+            RenderAction::RequestSemanticClose { scene, target } if local_response => {
+                EngineInput::RequestLocalSceneClose {
+                    expected,
+                    scene: *scene,
+                    target: *target,
+                }
             }
             RenderAction::RequestSemanticClose { scene, target } => {
                 EngineInput::RequestSceneClose {

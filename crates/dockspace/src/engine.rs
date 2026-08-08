@@ -4,6 +4,7 @@ mod close_workflow;
 mod contained_geometry;
 mod host_frame;
 mod input;
+mod local_response;
 mod native_admission;
 mod pointer_contained;
 mod pointer_proof;

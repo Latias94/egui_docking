@@ -962,9 +962,9 @@ impl Dockspace {
     /// at most one logical surface because ordinary callbacks cannot establish a global
     /// cross-viewport boundary. Explicit host frames deliberately submit no
     /// final-presentation assertion because this API has no exact egui pass
-    /// completion fact. Consequently the public facade records paint-only
-    /// contributions, not core presentation emissions that could never receive
-    /// a terminal settlement.
+    /// completion fact. Local [`egui::Response`] actions remain available once
+    /// the current Ready scene is painted; only retained/native receiver lookup
+    /// requires a separately accepted renderer snapshot.
     #[cfg(any(feature = "backend", test))]
     pub fn begin_host_frame(
         &mut self,
@@ -1253,10 +1253,11 @@ impl Dockspace {
 
     /// Paints and commits the sole surface supported by the crates.io egui facade.
     ///
-    /// This convenience path records actual output emissions. Upstream egui
-    /// does not expose a typed final-pass acknowledgement, so the facade reports
-    /// that fact as unavailable and never infers interaction authority from a
-    /// scene stamp, callback order, or a guessed final pass.
+    /// This convenience path uses current-pass [`egui::Response`] facts for
+    /// local interaction and revalidates every action in the core at frame end.
+    /// Upstream egui does not expose a typed renderer-presentation
+    /// acknowledgement, so this API does not mint retained or cross-window
+    /// receiver authority from callback order or a guessed final pass.
     pub fn show_single_surface(
         &mut self,
         surface: SurfaceId,

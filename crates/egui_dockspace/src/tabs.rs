@@ -1160,13 +1160,18 @@ fn paint_tab(
     });
     if let Some(selection_cause) = selection_cause.flatten()
         && semantic_selected != Some(tab_scene.item)
+        && let Some(scene) = interaction_scene
         && let Some(source) = output.capture(workspace.capture_item_source(
             tab_scene.root,
             tab_scene.tabs,
             tab_scene.item,
         ))
     {
-        let action = RenderAction::Select(source);
+        let action = RenderAction::Select {
+            scene,
+            tab: tab_scene,
+            source,
+        };
         match selection_cause {
             TabSelectionCause::WidgetActivation(activation) => {
                 output.push_widget_activation(
@@ -1193,6 +1198,7 @@ fn paint_tab(
             tab_strip_states,
             tab.ordinal(),
             workspace,
+            interaction_scene.expect("current tab interaction retains its Ready scene"),
             output,
         );
     }
@@ -1350,6 +1356,7 @@ fn keyboard_select(
     tab_strip_states: &mut TabStripStateMap,
     current: usize,
     workspace: &Workspace,
+    scene: SurfaceSceneStamp,
     output: &mut RenderOutput,
 ) {
     let members = bar.members();
@@ -1393,7 +1400,15 @@ fn keyboard_select(
         next_scene.tabs,
         next_scene.item,
     )) {
-        output.push_key(ui, RenderAction::Select(source), key);
+        output.push_key(
+            ui,
+            RenderAction::Select {
+                scene,
+                tab: next_scene,
+                source,
+            },
+            key,
+        );
         let target_requires_reprojection =
             next_tab.visibility() == TabStripMemberVisibility::Hidden;
         let key = TabStripKey::new(surface, *bar.id());

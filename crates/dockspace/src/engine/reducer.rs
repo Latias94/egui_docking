@@ -1346,6 +1346,31 @@ impl DockEngine {
                 *target,
                 tick_start.policy,
             ),
+            EngineInput::RequestLocalSceneClose {
+                expected,
+                scene,
+                target,
+            } => self.reduce_local_scene_close_input(
+                input.sequence,
+                *expected,
+                *scene,
+                *target,
+                tick_start.policy,
+            ),
+            EngineInput::SelectLocalSceneTab {
+                expected,
+                scene,
+                tab,
+            } => self.reduce_local_scene_tab_select(
+                input.sequence,
+                *expected,
+                *application_base,
+                *scene,
+                *tab,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::ActivateSemanticReceiver { expected, event } => self
                 .reduce_semantic_receiver_input(
                     input.sequence,

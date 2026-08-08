@@ -38,11 +38,14 @@ through the native event loop. Hardware-input coverage, mixed-DPI monitor
 transfer, close/focus failure matrices, bounded core ledgers, and an
 upstream-reviewable fork patch series are still release blockers.
 
-The ordinary crates.io `show_single_surface` convenience path can paint the
-current plan, but upstream egui/eframe does not expose the post-`FullOutput`
-presentation fact needed to authorize interaction. That callback-only path
-therefore reports presentation authority as unavailable and remains paint-only
-in non-test builds.
+The ordinary crates.io `show_single_surface` convenience path now treats the
+current egui `Response` as local receiver evidence. A Ready single-surface frame
+can perform revision-bound local tab actions without inventing a
+post-`FullOutput` renderer fact. Output publication remains paint-only in the
+renderer-settlement sense; retained/native receiver lookup still requires a
+separately accepted snapshot. Pointer-driven tab docking, splitter drag, and
+contained move/resize are being migrated to the same local-action boundary and
+remain release blockers until their downstream interaction cases pass.
 
 The base adapter keeps the application-facing API at the crate root. Custom
 hosts opt into the low-level `backend` feature and use the
