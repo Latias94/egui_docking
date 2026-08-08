@@ -281,7 +281,7 @@ impl EguiNativePresentationSettlementError {
 pub struct EguiOuterSurfaceOutput {
     surface: SurfaceId,
     native: Option<NativeCoreRoute>,
-    full_output: FullOutput,
+    full_output: Option<FullOutput>,
     presentation: Option<PendingEguiPresentation>,
 }
 
@@ -306,7 +306,7 @@ impl EguiOuterSurfaceOutput {
         Self {
             surface,
             native,
-            full_output,
+            full_output: Some(full_output),
             presentation,
         }
     }
@@ -342,8 +342,10 @@ impl EguiOuterSurfaceOutput {
 
     /// Borrows the exact egui output before renderer submission.
     #[must_use]
-    pub const fn full_output(&self) -> &FullOutput {
-        &self.full_output
+    pub fn full_output(&self) -> &FullOutput {
+        self.full_output
+            .as_ref()
+            .expect("a live outer output retains its egui FullOutput")
     }
 
     /// Returns whether this output must report a terminal renderer result.
@@ -358,13 +360,14 @@ impl EguiOuterSurfaceOutput {
     /// affine and must be consumed with [`EguiPresentationSettlement::settle`]
     /// or dropped, which terminally records `Dropped` when required.
     #[must_use = "the returned settlement capability must be handled"]
-    pub fn into_parts(self) -> (SurfaceId, FullOutput, EguiPresentationSettlement) {
-        let Self {
-            surface,
-            native,
-            full_output,
-            presentation,
-        } = self;
+    pub fn into_parts(mut self) -> (SurfaceId, FullOutput, EguiPresentationSettlement) {
+        let surface = self.surface;
+        let native = self.native;
+        let full_output = self
+            .full_output
+            .take()
+            .expect("an outer output can be split exactly once");
+        let presentation = self.presentation.take();
         (
             surface,
             full_output,
@@ -377,5 +380,13 @@ impl EguiOuterSurfaceOutput {
         let (surface, full_output, presentation) = self.into_parts();
         let result = settle(surface, full_output);
         presentation.settle(result);
+    }
+}
+
+impl Drop for EguiOuterSurfaceOutput {
+    fn drop(&mut self) {
+        if let Some(full_output) = self.full_output.take() {
+            full_output.drop_without_applying_deltas();
+        }
     }
 }

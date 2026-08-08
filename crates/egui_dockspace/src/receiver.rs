@@ -514,7 +514,7 @@ mod tests {
     fn registered_response() -> Response {
         let context = Context::default();
         let mut response = None;
-        let _ = context.run_ui(RawInput::default(), |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |ui| {
             response = Some(ui.allocate_response(vec2(80.0, 24.0), Sense::click_and_drag()));
         });
         response.expect("fixture response is painted")

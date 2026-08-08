@@ -185,6 +185,14 @@ pub(super) struct HostFrameState {
     finished: bool,
 }
 
+impl Drop for HostFrameState {
+    fn drop(&mut self) {
+        for (_, output) in std::mem::take(&mut self.confirmed_full_outputs) {
+            output.drop_without_applying_deltas();
+        }
+    }
+}
+
 /// Movable storage for a host-frame capability shared by borrowed and owned drivers.
 ///
 /// `DockspaceHostFrame` has a `Drop` implementation, so Rust correctly prevents
@@ -266,6 +274,7 @@ mod output_proof_tests {
             .expect("the exact pass output carries its private proof");
 
         assert!(output.platform_output.presentation_token.is_none());
+        output.drop_without_applying_deltas();
     }
 
     #[test]
@@ -282,6 +291,7 @@ mod output_proof_tests {
             .expect("the proof uses an independent backend-only lane");
 
         assert_eq!(output.platform_output.presentation_token, Some(expected));
+        output.drop_without_applying_deltas();
     }
 
     #[test]
@@ -297,6 +307,7 @@ mod output_proof_tests {
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        output.drop_without_applying_deltas();
     }
 
     #[test]
@@ -312,6 +323,7 @@ mod output_proof_tests {
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        output.drop_without_applying_deltas();
     }
 
     #[test]
@@ -325,6 +337,7 @@ mod output_proof_tests {
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        output.drop_without_applying_deltas();
     }
 
     #[test]
@@ -339,31 +352,41 @@ mod output_proof_tests {
             pass.consume_output_proof(SurfaceId::new(1), &mut duplicate),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        first.drop_without_applying_deltas();
+        duplicate.drop_without_applying_deltas();
     }
 
     #[test]
     fn later_output_from_the_same_context_cannot_replace_an_older_pass() {
         let context = Context::default();
-        let (older, _) = proven_output(&context);
+        let (older, older_output) = proven_output(&context);
         let (_, newer_output) = proven_output(&context);
+        let mut submitted = newer_output.clone();
 
         assert!(matches!(
-            older.consume_output_proof(SurfaceId::new(1), &mut newer_output.clone()),
+            older.consume_output_proof(SurfaceId::new(1), &mut submitted),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        older_output.drop_without_applying_deltas();
+        newer_output.drop_without_applying_deltas();
+        submitted.drop_without_applying_deltas();
     }
 
     #[test]
     fn another_context_cannot_supply_the_output() {
         let first = Context::default();
         let second = Context::default();
-        let (pass, _) = proven_output(&first);
+        let (pass, first_output) = proven_output(&first);
         let (_, foreign_output) = proven_output(&second);
+        let mut submitted = foreign_output.clone();
 
         assert!(matches!(
-            pass.consume_output_proof(SurfaceId::new(1), &mut foreign_output.clone()),
+            pass.consume_output_proof(SurfaceId::new(1), &mut submitted),
             Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
+        first_output.drop_without_applying_deltas();
+        foreign_output.drop_without_applying_deltas();
+        submitted.drop_without_applying_deltas();
     }
 }
 
@@ -650,7 +673,7 @@ impl HostFrameState {
         let pass = pass.with_output_proof();
         self.native_staging_passes
             .insert(surface, EguiNativeStagingPass { presentation, pass });
-        self.confirmed_full_outputs.remove(&surface);
+        self.discard_confirmed_output(surface);
         Ok(())
     }
 
@@ -829,7 +852,7 @@ impl HostFrameState {
         let pass = pass.with_output_proof();
         self.drafts.insert(surface, draft);
         self.surface_passes.insert(surface, pass);
-        self.confirmed_full_outputs.remove(&surface);
+        self.discard_confirmed_output(surface);
         Ok(())
     }
 
@@ -839,7 +862,7 @@ impl HostFrameState {
         draft: EguiSurfaceDraft,
     ) {
         self.drafts.insert(surface, draft);
-        self.confirmed_full_outputs.remove(&surface);
+        self.discard_confirmed_output(surface);
     }
 
     pub(super) fn confirm_surface_output(
@@ -851,7 +874,9 @@ impl HostFrameState {
     ) -> Result<(), DockspaceErrorSource> {
         let pass = self.validate_surface_output(surface, context, viewport, &output)?;
         pass.consume_output_proof(surface, &mut output)?;
-        self.confirmed_full_outputs.insert(surface, output);
+        if let Some(previous) = self.confirmed_full_outputs.insert(surface, output) {
+            previous.drop_without_applying_deltas();
+        }
         Ok(())
     }
 
@@ -929,7 +954,9 @@ impl HostFrameState {
     ) -> Result<(), DockspaceErrorSource> {
         let pass = self.validate_surface_output(surface, context, viewport, output)?;
         pass.consume_output_proof(surface, output)?;
-        self.confirmed_full_outputs.insert(surface, output.clone());
+        if let Some(previous) = self.confirmed_full_outputs.insert(surface, output.clone()) {
+            previous.drop_without_applying_deltas();
+        }
         Ok(())
     }
 
@@ -1033,6 +1060,12 @@ impl HostFrameState {
 
     pub(super) fn take_confirmed_full_outputs(&mut self) -> BTreeMap<SurfaceId, FullOutput> {
         std::mem::take(&mut self.confirmed_full_outputs)
+    }
+
+    fn discard_confirmed_output(&mut self, surface: SurfaceId) {
+        if let Some(output) = self.confirmed_full_outputs.remove(&surface) {
+            output.drop_without_applying_deltas();
+        }
     }
 
     pub(super) const fn semantic_source_sequence(&self) -> SourceSequence {

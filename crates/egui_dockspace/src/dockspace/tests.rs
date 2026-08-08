@@ -125,7 +125,7 @@ fn run_frame(
 ) -> HostFrameResponse {
     let mut host = dockspace.begin_host_frame(key).expect("host frame begins");
     let mut paint = None;
-    let _ = context.run_ui(input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, input(), |ui| {
         paint = Some(host.show_surface(SURFACE, ui, panes));
     });
     paint
@@ -145,7 +145,7 @@ fn prepare_owned_surface_draft(
 ) {
     let mut host = dockspace.begin_host_frame(key).expect("host frame begins");
     let mut paint = None;
-    let _ = context.run_ui(input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, input(), |ui| {
         paint = Some(host.show_surface(SURFACE, ui, panes));
     });
     paint
@@ -208,7 +208,7 @@ fn run_automatic_frame(
     panes: &mut dyn PaneView,
 ) -> DockspaceResponse {
     let mut response = None;
-    let _ = context.run_ui(input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, input(), |ui| {
         response = Some(dockspace.show_single_surface(SURFACE, ui, panes));
     });
     response
@@ -415,7 +415,7 @@ fn arm_real_journal_click(
         )
         .expect("the press receipt stages");
     let mut paint = None;
-    let _ = context.run_ui(input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, input(), |ui| {
         paint = Some(frame.show_surface(SURFACE, ui, panes));
     });
     paint
@@ -449,7 +449,7 @@ fn submit_formal_click_escape(
         .begin_host_frame(EguiFrameScheduleKey::new(next_sequence, 0))
         .expect("the formal Escape host frame begins");
     let mut formal_input = None;
-    let _ = context.run_ui(escape_input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, escape_input(), |ui| {
         let escape_events = ui.input(|input| input.events.clone());
         formal_input = Some(frame.escape_input(SURFACE, ui.ctx(), &escape_events));
     });
@@ -485,7 +485,7 @@ fn submit_formal_click_escape(
         .append_input(ESCAPE_TEST_SOURCE, SourceSequence::new(1), formal_input)
         .expect("the formal Escape input stages");
     let mut paint = None;
-    let _ = context.run_ui(input(), |ui| {
+    let _ = crate::test_support::run_ui_without_renderer(&context, input(), |ui| {
         paint = Some(frame.show_surface(SURFACE, ui, panes));
     });
     paint
@@ -510,13 +510,14 @@ fn real_pressed_click_escape_is_callback_order_independent() {
         };
         let callback_context = context();
         let mut escape_consumptions = 0;
-        let _ = callback_context.run_ui(escape_input(), |ui| {
-            for is_source_surface in source_order {
-                if consume_gesture_escape(ui, status, is_source_surface) {
-                    escape_consumptions += 1;
+        let _ =
+            crate::test_support::run_ui_without_renderer(&callback_context, escape_input(), |ui| {
+                for is_source_surface in source_order {
+                    if consume_gesture_escape(ui, status, is_source_surface) {
+                        escape_consumptions += 1;
+                    }
                 }
-            }
-        });
+            });
         assert_eq!(
             escape_consumptions, 1,
             "only the core-proven source callback may consume Escape",
@@ -819,7 +820,7 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
     let mut paint = None;
     let raw_input = input();
     let viewport = raw_input.viewport_id;
-    let output = context.run_ui(raw_input, |ui| {
+    let output = crate::test_support::run_ui_without_renderer(&context, raw_input, |ui| {
         paint = Some(frame.inner.show_surface(SURFACE, ui, &mut panes));
     });
     paint

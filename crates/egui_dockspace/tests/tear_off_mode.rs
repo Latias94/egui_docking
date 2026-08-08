@@ -9,6 +9,16 @@ const ITEM: ItemId = ItemId::new(3);
 
 struct TestPane;
 
+fn run_ui_without_renderer(
+    context: &Context,
+    input: RawInput,
+    run_ui: impl FnMut(&mut Ui),
+) -> egui::FullOutput {
+    let mut output = context.run_ui(input, run_ui);
+    output.textures_delta.clear();
+    output
+}
+
 impl PaneView for TestPane {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
         (item == ITEM).then(|| "Document".into())
@@ -28,7 +38,8 @@ fn workspace() -> Workspace {
 fn capability(dockspace: &mut Dockspace, context: &Context) -> DockspaceCapability {
     let mut pane = TestPane;
     let mut observed = None;
-    let _ = context.run_ui(
+    let _ = run_ui_without_renderer(
+        context,
         RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 400.0))),
             ..RawInput::default()

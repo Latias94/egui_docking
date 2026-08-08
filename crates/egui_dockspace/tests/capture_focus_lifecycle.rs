@@ -119,8 +119,9 @@ fn run_input(
         .expect("outer host frame commits")
         .into_parts();
     for output in outputs {
-        output.settle_with(|surface, _| {
+        output.settle_with(|surface, full_output| {
             assert_eq!(surface, SURFACE);
+            full_output.drop_without_applying_deltas();
             EguiPresentationResult::Presented
         });
     }
@@ -431,7 +432,8 @@ fn active_resize_survives_local_button_state_without_a_release_edge() {
         InteractionStatus::Resizing { .. }
     ));
 
-    let _ = context.run_ui(
+    let _ = crate::test_support::run_ui_without_renderer(
+        &context,
         raw_input(
             vec![Event::PointerMoved(moved), pointer_button(moved, false)],
             true,
@@ -670,7 +672,10 @@ fn finish_multipass_terminal_frame(
         .expect("outer host frame commits")
         .into_parts();
     for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Presented);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Presented
+        });
     }
     assert_eq!(panes.passes, BTreeSet::from([0, 1]));
     (response, panes)

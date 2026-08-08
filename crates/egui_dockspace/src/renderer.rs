@@ -1241,7 +1241,7 @@ mod tests {
     #[cfg(not(egui_backend_event_envelope))]
     fn push_test_key(output: &mut RenderOutput, key: Key) {
         let context = Context::default();
-        let _ = context.run_ui(RawInput::default(), |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |ui| {
             output.push_key(ui, positioned_action_fixture(), key);
         });
     }
@@ -1249,7 +1249,7 @@ mod tests {
     #[cfg(not(egui_backend_event_envelope))]
     fn push_test_accesskit(output: &mut RenderOutput, id: Id, action: Action) {
         let context = Context::default();
-        let _ = context.run_ui(RawInput::default(), |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |ui| {
             output.push_accesskit(ui, positioned_action_fixture(), id, action);
         });
     }
@@ -1262,7 +1262,7 @@ mod tests {
             events: vec![pressed_key(Key::Enter)],
             ..RawInput::default()
         };
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
             let mut output = RenderOutput::from_ui_with_semantic_action_capture(ui, false);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert!(output.actions.is_empty());
@@ -1281,7 +1281,7 @@ mod tests {
             ..RawInput::default()
         };
         let mut unclaimed = None;
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
             let mut output = RenderOutput::from_ui_with_semantic_action_capture(ui, false);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert!(output.actions.is_empty());
@@ -1308,7 +1308,7 @@ mod tests {
         };
         let mut positions = Vec::new();
         let mut unclaimed_duplicate = None;
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
             let mut output = RenderOutput::from_ui(ui);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert_eq!(output.semantic_causality_error(), None);
@@ -1344,7 +1344,7 @@ mod tests {
             ..RawInput::default()
         };
         let mut error = None;
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input, |ui| {
             let mut output = RenderOutput::from_ui(ui);
             output.push_key(ui, positioned_action_fixture(), Key::Enter);
             assert!(output.actions.is_empty());
@@ -1481,7 +1481,8 @@ mod tests {
         let mut tab_strip_states = TabStripStateMap::default();
         let mut panes = TestPanes;
         let mut work = None;
-        let _ = context.run_ui(
+        let _ = crate::test_support::run_ui_without_renderer(
+            &context,
             RawInput {
                 screen_rect: Some(bounds),
                 ..RawInput::default()

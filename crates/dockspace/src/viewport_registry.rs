@@ -1003,7 +1003,7 @@ impl ViewportRegistry {
     ) -> Result<(), ViewportRegistryError> {
         match self.records.get(&binding.surface()) {
             Some(record) if record.binding == binding => Ok(()),
-            Some(record) if retired_bindings.contains(&binding) => Ok(()),
+            Some(_) if retired_bindings.contains(&binding) => Ok(()),
             Some(record) => Err(ViewportRegistryError::StaleObservedBinding {
                 observed: binding,
                 current: record.binding,

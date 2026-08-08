@@ -1,5 +1,15 @@
 use egui::{Context, FullOutput, Id, RawInput, Ui};
 
+pub(crate) fn run_ui_without_renderer(
+    context: &Context,
+    input: RawInput,
+    run_ui: impl FnMut(&mut Ui),
+) -> FullOutput {
+    let mut output = context.run_ui(input, run_ui);
+    output.textures_delta.clear();
+    output
+}
+
 fn presentation_provider_state_id() -> Id {
     Id::new("egui_dockspace_test_presentation_provider")
 }
@@ -52,7 +62,7 @@ pub(crate) fn run_ui(
     });
 
     let mut final_pass = None;
-    let output = context.run_ui(input, |ui| {
+    let mut output = context.run_ui(input, |ui| {
         final_pass = Some(
             u32::try_from(ui.ctx().current_pass_index())
                 .expect("test egui pass index must fit in u32"),
@@ -86,6 +96,7 @@ pub(crate) fn run_ui(
             .expect("test presentation boundary must not overflow");
         data.insert_temp(state_id, state);
     });
+    output.textures_delta.clear();
     output
 }
 

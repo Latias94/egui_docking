@@ -328,7 +328,8 @@ impl PresentationCaptureClock {
         outputs
             .into_iter()
             .filter_map(|output| {
-                let (_, _, settlement) = output.into_parts();
+                let (_, full_output, settlement) = output.into_parts();
+                full_output.drop_without_applying_deltas();
                 let presentation = settlement.presentation_output();
                 settlement.settle(EguiPresentationResult::Presented);
                 presentation.map(|output| {
@@ -492,7 +493,10 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
         .finish(&mut target)
         .expect("outer frame must publish document and sidecars atomically");
     for output in commit.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 
     assert!(!target.has_pending_document_restore());
@@ -617,7 +621,10 @@ fn bootstrap_native_root(
         .finish(dockspace)
         .expect("bootstrap registration must publish atomically");
     for output in commit.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
     let committed = dockspace
         .core_engine()
@@ -902,7 +909,10 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         "an acknowledged unchanged focus sample must not grow the recorder",
     );
     for output in acknowledged.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }
 
@@ -971,7 +981,10 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         .expect("the sampled focus must reserve a predecessor ingress position");
     assert_eq!(predecessor_ordinals.len(), 1);
     for output in sampled.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     assert!(
@@ -1049,7 +1062,10 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         "the committed replay must not be emitted a third time",
     );
     for output in acknowledged.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }
 
@@ -1159,7 +1175,10 @@ fn native_presentation_session_rejects_a_different_dockspace_instance() {
         .finish(&mut dockspace)
         .expect("the exact facade must commit its owned session");
     for output in commit.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }
 
@@ -1179,7 +1198,8 @@ fn native_renderer_settlement_rejects_another_incarnation_and_returns_the_capabi
     assert!(!outputs[0].has_presentation_obligation());
     let output = outputs.pop().expect("one native output must exist");
     assert_eq!(output.native_route(), Some(route));
-    let (_, _, settlement) = output.into_parts();
+    let (_, full_output, settlement) = output.into_parts();
+    full_output.drop_without_applying_deltas();
     assert_eq!(settlement.native_route(), Some(route));
     assert_eq!(settlement.presentation_output(), None);
 
@@ -1749,7 +1769,10 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         "an omitted staging pass cannot manufacture a presentation obligation"
     );
     for output in unavailable.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
@@ -1830,9 +1853,9 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         HostPresentationOutputPayload::NativeStaging { presentation }
             if presentation == painted
     ));
-    output
-        .into_parts()
-        .2
+    let (_, full_output, settlement) = output.into_parts();
+    full_output.drop_without_applying_deltas();
+    settlement
         .settle_native(target_native, EguiPresentationResult::Presented)
         .expect("the exact target lifetime settles its staging output");
 }
@@ -2001,7 +2024,10 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
         "a prepared-only first paint must not be relabelled as the frozen bootstrap output",
     );
     for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }
 
@@ -2092,7 +2118,10 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
         "the old-style paint must not become authoritative after terminal configuration"
     );
     for output in commit.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }
 
@@ -2193,6 +2222,9 @@ fn dropped_backend_configuration_rolls_back_and_replays_the_same_ingress() {
         .expect("retry must publish atomically");
     assert_eq!(dockspace.style(), &replacement_style);
     for output in commit.into_parts().1 {
-        output.settle_with(|_, _| EguiPresentationResult::Dropped);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Dropped
+        });
     }
 }

@@ -19,7 +19,7 @@ exclude = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.95"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Latias94/egui_docking"
@@ -27,8 +27,8 @@ repository = "https://github.com/Latias94/egui_docking"
 [workspace.dependencies]
 blake3 = "1.8.3"
 dockspace = { version = "0.1.0", path = "crates/dockspace", default-features = false }
-egui = { version = "=0.35.0", default-features = false }
-eframe = { version = "=0.35.0", default-features = false }
+egui = { version = "=0.36.1", default-features = false }
+eframe = { version = "=0.36.1", default-features = false }
 proptest = "1.9.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

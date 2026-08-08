@@ -1290,7 +1290,7 @@ mod tests {
         let provider = state.provider().expect("fixture provider is installed");
         let epoch = EguiPointerInputEpoch::new(6, 0, ViewportId::ROOT, 1);
         let mut staged = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             staged = state.prepare(&context, epoch, None).expect("input stages");
         });
         let staged = staged.expect("the provider produces a journal");
@@ -1305,7 +1305,7 @@ mod tests {
         assert_eq!(state.provider(), Some(provider));
         assert_eq!(state.current_epoch(6, 0, ViewportId::ROOT), Some(epoch));
         let mut retry = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             retry = state
                 .prepare(&context, epoch, None)
                 .expect("the restored pending epoch retries");
@@ -1323,7 +1323,7 @@ mod tests {
         let epoch = EguiPointerInputEpoch::new(7, 0, ViewportId::ROOT, 1);
         let mut first = None;
         let mut retry = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             first = state
                 .prepare(&context, epoch, None)
                 .expect("first staging succeeds");
@@ -1344,7 +1344,7 @@ mod tests {
         let (mut engine, host, mut state) = state_fixture(&context, PointerEdgeSequence::new(0));
         let epoch = EguiPointerInputEpoch::new(11, 0, ViewportId::ROOT, 1);
         let mut first = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             first = state
                 .prepare(&context, epoch, None)
                 .expect("first pass stages");
@@ -1353,7 +1353,7 @@ mod tests {
         commit_prepared_pointer_epoch(&mut engine, host, &mut state, &first);
 
         let mut repeated = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             repeated = state
                 .prepare(&context, epoch, None)
                 .expect("later pass stages its mandatory empty journal");
@@ -1378,21 +1378,23 @@ mod tests {
         #[cfg(not(egui_backend_event_envelope))]
         let captured = input().events;
         let mut first = None;
-        let _ = context.run_ui(RawInput::default(), |_ui| {
-            first = state
-                .prepare_captured_events(&context, epoch, None, &captured)
-                .expect("the outer-host event snapshot stages");
-        });
+        let _ =
+            crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |_ui| {
+                first = state
+                    .prepare_captured_events(&context, epoch, None, &captured)
+                    .expect("the outer-host event snapshot stages");
+            });
         let first = first.expect("the provider produces a journal");
         assert_eq!(first.journal.edges().len(), 2);
         commit_prepared_pointer_epoch(&mut engine, host, &mut state, &first);
 
         let mut repeated = None;
-        let _ = context.run_ui(RawInput::default(), |_ui| {
-            repeated = state
-                .prepare_captured_events(&context, epoch, None, &captured)
-                .expect("a repeated render pass remains valid");
-        });
+        let _ =
+            crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |_ui| {
+                repeated = state
+                    .prepare_captured_events(&context, epoch, None, &captured)
+                    .expect("a repeated render pass remains valid");
+            });
         let repeated = repeated.expect("the provider remains active");
         assert!(repeated.journal.is_empty());
         assert_eq!(repeated.journal.previous(), PointerEdgeSequence::new(2));
@@ -1405,7 +1407,7 @@ mod tests {
         let mut state = state(&context);
         let first_epoch = EguiPointerInputEpoch::new(13, 0, ViewportId::ROOT, 1);
         let mut result = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             let _ = state
                 .prepare(&context, first_epoch, None)
                 .expect("first epoch stages");
@@ -1478,7 +1480,7 @@ mod tests {
         let mut state = state_with_watermark(&context, PointerEdgeSequence::new(u64::MAX));
         let epoch = EguiPointerInputEpoch::new(17, 0, ViewportId::ROOT, 1);
         let mut result = None;
-        let _ = context.run_ui(input(), |_ui| {
+        let _ = crate::test_support::run_ui_without_renderer(&context, input(), |_ui| {
             result = Some(state.prepare(&context, epoch, None));
         });
         assert!(matches!(
@@ -1551,16 +1553,17 @@ mod tests {
             },
         ];
         let mut prepared = None;
-        let _ = context.run_ui(RawInput::default(), |_ui| {
-            prepared = state
-                .prepare_captured_events(
-                    &context,
-                    EguiPointerInputEpoch::new(19, 0, ViewportId::ROOT, 1),
-                    None,
-                    &events,
-                )
-                .expect("captured events stage");
-        });
+        let _ =
+            crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |_ui| {
+                prepared = state
+                    .prepare_captured_events(
+                        &context,
+                        EguiPointerInputEpoch::new(19, 0, ViewportId::ROOT, 1),
+                        None,
+                        &events,
+                    )
+                    .expect("captured events stage");
+            });
         let prepared = prepared.expect("the provider produces a journal");
         assert_eq!(prepared.journal.edges().len(), 2);
         assert_eq!(prepared.segment_index_before_raw_event(1), 1);
@@ -1586,16 +1589,17 @@ mod tests {
             },
         ];
         let mut prepared = None;
-        let _ = context.run_ui(RawInput::default(), |_ui| {
-            prepared = state
-                .prepare_captured_events(
-                    &context,
-                    EguiPointerInputEpoch::new(20, 0, ViewportId::ROOT, 1),
-                    None,
-                    &events,
-                )
-                .expect("captured events stage");
-        });
+        let _ =
+            crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |_ui| {
+                prepared = state
+                    .prepare_captured_events(
+                        &context,
+                        EguiPointerInputEpoch::new(20, 0, ViewportId::ROOT, 1),
+                        None,
+                        &events,
+                    )
+                    .expect("captured events stage");
+            });
         let prepared = prepared.expect("the provider produces a journal");
         assert_eq!(prepared.journal.edges().len(), 1);
         assert_eq!(prepared.segment_index_before_raw_event(1), 1);
@@ -1620,16 +1624,17 @@ mod tests {
             },
         ];
         let mut prepared = None;
-        let _ = context.run_ui(RawInput::default(), |_ui| {
-            prepared = state
-                .prepare_captured_events(
-                    &context,
-                    EguiPointerInputEpoch::new(21, 0, ViewportId::ROOT, 1),
-                    None,
-                    &events,
-                )
-                .expect("captured same-frame edges stage");
-        });
+        let _ =
+            crate::test_support::run_ui_without_renderer(&context, RawInput::default(), |_ui| {
+                prepared = state
+                    .prepare_captured_events(
+                        &context,
+                        EguiPointerInputEpoch::new(21, 0, ViewportId::ROOT, 1),
+                        None,
+                        &events,
+                    )
+                    .expect("captured same-frame edges stage");
+            });
         let prepared = prepared.expect("the provider preserves the physical journal");
 
         assert_eq!(prepared.journal.edges().len(), 2);

@@ -73,13 +73,23 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
     }
 }
 
+fn run_ui_without_renderer(
+    context: &Context,
+    input: RawInput,
+    run_ui: impl FnMut(&mut Ui),
+) -> egui::FullOutput {
+    let mut output = context.run_ui(input, run_ui);
+    output.textures_delta.clear();
+    output
+}
+
 fn run_frame(
     context: &Context,
     dockspace: &mut Dockspace,
     panes: &mut TestPanes,
     events: Vec<Event>,
 ) {
-    let _ = context.run_ui(input(events), |ui| {
+    let _ = run_ui_without_renderer(context, input(events), |ui| {
         dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("occlusion frame advances");

@@ -2,7 +2,7 @@
 
 This package verifies that `egui_dockspace` builds and its public single-surface
 facade can be consumed with the unmodified crates.io releases of `egui` and
-`eframe` 0.35.0.
+`eframe` 0.36.1.
 
 The manifest is an independent workspace root, and the repository root currently
 uses the same official registry coordinates without a local source patch. Do not
@@ -14,7 +14,7 @@ root patch from silently changing the compatibility gate.
 Run the gate from the repository root:
 
 ```text
-cargo test --manifest-path integration/egui-official-harness/Cargo.toml --locked
+cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --locked -j1
 ```
 
 Inspect the resolved dependency sources when diagnosing a failure:
@@ -23,6 +23,6 @@ Inspect the resolved dependency sources when diagnosing a failure:
 cargo tree --manifest-path integration/egui-official-harness/Cargo.toml --locked
 ```
 
-Both `egui v0.35.0` and `eframe v0.35.0` in that tree must come from the
+Both `egui v0.36.1` and `eframe v0.36.1` in that tree must come from the
 registry. The only intentional path dependencies are `egui_dockspace` and its
 local `dockspace` dependency.

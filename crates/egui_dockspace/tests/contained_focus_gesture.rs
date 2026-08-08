@@ -114,8 +114,9 @@ fn run_frame(
         .expect("outer egui frame commits")
         .into_parts();
     for output in outputs {
-        output.settle_with(|surface, _| {
+        output.settle_with(|surface, full_output| {
             assert_eq!(surface, SURFACE);
+            full_output.drop_without_applying_deltas();
             EguiPresentationResult::Presented
         });
     }

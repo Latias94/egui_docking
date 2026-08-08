@@ -75,7 +75,7 @@ fn official_egui_consumes_the_public_paint_only_facade() {
     let mut last_tree = None;
 
     for _ in 0..4 {
-        let output = context.run_ui(raw_input(), |ui| {
+        let mut output = context.run_ui(raw_input(), |ui| {
             let response = dockspace
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
@@ -88,7 +88,8 @@ fn official_egui_consumes_the_public_paint_only_facade() {
             .get(&ViewportId::ROOT)
             .expect("the root viewport has output")
             .repaint_delay;
-        last_tree = output.platform_output.accesskit_update;
+        last_tree = output.platform_output.accesskit_update.take();
+        output.textures_delta.clear();
     }
 
     assert!(panes.paint_count > 0, "the selected pane must paint");
@@ -144,6 +145,12 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
             .all(|output| !output.has_presentation_obligation()),
         "bootstrap paint must not fabricate a presentation obligation",
     );
+    for output in outputs {
+        output.settle_with(|_, mut full_output| {
+            full_output.textures_delta.clear();
+            EguiPresentationResult::Dropped
+        });
+    }
 
     let mut ready = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(2, 0))
@@ -156,7 +163,10 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
         .into_iter()
         .next()
         .expect("ready paint has a settlement obligation")
-        .settle_with(|_, _| EguiPresentationResult::Presented);
+        .settle_with(|_, mut full_output| {
+            full_output.textures_delta.clear();
+            EguiPresentationResult::Presented
+        });
 
     let mut settled = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
@@ -173,5 +183,8 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
         .into_iter()
         .next()
         .expect("the next output has a settlement obligation")
-        .settle_with(|_, _| EguiPresentationResult::Dropped);
+        .settle_with(|_, mut full_output| {
+            full_output.textures_delta.clear();
+            EguiPresentationResult::Dropped
+        });
 }

@@ -756,7 +756,8 @@ mod tests {
         );
 
         let context = egui::Context::default();
-        let output = context.run_ui(
+        let output = crate::test_support::run_ui_without_renderer(
+            &context,
             RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0))),
                 ..RawInput::default()

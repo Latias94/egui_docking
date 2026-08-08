@@ -119,7 +119,7 @@ not egui restoration APIs.
 
 ## Development
 
-The workspace uses Rust 1.92 and edition 2024.
+The official workspace uses Rust 1.95 and edition 2024.
 
 ```text
 cargo nextest run --workspace --all-features --all-targets
@@ -129,16 +129,19 @@ cargo fmt --all --check
 ```
 
 The crate manifests pin the official egui and eframe registry coordinates to
-`=0.35.0`, and the root workspace contains no source patch. The independent
+`=0.36.1`, and the root workspace contains no source patch. The independent
 `integration/egui-official-harness` workspace verifies that an external consumer
 resolves registry egui/eframe and can paint through the public facade:
 
 ```text
-cargo test --manifest-path integration/egui-official-harness/Cargo.toml --locked
+cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --locked -j1
 ```
 
-The development fork in `repo-ref/egui-release` starts at the exact upstream
-`0.35.0` tag. The excluded fork-backed workspace pins the complete public patch
+Upstream egui `0.36.1` commit
+`4c1f2fae95475a40e524884ebb298bcb1714b08e` is the clean baseline for the
+next native vertical slice. The current checkout in `repo-ref/egui-release`
+and the excluded fork-backed workspace intentionally remain on the old 0.35
+trial while that migration is performed as one coherent change. They pin patch
 revision `5016206ba71228d11e594ff2c1dd1887da904486` and Winit revision
 `c4e37f29ca448d0bfb10f5d223479154091c5898`; its lockfile makes a clean
 checkout reproducible without either ignored local repository. The fork-backed

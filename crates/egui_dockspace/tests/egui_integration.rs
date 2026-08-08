@@ -273,7 +273,10 @@ fn run_outer_frame_with_size(
         .expect("outer frame must commit atomically")
         .into_parts();
     for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Presented);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Presented
+        });
     }
     Observation {
         pass: context.current_pass_index(),
@@ -4323,7 +4326,10 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         "the release position was sampled after this paint and must not be claimed as drawn"
     );
     for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Presented);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Presented
+        });
     }
     let floating = dockspace
         .core_engine()
@@ -4401,7 +4407,10 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         "the output carrying the pending token must contain its exact preview rectangle"
     );
     for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Presented);
+        output.settle_with(|_, full_output| {
+            full_output.drop_without_applying_deltas();
+            EguiPresentationResult::Presented
+        });
     }
     assert!(dockspace.core_engine().pending_release_preview().is_some());
     run_outer_frame_with_size(
