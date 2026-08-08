@@ -119,15 +119,34 @@ impl EguiOuterHostFrame<'_> {
             pointer_events.get_or_insert_with(|| ui.input(|input| input.events.clone()));
             paint = Some(self.inner.show_surface(surface, ui, panes));
         });
-        let paint = paint.ok_or(
-            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
-        )?;
-        let paint = paint?;
-        let pointer_events = pointer_events.ok_or(
-            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
-        )?;
-        self.inner
-            .prepare_outer_pointer(surface, context, &pointer_events)?;
+        let paint = match paint {
+            Some(Ok(paint)) => paint,
+            Some(Err(error)) => {
+                self.inner.defer_full_output(output);
+                return Err(error);
+            }
+            None => {
+                self.inner.defer_full_output(output);
+                return Err(DockspaceError::from_source(
+                    crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
+                        surface,
+                    },
+                ));
+            }
+        };
+        let Some(pointer_events) = pointer_events else {
+            self.inner.defer_full_output(output);
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            ));
+        };
+        if let Err(error) = self
+            .inner
+            .prepare_outer_pointer(surface, context, &pointer_events)
+        {
+            self.inner.defer_full_output(output);
+            return Err(error);
+        }
         self.inner
             .confirm_surface_output(surface, context, viewport, output)?;
         Ok(paint)
@@ -337,6 +356,7 @@ impl PreparedEguiOuterFrameCommit {
             .map(|presentation| (presentation.surface(), presentation))
             .collect::<BTreeMap<_, _>>();
         let confirmed_full_outputs = state.take_confirmed_full_outputs();
+        let deferred_texture_deltas = state.deferred_texture_deltas();
         let outputs = confirmed_full_outputs
             .into_iter()
             .map(|(surface, full_output)| {
@@ -345,6 +365,7 @@ impl PreparedEguiOuterFrameCommit {
                     state.native_surface_pass(surface),
                     full_output,
                     presentations_by_surface.remove(&surface),
+                    deferred_texture_deltas.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -886,6 +907,10 @@ impl DockspaceHostFrame<'_> {
         self.state
             .confirm_external_surface_output(surface, context, viewport, output)
             .map_err(Into::into)
+    }
+
+    pub(super) fn defer_full_output(&self, output: FullOutput) {
+        self.state.defer_full_output(output);
     }
 
     fn prepare_surface_contribution(

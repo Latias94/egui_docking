@@ -8,7 +8,7 @@ use dockspace::backend::presentation_observation::HostPresentationOutput;
 use dockspace::ids::SurfaceId;
 use egui::FullOutput;
 
-use crate::facade::{ExactNativeViewport, NativeCoreRoute};
+use crate::facade::{DeferredTextureDeltas, ExactNativeViewport, NativeCoreRoute};
 
 /// Terminal renderer result for one exact outer-host output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,6 +283,7 @@ pub struct EguiOuterSurfaceOutput {
     native: Option<NativeCoreRoute>,
     full_output: Option<FullOutput>,
     presentation: Option<PendingEguiPresentation>,
+    deferred_texture_deltas: DeferredTextureDeltas,
 }
 
 impl Debug for EguiOuterSurfaceOutput {
@@ -302,12 +303,14 @@ impl EguiOuterSurfaceOutput {
         native: Option<NativeCoreRoute>,
         full_output: FullOutput,
         presentation: Option<PendingEguiPresentation>,
+        deferred_texture_deltas: DeferredTextureDeltas,
     ) -> Self {
         Self {
             surface,
             native,
             full_output: Some(full_output),
             presentation,
+            deferred_texture_deltas,
         }
     }
 
@@ -386,7 +389,7 @@ impl EguiOuterSurfaceOutput {
 impl Drop for EguiOuterSurfaceOutput {
     fn drop(&mut self) {
         if let Some(full_output) = self.full_output.take() {
-            full_output.drop_without_applying_deltas();
+            self.deferred_texture_deltas.defer_output(full_output);
         }
     }
 }

@@ -164,12 +164,13 @@ The precise method names and storage layout are implementation-time decisions. T
 
 **Files:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `crates/egui_dockspace/Cargo.toml`, `integration/egui-official-harness/Cargo.toml`, `integration/egui-official-harness/tests/public_api.rs`, `repo-ref/egui-release` reference metadata and README instructions.
 
-**Approach:** Update the official workspace and Rust toolchain first. Record upstream 0.36.1 as the clean future fork base, but keep the excluded native/fork workspace pinned to the working 0.35 fork until U7 migrates its fork-only APIs and tests as one coherent vertical slice. Keep the old fork untouched as reference material until U7 proves and reapplies each necessary seam.
+**Approach:** Update the official workspace and Rust toolchain first. Record upstream 0.36.1 as the clean future fork base. Preserve the old 0.35 fork revision as source-only behavior reference, but suspend its adapter/native build gate: the current `egui_dockspace` path dependency now targets 0.36.1 and must not be forced into a misleading mixed-version workspace. U7 recreates one clean fork/native workspace from the 0.36.1 baseline after each necessary seam is proven.
 
 **Test scenarios:**
 
 - Official-egui workspace compiles with egui/eframe 0.36.1 and no fork-only cfg.
-- The existing excluded native/fork workspace remains reproducible on its old pin while the clean 0.36.1 baseline is recorded for U7.
+- The old fork source revisions remain recorded, while CI and README no longer claim that the obsolete 0.35 adapter/native workspace can build against the 0.36.1 product crate.
+- Repeated egui passes, aborts, and externally owned outputs preserve single ownership of renderer texture commands.
 - A downstream fixture can use the product facade without importing fork-only types.
 
 **Verification:** Locked workspace check and official downstream harness pass on the new version baseline.

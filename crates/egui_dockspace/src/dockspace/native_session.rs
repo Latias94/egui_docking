@@ -534,9 +534,21 @@ impl EguiNativePresentationSession {
             let output = context.run_ui(input, |ui| {
                 paint = Some(driver.show_surface(surface, ui, panes));
             });
-            let paint = paint.ok_or(
-                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
-            )??;
+            let paint = match paint {
+                Some(Ok(paint)) => paint,
+                Some(Err(error)) => {
+                    driver.defer_full_output(output);
+                    return Err(error);
+                }
+                None => {
+                    driver.defer_full_output(output);
+                    return Err(DockspaceError::from_source(
+                        crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
+                            surface,
+                        },
+                    ));
+                }
+            };
             driver.confirm_surface_output(surface, context, viewport, output)?;
             Ok(paint)
         })
@@ -570,9 +582,21 @@ impl EguiNativePresentationSession {
             let output = context.run_ui(input, |ui| {
                 paint = Some(driver.show_native_staging(presentation, ui));
             });
-            paint.ok_or(
-                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
-            )??;
+            match paint {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    driver.defer_full_output(output);
+                    return Err(error);
+                }
+                None => {
+                    driver.defer_full_output(output);
+                    return Err(DockspaceError::from_source(
+                        crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
+                            surface,
+                        },
+                    ));
+                }
+            }
             driver.confirm_surface_output(surface, context, native.viewport(), output)?;
             Ok(())
         })?;
@@ -583,7 +607,9 @@ impl EguiNativePresentationSession {
     ///
     /// The exact native lifetime must match both the callback route and the
     /// post-ingress core binding. This is the split counterpart of
-    /// [`Self::run_native_surface`] for eframe's begin/UI/end hosted hooks.
+    /// [`Self::run_native_surface`] for eframe's begin/UI/end hosted hooks. On
+    /// success the output is moved into the affine frame and the supplied slot
+    /// becomes [`FullOutput::default`]; commit returns that same owner to the host.
     pub fn confirm_native_surface_output(
         &mut self,
         dockspace: &mut Dockspace,
@@ -604,6 +630,8 @@ impl EguiNativePresentationSession {
     ///
     /// The callback route, core staging request, and exact native lifetime are
     /// revalidated before the [`FullOutput`] enters the affine settlement path.
+    /// Successful confirmation moves the output out of the supplied slot until
+    /// the enclosing frame commits.
     pub fn confirm_native_staging_output(
         &mut self,
         dockspace: &mut Dockspace,

@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
       - uses: taiki-e/install-action@nextest
@@ -56,7 +56,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: dtolnay/rust-toolchain@1.95.0
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: official-egui
@@ -65,20 +65,3 @@ jobs:
         run: >-
           cargo test --manifest-path integration/egui-official-harness/Cargo.toml
           --locked
-
-  fork-native:
-    name: Pinned fork and native runtime
-    runs-on: macos-14
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
-      - uses: taiki-e/install-action@nextest
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: fork-native
-
-      - name: Run fork and native protocol harnesses
-        run: python3 scripts/run_egui_fork_harness.py
-      - name: Run real-window tear-off and redock
-        run: python3 scripts/run_native_e2e.py --timeout 600

@@ -504,6 +504,7 @@ fn outer_host_surface_run_returns_only_its_owned_full_output() {
                 .viewport_output
                 .contains_key(&context.viewport_id())
         );
+        full_output.drop_without_applying_deltas();
         EguiPresentationResult::Dropped
     });
 }
@@ -600,6 +601,7 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
     assert_eq!(settlement.surface(), ROOT_SURFACE);
     assert!(settlement.is_required());
     assert_eq!(settlement.native_route(), None);
+    full_output.drop_without_applying_deltas();
 
     let (before_result, outputs) = paint_outer_frame(
         &context,
@@ -611,7 +613,8 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
     assert_eq!(before_result.presentation_summary().retired(), 0);
     let no_op_output = one_presentation(outputs);
     assert!(!no_op_output.has_presentation_obligation());
-    let (_, _, no_op) = no_op_output.into_parts();
+    let (_, full_output, no_op) = no_op_output.into_parts();
+    full_output.drop_without_applying_deltas();
     assert!(!no_op.is_required());
     no_op.settle(EguiPresentationResult::Presented);
 

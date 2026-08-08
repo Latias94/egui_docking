@@ -139,37 +139,14 @@ cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml -
 
 Upstream egui `0.36.1` commit
 `4c1f2fae95475a40e524884ebb298bcb1714b08e` is the clean baseline for the
-next native vertical slice. The current checkout in `repo-ref/egui-release`
-and the excluded fork-backed workspace intentionally remain on the old 0.35
-trial while that migration is performed as one coherent change. They pin patch
-revision `5016206ba71228d11e594ff2c1dd1887da904486` and Winit revision
-`c4e37f29ca448d0bfb10f5d223479154091c5898`; its lockfile makes a clean
-checkout reproducible without either ignored local repository. The fork-backed
-runtime remains `publish = false` until its required seams are available from a
-publishable release. Launch the current two-window trial example with:
-
-```text
-cargo run \
-  --manifest-path integration/egui-fork-workspace/Cargo.toml \
-  --package egui_dockspace_native \
-  --example native_multiview \
-  --target-dir target \
-  --locked
-```
-
-A self-driving native smoke gate starts one real root window, tears a two-tab
-group off into a dynamically created child, waits for the child's first-live
-interaction admission, redocks the complete group into the root, verifies exact
-ownership and source vacancy, then closes itself:
-
-```text
-python3 scripts/run_native_e2e.py
-```
-
-This gate uses typed test-driver pointer events and real OS windows. It does not
-simulate hardware input, exercise wheel routing, transfer a window between
-mixed-DPI monitors, exercise close/focus failure matrices, or prove grab-offset
-preservation.
+next native vertical slice. The current `repo-ref/egui-release` revision
+`5016206ba71228d11e594ff2c1dd1887da904486` and Winit revision
+`c4e37f29ca448d0bfb10f5d223479154091c5898` are retained only as behavior and
+patch references. Their former 0.35 adapter/native build gate is intentionally
+suspended because the product crate now targets egui 0.36.1; mixing those two
+dependency families would not be a reproducible compatibility claim. U7 will
+create one clean 0.36.1 fork/native workspace and one focused real-window smoke
+after the minimal seams are proven.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example deliberately
 uses the registry-only paint path and is not an interaction or multiview demo.
