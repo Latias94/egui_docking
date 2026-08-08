@@ -156,20 +156,20 @@ The precise method names and storage layout are implementation-time decisions. T
 
 ### U1. Establish the egui 0.36.1 baseline
 
-**Goal:** Replace the 0.35 dependency baseline and split the old fork into an archived reference plus a clean 0.36.1 migration branch.
+**Goal:** Upgrade the official workspace to egui 0.36.1 and record a clean 0.36.1 fork baseline without prematurely porting the native runtime.
 
 **Requirements:** R9, R12; KTD5.
 
 **Dependencies:** None.
 
-**Files:** `Cargo.toml`, `Cargo.lock`, `crates/*/Cargo.toml`, `integration/*/Cargo.toml`, `repo-ref/egui-release`, `repo-ref/winit-release`, `integration/egui-official-harness/tests/public_api.rs`, `integration/egui-fork-harness/tests/backend_authority.rs`, fork harness manifests and README instructions.
+**Files:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `crates/egui_dockspace/Cargo.toml`, `integration/egui-official-harness/Cargo.toml`, `integration/egui-official-harness/tests/public_api.rs`, `repo-ref/egui-release` reference metadata and README instructions.
 
-**Approach:** Update the official workspace first. Create a clean, pinned fork baseline from upstream 0.36.1 without porting the old provider/runtime patch series. Keep the old fork untouched as reference material until U7 proves and reapplies each necessary seam.
+**Approach:** Update the official workspace and Rust toolchain first. Record upstream 0.36.1 as the clean future fork base, but keep the excluded native/fork workspace pinned to the working 0.35 fork until U7 migrates its fork-only APIs and tests as one coherent vertical slice. Keep the old fork untouched as reference material until U7 proves and reapplies each necessary seam.
 
 **Test scenarios:**
 
 - Official-egui workspace compiles with egui/eframe 0.36.1 and no fork-only cfg.
-- Fork workspace compiles against the new pinned revision without dependency API probing.
+- The existing excluded native/fork workspace remains reproducible on its old pin while the clean 0.36.1 baseline is recorded for U7.
 - A downstream fixture can use the product facade without importing fork-only types.
 
 **Verification:** Locked workspace check and official downstream harness pass on the new version baseline.
