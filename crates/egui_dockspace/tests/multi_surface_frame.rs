@@ -8,7 +8,7 @@ use egui_dockspace::backend::{
     EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult,
     HostFrameResponse, SurfaceFrameDisposition,
 };
-use egui_dockspace::{Dockspace, DockspaceError, DockspaceSurfaceStatus, PaneView};
+use egui_dockspace::{Dockspace, DockspaceErrorKind, DockspaceSurfaceStatus, PaneView};
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const CHILD_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -446,13 +446,13 @@ fn outer_host_frame_rejects_a_duplicate_callback_in_the_same_pass() {
         duplicate = Some(host.show_surface(ROOT_SURFACE, ui, &mut panes));
     });
 
-    assert!(matches!(
-        duplicate.expect("duplicate callback runs"),
-        Err(DockspaceError::HostFrameSurfacePassNotIncreasing {
-            surface: ROOT_SURFACE,
-            ..
-        })
-    ));
+    assert_eq!(
+        duplicate
+            .expect("duplicate callback runs")
+            .expect_err("a non-increasing pass must be rejected")
+            .kind(),
+        DockspaceErrorKind::HostProtocol,
+    );
 }
 
 #[test]
@@ -471,12 +471,12 @@ fn outer_host_frame_rejects_an_unconfirmed_final_output() {
             .expect("surface paints");
     });
 
-    assert!(matches!(
-        host.finish(),
-        Err(DockspaceError::OuterHostSurfaceOutputUnconfirmed {
-            surface: ROOT_SURFACE
-        })
-    ));
+    assert_eq!(
+        host.finish()
+            .expect_err("an unconfirmed final output must be rejected")
+            .kind(),
+        DockspaceErrorKind::HostProtocol,
+    );
     assert_eq!(dockspace.core_engine().last_reducer_tick(), before_tick);
 }
 
@@ -537,12 +537,12 @@ fn outer_host_rejects_replacing_a_surface_run_with_another_context() {
         .expect("first context owns the initial surface run");
     let _ = second_context.run_ui(input(), |_| {});
 
-    assert!(matches!(
-        host.run_surface(ROOT_SURFACE, &second_context, input(), &mut panes),
-        Err(DockspaceError::OuterHostSurfaceContextMismatch {
-            surface: ROOT_SURFACE
-        })
-    ));
+    assert_eq!(
+        host.run_surface(ROOT_SURFACE, &second_context, input(), &mut panes)
+            .expect_err("a different context cannot replace the authoritative pass")
+            .kind(),
+        DockspaceErrorKind::HostProtocol,
+    );
 }
 
 #[test]
@@ -1167,14 +1167,21 @@ fn crates_io_facade_rejects_multi_surface_workspace_before_paint() {
     let _ = context.run_ui(input(), |ui| {
         result = Some(dockspace.show_single_surface(ROOT_SURFACE, ui, &mut panes));
     });
-    assert!(matches!(
-        result.expect("egui invokes the surface callback"),
-        Err(DockspaceError::SingleSurfaceHostFrameRequiresOneSurface { surface_count: 2 })
-    ));
-    assert!(matches!(
-        dockspace.begin_host_frame(EguiFrameScheduleKey::new(1, 0)),
-        Err(DockspaceError::MultiSurfaceHostFrameUnsupported { surface_count: 2 })
-    ));
+    assert_eq!(
+        result
+            .expect("egui invokes the surface callback")
+            .expect_err("the convenience facade accepts one surface only")
+            .kind(),
+        DockspaceErrorKind::Unsupported,
+    );
+    assert_eq!(
+        dockspace
+            .begin_host_frame(EguiFrameScheduleKey::new(1, 0))
+            .err()
+            .expect("the convenience host frame accepts one surface only")
+            .kind(),
+        DockspaceErrorKind::Unsupported,
+    );
     assert_eq!(dockspace.core_engine().last_reducer_tick(), before_tick);
     assert_eq!(dockspace.core_engine().version(), before_version);
 }

@@ -102,6 +102,13 @@ and native failures have narrow accessors, while engine, host-frame, and scene
 compilation sources remain in the standard error chain and outside the default
 API.
 
+The egui facade follows the same rule. `DockspaceError` is opaque and exposes
+only the action-oriented `DockspaceErrorKind` categories: invalid
+configuration, persistence, unsupported operation, operation conflict, host
+protocol, and internal failure. Exact renderer, pointer, host-frame, and reducer
+diagnostics are private implementation details retained through `Error::source`;
+there are no public conversions from backend FSM errors into the product error.
+
 Pointer- and semantic-created close plans now return through the same
 `HostInputOutcome::CloseRequested` shape as application close requests, with a
 small product-level origin instead of a mirrored reducer FSM. Their decision
@@ -210,8 +217,8 @@ obtain `WorkspaceVersion` and typed close rejections through
 `dockspace` directly when they intentionally exercise core contracts, so rustc
 rather than an API-classification script owns dependency and name resolution.
 The low-level backend host response still carries a raw transition for native
-migration; remaining model/error consolidation and backend-host migration keep
-this seal open.
+migration; remaining model consolidation and backend-host migration keep this
+seal open.
 
 ## Protocol Tests
 

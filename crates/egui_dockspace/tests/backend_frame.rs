@@ -52,7 +52,7 @@ use egui_dockspace::backend::{
     EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult, ExactNativeViewport,
     NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
 };
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{Dockspace, DockspaceErrorKind, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -1075,14 +1075,21 @@ fn native_session_is_owned_and_blocks_competing_facade_mutations() {
         .begin_native_cycle(EguiFrameScheduleKey::new(1, 0), empty_native_bindings())
         .expect("owned native session must begin");
 
-    assert!(matches!(
-        dockspace.set_policy(DockPolicy::default()),
-        Err(egui_dockspace::DockspaceError::NativeSessionAlreadyActive)
-    ));
-    assert!(matches!(
-        dockspace.begin_native_cycle(EguiFrameScheduleKey::new(2, 0), empty_native_bindings()),
-        Err(egui_dockspace::DockspaceError::NativeSessionAlreadyActive)
-    ));
+    assert_eq!(
+        dockspace
+            .set_policy(DockPolicy::default())
+            .expect_err("an active affine session blocks standalone mutation")
+            .kind(),
+        DockspaceErrorKind::OperationConflict,
+    );
+    assert_eq!(
+        dockspace
+            .begin_native_cycle(EguiFrameScheduleKey::new(2, 0), empty_native_bindings())
+            .err()
+            .expect("a second affine native session must be rejected")
+            .kind(),
+        DockspaceErrorKind::OperationConflict,
+    );
     assert_eq!(dockspace.core_engine().version(), version);
 
     drop(session);
@@ -1138,14 +1145,13 @@ fn native_presentation_session_rejects_a_different_dockspace_instance() {
         .build()
         .expect("second fixture must build");
 
-    assert!(matches!(
-        presentation.mark_surface_unavailable(
-            &mut other,
-            SURFACE,
-            MeasurementUnavailableReason::Deferred,
-        ),
-        Err(egui_dockspace::DockspaceError::NativeSessionLeaseMismatch)
-    ));
+    assert_eq!(
+        presentation
+            .mark_surface_unavailable(&mut other, SURFACE, MeasurementUnavailableReason::Deferred,)
+            .expect_err("a foreign facade cannot consume the affine session")
+            .kind(),
+        DockspaceErrorKind::HostProtocol,
+    );
     presentation
         .mark_surface_unavailable(
             &mut dockspace,

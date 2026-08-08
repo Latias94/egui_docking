@@ -22,7 +22,7 @@ use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use egui::{Context, Event, PointerButton as EguiPointerButton, Pos2, ViewportId};
 
-use crate::DockspaceError;
+use crate::error::DockspaceErrorSource;
 use crate::receiver::{
     PaintReceiverEvidence, PaintReceiverFingerprint, PaintReceiverLookup,
     PaintReceiverRegistrations,
@@ -88,7 +88,7 @@ impl PreparedPointerInput {
         self.provider
     }
 
-    pub(crate) fn journal_segments(&self) -> Result<Vec<PointerEdgeJournal>, DockspaceError> {
+    pub(crate) fn journal_segments(&self) -> Result<Vec<PointerEdgeJournal>, DockspaceErrorSource> {
         if self.journal.edges().is_empty() {
             return Ok(vec![self.journal.clone()]);
         }
@@ -120,14 +120,14 @@ impl PreparedPointerInput {
         receiver_store: &EguiDockRenderer,
         registrations: &PaintReceiverRegistrations,
         journal: &PointerEdgeJournal,
-    ) -> Result<PointerReceiverReceiptBatch, DockspaceError> {
+    ) -> Result<PointerReceiverReceiptBatch, DockspaceErrorSource> {
         let Some(projection) = view.interaction_projection(surface) else {
             return self.prepare_unavailable_receipts_for(candidates);
         };
         let receipts = candidates
             .candidates()
             .iter()
-            .map(|candidate| -> Result<_, DockspaceError> {
+            .map(|candidate| -> Result<_, DockspaceErrorSource> {
                 if !candidate.receiver_is_applicable() {
                     return Ok(candidate.receipt(PointerReceiverObservation::NotApplicable));
                 }
@@ -135,9 +135,11 @@ impl PreparedPointerInput {
                     .edges()
                     .iter()
                     .find(|edge| edge.sequence() == candidate.id().sequence())
-                    .ok_or(DockspaceError::PointerReceiverEdgeMissing {
-                        sequence: candidate.id().sequence(),
-                    })?;
+                    .ok_or(
+                        crate::error::DockspaceErrorSource::PointerReceiverEdgeMissing {
+                            sequence: candidate.id().sequence(),
+                        },
+                    )?;
                 let mut probes = Vec::new();
                 if candidate.probes().requires(PointerReceiverProbe::Delivery) {
                     let correlation_unavailable = !self.delivery_correlation_available
@@ -190,14 +192,14 @@ impl PreparedPointerInput {
                     PresentedPointerReceiverObservation::new(probes)?,
                 )))
             })
-            .collect::<Result<Vec<_>, DockspaceError>>()?;
+            .collect::<Result<Vec<_>, DockspaceErrorSource>>()?;
         Ok(PointerReceiverReceiptBatch::new(receipts)?)
     }
 
     pub(crate) fn prepare_unavailable_receipts_for(
         &self,
         candidates: &PointerReceiverCandidateRoster,
-    ) -> Result<PointerReceiverReceiptBatch, DockspaceError> {
+    ) -> Result<PointerReceiverReceiptBatch, DockspaceErrorSource> {
         let receipts = candidates.candidates().iter().map(|candidate| {
             if candidate.receiver_is_applicable() {
                 candidate.receipt(PointerReceiverObservation::Unknown(
@@ -218,7 +220,7 @@ fn hover_hit(
     surface: SurfaceId,
     projection: dockspace::backend::scene::SurfaceInteractionProjection<'_>,
     point: Option<LogicalPoint>,
-) -> Result<PointerReceiverHoverHit, DockspaceError> {
+) -> Result<PointerReceiverHoverHit, DockspaceErrorSource> {
     let Some(point) = point else {
         return Ok(PointerReceiverHoverHit::unknown(
             PointerReceiverUnknownReason::EventCorrelationUnavailable,
@@ -464,14 +466,14 @@ impl EguiPointerInput {
 
     pub(crate) fn reserve_install(
         &mut self,
-    ) -> Result<EguiPointerInstallReservation, DockspaceError> {
+    ) -> Result<EguiPointerInstallReservation, DockspaceErrorSource> {
         if self.provider.is_some() {
-            return Err(DockspaceError::PointerInputProviderAlreadyInstalled);
+            return Err(crate::error::DockspaceErrorSource::PointerInputProviderAlreadyInstalled);
         }
         let incarnation = self
             .next_incarnation
             .checked_add(1)
-            .ok_or(DockspaceError::PointerAdapterIncarnationExhausted)?;
+            .ok_or(crate::error::DockspaceErrorSource::PointerAdapterIncarnationExhausted)?;
         self.next_incarnation = incarnation;
         Ok(EguiPointerInstallReservation { incarnation })
     }
@@ -512,12 +514,12 @@ impl EguiPointerInput {
         viewport: ViewportId,
         surface: SurfaceId,
         workspace_epoch: WorkspaceEpoch,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let Some(binding) = self.binding.as_mut() else {
-            return Err(DockspaceError::PointerInputBindingMissing);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingMissing);
         };
         if binding.surface != surface || binding.workspace_epoch != workspace_epoch {
-            return Err(DockspaceError::PointerInputBindingStale);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingStale);
         }
         if binding
             .context
@@ -525,7 +527,7 @@ impl EguiPointerInput {
             .is_some_and(|bound| !bound.eq(context))
             || binding.viewport.is_some_and(|bound| bound != viewport)
         {
-            return Err(DockspaceError::PointerInputBindingStale);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingStale);
         }
         binding.context = Some(context.clone());
         binding.viewport = Some(viewport);
@@ -533,7 +535,9 @@ impl EguiPointerInput {
     }
 
     /// Detaches the complete surface-local producer state before core retirement.
-    pub(crate) fn drain(&mut self) -> Result<Option<DrainedEguiPointerInput>, DockspaceError> {
+    pub(crate) fn drain(
+        &mut self,
+    ) -> Result<Option<DrainedEguiPointerInput>, DockspaceErrorSource> {
         let Some(provider) = self.provider.take() else {
             return Ok(None);
         };
@@ -541,7 +545,7 @@ impl EguiPointerInput {
             Ok(receipt) => receipt,
             Err(error) => {
                 self.provider = Some(error.into_provider());
-                return Err(DockspaceError::PointerInputFrameInFlight);
+                return Err(crate::error::DockspaceErrorSource::PointerInputFrameInFlight);
             }
         };
         Ok(Some(DrainedEguiPointerInput {
@@ -586,12 +590,12 @@ impl EguiPointerInput {
     pub(crate) fn submit_empty_interval(
         &self,
         frame: &mut CoreHostFrame,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let Some(provider) = self.provider.as_ref() else {
             return Ok(());
         };
         if self.pending.is_some() {
-            return Err(DockspaceError::PointerInputControlDuringPendingEpoch);
+            return Err(crate::error::DockspaceErrorSource::PointerInputControlDuringPendingEpoch);
         }
         frame.submit_surface_pointer_journal(
             provider,
@@ -616,13 +620,13 @@ impl EguiPointerInput {
         frame: &mut CoreHostFrame,
         prepared: &PreparedPointerInput,
         journal: PointerEdgeJournal,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let provider = self
             .provider
             .as_ref()
-            .ok_or(DockspaceError::PointerInputBindingMissing)?;
+            .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)?;
         if provider.lease() != prepared.provider() {
-            return Err(DockspaceError::PointerInputBindingStale);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingStale);
         }
         frame.submit_surface_pointer_journal(provider, journal)?;
         Ok(())
@@ -661,7 +665,7 @@ impl EguiPointerInput {
         context: &Context,
         epoch: EguiPointerInputEpoch,
         registrations: Option<&PaintReceiverRegistrations>,
-    ) -> Result<Option<PreparedPointerInput>, DockspaceError> {
+    ) -> Result<Option<PreparedPointerInput>, DockspaceErrorSource> {
         self.prepare_inner(context, epoch, registrations, None)
     }
 
@@ -671,7 +675,7 @@ impl EguiPointerInput {
         epoch: EguiPointerInputEpoch,
         registrations: Option<&PaintReceiverRegistrations>,
         events: &[Event],
-    ) -> Result<Option<PreparedPointerInput>, DockspaceError> {
+    ) -> Result<Option<PreparedPointerInput>, DockspaceErrorSource> {
         self.prepare_inner(context, epoch, registrations, Some(events))
     }
 
@@ -681,17 +685,17 @@ impl EguiPointerInput {
         epoch: EguiPointerInputEpoch,
         registrations: Option<&PaintReceiverRegistrations>,
         captured_events: Option<&[Event]>,
-    ) -> Result<Option<PreparedPointerInput>, DockspaceError> {
+    ) -> Result<Option<PreparedPointerInput>, DockspaceErrorSource> {
         let Some(provider) = self.provider.as_ref() else {
             return Ok(None);
         };
         let lease = provider.lease();
         let committed_through = provider.committed_through();
         let Some(binding) = self.binding.as_ref() else {
-            return Err(DockspaceError::PointerInputBindingMissing);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingMissing);
         };
         if binding.incarnation != epoch.incarnation {
-            return Err(DockspaceError::PointerInputBindingStale);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingStale);
         }
         if binding.viewport != Some(epoch.viewport)
             || binding
@@ -699,14 +703,14 @@ impl EguiPointerInput {
                 .as_ref()
                 .is_none_or(|bound| !bound.eq(context))
         {
-            return Err(DockspaceError::PointerInputBindingStale);
+            return Err(crate::error::DockspaceErrorSource::PointerInputBindingStale);
         }
         if self
             .pending
             .as_ref()
             .is_some_and(|pending| pending.epoch != epoch)
         {
-            return Err(DockspaceError::PointerInputEpochAdvancedBeforeCommit);
+            return Err(crate::error::DockspaceErrorSource::PointerInputEpochAdvancedBeforeCommit);
         }
         if self.pending.is_none() && self.delivered_epoch != Some(epoch) {
             let mut cursor = committed_through;
@@ -818,7 +822,7 @@ pub(crate) fn enroll_surface_local_provider(
     host: PresentationHostLease,
     surface: SurfaceId,
     workspace_epoch: WorkspaceEpoch,
-) -> Result<(), DockspaceError> {
+) -> Result<(), DockspaceErrorSource> {
     let reservation = state.reserve_install()?;
     let watermark = PointerEdgeSequence::new(0);
     let provider = engine.create_surface_local_pointer_provider(
@@ -838,7 +842,7 @@ pub(crate) fn install_surface_local_provider(
     context: &Context,
     viewport: ViewportId,
     workspace_epoch: WorkspaceEpoch,
-) -> Result<(), DockspaceError> {
+) -> Result<(), DockspaceErrorSource> {
     enroll_surface_local_provider(engine, state, host, surface, workspace_epoch)?;
     state.bind_context(context, viewport, surface, workspace_epoch)
 }
@@ -847,7 +851,7 @@ fn pointer_edge(
     event: &Event,
     cursor: &mut PointerEdgeSequence,
     capture: Authority<PointerCaptureOwner>,
-) -> Result<Option<PointerEdge>, DockspaceError> {
+) -> Result<Option<PointerEdge>, DockspaceErrorSource> {
     let (kind, position) = match event {
         Event::PointerMoved(position) => (PointerEdgeKind::Moved, Some(*position)),
         Event::PointerButton {
@@ -868,9 +872,9 @@ fn pointer_edge(
         Event::PointerGone => return Ok(None),
         _ => return Ok(None),
     };
-    let sequence = cursor
-        .checked_next()
-        .ok_or(DockspaceError::PointerEdgeSequenceExhausted { after: *cursor })?;
+    let sequence = cursor.checked_next().ok_or(
+        crate::error::DockspaceErrorSource::PointerEdgeSequenceExhausted { after: *cursor },
+    )?;
     *cursor = sequence;
     Ok(Some(PointerEdge::new(
         sequence,
@@ -1275,7 +1279,7 @@ mod tests {
 
         assert!(matches!(
             state.reserve_install(),
-            Err(DockspaceError::PointerInputProviderAlreadyInstalled)
+            Err(crate::error::DockspaceErrorSource::PointerInputProviderAlreadyInstalled)
         ));
     }
 
@@ -1413,7 +1417,7 @@ mod tests {
         });
         assert!(matches!(
             result.expect("second attempt ran"),
-            Err(DockspaceError::PointerInputEpochAdvancedBeforeCommit)
+            Err(crate::error::DockspaceErrorSource::PointerInputEpochAdvancedBeforeCommit)
         ));
     }
 
@@ -1479,7 +1483,7 @@ mod tests {
         });
         assert!(matches!(
             result.expect("staging was attempted"),
-            Err(DockspaceError::PointerEdgeSequenceExhausted { after })
+            Err(crate::error::DockspaceErrorSource::PointerEdgeSequenceExhausted { after })
                 if after == PointerEdgeSequence::new(u64::MAX)
         ));
         assert_eq!(

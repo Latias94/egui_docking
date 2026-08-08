@@ -39,7 +39,7 @@ use crate::projection::{TabStripStateMap, load_tab_strip_states};
 use crate::render::{EguiDockRenderer, EguiRendererError, EguiSurfaceDraft};
 use crate::renderer::consume_gesture_escape;
 use crate::style::DockStyle;
-use crate::{DockspaceCommandOutcome, DockspaceError, PaneView};
+use crate::{DockspaceCommandOutcome, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(10);
@@ -719,8 +719,8 @@ fn post_pointer_prepare_error_drops_core_guard_before_retiring_provider() {
         .finish()
         .expect_err("the post-pointer semantic sequence is exhausted");
     assert!(matches!(
-        error,
-        DockspaceError::InputSourceSequenceExhausted { .. }
+        error.detail(),
+        crate::error::DockspaceErrorSource::InputSourceSequenceExhausted { .. }
     ));
     assert_eq!(dockspace.pointer_input.provider(), None);
     assert_eq!(dockspace.core_engine().pointer_provider(), None);
@@ -768,7 +768,10 @@ fn deferred_pointer_abort_retries_before_the_next_public_boundary() {
     let error = dockspace
         .abort_pointer_input()
         .expect_err("an in-flight core guard blocks provider retirement");
-    assert!(matches!(error, DockspaceError::PointerInputFrameInFlight));
+    assert!(matches!(
+        error.detail(),
+        crate::error::DockspaceErrorSource::PointerInputFrameInFlight
+    ));
     assert!(dockspace.pending_pointer_abort);
     assert!(dockspace.pointer_input.provider().is_some());
 
@@ -858,12 +861,12 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
         .expect_err("paint without an exact pointer epoch must fail closed");
 
     assert!(matches!(
-        error,
-        DockspaceError::CoreHostFrame(
+        error.detail(),
+        crate::error::DockspaceErrorSource::CoreHostFrame(
             dockspace::backend::engine::CoreHostFrameError::PointerJournalMissingBeforePresentation {
                 provider: missing,
             },
-        ) if missing == provider
+        ) if *missing == provider
     ));
 }
 
@@ -1275,11 +1278,14 @@ fn duplicate_owned_draft_staging_does_not_publish_adapter_sidecars() {
     draft
         .stage_core_contribution(&mut core_frame)
         .expect("first contribution stages");
+    let error = draft
+        .stage_core_contribution(&mut core_frame)
+        .expect_err("a contribution capability is affine");
     assert!(matches!(
-        draft.stage_core_contribution(&mut core_frame),
-        Err(DockspaceError::Renderer(
+        error.detail(),
+        crate::error::DockspaceErrorSource::Renderer(
             EguiRendererError::ContributionAlreadySubmitted { surface: SURFACE }
-        ))
+        )
     ));
 
     assert_eq!(dockspace.renderer.sidecar_diagnostics(), before);
@@ -1340,11 +1346,14 @@ fn owned_core_candidate_cannot_overwrite_an_advanced_host_frontier() {
     EguiEngineOwner::create_presentation_host(&mut dockspace.engine)
         .expect("a later host frontier is minted independently");
 
+    let error =
+        EguiEngineOwner::commit_owned_host_presentation_frame(&mut dockspace.engine, prepared)
+            .expect_err("the stale candidate must not publish");
     assert!(matches!(
-        EguiEngineOwner::commit_owned_host_presentation_frame(&mut dockspace.engine, prepared),
-        Err(DockspaceError::Engine(
+        error.detail(),
+        crate::error::DockspaceErrorSource::Engine(
             EngineError::HostFramePresentationHostFrontierStale { .. }
-        ))
+        )
     ));
     assert_eq!(dockspace.engine.last_reducer_tick(), before_tick);
 }
@@ -1372,11 +1381,15 @@ fn cross_renderer_preflight_rejects_before_core_commit() {
         .expect("second renderer builds");
     let before = other.sidecar_diagnostics();
 
+    let error = other
+        .prepare_frame(prepared_core.transition(), drafts, BTreeMap::new())
+        .err()
+        .expect("a draft cannot cross renderer identity");
     assert!(matches!(
-        other.prepare_frame(prepared_core.transition(), drafts, BTreeMap::new()),
-        Err(DockspaceError::Renderer(
-            EguiRendererError::RendererBindingMismatch { surface: SURFACE }
-        ))
+        error.detail(),
+        crate::error::DockspaceErrorSource::Renderer(EguiRendererError::RendererBindingMismatch {
+            surface: SURFACE
+        })
     ));
     drop(prepared_core);
     assert_eq!(dockspace.engine.last_reducer_tick(), before_tick);
@@ -1414,16 +1427,19 @@ fn changed_style_preflight_rejects_before_core_commit() {
         EguiEngineOwner::prepare_host_presentation_frame(&mut dockspace.engine, core_frame)
             .expect("core frame prepares without publishing");
 
+    let error = dockspace
+        .renderer
+        .prepare_frame(prepared_core.transition(), drafts, BTreeMap::new())
+        .err()
+        .expect("a stale style-bound draft must not publish");
     assert!(matches!(
-        dockspace
-            .renderer
-            .prepare_frame(prepared_core.transition(), drafts, BTreeMap::new()),
-        Err(DockspaceError::Renderer(
+        error.detail(),
+        crate::error::DockspaceErrorSource::Renderer(
             EguiRendererError::RendererStyleRevisionMismatch {
                 surface: SURFACE,
                 ..
             }
-        ))
+        )
     ));
     drop(prepared_core);
     assert_eq!(dockspace.engine.last_reducer_tick(), before_tick);

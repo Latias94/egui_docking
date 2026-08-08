@@ -14,6 +14,7 @@ pub mod backend;
 mod builder;
 mod drop_guides;
 mod error;
+mod error_detail;
 // These modules share implementation with the opt-in host backend. Their
 // backend-only branches are intentionally dormant in the default product build.
 #[cfg_attr(not(any(feature = "backend", test)), allow(dead_code, unused_imports))]
@@ -45,7 +46,7 @@ mod test_support;
 mod behavior_tests;
 
 pub use builder::DockspaceBuilder;
-pub use error::DockspaceError;
+pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
 #[cfg(feature = "serde")]

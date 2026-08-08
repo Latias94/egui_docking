@@ -253,6 +253,7 @@ impl Dockspace {
         ) {
             Ok(prepared) => prepared,
             Err(publisher) => {
+                let publisher = DockspaceError::from_source(publisher);
                 return match restore.abort() {
                     Ok(()) => Err(DockspaceDocumentPersistenceError::Publish(publisher)),
                     Err(rollback) => Err(DockspaceDocumentPersistenceError::PublishRollback {
@@ -264,7 +265,7 @@ impl Dockspace {
         };
         let committed = restore
             .commit_publication(prepared)
-            .map_err(DockspaceError::from)
+            .map_err(DockspaceError::from_detail)
             .map_err(DockspaceDocumentPersistenceError::Publish)?;
         let (publication, transition) = committed.into_parts();
         self.accept_document_restore_transition(sequence, &transition);
@@ -347,7 +348,7 @@ impl Dockspace {
     ) -> Result<Option<BackendIngressOrdinal>, DockspaceError> {
         self.engine
             .adapter_record_pending_backend_restore(recorder)
-            .map_err(Into::into)
+            .map_err(DockspaceError::from_detail)
     }
 }
 
@@ -598,21 +599,27 @@ mod tests {
         let before = dockspace.engine.version();
         let unbound_item = ItemId::new(99);
 
+        let error = dockspace
+            .replace_workspace(workspace_with(unbound_item))
+            .expect_err("an unmapped item cannot enter the workspace");
         assert!(matches!(
-            dockspace.replace_workspace(workspace_with(unbound_item)),
-            Err(DockspaceError::DocumentSession(
+            error.detail(),
+            crate::error::DockspaceErrorSource::DocumentSession(
                 DockspaceDocumentSessionError::UnknownExternalItemKey(item)
-            )) if item == unbound_item
+            ) if *item == unbound_item
         ));
-        assert!(matches!(
-            dockspace.submit_command(WorkspaceCommand::CreateSurfaceRoot {
+        let error = dockspace
+            .submit_command(WorkspaceCommand::CreateSurfaceRoot {
                 surface: SurfaceId::new(4),
                 root: RootId::new(4),
                 content: RootContent::OpenItem(unbound_item),
-            }),
-            Err(DockspaceError::DocumentSession(
+            })
+            .expect_err("an unmapped item cannot enter a command");
+        assert!(matches!(
+            error.detail(),
+            crate::error::DockspaceErrorSource::DocumentSession(
                 DockspaceDocumentSessionError::UnknownExternalItemKey(item)
-            )) if item == unbound_item
+            ) if *item == unbound_item
         ));
         assert_eq!(dockspace.engine.version(), before);
     }
@@ -731,11 +738,15 @@ mod tests {
         let before = target.engine.version();
         target.set_semantic_source_sequence_for_test(SourceSequence::new(u64::MAX));
 
+        let error = target
+            .load_document_json(&json, primary_item_association)
+            .expect_err("the exhausted source sequence must abort publication");
+        let DockspaceDocumentPersistenceError::Publish(error) = error else {
+            panic!("the reducer failure must be reported as a publication error");
+        };
         assert!(matches!(
-            target.load_document_json(&json, primary_item_association),
-            Err(DockspaceDocumentPersistenceError::Publish(
-                DockspaceError::InputSourceSequenceExhausted { .. }
-            ))
+            error.detail(),
+            crate::error::DockspaceErrorSource::InputSourceSequenceExhausted { .. }
         ));
         assert_eq!(target.engine.version(), before);
         assert_eq!(target.next_document_generation(), Some(5));

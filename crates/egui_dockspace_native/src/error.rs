@@ -132,6 +132,9 @@ pub enum NativeRuntimeError {
     /// The dockspace adapter rejected an operation.
     #[error(transparent)]
     Dockspace(#[from] egui_dockspace::DockspaceError),
+    /// Native style configuration was invalid before entering a hosted cycle.
+    #[error(transparent)]
+    DockStyle(#[from] egui_dockspace::DockStyleError),
     /// The atomic dockspace document could not be captured or restored.
     #[error(transparent)]
     DocumentPersistence(#[from] egui_dockspace::DockspaceDocumentPersistenceError),
@@ -150,6 +153,16 @@ pub enum NativeRuntimeError {
     /// A fail-closed receiver receipt roster was malformed.
     #[error(transparent)]
     PointerReceipts(#[from] dockspace::backend::pointer_receiver::PointerReceiverReceiptBatchError),
+    /// A receiver observation contradicted the exact presented projection.
+    #[error(transparent)]
+    PointerReceiverObservation(
+        #[from] dockspace::backend::pointer_receiver::PointerReceiverObservationError,
+    ),
+    /// A hover/drop query could not resolve against the sealed host frame.
+    #[error(transparent)]
+    HoverDropResolution(
+        #[from] dockspace::backend::engine::HostFrameHoverDropResolutionError,
+    ),
     /// Native geometry could not be represented by the core geometry model.
     #[error(transparent)]
     Geometry(#[from] dockspace::geometry::GeometryError),

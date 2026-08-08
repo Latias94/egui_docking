@@ -45,8 +45,10 @@ pub(super) fn prepared_host_transition(
 #[cfg(feature = "serde")]
 fn map_document_session_error(error: DockspaceDocumentSessionError) -> DockspaceError {
     match error {
-        DockspaceDocumentSessionError::Engine(source) => DockspaceError::Engine(*source),
-        error => DockspaceError::DocumentSession(error),
+        DockspaceDocumentSessionError::Engine(source) => {
+            crate::error::DockspaceErrorSource::Engine(*source).into()
+        }
+        error => crate::error::DockspaceErrorSource::DocumentSession(error).into(),
     }
 }
 
@@ -309,7 +311,9 @@ impl EguiEngineOwner for DockEngine {
         &self,
         frame: CoreHostPresentationFrame,
     ) -> Result<Self::PreparedOwnedHostCommit, DockspaceError> {
-        frame.prepare_owned(self).map_err(Into::into)
+        frame
+            .prepare_owned(self)
+            .map_err(DockspaceError::from_detail)
     }
 
     fn prepared_host_transition(prepared: &Self::PreparedOwnedHostCommit) -> &EngineTransition {
@@ -320,7 +324,7 @@ impl EguiEngineOwner for DockEngine {
         &mut self,
         prepared: Self::PreparedOwnedHostCommit,
     ) -> Result<EngineTransition, DockspaceError> {
-        prepared.commit(self).map_err(Into::into)
+        prepared.commit(self).map_err(DockspaceError::from_detail)
     }
 
     fn try_prepare_presentation_stream_quiescence(

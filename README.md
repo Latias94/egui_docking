@@ -65,6 +65,9 @@ Ordinary commands, close decisions, style changes, and paint responses return
 product-level mutation and outcome values. They do not expose reducer ticks,
 `EngineTransition`, scene stamps, or presentation ledgers. Those diagnostics
 remain available only through the explicitly unstable backend protocol.
+Facade failures follow the same boundary: callers branch on the six stable
+`DockspaceErrorKind` categories, while exact renderer and reducer diagnostics
+remain private in the standard error source chain.
 
 The renderer-neutral crate follows the same split. Its default API exposes the
 model and `dockspace::runtime` facade; adapter-only reducer, scene, pointer,

@@ -49,7 +49,7 @@ impl DockspaceBuilder {
     ///
     /// Returns [`DockspaceError`] when style or workspace validation fails.
     pub fn build(self) -> Result<Dockspace, DockspaceError> {
-        self.style.validate()?;
+        self.style.validate().map_err(DockspaceError::from_detail)?;
         Dockspace::from_parts(self.id, self.workspace, self.policy, self.style)
     }
 }

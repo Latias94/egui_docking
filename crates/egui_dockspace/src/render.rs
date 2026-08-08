@@ -382,15 +382,18 @@ impl PreparedEguiFrameAcceptance {
             })
             .expect("a prepared renderer acceptance retains at least one physical output");
         if !Arc::ptr_eq(&self.renderer_identity, &renderer.identity) {
-            return Err(EguiRendererError::RendererBindingMismatch { surface }.into());
+            return Err(DockspaceError::from_detail(
+                EguiRendererError::RendererBindingMismatch { surface },
+            ));
         }
         if self.renderer_style_revision != renderer.style_revision {
-            return Err(EguiRendererError::RendererStyleRevisionMismatch {
-                surface,
-                draft_revision: self.renderer_style_revision,
-                renderer_revision: renderer.style_revision,
-            }
-            .into());
+            return Err(DockspaceError::from_detail(
+                EguiRendererError::RendererStyleRevisionMismatch {
+                    surface,
+                    draft_revision: self.renderer_style_revision,
+                    renderer_revision: renderer.style_revision,
+                },
+            ));
         }
         Ok(())
     }
@@ -692,7 +695,7 @@ impl EguiSurfaceDraft {
         obligation: HostPresentationObligation,
     ) -> Result<(), DockspaceError> {
         self.try_stage_painted_output(frame, obligation)
-            .map_err(Into::into)
+            .map_err(DockspaceError::from_detail)
     }
 
     fn try_stage_painted_output<F>(
@@ -806,7 +809,8 @@ impl EguiSurfaceDraft {
         &mut self,
         frame: &mut CoreHostPresentationFrame,
     ) -> Result<(), DockspaceError> {
-        self.try_stage_core_contribution(frame).map_err(Into::into)
+        self.try_stage_core_contribution(frame)
+            .map_err(DockspaceError::from_detail)
     }
 
     fn try_stage_core_contribution<F>(&mut self, frame: &mut F) -> Result<(), EguiRendererError>
@@ -1321,7 +1325,8 @@ impl EguiDockRenderer {
         let requirements = view
             .presentation_requirements()
             .surface(surface)
-            .ok_or(ProjectionError::MissingSurface { surface })?;
+            .ok_or(ProjectionError::MissingSurface { surface })
+            .map_err(DockspaceError::from_detail)?;
         build_surface_projection(
             ui,
             source_workspace,
@@ -1333,7 +1338,7 @@ impl EguiDockRenderer {
             panes,
             &self.style,
         )
-        .map_err(Into::into)
+        .map_err(DockspaceError::from_detail)
     }
 
     pub(crate) fn retained_paint_resources(
@@ -1352,7 +1357,7 @@ impl EguiDockRenderer {
         native_staging: BTreeMap<SurfaceId, EguiNativeStagingPublication>,
     ) -> Result<PreparedEguiFrameAcceptance, DockspaceError> {
         self.try_prepare_frame(transition, drafts, native_staging)
-            .map_err(Into::into)
+            .map_err(DockspaceError::from_detail)
     }
 
     fn try_prepare_frame(

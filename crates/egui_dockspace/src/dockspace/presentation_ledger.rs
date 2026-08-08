@@ -17,7 +17,7 @@ use dockspace::ids::SurfaceId;
 use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use egui::{Context, ViewportId};
 
-use crate::error::DockspaceError;
+use crate::error::DockspaceErrorSource;
 use crate::presentation_settlement::{
     EguiPresentationResult, OuterPresentationCompletion, PendingEguiPresentation,
 };
@@ -252,7 +252,7 @@ impl PresentationOutputLedger {
         viewport: ViewportId,
         cumulative_frame: u64,
         pass: u32,
-    ) -> Result<AutomaticPresentationFrame, DockspaceError> {
+    ) -> Result<AutomaticPresentationFrame, DockspaceErrorSource> {
         #[cfg(test)]
         let test_presentation_provider = current_presentation_provider(context);
         let same_egui_frame = self.automatic_callback.as_ref().is_some_and(|known| {
@@ -273,7 +273,7 @@ impl PresentationOutputLedger {
             });
             baseline
                 .checked_add(1)
-                .ok_or(DockspaceError::AutomaticHostFrameSequenceExhausted)?
+                .ok_or(crate::error::DockspaceErrorSource::AutomaticHostFrameSequenceExhausted)?
         };
         Ok(AutomaticPresentationFrame {
             progress: AutomaticPresentationProgress {
@@ -296,7 +296,7 @@ impl PresentationOutputLedger {
         prelude: &CoreHostFramePrelude,
         automatic: &mut AutomaticPresentationFrame,
         outer: &mut OuterPresentationFrame,
-    ) -> Result<HostPresentationObservation, DockspaceError> {
+    ) -> Result<HostPresentationObservation, DockspaceErrorSource> {
         let streams = prelude.pending_presentation_streams().collect::<Vec<_>>();
         if streams.is_empty() {
             return Ok(HostPresentationObservation::NoUpdate);
@@ -322,7 +322,7 @@ impl PresentationOutputLedger {
         &self,
         prelude: &CoreHostFramePrelude,
         outer: &mut OuterPresentationFrame,
-    ) -> Result<HostPresentationObservation, DockspaceError> {
+    ) -> Result<HostPresentationObservation, DockspaceErrorSource> {
         let streams = prelude.pending_presentation_streams().collect::<Vec<_>>();
         if streams.is_empty() {
             return Ok(HostPresentationObservation::NoUpdate);
@@ -340,7 +340,7 @@ impl PresentationOutputLedger {
         &self,
         stream: HostPresentationStreamId,
         frame: &mut OuterPresentationFrame,
-    ) -> Result<HostPresentationStreamObservation, DockspaceError> {
+    ) -> Result<HostPresentationStreamObservation, DockspaceErrorSource> {
         let Some(state) = self.outer_streams.get(&stream) else {
             return Ok(HostPresentationStreamObservation::NoUpdate);
         };
@@ -359,9 +359,11 @@ impl PresentationOutputLedger {
         let Some(settled_through) = settled_through else {
             return Ok(HostPresentationStreamObservation::NoUpdate);
         };
-        let generation = self
-            .next_capture_generation(stream)
-            .ok_or(DockspaceError::OuterPresentationCaptureGenerationExhausted { stream })?;
+        let generation = self.next_capture_generation(stream).ok_or(
+            crate::error::DockspaceErrorSource::OuterPresentationCaptureGenerationExhausted {
+                stream,
+            },
+        )?;
         frame.captures.push(OuterPresentationCapture {
             stream,
             generation,
@@ -380,7 +382,7 @@ impl PresentationOutputLedger {
         &self,
         stream: HostPresentationStreamId,
         frame: &mut AutomaticPresentationFrame,
-    ) -> Result<HostPresentationStreamObservation, DockspaceError> {
+    ) -> Result<HostPresentationStreamObservation, DockspaceErrorSource> {
         let Some(state) = self.automatic_streams.get(&stream) else {
             return Ok(HostPresentationStreamObservation::NoUpdate);
         };
@@ -404,9 +406,11 @@ impl PresentationOutputLedger {
             return Ok(HostPresentationStreamObservation::NoUpdate);
         }
 
-        let generation = self
-            .next_capture_generation(stream)
-            .ok_or(DockspaceError::AutomaticPresentationCaptureGenerationExhausted { stream })?;
+        let generation = self.next_capture_generation(stream).ok_or(
+            crate::error::DockspaceErrorSource::AutomaticPresentationCaptureGenerationExhausted {
+                stream,
+            },
+        )?;
         frame.captures.push(AutomaticPresentationCapture {
             stream,
             generation,
@@ -428,7 +432,7 @@ impl PresentationOutputLedger {
         state: &AutomaticPresentationStream,
         completed: CompletedTestPresentationBoundary,
         frame: &mut AutomaticPresentationFrame,
-    ) -> Result<HostPresentationStreamObservation, DockspaceError> {
+    ) -> Result<HostPresentationStreamObservation, DockspaceErrorSource> {
         let Some((reported_through, _)) = state.emissions.iter().rev().find(|(_, emission)| {
             emission
                 .progress
@@ -437,9 +441,11 @@ impl PresentationOutputLedger {
         }) else {
             return Ok(HostPresentationStreamObservation::NoUpdate);
         };
-        let generation = self
-            .next_capture_generation(stream)
-            .ok_or(DockspaceError::AutomaticPresentationCaptureGenerationExhausted { stream })?;
+        let generation = self.next_capture_generation(stream).ok_or(
+            crate::error::DockspaceErrorSource::AutomaticPresentationCaptureGenerationExhausted {
+                stream,
+            },
+        )?;
         let reported_through = *reported_through;
         frame.captures.push(AutomaticPresentationCapture {
             stream,
@@ -517,7 +523,7 @@ impl PresentationOutputLedger {
 
     pub(super) fn next_ordered_outer_capture(
         &self,
-    ) -> Result<Option<OrderedOuterCapture>, DockspaceError> {
+    ) -> Result<Option<OrderedOuterCapture>, DockspaceErrorSource> {
         for (stream, state) in &self.outer_streams {
             let pending = self
                 .ordered_outer_captures
@@ -549,7 +555,7 @@ impl PresentationOutputLedger {
                 .unwrap_or_default()
                 .checked_next()
                 .ok_or(
-                    DockspaceError::OuterPresentationCaptureGenerationExhausted { stream: *stream },
+                    crate::error::DockspaceErrorSource::OuterPresentationCaptureGenerationExhausted { stream: *stream },
                 )?;
             return Ok(Some(OrderedOuterCapture {
                 stream: *stream,

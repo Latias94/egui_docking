@@ -2,7 +2,7 @@
 
 use dockspace::policy::DockPolicy;
 use egui_dockspace::backend::EguiNativeConfigurationSession;
-use egui_dockspace::{DockStyle, Dockspace, DockspaceError};
+use egui_dockspace::{DockStyle, DockStyleError, Dockspace, DockspaceError};
 
 /// Application configuration waiting for the next terminal host-frame phase.
 #[derive(Clone, Default)]
@@ -16,7 +16,7 @@ impl NativeConfigurationQueue {
         self.policy = Some(policy);
     }
 
-    pub(crate) fn replace_style(&mut self, style: DockStyle) -> Result<(), DockspaceError> {
+    pub(crate) fn replace_style(&mut self, style: DockStyle) -> Result<(), DockStyleError> {
         style.validate()?;
         self.style = Some(style);
         Ok(())

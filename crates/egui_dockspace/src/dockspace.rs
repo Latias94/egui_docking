@@ -136,16 +136,22 @@ impl Dockspace {
         policy: DockPolicy,
         style: DockStyle,
     ) -> Result<Self, DockspaceError> {
-        let presentation_config = style.presentation_config()?;
+        let presentation_config = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
         let mut engine =
-            DockEngine::new_with_presentation_config(workspace, policy, presentation_config)?;
-        let presentation_host = engine.create_presentation_host()?;
+            DockEngine::new_with_presentation_config(workspace, policy, presentation_config)
+                .map_err(DockspaceError::from_detail)?;
+        let presentation_host = engine
+            .create_presentation_host()
+            .map_err(DockspaceError::from_detail)?;
         #[cfg(feature = "serde")]
-        let engine = DockspaceDocumentSession::unbound(engine)?;
+        let engine =
+            DockspaceDocumentSession::unbound(engine).map_err(DockspaceError::from_detail)?;
         Ok(Self {
             engine,
             presentation_host,
-            renderer: EguiDockRenderer::new(id, style)?,
+            renderer: EguiDockRenderer::new(id, style).map_err(DockspaceError::from_detail)?,
             pane_focus: PaneFocusAdapterState::default(),
             semantic_source_sequence: SourceSequence::default(),
             last_host_frame: None,
@@ -220,7 +226,8 @@ impl Dockspace {
                 &self.engine,
                 presentation_host,
                 stream,
-            )?
+            )
+            .map_err(DockspaceError::from_detail)?
             else {
                 all_reclaimed = false;
                 continue;
@@ -231,7 +238,8 @@ impl Dockspace {
             EguiEngineOwner::confirm_presentation_stream_quiescence_batch(
                 &mut self.engine,
                 quiescences,
-            )?;
+            )
+            .map_err(DockspaceError::from_detail)?;
         }
 
         let retention = EguiEngineOwner::engine(&self.engine).presentation_retention_manifest();
@@ -255,7 +263,8 @@ impl Dockspace {
             &mut self.engine,
             self.presentation_host,
             pointer_committed_through,
-        )?;
+        )
+        .map_err(DockspaceError::from_detail)?;
         if let Some(bindings) = self.native_bindings.as_mut() {
             bindings.rebind_provider(recorder.lease(), self.engine.version().epoch());
         }
@@ -275,10 +284,10 @@ impl Dockspace {
         receipt: &mut dockspace::backend::ingress::BackendIngressPrefixRetirementReceipt,
     ) -> Result<Vec<dockspace::viewport::ViewportBinding>, DockspaceError> {
         self.ensure_native_session_idle()?;
-        Ok(EguiEngineOwner::settle_backend_ingress_prefix_retirement(
-            &mut self.engine,
-            receipt,
-        )?)
+        Ok(
+            EguiEngineOwner::settle_backend_ingress_prefix_retirement(&mut self.engine, receipt)
+                .map_err(DockspaceError::from_detail)?,
+        )
     }
 
     /// Records one exact renderer result in the joined backend ingress order.
@@ -294,7 +303,8 @@ impl Dockspace {
     ) -> Result<BackendIngressOrdinal, DockspaceError> {
         Ok(self
             .engine
-            .record_backend_presentation_observation(recorder, entry)?)
+            .record_backend_presentation_observation(recorder, entry)
+            .map_err(DockspaceError::from_detail)?)
     }
 
     /// Records every newly contiguous renderer settlement at the backend's
@@ -313,7 +323,8 @@ impl Dockspace {
         while let Some(capture) = self.presentation_ledger.next_ordered_outer_capture()? {
             let ordinal = self
                 .engine
-                .record_backend_presentation_observation(recorder, capture.entry())?;
+                .record_backend_presentation_observation(recorder, capture.entry())
+                .map_err(DockspaceError::from_detail)?;
             self.presentation_ledger.stage_ordered_outer_capture(
                 capture,
                 recorder.lease(),
@@ -338,7 +349,9 @@ impl Dockspace {
         self.ensure_native_session_idle()?;
         let lease = savepoint.lease();
         let recorded_through = savepoint.recorded_through();
-        recorder.rollback_to(savepoint)?;
+        recorder
+            .rollback_to(savepoint)
+            .map_err(DockspaceError::from_detail)?;
         self.presentation_ledger
             .rollback_ordered_outer_after(lease, recorded_through);
         self.pane_focus
@@ -389,7 +402,8 @@ impl Dockspace {
             self.abort_pointer_input()?;
         }
         let replacement =
-            EguiEngineOwner::begin_backend_ingress_provider_replacement(&mut self.engine, drained)?;
+            EguiEngineOwner::begin_backend_ingress_provider_replacement(&mut self.engine, drained)
+                .map_err(DockspaceError::from_detail)?;
         self.pane_focus.accept_transition(replacement.transition());
         Ok(replacement)
     }
@@ -405,7 +419,7 @@ impl Dockspace {
     ) -> Result<BackendIngressProviderReplacementTicket, DockspaceError> {
         self.ensure_native_session_idle()?;
         EguiEngineOwner::reissue_backend_ingress_provider_replacement(&mut self.engine)
-            .map_err(DockspaceError::from)
+            .map_err(DockspaceError::from_detail)
     }
 
     /// Abandons the pending joined-provider handoff and leaves no provider active.
@@ -415,7 +429,8 @@ impl Dockspace {
     ) -> Result<EngineTransition, DockspaceError> {
         self.ensure_native_session_idle()?;
         let transition =
-            EguiEngineOwner::abort_backend_ingress_provider_replacement(&mut self.engine)?;
+            EguiEngineOwner::abort_backend_ingress_provider_replacement(&mut self.engine)
+                .map_err(DockspaceError::from_detail)?;
         self.pane_focus.accept_transition(&transition);
         Ok(transition)
     }
@@ -427,7 +442,8 @@ impl Dockspace {
     ) -> Result<Option<EngineTransition>, DockspaceError> {
         self.ensure_native_session_idle()?;
         let transition =
-            EguiEngineOwner::reap_abandoned_backend_ingress_provider_replacement(&mut self.engine)?;
+            EguiEngineOwner::reap_abandoned_backend_ingress_provider_replacement(&mut self.engine)
+                .map_err(DockspaceError::from_detail)?;
         if let Some(transition) = &transition {
             self.pane_focus.accept_transition(transition);
         }
@@ -445,7 +461,8 @@ impl Dockspace {
             &mut self.engine,
             ticket,
             self.presentation_host,
-        )?;
+        )
+        .map_err(DockspaceError::from_detail)?;
         if let Some(bindings) = self.native_bindings.as_mut() {
             bindings.rebind_provider(recorder.lease(), self.engine.version().epoch());
         }
@@ -474,13 +491,19 @@ impl Dockspace {
 
     /// Replaces style after complete deterministic validation.
     pub fn set_style(&mut self, style: DockStyle) -> Result<DockspaceMutation, DockspaceError> {
-        style.validate()?;
-        self.renderer.ensure_style_revision_available()?;
+        style.validate().map_err(DockspaceError::from_detail)?;
+        self.renderer
+            .ensure_style_revision_available()
+            .map_err(DockspaceError::from_detail)?;
         let transition = self.submit_application_input(EngineInput::ReplacePresentationConfig {
             expected: self.engine.version(),
-            config: style.presentation_config()?,
+            config: style
+                .presentation_config()
+                .map_err(DockspaceError::from_detail)?,
         })?;
-        self.renderer.replace_style(style)?;
+        self.renderer
+            .replace_style(style)
+            .map_err(DockspaceError::from_detail)?;
         Ok(DockspaceMutation::from_transition(&transition))
     }
 
@@ -491,16 +514,19 @@ impl Dockspace {
     ) -> Result<DockspaceCommandResult, DockspaceError> {
         #[cfg(feature = "serde")]
         self.engine
-            .validate_workspace_command_identity_bindings(&command)?;
+            .validate_workspace_command_identity_bindings(&command)
+            .map_err(DockspaceError::from_detail)?;
         let transition = self.submit_application_input(EngineInput::WorkspaceCommand {
             expected: self.engine.version(),
             command,
         })?;
-        DockspaceCommandResult::from_transition(&transition).ok_or(
-            DockspaceError::ApplicationOutcomeUnavailable {
-                operation: "workspace command",
-            },
-        )
+        DockspaceCommandResult::from_transition(&transition)
+            .ok_or(
+                crate::error::DockspaceErrorSource::ApplicationOutcomeUnavailable {
+                    operation: "workspace command",
+                },
+            )
+            .map_err(Into::into)
     }
 
     /// Records one application workspace command in the active backend causal stream.
@@ -512,7 +538,8 @@ impl Dockspace {
     ) -> Result<BackendIngressOrdinal, DockspaceError> {
         #[cfg(feature = "serde")]
         self.engine
-            .validate_workspace_command_identity_bindings(&command)?;
+            .validate_workspace_command_identity_bindings(&command)
+            .map_err(DockspaceError::from_detail)?;
         self.record_backend_input(
             recorder,
             EngineInput::WorkspaceCommand {
@@ -539,7 +566,8 @@ impl Dockspace {
         let provider = self
             .engine
             .platform_provider()
-            .ok_or(BackendIngressError::ProviderUnavailable)?;
+            .ok_or(BackendIngressError::ProviderUnavailable)
+            .map_err(DockspaceError::from_detail)?;
         self.record_backend_input(
             recorder,
             EngineInput::RegisterViewport {
@@ -567,7 +595,8 @@ impl Dockspace {
         let provider = self
             .engine
             .platform_provider()
-            .ok_or(BackendIngressError::ProviderUnavailable)?;
+            .ok_or(BackendIngressError::ProviderUnavailable)
+            .map_err(DockspaceError::from_detail)?;
         self.record_backend_input(
             recorder,
             EngineInput::BootstrapChildViewport {
@@ -702,11 +731,13 @@ impl Dockspace {
             token,
             decision,
         })?;
-        DockspaceCloseResult::from_transition(&transition).ok_or(
-            DockspaceError::ApplicationOutcomeUnavailable {
-                operation: "close decision",
-            },
-        )
+        DockspaceCloseResult::from_transition(&transition)
+            .ok_or(
+                crate::error::DockspaceErrorSource::ApplicationOutcomeUnavailable {
+                    operation: "close decision",
+                },
+            )
+            .map_err(Into::into)
     }
 
     /// Submits one exact terminal decision for a deferred close continuation.
@@ -721,11 +752,13 @@ impl Dockspace {
             token,
             decision,
         })?;
-        DockspaceCloseResult::from_transition(&transition).ok_or(
-            DockspaceError::ApplicationOutcomeUnavailable {
-                operation: "deferred close decision",
-            },
-        )
+        DockspaceCloseResult::from_transition(&transition)
+            .ok_or(
+                crate::error::DockspaceErrorSource::ApplicationOutcomeUnavailable {
+                    operation: "deferred close decision",
+                },
+            )
+            .map_err(Into::into)
     }
 
     /// Submits an epoch-advancing complete workspace replacement.
@@ -735,7 +768,8 @@ impl Dockspace {
     ) -> Result<DockspaceMutation, DockspaceError> {
         #[cfg(feature = "serde")]
         self.engine
-            .validate_workspace_identity_bindings(&workspace)?;
+            .validate_workspace_identity_bindings(&workspace)
+            .map_err(DockspaceError::from_detail)?;
         let transition = self.submit_application_input(EngineInput::ReplaceWorkspace(workspace))?;
         Ok(DockspaceMutation::from_transition(&transition))
     }
@@ -762,6 +796,7 @@ impl Dockspace {
             &mut self.pane_focus,
             input,
         )
+        .map_err(Into::into)
     }
 
     #[cfg(feature = "serde")]
@@ -771,12 +806,15 @@ impl Dockspace {
         pointer_input: &mut EguiPointerInput,
         semantic_source_sequence: &mut SourceSequence,
         input: EngineInput,
-    ) -> Result<(PreparedDockspaceDocumentPublication, SourceSequence), DockspaceError> {
+    ) -> Result<
+        (PreparedDockspaceDocumentPublication, SourceSequence),
+        crate::error::DockspaceErrorSource,
+    > {
         if restore.engine().backend_ingress_provider().is_some() {
-            return Err(DockspaceError::BackendApplicationInputRequiresIngress);
+            return Err(crate::error::DockspaceErrorSource::BackendApplicationInputRequiresIngress);
         }
         let sequence = semantic_source_sequence.checked_next().ok_or(
-            DockspaceError::InputSourceSequenceExhausted {
+            crate::error::DockspaceErrorSource::InputSourceSequenceExhausted {
                 input_source: EGUI_APPLICATION_INPUT_SOURCE,
             },
         )?;
@@ -818,16 +856,16 @@ impl Dockspace {
         semantic_source_sequence: &mut SourceSequence,
         pane_focus: &mut PaneFocusAdapterState,
         input: EngineInput,
-    ) -> Result<EngineTransition, DockspaceError> {
+    ) -> Result<EngineTransition, crate::error::DockspaceErrorSource> {
         if engine
             .application_engine()
             .backend_ingress_provider()
             .is_some()
         {
-            return Err(DockspaceError::BackendApplicationInputRequiresIngress);
+            return Err(crate::error::DockspaceErrorSource::BackendApplicationInputRequiresIngress);
         }
         let sequence = semantic_source_sequence.checked_next().ok_or(
-            DockspaceError::InputSourceSequenceExhausted {
+            crate::error::DockspaceErrorSource::InputSourceSequenceExhausted {
                 input_source: EGUI_APPLICATION_INPUT_SOURCE,
             },
         )?;
@@ -872,32 +910,39 @@ impl Dockspace {
         let active = self
             .engine
             .backend_ingress_provider()
-            .ok_or(BackendIngressError::ProviderUnavailable)?;
+            .ok_or(BackendIngressError::ProviderUnavailable)
+            .map_err(DockspaceError::from_detail)?;
         if recorder.lease() != active {
-            return Err(BackendIngressError::ProviderLeaseMismatch {
-                expected: active,
-                submitted: recorder.lease(),
-            }
-            .into());
+            return Err(DockspaceError::from_detail(
+                BackendIngressError::ProviderLeaseMismatch {
+                    expected: active,
+                    submitted: recorder.lease(),
+                },
+            ));
         }
-        Ok(recorder.record_semantic_input(input)?)
+        Ok(recorder
+            .record_semantic_input(input)
+            .map_err(DockspaceError::from_detail)?)
     }
 
     fn append_unavailable_surface_contributions(
         frame: &mut CoreHostFrame,
         reason: MeasurementUnavailableReason,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), crate::error::DockspaceErrorSource> {
         let contributions = {
             let view = frame.view();
             frame
                 .surfaces()
                 .map(
-                    |surface| -> Result<PreparedSurfaceContribution, DockspaceError> {
+                    |surface| -> Result<
+                        PreparedSurfaceContribution,
+                        crate::error::DockspaceErrorSource,
+                    > {
                         let token = view.begin_surface_contribution(surface)?;
                         Ok(view.prepare_surface_unavailable_contribution(token, reason)?)
                     },
                 )
-                .collect::<Result<Vec<_>, DockspaceError>>()?
+                .collect::<Result<Vec<_>, crate::error::DockspaceErrorSource>>()?
         };
         for contribution in contributions {
             frame.push_surface_contribution(contribution)?;
@@ -932,7 +977,11 @@ impl Dockspace {
         )?;
         let surface_count = host.expected_surfaces().len();
         if surface_count > 1 {
-            return Err(DockspaceError::MultiSurfaceHostFrameUnsupported { surface_count });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::MultiSurfaceHostFrameUnsupported {
+                    surface_count,
+                },
+            ));
         }
         Ok(host)
     }
@@ -989,7 +1038,7 @@ impl Dockspace {
         let provider = self
             .engine
             .backend_ingress_provider()
-            .ok_or(DockspaceError::BackendIngressProviderMissing)?;
+            .ok_or(crate::error::DockspaceErrorSource::BackendIngressProviderMissing)?;
         if self.pointer_input.provider().is_some() {
             self.abort_pointer_input()?;
         }
@@ -1000,7 +1049,8 @@ impl Dockspace {
         let (routes, retirements) = bindings.into_parts();
         let candidate = registry
             .reconcile_candidate(provider, workspace_epoch, routes, retirements)
-            .map_err(NativeBindingError::from)?;
+            .map_err(NativeBindingError::from)
+            .map_err(DockspaceError::from_detail)?;
         let mut state = self.begin_host_frame_state_inner(
             key,
             None,
@@ -1015,7 +1065,9 @@ impl Dockspace {
 
     #[cfg(any(feature = "backend", test))]
     fn ensure_outer_pointer_provider(&mut self) -> Result<(), DockspaceError> {
-        let schedule = EguiEngineOwner::engine(&self.engine).host_presentation_schedule()?;
+        let schedule = EguiEngineOwner::engine(&self.engine)
+            .host_presentation_schedule()
+            .map_err(DockspaceError::from_detail)?;
         if schedule.native_staging_presentations().len() != 0 {
             if self.pointer_input.provider().is_some() {
                 self.abort_pointer_input()?;
@@ -1053,7 +1105,7 @@ impl Dockspace {
                 Err(EngineError::PointerProviderSurfaceAuthorityUnavailable { .. }) => {
                     return Ok(());
                 }
-                Err(source) => return Err(source.into()),
+                Err(source) => return Err(DockspaceError::from_detail(source)),
             }
             let reservation = self.pointer_input.reserve_install()?;
             let watermark = PointerEdgeSequence::new(0);
@@ -1061,7 +1113,8 @@ impl Dockspace {
                 &mut self.engine,
                 scope,
                 watermark,
-            )?;
+            )
+            .map_err(DockspaceError::from_detail)?;
             self.pointer_input
                 .install_unbound(reservation, provider, surface, workspace_epoch);
         }
@@ -1101,12 +1154,14 @@ impl Dockspace {
         if let Some(previous) = self.last_host_frame
             && key <= previous
         {
-            return Err(DockspaceError::HostFrameNotIncreasing {
-                previous_sequence: previous.sequence(),
-                previous_pass: previous.pass(),
-                submitted_sequence: key.sequence(),
-                submitted_pass: key.pass(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::HostFrameNotIncreasing {
+                    previous_sequence: previous.sequence(),
+                    previous_pass: previous.pass(),
+                    submitted_sequence: key.sequence(),
+                    submitted_pass: key.pass(),
+                },
+            ));
         }
 
         macro_rules! try_or_abort_pointer {
@@ -1115,7 +1170,7 @@ impl Dockspace {
                     Ok(value) => value,
                     Err(error) => {
                         self.abort_pointer_input()?;
-                        return Err(error.into());
+                        return Err(DockspaceError::from_detail(error));
                     }
                 }
             };
@@ -1156,7 +1211,7 @@ impl Dockspace {
                             automatic.context.cumulative_pass_nr_for(automatic.viewport),
                             automatic.viewport,
                         )
-                        .ok_or(DockspaceError::PointerInputBindingMissing)
+                        .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)
                 );
                 try_or_abort_pointer!(self.pointer_input.prepare(&automatic.context, epoch, None))
             } else {
@@ -1207,7 +1262,7 @@ impl Dockspace {
         }
 
         let pass = u32::try_from(ui.ctx().current_pass_index())
-            .map_err(|_| DockspaceError::AutomaticHostFrameSequenceExhausted)?;
+            .map_err(|_| crate::error::DockspaceErrorSource::AutomaticHostFrameSequenceExhausted)?;
         let automatic_presentation = self.automatic_presentation_frame(
             ui.ctx(),
             ui.ctx().viewport_id(),
@@ -1227,10 +1282,16 @@ impl Dockspace {
             (scheduled_surfaces.len(), scheduled_surfaces.next())
         };
         if surface_count != 1 {
-            return Err(DockspaceError::SingleSurfaceHostFrameRequiresOneSurface { surface_count });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::SingleSurfaceHostFrameRequiresOneSurface {
+                    surface_count,
+                },
+            ));
         }
         if scheduled_surface != Some(surface) {
-            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::HostFrameSurfaceOutsideRoster { surface },
+            ));
         }
         let _ = host.show_surface(surface, ui, panes)?;
         let HostFrameResponse {
@@ -1239,9 +1300,10 @@ impl Dockspace {
         } = host.end_host_frame()?;
         let surface_response = surfaces
             .remove(&surface)
-            .ok_or(DockspaceError::SingleSurfacePaintUnavailable { surface })?;
+            .ok_or(crate::error::DockspaceErrorSource::SingleSurfacePaintUnavailable { surface })?;
         let SurfaceCommitResponse { paint, disposition } = surface_response;
-        let paint = paint.ok_or(DockspaceError::SingleSurfacePaintUnavailable { surface })?;
+        let paint = paint
+            .ok_or(crate::error::DockspaceErrorSource::SingleSurfacePaintUnavailable { surface })?;
         Ok(DockspaceResponse {
             transition,
             paint,
@@ -1256,13 +1318,15 @@ impl Dockspace {
         cumulative_frame: u64,
         pass: u32,
     ) -> Result<AutomaticPresentationFrame, DockspaceError> {
-        self.presentation_ledger.prepare_automatic_frame(
-            self.last_host_frame,
-            context,
-            viewport,
-            cumulative_frame,
-            pass,
-        )
+        self.presentation_ledger
+            .prepare_automatic_frame(
+                self.last_host_frame,
+                context,
+                viewport,
+                cumulative_frame,
+                pass,
+            )
+            .map_err(Into::into)
     }
 
     fn automatic_presentation_observation(
@@ -1270,7 +1334,7 @@ impl Dockspace {
         prelude: &CoreHostFramePrelude,
         automatic: &mut AutomaticPresentationFrame,
         outer: &mut OuterPresentationFrame,
-    ) -> Result<HostPresentationObservation, DockspaceError> {
+    ) -> Result<HostPresentationObservation, crate::error::DockspaceErrorSource> {
         self.presentation_ledger
             .automatic_observation(prelude, automatic, outer)
     }
@@ -1279,7 +1343,7 @@ impl Dockspace {
         &self,
         prelude: &CoreHostFramePrelude,
         outer: &mut OuterPresentationFrame,
-    ) -> Result<HostPresentationObservation, DockspaceError> {
+    ) -> Result<HostPresentationObservation, crate::error::DockspaceErrorSource> {
         self.presentation_ledger.outer_observation(prelude, outer)
     }
 
@@ -1362,7 +1426,7 @@ impl Dockspace {
             Err(error) => {
                 self.pending_pointer_abort = true;
                 self.pointer_input.request_bound_repaint();
-                return Err(error);
+                return Err(error.into());
             }
         };
         let Some(mut drained) = drained else {
@@ -1382,7 +1446,7 @@ impl Dockspace {
                 self.pointer_input.restore_drained(drained);
                 self.pending_pointer_abort = true;
                 self.pointer_input.request_bound_repaint();
-                return Err(error.into());
+                return Err(DockspaceError::from_detail(error));
             }
         };
         if outcome.repaint_required() {
@@ -1399,9 +1463,9 @@ impl Dockspace {
         match self.native_sessions.reap_abandoned() {
             native_session::NativeSessionStatus::Idle => Ok(()),
             native_session::NativeSessionStatus::Abandoned => self.abort_pointer_input(),
-            native_session::NativeSessionStatus::Active => {
-                Err(DockspaceError::NativeSessionAlreadyActive)
-            }
+            native_session::NativeSessionStatus::Active => Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeSessionAlreadyActive,
+            )),
         }
     }
 
@@ -1412,7 +1476,8 @@ impl Dockspace {
         self.native_sessions
             .validate(lease)
             .then_some(())
-            .ok_or(DockspaceError::NativeSessionLeaseMismatch)
+            .ok_or(crate::error::DockspaceErrorSource::NativeSessionLeaseMismatch)
+            .map_err(Into::into)
     }
 
     fn complete_native_session(&mut self, lease: &native_session::NativeSessionLease) {

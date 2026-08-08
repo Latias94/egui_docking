@@ -177,7 +177,8 @@ impl EguiNativeInputSession {
             .state_mut()
             .input_core_frame_mut()
             .expect("a native input session cannot hold a presentation capability")
-            .submit_backend_ingress(batch)?)
+            .submit_backend_ingress(batch)
+            .map_err(DockspaceError::from_detail)?)
     }
 
     /// Returns the exact receiver challenge for the paused pointer record.
@@ -194,8 +195,8 @@ impl EguiNativeInputSession {
     ///
     /// # Errors
     ///
-    /// Returns [`DockspaceError::NativeSessionLeaseMismatch`] when `dockspace`
-    /// is not the exact facade that created this session.
+    /// Returns a host-protocol [`DockspaceError`] when `dockspace` is not the
+    /// exact facade that created this session.
     pub fn resolve_receiver(
         &self,
         dockspace: &Dockspace,
@@ -208,11 +209,13 @@ impl EguiNativeInputSession {
         dockspace.validate_native_session(&self.lease)?;
         let route = self.state().resolve_native_input_receiver(native)?;
         if output.surface() != route.surface() {
-            return Err(DockspaceError::NativeReceiverOutputSurfaceMismatch {
-                native,
-                expected: route.surface(),
-                submitted: output.surface(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeReceiverOutputSurfaceMismatch {
+                    native,
+                    expected: route.surface(),
+                    submitted: output.surface(),
+                },
+            ));
         }
         if authority.binding() != Some(route.core()) || !authority.matches_output(output) {
             return Ok(PaintReceiverLookup::GenerationUnavailable);
@@ -245,7 +248,8 @@ impl EguiNativeInputSession {
             .state_mut()
             .input_core_frame_mut()
             .expect("a native input session cannot hold a presentation capability")
-            .submit_backend_pointer_receiver_receipts(receipts)?)
+            .submit_backend_pointer_receiver_receipts(receipts)
+            .map_err(DockspaceError::from_detail)?)
     }
 
     /// Closes causal ingress and enters the terminal configuration phase.
@@ -303,13 +307,16 @@ impl EguiNativeConfigurationSession {
             .state()
             .semantic_source_sequence()
             .checked_next()
-            .ok_or(DockspaceError::InputSourceSequenceExhausted {
-                input_source: EGUI_APPLICATION_INPUT_SOURCE,
-            })?;
+            .ok_or(
+                crate::error::DockspaceErrorSource::InputSourceSequenceExhausted {
+                    input_source: EGUI_APPLICATION_INPUT_SOURCE,
+                },
+            )?;
         self.state_mut()
             .input_core_frame_mut()
             .expect("a native configuration session retains its core input capability")
-            .append_configuration(EGUI_APPLICATION_INPUT_SOURCE, sequence, input)?;
+            .append_configuration(EGUI_APPLICATION_INPUT_SOURCE, sequence, input)
+            .map_err(DockspaceError::from_detail)?;
         self.state_mut().set_semantic_source_sequence(sequence);
         self.state_mut().mark_terminal_configuration_pending();
         Ok(sequence)
@@ -347,9 +354,14 @@ impl EguiNativeConfigurationSession {
         style: DockStyle,
     ) -> Result<(), DockspaceError> {
         dockspace.validate_native_session(&self.lease)?;
-        style.validate()?;
-        let config = style.presentation_config()?;
-        let prepared = dockspace.renderer.prepare_style_replacement(style)?;
+        style.validate().map_err(DockspaceError::from_detail)?;
+        let config = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
+        let prepared = dockspace
+            .renderer
+            .prepare_style_replacement(style)
+            .map_err(DockspaceError::from_detail)?;
         let expected = self.state().view().version();
         let source_sequence =
             self.append_configuration(EngineInput::ReplacePresentationConfig { expected, config })?;
@@ -452,10 +464,12 @@ impl EguiNativePresentationSession {
     ) -> Result<SurfacePaintResponse, DockspaceError> {
         let route = self.state().resolve_native_callback(native)?;
         if ui.ctx().viewport_id() != native.viewport() {
-            return Err(DockspaceError::NativeCallbackViewportMismatch {
-                native,
-                submitted: ui.ctx().viewport_id(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeCallbackViewportMismatch {
+                    native,
+                    submitted: ui.ctx().viewport_id(),
+                },
+            ));
         }
         self.state_mut().record_native_surface_pass(route)?;
         let surface = route.surface();
@@ -475,10 +489,12 @@ impl EguiNativePresentationSession {
     ) -> Result<NativeStagingPresentation, DockspaceError> {
         let (route, presentation) = self.state().resolve_native_staging_callback(native)?;
         if ui.ctx().viewport_id() != native.viewport() {
-            return Err(DockspaceError::NativeCallbackViewportMismatch {
-                native,
-                submitted: ui.ctx().viewport_id(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeCallbackViewportMismatch {
+                    native,
+                    submitted: ui.ctx().viewport_id(),
+                },
+            ));
         }
         self.state_mut().record_native_surface_pass(route)?;
         self.with_driver(dockspace, |driver| {
@@ -503,10 +519,12 @@ impl EguiNativePresentationSession {
     ) -> Result<SurfacePaintResponse, DockspaceError> {
         let route = self.state().resolve_native_callback(native)?;
         if input.viewport_id != native.viewport() {
-            return Err(DockspaceError::NativeCallbackViewportMismatch {
-                native,
-                submitted: input.viewport_id,
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeCallbackViewportMismatch {
+                    native,
+                    submitted: input.viewport_id,
+                },
+            ));
         }
         let surface = route.surface();
         let viewport = input.viewport_id;
@@ -516,8 +534,9 @@ impl EguiNativePresentationSession {
             let output = context.run_ui(input, |ui| {
                 paint = Some(driver.show_surface(surface, ui, panes));
             });
-            let paint =
-                paint.ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })??;
+            let paint = paint.ok_or(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            )??;
             driver.confirm_surface_output(surface, context, viewport, output)?;
             Ok(paint)
         })
@@ -537,10 +556,12 @@ impl EguiNativePresentationSession {
     ) -> Result<NativeStagingPresentation, DockspaceError> {
         let (route, presentation) = self.state().resolve_native_staging_callback(native)?;
         if input.viewport_id != native.viewport() {
-            return Err(DockspaceError::NativeCallbackViewportMismatch {
-                native,
-                submitted: input.viewport_id,
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeCallbackViewportMismatch {
+                    native,
+                    submitted: input.viewport_id,
+                },
+            ));
         }
         let surface = route.surface();
         self.state_mut().record_native_surface_pass(route)?;
@@ -549,7 +570,9 @@ impl EguiNativePresentationSession {
             let output = context.run_ui(input, |ui| {
                 paint = Some(driver.show_native_staging(presentation, ui));
             });
-            paint.ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })??;
+            paint.ok_or(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            )??;
             driver.confirm_surface_output(surface, context, native.viewport(), output)?;
             Ok(())
         })?;

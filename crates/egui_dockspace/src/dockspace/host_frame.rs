@@ -13,7 +13,7 @@ use dockspace::runtime::WorkspaceVersion;
 use egui::UserData;
 use egui::{Context, FullOutput, ViewportId};
 
-use crate::error::DockspaceError;
+use crate::error::DockspaceErrorSource;
 use crate::pointer_input::PreparedPointerInput;
 use crate::render::{EguiSurfaceDraft, PreparedStyleReplacement};
 
@@ -107,13 +107,16 @@ impl EguiSurfacePass {
         &self,
         surface: SurfaceId,
         output: &mut FullOutput,
-    ) -> Result<(), DockspaceError> {
-        let expected = self
-            .output_proof
-            .as_ref()
-            .ok_or(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { surface })?;
+    ) -> Result<(), DockspaceErrorSource> {
+        let expected = self.output_proof.as_ref().ok_or(
+            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { surface },
+        )?;
         if !output.consume_output_provenance(expected) {
-            return Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch {
+                    surface,
+                },
+            );
         }
         Ok(())
     }
@@ -123,7 +126,7 @@ impl EguiSurfacePass {
         &self,
         _surface: SurfaceId,
         _output: &mut FullOutput,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         Ok(())
     }
 }
@@ -292,7 +295,7 @@ mod output_proof_tests {
 
         assert!(matches!(
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 
@@ -307,7 +310,7 @@ mod output_proof_tests {
 
         assert!(matches!(
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 
@@ -320,7 +323,7 @@ mod output_proof_tests {
 
         assert!(matches!(
             pass.consume_output_proof(SurfaceId::new(1), &mut output),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 
@@ -334,7 +337,7 @@ mod output_proof_tests {
             .expect("the first exact output consumes the proof");
         assert!(matches!(
             pass.consume_output_proof(SurfaceId::new(1), &mut duplicate),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 
@@ -346,7 +349,7 @@ mod output_proof_tests {
 
         assert!(matches!(
             older.consume_output_proof(SurfaceId::new(1), &mut newer_output.clone()),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 
@@ -359,7 +362,7 @@ mod output_proof_tests {
 
         assert!(matches!(
             pass.consume_output_proof(SurfaceId::new(1), &mut foreign_output.clone()),
-            Err(DockspaceError::OuterHostSurfaceOutputAuthorityMismatch { .. })
+            Err(crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAuthorityMismatch { .. })
         ));
     }
 }
@@ -440,7 +443,7 @@ impl HostFrameState {
     pub(super) fn resolve_native_callback(
         &self,
         native: ExactNativeViewport,
-    ) -> Result<NativeCoreRoute, DockspaceError> {
+    ) -> Result<NativeCoreRoute, DockspaceErrorSource> {
         let candidate = self
             .native_bindings
             .as_ref()
@@ -456,13 +459,13 @@ impl HostFrameState {
         candidate
             .resolve_callback(native, current)
             .map_err(NativeBindingError::from)
-            .map_err(DockspaceError::from)
+            .map_err(Into::into)
     }
 
     pub(super) fn resolve_native_input_receiver(
         &self,
         native: ExactNativeViewport,
-    ) -> Result<NativeCoreRoute, DockspaceError> {
+    ) -> Result<NativeCoreRoute, DockspaceErrorSource> {
         let candidate = self
             .native_bindings
             .as_ref()
@@ -478,13 +481,13 @@ impl HostFrameState {
         candidate
             .resolve_input_receiver(native, current)
             .map_err(NativeBindingError::from)
-            .map_err(DockspaceError::from)
+            .map_err(Into::into)
     }
 
     pub(super) fn resolve_native_presentation(
         &self,
         native: ExactNativeViewport,
-    ) -> Result<NativeCoreRoute, DockspaceError> {
+    ) -> Result<NativeCoreRoute, DockspaceErrorSource> {
         let candidate = self
             .native_bindings
             .as_ref()
@@ -500,24 +503,28 @@ impl HostFrameState {
         candidate
             .resolve_presentation(native, current)
             .map_err(NativeBindingError::from)
-            .map_err(DockspaceError::from)
+            .map_err(Into::into)
     }
 
     pub(super) fn resolve_native_staging_callback(
         &self,
         native: ExactNativeViewport,
-    ) -> Result<(NativeCoreRoute, NativeStagingPresentation), DockspaceError> {
+    ) -> Result<(NativeCoreRoute, NativeStagingPresentation), DockspaceErrorSource> {
         let route = self.resolve_native_callback(native)?;
         let presentation = self
             .view()
             .native_staging_presentations()
             .find(|presentation| presentation.binding().surface() == route.surface())
-            .ok_or(DockspaceError::NativeStagingRequestUnavailable { native })?;
+            .ok_or(
+                crate::error::DockspaceErrorSource::NativeStagingRequestUnavailable { native },
+            )?;
         if presentation.binding() != route.core() {
-            return Err(DockspaceError::NativeStagingBindingMismatch {
-                native,
-                presentation,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeStagingBindingMismatch {
+                    native,
+                    presentation,
+                },
+            );
         }
         Ok((route, presentation))
     }
@@ -525,18 +532,22 @@ impl HostFrameState {
     pub(super) fn resolve_native_staging_presentation(
         &self,
         native: ExactNativeViewport,
-    ) -> Result<(NativeCoreRoute, NativeStagingPresentation), DockspaceError> {
+    ) -> Result<(NativeCoreRoute, NativeStagingPresentation), DockspaceErrorSource> {
         let route = self.resolve_native_presentation(native)?;
         let presentation = self
             .view()
             .native_staging_presentations()
             .find(|presentation| presentation.binding().surface() == route.surface())
-            .ok_or(DockspaceError::NativeStagingRequestUnavailable { native })?;
+            .ok_or(
+                crate::error::DockspaceErrorSource::NativeStagingRequestUnavailable { native },
+            )?;
         if presentation.binding() != route.core() {
-            return Err(DockspaceError::NativeStagingBindingMismatch {
-                native,
-                presentation,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeStagingBindingMismatch {
+                    native,
+                    presentation,
+                },
+            );
         }
         Ok((route, presentation))
     }
@@ -544,17 +555,19 @@ impl HostFrameState {
     pub(super) fn record_native_surface_pass(
         &mut self,
         route: NativeCoreRoute,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let surface = route.surface();
         if let Some(previous) = self.native_surface_passes.insert(surface, route)
             && previous != route
         {
             self.native_surface_passes.insert(surface, previous);
-            return Err(DockspaceError::NativeSurfaceBindingChanged {
-                surface,
-                previous: previous.native(),
-                submitted: route.native(),
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeSurfaceBindingChanged {
+                    surface,
+                    previous: previous.native(),
+                    submitted: route.native(),
+                },
+            );
         }
         Ok(())
     }
@@ -563,16 +576,20 @@ impl HostFrameState {
         &self,
         surface: SurfaceId,
         native: ExactNativeViewport,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let Some(previous) = self.native_surface_passes.get(&surface).copied() else {
-            return Err(DockspaceError::NativeSurfaceOutputWithoutCallback { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeSurfaceOutputWithoutCallback { surface },
+            );
         };
         if previous.native() != native {
-            return Err(DockspaceError::NativeSurfaceBindingChanged {
-                surface,
-                previous: previous.native(),
-                submitted: native,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeSurfaceBindingChanged {
+                    surface,
+                    previous: previous.native(),
+                    submitted: native,
+                },
+            );
         }
         Ok(())
     }
@@ -585,35 +602,49 @@ impl HostFrameState {
         &mut self,
         presentation: NativeStagingPresentation,
         pass: EguiSurfacePass,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         if !self
             .view()
             .native_staging_presentations()
             .any(|current| current == presentation)
         {
-            return Err(DockspaceError::NativeStagingRequestOutsideRoster { presentation });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeStagingRequestOutsideRoster {
+                    presentation,
+                },
+            );
         }
         let surface = presentation.binding().surface();
         if let Some(previous) = self.native_staging_passes.get(&surface) {
             if previous.presentation != presentation {
-                return Err(DockspaceError::NativeStagingRequestOutsideRoster { presentation });
+                return Err(
+                    crate::error::DockspaceErrorSource::NativeStagingRequestOutsideRoster {
+                        presentation,
+                    },
+                );
             }
             if !previous.pass.context.eq(&pass.context) {
-                return Err(DockspaceError::OuterHostSurfaceContextMismatch { surface });
+                return Err(
+                    crate::error::DockspaceErrorSource::OuterHostSurfaceContextMismatch { surface },
+                );
             }
             if previous.pass.viewport != pass.viewport {
-                return Err(DockspaceError::HostFrameSurfaceViewportChanged {
-                    surface,
-                    previous: previous.pass.viewport,
-                    submitted: pass.viewport,
-                });
+                return Err(
+                    crate::error::DockspaceErrorSource::HostFrameSurfaceViewportChanged {
+                        surface,
+                        previous: previous.pass.viewport,
+                        submitted: pass.viewport,
+                    },
+                );
             }
             if pass.cumulative_pass <= previous.pass.cumulative_pass {
-                return Err(DockspaceError::HostFrameSurfacePassNotIncreasing {
-                    surface,
-                    previous: previous.pass.cumulative_pass,
-                    submitted: pass.cumulative_pass,
-                });
+                return Err(
+                    crate::error::DockspaceErrorSource::HostFrameSurfacePassNotIncreasing {
+                        surface,
+                        previous: previous.pass.cumulative_pass,
+                        submitted: pass.cumulative_pass,
+                    },
+                );
             }
         }
         let pass = pass.with_output_proof();
@@ -643,21 +674,25 @@ impl HostFrameState {
     pub(super) fn validate_native_presentation_output(
         &self,
         output: HostPresentationOutput,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         if self.native_bindings.is_none() {
             return Ok(());
         }
         let surface = output.surface();
         let Some(route) = self.native_surface_pass(surface) else {
-            return Err(DockspaceError::NativeSurfaceOutputWithoutCallback { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::NativeSurfaceOutputWithoutCallback { surface },
+            );
         };
         let expected = HostPresentationEndpoint::Native(route.core());
         if output.endpoint() != expected {
-            return Err(DockspaceError::NativePresentationEndpointMismatch {
-                native: route.native(),
-                expected,
-                submitted: output.endpoint(),
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::NativePresentationEndpointMismatch {
+                    native: route.native(),
+                    expected,
+                    submitted: output.endpoint(),
+                },
+            );
         }
         Ok(())
     }
@@ -692,7 +727,7 @@ impl HostFrameState {
             .and_then(EguiCoreFramePhase::input_mut)
     }
 
-    pub(super) fn close_input(&mut self) -> Result<(), DockspaceError> {
+    pub(super) fn close_input(&mut self) -> Result<(), DockspaceErrorSource> {
         let core = self
             .core_frame
             .take()
@@ -707,7 +742,7 @@ impl HostFrameState {
         Ok(())
     }
 
-    pub(super) fn begin_configuration_phase(&mut self) -> Result<(), DockspaceError> {
+    pub(super) fn begin_configuration_phase(&mut self) -> Result<(), DockspaceErrorSource> {
         self.input_core_frame_mut()
             .expect("a native input session cannot hold a presentation capability")
             .begin_configuration_phase()?;
@@ -723,12 +758,14 @@ impl HostFrameState {
     pub(super) fn validate_new_surface_slot(
         &self,
         surface: SurfaceId,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         if !self.expected_surfaces.contains(&surface) {
-            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::HostFrameSurfaceOutsideRoster { surface },
+            );
         }
         if self.drafts.contains_key(&surface) {
-            return Err(DockspaceError::HostFrameDuplicateSurface { surface });
+            return Err(crate::error::DockspaceErrorSource::HostFrameDuplicateSurface { surface });
         }
         Ok(())
     }
@@ -737,35 +774,45 @@ impl HostFrameState {
         &self,
         surface: SurfaceId,
         submitted: &EguiSurfacePass,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         if !self.expected_surfaces.contains(&surface) {
-            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::HostFrameSurfaceOutsideRoster { surface },
+            );
         }
         if !self.mode.defers_publication_staging() {
             return self.validate_new_surface_slot(surface);
         }
         let Some(previous) = self.surface_passes.get(&surface) else {
             if self.drafts.contains_key(&surface) {
-                return Err(DockspaceError::HostFrameDuplicateSurface { surface });
+                return Err(
+                    crate::error::DockspaceErrorSource::HostFrameDuplicateSurface { surface },
+                );
             }
             return Ok(());
         };
         if !previous.context.eq(&submitted.context) {
-            return Err(DockspaceError::OuterHostSurfaceContextMismatch { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceContextMismatch { surface },
+            );
         }
         if previous.viewport != submitted.viewport {
-            return Err(DockspaceError::HostFrameSurfaceViewportChanged {
-                surface,
-                previous: previous.viewport,
-                submitted: submitted.viewport,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::HostFrameSurfaceViewportChanged {
+                    surface,
+                    previous: previous.viewport,
+                    submitted: submitted.viewport,
+                },
+            );
         }
         if submitted.cumulative_pass <= previous.cumulative_pass {
-            return Err(DockspaceError::HostFrameSurfacePassNotIncreasing {
-                surface,
-                previous: previous.cumulative_pass,
-                submitted: submitted.cumulative_pass,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::HostFrameSurfacePassNotIncreasing {
+                    surface,
+                    previous: previous.cumulative_pass,
+                    submitted: submitted.cumulative_pass,
+                },
+            );
         }
         Ok(())
     }
@@ -801,7 +848,7 @@ impl HostFrameState {
         context: &Context,
         viewport: ViewportId,
         mut output: FullOutput,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let pass = self.validate_surface_output(surface, context, viewport, &output)?;
         pass.consume_output_proof(surface, &mut output)?;
         self.confirmed_full_outputs.insert(surface, output);
@@ -814,9 +861,9 @@ impl HostFrameState {
         context: &Context,
         viewport: ViewportId,
         output: &FullOutput,
-    ) -> Result<&'output EguiSurfacePass, DockspaceError> {
+    ) -> Result<&'output EguiSurfacePass, DockspaceErrorSource> {
         if self.mode != EguiHostFrameMode::CompleteRoster {
-            return Err(DockspaceError::OuterHostFrameRequired);
+            return Err(crate::error::DockspaceErrorSource::OuterHostFrameRequired);
         }
         let pass = self
             .surface_passes
@@ -826,36 +873,49 @@ impl HostFrameState {
                     .get(&surface)
                     .map(|pass| &pass.pass)
             })
-            .ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })?;
+            .ok_or(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            )?;
         if !pass.context.eq(context) {
-            return Err(DockspaceError::OuterHostSurfaceContextMismatch { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceContextMismatch { surface },
+            );
         }
         if pass.viewport != viewport {
-            return Err(DockspaceError::OuterHostSurfaceViewportMismatch {
-                surface,
-                expected: pass.viewport,
-                submitted: viewport,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceViewportMismatch {
+                    surface,
+                    expected: pass.viewport,
+                    submitted: viewport,
+                },
+            );
         }
-        let expected_completed_pass = pass
-            .cumulative_pass
-            .checked_add(1)
-            .ok_or(DockspaceError::OuterHostSurfaceOutputPassExhausted { surface })?;
+        let expected_completed_pass = pass.cumulative_pass.checked_add(1).ok_or(
+            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputPassExhausted { surface },
+        )?;
         let submitted_pass = context.cumulative_pass_nr_for(viewport);
         if expected_completed_pass != submitted_pass {
-            return Err(DockspaceError::OuterHostSurfaceOutputPassMismatch {
-                surface,
-                expected: expected_completed_pass,
-                submitted: submitted_pass,
-            });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputPassMismatch {
+                    surface,
+                    expected: expected_completed_pass,
+                    submitted: submitted_pass,
+                },
+            );
         }
         if output.platform_output.num_completed_passes == 0
             || !output.viewport_output.contains_key(&viewport)
         {
-            return Err(DockspaceError::OuterHostSurfaceFullOutputMissing { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceFullOutputMissing { surface },
+            );
         }
         if self.confirmed_full_outputs.contains_key(&surface) {
-            return Err(DockspaceError::OuterHostSurfaceOutputAlreadyConfirmed { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAlreadyConfirmed {
+                    surface,
+                },
+            );
         }
         Ok(pass)
     }
@@ -866,16 +926,16 @@ impl HostFrameState {
         context: &Context,
         viewport: ViewportId,
         output: &mut FullOutput,
-    ) -> Result<(), DockspaceError> {
+    ) -> Result<(), DockspaceErrorSource> {
         let pass = self.validate_surface_output(surface, context, viewport, output)?;
         pass.consume_output_proof(surface, output)?;
         self.confirmed_full_outputs.insert(surface, output.clone());
         Ok(())
     }
 
-    pub(super) fn validate_finish(&self) -> Result<(), DockspaceError> {
+    pub(super) fn validate_finish(&self) -> Result<(), DockspaceErrorSource> {
         if self.poisoned {
-            return Err(DockspaceError::HostFramePoisoned);
+            return Err(crate::error::DockspaceErrorSource::HostFramePoisoned);
         }
         if self.mode == EguiHostFrameMode::CompleteRoster
             && let Some(surface) = self.drafts.iter().find_map(|(surface, draft)| {
@@ -883,7 +943,9 @@ impl HostFrameState {
                     .then_some(*surface)
             })
         {
-            return Err(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            );
         }
         if self.mode == EguiHostFrameMode::CompleteRoster
             && let Some(surface) = self
@@ -892,7 +954,9 @@ impl HostFrameState {
                 .find(|surface| !self.confirmed_full_outputs.contains_key(surface))
                 .copied()
         {
-            return Err(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface });
+            return Err(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            );
         }
         Ok(())
     }

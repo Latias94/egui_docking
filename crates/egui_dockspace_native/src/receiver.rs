@@ -282,8 +282,7 @@ fn resolve_candidate(
             &hit,
         )?));
     }
-    let presented = PresentedPointerReceiverObservation::new(probes)
-        .map_err(egui_dockspace::DockspaceError::from)?;
+    let presented = PresentedPointerReceiverObservation::new(probes)?;
     Ok(ResolvedPointerReceiver {
         observation: PointerReceiverObservation::Presented(presented),
         scroll_claim,
@@ -416,7 +415,6 @@ fn locked_scroll_delivery(
         }
     };
     PointerReceiverDelivery::from_lanes_with_scroll(projection, unknown, unknown, scroll)
-        .map_err(egui_dockspace::DockspaceError::from)
         .map_err(NativeRuntimeError::from)
 }
 
@@ -443,7 +441,6 @@ fn scroll_delivery_receipt(
         egui_point,
     )?;
     PointerReceiverDelivery::from_lanes_with_scroll(projection, click, drag, scroll)
-        .map_err(egui_dockspace::DockspaceError::from)
         .map_err(NativeRuntimeError::from)
 }
 
@@ -457,7 +454,6 @@ fn pointer_delivery_receipt(
 ) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
     let (click, drag) = pointer_delivery_lanes(dockspace, input, route, projection, point, hit)?;
     PointerReceiverDelivery::from_lanes(projection, click, drag)
-        .map_err(egui_dockspace::DockspaceError::from)
         .map_err(NativeRuntimeError::from)
 }
 
@@ -618,7 +614,6 @@ fn hover_receipt(
             PointerReceiverHoverHitDisposition::NoReceiver
         };
         return PointerReceiverHoverHit::new(projection, point, disposition)
-            .map_err(egui_dockspace::DockspaceError::from)
             .map_err(NativeRuntimeError::from);
     };
     if hit
@@ -630,7 +625,6 @@ fn hover_receipt(
             point,
             PointerReceiverHoverHitDisposition::Blocked,
         )
-        .map_err(egui_dockspace::DockspaceError::from)
         .map_err(NativeRuntimeError::from);
     }
     match lookup_receiver(dockspace, input, route, projection, hit, receiver)? {
@@ -642,9 +636,7 @@ fn hover_receipt(
                     PointerReceiverUnknownReason::EventCorrelationUnavailable,
                 ));
             };
-            let core = view
-                .resolve_hover_drop_receiver(route.surface(), point)
-                .map_err(egui_dockspace::DockspaceError::from)?;
+            let core = view.resolve_hover_drop_receiver(route.surface(), point)?;
             if core.disposition() == PointerReceiverHoverHitDisposition::Dock(region) {
                 Ok(core)
             } else {
@@ -658,7 +650,6 @@ fn hover_receipt(
             point,
             PointerReceiverHoverHitDisposition::Blocked,
         )
-        .map_err(egui_dockspace::DockspaceError::from)
         .map_err(NativeRuntimeError::from),
         PaintReceiverLookup::FingerprintMismatch | PaintReceiverLookup::GenerationUnavailable => {
             Ok(PointerReceiverHoverHit::unknown(

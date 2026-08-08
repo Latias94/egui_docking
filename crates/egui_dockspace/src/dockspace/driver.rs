@@ -118,10 +118,13 @@ impl EguiOuterHostFrame<'_> {
             pointer_events.get_or_insert_with(|| ui.input(|input| input.events.clone()));
             paint = Some(self.inner.show_surface(surface, ui, panes));
         });
-        let paint = paint.ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })?;
+        let paint = paint.ok_or(
+            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+        )?;
         let paint = paint?;
-        let pointer_events =
-            pointer_events.ok_or(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface })?;
+        let pointer_events = pointer_events.ok_or(
+            crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+        )?;
         self.inner
             .prepare_outer_pointer(surface, context, &pointer_events)?;
         self.inner
@@ -205,7 +208,7 @@ impl PreparedEguiOuterFrameCommit {
                 .renderer
                 .validate_style_replacement(style.prepared())
             {
-                return self.abort_with_error(dockspace, error.into());
+                return self.abort_with_error(dockspace, DockspaceError::from_detail(error));
             }
         }
         if let Some(prepared) = self.native_bindings.as_ref() {
@@ -213,8 +216,10 @@ impl PreparedEguiOuterFrameCommit {
                 Some(registry) => registry
                     .validate_prepared(prepared)
                     .map_err(NativeBindingError::from)
-                    .map_err(DockspaceError::from),
-                None => Err(DockspaceError::NativeBindingRegistryUnavailable),
+                    .map_err(DockspaceError::from_detail),
+                None => Err(DockspaceError::from_source(
+                    crate::error::DockspaceErrorSource::NativeBindingRegistryUnavailable,
+                )),
             };
             if let Err(error) = validation {
                 return self.abort_with_error(dockspace, error);
@@ -376,10 +381,12 @@ impl PreparedEguiOuterFrameCommit {
     ) -> Result<T, DockspaceError> {
         match self.abort(dockspace) {
             Ok(()) => Err(error),
-            Err(retirement) => Err(DockspaceError::PointerInputAbortFailed {
-                frame: Box::new(error),
-                retirement: Box::new(retirement),
-            }),
+            Err(retirement) => Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::PointerInputAbortFailed {
+                    frame: Box::new(error),
+                    retirement: Box::new(retirement),
+                },
+            )),
         }
     }
 }
@@ -390,10 +397,12 @@ fn abort_pointer_input_after_error<T>(
 ) -> Result<T, DockspaceError> {
     match dockspace.abort_pointer_input() {
         Ok(()) => Err(error),
-        Err(retirement) => Err(DockspaceError::PointerInputAbortFailed {
-            frame: Box::new(error),
-            retirement: Box::new(retirement),
-        }),
+        Err(retirement) => Err(DockspaceError::from_source(
+            crate::error::DockspaceErrorSource::PointerInputAbortFailed {
+                frame: Box::new(error),
+                retirement: Box::new(retirement),
+            },
+        )),
     }
 }
 
@@ -545,7 +554,7 @@ impl DockspaceHostFrame<'_> {
                         .retained_paint_resources(surface, *stamp)
                         .cloned()
                 })
-                .ok_or(DockspaceError::PaintResourceMissing {
+                .ok_or(crate::error::DockspaceErrorSource::PaintResourceMissing {
                     surface,
                     stamp: *stamp,
                 })?,
@@ -618,16 +627,18 @@ impl DockspaceHostFrame<'_> {
             #[cfg(egui_backend_event_envelope)]
             if let Some(raw_event_index) = error.uncorrelated_raw_event() {
                 return Err(
-                    DockspaceError::SemanticActionBackendCorrelationUnavailable {
+                    crate::error::DockspaceErrorSource::SemanticActionBackendCorrelationUnavailable {
                         surface,
                         raw_event_index,
                     },
                 );
             }
-            return Err(DockspaceError::SemanticActionCausalityUnavailable {
-                surface,
-                matching_raw_events: error.matching_raw_events(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::SemanticActionCausalityUnavailable {
+                    surface,
+                    matching_raw_events: error.matching_raw_events(),
+                },
+            ));
         }
         if let Some(registrations) = receiver_registrations.as_mut() {
             registrations.capture_framework_hover(ui.ctx());
@@ -636,7 +647,9 @@ impl DockspaceHostFrame<'_> {
             .as_ref()
             .is_some_and(PaintReceiverRegistrations::is_conflicted)
         {
-            return Err(DockspaceError::PointerReceiverRegistrationConflict);
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::PointerReceiverRegistrationConflict,
+            ));
         }
         let (pane_focus_capability, pane_focus_observation) = match pane_focus_preparation {
             Ok(()) => {
@@ -654,9 +667,11 @@ impl DockspaceHostFrame<'_> {
             ));
         }
         if !framework_actions_enabled && !output.actions.is_empty() {
-            return Err(DockspaceError::PresentationPhaseProducedSemanticInput {
-                count: output.actions.len(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::PresentationPhaseProducedSemanticInput {
+                    count: output.actions.len(),
+                },
+            ));
         }
         for positioned in output.actions {
             let (action, position) = positioned.into_parts();
@@ -697,7 +712,9 @@ impl DockspaceHostFrame<'_> {
             semantic_inputs,
         );
         draft.set_pane_focus_observation(pane_focus_observation);
-        self.state.record_painted_surface(surface, draft, pass)?;
+        self.state
+            .record_painted_surface(surface, draft, pass)
+            .map_err(DockspaceError::from_detail)?;
         if projection_changed && framework_actions_enabled {
             ui.ctx()
                 .request_discard("dockspace host-frame authority changed");
@@ -731,7 +748,9 @@ impl DockspaceHostFrame<'_> {
         ui.painter()
             .rect_filled(bounds, 0.0, self.dockspace.renderer.style().workspace_fill);
         ui.advance_cursor_after_rect(bounds);
-        self.state.record_native_staging_pass(presentation, pass)
+        self.state
+            .record_native_staging_pass(presentation, pass)
+            .map_err(Into::into)
     }
 
     fn prepare_outer_pointer(
@@ -745,7 +764,7 @@ impl DockspaceHostFrame<'_> {
         {
             return Ok(());
         }
-        let result = (|| {
+        let result: Result<(), DockspaceError> = (|| {
             let escape_input = self.escape_input(surface, context, events)?;
             let viewport = context.viewport_id();
             self.dockspace.pointer_input.bind_context(
@@ -762,7 +781,7 @@ impl DockspaceHostFrame<'_> {
                     u64::from(self.state.key().pass()),
                     viewport,
                 )
-                .ok_or(DockspaceError::PointerInputBindingMissing)?;
+                .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)?;
             let registrations = self
                 .state
                 .drafts()
@@ -780,13 +799,18 @@ impl DockspaceHostFrame<'_> {
                 self.state
                     .drafts_mut()
                     .get_mut(&surface)
-                    .ok_or(DockspaceError::PointerInputBindingMissing)?
+                    .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)?
                     .stage_semantic_input(input);
             }
             Ok(())
         })();
         let result = match result {
-            Err(error) if matches!(error, DockspaceError::PointerInputBindingStale) => {
+            Err(error)
+                if matches!(
+                    error.detail(),
+                    crate::error::DockspaceErrorSource::PointerInputBindingStale
+                ) =>
+            {
                 abort_pointer_input_after_error(self.dockspace, error)
             }
             result => result,
@@ -839,6 +863,7 @@ impl DockspaceHostFrame<'_> {
     ) -> Result<(), DockspaceError> {
         self.state
             .confirm_surface_output(surface, context, viewport, output)
+            .map_err(Into::into)
     }
 
     pub(super) fn confirm_external_surface_output(
@@ -850,6 +875,7 @@ impl DockspaceHostFrame<'_> {
     ) -> Result<(), DockspaceError> {
         self.state
             .confirm_external_surface_output(surface, context, viewport, output)
+            .map_err(Into::into)
     }
 
     fn prepare_surface_contribution(
@@ -860,11 +886,11 @@ impl DockspaceHostFrame<'_> {
         let result = self
             .view()
             .begin_surface_contribution(surface)
-            .map_err(DockspaceError::from)
+            .map_err(DockspaceError::from_detail)
             .and_then(|token| {
                 self.view()
                     .prepare_surface_contribution(token, measurements)
-                    .map_err(DockspaceError::from)
+                    .map_err(DockspaceError::from_detail)
             });
         if result.is_err() {
             self.state.poison();
@@ -879,7 +905,7 @@ impl DockspaceHostFrame<'_> {
         let result = self
             .view()
             .begin_surface_contribution(surface)
-            .map_err(DockspaceError::from);
+            .map_err(DockspaceError::from_detail);
         if result.is_err() {
             self.state.poison();
         }
@@ -915,11 +941,11 @@ impl DockspaceHostFrame<'_> {
         let result = self
             .view()
             .begin_surface_contribution(surface)
-            .map_err(DockspaceError::from)
+            .map_err(DockspaceError::from_detail)
             .and_then(|token| {
                 self.view()
                     .prepare_surface_unavailable_contribution(token, reason)
-                    .map_err(DockspaceError::from)
+                    .map_err(DockspaceError::from_detail)
             });
         if result.is_err() {
             self.state.poison();
@@ -944,11 +970,11 @@ impl DockspaceHostFrame<'_> {
             .state
             .expected_surfaces()
             .next()
-            .ok_or(DockspaceError::PointerInputBindingMissing)?;
+            .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)?;
         let receipts = {
             let candidates = core_frame
                 .pointer_receiver_candidates()
-                .ok_or(DockspaceError::PointerReceiverCandidatesMissing)?;
+                .ok_or(crate::error::DockspaceErrorSource::PointerReceiverCandidatesMissing)?;
             if pointer_receivers_current {
                 let view = core_frame.view();
                 let registrations = self
@@ -956,7 +982,7 @@ impl DockspaceHostFrame<'_> {
                     .drafts()
                     .get(&surface)
                     .and_then(EguiSurfaceDraft::receiver_registrations)
-                    .ok_or(DockspaceError::PointerInputBindingMissing)?;
+                    .ok_or(crate::error::DockspaceErrorSource::PointerInputBindingMissing)?;
                 pointer.prepare_receipts_for(
                     candidates,
                     view,
@@ -969,7 +995,9 @@ impl DockspaceHostFrame<'_> {
                 pointer.prepare_unavailable_receipts_for(candidates)?
             }
         };
-        core_frame.submit_pointer_receiver_receipts(receipts)?;
+        core_frame
+            .submit_pointer_receiver_receipts(receipts)
+            .map_err(DockspaceError::from_detail)?;
         Ok(())
     }
 
@@ -995,7 +1023,7 @@ impl DockspaceHostFrame<'_> {
 
     fn prepare_inner_candidate(&mut self) -> Result<PreparedEguiOuterFrameCommit, DockspaceError> {
         if let Err(error) = self.state.validate_finish() {
-            return Err(error);
+            return Err(error.into());
         }
         let missing = self.state.missing_surfaces();
         for surface in missing {
@@ -1021,19 +1049,21 @@ impl DockspaceHostFrame<'_> {
             && surface_count > 1
             && event_derived_input_count != 0
         {
-            return Err(
-                DockspaceError::CrossViewportSemanticInputRequiresBackendAuthority {
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::CrossViewportSemanticInputRequiresBackendAuthority {
                     surface_count,
                     input_count: event_derived_input_count,
                 },
-            );
+            ));
         }
         if self.state.input_authority() == EguiInputAuthority::CoreBackend
             && !semantic_inputs.is_empty()
         {
-            return Err(DockspaceError::PresentationPhaseProducedSemanticInput {
-                count: semantic_inputs.len(),
-            });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::PresentationPhaseProducedSemanticInput {
+                    count: semantic_inputs.len(),
+                },
+            ));
         }
 
         let pane_focus_observations = self
@@ -1056,7 +1086,7 @@ impl DockspaceHostFrame<'_> {
                 .pointer_input
                 .submit_empty_interval(input_frame)
             {
-                return Err(error);
+                return Err(error.into());
             }
         }
         let pointer_segments = match self
@@ -1066,7 +1096,7 @@ impl DockspaceHostFrame<'_> {
             .transpose()
         {
             Ok(segments) => segments,
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let pointer_receivers_current = self
             .state
@@ -1111,9 +1141,11 @@ impl DockspaceHostFrame<'_> {
                     let sequence = match semantic_sequence.checked_next() {
                         Some(sequence) => sequence,
                         None => {
-                            return Err(DockspaceError::InputSourceSequenceExhausted {
-                                input_source: EGUI_RENDER_INPUT_SOURCE,
-                            });
+                            return Err(DockspaceError::from_source(
+                                crate::error::DockspaceErrorSource::InputSourceSequenceExhausted {
+                                    input_source: EGUI_RENDER_INPUT_SOURCE,
+                                },
+                            ));
                         }
                     };
                     semantic_sequence = sequence;
@@ -1123,7 +1155,7 @@ impl DockspaceHostFrame<'_> {
                     if let Err(error) =
                         input_frame.append_input(EGUI_RENDER_INPUT_SOURCE, sequence, input)
                     {
-                        return Err(error.into());
+                        return Err(DockspaceError::from_detail(error));
                     }
                 }
                 if let (Some(pointer), Some(segments)) =
@@ -1148,7 +1180,7 @@ impl DockspaceHostFrame<'_> {
         let mut core_frame = match core_frame {
             EguiCoreFramePhase::Input(frame) => match frame.into_presentation() {
                 Ok(frame) => frame,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(DockspaceError::from_detail(error)),
             },
             EguiCoreFramePhase::Presentation(frame) => frame,
         };
@@ -1162,11 +1194,14 @@ impl DockspaceHostFrame<'_> {
             for surface in current_surfaces.iter().copied() {
                 let contribution = {
                     let view = core_frame.view();
-                    let token = view.begin_surface_contribution(surface)?;
+                    let token = view
+                        .begin_surface_contribution(surface)
+                        .map_err(DockspaceError::from_detail)?;
                     view.prepare_surface_unavailable_contribution(
                         token,
                         MeasurementUnavailableReason::Deferred,
-                    )?
+                    )
+                    .map_err(DockspaceError::from_detail)?
                 };
                 if let Some(draft) = self.state.drafts_mut().get_mut(&surface) {
                     draft.supersede_with_unavailable_contribution(contribution);
@@ -1210,7 +1245,7 @@ impl DockspaceHostFrame<'_> {
                 .into_iter()
                 .map(|obligation| (obligation.slot().surface(), obligation))
                 .collect::<BTreeMap<_, _>>(),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(DockspaceError::from_detail(error)),
         };
         if let Some(surface) = self.state.drafts().values().find_map(|draft| {
             (draft.paint().is_some()
@@ -1218,7 +1253,9 @@ impl DockspaceHostFrame<'_> {
                 && !presentation_obligations.contains_key(&draft.surface()))
             .then_some(draft.surface())
         }) {
-            return Err(DockspaceError::HostFrameSurfaceOutsideRoster { surface });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::HostFrameSurfaceOutsideRoster { surface },
+            ));
         }
         let mut native_staging_publications =
             BTreeMap::<SurfaceId, EguiNativeStagingPublication>::new();
@@ -1241,7 +1278,11 @@ impl DockspaceHostFrame<'_> {
                 })
         };
         if let Some(presentation) = stale_staging {
-            return Err(DockspaceError::NativeStagingRequestOutsideRoster { presentation });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::NativeStagingRequestOutsideRoster {
+                    presentation,
+                },
+            ));
         }
         for (surface, presentation) in native_staging_slots {
             let obligation = presentation_obligations
@@ -1261,7 +1302,7 @@ impl DockspaceHostFrame<'_> {
             let request = match core_frame.resolve_presentation_obligation(obligation, disposition)
             {
                 Ok(request) => request,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(DockspaceError::from_detail(error)),
             };
             if let Some(request) = request {
                 native_staging_publications.insert(
@@ -1297,7 +1338,7 @@ impl DockspaceHostFrame<'_> {
                 obligation,
                 HostPresentationDisposition::Unavailable(reason),
             ) {
-                return Err(error.into());
+                return Err(DockspaceError::from_detail(error));
             }
         }
         for draft in self.state.drafts_mut().values_mut() {
@@ -1313,7 +1354,7 @@ impl DockspaceHostFrame<'_> {
         );
         let prepared_core = match prepared_core {
             Ok(prepared) => prepared,
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         if let Some(style) = self.state.staged_style_replacement() {
             let accepted = prepared_host_transition(&prepared_core)
@@ -1330,9 +1371,11 @@ impl DockspaceHostFrame<'_> {
             if !accepted {
                 let source_sequence = style.source_sequence();
                 drop(prepared_core);
-                return Err(DockspaceError::NativeStyleConfigurationNotAccepted {
-                    source_sequence,
-                });
+                return Err(DockspaceError::from_source(
+                    crate::error::DockspaceErrorSource::NativeStyleConfigurationNotAccepted {
+                        source_sequence,
+                    },
+                ));
             }
         }
         let prepared_renderer = match self.dockspace.renderer.prepare_frame(
@@ -1356,7 +1399,9 @@ impl DockspaceHostFrame<'_> {
         if let Some(surface) = unbound_surface {
             drop(prepared_renderer);
             drop(prepared_core);
-            return Err(DockspaceError::OuterHostSurfaceOutputUnconfirmed { surface });
+            return Err(DockspaceError::from_source(
+                crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
+            ));
         }
         let prepared_presentation_outputs =
             prepared_renderer.presentation_outputs().collect::<Vec<_>>();
@@ -1366,7 +1411,7 @@ impl DockspaceHostFrame<'_> {
         {
             drop(prepared_renderer);
             drop(prepared_core);
-            return Err(error);
+            return Err(error.into());
         }
         let prepared_native_bindings = match self.state.take_native_bindings() {
             Some(candidate) => {
@@ -1380,7 +1425,7 @@ impl DockspaceHostFrame<'_> {
                     Err(error) => {
                         drop(prepared_renderer);
                         drop(prepared_core);
-                        return Err(NativeBindingError::from(error).into());
+                        return Err(DockspaceError::from_detail(NativeBindingError::from(error)));
                     }
                 }
             }
@@ -1459,7 +1504,7 @@ impl DockspaceHostFrame<'_> {
             };
             if !claim.correlation().is_known() {
                 return Err(
-                    DockspaceError::SemanticActionBackendCorrelationUnavailable {
+                    crate::error::DockspaceErrorSource::SemanticActionBackendCorrelationUnavailable {
                         surface,
                         raw_event_index: claim.raw_event_index(),
                     },
@@ -1489,7 +1534,7 @@ impl DockspaceHostFrame<'_> {
             RenderAction::ActivateTabStripControl { surface, control } => {
                 let prepared = view
                     .prepare_tab_strip_control_activation(*surface, *control)
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::ActivateTabStripControl { prepared }
             }
             RenderAction::ActivateTabListMenuRow {
@@ -1499,7 +1544,7 @@ impl DockspaceHostFrame<'_> {
             } => {
                 let prepared = view
                     .prepare_tab_list_menu_row_activation(*surface, *session, *tab)
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::ActivateTabListMenuRow { prepared }
             }
             RenderAction::AdjustTabStripScroll {
@@ -1509,7 +1554,7 @@ impl DockspaceHostFrame<'_> {
             } => {
                 let prepared = view
                     .prepare_tab_strip_scroll(*surface, *bar, adjustment.clone())
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::AdjustTabStripScroll { prepared }
             }
             RenderAction::AdjustTabListMenuScroll {
@@ -1519,7 +1564,7 @@ impl DockspaceHostFrame<'_> {
             } => {
                 let prepared = view
                     .prepare_tab_list_menu_scroll(*surface, *session, adjustment.clone())
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::AdjustTabListMenuScroll { prepared }
             }
             RenderAction::NavigateTabListMenu {
@@ -1529,13 +1574,13 @@ impl DockspaceHostFrame<'_> {
             } => {
                 let prepared = view
                     .prepare_tab_list_menu_navigation(*surface, *session, *navigation)
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::NavigateTabListMenu { prepared }
             }
             RenderAction::DismissTabListMenu { surface, session } => {
                 let prepared = view
                     .prepare_tab_list_menu_dismiss(*surface, *session)
-                    .map_err(DockspaceError::TabInteractionUnavailable)?;
+                    .map_err(crate::error::DockspaceErrorSource::TabInteractionUnavailable)?;
                 EngineInput::DismissTabListMenu { prepared }
             }
             RenderAction::RequestSemanticClose { scene, target } => {
@@ -1591,13 +1636,16 @@ impl DockspaceHostFrame<'_> {
         delta: f64,
     ) -> Result<EngineInput, DockspaceError> {
         let view = self.view();
-        let baseline = view.contained_placement(surface, expected_rect, minimum_size)?;
+        let baseline = view
+            .contained_placement(surface, expected_rect, minimum_size)
+            .map_err(DockspaceError::from_detail)?;
         if baseline.scene() != scene {
-            return Err(ContainedPlacementUnavailable::StaleScene {
-                expected: scene,
-                current: Some(baseline.scene()),
-            }
-            .into());
+            return Err(DockspaceError::from_detail(
+                ContainedPlacementUnavailable::StaleScene {
+                    expected: scene,
+                    current: Some(baseline.scene()),
+                },
+            ));
         }
         let requested_rect = requested_contained_resize_rect(
             surface,
@@ -1606,14 +1654,18 @@ impl DockspaceHostFrame<'_> {
             minimum_size,
             edge,
             delta,
-        )?;
-        let placement = view.contained_placement(surface, requested_rect, minimum_size)?;
+        )
+        .map_err(DockspaceError::from_detail)?;
+        let placement = view
+            .contained_placement(surface, requested_rect, minimum_size)
+            .map_err(DockspaceError::from_detail)?;
         if placement.scene() != scene {
-            return Err(ContainedPlacementUnavailable::StaleScene {
-                expected: scene,
-                current: Some(placement.scene()),
-            }
-            .into());
+            return Err(DockspaceError::from_detail(
+                ContainedPlacementUnavailable::StaleScene {
+                    expected: scene,
+                    current: Some(placement.scene()),
+                },
+            ));
         }
         Ok(EngineInput::ApplyContainedPlacement {
             expected: self.state.sealed_workspace(),
