@@ -14,7 +14,7 @@ publish = false
 dockspace = { path = "../dockspace", default-features = false }
 eframe = { version = "=0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui = { version = "=0.35.0", default-features = false }
-egui_dockspace = { path = "../egui_dockspace", features = ["serde"] }
+egui_dockspace = { path = "../egui_dockspace", features = ["backend", "serde"] }
 thiserror = "2.0.18"
 
 [lints.rust]

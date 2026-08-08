@@ -90,7 +90,7 @@ fn run_frame(
     FrameObservation {
         interactions_current,
         transitions,
-        version: dockspace.engine().version(),
+        version: dockspace.core_engine().version(),
         accesskit: output.platform_output.accesskit_update,
     }
 }
@@ -184,7 +184,7 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
         .expect("fixture dockspace must build");
     let mut panes = TestPanes;
     let stable = settle(&context, &mut dockspace, &mut panes);
-    let initial = workspace_weights(dockspace.engine().workspace(), split);
+    let initial = workspace_weights(dockspace.core_engine().workspace(), split);
     let splitter_id = splitter_widget_id(&context, &mut dockspace, &mut panes, salt, split);
     context.memory_mut(|memory| memory.request_focus(splitter_id));
     let focused = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -196,23 +196,23 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
         &mut panes,
         key_press(Key::ArrowRight),
     );
-    let after_key = workspace_weights(dockspace.engine().workspace(), split);
+    let after_key = workspace_weights(dockspace.core_engine().workspace(), split);
     assert!(after_key[0] > initial[0]);
     assert_eq!(count_splitter_adjustments(&key_adjustment.transitions), 1);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 
     let _ = settle(&context, &mut dockspace, &mut panes);
-    let before_accesskit = dockspace.engine().version();
+    let before_accesskit = dockspace.core_engine().version();
     let accesskit_adjustment = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![accesskit_action(splitter_id, Action::Decrement)],
     );
-    let after_accesskit = workspace_weights(dockspace.engine().workspace(), split);
+    let after_accesskit = workspace_weights(dockspace.core_engine().workspace(), split);
     assert!(after_accesskit[0] < after_key[0]);
     assert_eq!(
         count_splitter_adjustments(&accesskit_adjustment.transitions),
@@ -223,7 +223,7 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
         before_accesskit.revision().get() + 1
     );
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 }
@@ -248,13 +248,18 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
         .expect("style change invalidates the presentation");
     let painted = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(!painted.interactions_current);
-    assert!(dockspace.engine().interaction_projection(SURFACE).is_none());
+    assert!(
+        dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .is_none()
+    );
 
     context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
-    let before_version = dockspace.engine().version();
-    let before_weights = workspace_weights(dockspace.engine().workspace(), split);
+    let before_version = dockspace.core_engine().version();
+    let before_weights = workspace_weights(dockspace.core_engine().workspace(), split);
     let acknowledgement_pass = run_frame(
         &context,
         &mut dockspace,
@@ -272,11 +277,14 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
     );
     assert_ne!(acknowledgement_pass.version, before_version);
     assert_ne!(
-        workspace_weights(dockspace.engine().workspace(), split),
+        workspace_weights(dockspace.core_engine().workspace(), split),
         before_weights
     );
     assert!(
-        dockspace.engine().interaction_projection(SURFACE).is_none(),
+        dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .is_none(),
         "the committed resize invalidates the projection after using sealed-frame authority"
     );
 }
@@ -300,11 +308,11 @@ fn fully_occluded_splitter_with_old_focus_exposes_no_action_and_cannot_adjust() 
     dockspace
         .replace_workspace(occluded.clone())
         .expect("workspace replacement commits immediately");
-    assert_eq!(dockspace.engine().workspace(), &occluded);
+    assert_eq!(dockspace.core_engine().workspace(), &occluded);
     let _ = settle(&context, &mut dockspace, &mut panes);
     let semantic_frame = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let ready = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("occluded surface remains authoritative");
     let record = ready
@@ -330,8 +338,8 @@ fn fully_occluded_splitter_with_old_focus_exposes_no_action_and_cannot_adjust() 
     assert!(!context.memory(|memory| memory.has_focus(splitter_id)));
 
     context.memory_mut(|memory| memory.request_focus(splitter_id));
-    let before = dockspace.engine().version();
-    let before_weights = workspace_weights(dockspace.engine().workspace(), split);
+    let before = dockspace.core_engine().version();
+    let before_weights = workspace_weights(dockspace.core_engine().workspace(), split);
     let rejected_actions = run_frame(
         &context,
         &mut dockspace,
@@ -344,7 +352,7 @@ fn fully_occluded_splitter_with_old_focus_exposes_no_action_and_cannot_adjust() 
     assert_eq!(rejected_actions.version, before);
     assert_eq!(count_splitter_adjustments(&rejected_actions.transitions), 0);
     assert_eq!(
-        workspace_weights(dockspace.engine().workspace(), split),
+        workspace_weights(dockspace.core_engine().workspace(), split),
         before_weights
     );
     assert!(!context.memory(|memory| memory.has_focus(splitter_id)));

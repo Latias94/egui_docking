@@ -15,6 +15,11 @@ contracts remain in focused Rust tests rather than this smoke. It does not
 simulate hardware input, transfer windows between mixed-DPI monitors, exercise
 close/focus failure matrices, or prove grab-offset preservation.
 
+This package intentionally contains one scenario and one binary. New protocol
+branches belong in deterministic Rust tests with a fake host; add another
+real-window scenario only when it proves a distinct OS integration boundary
+that cannot be observed below E2E.
+
 Run it from the repository root against the shared fork-workspace pin:
 
 ```text

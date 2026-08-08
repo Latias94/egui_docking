@@ -4,11 +4,11 @@ use dockspace::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::SurfaceContributionOutcome;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{
-    Dockspace, DockspaceError, DockspaceSurfaceStatus, EguiFrameScheduleKey, EguiOuterFrameCommit,
-    EguiOuterSurfaceOutput, EguiPresentationResult, HostFrameResponse, PaneView,
-    SurfaceFrameDisposition,
+use egui_dockspace::backend::{
+    EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult,
+    HostFrameResponse, SurfaceFrameDisposition,
 };
+use egui_dockspace::{Dockspace, DockspaceError, DockspaceSurfaceStatus, PaneView};
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
 const CHILD_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -255,7 +255,7 @@ fn crates_io_facade_never_synthesizes_presentation_authority() {
         }
     }
 
-    let diagnostics = dockspace.engine().presentation_ledger_diagnostics();
+    let diagnostics = dockspace.core_engine().presentation_ledger_diagnostics();
     assert_eq!(diagnostics.active_streams(), 0);
     assert_eq!(diagnostics.pending_streams(), 0);
     assert_eq!(diagnostics.pending_outputs(), 0);
@@ -267,7 +267,7 @@ fn single_surface_host_frame_commits_through_the_core_capability() {
     let mut dockspace = Dockspace::builder("core-host-frame", single_workspace())
         .build()
         .expect("fixture builds");
-    let before_tick = dockspace.engine().last_reducer_tick();
+    let before_tick = dockspace.core_engine().last_reducer_tick();
     let mut panes = TestPanes;
 
     let response = paint_frame(
@@ -294,7 +294,7 @@ fn outer_host_frame_commits_the_complete_multi_surface_roster_once() {
     let mut dockspace = Dockspace::builder("outer-complete-roster", multi_surface_workspace())
         .build()
         .expect("fixture builds");
-    let before_tick = dockspace.engine().last_reducer_tick();
+    let before_tick = dockspace.core_engine().last_reducer_tick();
     let mut panes = TestPanes;
     let (response, presentations) = paint_multi_surface_outer_frame(
         &root_context,
@@ -461,7 +461,7 @@ fn outer_host_frame_rejects_an_unconfirmed_final_output() {
     let mut dockspace = Dockspace::builder("outer-unconfirmed-output", single_workspace())
         .build()
         .expect("fixture builds");
-    let before_tick = dockspace.engine().last_reducer_tick();
+    let before_tick = dockspace.core_engine().last_reducer_tick();
     let mut panes = TestPanes;
     let mut host = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(1, 0))
@@ -477,7 +477,7 @@ fn outer_host_frame_rejects_an_unconfirmed_final_output() {
             surface: ROOT_SURFACE
         })
     ));
-    assert_eq!(dockspace.engine().last_reducer_tick(), before_tick);
+    assert_eq!(dockspace.core_engine().last_reducer_tick(), before_tick);
 }
 
 #[test]
@@ -619,7 +619,7 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
     assert_eq!(settlement.native_route(), None);
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .presentation_ledger_diagnostics()
             .pending_outputs(),
         1,
@@ -753,7 +753,7 @@ fn split_output_without_an_obligation_has_an_explicit_no_op_settlement() {
     settlement.settle(EguiPresentationResult::Presented);
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .presentation_ledger_diagnostics()
             .pending_outputs(),
         0,
@@ -890,7 +890,7 @@ fn held_outer_output_applies_per_surface_backpressure() {
         drop(output);
         assert_eq!(
             dockspace
-                .engine()
+                .core_engine()
                 .presentation_ledger_diagnostics()
                 .pending_outputs(),
             1
@@ -1159,8 +1159,8 @@ fn crates_io_facade_rejects_multi_surface_workspace_before_paint() {
     let mut dockspace = Dockspace::builder("strict-single", multi_surface_workspace())
         .build()
         .expect("fixture builds");
-    let before_tick = dockspace.engine().last_reducer_tick();
-    let before_version = dockspace.engine().version();
+    let before_tick = dockspace.core_engine().last_reducer_tick();
+    let before_version = dockspace.core_engine().version();
     let mut panes = TestPanes;
     let mut result = None;
     let _ = context.run_ui(input(), |ui| {
@@ -1174,6 +1174,6 @@ fn crates_io_facade_rejects_multi_surface_workspace_before_paint() {
         dockspace.begin_host_frame(EguiFrameScheduleKey::new(1, 0)),
         Err(DockspaceError::MultiSurfaceHostFrameUnsupported { surface_count: 2 })
     ));
-    assert_eq!(dockspace.engine().last_reducer_tick(), before_tick);
-    assert_eq!(dockspace.engine().version(), before_version);
+    assert_eq!(dockspace.core_engine().last_reducer_tick(), before_tick);
+    assert_eq!(dockspace.core_engine().version(), before_version);
 }

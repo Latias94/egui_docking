@@ -70,7 +70,7 @@ pub enum DockspaceUnavailableReason {
     PaneFocusObservationGenerationExhausted,
 }
 
-/// Immediate paint result from one [`crate::DockspaceHostFrame::show_surface`] call.
+/// Immediate paint result from one backend host-frame surface call.
 ///
 /// This value deliberately contains no reducer transition. Semantic input and measurement facts
 /// are staged until the enclosing host frame ends.

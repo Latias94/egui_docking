@@ -321,7 +321,6 @@ impl Dockspace {
             .map(|(surface, _)| surface)
             .collect::<BTreeSet<_>>();
         let current = self
-            .engine()
             .workspace()
             .surfaces()
             .map(|(surface, _)| surface)

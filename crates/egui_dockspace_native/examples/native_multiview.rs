@@ -80,7 +80,7 @@ fn example_bootstrap() -> Result<(DockspaceDocumentBootstrap, PaneIds), ExampleE
 }
 
 fn restored_roster(dockspace: &Dockspace) -> Result<NativeViewportRoster, ExampleError> {
-    let workspace = dockspace.engine().workspace();
+    let workspace = dockspace.workspace();
     if workspace.surface(ROOT_SURFACE).is_none() {
         return Err(io::Error::other("restored document omitted the example root surface").into());
     }

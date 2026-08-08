@@ -2,10 +2,13 @@
 
 ## Status
 
-This document describes a **planned breaking public boundary** for the first
-shipping `dockspace` API. It is not a description of the current API surface.
-Current public modules intentionally remain broad while the refactor migrates
-adapters and executable protocol tests.
+This document describes the target breaking boundary for the first shipping
+`dockspace` API and records the portions already sealed. `egui_dockspace` no
+longer re-exports the core or exposes its raw `DockEngine`; application-facing
+types remain at the crate root, while the low-level host protocol requires the
+explicit `backend` feature and `egui_dockspace::backend` namespace. The
+renderer-neutral core surface is still broader than this target and remains an
+active breaking refactor.
 
 ## Goal
 

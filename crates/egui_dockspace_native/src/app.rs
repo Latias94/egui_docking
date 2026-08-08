@@ -19,10 +19,13 @@ use eframe::{
     NativeViewportCreateSink,
 };
 use egui::{FullOutput, ViewportId};
-use egui_dockspace::{
-    DockStyle, Dockspace, EguiFrameScheduleKey, EguiNativePresentationSession, ExactNativeViewport,
-    PaneView, PreparedEguiOuterFrameCommit,
+#[cfg(test)]
+use egui_dockspace::backend::NativeViewportIncarnation;
+use egui_dockspace::backend::{
+    EguiFrameScheduleKey, EguiNativeInputSession, EguiNativePresentationSession,
+    ExactNativeViewport, PreparedEguiOuterFrameCommit,
 };
+use egui_dockspace::{DockStyle, Dockspace, PaneView};
 
 use crate::NATIVE_DOCKSPACE_DOCUMENT_STORAGE_KEY;
 use crate::configuration::NativeConfigurationQueue;
@@ -199,7 +202,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         panes: P,
         catalog: NativeViewportRoster,
     ) -> Result<Self, NativeRuntimeError> {
-        catalog.validate_workspace(dockspace.engine().workspace())?;
+        catalog.validate_workspace(dockspace.workspace())?;
         let pending_restored_viewports = catalog
             .restored_children()
             .map(|spec| spec.viewport())
@@ -785,7 +788,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                 .close_handler
                 .surface_request(NativeSurfaceCloseContext::new(
                     edge,
-                    self.dockspace.engine().workspace(),
+                    self.dockspace.workspace(),
                     self.catalog.close_request(edge.binding().surface()),
                 ));
             self.ingress
@@ -796,8 +799,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
     fn queue_native_close_decisions(&mut self) {
         let initial = self
             .dockspace
-            .engine()
-            .active_close_plans()
+            .backend_active_close_plans()
             .filter(|plan| matches!(plan.target(), dockspace::ClosePlanTarget::Surface { .. }))
             .flat_map(|plan| {
                 plan.items().iter().filter_map(move |item| {
@@ -841,8 +843,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
 
         let deferred = self
             .dockspace
-            .engine()
-            .active_close_plans()
+            .backend_active_close_plans()
             .filter(|plan| matches!(plan.target(), dockspace::ClosePlanTarget::Surface { .. }))
             .flat_map(|plan| {
                 plan.items().iter().filter_map(move |item| {
@@ -882,7 +883,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
 }
 
 fn core_ingress_error(
-    input: &egui_dockspace::EguiNativeInputSession,
+    input: &EguiNativeInputSession,
     source: egui_dockspace::DockspaceError,
 ) -> NativeRuntimeError {
     let detail = input
@@ -964,8 +965,6 @@ fn _assert_exact_native_is_copy(_: ExactNativeViewport) {}
 mod tests {
     use super::*;
     use dockspace::viewport::WindowToken;
-    use egui_dockspace::NativeViewportIncarnation;
-
     #[test]
     fn restored_viewport_stays_undeclared_until_materialized_then_hidden_until_routed() {
         assert_eq!(

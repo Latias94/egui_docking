@@ -9,7 +9,8 @@ use dockspace::transition::{
 use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
 use egui::{Context, Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -103,7 +104,7 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
 )]
 fn splitter_pointer_position(dockspace: &Dockspace, split: NodeId) -> Pos2 {
     let rect = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .map(dockspace::scene::SurfaceInteractionProjection::plan)
         .expect("the warmed surface has an acknowledged interaction plan")
@@ -178,10 +179,10 @@ fn run_frame(
         }
         saw_stale_pass |= !response.interactions_current();
         let root_node = dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .root(ROOT)
-            .and_then(|root| dockspace.engine().workspace().node(root.node));
+            .and_then(|root| dockspace.core_engine().workspace().node(root.node));
         let (selected, weights) = match root_node {
             Some(Node::Tabs { selected, .. }) => (*selected, Vec::new()),
             Some(Node::Split { weights, .. }) => {
@@ -558,7 +559,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
         );
         assert!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .item_multiset()
                 .contains_key(&ITEM_B)
@@ -577,7 +578,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
             .expect("the exact keyboard close decision must commit immediately");
         assert!(
             !dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .item_multiset()
                 .contains_key(&ITEM_B)
@@ -595,7 +596,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
         assert!(committed.close_requests.is_empty());
         assert!(
             !dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .item_multiset()
                 .contains_key(&ITEM_B)
@@ -831,7 +832,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
         assert_eq!(focused.selected, Some(ITEM_B));
 
         let select_a = dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .capture_item_source(ROOT, tabs, ITEM_A)
             .expect("selection source must capture");
@@ -840,7 +841,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
             .expect("selection command must commit immediately");
         assert_eq!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .node(tabs)
                 .and_then(|node| match node {
@@ -961,7 +962,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
         assert_eq!(focused.focused, Some(focused.close_ids[1]));
 
         let select_a = dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .capture_item_source(ROOT, tabs, ITEM_A)
             .expect("selection source must capture");
@@ -986,7 +987,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
         assert_eq!(stale.selected, Some(ITEM_A));
         assert!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .item_multiset()
                 .contains_key(&ITEM_B)
@@ -1002,7 +1003,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
     let mut panes = TestPanes;
     let stable = warm_tabs(&context, &mut dockspace, &mut panes, salt, tabs);
     let select_a = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .capture_item_source(ROOT, tabs, ITEM_A)
         .expect("selection source must capture");

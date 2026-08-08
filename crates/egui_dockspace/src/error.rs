@@ -22,8 +22,10 @@ use dockspace::scene::SurfaceSceneStamp;
 use egui::ViewportId;
 use thiserror::Error;
 
+use crate::DockStyleError;
+use crate::facade::{ExactNativeViewport, NativeBindingError};
+use crate::projection::ProjectionError;
 use crate::render::EguiRendererError;
-use crate::{DockStyleError, ExactNativeViewport, NativeBindingError, ProjectionError};
 
 /// Failure to construct or advance an egui docking frame.
 #[derive(Debug, Error)]

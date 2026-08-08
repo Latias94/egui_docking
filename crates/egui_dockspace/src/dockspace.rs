@@ -1,5 +1,8 @@
 //! Authoritative egui facade over [`dockspace::engine::DockEngine`].
 
+#[cfg(any(feature = "backend", test))]
+#[path = "dockspace/backend.rs"]
+pub(crate) mod backend;
 #[path = "dockspace/contained_resize.rs"]
 mod contained_resize;
 #[path = "dockspace/driver.rs"]
@@ -67,10 +70,12 @@ use egui::{Context, Id, Ui, ViewportId};
 
 use self::host_frame::{HostFrameState, HostFrameStateSlot};
 use self::native_binding::NativeBindingRegistry;
+#[cfg_attr(not(any(feature = "backend", test)), allow(unused_imports))]
 pub use self::native_binding::{
     ExactNativeViewport, NativeBindingError, NativeBindingRoster, NativeCoreRoute,
     NativeViewportIncarnation,
 };
+#[cfg_attr(not(any(feature = "backend", test)), allow(unused_imports))]
 pub use self::native_session::{
     EguiNativeConfigurationSession, EguiNativeInputSession, EguiNativePresentationSession,
 };
@@ -155,9 +160,25 @@ impl Dockspace {
         self.renderer.id()
     }
 
-    /// Returns the renderer-neutral authority for advanced read-only inspection.
+    /// Returns the currently published workspace.
     #[must_use]
-    pub fn engine(&self) -> &DockEngine {
+    pub fn workspace(&self) -> &Workspace {
+        self.core_engine().workspace()
+    }
+
+    /// Returns the current durable workspace version.
+    #[must_use]
+    pub fn version(&self) -> dockspace::transition::WorkspaceVersion {
+        self.core_engine().version()
+    }
+
+    /// Returns the current declarative docking policy.
+    #[must_use]
+    pub fn policy(&self) -> &DockPolicy {
+        self.core_engine().policy()
+    }
+
+    pub(crate) fn core_engine(&self) -> &DockEngine {
         #[cfg(feature = "serde")]
         {
             self.engine.engine()
@@ -177,6 +198,7 @@ impl Dockspace {
     /// # Errors
     ///
     /// Returns an error when a retained stream belongs to another engine or presentation host.
+    #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
     pub fn adapter_reclaim_quiesced_presentation_streams(
         &mut self,
@@ -217,6 +239,7 @@ impl Dockspace {
     }
 
     /// Enrolls the joined native platform and desktop-pointer ingress provider.
+    #[cfg(any(feature = "backend", test))]
     pub fn create_backend_ingress_provider(
         &mut self,
         pointer_committed_through: PointerEdgeSequence,
@@ -242,6 +265,7 @@ impl Dockspace {
     ///
     /// Returns an error when a native session is active or the core rejects the
     /// receipt's authority, commit boundary, or binding-guard roster.
+    #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
     pub fn adapter_settle_backend_ingress_prefix_retirement(
         &mut self,
@@ -259,6 +283,7 @@ impl Dockspace {
     /// The backend recorder is already bound to this facade's core-minted
     /// presentation host. The runtime supplies only the stream observation it
     /// derived from an exact renderer result.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_presentation_observation(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -275,6 +300,7 @@ impl Dockspace {
     /// The adapter ledger reserves a capture only after the recorder accepts
     /// its entry. A failed host-frame attempt therefore replays the same record,
     /// while a committed rejection releases the reservation for an exact retry.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_ready_backend_presentation_observations(
         &mut self,
         recorder: &mut BackendIngressRecorder,
@@ -300,6 +326,7 @@ impl Dockspace {
     /// Renderer completions remain terminal physical facts. Only their
     /// uncommitted causal records are released so an exact ingress replay can
     /// stage them again at the same relative position.
+    #[cfg(any(feature = "backend", test))]
     pub fn rollback_backend_ingress_to(
         &mut self,
         recorder: &mut BackendIngressRecorder,
@@ -325,6 +352,7 @@ impl Dockspace {
     /// position. Recorder acceptance only reserves that position; an aborted
     /// frame replays the recorder prefix, while provider replacement returns
     /// uncommitted samples to the successor recorder.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_ready_backend_pane_focus_observations(
         &mut self,
         recorder: &mut BackendIngressRecorder,
@@ -348,6 +376,7 @@ impl Dockspace {
     }
 
     /// Revokes one exact joined backend after consuming its stopped producer.
+    #[cfg(any(feature = "backend", test))]
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
         drained: &mut dockspace::backend_ingress::BackendIngressDrainReceipt,
@@ -367,6 +396,7 @@ impl Dockspace {
     /// The quiescence proof remains owned by the core from the original begin
     /// boundary. This method recovers only the opaque finish capability; it
     /// does not reactivate the predecessor or infer authority from ticket loss.
+    #[cfg(any(feature = "backend", test))]
     pub fn reissue_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<BackendIngressProviderReplacementTicket, DockspaceError> {
@@ -376,6 +406,7 @@ impl Dockspace {
     }
 
     /// Abandons the pending joined-provider handoff and leaves no provider active.
+    #[cfg(any(feature = "backend", test))]
     pub fn abort_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<EngineTransition, DockspaceError> {
@@ -387,6 +418,7 @@ impl Dockspace {
     }
 
     /// Reaps a pending joined handoff only after its current ticket was dropped.
+    #[cfg(any(feature = "backend", test))]
     pub fn reap_abandoned_backend_ingress_provider_replacement(
         &mut self,
     ) -> Result<Option<EngineTransition>, DockspaceError> {
@@ -400,6 +432,7 @@ impl Dockspace {
     }
 
     /// Activates the joined successor from the predecessor's affine drain proof.
+    #[cfg(any(feature = "backend", test))]
     pub fn finish_backend_ingress_provider_replacement(
         &mut self,
         ticket: &mut BackendIngressProviderReplacementTicket,
@@ -430,6 +463,7 @@ impl Dockspace {
     /// Returns the last successfully committed egui render-pass schedule identity.
     ///
     /// This is scheduling state only; it is not presentation authority.
+    #[cfg(any(feature = "backend", test))]
     #[must_use]
     pub const fn last_egui_frame_schedule_key(&self) -> Option<EguiFrameScheduleKey> {
         self.last_host_frame
@@ -462,6 +496,7 @@ impl Dockspace {
     }
 
     /// Records one application workspace command in the active backend causal stream.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_command(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -484,6 +519,7 @@ impl Dockspace {
     /// The core mints the resulting [`ViewportBinding`] when this record is
     /// reduced. A runtime must not construct an incarnation from its native
     /// window identity.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_viewport_registration(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -512,6 +548,7 @@ impl Dockspace {
     /// Records the first registration of an existing docking-owned child viewport.
     ///
     /// The core, rather than the native runtime, resolves and reserves the exact recovery target.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_child_viewport_bootstrap(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -536,6 +573,7 @@ impl Dockspace {
     }
 
     /// Returns the current core-minted native binding for one logical surface.
+    #[cfg(any(feature = "backend", test))]
     #[must_use]
     pub fn native_viewport_binding(&self, surface: SurfaceId) -> Option<ViewportBinding> {
         self.engine
@@ -550,6 +588,7 @@ impl Dockspace {
     /// Native runtimes use this before replaying their ordered ingress batch;
     /// core independently rechecks the same output and emission when reducing
     /// the resulting semantic action.
+    #[cfg(any(feature = "backend", test))]
     #[must_use]
     pub fn resolve_retained_receiver(
         &self,
@@ -569,6 +608,7 @@ impl Dockspace {
     }
 
     /// Returns whether core accepts one semantic action for an exact retained output.
+    #[cfg(any(feature = "backend", test))]
     #[must_use]
     pub fn retained_semantic_receiver_supports(
         &self,
@@ -587,6 +627,7 @@ impl Dockspace {
     }
 
     /// Records one close decision in the active backend causal stream.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_close_resolution(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -605,6 +646,7 @@ impl Dockspace {
     }
 
     /// Records one exact native surface-close request in the active backend stream.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_surface_close_request(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -622,6 +664,7 @@ impl Dockspace {
     }
 
     /// Records one deferred close decision in the active backend causal stream.
+    #[cfg(any(feature = "backend", test))]
     pub fn record_backend_deferred_close_resolution(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -800,6 +843,7 @@ impl Dockspace {
         Ok(transition)
     }
 
+    #[cfg(any(feature = "backend", test))]
     fn record_backend_input(
         &self,
         recorder: &mut BackendIngressRecorder,
@@ -850,6 +894,7 @@ impl Dockspace {
     /// completion fact. Consequently the public facade records paint-only
     /// contributions, not core presentation emissions that could never receive
     /// a terminal settlement.
+    #[cfg(any(feature = "backend", test))]
     pub fn begin_host_frame(
         &mut self,
         key: EguiFrameScheduleKey,
@@ -886,6 +931,7 @@ impl Dockspace {
     /// the frame therefore returns an affine settlement capability with every
     /// publishable output. If reducing framework input changed the presentation,
     /// the superseded output remains paint-only and a fresh pass is requested.
+    #[cfg(any(feature = "backend", test))]
     pub fn begin_outer_frame(
         &mut self,
         key: EguiFrameScheduleKey,
@@ -913,6 +959,7 @@ impl Dockspace {
     ///
     /// Returns an error when another native session is active, the joined
     /// backend provider is missing, or the core cannot seal the host frame.
+    #[cfg(any(feature = "backend", test))]
     pub fn begin_native_cycle(
         &mut self,
         key: EguiFrameScheduleKey,
@@ -946,6 +993,7 @@ impl Dockspace {
         Ok(EguiNativeInputSession::new(lease, state))
     }
 
+    #[cfg(any(feature = "backend", test))]
     fn ensure_outer_pointer_provider(&mut self) -> Result<(), DockspaceError> {
         let schedule = EguiEngineOwner::engine(&self.engine).host_presentation_schedule()?;
         if schedule.native_staging_presentations().len() != 0 {

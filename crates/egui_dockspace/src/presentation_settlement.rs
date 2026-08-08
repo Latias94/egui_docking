@@ -8,7 +8,7 @@ use dockspace::ids::SurfaceId;
 use dockspace::presentation_observation::HostPresentationOutput;
 use egui::FullOutput;
 
-use crate::{ExactNativeViewport, NativeCoreRoute};
+use crate::facade::{ExactNativeViewport, NativeCoreRoute};
 
 /// Terminal renderer result for one exact outer-host output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

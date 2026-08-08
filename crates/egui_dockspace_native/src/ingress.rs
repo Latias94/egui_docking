@@ -63,9 +63,10 @@ use eframe::{
     NativeWorkAreaRoute,
 };
 use egui::ViewportId;
-use egui_dockspace::{
-    Dockspace, ExactNativeViewport, NativeBindingRoster, NativeCoreRoute,
-    NativeViewportIncarnation, PaintReceiverFingerprint, PaintReceiverLookup,
+use egui_dockspace::Dockspace;
+use egui_dockspace::backend::{
+    ExactNativeViewport, NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
+    PaintReceiverFingerprint, PaintReceiverLookup,
 };
 
 use crate::effects::{DeferredEffectResult, NativeEffectDriver};
@@ -350,7 +351,7 @@ impl NativeIngressBridge {
                 .expect("the provider was enrolled before preparing native ingress");
             let _ = dockspace.record_ready_backend_pane_focus_observations(recorder)?;
         }
-        self.flush_post_commit_records(dockspace.engine().version().epoch())?;
+        self.flush_post_commit_records(dockspace.version().epoch())?;
         let mut replacement_lineages =
             self.plan_deferred_replacement_lineages(ingress, configured)?;
         let mut routes = self.routes.clone();
@@ -407,7 +408,7 @@ impl NativeIngressBridge {
                                 .expect("the provider was enrolled above")
                                 .record_semantic_input(
                                     EngineInput::CancelActiveInteractionWithEscape {
-                                        expected: dockspace.engine().version(),
+                                        expected: dockspace.version(),
                                         delivery: EscapeDelivery::NativeBinding(route.core()),
                                     },
                                 )?;
@@ -443,7 +444,7 @@ impl NativeIngressBridge {
                         .as_mut()
                         .expect("the provider was enrolled above")
                         .record_semantic_input(EngineInput::ActivateSemanticReceiver {
-                            expected: dockspace.engine().version(),
+                            expected: dockspace.version(),
                             event,
                         })?;
                 }
@@ -487,7 +488,7 @@ impl NativeIngressBridge {
                         .as_mut()
                         .expect("the provider was enrolled above")
                         .record_semantic_input(EngineInput::ActivateSemanticReceiver {
-                            expected: dockspace.engine().version(),
+                            expected: dockspace.version(),
                             event,
                         })?;
                 }
@@ -547,10 +548,7 @@ impl NativeIngressBridge {
                     self.recorder
                         .as_mut()
                         .expect("the provider was enrolled above")
-                        .record_native_close_observation(
-                            dockspace.engine().version().epoch(),
-                            close,
-                        )?;
+                        .record_native_close_observation(dockspace.version().epoch(), close)?;
                 }
                 NativeIngressEvent::PlatformSnapshot(_) => {
                     if observed_snapshot {
@@ -577,7 +575,7 @@ impl NativeIngressBridge {
                         .recorder
                         .as_mut()
                         .expect("the provider was enrolled above")
-                        .record_platform_snapshot(dockspace.engine().version().epoch(), snapshot)?;
+                        .record_platform_snapshot(dockspace.version().epoch(), snapshot)?;
                     if self
                         .work_area_sidecars
                         .insert(ordinal.get(), work_area_commit)
@@ -596,7 +594,7 @@ impl NativeIngressBridge {
                     let recorder = self.recorder.as_mut().expect("provider enrolled above");
                     self.effects.consume_effect_result(
                         result,
-                        dockspace.engine().version().epoch(),
+                        dockspace.version().epoch(),
                         recorder,
                     )?;
                     self.quarantine_failed_native_lifetime(
@@ -912,7 +910,7 @@ impl NativeIngressBridge {
     ) {
         self.post_commit_records.push(PostCommitRecord::Semantic(
             EngineInput::RequestSurfaceClose {
-                expected: dockspace.engine().version(),
+                expected: dockspace.version(),
                 edge,
                 request,
             },
@@ -992,10 +990,9 @@ impl NativeIngressBridge {
         }
         self.settle_pending_prefix_retirement(dockspace)?;
         let committed_through = dockspace
-            .engine()
             .backend_ingress_commit_watermark()
             .map(|watermark| watermark.through());
-        if let Some(watermark) = dockspace.engine().backend_ingress_commit_watermark() {
+        if let Some(watermark) = dockspace.backend_ingress_commit_watermark() {
             let through = watermark.through();
             let work_area_commit = self
                 .work_area_sidecars
@@ -1091,7 +1088,7 @@ impl NativeIngressBridge {
         let focus_routes = by_native
             .values()
             .filter_map(|route| {
-                (dockspace.engine().viewport_focus_binding(route.surface()) == Some(route.core()))
+                (dockspace.backend_viewport_focus_binding(route.surface()) == Some(route.core()))
                     .then_some(route.native_binding())
             })
             .collect::<BTreeSet<_>>();

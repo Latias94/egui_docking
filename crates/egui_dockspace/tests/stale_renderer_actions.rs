@@ -64,7 +64,7 @@ fn pointer_button(position: Pos2, pressed: bool) -> Event {
 )]
 fn close_center(dockspace: &Dockspace) -> Pos2 {
     let painted = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("fixture surface must have acknowledged painted geometry");
     let tab = painted
@@ -102,11 +102,14 @@ fn restored_epoch_rejects_prior_scene_close_release_without_a_request() {
         "pressing a close control must not open a close plan"
     );
 
-    let version_before_replacement = dockspace.engine().version();
+    let version_before_replacement = dockspace.core_engine().version();
     dockspace
         .replace_workspace(original.clone())
         .expect("replacement commits before the release renderer boundary");
-    assert_ne!(dockspace.engine().version(), version_before_replacement);
+    assert_ne!(
+        dockspace.core_engine().version(),
+        version_before_replacement
+    );
     let close_requests = run(
         &context,
         &mut dockspace,
@@ -118,5 +121,5 @@ fn restored_epoch_rejects_prior_scene_close_release_without_a_request() {
         close_requests, 0,
         "a release captured from the prior scene must not reach application close decisions"
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
 }

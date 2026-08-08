@@ -24,7 +24,7 @@ use eframe::{
     NativeViewportCreateSink, NativeViewportCreateSubmitError, NativeWindowEffect,
 };
 use egui::{UserData, ViewportId};
-use egui_dockspace::ExactNativeViewport;
+use egui_dockspace::backend::{ExactNativeViewport, NativeViewportIncarnation};
 
 use crate::NativeRuntimeError;
 use crate::ingress::BoundNativeRoute;
@@ -1546,7 +1546,7 @@ fn route_for_core(
 fn exact_native(binding: NativeViewportBinding) -> ExactNativeViewport {
     ExactNativeViewport::new(
         binding.viewport_id(),
-        egui_dockspace::NativeViewportIncarnation::new(binding.incarnation().get()),
+        NativeViewportIncarnation::new(binding.incarnation().get()),
     )
 }
 

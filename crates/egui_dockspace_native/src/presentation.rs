@@ -14,9 +14,10 @@ use eframe::{
     NativeViewportBinding,
 };
 use egui::{FullOutput, PaintOutcome, PointerHitGraphSnapshot, UserData};
-use egui_dockspace::{
-    Dockspace, EguiOuterSurfaceOutput, EguiPresentationResult, EguiPresentationSettlement,
-    ExactNativeViewport,
+use egui_dockspace::Dockspace;
+use egui_dockspace::backend::{
+    EguiOuterSurfaceOutput, EguiPresentationResult, EguiPresentationSettlement,
+    ExactNativeViewport, NativeViewportIncarnation,
 };
 
 use crate::NativeRuntimeError;
@@ -323,7 +324,7 @@ impl NativePresentationLedger {
         let submitted = native_result.binding();
         let submitted_exact = ExactNativeViewport::new(
             submitted.viewport_id(),
-            egui_dockspace::NativeViewportIncarnation::new(submitted.incarnation().get()),
+            NativeViewportIncarnation::new(submitted.incarnation().get()),
         );
         if let Some(settled) = self.settled.get(&token.serial) {
             if submitted_exact != settled.native
@@ -551,7 +552,7 @@ impl NativePresentationLedger {
     ) -> Option<&PresentedNativePointerGraph> {
         let exact = ExactNativeViewport::new(
             binding.viewport_id(),
-            egui_dockspace::NativeViewportIncarnation::new(binding.incarnation().get()),
+            NativeViewportIncarnation::new(binding.incarnation().get()),
         );
         self.presented_graphs.get(&exact)
     }
@@ -569,7 +570,7 @@ impl NativePresentationLedger {
 fn exact_native(binding: NativeViewportBinding) -> ExactNativeViewport {
     ExactNativeViewport::new(
         binding.viewport_id(),
-        egui_dockspace::NativeViewportIncarnation::new(binding.incarnation().get()),
+        NativeViewportIncarnation::new(binding.incarnation().get()),
     )
 }
 
@@ -589,8 +590,6 @@ mod tests {
     use super::*;
     use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::ids::{ItemId, RootId, SurfaceId};
-    use egui_dockspace::NativeViewportIncarnation;
-
     fn test_dockspace() -> Dockspace {
         let surface = SurfaceId::new(1);
         let root = RootId::new(1);
@@ -655,7 +654,7 @@ mod tests {
     fn failed_prepare_preserves_quiesced_retirement_replay_evidence() {
         let exact = ExactNativeViewport::new(
             egui::ViewportId::from_hash_of("failed-prepare-retired-viewport"),
-            egui_dockspace::NativeViewportIncarnation::new(1),
+            NativeViewportIncarnation::new(1),
         );
         let mut ledger = NativePresentationLedger::new().expect("runtime identity is available");
         ledger.retired_bindings.insert(exact);

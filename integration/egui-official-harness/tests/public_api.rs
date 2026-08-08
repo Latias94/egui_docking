@@ -5,7 +5,8 @@ use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::presentation_observation::HostPresentationObservationOutcome;
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
-use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);

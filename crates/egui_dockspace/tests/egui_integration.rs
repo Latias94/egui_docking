@@ -20,9 +20,8 @@ use egui::{
     Context, Event, Frame, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect,
     Sense, TouchPhase, Ui, UiBuilder, vec2,
 };
-use egui_dockspace::{
-    Dockspace, DockspaceSurfaceStatus, EguiFrameScheduleKey, EguiPresentationResult, PaneView,
-};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::{Dockspace, DockspaceSurfaceStatus, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -241,8 +240,8 @@ fn run_frame_with_size(
             surface_status: response.surface_status(),
             missing: response.missing_panes().to_vec(),
             close_requests: response.close_requests().cloned().collect(),
-            version: dockspace.engine().version(),
-            workspace: dockspace.engine().workspace().clone(),
+            version: dockspace.core_engine().version(),
+            workspace: dockspace.core_engine().workspace().clone(),
         });
     });
     observations
@@ -279,8 +278,8 @@ fn run_outer_frame_with_size(
         surface_status: paint.surface_status(),
         missing: paint.missing_panes().to_vec(),
         close_requests: host.close_requests().cloned().collect(),
-        version: dockspace.engine().version(),
-        workspace: dockspace.engine().workspace().clone(),
+        version: dockspace.core_engine().version(),
+        workspace: dockspace.core_engine().workspace().clone(),
     }
 }
 
@@ -634,7 +633,7 @@ fn equal_width_title_changes_refresh_paint_resources_without_changing_scene_iden
     panes.titles.insert(ITEM_A, "AAAA".to_owned());
     let _ = warm(&context, &mut dockspace, &mut panes);
     let before = dockspace
-        .engine()
+        .core_engine()
         .scene()
         .surface(SURFACE)
         .and_then(SurfaceScene::ready)
@@ -651,7 +650,7 @@ fn equal_width_title_changes_refresh_paint_resources_without_changing_scene_iden
         Vec::new(),
     );
     let after = dockspace
-        .engine()
+        .core_engine()
         .scene()
         .surface(SURFACE)
         .and_then(SurfaceScene::ready)
@@ -728,7 +727,7 @@ fn translated_rect(rect: LogicalRect, origin: Pos2, current: Pos2) -> LogicalRec
 )]
 fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("fixture has one contained floating");
@@ -749,7 +748,7 @@ fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
 
 fn contained_rect(dockspace: &Dockspace) -> LogicalRect {
     dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("fixture has one contained floating")
@@ -762,7 +761,7 @@ fn contained_rect(dockspace: &Dockspace) -> LogicalRect {
 )]
 fn contained_north_west_resize_point(dockspace: &Dockspace) -> Pos2 {
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("fixture has one contained floating");
@@ -787,7 +786,7 @@ fn splitter_center(dockspace: &Dockspace) -> Pos2 {
 )]
 fn splitter_hit_rect(dockspace: &Dockspace) -> Rect {
     let painted = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("surface must have an acknowledged paint");
     let splitter = painted
@@ -809,7 +808,7 @@ fn splitter_hit_rect(dockspace: &Dockspace) -> Rect {
 )]
 fn tab_close_rect(dockspace: &Dockspace) -> Rect {
     let painted = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("surface must have an acknowledged paint");
     let tab = painted
@@ -826,7 +825,7 @@ fn tab_close_rect(dockspace: &Dockspace) -> Rect {
 
 fn published_tab_rect(dockspace: &Dockspace, item: ItemId) -> Option<LogicalRect> {
     dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)?
         .plan()
         .tab_records()
@@ -869,8 +868,8 @@ fn logical_rect_intersection(first: LogicalRect, second: LogicalRect) -> Option<
 }
 
 fn selected_item(dockspace: &Dockspace, root: RootId) -> Option<ItemId> {
-    let root = dockspace.engine().workspace().root(root)?;
-    match dockspace.engine().workspace().node(root.node)? {
+    let root = dockspace.core_engine().workspace().root(root)?;
+    match dockspace.core_engine().workspace().node(root.node)? {
         Node::Tabs { selected, .. } => *selected,
         Node::Split { .. } => None,
     }
@@ -878,12 +877,12 @@ fn selected_item(dockspace: &Dockspace, root: RootId) -> Option<ItemId> {
 
 fn select_item(dockspace: &mut Dockspace, item: ItemId) {
     let source = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .roots()
         .find_map(|(root, record)| {
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .capture_item_source(root, record.node, item)
                 .ok()
@@ -896,7 +895,7 @@ fn select_item(dockspace: &mut Dockspace, item: ItemId) {
 
 fn selected_in_group_containing(dockspace: &Dockspace, item: ItemId) -> Option<ItemId> {
     dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .nodes()
         .find_map(|(_, node)| match node {
@@ -906,10 +905,10 @@ fn selected_in_group_containing(dockspace: &Dockspace, item: ItemId) -> Option<I
 }
 
 fn paint_projection_is_authoritative(dockspace: &Dockspace) -> bool {
-    let scene = dockspace.engine().scene().surface(SURFACE);
+    let scene = dockspace.core_engine().scene().surface(SURFACE);
     scene
         .and_then(SurfaceScene::paint_projection)
-        .zip(dockspace.engine().interaction_projection(SURFACE))
+        .zip(dockspace.core_engine().interaction_projection(SURFACE))
         .is_some_and(|(paint, interaction)| {
             paint.output_ticket() == interaction.output_ticket()
                 && interaction
@@ -933,7 +932,7 @@ fn inactive_tab_pointer_down_selects_and_arms_in_one_core_revision() {
     let press = logical_rect_center(
         published_tab_rect(&dockspace, ITEM_B).expect("inactive tab is visible"),
     );
-    let before = dockspace.engine().version();
+    let before = dockspace.core_engine().version();
 
     run_outer_frame_with_size(
         &context,
@@ -945,12 +944,12 @@ fn inactive_tab_pointer_down_selects_and_arms_in_one_core_revision() {
 
     assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Armed { .. }
     ));
-    assert_eq!(dockspace.engine().version().epoch(), before.epoch());
+    assert_eq!(dockspace.core_engine().version().epoch(), before.epoch());
     assert_eq!(
-        dockspace.engine().version().revision().get(),
+        dockspace.core_engine().version().revision().get(),
         before.revision().get() + 1,
         "selection and gesture activation must publish one atomic core revision"
     );
@@ -983,7 +982,7 @@ fn same_frame_press_and_release_still_activate_an_inactive_tab() {
 
     assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_B));
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle,
         "a complete click must not leave a gesture owner behind"
     );
@@ -1000,7 +999,7 @@ fn same_frame_press_and_release_requests_one_exact_tab_close() {
     warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let close = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("the tab strip is authoritative")
         .plan()
@@ -1026,7 +1025,7 @@ fn same_frame_press_and_release_requests_one_exact_tab_close() {
     assert_eq!(observation.close_requests[0].items().len(), 1);
     assert_eq!(observation.close_requests[0].items()[0].item(), ITEM_B);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle,
         "a complete close click must not leave a gesture owner behind"
     );
@@ -1065,7 +1064,7 @@ fn painted_prepared_contribution_requires_a_later_host_sequence_acknowledgement(
     );
     assert_eq!(painted.pass, 1);
     assert!(matches!(
-        dockspace.engine().scene().surface(SURFACE),
+        dockspace.core_engine().scene().surface(SURFACE),
         Some(SurfaceScene::Ready(_))
     ));
     assert!(!paint_projection_is_authoritative(&dockspace));
@@ -1119,7 +1118,7 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
             "no pass may acknowledge presentation from its own host sequence"
         );
         let candidate = dockspace
-            .engine()
+            .core_engine()
             .scene()
             .surface(SURFACE)
             .and_then(SurfaceScene::ready)
@@ -1137,7 +1136,7 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
         );
         assert_eq!(
             dockspace
-                .engine()
+                .core_engine()
                 .interaction_projection(SURFACE)
                 .map(dockspace::scene::SurfaceInteractionProjection::plan_stamp),
             Some(candidate)
@@ -1216,12 +1215,12 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     let selected_before = published_tab_rect(&dockspace, ITEM_A);
     let neighbor_before = published_tab_rect(&dockspace, ITEM_B);
     let scroll_before = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .and_then(|projection| projection.plan().tab_bar_records().first())
         .map(dockspace::scene::TabBarRecord::scroll_offset)
         .expect("the overflow fixture publishes one tab bar");
-    let version_before = dockspace.engine().version();
+    let version_before = dockspace.core_engine().version();
     assert!(selected_before.is_some());
     assert!(published_tab_rect(&dockspace, ITEM_C).is_none());
 
@@ -1242,10 +1241,10 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     );
     run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
     assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_A));
-    assert_eq!(dockspace.engine().version(), version_before);
+    assert_eq!(dockspace.core_engine().version(), version_before);
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_bar_records().first())
             .map(dockspace::scene::TabBarRecord::scroll_offset),
@@ -1262,11 +1261,15 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     );
 
     let painted = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("overflow fixture publishes an acknowledged scene");
     assert!(
-        selected_after.width() >= dockspace.engine().presentation_config().tab_close_extent(),
+        selected_after.width()
+            >= dockspace
+                .core_engine()
+                .presentation_config()
+                .tab_close_extent(),
         "the selected closeable tab must retain its close and drag affordances"
     );
     assert!(painted.plan().tab_records().iter().all(|tab| {
@@ -1278,13 +1281,13 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     }));
 
     let tabs = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .root(MAIN_ROOT)
         .expect("fixture root exists")
         .node;
     let source = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .capture_item_source(MAIN_ROOT, tabs, ITEM_C)
         .expect("hidden item source captures");
@@ -1420,7 +1423,7 @@ fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
         vec![Event::PointerMoved(current)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
 
@@ -1442,7 +1445,7 @@ fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
     warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     assert!(
@@ -1451,7 +1454,7 @@ fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
     );
     assert!(
         dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection
                 .plan()
@@ -1485,7 +1488,7 @@ fn authority_incomplete_wheel_does_not_choose_an_overlapping_tab_strip() {
     let overlap = logical_rect_intersection(background_before, foreground_before)
         .expect("fixture tab strips overlap");
     let pointer = logical_rect_center(overlap);
-    let version_before = dockspace.engine().version();
+    let version_before = dockspace.core_engine().version();
     run_frame_with_size(
         &context,
         &mut dockspace,
@@ -1503,7 +1506,7 @@ fn authority_incomplete_wheel_does_not_choose_an_overlapping_tab_strip() {
     );
     run_authoritative_frame_with_size(&context, &mut dockspace, &mut panes, size);
 
-    assert_eq!(dockspace.engine().version(), version_before);
+    assert_eq!(dockspace.core_engine().version(), version_before);
     assert_eq!(
         published_tab_rect(&dockspace, ITEM_A),
         Some(background_before)
@@ -1538,7 +1541,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
     );
     let edge = logical_rect_center(
         dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .expect("the floating strip has authoritative controls")
             .plan()
@@ -1576,7 +1579,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
         vec![Event::PointerMoved(press - vec2(12.0, 0.0))],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     let drag_pointer = press - vec2(12.0, 0.0);
@@ -1609,7 +1612,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
     warm_outer_with_size(&context, &mut dockspace, &mut panes, size);
 
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     assert_eq!(
@@ -1647,7 +1650,7 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
     dockspace
         .replace_workspace(added_workspace.clone())
         .expect("hidden-item addition commits immediately");
-    assert_eq!(dockspace.engine().workspace(), &added_workspace);
+    assert_eq!(dockspace.core_engine().workspace(), &added_workspace);
     let added = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
         !added
@@ -1674,7 +1677,7 @@ fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
     dockspace
         .replace_workspace(removed_workspace.clone())
         .expect("hidden-item removal commits immediately");
-    assert_eq!(dockspace.engine().workspace(), &removed_workspace);
+    assert_eq!(dockspace.core_engine().workspace(), &removed_workspace);
     let removed = run_frame_with_size(&context, &mut dockspace, &mut panes, size, Vec::new());
     assert!(
         !removed
@@ -2577,7 +2580,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
     );
     for _ in 0..8 {
         if dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .is_some_and(|projection| !projection.plan().tab_list_menu_records().is_empty())
         {
@@ -2597,7 +2600,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
     let (_, menu) = accesskit_node_by_role(&opened, Role::Menu);
     let pointer = accesskit_node_rect(menu).center();
     let menu_offset_before = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .and_then(|projection| projection.plan().tab_list_menu_records().first())
         .map(dockspace::scene::TabListMenuRecord::scroll_offset)
@@ -2643,7 +2646,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
     );
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_list_menu_records().first())
             .map(dockspace::scene::TabListMenuRecord::scroll_offset),
@@ -2721,7 +2724,7 @@ fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
         let (_, last_before) = accesskit_node_by_label(&menu, Role::MenuItem, &last_label);
         let last_y_before = accesskit_node_center(last_before).y;
         let menu_offset_before = dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_list_menu_records().first())
             .map(dockspace::scene::TabListMenuRecord::scroll_offset)
@@ -2748,7 +2751,7 @@ fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
         assert_eq!(accesskit_node_center(last_after).y, last_y_before);
         assert_eq!(
             dockspace
-                .engine()
+                .core_engine()
                 .interaction_projection(SURFACE)
                 .and_then(|projection| projection.plan().tab_list_menu_records().first())
                 .map(dockspace::scene::TabListMenuRecord::scroll_offset),
@@ -3099,11 +3102,11 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
     assert_eq!(panes.ui_calls(ITEM_A), a_ui_before);
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .roots()
             .next()
-            .and_then(|(_, root)| dockspace.engine().workspace().node(root.node))
+            .and_then(|(_, root)| dockspace.core_engine().workspace().node(root.node))
             .and_then(|node| match node {
                 Node::Tabs { selected, .. } => *selected,
                 Node::Split { .. } => None,
@@ -3159,7 +3162,7 @@ fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     warm(&context, &mut dockspace, &mut panes);
 
-    let (source_tabs, target_tabs) = dockspace.engine().workspace().nodes().fold(
+    let (source_tabs, target_tabs) = dockspace.core_engine().workspace().nodes().fold(
         (None, None),
         |(source, target), (node, record)| match record {
             Node::Tabs { items, .. } if items.contains(&ITEM_A) => (Some(node), target),
@@ -3170,12 +3173,12 @@ fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
     let source_tabs = source_tabs.expect("source tabs exist");
     let target_tabs = target_tabs.expect("target tabs exist");
     let source = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .capture_item_source(MAIN_ROOT, source_tabs, ITEM_A)
         .expect("source item must capture");
     let target = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .capture_tab_target(MAIN_ROOT, target_tabs)
         .expect("target tabs must capture");
@@ -3192,7 +3195,7 @@ fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
         .expect("move must commit immediately");
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .root(MAIN_ROOT)
             .map(|root| root.node),
@@ -3251,7 +3254,7 @@ fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
     warm(&context, &mut dockspace, &mut panes);
 
     let source = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .capture_node_source(FLOATING_ROOT, tabs)
         .expect("contained root source must capture");
@@ -3268,7 +3271,7 @@ fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
         .expect("contained root promotion must commit immediately");
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .surface(SURFACE)
             .and_then(|surface| surface.main_root),
@@ -3427,7 +3430,7 @@ fn missing_pane_is_reported_and_recovers_without_topology_changes() {
     );
     assert_eq!(panes.ui_calls(ITEM_A), 4);
     assert_eq!(panes.disabled_ui_calls(ITEM_A), 1);
-    assert_eq!(dockspace.engine().workspace(), &workspace);
+    assert_eq!(dockspace.core_engine().workspace(), &workspace);
 }
 
 #[test]
@@ -3446,7 +3449,7 @@ fn disabled_close_policy_removes_the_egui_affordance() {
     warm(&context, &mut dockspace, &mut panes);
 
     let painted = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("disabled fixture must have an acknowledged paint");
     let tab = painted
@@ -3457,8 +3460,11 @@ fn disabled_close_policy_removes_the_egui_affordance() {
         .expect("fixture tab is painted");
     assert!(tab.close_bounds().is_none());
 
-    assert_eq!(dockspace.engine().workspace(), &workspace);
-    assert_eq!(dockspace.engine().version(), WorkspaceVersion::default());
+    assert_eq!(dockspace.core_engine().workspace(), &workspace);
+    assert_eq!(
+        dockspace.core_engine().version(),
+        WorkspaceVersion::default()
+    );
 }
 
 #[test]
@@ -3486,7 +3492,7 @@ fn hidden_tab_bar_gives_the_full_leaf_to_content_without_tab_accessibility() {
     );
 
     let ready = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("hidden fixture has an acknowledged scene")
         .plan();
@@ -3536,7 +3542,7 @@ fn disabled_tab_bar_paints_static_chrome_without_input_or_accessibility_actions(
     );
 
     let ready = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("paint-only fixture has an acknowledged scene")
         .plan();
@@ -3586,7 +3592,7 @@ fn disabled_tab_bar_paints_static_chrome_without_input_or_accessibility_actions(
             .iter()
             .all(|observation| observation.close_requests.is_empty())
     );
-    assert_eq!(dockspace.engine().workspace(), &workspace);
+    assert_eq!(dockspace.core_engine().workspace(), &workspace);
 }
 
 #[test]
@@ -3649,36 +3655,54 @@ fn contained_close_accepts_keyboard_and_accesskit_activation_without_pointer_geo
                 .collect::<Vec<_>>(),
             [ITEM_B]
         );
-        assert_eq!(dockspace.engine().workspace(), &workspace);
+        assert_eq!(dockspace.core_engine().workspace(), &workspace);
 
         resolve_close_plan(&mut dockspace, &plan, |_| CloseDecision::Allow);
         assert!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .contained_floating(FLOATING)
                 .is_none()
         );
-        assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
+        assert!(
+            dockspace
+                .core_engine()
+                .workspace()
+                .root(FLOATING_ROOT)
+                .is_none()
+        );
         run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .contained_floating(FLOATING)
                 .is_none()
         );
-        assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
+        assert!(
+            dockspace
+                .core_engine()
+                .workspace()
+                .root(FLOATING_ROOT)
+                .is_none()
+        );
 
         run_frame(&context, &mut dockspace, &mut panes, Vec::new());
         assert!(
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .contained_floating(FLOATING)
                 .is_none()
         );
-        assert!(dockspace.engine().workspace().root(FLOATING_ROOT).is_none());
+        assert!(
+            dockspace
+                .core_engine()
+                .workspace()
+                .root(FLOATING_ROOT)
+                .is_none()
+        );
     }
 }
 
@@ -3850,7 +3874,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
     );
     let (policy_right, _) =
         accesskit_node_by_label(&policy_tree, Role::Splitter, "Resize right edge");
-    let policy_version = policy_dockspace.engine().version();
+    let policy_version = policy_dockspace.core_engine().version();
     run_accesskit_frame(
         &policy_context,
         &mut policy_dockspace,
@@ -3859,7 +3883,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
         vec![accesskit_action(policy_right, Action::Increment)],
     );
     assert_eq!(contained_rect(&policy_dockspace), original);
-    assert_eq!(policy_dockspace.engine().version(), policy_version);
+    assert_eq!(policy_dockspace.core_engine().version(), policy_version);
 
     let stale_context = Context::default();
     stale_context.enable_accesskit();
@@ -3886,7 +3910,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
     stale_context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");
     });
-    let before_stale_action = stale_dockspace.engine().version();
+    let before_stale_action = stale_dockspace.core_engine().version();
     let (stale_tree, interactions_current) = run_accesskit_frame_with_authority(
         &stale_context,
         &mut stale_dockspace,
@@ -3897,7 +3921,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
 
     assert!(!interactions_current);
     assert_eq!(contained_rect(&stale_dockspace), replacement);
-    assert_eq!(stale_dockspace.engine().version(), before_stale_action);
+    assert_eq!(stale_dockspace.core_engine().version(), before_stale_action);
     let stale_node = stale_tree
         .nodes
         .iter()
@@ -3940,7 +3964,7 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
         ],
     );
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
 
     let context = Context::default();
     let original = split_workspace();
@@ -3972,7 +3996,7 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
     assert!(
@@ -3992,13 +4016,13 @@ fn multipass_observes_a_command_submitted_between_passes() {
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     warm(&context, &mut dockspace, &mut panes);
     let source = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .roots()
         .next()
         .and_then(|(root, record)| {
             dockspace
-                .engine()
+                .core_engine()
                 .workspace()
                 .capture_item_source(root, record.node, ITEM_B)
                 .ok()
@@ -4013,13 +4037,13 @@ fn multipass_observes_a_command_submitted_between_passes() {
         dockspace
             .show_single_surface(SURFACE, ui, &mut panes)
             .expect("multipass show must succeed");
-        versions.push(dockspace.engine().version());
-        workspaces.push(dockspace.engine().workspace().clone());
+        versions.push(dockspace.core_engine().version());
+        workspaces.push(dockspace.core_engine().workspace().clone());
         if ui.ctx().current_pass_index() == 0 {
             dockspace
                 .submit_command(command.take().expect("submitted only in pass zero"))
                 .expect("command must commit before the next pass");
-            submitted_workspace = Some(dockspace.engine().workspace().clone());
+            submitted_workspace = Some(dockspace.core_engine().workspace().clone());
             ui.ctx()
                 .request_discard("exercise dockspace multipass gate");
         }
@@ -4040,7 +4064,7 @@ fn multipass_observes_a_command_submitted_between_passes() {
             Node::Split { .. } => None,
         });
     assert_eq!(selected, Some(ITEM_B));
-    assert_eq!(dockspace.engine().workspace(), &submitted_workspace);
+    assert_eq!(dockspace.core_engine().workspace(), &submitted_workspace);
 }
 
 #[test]
@@ -4080,7 +4104,7 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
     assert_eq!(current, Some((DockspaceSurfaceStatus::Ready, true)));
 
     let degraded_plan = dockspace
-        .engine()
+        .core_engine()
         .scene()
         .surface(SURFACE)
         .and_then(SurfaceScene::paint_projection)
@@ -4096,13 +4120,13 @@ fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
         "a collapsed gap has no paint or interaction record"
     );
 
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
     assert_eq!(
-        dockspace.engine().workspace().item_multiset(),
+        dockspace.core_engine().workspace().item_multiset(),
         BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)])
     );
     assert!(matches!(
-        dockspace.engine().scene().surface(SURFACE),
+        dockspace.core_engine().scene().surface(SURFACE),
         Some(SurfaceScene::Ready(_))
     ));
 }
@@ -4117,23 +4141,23 @@ fn contained_measurements_clip_presentation_without_rewriting_durable_bounds() {
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     panes.minimum_sizes.insert(ITEM_B, vec2(420.0, 280.0));
-    let before_version = dockspace.engine().version();
+    let before_version = dockspace.core_engine().version();
 
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating remains presented");
 
     assert_eq!(floating.rect, original);
-    assert_eq!(dockspace.engine().version(), before_version);
+    assert_eq!(dockspace.core_engine().version(), before_version);
     assert_eq!(
-        dockspace.engine().workspace().item_multiset(),
+        dockspace.core_engine().workspace().item_multiset(),
         BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)])
     );
     let ready = dockspace
-        .engine()
+        .core_engine()
         .scene()
         .surface(SURFACE)
         .and_then(SurfaceScene::ready)
@@ -4174,7 +4198,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
     warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
     let original_floating = *dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating exists");
@@ -4202,7 +4226,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         vec![Event::PointerMoved(painted_pointer)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     assert_eq!(contained_rect(&dockspace), original);
@@ -4217,7 +4241,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
     let expected = translated_rect(original, press_origin, painted_pointer);
     assert!(matches!(
         dockspace
-            .engine()
+            .core_engine()
             .interaction()
             .preview()
             .expect("last painted move candidate remains authoritative")
@@ -4266,7 +4290,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         "release must wait for its newly sampled preview: {outcomes:#?}"
     );
     let pending = dockspace
-        .engine()
+        .core_engine()
         .pending_release_preview()
         .expect("release retains the newly sampled preview");
     let release_output = outputs
@@ -4299,14 +4323,14 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         output.settle_with(|_, _| EguiPresentationResult::Presented);
     }
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating remains");
     assert_eq!(floating.rect, original);
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .surface(SURFACE)
             .expect("surface remains present")
@@ -4315,7 +4339,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
     );
     assert_eq!(floating.root, original_floating.root);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 
@@ -4376,7 +4400,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
     for output in outputs {
         output.settle_with(|_, _| EguiPresentationResult::Presented);
     }
-    assert!(dockspace.engine().pending_release_preview().is_some());
+    assert!(dockspace.core_engine().pending_release_preview().is_some());
     run_outer_frame_with_size(
         &context,
         &mut dockspace,
@@ -4384,7 +4408,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
         vec2(600.0, 400.0),
         Vec::new(),
     );
-    assert_eq!(dockspace.engine().pending_release_preview(), None);
+    assert_eq!(dockspace.core_engine().pending_release_preview(), None);
     assert_eq!(
         contained_rect(&dockspace),
         translated_rect(original, press_origin, release_pointer)
@@ -4440,7 +4464,7 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
     let resized = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("floating remains")
@@ -4455,7 +4479,7 @@ fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints(
     assert!((resized.width() - f64::from(minimum.x)).abs() <= f64::EPSILON);
     assert!(resized.height() >= f64::from(minimum.y));
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 }
@@ -4498,10 +4522,10 @@ fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
         vec![Event::PointerMoved(current)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    let before_release = dockspace.engine().workspace().clone();
+    let before_release = dockspace.core_engine().workspace().clone();
 
     let released = run_outer_frame_with_size(
         &context,
@@ -4512,17 +4536,17 @@ fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
     );
     assert!(!released.interactions_current);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.engine().workspace(), &before_release);
+    assert_eq!(dockspace.core_engine().workspace(), &before_release);
     let projection = dockspace
-        .engine()
+        .core_engine()
         .scene()
         .surface(SURFACE)
         .and_then(SurfaceScene::paint_projection)
         .expect("the resized surface projection is painted");
-    let interaction = dockspace.engine().interaction_projection(SURFACE);
+    let interaction = dockspace.core_engine().interaction_projection(SURFACE);
     assert!(
         interaction.is_none_or(|interaction| {
             interaction.output_ticket() != projection.output_ticket()
@@ -4562,10 +4586,10 @@ fn stale_projection_still_releases_active_split_resize() {
         vec![Event::PointerMoved(current)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Resizing { .. }
     ));
-    let version_before_release = dockspace.engine().version();
+    let version_before_release = dockspace.core_engine().version();
 
     let released = run_outer_frame_with_size(
         &context,
@@ -4575,14 +4599,14 @@ fn stale_projection_still_releases_active_split_resize() {
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
     assert!(!released.interactions_current);
-    assert_ne!(dockspace.engine().version(), version_before_release);
+    assert_ne!(dockspace.core_engine().version(), version_before_release);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
     assert!(
         dockspace
-            .engine()
+            .core_engine()
             .scene()
             .surface(SURFACE)
             .and_then(SurfaceScene::paint_projection)
@@ -4590,7 +4614,10 @@ fn stale_projection_still_releases_active_split_resize() {
         "the resized split candidate is published"
     );
     assert!(
-        dockspace.engine().interaction_projection(SURFACE).is_none(),
+        dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .is_none(),
         "the resize release cannot acknowledge its replacement candidate"
     );
 

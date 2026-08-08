@@ -9,7 +9,7 @@ use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::surface_recovery::SurfaceRecoveryBootstrap;
 use dockspace::viewport::{ViewportRole, WindowToken};
-use egui_dockspace::{EguiFrameScheduleKey, EguiPresentationResult, NativeCoreRoute};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, NativeCoreRoute};
 
 const HOST_SURFACE: SurfaceId = SurfaceId::new(1);
 const CHILD_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -562,7 +562,7 @@ fn local_destructive_result_waits_for_cleanup_observer_after_backend_handoff() {
         child_binding,
         ..
     } = committed_pending_restored_registration();
-    let current_epoch = dockspace.engine().version().epoch();
+    let current_epoch = dockspace.version().epoch();
     let predecessor = EffectId::new(77);
     let old_provider = bridge
         .recorder
@@ -664,7 +664,7 @@ fn committed_bootstrap_can_retire_before_its_adapter_route_and_fully_quiesce() {
         .as_mut()
         .expect("the recorder is enrolled")
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.version().epoch(),
             destroyed_child_snapshot(1, host_route.core(), child_binding),
         )
         .expect("the ordered destroyed observation is recorded");
@@ -679,11 +679,7 @@ fn committed_bootstrap_can_retire_before_its_adapter_route_and_fully_quiesce() {
     presentations.accept_commit();
     assert!(dockspace.native_viewport_binding(CHILD_SURFACE).is_none());
     assert_eq!(
-        dockspace
-            .engine()
-            .runtime_retention_manifest()
-            .bindings()
-            .destroyed_binding_guards(),
+        dockspace.backend_destroyed_binding_guard_count(),
         1,
         "the committed destruction guard remains until exact backend quiescence settles",
     );
@@ -695,14 +691,7 @@ fn committed_bootstrap_can_retire_before_its_adapter_route_and_fully_quiesce() {
         .reclaim_committed_quiescence(&mut dockspace)
         .expect("the adapter presentation tombstone also reaches quiescence");
     assert!(bridge.retired_routes.is_empty());
-    assert_eq!(
-        dockspace
-            .engine()
-            .runtime_retention_manifest()
-            .bindings()
-            .destroyed_binding_guards(),
-        0,
-    );
+    assert_eq!(dockspace.backend_destroyed_binding_guard_count(), 0,);
 }
 
 #[test]
@@ -1067,7 +1056,7 @@ fn deferred_replacement_adoption_is_transactional_and_fast_retirement_keeps_core
         .as_mut()
         .expect("the recorder is enrolled")
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.version().epoch(),
             live_child_snapshot(1, host_route.core(), child_binding),
         )
         .expect("the live child coordinates enter the ordered prefix");
@@ -1110,7 +1099,7 @@ fn deferred_replacement_adoption_is_transactional_and_fast_retirement_keeps_core
         .as_mut()
         .expect("the recorder is enrolled")
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.version().epoch(),
             destroyed_child_snapshot(2, host_route.core(), child_binding),
         )
         .expect("the predecessor destruction enters the ordered prefix");
@@ -1127,10 +1116,7 @@ fn deferred_replacement_adoption_is_transactional_and_fast_retirement_keeps_core
         .reclaim_committed_prefix(&mut dockspace)
         .expect("the predecessor retirement boundary is reclaimed");
     let replacement_binding = dockspace
-        .engine()
-        .viewport()
-        .recovery_pending(CHILD_SURFACE)
-        .and_then(dockspace::frame::RecoveryPending::replacement_binding)
+        .backend_recovery_replacement_binding(CHILD_SURFACE)
         .expect("core destruction mints one exact replacement binding");
     assert_ne!(replacement_binding, child_binding);
 

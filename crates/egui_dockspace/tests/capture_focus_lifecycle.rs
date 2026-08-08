@@ -11,9 +11,8 @@ use dockspace::interaction::{
 use dockspace::scene::PresentationPlan;
 use dockspace::transition::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{
-    Dockspace, EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse, PaneView,
-};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -151,7 +150,7 @@ fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut dyn PaneView) 
 
 fn painted_plan(dockspace: &Dockspace) -> &PresentationPlan {
     dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .map(dockspace::scene::SurfaceInteractionProjection::plan)
         .expect("surface has an acknowledged painted plan")
@@ -245,7 +244,7 @@ fn splitter_point(dockspace: &Dockspace) -> Pos2 {
 )]
 fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(FLOATING)
         .expect("contained floating exists");
@@ -273,11 +272,14 @@ fn assert_cancelled_without_commit(
     expected: InteractionCancelReason,
 ) {
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.engine().workspace(), original);
-    assert_eq!(dockspace.engine().version(), WorkspaceVersion::default());
+    assert_eq!(dockspace.core_engine().workspace(), original);
+    assert_eq!(
+        dockspace.core_engine().version(),
+        WorkspaceVersion::default()
+    );
     assert!(
         reasons.contains(&expected),
         "expected {expected:?} cancellation, got {reasons:?}"
@@ -308,7 +310,7 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
         vec![Event::PointerMoved(source)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Armed { .. }
     ));
 
@@ -320,10 +322,10 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
     );
 
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Armed { .. }
     ));
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
     assert!(reasons.is_empty());
 
     let reasons = run_input(
@@ -382,11 +384,11 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
         vec![Event::PointerMoved(moved)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     let preview = dockspace
-        .engine()
+        .core_engine()
         .interaction()
         .preview()
         .cloned()
@@ -399,21 +401,27 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
         vec![Event::PointerGone],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert_eq!(
+        dockspace.core_engine().interaction().preview(),
+        Some(&preview)
+    );
     reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
     assert!(
         matches!(
-            dockspace.engine().interaction().status(),
+            dockspace.core_engine().interaction().status(),
             InteractionStatus::Dragging { .. }
         ),
         "one surface's local pointer loss is not global capture authority: status={:?}, reasons={reasons:?}",
-        dockspace.engine().interaction().status()
+        dockspace.core_engine().interaction().status()
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
-    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(
+        dockspace.core_engine().interaction().preview(),
+        Some(&preview)
+    );
     assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
 
     let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
@@ -450,7 +458,7 @@ fn active_resize_survives_local_button_state_without_a_release_edge() {
         vec![Event::PointerMoved(moved)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Resizing { .. }
     ));
 
@@ -464,10 +472,10 @@ fn active_resize_survives_local_button_state_without_a_release_edge() {
     let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Resizing { .. }
     ));
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
     assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
 
     let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
@@ -511,11 +519,11 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
         vec![Event::PointerMoved(moved)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     let preview = dockspace
-        .engine()
+        .core_engine()
         .interaction()
         .preview()
         .cloned()
@@ -528,20 +536,26 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
         raw_input(vec![Event::WindowFocused(false)], false),
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert_eq!(
+        dockspace.core_engine().interaction().preview(),
+        Some(&preview)
+    );
     reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
     assert!(
         matches!(
-            dockspace.engine().interaction().status(),
+            dockspace.core_engine().interaction().status(),
             InteractionStatus::Dragging { .. }
         ),
         "one surface's local focus loss is not global capture authority"
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
-    assert_eq!(dockspace.engine().interaction().preview(), Some(&preview));
+    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(
+        dockspace.core_engine().interaction().preview(),
+        Some(&preview)
+    );
     assert!(reasons.is_empty());
 
     let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
@@ -577,7 +591,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
         vec![Event::PointerMoved(source)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Armed { .. }
     ));
 
@@ -635,7 +649,7 @@ fn escape_keeps_priority_when_pointer_capture_is_lost() {
         vec![Event::PointerMoved(moved)],
     );
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
 
@@ -681,10 +695,10 @@ fn prepare_multipass_drag(name: &'static str) -> (Context, Workspace, Dockspace,
         );
     }
     assert!(matches!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    assert!(dockspace.engine().interaction().preview().is_some());
+    assert!(dockspace.core_engine().interaction().preview().is_some());
     (context, original, dockspace, moved)
 }
 
@@ -745,10 +759,10 @@ fn multipass_release_before_escape_commits_the_painted_drop() {
     );
     assert!(reasons.is_empty());
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_ne!(dockspace.engine().workspace(), &original);
+    assert_ne!(dockspace.core_engine().workspace(), &original);
 }
 
 #[test]
@@ -770,10 +784,10 @@ fn multipass_escape_before_release_cancels_the_painted_drop() {
         [InteractionCancelReason::Escape]
     );
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
 }
 
 #[test]
@@ -817,8 +831,8 @@ fn contained_max_edge_is_excluded_from_resize_gesture_ownership() {
     run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.engine().workspace(), &original);
+    assert_eq!(dockspace.core_engine().workspace(), &original);
 }

@@ -631,9 +631,9 @@ fn dropped_outer_frame_retires_captured_pointer_instead_of_discarding_release() 
     // is dropped. It must not merely delete the staged release from the adapter.
     drop(frame);
     assert_eq!(dockspace.pointer_input.provider(), None);
-    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(dockspace.core_engine().pointer_provider(), None);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 }
@@ -696,9 +696,9 @@ fn post_pointer_prepare_error_drops_core_guard_before_retiring_provider() {
         DockspaceError::InputSourceSequenceExhausted { .. }
     ));
     assert_eq!(dockspace.pointer_input.provider(), None);
-    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(dockspace.core_engine().pointer_provider(), None);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 }
@@ -751,9 +751,9 @@ fn deferred_pointer_abort_retries_before_the_next_public_boundary() {
         .expect("the next public boundary reaps the deferred exact retirement");
     assert!(!dockspace.pending_pointer_abort);
     assert_eq!(dockspace.pointer_input.provider(), None);
-    assert_eq!(dockspace.engine().pointer_provider(), None);
+    assert_eq!(dockspace.core_engine().pointer_provider(), None);
     assert_eq!(
-        dockspace.engine().interaction().status(),
+        dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
 }
@@ -979,7 +979,7 @@ fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
         );
         assert!(!response.interactions_current());
     }
-    let diagnostics = dockspace.engine().presentation_ledger_diagnostics();
+    let diagnostics = dockspace.core_engine().presentation_ledger_diagnostics();
     assert_eq!(diagnostics.active_streams(), 0);
     assert_eq!(diagnostics.pending_streams(), 0);
     assert_eq!(diagnostics.pending_outputs(), 0);
@@ -1022,7 +1022,7 @@ fn accepted_terminal_watermarks_bound_the_automatic_emission_map() {
 
         let adapter_pending = automatic_emission_count(&dockspace);
         let core_pending = dockspace
-            .engine()
+            .core_engine()
             .presentation_ledger_diagnostics()
             .pending_outputs();
         assert_eq!(adapter_pending, core_pending);
@@ -1071,7 +1071,7 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
     );
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .presentation_ledger_diagnostics()
             .pending_outputs(),
         1,
@@ -1101,7 +1101,7 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
     assert_eq!(
         automatic_emission_count(&dockspace),
         dockspace
-            .engine()
+            .core_engine()
             .presentation_ledger_diagnostics()
             .pending_outputs(),
     );
@@ -1460,7 +1460,7 @@ fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() 
     }
     let (output, authority) = {
         let projection = dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .expect("the deterministic provider presents one interactive output");
         (projection.output_ticket(), projection.authority())
@@ -1472,7 +1472,7 @@ fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() 
 
     assert!(
         dockspace
-            .engine()
+            .core_engine()
             .presentation_retention_manifest()
             .retains(authority.emission())
     );
@@ -1486,7 +1486,7 @@ fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() 
     for _ in 0..4 {
         let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
         if !dockspace
-            .engine()
+            .core_engine()
             .presentation_retention_manifest()
             .retains(authority.emission())
         {
@@ -1495,7 +1495,7 @@ fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() 
     }
     assert!(
         !dockspace
-            .engine()
+            .core_engine()
             .presentation_retention_manifest()
             .retains(authority.emission()),
         "a superseded terminal emission must eventually leave core retention authority",
@@ -1521,7 +1521,7 @@ fn ten_thousand_presented_outputs_keep_receiver_sidecars_bounded() {
     for _ in 0..10_000 {
         let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
         let diagnostics = dockspace.renderer.sidecar_diagnostics();
-        let manifest = dockspace.engine().presentation_retention_manifest();
+        let manifest = dockspace.core_engine().presentation_retention_manifest();
         let presentation_ledger = dockspace.presentation_ledger.diagnostics();
         maximum_receivers = maximum_receivers.max(diagnostics.receiver_presentation_count);
         maximum_retained_emissions = maximum_retained_emissions.max(manifest.emission_count());

@@ -11,6 +11,7 @@ repository.workspace = true
 
 [features]
 default = []
+backend = []
 example-app = ["dep:eframe"]
 serde = ["dockspace/serde", "dep:serde_json"]
 
@@ -34,12 +35,6 @@ required-features = ["example-app", "serde"]
 
 [[test]]
 name = "contained_occlusion"
-
-[[test]]
-name = "backend_frame"
-
-[[test]]
-name = "multi_surface_frame"
 
 [[test]]
 name = "tear_off_mode"

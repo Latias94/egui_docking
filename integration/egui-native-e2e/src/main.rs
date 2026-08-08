@@ -127,10 +127,10 @@ impl SmokeApp {
         let cycle_advanced = status.committed_cycles > self.phase_cycle;
         match self.phase {
             SmokePhase::AwaitRoot => {
-                let engine = self.runtime.dockspace().engine();
+                let dockspace = self.runtime.dockspace();
                 if status.live_viewports == 1
-                    && engine.interaction_authority(ROOT_SURFACE).is_some()
-                    && let Some(point) = tab_group_drag_point(engine, ROOT_SURFACE)
+                    && dockspace.backend_surface_is_interactive(ROOT_SURFACE)
+                    && let Some(point) = tab_group_drag_point(dockspace, ROOT_SURFACE)
                 {
                     self.queue_pointer(
                         NativeTestPointerEvent::new(
@@ -157,8 +157,7 @@ impl SmokeApp {
                 let native_preview = self
                     .runtime
                     .dockspace()
-                    .engine()
-                    .presentation_preview()
+                    .backend_presentation_preview()
                     .is_some_and(|preview| preview.visual().target_surface().is_some());
                 if native_preview {
                     self.queue_pointer(
@@ -172,11 +171,11 @@ impl SmokeApp {
                 }
             }
             SmokePhase::OutsideReleaseQueued => {
-                let engine = self.runtime.dockspace().engine();
+                let dockspace = self.runtime.dockspace();
                 if status.live_viewports == 2
-                    && let Some(child) = dynamic_child_surface(engine.workspace())
-                    && engine.interaction_authority(child).is_some()
-                    && let Some(point) = tab_group_drag_point(engine, child)
+                    && let Some(child) = dynamic_child_surface(dockspace.workspace())
+                    && dockspace.backend_surface_is_interactive(child)
+                    && let Some(point) = tab_group_drag_point(dockspace, child)
                 {
                     self.queue_pointer(
                         NativeTestPointerEvent::unique_child(
@@ -189,12 +188,10 @@ impl SmokeApp {
                 }
             }
             SmokePhase::ChildPressQueued if cycle_advanced => {
-                let (point, target) =
-                    redock_drop_target(self.runtime.dockspace().engine(), ROOT_SURFACE)
-                        .ok_or_else(|| {
-                            "root surface published no authoritative left-edge drop target"
-                                .to_owned()
-                        })?;
+                let (point, target) = redock_drop_target(self.runtime.dockspace(), ROOT_SURFACE)
+                    .ok_or_else(|| {
+                        "root surface published no authoritative left-edge drop target".to_owned()
+                    })?;
                 self.redock_point = Some(point);
                 self.redock_target = Some(target);
                 self.queue_pointer(
@@ -214,8 +211,7 @@ impl SmokeApp {
                 let root_preview = self
                     .runtime
                     .dockspace()
-                    .engine()
-                    .presentation_preview()
+                    .backend_presentation_preview()
                     .is_some_and(|preview| {
                         matches!(
                             preview.visual(),
@@ -242,8 +238,8 @@ impl SmokeApp {
                 }
             }
             SmokePhase::RootReleaseQueued => {
-                let engine = self.runtime.dockspace().engine();
-                let workspace = engine.workspace();
+                let dockspace = self.runtime.dockspace();
+                let workspace = dockspace.workspace();
                 let surfaces = workspace
                     .surfaces()
                     .map(|(surface, _)| surface)
@@ -251,7 +247,7 @@ impl SmokeApp {
                 if status.live_viewports == 1
                     && surfaces == [ROOT_SURFACE]
                     && workspace.item_multiset() == expected_item_multiset()
-                    && engine.interaction_authority(ROOT_SURFACE).is_some()
+                    && dockspace.backend_surface_is_interactive(ROOT_SURFACE)
                 {
                     return Ok(Some(status));
                 }
@@ -291,13 +287,10 @@ fn dynamic_child_surface(workspace: &Workspace) -> Option<SurfaceId> {
     Some(*child)
 }
 
-fn tab_group_drag_point(
-    engine: &dockspace::engine::DockEngine,
-    surface: SurfaceId,
-) -> Option<egui::Pos2> {
-    let ready = engine.scene().surface(surface)?.ready()?;
+fn tab_group_drag_point(dockspace: &Dockspace, surface: SurfaceId) -> Option<egui::Pos2> {
+    let plan = dockspace.backend_ready_presentation_plan(surface)?;
     let expected = group_items().collect::<Vec<_>>();
-    let bar = ready.plan().tab_bar_records().iter().find(|bar| {
+    let bar = plan.tab_bar_records().iter().find(|bar| {
         bar.members()
             .iter()
             .map(|member| member.tab().item)
@@ -307,11 +300,10 @@ fn tab_group_drag_point(
 }
 
 fn redock_drop_target(
-    engine: &dockspace::engine::DockEngine,
+    dockspace: &Dockspace,
     surface: SurfaceId,
 ) -> Option<(egui::Pos2, DropTargetId)> {
-    let ready = engine.scene().surface(surface)?.ready()?;
-    let plan = ready.plan();
+    let plan = dockspace.backend_ready_presentation_plan(surface)?;
     let target = plan.drop_guide_clusters().iter().find_map(|cluster| {
         cluster
             .target(dockspace::drop_guide::DropGuideSlot::Edge(Edge::Left))

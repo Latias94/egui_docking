@@ -7,22 +7,16 @@ pub(super) fn accepted_work_area_authority(
     commit: &NativeWorkAreaCommit,
 ) -> Option<AcceptedWorkAreaAuthority> {
     let expected = commit.roster.as_ref()?;
-    let viewport = dockspace.engine().viewport();
-    if !viewport.capabilities().work_area().is_supported() {
-        return None;
-    }
-    let mut actual = viewport
-        .work_areas()
-        .map(|(_, work_area)| work_area)
-        .collect::<Vec<_>>();
+    let state = dockspace.backend_work_area_state()?;
+    let mut actual = state.work_areas().to_vec();
     actual.sort_by_key(|work_area| work_area.token());
     if &actual != expected {
         return None;
     }
     Some(AcceptedWorkAreaAuthority {
         native_generation: commit.native_generation,
-        provider: dockspace.engine().platform_provider()?,
-        generation: viewport.work_area_generation(),
+        provider: state.provider(),
+        generation: state.generation(),
         tokens: actual.into_iter().map(ObservedWorkArea::token).collect(),
     })
 }

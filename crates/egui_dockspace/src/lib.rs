@@ -8,21 +8,32 @@ extern crate self as egui_dockspace;
 pub mod pane;
 pub mod style;
 
+#[cfg(any(feature = "backend", test))]
+pub mod backend;
+
 mod builder;
 mod drop_guides;
 mod error;
+// These modules share implementation with the opt-in host backend. Their
+// backend-only branches are intentionally dormant in the default product build.
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code, unused_imports))]
 #[path = "dockspace.rs"]
 mod facade;
 mod floating;
 mod hit;
 #[cfg(feature = "serde")]
 mod persistence;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod pointer_input;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod presentation_settlement;
 mod projection;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod receiver;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod render;
 mod renderer;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod response;
 mod splits;
 mod tabs;
@@ -35,24 +46,11 @@ mod behavior_tests;
 
 pub use builder::DockspaceBuilder;
 pub use error::DockspaceError;
-pub use facade::{
-    Dockspace, DockspaceHostFrame, EguiFrameScheduleKey, EguiNativeConfigurationSession,
-    EguiNativeInputSession, EguiNativePresentationSession, EguiOuterFrameCommit,
-    EguiOuterHostFrame, ExactNativeViewport, NativeBindingError, NativeBindingRoster,
-    NativeCoreRoute, NativeViewportIncarnation, PreparedEguiOuterFrameCommit,
-};
+pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
 #[cfg(feature = "serde")]
 pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
-pub use presentation_settlement::{
-    EguiNativePresentationSettlementError, EguiOuterSurfaceOutput, EguiPresentationResult,
-    EguiPresentationSettlement,
-};
-pub use projection::ProjectionError;
-pub use receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
-pub use render::EguiRendererError;
 pub use response::{
     DockspaceCapability, DockspaceResponse, DockspaceSurfaceStatus, DockspaceUnavailableReason,
-    HostFrameResponse, SurfaceCommitResponse, SurfaceFrameDisposition, SurfacePaintResponse,
 };
 pub use style::{DockStyle, DockStyleError};

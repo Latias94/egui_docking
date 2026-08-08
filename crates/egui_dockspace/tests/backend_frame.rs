@@ -45,10 +45,12 @@ use dockspace::viewport_focus::{
 };
 use egui::accesskit::{Action, Role};
 use egui::{Color32, Context, Id, Pos2, RawInput, Rect, TextEdit, Ui, ViewportId, vec2};
-use egui_dockspace::{
-    Dockspace, EguiFrameScheduleKey, EguiOuterSurfaceOutput, EguiPresentationResult,
-    ExactNativeViewport, NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation, PaneView,
+use egui_dockspace::backend::{
+    EguiFrameScheduleKey, EguiNativeInputSession, EguiNativePresentationSession,
+    EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult, ExactNativeViewport,
+    NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
 };
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -272,10 +274,10 @@ fn outside_all_route(dockspace: &Dockspace, position: PhysicalPoint) -> DesktopR
         Authority::Known(position),
         Authority::Known(DesktopWorkAreaRoute::new(
             dockspace
-                .engine()
+                .core_engine()
                 .platform_provider()
                 .expect("native test platform provider remains active"),
-            dockspace.engine().viewport().work_area_generation(),
+            dockspace.core_engine().viewport().work_area_generation(),
             WORK_AREA,
         )),
     )
@@ -302,7 +304,7 @@ fn reclaim_backend_prefix(
     recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
 ) {
     let committed = dockspace
-        .engine()
+        .core_engine()
         .backend_ingress_commit_watermark()
         .expect("a committed native frame exposes a reclaimable prefix");
     let receipt = recorder
@@ -496,11 +498,11 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
     }
 
     assert!(!target.has_pending_document_restore());
-    assert!(!target.engine().policy().allows_contained_floating());
+    assert!(!target.core_engine().policy().allows_contained_floating());
     assert_eq!(target.item_id_for_external_key("pane/later"), Some(later));
     assert!(
         target
-            .engine()
+            .core_engine()
             .workspace()
             .item_multiset()
             .contains_key(&later)
@@ -510,7 +512,7 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
         .native_viewport_binding(SURFACE)
         .expect("restore must retain the native root in the new workspace epoch");
     assert_ne!(rebound, route.core());
-    assert_eq!(rebound.epoch(), target.engine().version().epoch());
+    assert_eq!(rebound.epoch(), target.core_engine().version().epoch());
     reclaim_backend_prefix(&mut target, &mut recorder);
 
     recorder
@@ -620,7 +622,7 @@ fn bootstrap_native_root(
         output.settle_with(|_, _| EguiPresentationResult::Dropped);
     }
     let committed = dockspace
-        .engine()
+        .core_engine()
         .backend_ingress_commit_watermark()
         .expect("bootstrap must publish a reclaimable prefix");
     let receipt = recorder
@@ -646,7 +648,7 @@ fn paint_native_frame(
     recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
     route: NativeCoreRoute,
     sequence: u64,
-) -> egui_dockspace::EguiOuterFrameCommit {
+) -> EguiOuterFrameCommit {
     paint_native_frame_with_context(dockspace, recorder, route, sequence, &context())
 }
 
@@ -656,7 +658,7 @@ fn paint_native_frame_with_context(
     route: NativeCoreRoute,
     sequence: u64,
     context: &Context,
-) -> egui_dockspace::EguiOuterFrameCommit {
+) -> EguiOuterFrameCommit {
     recorder
         .record_pointer_segment(
             PointerEdgeJournal::new(
@@ -698,7 +700,7 @@ fn paint_native_frame_with_context(
         .finish(dockspace)
         .expect("native frame must publish atomically");
     let committed = dockspace
-        .engine()
+        .core_engine()
         .backend_ingress_commit_watermark()
         .expect("native frame must publish a reclaimable ingress prefix");
     let receipt = recorder
@@ -719,7 +721,7 @@ fn paint_native_focus_frame(
     sequence: u64,
     context: &Context,
     panes: &mut FocusPanes,
-) -> egui_dockspace::EguiOuterFrameCommit {
+) -> EguiOuterFrameCommit {
     recorder
         .record_pointer_segment(
             PointerEdgeJournal::new(
@@ -783,7 +785,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
 
     recorder
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(1, route.core(), None),
         )
         .expect("global focus authority must enter the native stream");
@@ -804,7 +806,11 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
         reclaim_backend_prefix(&mut dockspace, &mut recorder);
         sequence += 1;
-        if dockspace.engine().interaction_projection(SURFACE).is_some() {
+        if dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .is_some()
+        {
             break;
         }
         assert!(sequence < 8, "native presentation authority must converge");
@@ -812,7 +818,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
 
     recorder
         .record_semantic_input(EngineInput::ActivateViewport {
-            expected: dockspace.engine().version(),
+            expected: dockspace.core_engine().version(),
             request: ViewportActivationRequest::explicit(route.core(), PanelFocus::Item(ITEM)),
         })
         .expect("the explicit pane-focus request must retain backend order");
@@ -839,7 +845,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
     presentation_clock.settle_and_record(&dockspace, &mut recorder, requested.into_parts().1);
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     let intent = dockspace
-        .engine()
+        .core_engine()
         .viewport_focus()
         .pending_pane_intent()
         .expect("the request remains pending until a later observation");
@@ -858,7 +864,10 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         .expect("the later focus sample must enter backend ingress");
     assert_eq!(observations.len(), 1);
     assert_eq!(
-        dockspace.engine().viewport_focus().pending_pane_intent(),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .pending_pane_intent(),
         Some(intent),
         "recording an observation is not the same as core acknowledgement",
     );
@@ -874,11 +883,17 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
         &mut panes,
     );
     assert_eq!(
-        dockspace.engine().viewport_focus().pending_pane_intent(),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .pending_pane_intent(),
         None,
     );
     assert_eq!(
-        dockspace.engine().viewport_focus().panel_focus(SURFACE),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .panel_focus(SURFACE),
         PanelFocusRecord::Item(ITEM),
     );
     assert!(
@@ -908,7 +923,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
 
     recorder
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(1, route.core(), None),
         )
         .expect("predecessor focus authority must enter the native stream");
@@ -929,7 +944,11 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
         reclaim_backend_prefix(&mut dockspace, &mut recorder);
         sequence += 1;
-        if dockspace.engine().interaction_projection(SURFACE).is_some() {
+        if dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .is_some()
+        {
             break;
         }
         assert!(sequence < 8, "native presentation authority must converge");
@@ -958,11 +977,14 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
     }
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     assert!(
-        recorder.recorded_through() > dockspace.engine().backend_ingress_committed_through(),
+        recorder.recorded_through() > dockspace.core_engine().backend_ingress_committed_through(),
         "recorder acceptance must not masquerade as a core commit",
     );
     assert_ne!(
-        dockspace.engine().viewport_focus().panel_focus(SURFACE),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .panel_focus(SURFACE),
         PanelFocusRecord::Item(ITEM),
         "the uncommitted predecessor sample must not affect core focus history",
     );
@@ -982,7 +1004,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
 
     successor
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(1, route.core(), None),
         )
         .expect("the successor must establish a fresh platform baseline");
@@ -991,7 +1013,10 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         .expect("the successor recorder must recover the predecessor reservation");
     assert_eq!(replayed_ordinals.len(), 1);
     assert_ne!(
-        dockspace.engine().viewport_focus().panel_focus(SURFACE),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .panel_focus(SURFACE),
         PanelFocusRecord::Item(ITEM),
         "re-recording still must not bypass the core frame boundary",
     );
@@ -1005,12 +1030,15 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         &mut panes,
     );
     assert_eq!(
-        dockspace.engine().viewport_focus().panel_focus(SURFACE),
+        dockspace
+            .core_engine()
+            .viewport_focus()
+            .panel_focus(SURFACE),
         PanelFocusRecord::Item(ITEM),
         "the successor commit must acknowledge the replayed focus sample",
     );
     let committed = dockspace
-        .engine()
+        .core_engine()
         .backend_ingress_commit_watermark()
         .expect("the successor frame must publish a commit watermark");
     assert_eq!(committed.lease(), successor.lease());
@@ -1031,8 +1059,8 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
 fn native_session_is_owned_and_blocks_competing_facade_mutations() {
     fn assert_static<T: 'static>() {}
 
-    assert_static::<egui_dockspace::EguiNativeInputSession>();
-    assert_static::<egui_dockspace::EguiNativePresentationSession>();
+    assert_static::<EguiNativeInputSession>();
+    assert_static::<EguiNativePresentationSession>();
 
     let mut dockspace = Dockspace::builder("native-session-lease", workspace())
         .build()
@@ -1040,7 +1068,7 @@ fn native_session_is_owned_and_blocks_competing_facade_mutations() {
     dockspace
         .create_backend_ingress_provider(PointerEdgeSequence::new(0))
         .expect("joined backend provider must enroll");
-    let version = dockspace.engine().version();
+    let version = dockspace.core_engine().version();
     let session = dockspace
         .begin_native_cycle(EguiFrameScheduleKey::new(1, 0), empty_native_bindings())
         .expect("owned native session must begin");
@@ -1053,7 +1081,7 @@ fn native_session_is_owned_and_blocks_competing_facade_mutations() {
         dockspace.begin_native_cycle(EguiFrameScheduleKey::new(2, 0), empty_native_bindings()),
         Err(egui_dockspace::DockspaceError::NativeSessionAlreadyActive)
     ));
-    assert_eq!(dockspace.engine().version(), version);
+    assert_eq!(dockspace.core_engine().version(), version);
 
     drop(session);
     let retry = dockspace
@@ -1187,7 +1215,7 @@ fn core_backend_publishes_actionable_accesskit_tree() {
 
     recorder
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(1, route.core(), None),
         )
         .expect("platform authority must enter the native stream");
@@ -1217,7 +1245,12 @@ fn core_backend_publishes_actionable_accesskit_tree() {
         });
         presentation_clock.settle_and_record(&dockspace, &mut recorder, outputs);
         reclaim_backend_prefix(&mut dockspace, &mut recorder);
-        if actionable_tab && dockspace.engine().interaction_projection(SURFACE).is_some() {
+        if actionable_tab
+            && dockspace
+                .core_engine()
+                .interaction_projection(SURFACE)
+                .is_some()
+        {
             break;
         }
     }
@@ -1249,7 +1282,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
 
     recorder
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(1, source_route.core(), None),
         )
         .expect("source platform snapshot must be ordered");
@@ -1305,7 +1338,11 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
 
     let mut sequence = 3;
-    while dockspace.engine().interaction_projection(SURFACE).is_none() {
+    while dockspace
+        .core_engine()
+        .interaction_projection(SURFACE)
+        .is_none()
+    {
         let commit = paint_native_frame(&mut dockspace, &mut recorder, source_route, sequence);
         presentation_clock.settle_and_record(&dockspace, &mut recorder, commit.into_parts().1);
         sequence += 1;
@@ -1316,7 +1353,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     }
 
     let projection = dockspace
-        .engine()
+        .core_engine()
         .interaction_projection(SURFACE)
         .expect("source interaction projection must be current");
     let tab = projection
@@ -1603,7 +1640,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     );
     recorder
         .record_platform_snapshot(
-            dockspace.engine().version().epoch(),
+            dockspace.core_engine().version().epoch(),
             platform_snapshot(
                 2,
                 source_route.core(),
@@ -1827,9 +1864,9 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
             .expect("empty pointer checkpoint must be canonical"),
         )
         .expect("empty checkpoint must enter the joined ingress stream");
-    let committed = dockspace.engine().backend_ingress_committed_through();
-    let version_before = dockspace.engine().version();
-    let tick_before = dockspace.engine().last_reducer_tick();
+    let committed = dockspace.core_engine().backend_ingress_committed_through();
+    let version_before = dockspace.core_engine().version();
+    let tick_before = dockspace.core_engine().last_reducer_tick();
     let batch = recorder
         .batch_after(committed)
         .expect("the captured suffix must be retryable");
@@ -1871,22 +1908,22 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
         .prepare_finish(&mut dockspace)
         .expect("the outer frame must prepare without publishing");
     assert_eq!(
-        dockspace.engine().backend_ingress_committed_through(),
+        dockspace.core_engine().backend_ingress_committed_through(),
         committed,
         "preparing must not publish the ingress watermark",
     );
-    assert_eq!(dockspace.engine().version(), version_before);
-    assert_eq!(dockspace.engine().last_reducer_tick(), tick_before);
+    assert_eq!(dockspace.core_engine().version(), version_before);
+    assert_eq!(dockspace.core_engine().last_reducer_tick(), tick_before);
     prepared
         .abort(&mut dockspace)
         .expect("aborting the prepared frame retires any staged pointer provider");
     assert_eq!(
-        dockspace.engine().backend_ingress_committed_through(),
+        dockspace.core_engine().backend_ingress_committed_through(),
         committed,
         "aborting after host seal failure must preserve the live core watermark",
     );
-    assert_eq!(dockspace.engine().version(), version_before);
-    assert_eq!(dockspace.engine().last_reducer_tick(), tick_before);
+    assert_eq!(dockspace.core_engine().version(), version_before);
+    assert_eq!(dockspace.core_engine().last_reducer_tick(), tick_before);
 
     let mut input_frame = dockspace
         .begin_native_cycle(EguiFrameScheduleKey::new(2, 0), native_roster(route))
@@ -1924,7 +1961,7 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
         .prepare_finish(&mut dockspace)
         .expect("painted backend frame must prepare atomically");
     assert_eq!(
-        dockspace.engine().backend_ingress_committed_through(),
+        dockspace.core_engine().backend_ingress_committed_through(),
         committed,
         "a prepared frame remains invisible until the host commits it",
     );
@@ -1932,11 +1969,11 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
         .commit(&mut dockspace)
         .expect("the sealed backend frame must publish exactly once");
     assert_eq!(
-        dockspace.engine().backend_ingress_committed_through(),
+        dockspace.core_engine().backend_ingress_committed_through(),
         recorder.recorded_through(),
     );
     let committed = dockspace
-        .engine()
+        .core_engine()
         .backend_ingress_commit_watermark()
         .expect("the active provider must expose its exact committed prefix");
     let receipt = recorder
@@ -2024,7 +2061,7 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
         .set_style(&dockspace, replacement_style.clone())
         .expect("style geometry and renderer sidecar must stage together");
     assert_eq!(dockspace.style(), &original_style);
-    assert!(dockspace.engine().policy().allows_contained_floating());
+    assert!(dockspace.core_engine().policy().allows_contained_floating());
 
     let mut presentation = configuration
         .into_presentation()
@@ -2044,7 +2081,7 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
         .expect("core and renderer configuration must publish atomically");
 
     assert_eq!(dockspace.style(), &replacement_style);
-    assert!(!dockspace.engine().policy().allows_contained_floating());
+    assert!(!dockspace.core_engine().policy().allows_contained_floating());
     assert!(
         commit
             .host()
@@ -2090,7 +2127,7 @@ fn dropped_backend_configuration_rolls_back_and_replays_the_same_ingress() {
             .expect("empty pointer checkpoint must be canonical"),
         )
         .expect("empty checkpoint must enter the joined ingress stream");
-    let committed = dockspace.engine().backend_ingress_committed_through();
+    let committed = dockspace.core_engine().backend_ingress_committed_through();
     let batch = recorder
         .batch_after(committed)
         .expect("the exact ingress suffix must be replayable");
@@ -2123,7 +2160,7 @@ fn dropped_backend_configuration_rolls_back_and_replays_the_same_ingress() {
 
     assert_eq!(dockspace.style(), &original_style);
     assert_eq!(
-        dockspace.engine().backend_ingress_committed_through(),
+        dockspace.core_engine().backend_ingress_committed_through(),
         committed,
     );
 

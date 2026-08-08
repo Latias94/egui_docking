@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 dockspace = { path = "../../crates/dockspace" }
 eframe = { version = "=0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "native-test-support", "persistence", "wayland", "x11"] }
-egui_dockspace = { path = "../../crates/egui_dockspace" }
+egui_dockspace = { path = "../../crates/egui_dockspace", features = ["backend"] }
 egui_dockspace_native = { path = "../../crates/egui_dockspace_native" }
 
 [lints.rust]

@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use dockspace::effect::{EffectDispatchResult, EffectId};
 use dockspace::ids::WorkspaceEpoch;
-use egui_dockspace::ExactNativeViewport;
+use egui_dockspace::backend::ExactNativeViewport;
+#[cfg(test)]
+use egui_dockspace::backend::NativeViewportIncarnation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PendingCleanupResult<Binding> {
@@ -445,8 +447,6 @@ mod tests {
         DispatchFailureReason, EffectIndeterminateReason, EffectUnsupportedReason,
     };
     use egui::ViewportId;
-    use egui_dockspace::NativeViewportIncarnation;
-
     fn native(value: u64) -> ExactNativeViewport {
         ExactNativeViewport::new(
             ViewportId::from_hash_of(format!("cleanup-native-{value}")),

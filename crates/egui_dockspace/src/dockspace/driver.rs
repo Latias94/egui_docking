@@ -310,7 +310,7 @@ impl PreparedEguiOuterFrameCommit {
         } else {
             dockspace.register_outer_presentation(actual_presentation_outputs)
         };
-        let presentation_retention = dockspace.engine().presentation_retention_manifest();
+        let presentation_retention = dockspace.core_engine().presentation_retention_manifest();
         dockspace
             .presentation_ledger
             .retain(&presentation_retention);

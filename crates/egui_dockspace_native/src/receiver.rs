@@ -18,8 +18,9 @@ use eframe::{
 use egui::{
     PointerHit, PointerReceiverAuthority, Pos2, ScrollProbe, ScrollReceiver, Sense, WidgetReceiver,
 };
-use egui_dockspace::{
-    Dockspace, EguiNativeInputSession, PaintReceiverFingerprint, PaintReceiverLookup,
+use egui_dockspace::Dockspace;
+use egui_dockspace::backend::{
+    EguiNativeInputSession, PaintReceiverFingerprint, PaintReceiverLookup,
 };
 
 use crate::NativeRuntimeError;

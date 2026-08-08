@@ -44,12 +44,13 @@ presentation fact needed to authorize interaction. That callback-only path
 therefore reports presentation authority as unavailable and remains paint-only
 in non-test builds.
 
-The base adapter now exposes the low-level `begin_outer_frame` boundary needed
-to prove the current official-egui behavior matrix. It freezes the complete
-logical surface roster, replaces intermediate egui multipass drafts, and
-commits the final drafts in one reducer tick only after the host confirms each
-matching final `FullOutput`. Each final output is bound to an opaque
-renderer-settlement capability. The host
+The base adapter keeps the application-facing API at the crate root. Custom
+hosts opt into the low-level `backend` feature and use the
+`egui_dockspace::backend` protocol; raw `DockEngine` access is not exposed. That
+protocol freezes the complete logical surface roster, replaces intermediate
+egui multipass drafts, and commits final drafts in one reducer tick only after
+the host confirms each matching final `FullOutput`. Each final output is bound
+to an opaque renderer-settlement capability. The host
 consumes that bound value at its renderer boundary and returns `Presented` or
 `Dropped`; results are reduced on the next outer frame behind a contiguous
 per-stream causal barrier. This production path now drives tab selection and

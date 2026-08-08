@@ -7,7 +7,8 @@ use dockspace::intent::{
 };
 use dockspace::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -152,24 +153,24 @@ fn run_frame(
         }
     }
     let floating = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(REAR_FLOATING)
         .expect("rear floating remains presented");
     FrameObservation {
         interactions_current,
         saw_stale_pass: !interactions_current,
-        status: dockspace.engine().interaction().status(),
+        status: dockspace.core_engine().interaction().status(),
         rect: floating.rect,
         contained: dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .surface(SURFACE)
             .expect("surface remains present")
             .contained
             .clone(),
         preview: dockspace
-            .engine()
+            .core_engine()
             .interaction()
             .preview()
             .and_then(|preview| match preview.visual() {
@@ -178,7 +179,7 @@ fn run_frame(
             })
             .or_else(|| {
                 dockspace
-                    .engine()
+                    .core_engine()
                     .interaction()
                     .contained_transform_preview()
                     .map(|preview| preview.rect())
@@ -202,7 +203,7 @@ fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) {
 )]
 fn gesture_points(dockspace: &Dockspace, gesture: Gesture) -> (Pos2, Pos2) {
     let rear = dockspace
-        .engine()
+        .core_engine()
         .workspace()
         .contained_floating(REAR_FLOATING)
         .expect("rear floating exists");
@@ -358,7 +359,7 @@ fn activate_rear_and_cross_drag_threshold(
     );
     assert_eq!(
         dockspace
-            .engine()
+            .core_engine()
             .workspace()
             .surface(SURFACE)
             .expect("surface exists")
@@ -410,7 +411,7 @@ fn exercise_rear_gesture(gesture: Gesture) {
     match gesture {
         Gesture::Move => {
             let active_view = dockspace
-                .engine()
+                .core_engine()
                 .interaction()
                 .active_drag_view()
                 .expect("title drag is active");
@@ -421,7 +422,7 @@ fn exercise_rear_gesture(gesture: Gesture) {
         }
         Gesture::ResizeWest => {
             let active_view = dockspace
-                .engine()
+                .core_engine()
                 .interaction()
                 .active_contained_transform_view()
                 .expect("resize transform is active");

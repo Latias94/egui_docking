@@ -12,7 +12,8 @@ use dockspace::interaction::{
 use dockspace::scene::PresentationPlan;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, EguiFrameScheduleKey, EguiPresentationResult, PaneView};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -103,7 +104,7 @@ impl Fixture {
         self.run_frame(Vec::new());
         assert!(
             self.dockspace
-                .engine()
+                .core_engine()
                 .interaction_projection(SURFACE)
                 .is_some(),
             "a presented outer-host frame must authorize the guide fixture"
@@ -158,7 +159,7 @@ impl Fixture {
 
     fn painted_plan(&self) -> &PresentationPlan {
         self.dockspace
-            .engine()
+            .core_engine()
             .interaction_projection(SURFACE)
             .map(dockspace::scene::SurfaceInteractionProjection::plan)
             .expect("fixture surface has an acknowledged painted plan")
@@ -215,7 +216,7 @@ fn run_guide_case(slot: DropGuideSlot) {
     fixture.warm();
     let source = fixture.source_tab_point();
     let (cluster_id, target_id, target_point) = fixture.guide_target(slot);
-    let original = fixture.dockspace.engine().workspace().clone();
+    let original = fixture.dockspace.core_engine().workspace().clone();
     let expected_items = BTreeMap::from([(ITEM_A, 1), (ITEM_B, 1)]);
 
     let mut gesture = fixture.run_frame(vec![
@@ -227,12 +228,12 @@ fn run_guide_case(slot: DropGuideSlot) {
     }
 
     assert!(matches!(
-        fixture.dockspace.engine().interaction().status(),
+        fixture.dockspace.core_engine().interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
     let affordance = fixture
         .dockspace
-        .engine()
+        .core_engine()
         .interaction()
         .drop_affordance()
         .expect("exact guide hit publishes an affordance");
@@ -260,7 +261,7 @@ fn run_guide_case(slot: DropGuideSlot) {
     assert!(matches!(
         fixture
             .dockspace
-            .engine()
+            .core_engine()
             .interaction()
             .preview()
             .expect("eligible exact guide publishes a preview")
@@ -269,13 +270,13 @@ fn run_guide_case(slot: DropGuideSlot) {
     ));
     let preview_session = fixture
         .dockspace
-        .engine()
+        .core_engine()
         .interaction()
         .preview()
         .expect("eligible exact guide retains its preview until release")
         .token()
         .session();
-    assert_eq!(fixture.dockspace.engine().workspace(), &original);
+    assert_eq!(fixture.dockspace.core_engine().workspace(), &original);
 
     gesture.extend(fixture.run_frame(vec![
         Event::PointerMoved(target_point),
@@ -302,22 +303,22 @@ fn run_guide_case(slot: DropGuideSlot) {
         "unexpected gesture protocol: {protocol:?}"
     );
     assert_eq!(
-        fixture.dockspace.engine().workspace().item_multiset(),
+        fixture.dockspace.core_engine().workspace().item_multiset(),
         expected_items
     );
     assert_eq!(
-        fixture.dockspace.engine().interaction().status(),
+        fixture.dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
     assert!(
         fixture
             .dockspace
-            .engine()
+            .core_engine()
             .interaction()
             .drop_affordance()
             .is_none()
     );
-    assert_final_topology(fixture.dockspace.engine().workspace(), slot);
+    assert_final_topology(fixture.dockspace.core_engine().workspace(), slot);
 }
 
 fn assert_final_topology(workspace: &Workspace, slot: DropGuideSlot) {

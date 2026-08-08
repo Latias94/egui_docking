@@ -12,7 +12,7 @@ publish = false
 dockspace = { path = "../../crates/dockspace" }
 eframe = { version = "=0.35.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = { version = "=0.35.0", default-features = false, features = ["default_fonts"] }
-egui_dockspace = { path = "../../crates/egui_dockspace" }
+egui_dockspace = { path = "../../crates/egui_dockspace", features = ["backend"] }
 
 [lints.rust]
 unsafe_code = "forbid"

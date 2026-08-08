@@ -658,11 +658,8 @@ impl NativeIngressBridge {
             match pending.phase {
                 PendingNativeRegistrationPhase::AwaitingPredecessorRetirement(predecessor) => {
                     let current = dockspace.native_viewport_binding(pending.surface);
-                    let retained_replacement = dockspace
-                        .engine()
-                        .viewport()
-                        .recovery_pending(pending.surface)
-                        .and_then(dockspace::frame::RecoveryPending::replacement_binding);
+                    let retained_replacement =
+                        dockspace.backend_recovery_replacement_binding(pending.surface);
                     if current.is_some_and(|binding| {
                         binding != predecessor && Some(binding) != retained_replacement
                     }) {
@@ -676,11 +673,7 @@ impl NativeIngressBridge {
                     replacement,
                 } => {
                     let current = dockspace.native_viewport_binding(pending.surface);
-                    let retained = dockspace
-                        .engine()
-                        .viewport()
-                        .recovery_pending(pending.surface)
-                        .and_then(|recovery| recovery.replacement_binding());
+                    let retained = dockspace.backend_recovery_replacement_binding(pending.surface);
                     if current
                         .is_some_and(|binding| binding != predecessor && binding != replacement)
                         || (current.is_none() && retained != Some(replacement))
@@ -995,11 +988,8 @@ impl NativeIngressBridge {
                 let Some(expected_replacement) =
                     pending.and_then(PendingNativeRegistration::adopted_replacement_binding)
                 else {
-                    let retained_replacement = dockspace
-                        .engine()
-                        .viewport()
-                        .recovery_pending(surface)
-                        .and_then(dockspace::frame::RecoveryPending::replacement_binding);
+                    let retained_replacement =
+                        dockspace.backend_recovery_replacement_binding(surface);
                     if current.is_some_and(|binding| Some(binding) != retained_replacement) {
                         return Err(NativeRuntimeError::IngressUnavailable(
                             "deferred native replacement observed an unrelated core binding",

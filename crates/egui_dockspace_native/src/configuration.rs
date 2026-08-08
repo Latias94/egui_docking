@@ -1,7 +1,8 @@
 //! Deferred native policy and style configuration.
 
 use dockspace::policy::DockPolicy;
-use egui_dockspace::{DockStyle, Dockspace, DockspaceError, EguiNativeConfigurationSession};
+use egui_dockspace::backend::EguiNativeConfigurationSession;
+use egui_dockspace::{DockStyle, Dockspace, DockspaceError};
 
 /// Application configuration waiting for the next terminal host-frame phase.
 #[derive(Clone, Default)]
