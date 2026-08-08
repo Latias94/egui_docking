@@ -2,6 +2,7 @@ use super::*;
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::graph::{Axis, ContainedFloating, RootRecord, SurfacePresentation};
 use crate::ids::{ItemId, WorkspaceEpoch, WorkspaceRevision};
+use crate::interaction::{DragGeneration, DragSessionId};
 use crate::policy::{DockPolicy, TabBarInteraction, TabBarPolicy, TabBarVisibility};
 use crate::presentation_hit::{
     PopupHitRole, PresentationHitManifest, PresentationHitRegionKind, PresentationPlane,
@@ -195,6 +196,74 @@ fn scene_target_fingerprints_are_built_once_per_root_at_scale() {
         assert_eq!(
             work.root_fingerprint_node_visits, node_count,
             "a {leaf_count}-leaf hot root must visit every root node exactly once"
+        );
+    }
+}
+
+#[test]
+fn measured_future_drop_preview_does_not_reindex_the_candidate_workspace() {
+    for leaf_count in [16, 128, 1_024] {
+        let (workspace, manifest, measurements, node_count) = balanced_hot_root_fixture(leaf_count);
+        let policy = policy_snapshot();
+        let plan = compile_surface_measurements(
+            &workspace,
+            version(),
+            &policy,
+            &DockPresentationConfig::default(),
+            &manifest,
+            &measurements,
+            &TabStripStateStore::default(),
+            &[],
+        )
+        .expect("complete measurements should compile");
+        assert!(plan.layout_facts().is_some());
+
+        let source_item = ItemId::new(u64::try_from(leaf_count).expect("fixture size fits u64"));
+        let source = workspace
+            .capture_item_source_by_id(source_item)
+            .expect("fixture source lookup should remain valid")
+            .expect("fixture source item should exist");
+        let target = plan
+            .drop_guide_clusters()
+            .iter()
+            .find(|cluster| matches!(cluster.id().scope, crate::drop_guide::DropGuideScope::Outer))
+            .and_then(|cluster| cluster.target(crate::drop_guide::DropGuideSlot::Edge(Edge::Left)))
+            .expect("compiled root should expose its outer-left guide");
+        let hit = target.target().region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("guide center should be finite");
+        let stamp = SurfaceSceneStamp::new(measurements.ticket(), SurfaceSceneRevision::new(1));
+
+        crate::drop_resolver::structural_work::reset();
+        let query = crate::drop_resolver::resolve_presented_drop(
+            stamp,
+            &plan,
+            plan.layout_facts(),
+            &workspace,
+            version(),
+            manifest.workspace_index(),
+            &policy,
+            DragSessionId::new(version().epoch(), DragGeneration::new(1)),
+            crate::command::MovePayload::Item(source),
+            None,
+            point,
+        )
+        .expect("measured edge preview should resolve");
+        assert!(matches!(
+            query.resolution(),
+            crate::drop_resolver::DropResolution::Resolved(_)
+        ));
+
+        let work = crate::drop_resolver::structural_work::snapshot();
+        assert_eq!(work.transaction_prepares, 1);
+        assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
+        assert!(
+            work.root_fingerprint_builds <= 8,
+            "future projection must not add a ninth full-root build at {leaf_count} leaves"
+        );
+        assert!(
+            work.root_fingerprint_node_visits <= node_count * 8,
+            "future projection must not add another root traversal at {leaf_count} leaves"
         );
     }
 }

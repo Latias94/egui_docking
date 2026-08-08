@@ -13,12 +13,10 @@ use crate::scene::{PresentationLayoutFacts, PresentationPlan};
 use crate::scene_compiler::{
     FutureLayoutProjectionError, project_future_root, project_future_tab_gap_visual,
 };
-use crate::transition::WorkspaceVersion;
 
 pub(super) fn resolved_visual(
     original: &Workspace,
     candidate: &Workspace,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     target_plan: &PresentationPlan,
     source_layout_facts: Option<&PresentationLayoutFacts>,
@@ -41,7 +39,6 @@ pub(super) fn resolved_visual(
     let Some(projection) = project_future_root(
         original,
         candidate,
-        workspace_version,
         policy,
         target_plan,
         source_layout_facts,

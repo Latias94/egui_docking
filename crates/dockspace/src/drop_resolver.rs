@@ -769,7 +769,6 @@ impl<'a> DropEligibilityContext<'a> {
                 let visual = preview::resolved_visual(
                     self.workspace,
                     &prepared.candidate,
-                    self.workspace_version,
                     self.policy,
                     self.target_plan,
                     self.source_layout_facts,

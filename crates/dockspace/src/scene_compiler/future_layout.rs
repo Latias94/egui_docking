@@ -20,14 +20,11 @@ use crate::layout::{
 use crate::policy::{DockPolicySnapshot, DockTabBarPolicyRequest, TabBarVisibility};
 use crate::scene::{PresentationLayoutFacts, PresentationPlan, TabBarSceneId, TabSceneId};
 use crate::scene_manifest::{PaneMinimumKey, TabIntrinsicKey, TabStripKey};
-use crate::transition::WorkspaceVersion;
-use crate::workspace::WorkspaceIndex;
 
 /// Reprojects one future root using only measurements retained by presented outputs.
 pub(crate) fn project_future_root(
     original: &Workspace,
     workspace: &Workspace,
-    workspace_version: WorkspaceVersion,
     policy: &DockPolicySnapshot,
     target_plan: &PresentationPlan,
     source_layout_facts: Option<&PresentationLayoutFacts>,
@@ -53,11 +50,11 @@ pub(crate) fn project_future_root(
         | Some(RootPresentationOwner::Contained { surface, .. }) => surface,
         None => return Err(FutureLayoutProjectionError::TargetRootNotPresented { root }),
     };
-    let index = WorkspaceIndex::build(workspace, workspace_version)?;
-    let root_node = workspace
+    let root_record = workspace
         .root(root)
-        .ok_or(FutureLayoutProjectionError::MissingRoot { root })?
-        .node;
+        .ok_or(FutureLayoutProjectionError::MissingRoot { root })?;
+    let root_node = root_record.node;
+    let central = root_record.central;
     let mut leaf_minimums = BTreeMap::new();
     let mut pending = vec![root_node];
     let mut visited = BTreeSet::new();
@@ -76,9 +73,9 @@ pub(crate) fn project_future_root(
                     }
                     None => LogicalSize::new(0.0, 0.0)?,
                 };
-                let target = index.capture_tab_target(workspace, workspace_version, root, node)?;
-                let tab_bar = policy
-                    .tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(target.rule())));
+                let rule = workspace.pane_local_target_rule(root, node, central == Some(node))?;
+                let tab_bar =
+                    policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
                 leaf_minimums.insert(
                     node,
                     pane_outer_minimum(measured, target_facts.config(), tab_bar.visibility())?,

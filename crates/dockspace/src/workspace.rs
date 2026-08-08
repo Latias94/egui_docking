@@ -533,7 +533,7 @@ impl Workspace {
         })
     }
 
-    fn pane_local_target_rule(
+    pub(crate) fn pane_local_target_rule(
         &self,
         root: RootId,
         tabs: NodeId,
