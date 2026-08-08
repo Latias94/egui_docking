@@ -7,7 +7,8 @@ use crate::model::{
     DockspaceRootLayout, DockspaceSurfaceLayout,
 };
 use crate::runtime::{
-    DockspaceHostFrame, DockspaceSession, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
+    HostFrameReport, HostInputOutcome,
 };
 use crate::scene_manifest::MeasurementUnavailableReason;
 
@@ -53,7 +54,7 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
     let mut session = session();
 
     let mut frame = session.begin_host_frame().expect("selection frame begins");
-    frame.select_item(SECOND).expect("selection stages");
+    frame.select_item_current(SECOND).expect("selection stages");
     let report = commit(frame);
     assert_eq!(
         report.inputs(),
@@ -76,7 +77,7 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
 
     let mut frame = session.begin_host_frame().expect("open frame begins");
     frame
-        .open_item(
+        .open_item_current(
             NEW_ITEM,
             DockPlacement::Center(DockAnchor::Central(MAIN_ROOT)),
         )
@@ -96,7 +97,7 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
         .begin_host_frame()
         .expect("duplicate open frame begins");
     frame
-        .open_item(NEW_ITEM, DockPlacement::Center(DockAnchor::Item(FIRST)))
+        .open_item_current(NEW_ITEM, DockPlacement::Center(DockAnchor::Item(FIRST)))
         .expect("duplicate open stages");
     let report = commit(frame);
     assert_eq!(report.before(), report.after());
@@ -109,7 +110,7 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
 
     let mut frame = session.begin_host_frame().expect("dock frame begins");
     frame
-        .dock_item(
+        .dock_item_current(
             FLOATING,
             DockPlacement::Center(DockAnchor::Central(MAIN_ROOT)),
         )
@@ -141,13 +142,13 @@ fn product_actions_resolve_anchors_against_the_same_frame_candidate() {
     let mut session = session();
     let mut frame = session.begin_host_frame().expect("compound frame begins");
     frame
-        .open_item(
+        .open_item_current(
             NEW_ITEM,
             DockPlacement::Center(DockAnchor::Central(MAIN_ROOT)),
         )
         .expect("open stages");
     frame
-        .dock_item(NEW_ITEM, DockPlacement::Before(FIRST))
+        .dock_item_current(NEW_ITEM, DockPlacement::Before(FIRST))
         .expect("move stages against the post-open candidate");
     let report = commit(frame);
 
@@ -176,12 +177,312 @@ fn product_actions_resolve_anchors_against_the_same_frame_candidate() {
 }
 
 #[test]
+fn prepared_product_actions_reject_a_newer_same_frame_candidate() {
+    let mut session = session();
+    let expected = session.version();
+    let prepared = session.prepare_dock_item(
+        FLOATING,
+        DockPlacement::Center(DockAnchor::Central(MAIN_ROOT)),
+    );
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("prepared-action frame begins");
+    frame
+        .select_item_current(SECOND)
+        .expect("current selection stages");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("stale prepared action stages structurally");
+    let report = commit(frame);
+
+    assert_eq!(report.before(), expected);
+    assert_eq!(
+        report.inputs(),
+        &[
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            }),
+            HostInputOutcome::StaleRejected {
+                expected,
+                accepted: report.after(),
+            },
+        ]
+    );
+    assert!(session.view().root(CONTAINED_ROOT).is_some());
+}
+
+#[test]
+fn prepared_product_actions_are_bound_to_the_preparing_session() {
+    let source_session = session();
+    let prepared = source_session.prepare_select_item(SECOND);
+    let mut target_session = session();
+    let mut frame = target_session
+        .begin_host_frame()
+        .expect("target frame begins");
+
+    let error = frame
+        .submit_prepared_action(prepared)
+        .expect_err("foreign prepared action is rejected");
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::ActionAuthority);
+
+    frame
+        .select_item_current(SECOND)
+        .expect("frame remains usable after foreign capability rejection");
+    let report = commit(frame);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            },
+        )]
+    );
+}
+
+#[test]
+fn docking_a_complete_contained_root_to_same_surface_main_preserves_root_identity() {
+    let mut session = session();
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained promotion frame begins");
+    frame
+        .dock_item_current(FLOATING, DockPlacement::Main(ROOTLESS_SURFACE))
+        .expect("contained promotion stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: FLOATING,
+                source_root: CONTAINED_ROOT,
+                target_root: CONTAINED_ROOT,
+                changed: true,
+            },
+        )]
+    );
+    let surface = session
+        .view()
+        .surface(ROOTLESS_SURFACE)
+        .expect("promoted surface remains available");
+    assert_eq!(
+        surface.main_root().map(|root| root.id()),
+        Some(CONTAINED_ROOT)
+    );
+    assert_eq!(surface.contained_count(), 0);
+}
+
+#[test]
+fn docking_part_of_a_root_to_main_allocates_a_new_root() {
+    let mut session = session();
+    let expected_root = RootId::new(CONTAINED_ROOT.get() + 1);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("partial main move frame begins");
+    frame
+        .dock_item_current(FIRST, DockPlacement::Main(ROOTLESS_SURFACE))
+        .expect("partial main move stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: FIRST,
+                source_root: MAIN_ROOT,
+                target_root: expected_root,
+                changed: true,
+            },
+        )]
+    );
+    assert_eq!(
+        session
+            .view()
+            .surface(ROOTLESS_SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(expected_root)
+    );
+    assert!(session.view().root(MAIN_ROOT).is_some());
+}
+
+#[test]
+fn docking_a_complete_root_across_surfaces_rehomes_the_existing_root() {
+    const TARGET_SURFACE: SurfaceId = SurfaceId::new(30);
+    const TARGET_CONTAINED_ROOT: RootId = RootId::new(300);
+    const TARGET_CONTAINED_ITEM: ItemId = ItemId::new(5);
+
+    let main = DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
+    );
+    let source = DockspaceSurfaceLayout::rootless(ROOTLESS_SURFACE).with_contained(
+        DockspaceContainedLayout::new(
+            FloatingPresentationId::new(1_000),
+            DockspaceRootLayout::new(CONTAINED_ROOT, DockspaceNode::tabs([FLOATING])),
+            LogicalRect::new(10.0, 20.0, 320.0, 180.0).expect("test rect validates"),
+        ),
+    );
+    let target = DockspaceSurfaceLayout::rootless(TARGET_SURFACE).with_contained(
+        DockspaceContainedLayout::new(
+            FloatingPresentationId::new(2_000),
+            DockspaceRootLayout::new(
+                TARGET_CONTAINED_ROOT,
+                DockspaceNode::tabs([TARGET_CONTAINED_ITEM]),
+            ),
+            LogicalRect::new(40.0, 50.0, 240.0, 160.0).expect("target rect validates"),
+        ),
+    );
+    let layout = DockspaceLayout::new([main, source, target]).expect("rehome layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("rehome session initializes");
+
+    let mut frame = session.begin_host_frame().expect("rehome frame begins");
+    frame
+        .dock_item_current(FLOATING, DockPlacement::Main(TARGET_SURFACE))
+        .expect("root rehome stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: FLOATING,
+                source_root: CONTAINED_ROOT,
+                target_root: CONTAINED_ROOT,
+                changed: true,
+            },
+        )]
+    );
+    assert_eq!(
+        session
+            .view()
+            .surface(TARGET_SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(CONTAINED_ROOT)
+    );
+    assert!(session.view().surface(ROOTLESS_SURFACE).is_none());
+}
+
+#[test]
+fn docking_a_complete_main_root_to_its_current_surface_is_a_noop() {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([FIRST])),
+    )])
+    .expect("singleton main layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("singleton main session initializes");
+    let before = session.version();
+
+    let mut frame = session.begin_host_frame().expect("main no-op frame begins");
+    frame
+        .dock_item_current(FIRST, DockPlacement::Main(MAIN_SURFACE))
+        .expect("main no-op stages");
+    let report = commit(frame);
+
+    assert_eq!(report.before(), before);
+    assert_eq!(report.after(), before);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: FIRST,
+                source_root: MAIN_ROOT,
+                target_root: MAIN_ROOT,
+                changed: false,
+            },
+        )]
+    );
+}
+
+#[test]
+fn same_main_noop_still_uses_transaction_policy_authority() {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([FIRST])),
+    )])
+    .expect("singleton main layout validates");
+    let mut policy = crate::policy::DockPolicy::default();
+    policy.set_allow_tiled_presentation(false);
+    let mut session = DockspaceSession::from_layout(layout, policy)
+        .expect("policy-restricted session initializes");
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("policy no-op frame begins");
+    frame
+        .dock_item_current(FIRST, DockPlacement::Main(MAIN_SURFACE))
+        .expect("same-main action stages structurally");
+    let report = commit(frame);
+
+    assert_eq!(report.before(), report.after());
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::PolicyDenied,
+        )]
+    );
+}
+
+#[test]
+fn docking_a_complete_main_root_across_surfaces_preserves_root_identity() {
+    let source = DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([FIRST])),
+    );
+    let target = DockspaceSurfaceLayout::rootless(ROOTLESS_SURFACE).with_contained(
+        DockspaceContainedLayout::new(
+            FloatingPresentationId::new(1_000),
+            DockspaceRootLayout::new(CONTAINED_ROOT, DockspaceNode::tabs([FLOATING])),
+            LogicalRect::new(10.0, 20.0, 320.0, 180.0).expect("test rect validates"),
+        ),
+    );
+    let layout = DockspaceLayout::new([source, target]).expect("main rehome layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("main rehome session initializes");
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("main rehome frame begins");
+    frame
+        .dock_item_current(FIRST, DockPlacement::Main(ROOTLESS_SURFACE))
+        .expect("main rehome stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: FIRST,
+                source_root: MAIN_ROOT,
+                target_root: MAIN_ROOT,
+                changed: true,
+            },
+        )]
+    );
+    assert_eq!(
+        session
+            .view()
+            .surface(ROOTLESS_SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(MAIN_ROOT)
+    );
+    assert!(session.view().surface(MAIN_SURFACE).is_none());
+}
+
+#[test]
 fn rejected_main_placement_does_not_consume_the_next_root_identity() {
     let mut session = session();
 
     let mut frame = session.begin_host_frame().expect("rejected frame begins");
     frame
-        .open_item(NEW_ITEM, DockPlacement::Main(MAIN_SURFACE))
+        .open_item_current(NEW_ITEM, DockPlacement::Main(MAIN_SURFACE))
         .expect("invalid product action still stages structurally");
     let report = commit(frame);
     assert_eq!(report.before(), report.after());
@@ -198,7 +499,7 @@ fn rejected_main_placement_does_not_consume_the_next_root_identity() {
         .begin_host_frame()
         .expect("missing root frame begins");
     frame
-        .open_item(
+        .open_item_current(
             NEW_ITEM,
             DockPlacement::OuterEdge {
                 root: RootId::new(999),
@@ -220,7 +521,7 @@ fn rejected_main_placement_does_not_consume_the_next_root_identity() {
 
     let mut discarded = session.begin_host_frame().expect("discarded frame begins");
     discarded
-        .open_item(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
+        .open_item_current(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
         .expect("discarded main-root open stages");
     let expected_root = RootId::new(CONTAINED_ROOT.get() + 1);
     assert_eq!(
@@ -241,7 +542,7 @@ fn rejected_main_placement_does_not_consume_the_next_root_identity() {
 
     let mut frame = session.begin_host_frame().expect("accepted frame begins");
     frame
-        .open_item(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
+        .open_item_current(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
         .expect("main-root open stages");
     let report = commit(frame);
     assert_eq!(
@@ -300,10 +601,10 @@ fn same_frame_main_actions_receive_distinct_authoritative_root_identities() {
         .begin_host_frame()
         .expect("compound main frame begins");
     frame
-        .open_item(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
+        .open_item_current(NEW_ITEM, DockPlacement::Main(ROOTLESS_SURFACE))
         .expect("first main-root open stages");
     frame
-        .open_item(
+        .open_item_current(
             SECOND_NEW_ITEM,
             DockPlacement::Main(SECOND_ROOTLESS_SURFACE),
         )
@@ -334,7 +635,7 @@ fn product_action_policy_rejection_rolls_back_without_leaking_internal_errors() 
     let mut session = session_with_policy(policy);
     let mut frame = session.begin_host_frame().expect("policy frame begins");
     frame
-        .open_item(
+        .open_item_current(
             NEW_ITEM,
             DockPlacement::Center(DockAnchor::Central(MAIN_ROOT)),
         )

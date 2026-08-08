@@ -86,7 +86,10 @@ pub enum DockPlacement {
         /// Share assigned to the opened or moved item.
         fraction: DockFraction,
     },
-    /// Install a newly allocated root into an existing rootless surface.
+    /// Make an existing rootless surface own the item as its main presentation.
+    ///
+    /// Opening new content or moving part of a root allocates a new root. Moving
+    /// the complete source root preserves that root's stable identity.
     Main(SurfaceId),
 }
 

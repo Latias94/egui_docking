@@ -1289,7 +1289,6 @@ impl DockEngine {
             EngineInput::SelectItem { expected, item } => self.reduce_product_action(
                 input.sequence,
                 *expected,
-                *application_base,
                 ProductAction::SelectItem { item: *item },
                 tick_start.policy,
                 events,
@@ -1302,7 +1301,6 @@ impl DockEngine {
             } => self.reduce_product_action(
                 input.sequence,
                 *expected,
-                *application_base,
                 ProductAction::OpenItem {
                     item: *item,
                     placement: *placement,
@@ -1318,7 +1316,6 @@ impl DockEngine {
             } => self.reduce_product_action(
                 input.sequence,
                 *expected,
-                *application_base,
                 ProductAction::DockItem {
                     item: *item,
                     placement: *placement,

@@ -619,11 +619,16 @@ pub(crate) fn authorize_workspace_command(
         ),
         WorkspaceCommand::RehomeRoot { source, target } => {
             let (root, _) = validate_root_source(workspace, source)?;
+            let current = workspace
+                .presentation_for_root(root)
+                .ok_or(CommandError::Invariant {
+                    stage: "locate root presentation before rehome authorization",
+                })?;
             if let RootPresentationTarget::Contained { surface, .. } = target
-                && let Some(RootPresentationOwner::Contained {
+                && let RootPresentationOwner::Contained {
                     surface: source_surface,
                     ..
-                }) = workspace.presentation_for_root(root)
+                } = current
                 && source_surface == *surface
             {
                 return authorize_contained_transform(
@@ -632,6 +637,17 @@ pub(crate) fn authorize_workspace_command(
                     *surface,
                 );
             }
+            let changes_owner = !matches!(
+                (current, *target),
+                (
+                    RootPresentationOwner::Main {
+                        surface: current_surface,
+                    },
+                    RootPresentationTarget::Main {
+                        surface: target_surface,
+                    },
+                ) if current_surface == target_surface
+            );
             let target = match target {
                 RootPresentationTarget::NewSurface { surface } => {
                     DockPresentationTarget::Native(*surface)
@@ -644,7 +660,7 @@ pub(crate) fn authorize_workspace_command(
             authorize_presentation(
                 workspace,
                 policy,
-                root_payload_policy_facts(workspace, root, true)?,
+                root_payload_policy_facts(workspace, root, changes_owner)?,
                 target,
             )
         }
@@ -1660,6 +1676,9 @@ fn rehome_root_to_main(
     current: RootPresentationOwner,
     surface: SurfaceId,
 ) -> Result<AppliedCommand, CommandError> {
+    if current == (RootPresentationOwner::Main { surface }) {
+        return Ok(rehome_outcome(root, surface, None, false));
+    }
     require_rootless_surface(workspace, surface)?;
     if let RootPresentationOwner::Contained {
         surface: current_surface,

@@ -8,6 +8,7 @@ use crate::model::{
     DockAnchor, DockEdge, DockPlacement, DockspaceActionOutcome, DockspaceActionRejection,
     ProductAction,
 };
+use crate::workspace::WorkspaceIndex;
 
 enum ProductActionPlan {
     Noop(DockspaceActionOutcome),
@@ -25,10 +26,27 @@ enum ProductCommandContext {
     Open {
         item: ItemId,
     },
-    Dock {
+    DockMove {
         item: ItemId,
         source_root: RootId,
         target_root: RootId,
+    },
+    DockInstallMain {
+        item: ItemId,
+        source_root: RootId,
+        target_root: RootId,
+        surface: SurfaceId,
+    },
+    DockRehomeMain {
+        item: ItemId,
+        root: RootId,
+        surface: SurfaceId,
+    },
+    DockPromoteContained {
+        item: ItemId,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
     },
 }
 
@@ -37,16 +55,16 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         expected: WorkspaceVersion,
-        application_base: WorkspaceVersion,
         action: ProductAction,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        let accepted_base = self.version;
+        if expected != accepted_base {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base,
             });
         }
 
@@ -72,7 +90,7 @@ impl DockEngine {
         match self.reduce_workspace_command(
             input,
             expected,
-            application_base,
+            accepted_base,
             &command,
             policy,
             events,
@@ -137,16 +155,7 @@ impl DockEngine {
             }
             ProductAction::DockItem { item, placement } => {
                 let source = self.capture_product_item(item)?;
-                let source_root = source.root();
-                let (command, target_root) = self.compile_product_move(source, placement)?;
-                Ok(ProductActionPlan::Command {
-                    command,
-                    context: ProductCommandContext::Dock {
-                        item,
-                        source_root,
-                        target_root,
-                    },
-                })
+                self.compile_product_move(item, source, placement)
             }
         }
     }
@@ -189,26 +198,98 @@ impl DockEngine {
 
     fn compile_product_move(
         &self,
+        item: ItemId,
         source: crate::command::ItemSource,
         placement: DockPlacement,
-    ) -> Result<(WorkspaceCommand, RootId), DockspaceActionRejection> {
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        let source_root = source.root();
         let payload = MovePayload::Item(source);
-        match placement {
-            DockPlacement::Main(surface) => {
-                self.require_rootless_surface(surface)?;
-                let root = self.next_product_root()?;
-                Ok((
-                    WorkspaceCommand::InstallMainRoot {
-                        surface,
-                        root,
-                        content: RootContent::Move(payload),
-                    },
+        let DockPlacement::Main(surface) = placement else {
+            let (target, target_root) = self.capture_product_target(placement)?;
+            return Ok(ProductActionPlan::Command {
+                command: WorkspaceCommand::Move { payload, target },
+                context: ProductCommandContext::DockMove {
+                    item,
+                    source_root,
+                    target_root,
+                },
+            });
+        };
+
+        let index = WorkspaceIndex::build(&self.workspace, self.version)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        let complete_root = index
+            .capture_complete_root_source(&self.workspace, self.version, &payload)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        let Some(complete_root) = complete_root else {
+            self.require_rootless_surface(surface)?;
+            let root = self.next_product_root()?;
+            return Ok(ProductActionPlan::Command {
+                command: WorkspaceCommand::InstallMainRoot {
+                    surface,
                     root,
-                ))
+                    content: RootContent::Move(payload),
+                },
+                context: ProductCommandContext::DockInstallMain {
+                    item,
+                    source_root,
+                    target_root: root,
+                    surface,
+                },
+            });
+        };
+
+        let owner = self
+            .workspace
+            .presentation_for_root(source_root)
+            .ok_or(DockspaceActionRejection::Conflict)?;
+        match owner {
+            crate::RootPresentationOwner::Contained {
+                surface: current_surface,
+                floating,
+            } if current_surface == surface => {
+                self.require_rootless_surface(surface)?;
+                Ok(ProductActionPlan::Command {
+                    command: WorkspaceCommand::PromoteContained {
+                        source: complete_root,
+                        surface,
+                        floating,
+                    },
+                    context: ProductCommandContext::DockPromoteContained {
+                        item,
+                        root: source_root,
+                        surface,
+                        floating,
+                    },
+                })
             }
-            _ => {
-                let (target, target_root) = self.capture_product_target(placement)?;
-                Ok((WorkspaceCommand::Move { payload, target }, target_root))
+            crate::RootPresentationOwner::Main {
+                surface: current_surface,
+            } if current_surface == surface => Ok(ProductActionPlan::Command {
+                command: WorkspaceCommand::RehomeRoot {
+                    source: complete_root,
+                    target: RootPresentationTarget::Main { surface },
+                },
+                context: ProductCommandContext::DockRehomeMain {
+                    item,
+                    root: source_root,
+                    surface,
+                },
+            }),
+            crate::RootPresentationOwner::Main { .. }
+            | crate::RootPresentationOwner::Contained { .. } => {
+                self.require_rootless_surface(surface)?;
+                Ok(ProductActionPlan::Command {
+                    command: WorkspaceCommand::RehomeRoot {
+                        source: complete_root,
+                        target: RootPresentationTarget::Main { surface },
+                    },
+                    context: ProductCommandContext::DockRehomeMain {
+                        item,
+                        root: source_root,
+                        surface,
+                    },
+                })
             }
         }
     }
@@ -346,7 +427,7 @@ impl ProductCommandContext {
                 Ok(DockspaceActionOutcome::Opened { item, root })
             }
             (
-                Self::Dock {
+                Self::DockMove {
                     item,
                     source_root,
                     target_root,
@@ -369,17 +450,69 @@ impl ProductCommandContext {
                 })
             }
             (
-                Self::Dock {
+                Self::DockInstallMain {
                     item,
                     source_root,
                     target_root,
+                    surface: target_surface,
                 },
-                CommandOutcome::MainRootInstalled { root, items, .. },
-            ) if items.as_slice() == [item] && root == target_root => {
+                CommandOutcome::MainRootInstalled {
+                    surface,
+                    root,
+                    items,
+                },
+            ) if items.as_slice() == [item] && root == target_root && target_surface == surface => {
                 Ok(DockspaceActionOutcome::Docked {
                     item,
                     source_root,
                     target_root,
+                    changed,
+                })
+            }
+            (
+                Self::DockRehomeMain {
+                    item,
+                    root: expected_root,
+                    surface: target_surface,
+                },
+                CommandOutcome::RootRehomed {
+                    root,
+                    surface,
+                    floating: None,
+                    changed: outcome_changed,
+                },
+            ) if root == expected_root
+                && target_surface == surface
+                && changed == outcome_changed =>
+            {
+                Ok(DockspaceActionOutcome::Docked {
+                    item,
+                    source_root: root,
+                    target_root: root,
+                    changed,
+                })
+            }
+            (
+                Self::DockPromoteContained {
+                    item,
+                    root: expected_root,
+                    surface: target_surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::ContainedPromoted {
+                    surface,
+                    root,
+                    floating,
+                },
+            ) if root == expected_root
+                && target_surface == surface
+                && floating == expected_floating
+                && changed =>
+            {
+                Ok(DockspaceActionOutcome::Docked {
+                    item,
+                    source_root: root,
+                    target_root: root,
                     changed,
                 })
             }

@@ -346,14 +346,14 @@ pub enum EngineInput {
     },
     /// Select one item by stable application identity.
     SelectItem {
-        /// Frozen application base for this reducer tick.
+        /// Exact workspace version from which this product action was derived.
         expected: WorkspaceVersion,
         /// Stable application item.
         item: ItemId,
     },
     /// Open one item at a stable product placement.
     OpenItem {
-        /// Frozen application base for this reducer tick.
+        /// Exact workspace version from which this product action was derived.
         expected: WorkspaceVersion,
         /// Stable application item.
         item: ItemId,
@@ -362,7 +362,7 @@ pub enum EngineInput {
     },
     /// Move one open item to a stable product placement.
     DockItem {
-        /// Frozen application base for this reducer tick.
+        /// Exact workspace version from which this product action was derived.
         expected: WorkspaceVersion,
         /// Stable application item.
         item: ItemId,

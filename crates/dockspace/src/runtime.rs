@@ -61,10 +61,11 @@ use crate::engine::{
 };
 use crate::error::CommandError;
 use crate::graph::Workspace;
-use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
+use crate::ids::{EngineAuthorityDomainId, SourceSequence, StableInputSourceId, SurfaceId};
 use crate::interaction::InteractionOutcome;
 use crate::model::{
-    DockPlacement, DockspaceActionOutcome, DockspaceActionRejection, DockspaceLayout, DockspaceView,
+    DockPlacement, DockspaceActionOutcome, DockspaceActionRejection, DockspaceLayout,
+    DockspaceView, ProductAction,
 };
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
@@ -91,6 +92,27 @@ pub struct DockspaceSession {
     native_handoff: Option<native::RuntimeNativeHandoff>,
     abandoned_native_effects: native_effect::NativeEffectDropQueue,
     committed_source_sequence: u64,
+}
+
+/// Session- and revision-bound product docking action.
+///
+/// A prepared action preserves the exact published workspace version from
+/// which its stable placement was derived. It is intentionally affine and can
+/// only be submitted to the [`DockspaceSession`] which prepared it.
+#[derive(Debug)]
+#[must_use = "a prepared docking action must be submitted or deliberately discarded"]
+pub struct PreparedDockAction {
+    authority_domain: EngineAuthorityDomainId,
+    expected: WorkspaceVersion,
+    action: ProductAction,
+}
+
+impl PreparedDockAction {
+    /// Returns the published workspace version from which this action was prepared.
+    #[must_use]
+    pub const fn expected_version(&self) -> WorkspaceVersion {
+        self.expected
+    }
 }
 
 impl DockspaceSession {
@@ -148,6 +170,37 @@ impl DockspaceSession {
     #[must_use]
     pub const fn version(&self) -> WorkspaceVersion {
         self.engine.version()
+    }
+
+    /// Prepares one revision-bound selection action from the published workspace.
+    pub const fn prepare_select_item(&self, item: crate::ids::ItemId) -> PreparedDockAction {
+        self.prepare_action(ProductAction::SelectItem { item })
+    }
+
+    /// Prepares one revision-bound open action from the published workspace.
+    pub const fn prepare_open_item(
+        &self,
+        item: crate::ids::ItemId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_action(ProductAction::OpenItem { item, placement })
+    }
+
+    /// Prepares one revision-bound move action from the published workspace.
+    pub const fn prepare_dock_item(
+        &self,
+        item: crate::ids::ItemId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_action(ProductAction::DockItem { item, placement })
+    }
+
+    const fn prepare_action(&self, action: ProductAction) -> PreparedDockAction {
+        PreparedDockAction {
+            authority_domain: self.engine.authority_domain(),
+            expected: self.engine.version(),
+            action,
+        }
     }
 
     /// Begins one affine application host frame.
@@ -279,9 +332,17 @@ impl DockspaceHostFrame<'_> {
     /// Selects one currently open item by stable identity.
     ///
     /// The reducer resolves the current tabs source inside this rollback candidate.
-    pub fn select_item(&mut self, item: crate::ids::ItemId) -> Result<(), DockspaceRuntimeError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn select_item_current(
+        &mut self,
+        item: crate::ids::ItemId,
+    ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::SelectItem {
-            expected: self.application_base,
+            expected: self.frame.view().version(),
             item,
         })
     }
@@ -289,29 +350,74 @@ impl DockspaceHostFrame<'_> {
     /// Opens one item at a stable product placement.
     ///
     /// Opening an already owned item is a valid no-op and does not reposition it.
-    pub fn open_item(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn open_item_current(
         &mut self,
         item: crate::ids::ItemId,
         placement: DockPlacement,
     ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::OpenItem {
-            expected: self.application_base,
+            expected: self.frame.view().version(),
             item,
             placement,
         })
     }
 
     /// Docks one currently open item at a stable product placement.
-    pub fn dock_item(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn dock_item_current(
         &mut self,
         item: crate::ids::ItemId,
         placement: DockPlacement,
     ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::DockItem {
-            expected: self.application_base,
+            expected: self.frame.view().version(),
             item,
             placement,
         })
+    }
+
+    /// Submits one action against the exact published revision which prepared it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without poisoning the frame when the action belongs to
+    /// another dockspace session. A stale action from this session is accepted
+    /// structurally and reported as [`HostInputOutcome::StaleRejected`].
+    pub fn submit_prepared_action(
+        &mut self,
+        prepared: PreparedDockAction,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let PreparedDockAction {
+            authority_domain,
+            expected,
+            action,
+        } = prepared;
+        if authority_domain != self.session.engine.authority_domain() {
+            return Err(DockspaceRuntimeError::prepared_action_authority_mismatch());
+        }
+        let input = match action {
+            ProductAction::SelectItem { item } => EngineInput::SelectItem { expected, item },
+            ProductAction::OpenItem { item, placement } => EngineInput::OpenItem {
+                expected,
+                item,
+                placement,
+            },
+            ProductAction::DockItem { item, placement } => EngineInput::DockItem {
+                expected,
+                item,
+                placement,
+            },
+        };
+        self.append(input)
     }
 
     /// Opens or reuses one core-owned close plan for an item.
@@ -858,6 +964,8 @@ pub enum DockspaceRuntimeErrorKind {
     Engine,
     /// The affine host-frame protocol rejected an operation.
     HostFrame,
+    /// A product action capability belongs to another dockspace authority domain.
+    ActionAuthority,
     /// The private application input sequence was exhausted.
     SourceSequenceExhausted,
     /// The host named a surface without a matching paint obligation.
@@ -891,6 +999,9 @@ impl DockspaceRuntimeError {
         match &self.source {
             DockspaceRuntimeErrorSource::Engine(_) => DockspaceRuntimeErrorKind::Engine,
             DockspaceRuntimeErrorSource::HostFrame(_) => DockspaceRuntimeErrorKind::HostFrame,
+            DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch => {
+                DockspaceRuntimeErrorKind::ActionAuthority
+            }
             DockspaceRuntimeErrorSource::SourceSequenceExhausted => {
                 DockspaceRuntimeErrorKind::SourceSequenceExhausted
             }
@@ -949,6 +1060,12 @@ impl DockspaceRuntimeError {
             source: DockspaceRuntimeErrorSource::PaintObligationUnavailable { surface },
         }
     }
+
+    const fn prepared_action_authority_mismatch() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch,
+        }
+    }
 }
 
 impl std::fmt::Display for DockspaceRuntimeError {
@@ -969,6 +1086,8 @@ enum DockspaceRuntimeErrorSource {
     Engine(Box<EngineError>),
     #[error(transparent)]
     HostFrame(Box<CoreHostFrameError>),
+    #[error("prepared docking action belongs to another dockspace authority domain")]
+    PreparedActionAuthorityMismatch,
     #[error("application input source sequence is exhausted")]
     SourceSequenceExhausted,
     #[error("surface {surface} has no paintable presentation obligation in this frame")]
