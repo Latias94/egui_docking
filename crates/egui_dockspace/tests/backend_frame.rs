@@ -1,13 +1,9 @@
 use std::collections::BTreeMap;
 
-use dockspace::backend::engine::{
-    BackendIngressProgress, EngineInput, HostPresentationDisposition, HostPresentationSlot,
-    HostPresentationUnavailableReason,
-};
+use dockspace::backend::effect::PlatformEffect;
+use dockspace::backend::engine::{BackendIngressProgress, EngineInput};
 use dockspace::backend::frame::PanelFocus;
-use dockspace::backend::interaction::{
-    InteractionDelivery, InteractionEventKind, InteractionOutcome,
-};
+use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
@@ -52,7 +48,7 @@ use egui_dockspace::backend::{
     EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult, ExactNativeViewport,
     NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
 };
-use egui_dockspace::{Dockspace, DockspaceErrorKind, PaneView};
+use egui_dockspace::{Dockspace, DockspaceErrorKind, DockspaceSurfaceCommitStatus, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -1275,6 +1271,66 @@ enum ReleasePresentationOrder {
     ReleaseBeforePresentation,
 }
 
+fn commit_source_cycle(
+    dockspace: &mut Dockspace,
+    recorder: &dockspace::backend::ingress::BackendIngressRecorder,
+    source_route: NativeCoreRoute,
+    sequence: u64,
+) -> (
+    Option<(ViewportBinding, dockspace::backend::effect::EffectId)>,
+    Vec<EguiOuterSurfaceOutput>,
+) {
+    let batch = recorder
+        .pending_batch()
+        .expect("source cycle ingress freezes");
+    let mut input_session = dockspace
+        .begin_native_cycle(
+            EguiFrameScheduleKey::new(sequence, 0),
+            native_roster(source_route),
+        )
+        .expect("source cycle begins");
+    let progress = input_session
+        .submit_ingress(batch)
+        .expect("source cycle ingress reduces");
+    if progress == BackendIngressProgress::ReceiverReceiptsRequired {
+        let receipts = unavailable_receiver_receipts(
+            input_session
+                .pointer_receiver_candidates()
+                .expect("source cycle freezes a receiver challenge"),
+        );
+        assert_eq!(
+            input_session
+                .submit_pointer_receiver_receipts(receipts)
+                .expect("source cycle receiver facts reduce"),
+            BackendIngressProgress::Complete,
+        );
+    }
+    let mut presentation = input_session
+        .into_presentation()
+        .expect("source cycle enters presentation");
+    presentation
+        .run_native_surface(
+            dockspace,
+            source_route.native(),
+            &context(),
+            native_input(source_route.native().viewport()),
+            &mut TestPanes,
+        )
+        .expect("source cycle paints");
+    let prepared = presentation
+        .prepare_finish(dockspace)
+        .expect("source cycle preflights");
+    let create = prepared
+        .pending_platform_effects()
+        .iter()
+        .find_map(|emission| match emission.effect() {
+            PlatformEffect::CreateWindow { binding, .. } => Some((*binding, emission.id())),
+            _ => None,
+        });
+    let committed = prepared.commit(dockspace).expect("source cycle commits");
+    (create, committed.into_parts().1)
+}
+
 fn run_native_staging_request(order: ReleasePresentationOrder) {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
@@ -1461,8 +1517,8 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .finish(&mut dockspace)
         .expect("source press frame commits");
     assert!(matches!(
-        press.host().transition().reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::DragArmed { .. }]
+        dockspace.core_engine().interaction().status(),
+        InteractionStatus::Armed { .. }
     ));
     presentation_clock.settle_and_record(&dockspace, &mut recorder, press.into_parts().1);
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
@@ -1522,12 +1578,10 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .finish(&mut dockspace)
         .expect("outside move frame commits");
     assert!(matches!(
-        moved.host().transition().reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::DragBegan { .. },
-            InteractionOutcome::PreviewUpdated { .. }
-        ]
+        dockspace.core_engine().interaction().status(),
+        InteractionStatus::Dragging { .. }
     ));
+    assert!(dockspace.core_engine().interaction().preview().is_some());
     let preview_presented = presentation_clock.settle_presented(moved.into_parts().1);
     assert!(
         !preview_presented.is_empty(),
@@ -1554,98 +1608,66 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
             Authority::Known(PointerCaptureOwner::None),
         ))
         .expect("outside release must be ordered");
-    if matches!(order, ReleasePresentationOrder::ReleaseBeforePresentation) {
-        PresentationCaptureClock::record(&dockspace, &mut recorder, preview_presented);
-    }
-    let batch = recorder
-        .pending_batch()
-        .expect("outside release batch freezes");
-    let mut released = dockspace
-        .begin_native_cycle(
-            EguiFrameScheduleKey::new(sequence, 0),
-            native_roster(source_route),
-        )
-        .expect("outside release cycle begins");
-    assert_eq!(
-        released
-            .submit_ingress(batch)
-            .expect("outside release pauses for receiver facts"),
-        BackendIngressProgress::ReceiverReceiptsRequired,
-    );
-    let receipts = unavailable_receiver_receipts(
-        released
-            .pointer_receiver_candidates()
-            .expect("outside release freezes a receiver challenge"),
-    );
-    assert_eq!(
-        released
-            .submit_pointer_receiver_receipts(receipts)
-            .expect("outside release receiver facts reduce"),
-        BackendIngressProgress::Complete,
-    );
-    let mut presentation = released
-        .into_presentation()
-        .expect("outside release enters presentation");
-    presentation
-        .run_native_surface(
-            &mut dockspace,
-            source_route.native(),
-            &context(),
-            native_input(source_route.native().viewport()),
-            &mut TestPanes,
-        )
-        .expect("outside release frame paints");
-    let released = presentation
-        .finish(&mut dockspace)
-        .expect("outside release frame commits");
-    let transition = released.host().transition();
-    let release_outcomes = transition.reduced_pointer_edges()[0].interaction_outcomes();
-    match order {
-        ReleasePresentationOrder::PresentationBeforeRelease => assert!(
-            matches!(
-                release_outcomes,
-                [
-                    InteractionOutcome::PreviewUpdated { .. },
-                    InteractionOutcome::DragDelivered {
-                        delivery: InteractionDelivery::NativeRequested(_),
-                        ..
-                    }
-                ]
-            ),
-            "unexpected release outcomes: {release_outcomes:?}"
-        ),
-        ReleasePresentationOrder::ReleaseBeforePresentation => assert!(
-            matches!(
-                release_outcomes,
-                [
-                    InteractionOutcome::PreviewUpdated { .. },
-                    InteractionOutcome::ReleasePending { .. }
-                ]
-            ),
-            "unexpected release outcomes: {release_outcomes:?}"
-        ),
-    }
-    let request = transition
-        .interaction_events()
-        .iter()
-        .find_map(|event| match event.kind() {
-            InteractionEventKind::NativePresentationRequested(request) => Some(*request),
-            _ => None,
-        })
-        .expect("both causal orders must eventually create one native saga");
-    presentation_clock.settle_and_record(&dockspace, &mut recorder, released.into_parts().1);
-    reclaim_backend_prefix(&mut dockspace, &mut recorder);
-    sequence += 1;
+    let (release_create, release_outputs) =
+        commit_source_cycle(&mut dockspace, &recorder, source_route, sequence);
+    let (request_binding, request_effect) = match order {
+        ReleasePresentationOrder::PresentationBeforeRelease => {
+            let request =
+                release_create.expect("a previously presented preview may commit on release");
+            assert!(matches!(
+                dockspace.core_engine().interaction().status(),
+                InteractionStatus::Idle
+            ));
+            presentation_clock.settle_and_record(&dockspace, &mut recorder, release_outputs);
+            reclaim_backend_prefix(&mut dockspace, &mut recorder);
+            sequence += 1;
+            request
+        }
+        ReleasePresentationOrder::ReleaseBeforePresentation => {
+            assert!(
+                release_create.is_none(),
+                "release must not create a native window before its preview is presented",
+            );
+            assert!(
+                dockspace.core_engine().pending_release_preview().is_some(),
+                "the exact release preview must remain pending until presentation proof arrives",
+            );
+            PresentationCaptureClock::record(&dockspace, &mut recorder, preview_presented);
+            presentation_clock.settle_and_record(&dockspace, &mut recorder, release_outputs);
+            reclaim_backend_prefix(&mut dockspace, &mut recorder);
+            sequence += 1;
+            recorder
+                .record_pointer_segment(
+                    PointerEdgeJournal::new(
+                        PointerEdgeSequence::new(3),
+                        PointerEdgeSequence::new(3),
+                        Vec::new(),
+                    )
+                    .expect("pending release checkpoint is canonical"),
+                )
+                .expect("pending release checkpoint is ordered");
+
+            let (request, observed_outputs) =
+                commit_source_cycle(&mut dockspace, &recorder, source_route, sequence);
+            let request =
+                request.expect("presenting the frozen preview releases the native create");
+            assert!(matches!(
+                dockspace.core_engine().interaction().status(),
+                InteractionStatus::Idle
+            ));
+            presentation_clock.settle_and_record(&dockspace, &mut recorder, observed_outputs);
+            reclaim_backend_prefix(&mut dockspace, &mut recorder);
+            sequence += 1;
+            request
+        }
+    };
 
     let target_native = ExactNativeViewport::new(
         ViewportId::from_hash_of("native-staging-target"),
         NativeViewportIncarnation::new(1),
     );
-    let target_route = NativeCoreRoute::new(
-        target_native,
-        request.binding().surface(),
-        request.binding(),
-    );
+    let target_route =
+        NativeCoreRoute::new(target_native, request_binding.surface(), request_binding);
     recorder
         .record_platform_snapshot(
             dockspace.core_engine().version().epoch(),
@@ -1653,9 +1675,9 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
                 2,
                 source_route.core(),
                 Some((
-                    request.binding(),
+                    request_binding,
                     WindowPresentationState::Hidden,
-                    Some(request.effect()),
+                    Some(request_effect),
                 )),
             ),
         )
@@ -1701,7 +1723,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .expect("hidden observation must enter presentation");
     let requests = staging.native_staging_requests().collect::<Vec<_>>();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].binding(), request.binding());
+    assert_eq!(requests[0].binding(), request_binding);
     staging
         .mark_surface_unavailable(
             &mut dockspace,
@@ -1712,33 +1734,19 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     let unavailable = staging
         .finish(&mut dockspace)
         .expect("omitted staging must commit an explicit unavailable disposition");
-    assert!(
+    assert_eq!(
         unavailable
             .host()
-            .transition()
-            .presentation_dispositions()
-            .iter()
-            .any(|outcome| {
-                outcome.slot()
-                    == HostPresentationSlot::NativeStaging {
-                        presentation: requests[0],
-                    }
-                    && outcome.disposition()
-                        == HostPresentationDisposition::Unavailable(
-                            HostPresentationUnavailableReason::RetainedResourceUnavailable,
-                        )
-            })
+            .surface(SURFACE)
+            .expect("the omitted source retains one terminal surface result")
+            .status(),
+        DockspaceSurfaceCommitStatus::Unavailable
     );
     assert!(
         unavailable
-            .host()
-            .transition()
-            .presentation_emissions()
-            .iter()
-            .all(|emission| !matches!(
-                emission.output().payload(),
-                HostPresentationOutputPayload::NativeStaging { .. }
-            ))
+            .outputs()
+            .all(|output| !output.has_presentation_obligation()),
+        "an omitted staging pass cannot manufacture a presentation obligation"
     );
     for output in unavailable.into_parts().1 {
         output.settle_with(|_, _| EguiPresentationResult::Dropped);
@@ -1787,7 +1795,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .expect("staging retry enters presentation");
     let requests = staging.native_staging_requests().collect::<Vec<_>>();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].binding(), request.binding());
+    assert_eq!(requests[0].binding(), request_binding);
     staging
         .mark_surface_unavailable(
             &mut dockspace,
@@ -1807,20 +1815,6 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     let staging = staging
         .finish(&mut dockspace)
         .expect("staging output and source omission must publish atomically");
-    let emissions = staging
-        .host()
-        .transition()
-        .presentation_emissions()
-        .iter()
-        .filter(|emission| {
-            matches!(
-                emission.output().payload(),
-                HostPresentationOutputPayload::NativeStaging { presentation }
-                    if presentation == painted
-            )
-        })
-        .count();
-    assert_eq!(emissions, 1);
     let (_, mut outputs) = staging.into_parts();
     assert_eq!(outputs.len(), 1);
     let output = outputs
@@ -1849,7 +1843,7 @@ fn presented_preview_before_release_delivers_in_the_release_edge() {
 }
 
 #[test]
-fn release_before_presented_preview_waits_then_delivers_in_the_same_batch() {
+fn release_before_presented_preview_waits_for_a_later_presentation_boundary() {
     run_native_staging_request(ReleasePresentationOrder::ReleaseBeforePresentation);
 }
 
@@ -2090,22 +2084,7 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
 
     assert_eq!(dockspace.style(), &replacement_style);
     assert!(!dockspace.core_engine().policy().allows_contained_floating());
-    assert!(
-        commit
-            .host()
-            .transition()
-            .reduced_inputs()
-            .iter()
-            .any(|input| {
-                matches!(
-                    input.outcome(),
-                    dockspace::backend::transition::InputOutcome::PolicyReplaced {
-                        changed: true,
-                        ..
-                    }
-                )
-            })
-    );
+    assert!(commit.host().mutation().workspace_changed());
     assert!(
         commit
             .outputs()

@@ -216,9 +216,11 @@ obtain `WorkspaceVersion` and typed close rejections through
 `dockspace::runtime`. Examples and the official-egui harness declare
 `dockspace` directly when they intentionally exercise core contracts, so rustc
 rather than an API-classification script owns dependency and name resolution.
-The low-level backend host response still carries a raw transition for native
-migration; remaining model consolidation and backend-host migration keep this
-seal open.
+The low-level backend host response now extracts only facts the native host can
+act on: rejected surface registrations, pending platform effects, effect
+receipts, native close edges, presentation-settlement counts, and product-level
+surface status. It no longer exposes raw transitions or surface-contribution
+FSM values. Remaining model consolidation keeps this seal open.
 
 ## Protocol Tests
 

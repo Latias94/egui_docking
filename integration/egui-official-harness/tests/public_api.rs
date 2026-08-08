@@ -3,7 +3,6 @@ use std::time::Duration;
 use dockspace::command::WorkspaceCommand;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
@@ -169,12 +168,7 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
         .finish()
         .expect("settlement frame commits")
         .into_parts();
-    assert!(
-        host.transition()
-            .presentation_observations()
-            .iter()
-            .any(|outcome| matches!(outcome, HostPresentationObservationOutcome::Retired { .. })),
-    );
+    assert_eq!(host.presentation_summary().retired_presented_eligible(), 1);
     pending
         .into_iter()
         .next()

@@ -1295,19 +1295,23 @@ impl Dockspace {
         }
         let _ = host.show_surface(surface, ui, panes)?;
         let HostFrameResponse {
-            transition,
+            mutation,
             mut surfaces,
+            close_requests,
+            ..
         } = host.end_host_frame()?;
         let surface_response = surfaces
             .remove(&surface)
             .ok_or(crate::error::DockspaceErrorSource::SingleSurfacePaintUnavailable { surface })?;
-        let SurfaceCommitResponse { paint, disposition } = surface_response;
+        let surface_commit_status = surface_response.status();
+        let SurfaceCommitResponse { paint, status: _ } = surface_response;
         let paint = paint
             .ok_or(crate::error::DockspaceErrorSource::SingleSurfacePaintUnavailable { surface })?;
         Ok(DockspaceResponse {
-            transition,
+            mutation,
             paint,
-            disposition,
+            surface_commit_status,
+            close_requests,
         })
     }
 

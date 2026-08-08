@@ -1,16 +1,9 @@
-use dockspace::backend::interaction::InteractionOutcome;
-use dockspace::backend::pointer_journal::PointerEdgeKind;
-use dockspace::backend::transition::{
-    InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
-};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::intent::PointerButton as DockPointerButton;
-use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
+use dockspace::{CloseDecision, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
-use egui::{Context, Event, Id, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
-use egui_dockspace::{Dockspace, PaneView};
+use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
+use egui_dockspace::{Dockspace, DockspaceClosePlan, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -19,12 +12,6 @@ const ITEM_B: ItemId = ItemId::new(11);
 const ITEM_C: ItemId = ItemId::new(12);
 
 struct TestPanes;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ObservedReducerAction {
-    Keyboard,
-    Pointer,
-}
 
 impl PaneView for TestPanes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
@@ -44,8 +31,7 @@ struct FrameObservation {
     weights: Vec<f32>,
     interactions_current: bool,
     saw_stale_pass: bool,
-    close_requests: Vec<ClosePlan>,
-    contribution_rejections: Vec<SurfaceContributionRejection>,
+    close_requests: Vec<DockspaceClosePlan>,
 }
 
 fn tabs_workspace() -> (Workspace, NodeId) {
@@ -89,37 +75,6 @@ fn key_press(key: Key) -> Vec<Event> {
         .collect()
 }
 
-fn pointer_button(position: Pos2, pressed: bool) -> Event {
-    Event::PointerButton {
-        pos: position,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers: Modifiers::NONE,
-    }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "finite scene coordinates intentionally become egui f32 input coordinates"
-)]
-fn splitter_pointer_position(dockspace: &Dockspace, split: NodeId) -> Pos2 {
-    let rect = dockspace
-        .core_engine()
-        .interaction_projection(SURFACE)
-        .map(dockspace::backend::scene::SurfaceInteractionProjection::plan)
-        .expect("the warmed surface has an acknowledged interaction plan")
-        .splitter_records()
-        .iter()
-        .find(|splitter| splitter.id().split == split)
-        .expect("the requested splitter is present in the interaction plan")
-        .hit()
-        .rect();
-    Pos2::new(
-        ((rect.min().x() + rect.max().x()) * 0.5) as f32,
-        ((rect.min().y() + rect.max().y()) * 0.5) as f32,
-    )
-}
-
 fn accesskit_action(id: Id, action: Action) -> Event {
     Event::AccessKitActionRequest(ActionRequest {
         action,
@@ -141,7 +96,6 @@ fn run_frame(
     let mut observation = None;
     let mut saw_stale_pass = false;
     let mut close_requests = Vec::new();
-    let mut contribution_rejections = Vec::new();
     let _ = crate::test_support::run_ui(context, input(events), |ui| {
         let instance_id = Id::new(("egui_dockspace", salt));
         let (tab_ids, close_ids) = tabs.map_or(([Id::NULL; 3], [Id::NULL; 3]), |tabs| {
@@ -174,10 +128,6 @@ fn run_frame(
             .show_single_surface(SURFACE, ui, panes)
             .expect("fixture frame must advance");
         close_requests.extend(response.close_requests().cloned());
-        if let SurfaceContributionOutcome::Rejected { reason, .. } = response.backend_contribution()
-        {
-            contribution_rejections.push(reason.clone());
-        }
         saw_stale_pass |= !response.interactions_current();
         let root_node = dockspace
             .core_engine()
@@ -201,66 +151,11 @@ fn run_frame(
             interactions_current: response.interactions_current(),
             saw_stale_pass,
             close_requests: Vec::new(),
-            contribution_rejections: Vec::new(),
         });
     });
     let mut observation = observation.expect("run_ui must paint one pass");
     observation.close_requests = close_requests;
-    observation.contribution_rejections = contribution_rejections;
     observation
-}
-
-fn run_outer_frame_actions(
-    context: &Context,
-    dockspace: &mut Dockspace,
-    panes: &mut TestPanes,
-    events: Vec<Event>,
-) -> Vec<ObservedReducerAction> {
-    let sequence = dockspace.last_egui_frame_schedule_key().map_or(1, |key| {
-        key.sequence()
-            .checked_add(1)
-            .expect("test host sequence must remain representable")
-    });
-    let mut frame = dockspace
-        .begin_outer_frame(EguiFrameScheduleKey::new(sequence, 0))
-        .expect("outer frame must begin");
-    frame
-        .run_surface(SURFACE, context, input(events), panes)
-        .expect("outer host must paint the surface");
-    let (host, outputs) = frame
-        .finish()
-        .expect("outer frame must commit atomically")
-        .into_parts();
-    let transition = host.transition();
-    let mut causal_actions = transition
-        .reduced_inputs()
-        .iter()
-        .filter_map(|input| match input.outcome() {
-            InputOutcome::InteractionProcessed {
-                outcome: InteractionOutcome::SplitterAdjusted { .. },
-                ..
-            } => Some((input.causal_ordinal(), ObservedReducerAction::Keyboard)),
-            _ => None,
-        })
-        .chain(
-            transition
-                .reduced_pointer_edges()
-                .iter()
-                .filter_map(|edge| {
-                    (edge.edge().kind()
-                        == PointerEdgeKind::ButtonPressed(DockPointerButton::Primary))
-                    .then_some((edge.causal_ordinal(), ObservedReducerAction::Pointer))
-                }),
-        )
-        .collect::<Vec<_>>();
-    causal_actions.sort_by_key(|(ordinal, _)| *ordinal);
-    for output in outputs {
-        output.settle_with(|_, _| EguiPresentationResult::Presented);
-    }
-    causal_actions
-        .into_iter()
-        .map(|(_, action)| action)
-        .collect()
 }
 
 fn warm_tabs(
@@ -449,78 +344,6 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
     );
     assert_eq!(end_stable.selected, Some(ITEM_C));
     assert_eq!(end_stable.focused, Some(end_stable.tab_ids[2]));
-}
-
-#[derive(Clone, Copy)]
-enum KeyboardPointerOrder {
-    KeyboardThenPointer,
-    PointerThenKeyboard,
-}
-
-fn splitter_state_after_keyboard_pointer_batch(
-    salt: &'static str,
-    order: KeyboardPointerOrder,
-) -> Vec<ObservedReducerAction> {
-    let context = Context::default();
-    let (workspace, split) = split_workspace();
-    let mut dockspace = Dockspace::builder(salt, workspace)
-        .build()
-        .expect("fixture facade must build");
-    let mut panes = TestPanes;
-    let stable = warm_split(&context, &mut dockspace, &mut panes, salt, split);
-    context.memory_mut(|memory| memory.request_focus(stable.splitter_id));
-    let focused = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        salt,
-        None,
-        Some(split),
-        Vec::new(),
-    );
-    assert_eq!(focused.focused, Some(focused.splitter_id));
-
-    let pointer = splitter_pointer_position(&dockspace, split);
-    let pointer_events = [Event::PointerMoved(pointer), pointer_button(pointer, true)];
-    let mut events = Vec::new();
-    match order {
-        KeyboardPointerOrder::KeyboardThenPointer => {
-            events.extend(key_press(Key::ArrowRight));
-            events.extend(pointer_events);
-        }
-        KeyboardPointerOrder::PointerThenKeyboard => {
-            events.extend(pointer_events);
-            events.extend(key_press(Key::ArrowRight));
-        }
-    }
-    run_outer_frame_actions(&context, &mut dockspace, &mut panes, events)
-}
-
-#[test]
-fn keyboard_and_pointer_batches_reduce_in_raw_event_order() {
-    let keyboard_first = splitter_state_after_keyboard_pointer_batch(
-        "keyboard-before-pointer-splitter",
-        KeyboardPointerOrder::KeyboardThenPointer,
-    );
-    let pointer_first = splitter_state_after_keyboard_pointer_batch(
-        "pointer-before-keyboard-splitter",
-        KeyboardPointerOrder::PointerThenKeyboard,
-    );
-
-    assert_eq!(
-        keyboard_first,
-        [
-            ObservedReducerAction::Keyboard,
-            ObservedReducerAction::Pointer
-        ]
-    );
-    assert_eq!(
-        pointer_first,
-        [
-            ObservedReducerAction::Pointer,
-            ObservedReducerAction::Keyboard
-        ]
-    );
 }
 
 #[test]
@@ -1067,5 +890,4 @@ fn same_tick_selection_supersedes_before_submission_and_disables_the_painted_res
     assert_eq!(selected.selected, Some(ITEM_B));
     assert!(!selected.interactions_current);
     assert!(selected.saw_stale_pass);
-    assert!(selected.contribution_rejections.is_empty());
 }

@@ -2,13 +2,22 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::backend::effect::{EffectId, EffectTransition};
+use dockspace::backend::ingress::BackendIngressOrdinal;
 use dockspace::backend::interaction::InteractionOutcome;
+use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::command::{CloseCommitOutcome, CommandOutcome};
 use dockspace::error::CommandError;
 use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
+use dockspace::policy::CloseCapability;
 use dockspace::runtime::WorkspaceVersion;
-use dockspace::{ClosePlan, CloseResolutionOutcome};
+use dockspace::{
+    CloseDecisionToken, CloseItemDecisionState, ClosePlan, ClosePlanPhase, ClosePlanTarget,
+    CloseRequestId, CloseResolutionOutcome, DeferredCloseToken,
+};
+
+use dockspace::NativeCloseEdge;
 
 /// Product-level summary of one atomic docking publication.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +135,138 @@ impl DockspaceCommandResult {
     }
 }
 
+/// One application-facing item decision in a close plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DockspaceCloseItem {
+    item: ItemId,
+    capability: CloseCapability,
+    token: CloseDecisionToken,
+    state: CloseItemDecisionState,
+}
+
+impl DockspaceCloseItem {
+    /// Returns the stable pane identity which must be decided.
+    #[must_use]
+    pub const fn item(self) -> ItemId {
+        self.item
+    }
+
+    /// Returns the policy capability frozen into this request.
+    #[must_use]
+    pub const fn capability(self) -> CloseCapability {
+        self.capability
+    }
+
+    /// Returns the initial decision token for this pane.
+    #[must_use]
+    pub const fn token(self) -> CloseDecisionToken {
+        self.token
+    }
+
+    /// Returns the current decision state for this pane.
+    #[must_use]
+    pub const fn state(self) -> CloseItemDecisionState {
+        self.state
+    }
+
+    /// Returns the deferred continuation when this pane is awaiting one.
+    #[must_use]
+    pub const fn deferred_token(self) -> Option<DeferredCloseToken> {
+        match self.state {
+            CloseItemDecisionState::Deferred { continuation } => Some(continuation),
+            CloseItemDecisionState::Pending
+            | CloseItemDecisionState::Allowed
+            | CloseItemDecisionState::Vetoed => None,
+        }
+    }
+}
+
+/// Stable application-facing view of one core close plan.
+///
+/// Destruction proofs, cancellation state, authority domains, and reducer
+/// diagnostics remain private to the core. The view retains only the identities
+/// and tokens an application needs to decide pane closure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockspaceClosePlan {
+    request: CloseRequestId,
+    target: ClosePlanTarget,
+    items: Box<[DockspaceCloseItem]>,
+    phase: ClosePlanPhase,
+}
+
+impl DockspaceClosePlan {
+    pub(crate) fn from_core(plan: &ClosePlan) -> Self {
+        Self {
+            request: plan.request(),
+            target: plan.target(),
+            items: plan
+                .items()
+                .iter()
+                .copied()
+                .map(|item| DockspaceCloseItem {
+                    item: item.item(),
+                    capability: item.capability(),
+                    token: item.token(),
+                    state: item.state(),
+                })
+                .collect(),
+            phase: plan.phase(),
+        }
+    }
+
+    /// Returns the unique close request identity.
+    #[must_use]
+    pub const fn request(&self) -> CloseRequestId {
+        self.request
+    }
+
+    /// Returns the stable item, root, or surface target.
+    #[must_use]
+    pub const fn target(&self) -> ClosePlanTarget {
+        self.target
+    }
+
+    /// Returns the required pane decisions in core order.
+    #[must_use]
+    pub fn items(&self) -> &[DockspaceCloseItem] {
+        &self.items
+    }
+
+    /// Returns the current application-visible close phase.
+    #[must_use]
+    pub const fn phase(&self) -> ClosePlanPhase {
+        self.phase
+    }
+}
+
+/// One close request emitted by an egui interaction or semantic action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockspaceCloseRequest {
+    plan: DockspaceClosePlan,
+    reused: bool,
+}
+
+impl DockspaceCloseRequest {
+    pub(crate) fn new(plan: &ClosePlan, reused: bool) -> Self {
+        Self {
+            plan: DockspaceClosePlan::from_core(plan),
+            reused,
+        }
+    }
+
+    /// Returns the stable close-plan view.
+    #[must_use]
+    pub const fn plan(&self) -> &DockspaceClosePlan {
+        &self.plan
+    }
+
+    /// Returns whether this interaction reused an unresolved plan.
+    #[must_use]
+    pub const fn reused(&self) -> bool {
+        self.reused
+    }
+}
+
 /// Product-level result of one initial or deferred close decision.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DockspaceCloseOutcome {
@@ -134,7 +275,7 @@ pub enum DockspaceCloseOutcome {
         /// Token-resolution result, including typed inert outcomes.
         resolution: CloseResolutionOutcome,
         /// Latest retained close plan, when the request exists.
-        plan: Option<ClosePlan>,
+        plan: Option<DockspaceClosePlan>,
         /// Checked topology result after the final allow decision.
         application: Option<Result<CloseCommitOutcome, CommandError>>,
     },
@@ -168,7 +309,7 @@ impl DockspaceCloseResult {
                         ..
                     } => Some(DockspaceCloseOutcome::Processed {
                         resolution: *resolution,
-                        plan: plan.clone(),
+                        plan: plan.as_ref().map(DockspaceClosePlan::from_core),
                         application: application.clone(),
                     }),
                     InputOutcome::StaleRejected {
@@ -210,6 +351,17 @@ pub enum DockspaceSurfaceCommitStatus {
     Unavailable,
     /// The prepared contribution was superseded before installation.
     Rejected,
+}
+
+impl DockspaceSurfaceCommitStatus {
+    pub(crate) const fn from_contribution(outcome: &SurfaceContributionOutcome) -> Self {
+        match outcome {
+            SurfaceContributionOutcome::Ready { .. } => Self::Ready,
+            SurfaceContributionOutcome::Retained { .. } => Self::Retained,
+            SurfaceContributionOutcome::Unavailable { .. } => Self::Unavailable,
+            SurfaceContributionOutcome::Rejected { .. } => Self::Rejected,
+        }
+    }
 }
 
 /// Truthful availability of one adapter operation.
@@ -333,41 +485,11 @@ impl SurfacePaintResponse {
     }
 }
 
-/// The terminal host-frame disposition of one tick-start surface slot.
-#[derive(Debug)]
-pub enum SurfaceFrameDisposition {
-    /// A complete contribution was reduced and its typed core result is visible to the host.
-    ///
-    /// In particular, [`SurfaceContributionOutcome::Rejected`] is a terminal,
-    /// caller-visible retry outcome. It never means the adapter retained current
-    /// interaction authority for the painted projection.
-    Contribution(SurfaceContributionOutcome),
-}
-
-impl SurfaceFrameDisposition {
-    /// Returns the exact core result for this surface contribution.
-    #[must_use]
-    pub const fn contribution(&self) -> &SurfaceContributionOutcome {
-        match self {
-            Self::Contribution(outcome) => outcome,
-        }
-    }
-
-    /// Returns whether the contribution was superseded before it could install.
-    #[must_use]
-    pub const fn was_rejected(&self) -> bool {
-        matches!(
-            self,
-            Self::Contribution(SurfaceContributionOutcome::Rejected { .. })
-        )
-    }
-}
-
 /// One surface's paint result and terminal host-frame disposition.
 #[derive(Debug)]
 pub struct SurfaceCommitResponse {
     pub(crate) paint: Option<SurfacePaintResponse>,
-    pub(crate) disposition: SurfaceFrameDisposition,
+    pub(crate) status: DockspaceSurfaceCommitStatus,
 }
 
 impl SurfaceCommitResponse {
@@ -377,65 +499,91 @@ impl SurfaceCommitResponse {
         self.paint.as_ref()
     }
 
-    /// Returns the complete core contribution outcome for this frozen slot.
+    /// Returns the terminal status of this contribution.
     #[must_use]
-    pub const fn disposition(&self) -> &SurfaceFrameDisposition {
-        &self.disposition
-    }
-
-    /// Returns the exact core result for this surface contribution.
-    #[must_use]
-    pub const fn contribution(&self) -> &SurfaceContributionOutcome {
-        self.disposition.contribution()
+    pub const fn status(&self) -> DockspaceSurfaceCommitStatus {
+        self.status
     }
 }
 
-/// One atomic reducer transition and every frozen surface's terminal disposition.
-#[derive(Debug)]
-pub struct HostFrameResponse {
-    pub(crate) transition: EngineTransition,
-    pub(crate) surfaces: BTreeMap<SurfaceId, SurfaceCommitResponse>,
+/// Receipt for one backend ingress ordinal which the core reduced as an effect result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BackendEffectReceipt {
+    ordinal: BackendIngressOrdinal,
+    accepted_effect: Option<EffectId>,
 }
 
-/// One close plan emitted by the core, retaining its causal position and reuse bit.
-///
-/// A plan may be requested more than once while an earlier close is still pending. The
-/// `reused` flag lets an adapter distinguish that case without inspecting private transition
-/// variants.
-#[derive(Clone, Copy, Debug)]
-pub struct CloseRequestRef<'a> {
-    plan: &'a ClosePlan,
-    reused: bool,
-    causal_ordinal: ReducerCausalOrdinal,
-}
-
-impl<'a> CloseRequestRef<'a> {
-    /// Returns the core-owned close plan.
+impl BackendEffectReceipt {
+    /// Returns the exact backend ingress position consumed by the reducer.
     #[must_use]
-    pub const fn plan(self) -> &'a ClosePlan {
-        self.plan
+    pub const fn ordinal(self) -> BackendIngressOrdinal {
+        self.ordinal
     }
 
-    /// Returns whether this request reused an unresolved plan for the same target.
+    /// Returns the effect identity when the result matched a known terminal transition.
     #[must_use]
-    pub const fn reused(self) -> bool {
-        self.reused
-    }
-
-    /// Returns the core-assigned causal position of this request.
-    #[must_use]
-    pub const fn causal_ordinal(self) -> ReducerCausalOrdinal {
-        self.causal_ordinal
+    pub const fn accepted_effect(self) -> Option<EffectId> {
+        self.accepted_effect
     }
 }
 
-struct OrderedCloseRequest<'a> {
-    ordinal: ReducerCausalOrdinal,
-    sequence: u64,
-    request: CloseRequestRef<'a>,
+/// Count-only summary of presentation observations reduced by one host frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PresentationObservationSummary {
+    observed: usize,
+    rejected: usize,
+    captured_unknown: usize,
+    retired: usize,
+    retired_presented_eligible: usize,
+    retired_presented_ineligible: usize,
+    retired_dropped: usize,
 }
 
-fn close_request_events<'a>(transition: &'a EngineTransition) -> Vec<CloseRequestRef<'a>> {
+impl PresentationObservationSummary {
+    /// Returns the number of observation outcomes in the committed boundary.
+    #[must_use]
+    pub const fn observed(self) -> usize {
+        self.observed
+    }
+
+    /// Returns the number of rejected observations.
+    #[must_use]
+    pub const fn rejected(self) -> usize {
+        self.rejected
+    }
+
+    /// Returns the number of accepted captures without a known final output.
+    #[must_use]
+    pub const fn captured_unknown(self) -> usize {
+        self.captured_unknown
+    }
+
+    /// Returns the number of terminally retired presentation streams.
+    #[must_use]
+    pub const fn retired(self) -> usize {
+        self.retired
+    }
+
+    /// Returns the number of presented outputs eligible for authority promotion.
+    #[must_use]
+    pub const fn retired_presented_eligible(self) -> usize {
+        self.retired_presented_eligible
+    }
+
+    /// Returns the number of presented outputs which settled but could not promote authority.
+    #[must_use]
+    pub const fn retired_presented_ineligible(self) -> usize {
+        self.retired_presented_ineligible
+    }
+
+    /// Returns the number of explicit known-dropped terminal outputs.
+    #[must_use]
+    pub const fn retired_dropped(self) -> usize {
+        self.retired_dropped
+    }
+}
+
+fn close_request_events(transition: &EngineTransition) -> Vec<DockspaceCloseRequest> {
     let mut ordered = Vec::new();
     for input in transition.reduced_inputs() {
         if let InputOutcome::InteractionProcessed {
@@ -446,11 +594,7 @@ fn close_request_events<'a>(transition: &'a EngineTransition) -> Vec<CloseReques
             ordered.push(OrderedCloseRequest {
                 ordinal: input.causal_ordinal(),
                 sequence: input.sequence().get(),
-                request: CloseRequestRef {
-                    plan,
-                    reused: *reused,
-                    causal_ordinal: input.causal_ordinal(),
-                },
+                request: DockspaceCloseRequest::new(plan, *reused),
             });
         }
     }
@@ -460,11 +604,7 @@ fn close_request_events<'a>(transition: &'a EngineTransition) -> Vec<CloseReques
                 ordered.push(OrderedCloseRequest {
                     ordinal: edge.causal_ordinal(),
                     sequence: edge.ticket().sequence().get(),
-                    request: CloseRequestRef {
-                        plan,
-                        reused: *reused,
-                        causal_ordinal: edge.causal_ordinal(),
-                    },
+                    request: DockspaceCloseRequest::new(plan, *reused),
                 });
             }
         }
@@ -473,11 +613,130 @@ fn close_request_events<'a>(transition: &'a EngineTransition) -> Vec<CloseReques
     ordered.into_iter().map(|entry| entry.request).collect()
 }
 
+struct OrderedCloseRequest {
+    ordinal: ReducerCausalOrdinal,
+    sequence: u64,
+    request: DockspaceCloseRequest,
+}
+
+fn native_close_edges(transition: &EngineTransition) -> Vec<NativeCloseEdge> {
+    transition
+        .reduced_inputs()
+        .iter()
+        .flat_map(|input| match input.outcome() {
+            InputOutcome::PlatformSnapshotPublished {
+                native_close_edges, ..
+            }
+            | InputOutcome::NativeCloseObservationPublished {
+                native_close_edges, ..
+            } => native_close_edges.as_slice(),
+            _ => &[],
+        })
+        .copied()
+        .collect()
+}
+
+fn effect_receipts(transition: &EngineTransition) -> Vec<BackendEffectReceipt> {
+    transition
+        .reduced_inputs()
+        .iter()
+        .filter_map(|input| {
+            let ordinal = input.backend_ingress_ordinal()?;
+            let accepted_effect = match input.outcome() {
+                InputOutcome::PlatformEffectReported {
+                    effect,
+                    transition:
+                        EffectTransition::Applied
+                        | EffectTransition::Duplicate
+                        | EffectTransition::RetiredTerminal,
+                    ..
+                } => Some(*effect),
+                _ => None,
+            };
+            Some(BackendEffectReceipt {
+                ordinal,
+                accepted_effect,
+            })
+        })
+        .collect()
+}
+
+fn presentation_summary(transition: &EngineTransition) -> PresentationObservationSummary {
+    let mut summary = PresentationObservationSummary::default();
+    for outcome in transition.presentation_observations() {
+        summary.observed += 1;
+        summary.retired += usize::from(matches!(
+            outcome,
+            HostPresentationObservationOutcome::Retired { .. }
+        ));
+        match outcome {
+            HostPresentationObservationOutcome::NoUpdate { .. } => {}
+            HostPresentationObservationOutcome::CapturedUnknown { .. } => {
+                summary.captured_unknown += 1;
+            }
+            HostPresentationObservationOutcome::Rejected { .. } => {
+                summary.rejected += 1;
+            }
+            HostPresentationObservationOutcome::Retired {
+                presented: dockspace::intent::Authority::Known(Some(_)),
+                promotion_eligible: true,
+                ..
+            } => {
+                summary.retired_presented_eligible += 1;
+            }
+            HostPresentationObservationOutcome::Retired {
+                presented: dockspace::intent::Authority::Known(Some(_)),
+                promotion_eligible: false,
+                ..
+            } => {
+                summary.retired_presented_ineligible += 1;
+            }
+            HostPresentationObservationOutcome::Retired {
+                presented: dockspace::intent::Authority::Known(None),
+                ..
+            } => {
+                summary.retired_dropped += 1;
+            }
+            HostPresentationObservationOutcome::Retired { .. } => {}
+        }
+    }
+    summary
+}
+
 impl HostFrameResponse {
-    /// Returns the sole atomic engine transition produced by `end_host_frame`.
+    pub(crate) fn from_transition(
+        transition: EngineTransition,
+        surfaces: BTreeMap<SurfaceId, SurfaceCommitResponse>,
+    ) -> Self {
+        let close_requests = close_request_events(&transition);
+        let mutation = DockspaceMutation::from_transition(&transition);
+        Self {
+            mutation,
+            surfaces,
+            close_requests,
+            native_close_edges: native_close_edges(&transition),
+            effect_receipts: effect_receipts(&transition),
+            presentation_summary: presentation_summary(&transition),
+        }
+    }
+}
+
+/// One atomic host-frame result and every frozen surface's terminal disposition.
+#[derive(Debug)]
+pub struct HostFrameResponse {
+    pub(crate) mutation: DockspaceMutation,
+    pub(crate) surfaces: BTreeMap<SurfaceId, SurfaceCommitResponse>,
+    pub(crate) close_requests: Vec<DockspaceCloseRequest>,
+    native_close_edges: Vec<NativeCloseEdge>,
+    effect_receipts: Vec<BackendEffectReceipt>,
+    presentation_summary: PresentationObservationSummary,
+}
+
+impl HostFrameResponse {
+    /// Returns the product-level summary of the atomic publication.
     #[must_use]
-    pub const fn transition(&self) -> &EngineTransition {
-        &self.transition
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
     }
 
     /// Returns one frozen surface's typed result.
@@ -495,16 +754,33 @@ impl HostFrameResponse {
     }
 
     /// Iterates close plans requested by semantic controls in this host frame.
-    pub fn close_requests(&self) -> impl Iterator<Item = &ClosePlan> {
-        self.close_request_events()
-            .into_iter()
-            .map(|request| request.plan())
+    #[must_use]
+    pub fn close_requests(&self) -> impl Iterator<Item = &DockspaceClosePlan> {
+        self.close_requests.iter().map(DockspaceCloseRequest::plan)
     }
 
-    /// Iterates close requests in core causal order, retaining whether each plan was reused.
+    /// Returns close requests in their core causal order.
     #[must_use]
-    pub fn close_request_events(&self) -> Vec<CloseRequestRef<'_>> {
-        close_request_events(&self.transition)
+    pub fn close_request_events(&self) -> &[DockspaceCloseRequest] {
+        &self.close_requests
+    }
+
+    /// Returns exact native close edges reduced by this host frame.
+    #[must_use]
+    pub fn native_close_edges(&self) -> &[NativeCloseEdge] {
+        &self.native_close_edges
+    }
+
+    /// Returns backend effect receipts in reduced ingress order.
+    #[must_use]
+    pub fn effect_receipts(&self) -> &[BackendEffectReceipt] {
+        &self.effect_receipts
+    }
+
+    /// Returns count-only presentation settlement facts for this boundary.
+    #[must_use]
+    pub const fn presentation_summary(&self) -> PresentationObservationSummary {
+        self.presentation_summary
     }
 }
 
@@ -514,58 +790,34 @@ impl HostFrameResponse {
 /// host frame, painting the one permitted surface slot, and ending that frame atomically.
 #[derive(Debug)]
 pub struct DockspaceResponse {
-    pub(crate) transition: EngineTransition,
+    pub(crate) mutation: DockspaceMutation,
     pub(crate) paint: SurfacePaintResponse,
-    pub(crate) disposition: SurfaceFrameDisposition,
+    pub(crate) surface_commit_status: DockspaceSurfaceCommitStatus,
+    pub(crate) close_requests: Vec<DockspaceCloseRequest>,
 }
 
 impl DockspaceResponse {
     /// Returns the product-level summary of the atomic publication.
     #[must_use]
-    pub fn mutation(&self) -> DockspaceMutation {
-        DockspaceMutation::from_transition(&self.transition)
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
     }
 
     /// Returns the product-level terminal status for the sole surface contribution.
     #[must_use]
     pub const fn surface_commit_status(&self) -> DockspaceSurfaceCommitStatus {
-        match self.disposition.contribution() {
-            SurfaceContributionOutcome::Ready { .. } => DockspaceSurfaceCommitStatus::Ready,
-            SurfaceContributionOutcome::Retained { .. } => DockspaceSurfaceCommitStatus::Retained,
-            SurfaceContributionOutcome::Unavailable { .. } => {
-                DockspaceSurfaceCommitStatus::Unavailable
-            }
-            SurfaceContributionOutcome::Rejected { .. } => DockspaceSurfaceCommitStatus::Rejected,
-        }
-    }
-
-    /// Returns the backend transition for adapter diagnostics and protocol tests.
-    #[cfg(any(feature = "backend", test))]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn backend_transition(&self) -> &EngineTransition {
-        &self.transition
-    }
-
-    /// Returns the backend surface contribution for adapter diagnostics and protocol tests.
-    #[cfg(any(feature = "backend", test))]
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn backend_contribution(&self) -> &SurfaceContributionOutcome {
-        self.disposition.contribution()
+        self.surface_commit_status
     }
 
     /// Iterates close plans requested by semantic controls in this call.
-    pub fn close_requests(&self) -> impl Iterator<Item = &ClosePlan> {
-        self.close_request_events()
-            .into_iter()
-            .map(|request| request.plan())
+    pub fn close_requests(&self) -> impl Iterator<Item = &DockspaceClosePlan> {
+        self.close_requests.iter().map(DockspaceCloseRequest::plan)
     }
 
     /// Iterates close requests in core causal order, retaining whether each plan was reused.
     #[must_use]
-    pub fn close_request_events(&self) -> Vec<CloseRequestRef<'_>> {
-        close_request_events(&self.transition)
+    pub fn close_request_events(&self) -> &[DockspaceCloseRequest] {
+        &self.close_requests
     }
 
     /// Returns stable item identities missing from the application pane registry.

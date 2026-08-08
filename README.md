@@ -64,7 +64,9 @@ support.
 Ordinary commands, close decisions, style changes, and paint responses return
 product-level mutation and outcome values. They do not expose reducer ticks,
 `EngineTransition`, scene stamps, or presentation ledgers. Those diagnostics
-remain available only through the explicitly unstable backend protocol.
+remain inside the adapter and core. The explicitly unstable backend protocol
+returns only host-actionable receipts: per-surface status, native close edges,
+effect acceptance, and presentation-settlement counts.
 Facade failures follow the same boundary: callers branch on the six stable
 `DockspaceErrorKind` categories, while exact renderer and reducer diagnostics
 remain private in the standard error source chain.

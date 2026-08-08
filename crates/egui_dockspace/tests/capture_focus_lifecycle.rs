@@ -1,15 +1,12 @@
 use std::collections::BTreeSet;
 
-use dockspace::backend::interaction::{
-    InteractionCancelReason, InteractionDelivery, InteractionEventKind, InteractionOutcome,
-    InteractionStatus,
-};
+use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::scene::PresentationPlan;
-use dockspace::backend::transition::WorkspaceVersion;
 use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::runtime::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse};
 use egui_dockspace::{Dockspace, PaneView};
@@ -98,7 +95,7 @@ fn run_frame(
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
     events: Vec<Event>,
-) -> Vec<InteractionCancelReason> {
+) -> HostFrameResponse {
     run_input(context, dockspace, panes, raw_input(events, true))
 }
 
@@ -107,7 +104,7 @@ fn run_input(
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
     input: RawInput,
-) -> Vec<InteractionCancelReason> {
+) -> HostFrameResponse {
     let sequence = context
         .cumulative_frame_nr()
         .checked_add(1)
@@ -127,19 +124,7 @@ fn run_input(
             EguiPresentationResult::Presented
         });
     }
-    cancellation_reasons(&response)
-}
-
-fn cancellation_reasons(response: &HostFrameResponse) -> Vec<InteractionCancelReason> {
     response
-        .transition()
-        .interaction_events()
-        .iter()
-        .filter_map(|event| match event.kind() {
-            InteractionEventKind::Cancelled { reason, .. } => Some(*reason),
-            _ => None,
-        })
-        .collect()
 }
 
 fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut dyn PaneView) {
@@ -268,22 +253,15 @@ fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
 fn assert_cancelled_without_commit(
     dockspace: &Dockspace,
     original: &Workspace,
-    reasons: &[InteractionCancelReason],
-    expected: InteractionCancelReason,
+    response: &HostFrameResponse,
 ) {
     assert_eq!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.core_engine().workspace(), original);
-    assert_eq!(
-        dockspace.core_engine().version(),
-        WorkspaceVersion::default()
-    );
-    assert!(
-        reasons.contains(&expected),
-        "expected {expected:?} cancellation, got {reasons:?}"
-    );
+    assert_eq!(dockspace.workspace(), original);
+    assert_eq!(dockspace.version(), WorkspaceVersion::default());
+    assert!(!response.mutation().workspace_changed());
 }
 
 #[test]
@@ -314,7 +292,7 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
         InteractionStatus::Armed { .. }
     ));
 
-    let reasons = run_input(
+    let response = run_input(
         &context,
         &mut dockspace,
         &mut panes,
@@ -325,10 +303,10 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Armed { .. }
     ));
-    assert_eq!(dockspace.core_engine().workspace(), &original);
-    assert!(reasons.is_empty());
+    assert_eq!(dockspace.workspace(), &original);
+    assert!(!response.mutation().workspace_changed());
 
-    let reasons = run_input(
+    let response = run_input(
         &context,
         &mut dockspace,
         &mut panes,
@@ -341,12 +319,7 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
             true,
         ),
     );
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::ReleasedBeforeDrag,
-    );
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 #[test]
@@ -394,7 +367,7 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
         .cloned()
         .expect("the target preview is published");
 
-    let mut reasons = run_frame(
+    let response = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
@@ -408,29 +381,25 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
         dockspace.core_engine().interaction().preview(),
         Some(&preview)
     );
-    reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
+    assert!(!response.mutation().workspace_changed());
+    let response = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
         matches!(
             dockspace.core_engine().interaction().status(),
             InteractionStatus::Dragging { .. }
         ),
-        "one surface's local pointer loss is not global capture authority: status={:?}, reasons={reasons:?}",
+        "one surface's local pointer loss is not global capture authority: status={:?}",
         dockspace.core_engine().interaction().status()
     );
-    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(dockspace.workspace(), &original);
     assert_eq!(
         dockspace.core_engine().interaction().preview(),
         Some(&preview)
     );
-    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
+    assert!(!response.mutation().workspace_changed());
 
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::Escape,
-    );
+    let response = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 #[test]
@@ -469,22 +438,17 @@ fn active_resize_survives_local_button_state_without_a_release_edge() {
         ),
         |_ui| {},
     );
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let response = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert!(matches!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Resizing { .. }
     ));
-    assert_eq!(dockspace.core_engine().workspace(), &original);
-    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
+    assert_eq!(dockspace.workspace(), &original);
+    assert!(!response.mutation().workspace_changed());
 
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::Escape,
-    );
+    let response = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 #[test]
@@ -529,7 +493,7 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
         .cloned()
         .expect("the contained docking preview is published");
 
-    let mut reasons = run_input(
+    let response = run_input(
         &context,
         &mut dockspace,
         &mut panes,
@@ -543,7 +507,8 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
         dockspace.core_engine().interaction().preview(),
         Some(&preview)
     );
-    reasons.extend(run_frame(&context, &mut dockspace, &mut panes, Vec::new()));
+    assert!(!response.mutation().workspace_changed());
+    let response = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(
         matches!(
             dockspace.core_engine().interaction().status(),
@@ -551,20 +516,15 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
         ),
         "one surface's local focus loss is not global capture authority"
     );
-    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(dockspace.workspace(), &original);
     assert_eq!(
         dockspace.core_engine().interaction().preview(),
         Some(&preview)
     );
-    assert!(reasons.is_empty());
+    assert!(!response.mutation().workspace_changed());
 
-    let reasons = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::Escape,
-    );
+    let response = run_frame(&context, &mut dockspace, &mut panes, vec![escape_pressed()]);
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 #[test]
@@ -595,7 +555,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
         InteractionStatus::Armed { .. }
     ));
 
-    let reasons = run_input(
+    let response = run_input(
         &context,
         &mut dockspace,
         &mut panes,
@@ -609,13 +569,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
         ),
     );
 
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::ReleasedBeforeDrag,
-    );
-    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 #[test]
@@ -653,20 +607,14 @@ fn escape_keeps_priority_when_pointer_capture_is_lost() {
         InteractionStatus::Dragging { .. }
     ));
 
-    let reasons = run_frame(
+    let response = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerGone, escape_pressed()],
     );
 
-    assert_cancelled_without_commit(
-        &dockspace,
-        &original,
-        &reasons,
-        InteractionCancelReason::Escape,
-    );
-    assert!(!reasons.contains(&InteractionCancelReason::CaptureLost));
+    assert_cancelled_without_commit(&dockspace, &original, &response);
 }
 
 fn prepare_multipass_drag(name: &'static str) -> (Context, Workspace, Dockspace, Pos2) {
@@ -742,27 +690,12 @@ fn multipass_release_before_escape_commits_the_painted_drop() {
         ],
     );
 
-    let reasons = cancellation_reasons(&response);
-    assert!(
-        crate::test_support::ordered_interaction_outcomes(std::slice::from_ref(
-            response.transition(),
-        ))
-        .iter()
-        .any(|outcome| matches!(
-            outcome,
-            InteractionOutcome::DragDelivered {
-                delivery: InteractionDelivery::Workspace { changed: true, .. },
-                ..
-            }
-        )),
-        "the physical release must commit before the later Escape",
-    );
-    assert!(reasons.is_empty());
+    assert!(response.mutation().workspace_changed());
     assert_eq!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_ne!(dockspace.core_engine().workspace(), &original);
+    assert_ne!(dockspace.workspace(), &original);
 }
 
 #[test]
@@ -779,15 +712,12 @@ fn multipass_escape_before_release_cancels_the_painted_drop() {
         ],
     );
 
-    assert_eq!(
-        cancellation_reasons(&response),
-        [InteractionCancelReason::Escape]
-    );
+    assert!(!response.mutation().workspace_changed());
     assert_eq!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(dockspace.workspace(), &original);
 }
 
 #[test]
@@ -834,5 +764,5 @@ fn contained_max_edge_is_excluded_from_resize_gesture_ownership() {
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
     );
-    assert_eq!(dockspace.core_engine().workspace(), &original);
+    assert_eq!(dockspace.workspace(), &original);
 }

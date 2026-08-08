@@ -52,8 +52,9 @@ pub use pane::{PaneFocusState, PaneView};
 #[cfg(feature = "serde")]
 pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
 pub use response::{
-    DockspaceCapability, DockspaceCloseOutcome, DockspaceCloseResult, DockspaceCommandOutcome,
-    DockspaceCommandResult, DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus,
-    DockspaceSurfaceStatus, DockspaceUnavailableReason,
+    DockspaceCapability, DockspaceCloseItem, DockspaceCloseOutcome, DockspaceClosePlan,
+    DockspaceCloseRequest, DockspaceCloseResult, DockspaceCommandOutcome, DockspaceCommandResult,
+    DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
+    DockspaceUnavailableReason,
 };
 pub use style::{DockStyle, DockStyleError};

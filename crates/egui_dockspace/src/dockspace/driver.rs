@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use dockspace::backend::effect::PlatformEffectEmission;
 use dockspace::backend::engine::{
     CoreHostFrame, EngineInput, HostFrameView, HostPresentationDisposition, HostPresentationSlot,
     HostPresentationUnavailableReason, PreparedSurfaceContribution, PreparedSurfacePaintCandidate,
@@ -186,10 +187,22 @@ impl EguiOuterFrameCommit {
 }
 
 impl PreparedEguiOuterFrameCommit {
-    /// Returns the exact core transition awaiting publication.
+    /// Iterates logical surfaces whose native registration was rejected.
     #[must_use]
-    pub fn transition(&self) -> &dockspace::backend::transition::EngineTransition {
+    pub fn rejected_native_registrations(&self) -> impl Iterator<Item = SurfaceId> + '_ {
         prepared_host_transition(&self.core)
+            .reduced_inputs()
+            .iter()
+            .filter_map(|input| match input.outcome() {
+                InputOutcome::ViewportRegistrationRejected { surface } => Some(*surface),
+                _ => None,
+            })
+    }
+
+    /// Returns the exact provider-bound effect batch awaiting host acceptance.
+    #[must_use]
+    pub fn pending_platform_effects(&self) -> &[PlatformEffectEmission] {
+        prepared_host_transition(&self.core).platform_effects()
     }
 
     /// Publishes the core candidate and every preflighted adapter sidecar once.
@@ -342,10 +355,7 @@ impl PreparedEguiOuterFrameCommit {
         dockspace.last_host_frame = Some(state.key());
         state.finish();
         Ok(EguiOuterFrameCommit {
-            host: HostFrameResponse {
-                transition,
-                surfaces: responses,
-            },
+            host: HostFrameResponse::from_transition(transition, responses),
             outputs,
         })
     }
@@ -626,12 +636,12 @@ impl DockspaceHostFrame<'_> {
         if let Some(error) = output.semantic_causality_error() {
             #[cfg(egui_backend_event_envelope)]
             if let Some(raw_event_index) = error.uncorrelated_raw_event() {
-                return Err(
+                return Err(DockspaceError::from_source(
                     crate::error::DockspaceErrorSource::SemanticActionBackendCorrelationUnavailable {
                         surface,
                         raw_event_index,
                     },
-                );
+                ));
             }
             return Err(DockspaceError::from_source(
                 crate::error::DockspaceErrorSource::SemanticActionCausalityUnavailable {
@@ -1503,12 +1513,12 @@ impl DockspaceHostFrame<'_> {
                 return Ok(None);
             };
             if !claim.correlation().is_known() {
-                return Err(
+                return Err(DockspaceError::from_source(
                     crate::error::DockspaceErrorSource::SemanticActionBackendCorrelationUnavailable {
                         surface,
                         raw_event_index: claim.raw_event_index(),
                     },
-                );
+                ));
             }
             let _ = events;
             Ok(Some(StagedSemanticInput::at_raw_event(

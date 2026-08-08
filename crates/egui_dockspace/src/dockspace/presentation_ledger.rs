@@ -746,14 +746,15 @@ impl PresentationOutputLedger {
     }
 
     #[cfg(test)]
-    pub(super) fn contains_automatic_output(
+    pub(super) fn first_automatic_output(
         &self,
-        stream: HostPresentationStreamId,
-        output: CorePresentationEmissionKey,
-    ) -> bool {
-        self.automatic_streams
-            .get(&stream)
-            .is_some_and(|state| state.emissions.contains_key(&output))
+    ) -> Option<(HostPresentationStreamId, CorePresentationEmissionKey)> {
+        self.automatic_streams.iter().find_map(|(stream, state)| {
+            state
+                .emissions
+                .first_key_value()
+                .map(|(output, _)| (*stream, *output))
+        })
     }
 
     fn next_capture_generation(

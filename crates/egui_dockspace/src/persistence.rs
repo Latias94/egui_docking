@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 
 use dockspace::backend::ingress::{BackendIngressOrdinal, BackendIngressRecorder};
-use dockspace::backend::transition::EngineTransition;
 use dockspace::document::{
     DockspaceDocumentBootstrap, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
     DockspaceDocumentId, DockspaceDocumentRestoreTicket, DockspaceDocumentSessionError,
@@ -14,6 +13,7 @@ use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::viewport_persistence::{ViewportPlacementPreference, ViewportPlacementPreferences};
 use thiserror::Error;
 
+use crate::response::DockspaceMutation;
 use crate::{Dockspace, DockspaceError};
 
 /// Failure to capture, encode, decode, validate, or publish an atomic dockspace document.
@@ -44,16 +44,16 @@ pub enum DockspaceDocumentPersistenceError {
 /// A successfully published document together with its restored lineage metadata.
 #[derive(Debug)]
 pub struct DockspaceDocumentLoad {
-    transition: EngineTransition,
+    mutation: DockspaceMutation,
     document_id: DockspaceDocumentId,
     generation: u64,
 }
 
 impl DockspaceDocumentLoad {
-    /// Returns the transition that atomically replaced the live workspace.
+    /// Returns the product-level summary of the atomic workspace publication.
     #[must_use]
-    pub const fn transition(&self) -> &EngineTransition {
-        &self.transition
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
     }
 
     /// Returns the restored document lineage identity.
@@ -68,10 +68,10 @@ impl DockspaceDocumentLoad {
         self.generation
     }
 
-    /// Consumes the response and returns the underlying reducer transition.
+    /// Consumes the response and returns the product-level publication summary.
     #[must_use]
-    pub fn into_transition(self) -> EngineTransition {
-        self.transition
+    pub fn into_mutation(self) -> DockspaceMutation {
+        self.mutation
     }
 }
 
@@ -268,10 +268,11 @@ impl Dockspace {
             .map_err(DockspaceError::from_detail)
             .map_err(DockspaceDocumentPersistenceError::Publish)?;
         let (publication, transition) = committed.into_parts();
+        let mutation = DockspaceMutation::from_transition(&transition);
         self.accept_document_restore_transition(sequence, &transition);
         self.engine.adapter_reconcile_viewport_placements();
         Ok(DockspaceDocumentLoad {
-            transition,
+            mutation,
             document_id: publication.document_id(),
             generation: publication.generation(),
         })
@@ -506,12 +507,11 @@ mod tests {
         let response = target
             .load_document_json(&json, primary_item_association)
             .expect("document must publish");
-        let transition = response.transition();
+        let mutation = response.mutation();
 
-        assert_eq!(transition.before(), before);
-        assert_eq!(transition.reduced_inputs().len(), 1);
-        assert!(transition.changed());
-        assert_eq!(target.engine.version(), transition.after());
+        assert_eq!(mutation.before(), before);
+        assert!(mutation.workspace_changed());
+        assert_eq!(target.engine.version(), mutation.after());
         assert_eq!(response.document_id(), DOCUMENT_ID);
         assert_eq!(response.generation(), 7);
         assert_eq!(

@@ -1635,8 +1635,9 @@ compatibility layer:
    examples and the official-egui harness now name their direct `dockspace`
    dependency. Raw `engine()` access and ordinary transition-bearing widget,
    command, close, and configuration responses are deleted. The explicit
-   backend host response retains raw transition diagnostics until the native
-   runtime consumes equivalent typed deltas.
+   backend host response also consumes the raw transition internally and emits
+   only the typed registration, effect, close, presentation, mutation, and
+   per-surface facts required by the native runtime.
 
 The former 23 red egui behavior tests now use the public outer-host path or have
 been removed only where stronger canonical and official-egui coverage exists.

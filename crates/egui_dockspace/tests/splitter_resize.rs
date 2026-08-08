@@ -1,5 +1,5 @@
-use dockspace::backend::interaction::{InteractionOutcome, InteractionStatus};
-use dockspace::backend::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
+use dockspace::backend::interaction::InteractionStatus;
+use dockspace::backend::transition::WorkspaceVersion;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, NodeId, RootId, SurfaceId};
@@ -29,7 +29,6 @@ impl PaneView for TestPanes {
 #[derive(Debug)]
 struct FrameObservation {
     interactions_current: bool,
-    transitions: Vec<EngineTransition>,
     version: WorkspaceVersion,
     accesskit: Option<TreeUpdate>,
 }
@@ -79,17 +78,14 @@ fn run_frame(
     events: Vec<Event>,
 ) -> FrameObservation {
     let mut interactions_current = false;
-    let mut transitions = Vec::new();
     let output = crate::test_support::run_ui(context, input(events), |ui| {
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("egui frame must advance");
         interactions_current = response.interactions_current();
-        transitions.push(response.backend_transition().clone());
     });
     FrameObservation {
         interactions_current,
-        transitions,
         version: dockspace.core_engine().version(),
         accesskit: output.platform_output.accesskit_update,
     }
@@ -158,22 +154,6 @@ fn splitter_widget_id(
     splitter_id.expect("splitter id is computed during the frame")
 }
 
-fn count_splitter_adjustments(transitions: &[EngineTransition]) -> usize {
-    transitions
-        .iter()
-        .flat_map(EngineTransition::reduced_inputs)
-        .filter(|input| {
-            matches!(
-                input.outcome(),
-                InputOutcome::InteractionProcessed {
-                    outcome: InteractionOutcome::SplitterAdjusted { changed: true, .. },
-                    ..
-                }
-            )
-        })
-        .count()
-}
-
 #[test]
 fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
     let context = Context::default();
@@ -184,11 +164,27 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
         .expect("fixture dockspace must build");
     let mut panes = TestPanes;
     let stable = settle(&context, &mut dockspace, &mut panes);
-    let initial = workspace_weights(dockspace.core_engine().workspace(), split);
     let splitter_id = splitter_widget_id(&context, &mut dockspace, &mut panes, salt, split);
     context.memory_mut(|memory| memory.request_focus(splitter_id));
     let focused = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(focused.version, stable.version);
+    let (before_extent, available_extent) = {
+        let projection = dockspace
+            .core_engine()
+            .interaction_projection(SURFACE)
+            .expect("focused splitter projection remains authoritative");
+        let record = projection
+            .plan()
+            .splitter_records()
+            .iter()
+            .find(|record| record.id().split == split)
+            .expect("focused splitter remains in the presentation plan");
+        (
+            record.child_extents()[0],
+            record.child_extents().iter().sum::<f64>(),
+        )
+    };
+    let keyboard_step = f64::from(dockspace.style().splitter_keyboard_step);
 
     let key_adjustment = run_frame(
         &context,
@@ -197,8 +193,15 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
         key_press(Key::ArrowRight),
     );
     let after_key = workspace_weights(dockspace.core_engine().workspace(), split);
-    assert!(after_key[0] > initial[0]);
-    assert_eq!(count_splitter_adjustments(&key_adjustment.transitions), 1);
+    let expected_key_weight = (before_extent + keyboard_step) / available_extent;
+    assert!(
+        (f64::from(after_key[0]) - expected_key_weight).abs() <= f64::from(f32::EPSILON) * 2.0,
+        "one keyboard edge must apply exactly one configured splitter step",
+    );
+    assert_eq!(
+        key_adjustment.version.revision().get(),
+        focused.version.revision().get() + 1
+    );
     assert_eq!(
         dockspace.core_engine().interaction().status(),
         InteractionStatus::Idle
@@ -214,10 +217,6 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
     );
     let after_accesskit = workspace_weights(dockspace.core_engine().workspace(), split);
     assert!(after_accesskit[0] < after_key[0]);
-    assert_eq!(
-        count_splitter_adjustments(&accesskit_adjustment.transitions),
-        1
-    );
     assert_eq!(
         accesskit_adjustment.version.revision().get(),
         before_accesskit.revision().get() + 1
@@ -270,10 +269,6 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
     assert!(
         !acknowledgement_pass.interactions_current,
         "the accepted adjustment immediately invalidates the painted projection"
-    );
-    assert_eq!(
-        count_splitter_adjustments(&acknowledgement_pass.transitions),
-        1
     );
     assert_ne!(acknowledgement_pass.version, before_version);
     assert_ne!(
@@ -350,7 +345,6 @@ fn fully_occluded_splitter_with_old_focus_exposes_no_action_and_cannot_adjust() 
         ],
     );
     assert_eq!(rejected_actions.version, before);
-    assert_eq!(count_splitter_adjustments(&rejected_actions.transitions), 0);
     assert_eq!(
         workspace_weights(dockspace.core_engine().workspace(), split),
         before_weights

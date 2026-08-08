@@ -2,16 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::document::{DockspaceDocumentId, DockspaceDocumentRestoreTicket};
 use dockspace::backend::engine::BackendIngressProgress;
+use dockspace::backend::presentation_observation::PresentationHostLease;
+use dockspace::document::{DockspaceDocumentId, DockspaceDocumentRestoreTicket};
 use dockspace::ids::{ItemId, SurfaceId};
-use dockspace::intent::Authority;
 use dockspace::policy::DockPolicy;
-use dockspace::backend::presentation_observation::{
-    HostPresentationObservationOutcome, PresentationHostLease,
-};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::backend::transition::{EngineTransition, InputOutcome};
 use dockspace::{CloseDecisionToken, CloseItemDecisionState, DeferredCloseToken, NativeCloseEdge};
 use eframe::{
     HostedNativeStagingPresentation, HostedViewportCommitDirective, HostedViewportCycle,
@@ -640,21 +636,14 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             std::mem::take(&mut active.staging),
         )?;
         let frame = active.session.prepare_finish(&mut self.dockspace)?;
-        if let Some(surface) = frame
-            .transition()
-            .reduced_inputs()
-            .iter()
-            .find_map(|input| match input.outcome() {
-                InputOutcome::ViewportRegistrationRejected { surface } => Some(*surface),
-                _ => None,
-            })
-        {
+        let rejected_surface = frame.rejected_native_registrations().next();
+        if let Some(surface) = rejected_surface {
             frame.abort(&mut self.dockspace)?;
             return Err(NativeRuntimeError::ViewportRegistrationRejected { surface });
         }
         if let Err(error) = NativeIngressBridge::dispatch_effects(
             &mut active.effects,
-            frame.transition().platform_effects(),
+            frame.pending_platform_effects(),
             &active.effect_routes,
             &self.catalog,
             &active.effect_sink,
@@ -699,7 +688,9 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .emitted_presentations
             .saturating_add(u64::try_from(emitted_presentations).unwrap_or(u64::MAX));
 
-        prepared.effects.settle_effect_results(host.transition());
+        prepared
+            .effects
+            .settle_effect_results(host.effect_receipts());
         self.ingress.commit_effect_cycle(prepared.effects);
         let transaction = self
             .ingress_transaction
@@ -708,37 +699,23 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         self.ingress
             .commit_transaction(&self.presentations, transaction);
         self.pending_restored_viewports = prepared.pending_restored_viewports;
-        self.queue_native_close_requests(host.transition());
+        self.queue_native_close_requests(host.native_close_edges());
         self.queue_native_close_decisions();
-        for observation in host.transition().presentation_observations() {
-            self.status.presentation_observations =
-                self.status.presentation_observations.saturating_add(1);
-            match observation {
-                HostPresentationObservationOutcome::Rejected { .. } => {
-                    self.status.presentation_rejections =
-                        self.status.presentation_rejections.saturating_add(1);
-                }
-                HostPresentationObservationOutcome::Retired {
-                    presented: Authority::Known(Some(_)),
-                    promotion_eligible: true,
-                    ..
-                } => {
-                    self.status.promoted_presentations =
-                        self.status.promoted_presentations.saturating_add(1);
-                }
-                HostPresentationObservationOutcome::Retired {
-                    presented: Authority::Known(Some(_)),
-                    promotion_eligible: false,
-                    ..
-                } => {
-                    self.status.ineligible_presentations =
-                        self.status.ineligible_presentations.saturating_add(1);
-                }
-                HostPresentationObservationOutcome::NoUpdate { .. }
-                | HostPresentationObservationOutcome::CapturedUnknown { .. }
-                | HostPresentationObservationOutcome::Retired { .. } => {}
-            }
-        }
+        let presentation = host.presentation_summary();
+        self.status.presentation_observations = self
+            .status
+            .presentation_observations
+            .saturating_add(u64::try_from(presentation.observed()).unwrap_or(u64::MAX));
+        self.status.presentation_rejections = self
+            .status
+            .presentation_rejections
+            .saturating_add(u64::try_from(presentation.rejected()).unwrap_or(u64::MAX));
+        self.status.promoted_presentations = self.status.promoted_presentations.saturating_add(
+            u64::try_from(presentation.retired_presented_eligible()).unwrap_or(u64::MAX),
+        );
+        self.status.ineligible_presentations = self.status.ineligible_presentations.saturating_add(
+            u64::try_from(presentation.retired_presented_ineligible()).unwrap_or(u64::MAX),
+        );
         self.presentations.accept_commit();
         self.status.committed_cycles = self.status.committed_cycles.saturating_add(1);
         self.status.live_viewports = prepared.routes.len();
@@ -768,22 +745,8 @@ impl<P: PaneView> NativeDockspaceApp<P> {
         }
     }
 
-    fn queue_native_close_requests(&mut self, transition: &EngineTransition) {
-        let edges = transition
-            .reduced_inputs()
-            .iter()
-            .flat_map(|input| match input.outcome() {
-                InputOutcome::PlatformSnapshotPublished {
-                    native_close_edges, ..
-                }
-                | InputOutcome::NativeCloseObservationPublished {
-                    native_close_edges, ..
-                } => native_close_edges.as_slice(),
-                _ => &[],
-            })
-            .copied()
-            .collect::<Vec<NativeCloseEdge>>();
-        for edge in edges {
+    fn queue_native_close_requests(&mut self, edges: &[NativeCloseEdge]) {
+        for edge in edges.iter().copied() {
             let request = self
                 .close_handler
                 .surface_request(NativeSurfaceCloseContext::new(

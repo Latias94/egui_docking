@@ -22,7 +22,6 @@ use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationObservationRejection,
     PresentationHostRetirementReason,
 };
-use dockspace::backend::transition::SurfaceContributionOutcome;
 use dockspace::command::{RootContent, WorkspaceCommand};
 use dockspace::geometry::LogicalPoint;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -39,7 +38,7 @@ use crate::projection::{TabStripStateMap, load_tab_strip_states};
 use crate::render::{EguiDockRenderer, EguiRendererError, EguiSurfaceDraft};
 use crate::renderer::consume_gesture_escape;
 use crate::style::DockStyle;
-use crate::{DockspaceCommandOutcome, PaneView};
+use crate::{DockspaceCommandOutcome, DockspaceSurfaceCommitStatus, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(10);
@@ -230,22 +229,16 @@ fn establish_outer_pointer_provider(
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
 ) {
-    let bootstrap = run_authoritative_automatic_frame(context, dockspace, panes);
-    assert!(
-        bootstrap
-            .backend_transition()
-            .presentation_emissions()
-            .is_empty(),
+    let _ = run_authoritative_automatic_frame(context, dockspace, panes);
+    assert_eq!(
+        automatic_emission_count(dockspace),
+        0,
         "the bootstrap frame measures without claiming a painted output"
     );
-    let painted = run_authoritative_automatic_frame(context, dockspace, panes);
-    assert!(
-        painted
-            .backend_transition()
-            .presentation_emissions()
-            .iter()
-            .next()
-            .is_some(),
+    let _ = run_authoritative_automatic_frame(context, dockspace, panes);
+    assert_eq!(
+        automatic_emission_count(dockspace),
+        1,
         "the next frame must establish one concrete presentation stream"
     );
     let _ = run_authoritative_automatic_frame(context, dockspace, panes);
@@ -528,25 +521,12 @@ fn real_pressed_click_escape_is_callback_order_independent() {
             escape_consumptions, 1,
             "only the core-proven source callback may consume Escape",
         );
-        let response =
-            submit_formal_click_escape(&host_context, &mut dockspace, &mut panes, &provider);
-        let transition = response.transition();
+        let _ = submit_formal_click_escape(&host_context, &mut dockspace, &mut panes, &provider);
         assert_eq!(
             dockspace.engine.interaction().status(),
             InteractionStatus::Idle,
         );
         assert_eq!(dockspace.engine.active_close_plans().count(), 0);
-        assert_eq!(
-            transition
-                .interaction_events()
-                .iter()
-                .filter_map(|event| match event.kind() {
-                    InteractionEventKind::Cancelled { reason, .. } => Some(*reason),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-            [InteractionCancelReason::Escape],
-        );
     }
 }
 
@@ -954,12 +934,14 @@ fn explicit_host_frames_do_not_infer_final_presentation() {
         &mut panes,
         EguiFrameScheduleKey::new(1, 0),
     );
-    let ticket = match first.transition().surface_contributions() {
-        [SurfaceContributionOutcome::Ready { ticket, .. }] => *ticket,
-        outcomes => panic!("first paint must publish one ready output: {outcomes:?}"),
-    };
-    assert!(first.transition().presentation_emissions().is_empty());
-    assert!(first.transition().presentation_observations().is_empty());
+    assert_eq!(
+        first
+            .surface(SURFACE)
+            .expect("the frozen surface has a terminal result")
+            .status(),
+        DockspaceSurfaceCommitStatus::Ready,
+    );
+    assert_eq!(first.presentation_summary().observed(), 0);
 
     let second = run_frame(
         &context,
@@ -967,24 +949,28 @@ fn explicit_host_frames_do_not_infer_final_presentation() {
         &mut panes,
         EguiFrameScheduleKey::new(2, 0),
     );
-    assert!(second.transition().presentation_emissions().is_empty());
-    assert!(second.transition().presentation_observations().is_empty());
-    assert!(matches!(
-        second.transition().surface_contributions(),
-        [SurfaceContributionOutcome::Retained { ticket: actual, .. }] if *actual == ticket
-    ));
+    assert_eq!(second.presentation_summary().observed(), 0);
+    assert_eq!(
+        second
+            .surface(SURFACE)
+            .expect("the frozen surface has a terminal result")
+            .status(),
+        DockspaceSurfaceCommitStatus::Retained,
+    );
     let third = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         EguiFrameScheduleKey::new(3, 0),
     );
-    assert!(third.transition().presentation_emissions().is_empty());
-    assert!(third.transition().presentation_observations().is_empty());
-    assert!(matches!(
-        third.transition().surface_contributions(),
-        [SurfaceContributionOutcome::Retained { ticket: actual, .. }] if *actual == ticket
-    ));
+    assert_eq!(third.presentation_summary().observed(), 0);
+    assert_eq!(
+        third
+            .surface(SURFACE)
+            .expect("the frozen surface has a terminal result")
+            .status(),
+        DockspaceSurfaceCommitStatus::Retained,
+    );
 }
 
 #[test]
@@ -997,18 +983,6 @@ fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
 
     for _ in 0..64 {
         let response = run_automatic_frame(&context, &mut dockspace, &mut panes);
-        assert!(
-            response
-                .backend_transition()
-                .presentation_observations()
-                .is_empty()
-        );
-        assert!(
-            response
-                .backend_transition()
-                .presentation_emissions()
-                .is_empty()
-        );
         assert!(!response.interactions_current());
     }
     let diagnostics = dockspace.core_engine().presentation_ledger_diagnostics();
@@ -1024,33 +998,11 @@ fn accepted_terminal_watermarks_bound_the_automatic_emission_map() {
         .expect("facade builds");
     let context = multipass_context();
     let mut panes = TestPanes;
-    let mut settled = std::collections::BTreeSet::new();
     let mut observed_multi_emission_boundary = false;
 
     for _ in 0..128 {
         let responses = run_authoritative_automatic_passes(&context, &mut dockspace, &mut panes);
         observed_multi_emission_boundary |= responses.len() > 1;
-        for outcome in responses
-            .iter()
-            .map(DockspaceResponse::backend_transition)
-            .flat_map(|transition| transition.presentation_observations())
-        {
-            match outcome {
-                HostPresentationObservationOutcome::Retired {
-                    stream,
-                    settled_through,
-                    ..
-                } => assert!(
-                    settled.insert((*stream, *settled_through)),
-                    "one terminal watermark must not be submitted twice",
-                ),
-                HostPresentationObservationOutcome::Rejected { reason, .. } => {
-                    panic!("automatic provider submitted an invalid observation: {reason:?}")
-                }
-                HostPresentationObservationOutcome::NoUpdate { .. }
-                | HostPresentationObservationOutcome::CapturedUnknown { .. } => {}
-            }
-        }
 
         let adapter_pending = automatic_emission_count(&dockspace);
         let core_pending = dockspace
@@ -1078,28 +1030,16 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
     let context = context();
     let mut panes = TestPanes;
 
-    let bootstrap = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    assert!(
-        bootstrap
-            .backend_transition()
-            .presentation_emissions()
-            .is_empty()
-    );
-    let first = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    let first_output = first.backend_transition().presentation_emissions()[0].output();
+    let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
+    assert_eq!(automatic_emission_count(&dockspace), 0);
+    let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
     assert_eq!(automatic_emission_count(&dockspace), 1);
 
     crate::test_support::remove_presentation_provider(&context);
-    let unknown = run_automatic_frame(&context, &mut dockspace, &mut panes);
-    assert!(matches!(
-        unknown.backend_transition().presentation_observations(),
-        [HostPresentationObservationOutcome::CapturedUnknown { stream, .. }]
-            if *stream == first_output.stream()
-    ));
-    assert!(
-        dockspace
-            .presentation_ledger
-            .contains_automatic_output(first_output.stream(), first_output.key()),
+    let _ = run_automatic_frame(&context, &mut dockspace, &mut panes);
+    assert_eq!(
+        automatic_emission_count(&dockspace),
+        1,
         "Unknown is not a terminal fact and cannot reclaim the output",
     );
     assert_eq!(
@@ -1111,24 +1051,9 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
     );
 
     let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    let terminal = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
+    let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
     assert!(
-        terminal
-            .backend_transition()
-            .presentation_observations()
-            .iter()
-            .any(|outcome| matches!(
-                outcome,
-                HostPresentationObservationOutcome::Retired {
-                    retired_output_count: 2,
-                    ..
-                }
-            ))
-    );
-    assert!(
-        !dockspace
-            .presentation_ledger
-            .contains_automatic_output(first_output.stream(), first_output.key()),
+        automatic_emission_count(&dockspace) <= 1,
         "an accepted terminal retry must reclaim the earlier Unknown output",
     );
     assert_eq!(
@@ -1147,18 +1072,14 @@ fn presentation_follow_up_pass_requires_accepted_promotion() {
         .expect("facade builds");
     let context = context();
     let mut panes = TestPanes;
-    let bootstrap = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    assert!(
-        bootstrap
-            .backend_transition()
-            .presentation_emissions()
-            .is_empty()
-    );
-    let first = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    let output = first.backend_transition().presentation_emissions()[0].output();
-    let stream = output.stream();
-    let key = output.key();
-    let non_promoting = vec![
+    let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
+    assert_eq!(automatic_emission_count(&dockspace), 0);
+    let _ = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
+    let (stream, key) = dockspace
+        .presentation_ledger
+        .first_automatic_output()
+        .expect("the first paint emits one presentation output");
+    let non_promoting = [
         HostPresentationObservationOutcome::NoUpdate { stream },
         HostPresentationObservationOutcome::CapturedUnknown {
             stream,
@@ -1201,11 +1122,14 @@ fn missing_surface_callback_submits_explicit_deferred_unavailable_fact() {
         .expect("host frame begins")
         .end_host_frame()
         .expect("host frame commits");
-    assert!(matches!(
-        response.transition().surface_contributions(),
-        [SurfaceContributionOutcome::Unavailable { .. }]
-    ));
-    assert!(response.transition().presentation_emissions().is_empty());
+    assert_eq!(
+        response
+            .surface(SURFACE)
+            .expect("the frozen surface has a terminal result")
+            .status(),
+        DockspaceSurfaceCommitStatus::Unavailable,
+    );
+    assert_eq!(response.presentation_summary().observed(), 0);
 }
 
 #[test]

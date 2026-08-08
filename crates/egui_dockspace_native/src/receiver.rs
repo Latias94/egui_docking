@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::geometry::LogicalPoint;
 use dockspace::backend::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
@@ -11,6 +10,7 @@ use dockspace::backend::pointer_receiver::{
 };
 use dockspace::backend::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
 use dockspace::backend::scene::SurfaceInteractionProjection;
+use dockspace::geometry::LogicalPoint;
 use eframe::{
     NativePhysicalPoint, NativePointerEdge, NativePointerEdgeKind, NativePointerSequence,
     NativeViewportBinding,
@@ -453,8 +453,7 @@ fn pointer_delivery_receipt(
     hit: &PointerHit,
 ) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
     let (click, drag) = pointer_delivery_lanes(dockspace, input, route, projection, point, hit)?;
-    PointerReceiverDelivery::from_lanes(projection, click, drag)
-        .map_err(NativeRuntimeError::from)
+    PointerReceiverDelivery::from_lanes(projection, click, drag).map_err(NativeRuntimeError::from)
 }
 
 fn pointer_delivery_lanes(
@@ -772,9 +771,11 @@ mod tests {
 
     #[test]
     fn receiver_probe_preserves_tiny_nonzero_f64_direction() {
-        let vector =
-            dockspace::backend::pointer_journal::FiniteScrollVector::new(f64::MAX, f64::MIN_POSITIVE)
-                .expect("the core probe vector is finite");
+        let vector = dockspace::backend::pointer_journal::FiniteScrollVector::new(
+            f64::MAX,
+            f64::MIN_POSITIVE,
+        )
+        .expect("the core probe vector is finite");
 
         assert_eq!(projected_egui_scroll_vector(vector), egui::vec2(1.0, 1.0));
     }

@@ -1,5 +1,5 @@
-use dockspace::backend::interaction::{InteractionOutcome, InteractionStatus, PreviewVisual};
-use dockspace::command::{CommandOutcome, MovePayload};
+use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
+use dockspace::command::MovePayload;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
@@ -39,13 +39,6 @@ struct FrameObservation {
     contained: Vec<FloatingPresentationId>,
     preview: Option<LogicalRect>,
     raised: Option<(usize, usize)>,
-    gesture_events: GestureEvents,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct GestureEvents {
-    began: usize,
-    delivered: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -93,6 +86,12 @@ fn run_frame(
     panes: &mut TestPanes,
     events: Vec<Event>,
 ) -> FrameObservation {
+    let contained_before = dockspace
+        .workspace()
+        .surface(SURFACE)
+        .expect("surface remains present")
+        .contained
+        .clone();
     let sequence = dockspace.last_egui_frame_schedule_key().map_or(1, |key| {
         key.sequence()
             .checked_add(1)
@@ -110,7 +109,7 @@ fn run_frame(
         .run_surface(SURFACE, context, input, panes)
         .expect("outer host owns the complete surface pass");
     let interactions_current = paint.interactions_current();
-    let (response, outputs) = frame
+    let (_, outputs) = frame
         .finish()
         .expect("outer egui frame commits")
         .into_parts();
@@ -121,54 +120,31 @@ fn run_frame(
         });
     }
 
-    let mut raised_across_passes = None;
-    let mut gesture_events = GestureEvents::default();
-    for event in response.transition().events() {
-        if let dockspace::backend::event::WorkspaceEventKind::CommandCommitted(
-            CommandOutcome::ContainedRaised {
-                floating,
-                from,
-                to,
-                changed: true,
-            },
-        ) = event.kind()
-            && *floating == REAR_FLOATING
-        {
-            raised_across_passes = Some((*from, *to));
-        }
-    }
-    for outcome in crate::test_support::ordered_interaction_outcomes(std::slice::from_ref(
-        response.transition(),
-    )) {
-        match outcome {
-            InteractionOutcome::DragBegan { .. }
-            | InteractionOutcome::ContainedTransformBegan { .. } => {
-                gesture_events.began += 1;
-            }
-            InteractionOutcome::DragDelivered { .. }
-            | InteractionOutcome::ContainedTransformDelivered { .. } => {
-                gesture_events.delivered = true;
-            }
-            _ => {}
-        }
-    }
     let floating = dockspace
-        .core_engine()
         .workspace()
         .contained_floating(REAR_FLOATING)
         .expect("rear floating remains presented");
+    let contained = dockspace
+        .workspace()
+        .surface(SURFACE)
+        .expect("surface remains present")
+        .contained
+        .clone();
+    let raised = contained_before
+        .iter()
+        .position(|floating| *floating == REAR_FLOATING)
+        .zip(
+            contained
+                .iter()
+                .position(|floating| *floating == REAR_FLOATING),
+        )
+        .filter(|(from, to)| from != to);
     FrameObservation {
         interactions_current,
         saw_stale_pass: !interactions_current,
         status: dockspace.core_engine().interaction().status(),
         rect: floating.rect,
-        contained: dockspace
-            .core_engine()
-            .workspace()
-            .surface(SURFACE)
-            .expect("surface remains present")
-            .contained
-            .clone(),
+        contained,
         preview: dockspace
             .core_engine()
             .interaction()
@@ -184,8 +160,7 @@ fn run_frame(
                     .contained_transform_preview()
                     .map(|preview| preview.rect())
             }),
-        raised: raised_across_passes,
-        gesture_events,
+        raised,
     }
 }
 
@@ -279,27 +254,23 @@ fn activate_rear_and_cross_drag_threshold(
     match gesture {
         Gesture::Move => {
             assert!(matches!(pressed.status, InteractionStatus::Armed { .. }));
-            assert_eq!(pressed.gesture_events.began, 0);
         }
         Gesture::ResizeWest => {
             assert!(matches!(
                 pressed.status,
                 InteractionStatus::ContainedTransforming { .. }
             ));
-            assert_eq!(pressed.gesture_events.began, 1);
         }
     }
     assert_eq!(pressed.rect, original);
     assert_eq!(pressed.raised, Some((0, 1)));
     assert_eq!(pressed.contained, vec![FRONT_FLOATING, REAR_FLOATING]);
 
-    let mut settlement_begins = 0;
     let mut saw_stale_projection = false;
     let mut projection_became_current = false;
     for _ in 0..4 {
         let settlement = run_frame(context, dockspace, panes, Vec::new());
         saw_stale_projection |= settlement.saw_stale_pass;
-        settlement_begins += settlement.gesture_events.began;
         assert_eq!(settlement.rect, original);
         assert_eq!(settlement.raised, None);
         assert_eq!(settlement.contained, vec![FRONT_FLOATING, REAR_FLOATING]);
@@ -346,12 +317,6 @@ fn activate_rear_and_cross_drag_threshold(
             ));
         }
     }
-    let began_through_threshold =
-        pressed.gesture_events.began + settlement_begins + threshold_move.gesture_events.began;
-    assert_eq!(
-        began_through_threshold, 1,
-        "one gesture session must begin across press, projection settlement, and threshold motion"
-    );
     assert_eq!(threshold_move.rect, original);
     assert_eq!(
         threshold_move.contained,
@@ -375,7 +340,6 @@ fn activate_rear_and_cross_drag_threshold(
         vec![Event::PointerMoved(current)],
     );
     assert!(active.interactions_current);
-    assert_eq!(active.gesture_events.began, 0);
     match gesture {
         Gesture::Move => assert!(matches!(active.status, InteractionStatus::Dragging { .. })),
         Gesture::ResizeWest => assert!(matches!(
@@ -449,10 +413,6 @@ fn exercise_rear_gesture(gesture: Gesture) {
     );
     assert_eq!(preview_painted.preview, Some(expected));
     assert_eq!(preview_painted.rect, original);
-    assert_eq!(
-        preview_painted.gesture_events.began, 0,
-        "an active session cannot restart"
-    );
     assert_eq!(preview_painted.status, active_status);
     let released = run_frame(
         &context,
@@ -460,12 +420,10 @@ fn exercise_rear_gesture(gesture: Gesture) {
         &mut panes,
         vec![Event::PointerMoved(current), pointer_button(current, false)],
     );
-    assert!(released.gesture_events.delivered);
     assert_eq!(released.rect, expected);
     assert_eq!(released.status, InteractionStatus::Idle);
 
     let idle = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    assert!(!idle.gesture_events.delivered);
     assert_eq!(idle.status, InteractionStatus::Idle);
     assert_eq!(idle.rect, expected);
     assert_eq!(idle.contained, vec![FRONT_FLOATING, REAR_FLOATING]);

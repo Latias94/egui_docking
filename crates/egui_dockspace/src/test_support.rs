@@ -1,8 +1,5 @@
 use egui::{Context, FullOutput, Id, RawInput, Ui};
 
-use dockspace::backend::interaction::InteractionOutcome;
-use dockspace::backend::transition::{EngineTransition, InputOutcome};
-
 fn presentation_provider_state_id() -> Id {
     Id::new("egui_dockspace_test_presentation_provider")
 }
@@ -112,29 +109,4 @@ pub(crate) fn remove_presentation_provider(context: &Context) {
     context.data_mut(|data| {
         data.remove::<TestPresentationProviderState>(presentation_provider_state_id());
     });
-}
-
-/// Collects interaction outcomes from every input lane in core causal order.
-pub(crate) fn ordered_interaction_outcomes(
-    transitions: &[EngineTransition],
-) -> Vec<&InteractionOutcome> {
-    let mut ordered = Vec::new();
-    for transition in transitions {
-        let mut tick = Vec::new();
-        for input in transition.reduced_inputs() {
-            if let InputOutcome::InteractionProcessed { outcome, .. } = input.outcome() {
-                tick.push((input.causal_ordinal(), outcome));
-            }
-        }
-        for edge in transition.reduced_pointer_edges() {
-            for outcome in edge.interaction_outcomes() {
-                tick.push((edge.causal_ordinal(), outcome));
-            }
-        }
-        // Stable sorting preserves provider edge order and per-edge outcome
-        // order when one journal segment shares a causal ordinal.
-        tick.sort_by_key(|(ordinal, _)| *ordinal);
-        ordered.extend(tick.into_iter().map(|(_, outcome)| outcome));
-    }
-    ordered
 }

@@ -35,8 +35,8 @@ use crate::receiver::{
     PaintReceiverFingerprint, PaintReceiverLookup, PaintReceiverRegistrations, PaintReceiverStore,
 };
 use crate::response::{
-    DockspaceCapability, DockspaceSurfaceStatus, DockspaceUnavailableReason, SurfaceCommitResponse,
-    SurfaceFrameDisposition, SurfacePaintResponse,
+    DockspaceCapability, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
+    DockspaceUnavailableReason, SurfaceCommitResponse, SurfacePaintResponse,
 };
 use crate::style::{DockStyle, DockStyleError};
 
@@ -1584,7 +1584,7 @@ impl EguiDockRenderer {
             );
         }
 
-        let disposition = SurfaceFrameDisposition::Contribution(outcome);
+        let status = DockspaceSurfaceCommitStatus::from_contribution(&outcome);
         if let Some(paint) = draft.paint.as_mut() {
             if rejected {
                 paint.interactions_current = false;
@@ -1603,7 +1603,7 @@ impl EguiDockRenderer {
         }
         SurfaceCommitResponse {
             paint: draft.paint,
-            disposition,
+            status,
         }
     }
 

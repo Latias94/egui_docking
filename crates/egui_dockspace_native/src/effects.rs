@@ -6,15 +6,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dockspace::backend::ingress::BackendIngressRecorder;
 use dockspace::backend::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
-    EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
-    NativeCloseResolution, PlatformEffect, PlatformEffectEmission,
+    EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
 };
+use dockspace::backend::ingress::BackendIngressRecorder;
 use dockspace::geometry::PhysicalRect;
 use dockspace::ids::{SurfaceId, WorkspaceEpoch};
-use dockspace::backend::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportBinding, ViewportRole};
 use eframe::{
     NativeEffectCorrelation, NativeEffectDispatchOutcome, NativeEffectProperty, NativeEffectResult,
@@ -24,7 +23,9 @@ use eframe::{
     NativeViewportCreateSink, NativeViewportCreateSubmitError, NativeWindowEffect,
 };
 use egui::{UserData, ViewportId};
-use egui_dockspace::backend::{ExactNativeViewport, NativeViewportIncarnation};
+use egui_dockspace::backend::{
+    BackendEffectReceipt, ExactNativeViewport, NativeViewportIncarnation,
+};
 
 use crate::NativeRuntimeError;
 use crate::ingress::BoundNativeRoute;
@@ -791,26 +792,15 @@ impl NativeEffectDriver {
         }
     }
 
-    pub(crate) fn settle_effect_results(&mut self, transition: &EngineTransition) {
-        for input in transition.reduced_inputs() {
-            let Some(ordinal) = input.backend_ingress_ordinal() else {
+    pub(crate) fn settle_effect_results(&mut self, receipts: &[BackendEffectReceipt]) {
+        for receipt in receipts {
+            let Some(delivery) = self.cleanup.take_inflight(receipt.ordinal().get()) else {
                 continue;
             };
-            let Some(delivery) = self.cleanup.take_inflight(ordinal.get()) else {
-                continue;
-            };
-            match input.outcome() {
-                InputOutcome::PlatformEffectReported {
-                    effect,
-                    transition:
-                        EffectTransition::Applied
-                        | EffectTransition::Duplicate
-                        | EffectTransition::RetiredTerminal,
-                    ..
-                } if *effect == delivery.predecessor() => {
-                    self.cleanup.accept_delivery(delivery);
-                }
-                _ => self.cleanup.reject_delivery(delivery),
+            if receipt.accepted_effect() == Some(delivery.predecessor()) {
+                self.cleanup.accept_delivery(delivery);
+            } else {
+                self.cleanup.reject_delivery(delivery);
             }
         }
     }

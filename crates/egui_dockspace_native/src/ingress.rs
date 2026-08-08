@@ -2,19 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::backend::platform::PlatformObservationLease;
-use dockspace::backend::ingress::{
-    BackendIngressBatch, BackendIngressOrdinal, BackendIngressPayload,
-    BackendIngressPrefixRetirementReceipt, BackendIngressRecorder, BackendIngressSavepoint,
-};
 #[cfg(test)]
 use dockspace::backend::effect::EffectResult;
 use dockspace::backend::effect::{EffectId, PlatformEffectEmission};
 use dockspace::backend::engine::EngineInput;
-use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::ids::{SurfaceId, WorkspaceEpoch};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
+use dockspace::backend::ingress::{
+    BackendIngressBatch, BackendIngressOrdinal, BackendIngressPayload,
+    BackendIngressPrefixRetirementReceipt, BackendIngressRecorder, BackendIngressSavepoint,
+};
 use dockspace::backend::interaction::EscapeDelivery;
+use dockspace::backend::platform::PlatformObservationLease;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
@@ -36,15 +33,17 @@ use dockspace::backend::semantic_input::{
     SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
     SemanticReceiverEvent,
 };
-use dockspace::backend::transition::EngineTransition;
+use dockspace::backend::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+};
+use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::ids::{SurfaceId, WorkspaceEpoch};
+use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,
     PresentationObservationGeneration, ViewportBinding, ViewportRole, WorkAreaGeneration,
     WorkAreaObservationGeneration, WorkAreaToken,
-};
-use dockspace::backend::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
 };
 use dockspace::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
@@ -65,8 +64,8 @@ use eframe::{
 use egui::ViewportId;
 use egui_dockspace::Dockspace;
 use egui_dockspace::backend::{
-    ExactNativeViewport, NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
-    PaintReceiverFingerprint, PaintReceiverLookup,
+    BackendEffectReceipt, ExactNativeViewport, NativeBindingRoster, NativeCoreRoute,
+    NativeViewportIncarnation, PaintReceiverFingerprint, PaintReceiverLookup,
 };
 
 use crate::effects::{DeferredEffectResult, NativeEffectDriver};
@@ -233,8 +232,8 @@ pub(crate) struct NativeEffectCycle {
 }
 
 impl NativeEffectCycle {
-    pub(crate) fn settle_effect_results(&mut self, transition: &EngineTransition) {
-        self.effects.settle_effect_results(transition);
+    pub(crate) fn settle_effect_results(&mut self, receipts: &[BackendEffectReceipt]) {
+        self.effects.settle_effect_results(receipts);
     }
 }
 

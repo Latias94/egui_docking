@@ -160,9 +160,7 @@ pub enum NativeRuntimeError {
     ),
     /// A hover/drop query could not resolve against the sealed host frame.
     #[error(transparent)]
-    HoverDropResolution(
-        #[from] dockspace::backend::engine::HostFrameHoverDropResolutionError,
-    ),
+    HoverDropResolution(#[from] dockspace::backend::engine::HostFrameHoverDropResolutionError),
     /// Native geometry could not be represented by the core geometry model.
     #[error(transparent)]
     Geometry(#[from] dockspace::geometry::GeometryError),
