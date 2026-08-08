@@ -5087,6 +5087,9 @@ impl DockEngine {
         candidate
             .viewport
             .compact_published_terminal_effects(&retained_effects);
+        candidate.viewport.compact_surface_coordinate_authority(
+            candidate.workspace.surfaces().map(|(surface, _)| surface),
+        );
         candidate
     }
 

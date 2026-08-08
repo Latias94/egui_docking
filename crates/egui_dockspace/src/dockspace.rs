@@ -284,10 +284,13 @@ impl Dockspace {
         receipt: &mut dockspace::backend::ingress::BackendIngressPrefixRetirementReceipt,
     ) -> Result<Vec<dockspace::viewport::ViewportBinding>, DockspaceError> {
         self.ensure_native_session_idle()?;
-        Ok(
+        let quiesced =
             EguiEngineOwner::settle_backend_ingress_prefix_retirement(&mut self.engine, receipt)
-                .map_err(DockspaceError::from_detail)?,
-        )
+                .map_err(DockspaceError::from_detail)?;
+        if let Some(bindings) = self.native_bindings.as_mut() {
+            bindings.compact_quiesced_core_bindings(quiesced.iter().copied());
+        }
+        Ok(quiesced)
     }
 
     /// Records one exact renderer result in the joined backend ingress order.

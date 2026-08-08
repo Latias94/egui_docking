@@ -1282,6 +1282,20 @@ impl ViewportRegistry {
             .unwrap_or_default()
     }
 
+    pub(crate) fn compact_surface_authority_generations(
+        &mut self,
+        retained_surfaces: &BTreeSet<SurfaceId>,
+    ) -> usize {
+        let before = self.surface_authority_generations.len();
+        self.surface_authority_generations
+            .retain(|surface, _| retained_surfaces.contains(surface));
+        before - self.surface_authority_generations.len()
+    }
+
+    pub(crate) fn surface_authority_generation_count(&self) -> usize {
+        self.surface_authority_generations.len()
+    }
+
     pub fn records(&self) -> impl Iterator<Item = (SurfaceId, &ViewportRecord)> {
         self.records
             .iter()
@@ -3274,5 +3288,41 @@ mod tests {
         assert!(staging.can_report_focus_fact());
         assert!(!staging.can_observe_focus());
         assert!(!staging.can_accept_activation());
+    }
+
+    #[test]
+    fn retired_surface_authority_history_compacts_without_resetting_live_headless_aba() {
+        let mut registry = ViewportRegistry::default();
+        let epoch = WorkspaceEpoch::new(1);
+        let retained_surface = SurfaceId::new(1);
+
+        for index in 1_u64..=10_001 {
+            let surface = SurfaceId::new(index);
+            let binding = registry
+                .register_existing(epoch, surface, WindowToken::new(index), ViewportRole::Root)
+                .expect("unique test binding should register");
+            registry
+                .detach(binding)
+                .expect("registered binding should detach");
+        }
+        let retained_generation = registry.surface_authority_generation(retained_surface);
+        assert_ne!(retained_generation, CoordinateGeneration::default());
+        assert_eq!(registry.surface_authority_generation_count(), 10_001);
+
+        let removed =
+            registry.compact_surface_authority_generations(&BTreeSet::from([retained_surface]));
+        assert_eq!(removed, 10_000);
+        assert_eq!(registry.surface_authority_generation_count(), 1);
+        assert_eq!(
+            registry.surface_authority_generation(retained_surface),
+            retained_generation,
+            "a still-live headless surface must not regain generation zero"
+        );
+
+        assert_eq!(
+            registry.compact_surface_authority_generations(&BTreeSet::new()),
+            1
+        );
+        assert_eq!(registry.surface_authority_generation_count(), 0);
     }
 }

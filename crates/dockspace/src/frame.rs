@@ -3267,7 +3267,31 @@ impl ViewportCoordinator {
     }
 
     pub(crate) fn binding_retention_manifest(&self) -> BindingRetentionManifest {
-        self.binding_cleanup.retention_manifest()
+        self.binding_cleanup
+            .retention_manifest()
+            .with_surface_authority_generations(self.registry.surface_authority_generation_count())
+    }
+
+    pub(crate) fn compact_surface_coordinate_authority(
+        &mut self,
+        workspace_surfaces: impl IntoIterator<Item = SurfaceId>,
+    ) -> usize {
+        let mut retained = workspace_surfaces.into_iter().collect::<BTreeSet<_>>();
+        retained.extend(self.registry.records().map(|(surface, _)| surface));
+        retained.extend(self.binding_cleanup.keys().map(|binding| binding.surface()));
+        retained.extend(
+            self.binding_cleanup
+                .destroyed_bindings()
+                .iter()
+                .map(|binding| binding.surface()),
+        );
+        retained.extend(
+            self.recovery_replacements
+                .iter()
+                .map(|(surface, _)| *surface),
+        );
+        self.registry
+            .compact_surface_authority_generations(&retained)
     }
 
     pub fn binding_retirements(

@@ -296,6 +296,7 @@ pub struct BindingRetentionManifest {
     token_index_entries: usize,
     cleanup_lineage_entries: usize,
     destroyed_binding_guards: usize,
+    surface_authority_generations: usize,
 }
 
 /// The session-owned semantic-input watermark retained as a replay guard.
@@ -368,7 +369,16 @@ impl BindingRetentionManifest {
             token_index_entries,
             cleanup_lineage_entries,
             destroyed_binding_guards,
+            surface_authority_generations: 0,
         }
+    }
+
+    pub(crate) const fn with_surface_authority_generations(
+        mut self,
+        surface_authority_generations: usize,
+    ) -> Self {
+        self.surface_authority_generations = surface_authority_generations;
+        self
     }
 
     /// Returns binding-scoped cleanup obligations which still own platform work.
@@ -395,6 +405,12 @@ impl BindingRetentionManifest {
         self.destroyed_binding_guards
     }
 
+    /// Returns per-surface coordinate-authority frontiers retained against headless ABA.
+    #[must_use]
+    pub const fn surface_authority_generations(self) -> usize {
+        self.surface_authority_generations
+    }
+
     /// Returns all currently stored binding cleanup identities and indexes.
     #[must_use]
     pub const fn retained_structure_count(self) -> usize {
@@ -402,6 +418,7 @@ impl BindingRetentionManifest {
             + self.token_index_entries
             + self.cleanup_lineage_entries
             + self.destroyed_binding_guards
+            + self.surface_authority_generations
     }
 
     /// Returns the proof required before destroyed binding guards may be compacted.

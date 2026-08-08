@@ -473,6 +473,48 @@ impl<B: ExactCoreBinding> ExactRouteRegistry<B> {
         self.state.live_by_native.values().copied()
     }
 
+    fn compact_quiesced_core_bindings(&mut self, bindings: impl IntoIterator<Item = B>) -> usize {
+        let mut compacted = 0;
+        for binding in bindings {
+            let core = binding.exact_identity();
+            if self.state.native_by_core.contains_key(&core) {
+                debug_assert!(
+                    false,
+                    "a live native route cannot be reported as producer-quiesced"
+                );
+                continue;
+            }
+            let Some(native) = self.state.retired_by_core.get(&core).copied() else {
+                continue;
+            };
+            let matching_retirement = self
+                .state
+                .retired_by_native
+                .get(&native)
+                .is_some_and(|route| route.core_identity() == core);
+            debug_assert!(
+                matching_retirement,
+                "native and core retirement indexes must remain bijective"
+            );
+            if !matching_retirement {
+                continue;
+            }
+            self.state.retired_by_core.remove(&core);
+            self.state.retired_by_native.remove(&native);
+            compacted += 1;
+        }
+        compacted
+    }
+
+    #[cfg(test)]
+    fn retired_route_count(&self) -> usize {
+        debug_assert_eq!(
+            self.state.retired_by_native.len(),
+            self.state.retired_by_core.len()
+        );
+        self.state.retired_by_native.len()
+    }
+
     fn validate_authority(
         &self,
         submitted: NativeRouteAuthority,
@@ -816,6 +858,17 @@ impl NativeBindingRegistry {
             });
         }
         Ok(())
+    }
+
+    /// Forgets exact retired routes after their sole producer proves quiescence.
+    ///
+    /// The enclosing facade calls this only while no native frame candidate can
+    /// exist, so compaction cannot make an older candidate current again.
+    pub(super) fn compact_quiesced_core_bindings(
+        &mut self,
+        bindings: impl IntoIterator<Item = ViewportBinding>,
+    ) -> usize {
+        self.inner.compact_quiesced_core_bindings(bindings)
     }
 }
 
@@ -1307,6 +1360,46 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn producer_quiescence_bounds_exact_route_retirement_history() {
+        let authority = route_authority();
+        let mut registry = ExactRouteRegistry::new(authority);
+        let viewport = 7;
+        let mut current = route(authority, viewport, 1, 10, 1);
+        let initial = registry
+            .reconcile_candidate(authority, [current], [])
+            .expect("the first route must validate");
+        registry
+            .commit(initial)
+            .expect("the first route must commit");
+
+        for incarnation in 2..=10_001 {
+            let next = route(
+                authority,
+                viewport,
+                incarnation,
+                incarnation + 9,
+                incarnation,
+            );
+            let replacement = registry
+                .reconcile_candidate(authority, [next], [current.native])
+                .expect("an exact successor and retirement must validate");
+            registry
+                .commit(replacement)
+                .expect("the exact successor must commit");
+            assert_eq!(registry.retired_route_count(), 1);
+            assert_eq!(registry.compact_quiesced_core_bindings([current.core]), 1);
+            assert_eq!(registry.retired_route_count(), 0);
+            current = next;
+        }
+
+        assert_eq!(
+            registry.resolve_native(authority, current.native, NativeRouteUse::Routing),
+            Ok(current),
+            "compaction must not disturb the live successor"
+        );
     }
 
     #[test]
