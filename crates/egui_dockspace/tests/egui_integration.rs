@@ -21,7 +21,9 @@ use egui::{
     Sense, TouchPhase, Ui, UiBuilder, vec2,
 };
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
-use egui_dockspace::{Dockspace, DockspaceSurfaceStatus, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceCloseOutcome, DockspaceCommandOutcome, DockspaceSurfaceStatus, PaneView,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -338,9 +340,13 @@ fn resolve_close_plan(
     decision_for: impl Fn(ItemId) -> CloseDecision,
 ) {
     for item in plan.items() {
-        dockspace
+        let result = dockspace
             .resolve_close(plan.request(), item.token(), decision_for(item.item()))
             .expect("an exact close decision must commit immediately");
+        assert!(matches!(
+            result.outcome(),
+            DockspaceCloseOutcome::Processed { .. }
+        ));
     }
 }
 
@@ -888,9 +894,13 @@ fn select_item(dockspace: &mut Dockspace, item: ItemId) {
                 .ok()
         })
         .expect("selected pane source must capture");
-    dockspace
+    let result = dockspace
         .submit_command(dockspace::command::WorkspaceCommand::Select { source })
         .expect("selection command must commit immediately");
+    assert!(matches!(
+        result.outcome(),
+        DockspaceCommandOutcome::Applied(_)
+    ));
 }
 
 fn selected_in_group_containing(dockspace: &Dockspace, item: ItemId) -> Option<ItemId> {

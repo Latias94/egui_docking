@@ -90,7 +90,10 @@ use crate::pointer_input::EguiPointerInput;
 use crate::presentation_settlement::PendingEguiPresentation;
 use crate::receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
 use crate::render::EguiDockRenderer;
-use crate::response::{DockspaceResponse, HostFrameResponse, SurfaceCommitResponse};
+use crate::response::{
+    DockspaceCloseResult, DockspaceCommandResult, DockspaceMutation, DockspaceResponse,
+    HostFrameResponse, SurfaceCommitResponse,
+};
 use crate::style::DockStyle;
 
 use self::engine_owner::{EguiApplicationInputOwner, EguiDockEngine, EguiEngineOwner};
@@ -470,7 +473,7 @@ impl Dockspace {
     }
 
     /// Replaces style after complete deterministic validation.
-    pub fn set_style(&mut self, style: DockStyle) -> Result<EngineTransition, DockspaceError> {
+    pub fn set_style(&mut self, style: DockStyle) -> Result<DockspaceMutation, DockspaceError> {
         style.validate()?;
         self.renderer.ensure_style_revision_available()?;
         let transition = self.submit_application_input(EngineInput::ReplacePresentationConfig {
@@ -478,21 +481,26 @@ impl Dockspace {
             config: style.presentation_config()?,
         })?;
         self.renderer.replace_style(style)?;
-        Ok(transition)
+        Ok(DockspaceMutation::from_transition(&transition))
     }
 
     /// Submits one exact checked workspace command at an explicit application boundary.
     pub fn submit_command(
         &mut self,
         command: WorkspaceCommand,
-    ) -> Result<EngineTransition, DockspaceError> {
+    ) -> Result<DockspaceCommandResult, DockspaceError> {
         #[cfg(feature = "serde")]
         self.engine
             .validate_workspace_command_identity_bindings(&command)?;
-        self.submit_application_input(EngineInput::WorkspaceCommand {
+        let transition = self.submit_application_input(EngineInput::WorkspaceCommand {
             expected: self.engine.version(),
             command,
-        })
+        })?;
+        DockspaceCommandResult::from_transition(&transition).ok_or(
+            DockspaceError::ApplicationOutcomeUnavailable {
+                operation: "workspace command",
+            },
+        )
     }
 
     /// Records one application workspace command in the active backend causal stream.
@@ -688,12 +696,17 @@ impl Dockspace {
         request: CloseRequestId,
         token: CloseDecisionToken,
         decision: CloseDecision,
-    ) -> Result<EngineTransition, DockspaceError> {
-        self.submit_application_input(EngineInput::ResolveClose {
+    ) -> Result<DockspaceCloseResult, DockspaceError> {
+        let transition = self.submit_application_input(EngineInput::ResolveClose {
             request,
             token,
             decision,
-        })
+        })?;
+        DockspaceCloseResult::from_transition(&transition).ok_or(
+            DockspaceError::ApplicationOutcomeUnavailable {
+                operation: "close decision",
+            },
+        )
     }
 
     /// Submits one exact terminal decision for a deferred close continuation.
@@ -702,31 +715,38 @@ impl Dockspace {
         request: CloseRequestId,
         token: DeferredCloseToken,
         decision: DeferredCloseDecision,
-    ) -> Result<EngineTransition, DockspaceError> {
-        self.submit_application_input(EngineInput::ContinueDeferredClose {
+    ) -> Result<DockspaceCloseResult, DockspaceError> {
+        let transition = self.submit_application_input(EngineInput::ContinueDeferredClose {
             request,
             token,
             decision,
-        })
+        })?;
+        DockspaceCloseResult::from_transition(&transition).ok_or(
+            DockspaceError::ApplicationOutcomeUnavailable {
+                operation: "deferred close decision",
+            },
+        )
     }
 
     /// Submits an epoch-advancing complete workspace replacement.
     pub fn replace_workspace(
         &mut self,
         workspace: Workspace,
-    ) -> Result<EngineTransition, DockspaceError> {
+    ) -> Result<DockspaceMutation, DockspaceError> {
         #[cfg(feature = "serde")]
         self.engine
             .validate_workspace_identity_bindings(&workspace)?;
-        self.submit_application_input(EngineInput::ReplaceWorkspace(workspace))
+        let transition = self.submit_application_input(EngineInput::ReplaceWorkspace(workspace))?;
+        Ok(DockspaceMutation::from_transition(&transition))
     }
 
     /// Submits a complete policy replacement against the current engine version.
-    pub fn set_policy(&mut self, policy: DockPolicy) -> Result<EngineTransition, DockspaceError> {
-        self.submit_application_input(EngineInput::ReplacePolicy {
+    pub fn set_policy(&mut self, policy: DockPolicy) -> Result<DockspaceMutation, DockspaceError> {
+        let transition = self.submit_application_input(EngineInput::ReplacePolicy {
             expected: self.engine.version(),
             policy,
-        })
+        })?;
+        Ok(DockspaceMutation::from_transition(&transition))
     }
 
     pub(crate) fn submit_application_input(

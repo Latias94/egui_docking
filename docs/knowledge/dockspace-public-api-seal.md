@@ -199,13 +199,16 @@ real multi-viewport host belongs in a dedicated native runtime crate and is not
 represented by a public egui callback-order protocol.
 
 The first two breaking slices are complete. The egui whole-crate re-export and
-raw engine accessor are gone. The renderer-neutral crate no longer exposes its
+raw engine accessor are gone. Ordinary egui mutation and paint responses now
+return product-level command, close, surface, and mutation outcomes instead of
+raw `EngineTransition` or surface-contribution FSM values. The renderer-neutral crate no longer exposes its
 backend FSM modules at their former root paths; adapters use the explicit
 `dockspace::backend` feature and namespace. Examples and the official-egui
 harness declare `dockspace` directly when they intentionally exercise core
 contracts, so rustc rather than an API-classification script owns dependency
-and name resolution. Remaining model/transition exposure and facade migration
-keep this seal open.
+and name resolution. The low-level backend host response still carries a raw
+transition for native migration; remaining model/transition exposure and
+facade migration keep this seal open.
 
 ## Protocol Tests
 

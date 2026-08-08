@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::PlatformObservationLease;
+use crate::platform_provider::PlatformObservationLease;
 use dockspace::backend_ingress::BackendIngressRecorder;
 use dockspace::engine::{
     BackendIngressProgress, CoreHostFrame, CoreHostFrameError, CoreHostFramePrelude,

@@ -2,11 +2,216 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::ClosePlan;
+use dockspace::command::{CloseCommitOutcome, CommandOutcome};
 use dockspace::error::CommandError;
 use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
 use dockspace::interaction::InteractionOutcome;
-use dockspace::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
+use dockspace::transition::{
+    EngineTransition, InputOutcome, SurfaceContributionOutcome, WorkspaceVersion,
+};
+use dockspace::{ClosePlan, CloseResolutionOutcome};
+
+/// Product-level summary of one atomic docking publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockspaceMutation {
+    before: WorkspaceVersion,
+    after: WorkspaceVersion,
+    workspace_changed: bool,
+    published_state_changed: bool,
+    affected_surfaces: Vec<SurfaceId>,
+}
+
+impl DockspaceMutation {
+    pub(crate) fn from_transition(transition: &EngineTransition) -> Self {
+        Self {
+            before: transition.before(),
+            after: transition.after(),
+            workspace_changed: transition.changed(),
+            published_state_changed: transition.published_state_changed(),
+            affected_surfaces: transition.affected_surfaces().collect(),
+        }
+    }
+
+    /// Returns the durable workspace version before publication.
+    #[must_use]
+    pub const fn before(&self) -> WorkspaceVersion {
+        self.before
+    }
+
+    /// Returns the durable workspace version after publication.
+    #[must_use]
+    pub const fn after(&self) -> WorkspaceVersion {
+        self.after
+    }
+
+    /// Returns whether durable workspace or policy state changed.
+    #[must_use]
+    pub const fn workspace_changed(&self) -> bool {
+        self.workspace_changed
+    }
+
+    /// Returns whether any published topology, presentation, or interaction state changed.
+    #[must_use]
+    pub const fn published_state_changed(&self) -> bool {
+        self.published_state_changed
+    }
+
+    /// Returns logical surfaces whose presentation authority changed.
+    #[must_use]
+    pub fn affected_surfaces(&self) -> &[SurfaceId] {
+        &self.affected_surfaces
+    }
+}
+
+/// Product-level result of one checked workspace command.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DockspaceCommandOutcome {
+    /// The command committed or produced a valid no-op.
+    Applied(CommandOutcome),
+    /// The command was deterministically rejected without mutation.
+    Rejected(CommandError),
+    /// The command named an older workspace version and was consumed inertly.
+    Stale {
+        /// Version carried by the command input.
+        expected: WorkspaceVersion,
+        /// Version accepted by the reducer boundary.
+        accepted: WorkspaceVersion,
+    },
+}
+
+/// Atomic publication plus the exact result of one checked workspace command.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockspaceCommandResult {
+    mutation: DockspaceMutation,
+    outcome: DockspaceCommandOutcome,
+}
+
+impl DockspaceCommandResult {
+    pub(crate) fn from_transition(transition: &EngineTransition) -> Option<Self> {
+        let outcome =
+            transition
+                .reduced_inputs()
+                .iter()
+                .find_map(|input| match input.outcome() {
+                    InputOutcome::CommandProcessed { outcome, .. } => {
+                        Some(DockspaceCommandOutcome::Applied(outcome.clone()))
+                    }
+                    InputOutcome::CommandRejected { error, .. } => {
+                        Some(DockspaceCommandOutcome::Rejected(error.clone()))
+                    }
+                    InputOutcome::StaleRejected {
+                        expected,
+                        accepted_base,
+                    } => Some(DockspaceCommandOutcome::Stale {
+                        expected: *expected,
+                        accepted: *accepted_base,
+                    }),
+                    _ => None,
+                })?;
+        Some(Self {
+            mutation: DockspaceMutation::from_transition(transition),
+            outcome,
+        })
+    }
+
+    /// Returns the atomic publication summary.
+    #[must_use]
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
+    }
+
+    /// Returns the exact checked command result.
+    #[must_use]
+    pub const fn outcome(&self) -> &DockspaceCommandOutcome {
+        &self.outcome
+    }
+}
+
+/// Product-level result of one initial or deferred close decision.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DockspaceCloseOutcome {
+    /// The exact close token was consumed by the core-owned close workflow.
+    Processed {
+        /// Token-resolution result, including typed inert outcomes.
+        resolution: CloseResolutionOutcome,
+        /// Latest retained close plan, when the request exists.
+        plan: Option<ClosePlan>,
+        /// Checked topology result after the final allow decision.
+        application: Option<Result<CloseCommitOutcome, CommandError>>,
+    },
+    /// The decision named an older workspace version and was consumed inertly.
+    Stale {
+        /// Version carried by the close input.
+        expected: WorkspaceVersion,
+        /// Version accepted by the reducer boundary.
+        accepted: WorkspaceVersion,
+    },
+}
+
+/// Atomic publication plus the exact result of one close decision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockspaceCloseResult {
+    mutation: DockspaceMutation,
+    outcome: DockspaceCloseOutcome,
+}
+
+impl DockspaceCloseResult {
+    pub(crate) fn from_transition(transition: &EngineTransition) -> Option<Self> {
+        let outcome =
+            transition
+                .reduced_inputs()
+                .iter()
+                .find_map(|input| match input.outcome() {
+                    InputOutcome::CloseDecisionProcessed {
+                        resolution,
+                        plan,
+                        application,
+                        ..
+                    } => Some(DockspaceCloseOutcome::Processed {
+                        resolution: *resolution,
+                        plan: plan.clone(),
+                        application: application.clone(),
+                    }),
+                    InputOutcome::StaleRejected {
+                        expected,
+                        accepted_base,
+                    } => Some(DockspaceCloseOutcome::Stale {
+                        expected: *expected,
+                        accepted: *accepted_base,
+                    }),
+                    _ => None,
+                })?;
+        Some(Self {
+            mutation: DockspaceMutation::from_transition(transition),
+            outcome,
+        })
+    }
+
+    /// Returns the atomic publication summary.
+    #[must_use]
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
+    }
+
+    /// Returns the exact close-workflow result.
+    #[must_use]
+    pub const fn outcome(&self) -> &DockspaceCloseOutcome {
+        &self.outcome
+    }
+}
+
+/// Product-level terminal status of one surface contribution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DockspaceSurfaceCommitStatus {
+    /// A complete next presentation candidate was installed.
+    Ready,
+    /// The current ready candidate was retained unchanged.
+    Retained,
+    /// The host explicitly left the surface non-interactive.
+    Unavailable,
+    /// The prepared contribution was superseded before installation.
+    Rejected,
+}
 
 /// Truthful availability of one adapter operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,21 +521,38 @@ pub struct DockspaceResponse {
 }
 
 impl DockspaceResponse {
-    /// Returns the sole atomic engine transition published by this call.
+    /// Returns the product-level summary of the atomic publication.
     #[must_use]
-    pub fn transitions(&self) -> &[EngineTransition] {
-        std::slice::from_ref(&self.transition)
+    pub fn mutation(&self) -> DockspaceMutation {
+        DockspaceMutation::from_transition(&self.transition)
     }
 
-    /// Returns the terminal scene disposition for the one surface slot.
+    /// Returns the product-level terminal status for the sole surface contribution.
     #[must_use]
-    pub const fn disposition(&self) -> &SurfaceFrameDisposition {
-        &self.disposition
+    pub const fn surface_commit_status(&self) -> DockspaceSurfaceCommitStatus {
+        match self.disposition.contribution() {
+            SurfaceContributionOutcome::Ready { .. } => DockspaceSurfaceCommitStatus::Ready,
+            SurfaceContributionOutcome::Retained { .. } => DockspaceSurfaceCommitStatus::Retained,
+            SurfaceContributionOutcome::Unavailable { .. } => {
+                DockspaceSurfaceCommitStatus::Unavailable
+            }
+            SurfaceContributionOutcome::Rejected { .. } => DockspaceSurfaceCommitStatus::Rejected,
+        }
     }
 
-    /// Returns the exact core result for the sole surface contribution.
+    /// Returns the backend transition for adapter diagnostics and protocol tests.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     #[must_use]
-    pub const fn contribution(&self) -> &SurfaceContributionOutcome {
+    pub const fn backend_transition(&self) -> &EngineTransition {
+        &self.transition
+    }
+
+    /// Returns the backend surface contribution for adapter diagnostics and protocol tests.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn backend_contribution(&self) -> &SurfaceContributionOutcome {
         self.disposition.contribution()
     }
 

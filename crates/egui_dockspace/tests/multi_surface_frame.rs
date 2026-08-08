@@ -237,7 +237,7 @@ fn crates_io_facade_never_synthesizes_presentation_authority() {
 
     for frame in 0..8 {
         let response = paint_crates_io_frame(&context, &mut dockspace, &mut panes);
-        let transition = &response.transitions()[0];
+        let transition = response.backend_transition();
 
         assert!(transition.presentation_emissions().is_empty());
         assert!(transition.presentation_observations().is_empty());
@@ -1041,8 +1041,9 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
     one_presentation(pending).settle_with(|_, _| EguiPresentationResult::Dropped);
 
     let response = paint_crates_io_frame(&context, &mut dockspace, &mut panes);
-    assert!(response.transitions().iter().any(|transition| {
-        transition
+    assert!(
+        response
+            .backend_transition()
             .presentation_observations()
             .iter()
             .any(|outcome| {
@@ -1054,7 +1055,7 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
                     }
                 )
             })
-    }));
+    );
 }
 
 #[test]

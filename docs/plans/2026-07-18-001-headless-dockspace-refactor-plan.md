@@ -1632,8 +1632,10 @@ compatibility layer:
 7. **In progress.** Seal the public facade through compile-visible breaking
    slices. The whole-core `egui_dockspace::dockspace` re-export is deleted;
    examples and the official-egui harness now name their direct `dockspace`
-   dependency. Raw `engine()` access and transition-bearing widget responses
-   remain until equivalent item/surface-oriented operations exist.
+   dependency. Raw `engine()` access and ordinary transition-bearing widget,
+   command, close, and configuration responses are deleted. The explicit
+   backend host response retains raw transition diagnostics until the native
+   runtime consumes equivalent typed deltas.
 
 The former 23 red egui behavior tests now use the public outer-host path or have
 been removed only where stronger canonical and official-egui coverage exists.
@@ -1704,21 +1706,14 @@ The remaining release blockers are narrower and should drive the next slices:
 1. Publish the complete fork delta as an immutable revision derived from the
    `0.35.0` release baseline, then make the native dependency and harness pin
    that revision. A dirty local checkout remains development-only evidence.
-2. Keep the completed first-live two-window smoke as `NATIVE-SMOKE-01`, then
-   add two explicitly different native interaction gates before claiming
-   native docking support. First, add a default-disabled fork
-   `native-test-support` feature with a narrow high-level test driver. It must
-   enqueue a test action onto the real eframe event loop, resolve the current
-   binding, geometry, scale, work area, and already-presented hit graph there,
-   and reuse the production pointer-ingress reducer. It must not expose raw
-   bindings, ingress ordinals, effect receipts, or a `Dockspace` input backdoor.
-   That gate covers deterministic dynamic tear-off, first-live child creation,
-   cross-window redock, focus, close, and recovery. Second, retain a
-   platform-specific physical-input acceptance gate for global hover, capture,
-   outside-all, and mixed-DPI. Synthetic typed ingress is not evidence of OS
-   pointer correctness, and physical test automation must not fabricate known
-   platform facts. The current smoke deliberately claims neither interaction
-   class.
+2. Keep exactly one real-window gate, `NATIVE-SMOKE-01`, covering the primary
+   tear-off, first-live, and cross-window redock path through the production
+   event loop. Do not grow it into a scenario runner or platform matrix. Focus,
+   close, recovery, pass-through compensation, mixed-DPI, global hover,
+   capture, and outside-all permutations belong in deterministic Rust protocol
+   tests and the existing fake host. A small platform-specific manual
+   acceptance checklist may validate physical input without fabricating known
+   platform facts, but it is not another automated smoke or script framework.
 3. Add structural counters and long-session soak gates around candidate clone
    volume, effect/close tombstone compaction, and presentation-sidecar
    reclamation. Optimize only after these counters establish the actual hot

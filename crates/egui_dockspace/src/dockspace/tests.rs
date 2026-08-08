@@ -19,6 +19,7 @@ use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationObservationRejection,
     PresentationHostRetirementReason,
 };
+use dockspace::command::{RootContent, WorkspaceCommand};
 use dockspace::geometry::LogicalPoint;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
@@ -36,7 +37,7 @@ use crate::projection::{TabStripStateMap, load_tab_strip_states};
 use crate::render::{EguiDockRenderer, EguiRendererError, EguiSurfaceDraft};
 use crate::renderer::consume_gesture_escape;
 use crate::style::DockStyle;
-use crate::{DockspaceError, PaneView};
+use crate::{DockspaceCommandOutcome, DockspaceError, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(10);
@@ -49,6 +50,28 @@ fn workspace() -> Workspace {
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("test workspace is valid")
+}
+
+#[test]
+fn command_result_reports_rejection_without_exposing_the_reducer_transition() {
+    let mut dockspace = Dockspace::builder("command-result", workspace())
+        .build()
+        .expect("facade builds");
+    let result = dockspace
+        .submit_command(WorkspaceCommand::CreateSurfaceRoot {
+            surface: SURFACE,
+            root: RootId::new(11),
+            content: RootContent::OpenItem(ItemId::new(101)),
+        })
+        .expect("a deterministic command rejection is a product outcome");
+
+    assert!(matches!(
+        result.outcome(),
+        DockspaceCommandOutcome::Rejected(_)
+    ));
+    assert!(!result.mutation().workspace_changed());
+    assert!(!result.mutation().published_state_changed());
+    assert_eq!(dockspace.workspace().item_multiset().len(), 1);
 }
 
 fn context() -> Context {
@@ -208,17 +231,19 @@ fn establish_outer_pointer_provider(
     let bootstrap = run_authoritative_automatic_frame(context, dockspace, panes);
     assert!(
         bootstrap
-            .transitions()
-            .iter()
-            .all(|transition| transition.presentation_emissions().is_empty()),
+            .backend_transition()
+            .presentation_emissions()
+            .is_empty(),
         "the bootstrap frame measures without claiming a painted output"
     );
     let painted = run_authoritative_automatic_frame(context, dockspace, panes);
     assert!(
         painted
-            .transitions()
+            .backend_transition()
+            .presentation_emissions()
             .iter()
-            .any(|transition| !transition.presentation_emissions().is_empty()),
+            .next()
+            .is_some(),
         "the next frame must establish one concrete presentation stream"
     );
     let _ = run_authoritative_automatic_frame(context, dockspace, panes);
@@ -968,12 +993,14 @@ fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
     for _ in 0..64 {
         let response = run_automatic_frame(&context, &mut dockspace, &mut panes);
         assert!(
-            response.transitions()[0]
+            response
+                .backend_transition()
                 .presentation_observations()
                 .is_empty()
         );
         assert!(
-            response.transitions()[0]
+            response
+                .backend_transition()
                 .presentation_emissions()
                 .is_empty()
         );
@@ -1048,18 +1075,19 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
 
     let bootstrap = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
     assert!(
-        bootstrap.transitions()[0]
+        bootstrap
+            .backend_transition()
             .presentation_emissions()
             .is_empty()
     );
     let first = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    let first_output = first.transitions()[0].presentation_emissions()[0].output();
+    let first_output = first.backend_transition().presentation_emissions()[0].output();
     assert_eq!(automatic_emission_count(&dockspace), 1);
 
     crate::test_support::remove_presentation_provider(&context);
     let unknown = run_automatic_frame(&context, &mut dockspace, &mut panes);
     assert!(matches!(
-        unknown.transitions()[0].presentation_observations(),
+        unknown.backend_transition().presentation_observations(),
         [HostPresentationObservationOutcome::CapturedUnknown { stream, .. }]
             if *stream == first_output.stream()
     ));
@@ -1081,9 +1109,9 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
     let terminal = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
     assert!(
         terminal
-            .transitions()
+            .backend_transition()
+            .presentation_observations()
             .iter()
-            .flat_map(|transition| transition.presentation_observations())
             .any(|outcome| matches!(
                 outcome,
                 HostPresentationObservationOutcome::Retired {
@@ -1116,12 +1144,13 @@ fn presentation_follow_up_pass_requires_accepted_promotion() {
     let mut panes = TestPanes;
     let bootstrap = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
     assert!(
-        bootstrap.transitions()[0]
+        bootstrap
+            .backend_transition()
             .presentation_emissions()
             .is_empty()
     );
     let first = run_authoritative_automatic_frame(&context, &mut dockspace, &mut panes);
-    let output = first.transitions()[0].presentation_emissions()[0].output();
+    let output = first.backend_transition().presentation_emissions()[0].output();
     let stream = output.stream();
     let key = output.key();
     let non_promoting = vec![

@@ -30,6 +30,12 @@ use crate::render::EguiRendererError;
 /// Failure to construct or advance an egui docking frame.
 #[derive(Debug, Error)]
 pub enum DockspaceError {
+    /// A facade method did not receive its required terminal reducer outcome.
+    #[error("dockspace {operation} did not produce its required application outcome")]
+    ApplicationOutcomeUnavailable {
+        /// Stable facade operation name used for diagnostics.
+        operation: &'static str,
+    },
     /// The session-owned persistence identity boundary rejected an operation.
     #[cfg(feature = "serde")]
     #[error("dockspace document session failed: {0}")]

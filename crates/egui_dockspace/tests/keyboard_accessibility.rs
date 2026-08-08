@@ -174,7 +174,8 @@ fn run_frame(
             .show_single_surface(SURFACE, ui, panes)
             .expect("fixture frame must advance");
         close_requests.extend(response.close_requests().cloned());
-        if let SurfaceContributionOutcome::Rejected { reason, .. } = response.contribution() {
+        if let SurfaceContributionOutcome::Rejected { reason, .. } = response.backend_contribution()
+        {
             contribution_rejections.push(reason.clone());
         }
         saw_stale_pass |= !response.interactions_current();

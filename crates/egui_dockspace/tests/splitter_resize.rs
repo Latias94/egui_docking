@@ -85,7 +85,7 @@ fn run_frame(
             .show_single_surface(SURFACE, ui, panes)
             .expect("egui frame must advance");
         interactions_current = response.interactions_current();
-        transitions.extend_from_slice(response.transitions());
+        transitions.push(response.backend_transition().clone());
     });
     FrameObservation {
         interactions_current,

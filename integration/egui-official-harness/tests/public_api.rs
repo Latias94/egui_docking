@@ -1,12 +1,13 @@
 use std::time::Duration;
 
+use dockspace::command::WorkspaceCommand;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{Dockspace, DockspaceCommandOutcome, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -53,6 +54,23 @@ fn official_egui_consumes_the_public_paint_only_facade() {
     let mut dockspace = Dockspace::builder("official-egui-consumer", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
+    let root_node = dockspace
+        .workspace()
+        .root(ROOT)
+        .expect("the fixture root exists")
+        .node;
+    let source = dockspace
+        .workspace()
+        .capture_item_source(ROOT, root_node, ITEM)
+        .expect("the fixture item source is current");
+    let command = dockspace
+        .submit_command(WorkspaceCommand::Select { source })
+        .expect("the public command boundary reduces one checked command");
+    assert!(matches!(
+        command.outcome(),
+        DockspaceCommandOutcome::Applied(_)
+    ));
+    assert!(!command.mutation().workspace_changed());
     let mut panes = SmokePanes::default();
     let mut last_repaint_delay = Duration::ZERO;
     let mut last_tree = None;

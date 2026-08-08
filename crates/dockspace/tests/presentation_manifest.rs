@@ -1,6 +1,6 @@
 use super::support;
 
-use dockspace::PresentationCompilationError;
+use crate::scene_compiler::PresentationCompilationError;
 use dockspace::command::{DockTarget, WorkspaceCommand};
 use dockspace::engine::{
     DockEngine, EngineInput, PreparedSurfaceContribution, SurfaceContributionPrepareError,
