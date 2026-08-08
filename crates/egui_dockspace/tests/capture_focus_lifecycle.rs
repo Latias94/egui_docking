@@ -118,13 +118,10 @@ fn run_input(
         .finish()
         .expect("outer host frame commits")
         .into_parts();
-    for output in outputs {
-        output.settle_with(|surface, full_output| {
-            assert_eq!(surface, SURFACE);
-            full_output.drop_without_applying_deltas();
-            EguiPresentationResult::Presented
-        });
-    }
+    outputs.settle_with(|surface, _| {
+        assert_eq!(surface, SURFACE);
+        EguiPresentationResult::Presented
+    });
     response
 }
 
@@ -671,12 +668,7 @@ fn finish_multipass_terminal_frame(
         .finish()
         .expect("outer host frame commits")
         .into_parts();
-    for output in outputs {
-        output.settle_with(|_, full_output| {
-            full_output.drop_without_applying_deltas();
-            EguiPresentationResult::Presented
-        });
-    }
+    outputs.settle_with(|_, _| EguiPresentationResult::Presented);
     assert_eq!(panes.passes, BTreeSet::from([0, 1]));
     (response, panes)
 }

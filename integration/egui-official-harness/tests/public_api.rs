@@ -143,12 +143,7 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
             .all(|output| !output.has_presentation_obligation()),
         "bootstrap paint must not fabricate a presentation obligation",
     );
-    for output in outputs {
-        output.settle_with(|_, mut full_output| {
-            full_output.textures_delta.clear();
-            EguiPresentationResult::Dropped
-        });
-    }
+    outputs.settle_with(|_, _| EguiPresentationResult::Dropped);
 
     let mut ready = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(2, 0))
@@ -157,14 +152,14 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
         .run_surface(SURFACE, &context, raw_input(), &mut panes)
         .expect("the ready host owns the surface run");
     let (_, pending) = ready.finish().expect("ready frame commits").into_parts();
-    pending
-        .into_iter()
-        .next()
-        .expect("ready paint has a settlement obligation")
-        .settle_with(|_, mut full_output| {
-            full_output.textures_delta.clear();
-            EguiPresentationResult::Presented
-        });
+    assert_eq!(pending.len(), 1, "ready paint has one renderer output");
+    assert!(
+        pending
+            .iter()
+            .all(|output| output.has_presentation_obligation()),
+        "ready paint has a settlement obligation",
+    );
+    pending.settle_with(|_, _| EguiPresentationResult::Presented);
 
     let mut settled = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
@@ -177,12 +172,12 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
         .expect("settlement frame commits")
         .into_parts();
     assert_eq!(host.presentation_summary().retired_presented_eligible(), 1);
-    pending
-        .into_iter()
-        .next()
-        .expect("the next output has a settlement obligation")
-        .settle_with(|_, mut full_output| {
-            full_output.textures_delta.clear();
-            EguiPresentationResult::Dropped
-        });
+    assert_eq!(pending.len(), 1, "the next frame has one renderer output");
+    assert!(
+        pending
+            .iter()
+            .all(|output| output.has_presentation_obligation()),
+        "the next output has a settlement obligation",
+    );
+    pending.settle_with(|_, _| EguiPresentationResult::Dropped);
 }

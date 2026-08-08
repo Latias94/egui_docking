@@ -22,6 +22,7 @@ mod error_detail;
 mod facade;
 mod floating;
 mod hit;
+mod output_ownership;
 #[cfg(feature = "serde")]
 mod persistence;
 #[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]

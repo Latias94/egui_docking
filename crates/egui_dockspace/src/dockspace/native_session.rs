@@ -33,6 +33,27 @@ use super::{
     EguiOuterFrameCommit, ExactNativeViewport, PreparedEguiOuterFrameCommit,
 };
 
+#[cfg(egui_backend_event_envelope)]
+fn validate_native_presentation_token(
+    surface: SurfaceId,
+    output: &FullOutput,
+) -> Result<(), DockspaceError> {
+    if output.platform_output.presentation_token.is_some() {
+        return Err(DockspaceError::from_source(
+            crate::error::DockspaceErrorSource::NativePresentationTokenOccupied { surface },
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(egui_backend_event_envelope))]
+fn validate_native_presentation_token(
+    _surface: SurfaceId,
+    _output: &FullOutput,
+) -> Result<(), DockspaceError> {
+    Ok(())
+}
+
 /// Adapter-side lifecycle state for one owned native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum NativeSessionStatus {
@@ -537,11 +558,11 @@ impl EguiNativePresentationSession {
             let paint = match paint {
                 Some(Ok(paint)) => paint,
                 Some(Err(error)) => {
-                    driver.defer_full_output(output);
+                    driver.defer_full_output(context, output);
                     return Err(error);
                 }
                 None => {
-                    driver.defer_full_output(output);
+                    driver.defer_full_output(context, output);
                     return Err(DockspaceError::from_source(
                         crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
                             surface,
@@ -549,6 +570,10 @@ impl EguiNativePresentationSession {
                     ));
                 }
             };
+            if let Err(error) = validate_native_presentation_token(surface, &output) {
+                driver.defer_full_output(context, output);
+                return Err(error);
+            }
             driver.confirm_surface_output(surface, context, viewport, output)?;
             Ok(paint)
         })
@@ -585,17 +610,21 @@ impl EguiNativePresentationSession {
             match paint {
                 Some(Ok(())) => {}
                 Some(Err(error)) => {
-                    driver.defer_full_output(output);
+                    driver.defer_full_output(context, output);
                     return Err(error);
                 }
                 None => {
-                    driver.defer_full_output(output);
+                    driver.defer_full_output(context, output);
                     return Err(DockspaceError::from_source(
                         crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
                             surface,
                         },
                     ));
                 }
+            }
+            if let Err(error) = validate_native_presentation_token(surface, &output) {
+                driver.defer_full_output(context, output);
+                return Err(error);
             }
             driver.confirm_surface_output(surface, context, native.viewport(), output)?;
             Ok(())
@@ -621,6 +650,7 @@ impl EguiNativePresentationSession {
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
+        validate_native_presentation_token(surface, output)?;
         self.with_driver(dockspace, |driver| {
             driver.confirm_external_surface_output(surface, context, native.viewport(), output)
         })
@@ -643,6 +673,7 @@ impl EguiNativePresentationSession {
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
+        validate_native_presentation_token(surface, output)?;
         self.with_driver(dockspace, |driver| {
             driver.confirm_external_surface_output(surface, context, native.viewport(), output)
         })?;

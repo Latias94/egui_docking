@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
 
 use dockspace::backend::engine::{CoreHostFrame, CoreHostPresentationFrame, HostFrameView};
 use dockspace::backend::presentation_observation::{
@@ -12,9 +11,12 @@ use dockspace::ids::{SourceSequence, SurfaceId};
 use dockspace::runtime::WorkspaceVersion;
 #[cfg(egui_backend_event_envelope)]
 use egui::UserData;
-use egui::{Context, FullOutput, TexturesDelta, ViewportId};
+use egui::{Context, FullOutput, ViewportId};
 
 use crate::error::DockspaceErrorSource;
+use crate::output_ownership::{
+    ConfirmedSurfaceOutput, ConfirmedSurfaceOutputs, OutputBatchReservation, OutputTextureLedger,
+};
 use crate::pointer_input::PreparedPointerInput;
 use crate::render::{EguiSurfaceDraft, PreparedStyleReplacement};
 
@@ -139,78 +141,6 @@ struct HostFrameScratch {
     style_replacement: Option<StagedStyleReplacement>,
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct DeferredTextureDeltas(Arc<DeferredTextureDeltasInner>);
-
-#[derive(Default)]
-struct DeferredTextureDeltasInner {
-    deltas: Mutex<TexturesDelta>,
-}
-
-impl Drop for DeferredTextureDeltasInner {
-    fn drop(&mut self) {
-        self.deltas
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-}
-
-impl DeferredTextureDeltas {
-    pub(crate) fn defer_output(&self, mut output: FullOutput) {
-        let delta = std::mem::take(&mut output.textures_delta);
-        self.defer(delta);
-    }
-
-    fn defer(&self, delta: TexturesDelta) {
-        self.0
-            .deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .append(delta);
-    }
-
-    fn prepend_to(&self, output: &mut FullOutput) {
-        let mut pending = {
-            let mut guard = self
-                .0
-                .deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut *guard)
-        };
-        pending.append(std::mem::take(&mut output.textures_delta));
-        output.textures_delta = pending;
-    }
-}
-
-#[cfg(test)]
-mod deferred_texture_tests {
-    use egui::{FullOutput, TextureId};
-
-    use super::DeferredTextureDeltas;
-
-    #[test]
-    fn deferred_texture_commands_precede_the_next_renderer_output() {
-        let deferred = DeferredTextureDeltas::default();
-        let mut abandoned = FullOutput::default();
-        abandoned.textures_delta.free.insert(TextureId::Managed(1));
-        deferred.defer_output(abandoned);
-
-        let mut next = FullOutput::default();
-        next.textures_delta.free.insert(TextureId::Managed(2));
-        deferred.prepend_to(&mut next);
-
-        assert_eq!(
-            next.textures_delta.free,
-            [TextureId::Managed(1), TextureId::Managed(2)]
-                .into_iter()
-                .collect()
-        );
-        next.drop_without_applying_deltas();
-    }
-}
-
 pub(super) struct StagedStyleReplacement {
     source_sequence: SourceSequence,
     prepared: PreparedStyleReplacement,
@@ -243,9 +173,8 @@ pub(super) struct HostFrameState {
     expected_surfaces: BTreeSet<SurfaceId>,
     drafts: BTreeMap<SurfaceId, EguiSurfaceDraft>,
     surface_passes: BTreeMap<SurfaceId, EguiSurfacePass>,
-    confirmed_full_outputs: BTreeMap<SurfaceId, FullOutput>,
-    confirmed_output_passes: BTreeMap<SurfaceId, u64>,
-    deferred_texture_deltas: DeferredTextureDeltas,
+    confirmed_outputs: ConfirmedSurfaceOutputs,
+    output_ledger: OutputTextureLedger,
     native_bindings: Option<NativeBindingCandidate>,
     native_surface_passes: BTreeMap<SurfaceId, NativeCoreRoute>,
     native_staging_passes: BTreeMap<SurfaceId, EguiNativeStagingPass>,
@@ -262,8 +191,9 @@ pub(super) struct HostFrameState {
 
 impl Drop for HostFrameState {
     fn drop(&mut self) {
-        for (_, output) in std::mem::take(&mut self.confirmed_full_outputs) {
-            self.deferred_texture_deltas.defer_output(output);
+        for output in self.confirmed_outputs.take() {
+            let (_, context, output) = output.into_parts();
+            self.output_ledger.defer_output(&context, output);
         }
     }
 }
@@ -475,7 +405,7 @@ impl HostFrameState {
         automatic_presentation: Option<AutomaticPresentationFrame>,
         outer_presentation: Option<OuterPresentationFrame>,
         automatic_pointer: Option<PreparedPointerInput>,
-        deferred_texture_deltas: DeferredTextureDeltas,
+        output_ledger: OutputTextureLedger,
         mode: EguiHostFrameMode,
         input_authority: EguiInputAuthority,
         output_boundary: EguiOutputBoundary,
@@ -489,9 +419,8 @@ impl HostFrameState {
             expected_surfaces,
             drafts: BTreeMap::new(),
             surface_passes: BTreeMap::new(),
-            confirmed_full_outputs: BTreeMap::new(),
-            confirmed_output_passes: BTreeMap::new(),
-            deferred_texture_deltas,
+            confirmed_outputs: ConfirmedSurfaceOutputs::default(),
+            output_ledger,
             native_bindings: None,
             native_surface_passes: BTreeMap::new(),
             native_staging_passes: BTreeMap::new(),
@@ -953,17 +882,17 @@ impl HostFrameState {
         {
             Ok((pass, completed_pass)) => {
                 if let Err(error) = pass.consume_output_proof(surface, &mut output) {
-                    self.deferred_texture_deltas.defer_output(output);
+                    self.output_ledger.defer_output(context, output);
                     return Err(error);
                 }
                 completed_pass
             }
             Err(error) => {
-                self.deferred_texture_deltas.defer_output(output);
+                self.output_ledger.defer_output(context, output);
                 return Err(error);
             }
         };
-        self.retain_confirmed_output(surface, completed_pass, output);
+        self.retain_confirmed_output(surface, context, completed_pass, output);
         Ok(())
     }
 
@@ -1023,9 +952,9 @@ impl HostFrameState {
             );
         }
         if self
-            .confirmed_output_passes
-            .get(&surface)
-            .is_some_and(|confirmed| *confirmed >= expected_completed_pass)
+            .confirmed_outputs
+            .completed_pass(surface)
+            .is_some_and(|confirmed| confirmed >= expected_completed_pass)
         {
             return Err(
                 crate::error::DockspaceErrorSource::OuterHostSurfaceOutputAlreadyConfirmed {
@@ -1047,25 +976,19 @@ impl HostFrameState {
             self.validate_surface_output(surface, context, viewport, output)?;
         pass.consume_output_proof(surface, output)?;
         let output = std::mem::take(output);
-        self.retain_confirmed_output(surface, completed_pass, output);
+        self.retain_confirmed_output(surface, context, completed_pass, output);
         Ok(())
     }
 
     fn retain_confirmed_output(
         &mut self,
         surface: SurfaceId,
+        context: &Context,
         completed_pass: u64,
-        mut output: FullOutput,
+        output: FullOutput,
     ) {
-        if let Some(mut previous) = self.confirmed_full_outputs.remove(&surface) {
-            self.deferred_texture_deltas.prepend_to(&mut previous);
-            previous.append(output);
-            output = previous;
-        } else {
-            self.deferred_texture_deltas.prepend_to(&mut output);
-        }
-        self.confirmed_full_outputs.insert(surface, output);
-        self.confirmed_output_passes.insert(surface, completed_pass);
+        self.confirmed_outputs
+            .retain(surface, context.clone(), completed_pass, output);
     }
 
     pub(super) fn validate_finish(&self) -> Result<(), DockspaceErrorSource> {
@@ -1074,8 +997,15 @@ impl HostFrameState {
         }
         if self.mode == EguiHostFrameMode::CompleteRoster
             && let Some(surface) = self.drafts.iter().find_map(|(surface, draft)| {
-                (draft.paint().is_some() && !self.confirmed_full_outputs.contains_key(surface))
-                    .then_some(*surface)
+                let expected_pass = self
+                    .surface_passes
+                    .get(surface)
+                    .and_then(|pass| pass.cumulative_pass.checked_add(1));
+                (draft.paint().is_some()
+                    && expected_pass.is_none_or(|expected| {
+                        self.confirmed_outputs.completed_pass(*surface) != Some(expected)
+                    }))
+                .then_some(*surface)
             })
         {
             return Err(
@@ -1083,11 +1013,17 @@ impl HostFrameState {
             );
         }
         if self.mode == EguiHostFrameMode::CompleteRoster
-            && let Some(surface) = self
-                .native_staging_passes
-                .keys()
-                .find(|surface| !self.confirmed_full_outputs.contains_key(surface))
-                .copied()
+            && let Some(surface) =
+                self.native_staging_passes
+                    .iter()
+                    .find_map(|(surface, staging)| {
+                        let expected_pass = staging.pass.cumulative_pass.checked_add(1);
+                        expected_pass
+                            .is_none_or(|expected| {
+                                self.confirmed_outputs.completed_pass(*surface) != Some(expected)
+                            })
+                            .then_some(*surface)
+                    })
         {
             return Err(
                 crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
@@ -1162,21 +1098,27 @@ impl HostFrameState {
         self.outer_presentation.take()
     }
 
-    pub(super) fn confirmed_full_outputs(&self) -> &BTreeMap<SurfaceId, FullOutput> {
-        &self.confirmed_full_outputs
+    pub(super) fn has_confirmed_output(&self, surface: SurfaceId) -> bool {
+        self.confirmed_outputs.contains(surface)
     }
 
-    pub(super) fn take_confirmed_full_outputs(&mut self) -> BTreeMap<SurfaceId, FullOutput> {
-        self.confirmed_output_passes.clear();
-        std::mem::take(&mut self.confirmed_full_outputs)
+    pub(super) fn take_confirmed_outputs(&mut self) -> Vec<ConfirmedSurfaceOutput> {
+        self.confirmed_outputs.take()
     }
 
-    pub(super) fn defer_full_output(&self, output: FullOutput) {
-        self.deferred_texture_deltas.defer_output(output);
+    pub(super) fn reserve_output_batch(
+        &self,
+    ) -> Result<Option<OutputBatchReservation>, DockspaceErrorSource> {
+        (!self.confirmed_outputs.is_empty())
+            .then(|| {
+                self.output_ledger
+                    .reserve(self.confirmed_outputs.contexts())
+            })
+            .transpose()
     }
 
-    pub(super) fn deferred_texture_deltas(&self) -> DeferredTextureDeltas {
-        self.deferred_texture_deltas.clone()
+    pub(super) fn defer_full_output(&self, context: &Context, output: FullOutput) {
+        self.output_ledger.defer_output(context, output);
     }
 
     pub(super) const fn semantic_source_sequence(&self) -> SourceSequence {

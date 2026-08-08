@@ -3,8 +3,8 @@ use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{
-    EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterSurfaceOutput, EguiPresentationResult,
-    HostFrameResponse,
+    EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterOutputBatch, EguiOuterSurfaceOutput,
+    EguiPresentationResult, HostFrameResponse,
 };
 use egui_dockspace::{
     Dockspace, DockspaceErrorKind, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, PaneView,
@@ -174,6 +174,7 @@ fn bootstrap_outer_frame(
             .all(|output| !output.has_presentation_obligation()),
         "a prepared-only bootstrap paint must not create a presentation obligation",
     );
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 fn bootstrap_multi_surface_outer_frame(
@@ -193,23 +194,16 @@ fn bootstrap_multi_surface_outer_frame(
             .all(|output| !output.has_presentation_obligation()),
         "prepared-only bootstrap paints must not create presentation obligations",
     );
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
-fn one_presentation(mut presentations: Vec<EguiOuterSurfaceOutput>) -> EguiOuterSurfaceOutput {
-    assert_eq!(presentations.len(), 1, "one surface emits one output token");
-    presentations.pop().expect("one output token exists")
+fn one_output(outputs: &EguiOuterOutputBatch) -> &EguiOuterSurfaceOutput {
+    assert_eq!(outputs.len(), 1, "one surface emits one output token");
+    outputs.iter().next().expect("one output token exists")
 }
 
-fn complete_presentations(
-    presentations: Vec<EguiOuterSurfaceOutput>,
-    result: EguiPresentationResult,
-) {
-    for presentation in presentations {
-        presentation.settle_with(|_, full_output| {
-            full_output.drop_without_applying_deltas();
-            result
-        });
-    }
+fn complete_presentations(presentations: EguiOuterOutputBatch, result: EguiPresentationResult) {
+    presentations.settle_with(|_, _| result);
 }
 
 #[test]
@@ -322,6 +316,7 @@ fn outer_host_frame_commits_the_complete_multi_surface_roster_once() {
     assert_eq!(response.surfaces().len(), 2);
     assert!(response.surface(ROOT_SURFACE).is_some());
     assert!(response.surface(CHILD_SURFACE).is_some());
+    complete_presentations(presentations, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -355,17 +350,14 @@ fn multi_surface_renderer_results_settle_independently() {
             .iter()
             .all(EguiOuterSurfaceOutput::has_presentation_obligation)
     );
-    for presentation in first {
-        let result = if presentation.surface() == ROOT_SURFACE {
+    first.settle_with(|surface, _| {
+        let result = if surface == ROOT_SURFACE {
             EguiPresentationResult::Presented
         } else {
             EguiPresentationResult::Dropped
         };
-        presentation.settle_with(|_, full_output| {
-            full_output.drop_without_applying_deltas();
-            result
-        });
-    }
+        result
+    });
 
     let (second, pending) = paint_multi_surface_outer_frame(
         &root_context,
@@ -379,7 +371,7 @@ fn multi_surface_renderer_results_settle_independently() {
     assert_eq!(summary.observed(), 2);
     assert_eq!(summary.retired_presented_eligible(), 1);
     assert_eq!(summary.retired_dropped(), 1);
-    complete_presentations(pending, EguiPresentationResult::Dropped);
+    complete_presentations(pending, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -401,7 +393,7 @@ fn outer_host_frame_replaces_an_earlier_egui_pass_before_reduction() {
     assert_eq!(panes.ui_calls, 2);
     let (response, outputs) = host.finish().expect("final pass commits").into_parts();
     assert_eq!(
-        one_presentation(outputs)
+        one_output(&outputs)
             .full_output()
             .platform_output
             .num_completed_passes,
@@ -415,6 +407,7 @@ fn outer_host_frame_replaces_an_earlier_egui_pass_before_reduction() {
             .status(),
         DockspaceSurfaceCommitStatus::Ready,
     );
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -488,9 +481,9 @@ fn outer_host_surface_run_returns_only_its_owned_full_output() {
         .run_surface(ROOT_SURFACE, &context, input(), &mut panes)
         .expect("outer host owns the complete surface run");
     assert_eq!(paint.surface(), ROOT_SURFACE);
-    let (_, mut outputs) = host.finish().expect("confirmed frame commits").into_parts();
+    let (_, outputs) = host.finish().expect("confirmed frame commits").into_parts();
     assert_eq!(outputs.len(), 1);
-    let output = outputs.pop().expect("one bound output exists");
+    let output = one_output(&outputs);
     assert!(output.has_presentation_obligation());
     assert!(
         output
@@ -498,15 +491,14 @@ fn outer_host_surface_run_returns_only_its_owned_full_output() {
             .viewport_output
             .contains_key(&context.viewport_id())
     );
-    output.settle_with(|surface, full_output| {
+    outputs.settle_with(|surface, full_output| {
         assert_eq!(surface, ROOT_SURFACE);
         assert!(
             full_output
                 .viewport_output
                 .contains_key(&context.viewport_id())
         );
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
+        EguiPresentationResult::Presented
     });
 }
 
@@ -531,6 +523,20 @@ fn outer_host_rejects_replacing_a_surface_run_with_another_context() {
             .kind(),
         DockspaceErrorKind::HostProtocol,
     );
+    assert_eq!(
+        host.finish()
+            .expect_err("a rejected context replacement poisons the host frame")
+            .kind(),
+        DockspaceErrorKind::HostProtocol,
+    );
+    let (_, outputs) = paint_outer_frame(
+        &first_context,
+        &mut dockspace,
+        &mut panes,
+        EguiFrameScheduleKey::new(2, 0),
+    )
+    .into_parts();
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -556,22 +562,19 @@ fn presentation_token_can_settle_on_the_renderer_thread() {
     .into_parts();
 
     assert_eq!(pending.len(), 1);
-    assert!(pending[0].has_presentation_obligation());
+    assert!(one_output(&pending).has_presentation_obligation());
 
     std::thread::spawn(move || {
-        one_presentation(pending).settle_with(|_, full_output| {
-            full_output.drop_without_applying_deltas();
-            EguiPresentationResult::Presented
-        });
+        pending.settle_with(|_, _| EguiPresentationResult::Presented);
     })
     .join()
     .expect("renderer thread does not panic");
 }
 
 #[test]
-fn split_presentation_stays_pending_until_a_late_renderer_result() {
+fn unsettled_output_batch_blocks_the_next_batch_until_renderer_settlement() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-split-late-result", single_workspace())
+    let mut dockspace = Dockspace::builder("outer-batch-backpressure", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -589,37 +592,33 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    let pending = one_presentation(pending);
-    assert!(pending.has_presentation_obligation());
-    let (surface, full_output, settlement) = pending.into_parts();
-
-    assert_eq!(surface, ROOT_SURFACE);
+    let output = one_output(&pending);
+    assert!(output.has_presentation_obligation());
     assert!(
-        full_output
+        output
+            .full_output()
             .viewport_output
             .contains_key(&context.viewport_id())
     );
-    assert_eq!(settlement.surface(), ROOT_SURFACE);
-    assert!(settlement.is_required());
-    assert_eq!(settlement.native_route(), None);
-    full_output.drop_without_applying_deltas();
 
-    let (before_result, outputs) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(3, 0),
-    )
-    .into_parts();
-    assert_eq!(before_result.presentation_summary().retired(), 0);
-    let no_op_output = one_presentation(outputs);
-    assert!(!no_op_output.has_presentation_obligation());
-    let (_, full_output, no_op) = no_op_output.into_parts();
-    full_output.drop_without_applying_deltas();
-    assert!(!no_op.is_required());
-    no_op.settle(EguiPresentationResult::Presented);
+    let mut blocked = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
+        .expect("next outer host frame begins");
+    blocked
+        .run_surface(ROOT_SURFACE, &context, input(), &mut panes)
+        .expect("the next surface run may be prepared");
+    assert_eq!(
+        blocked
+            .finish()
+            .expect_err("an unsettled renderer batch applies backpressure")
+            .kind(),
+        DockspaceErrorKind::OperationConflict,
+    );
 
-    settlement.settle(EguiPresentationResult::Presented);
+    pending.settle_with(|surface, _| {
+        assert_eq!(surface, ROOT_SURFACE);
+        EguiPresentationResult::Presented
+    });
 
     let (after_result, outputs) = paint_outer_frame(
         &context,
@@ -635,18 +634,14 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
         1,
         "the late result must complete the exact obligation once",
     );
-    let stable = one_presentation(outputs);
-    assert!(stable.has_presentation_obligation());
-    stable.settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
+    assert!(one_output(&outputs).has_presentation_obligation());
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
-fn dropping_a_split_settlement_terminally_drops_the_output() {
+fn dropping_an_output_batch_terminally_drops_the_output() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-split-drop", single_workspace())
+    let mut dockspace = Dockspace::builder("outer-batch-drop", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -664,13 +659,8 @@ fn dropping_a_split_settlement_terminally_drops_the_output() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    let pending = one_presentation(pending);
-    assert!(pending.has_presentation_obligation());
-    let (_, full_output, settlement) = pending.into_parts();
-    full_output.drop_without_applying_deltas();
-    assert!(settlement.is_required());
-
-    drop(settlement);
+    assert!(one_output(&pending).has_presentation_obligation());
+    drop(pending);
 
     let (response, outputs) = paint_outer_frame(
         &context,
@@ -680,13 +670,13 @@ fn dropping_a_split_settlement_terminally_drops_the_output() {
     )
     .into_parts();
     assert_eq!(response.presentation_summary().retired_dropped(), 1);
-    complete_presentations(outputs, EguiPresentationResult::Dropped);
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
-fn split_output_without_an_obligation_has_an_explicit_no_op_settlement() {
+fn output_batch_without_an_obligation_settles_as_a_no_op() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-split-no-op", single_workspace())
+    let mut dockspace = Dockspace::builder("outer-batch-no-op", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -698,13 +688,9 @@ fn split_output_without_an_obligation_has_an_explicit_no_op_settlement() {
         EguiFrameScheduleKey::new(1, 0),
     )
     .into_parts();
-    let (surface, full_output, settlement) = one_presentation(outputs).into_parts();
-    full_output.drop_without_applying_deltas();
-
-    assert_eq!(surface, ROOT_SURFACE);
-    assert_eq!(settlement.surface(), ROOT_SURFACE);
-    assert!(!settlement.is_required());
-    settlement.settle(EguiPresentationResult::Presented);
+    assert_eq!(one_output(&outputs).surface(), ROOT_SURFACE);
+    assert!(!one_output(&outputs).has_presentation_obligation());
+    complete_presentations(outputs, EguiPresentationResult::Presented);
     let (next, outputs) = paint_outer_frame(
         &context,
         &mut dockspace,
@@ -713,141 +699,7 @@ fn split_output_without_an_obligation_has_an_explicit_no_op_settlement() {
     )
     .into_parts();
     assert_eq!(next.presentation_summary().observed(), 0);
-    complete_presentations(outputs, EguiPresentationResult::Dropped);
-}
-
-#[test]
-fn outer_presentation_completion_cannot_jump_an_earlier_pending_output() {
-    let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-causal-barrier", single_workspace())
-        .build()
-        .expect("fixture builds");
-    let mut panes = TestPanes;
-
-    bootstrap_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(1, 0),
-    );
-
-    let (_, first) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(2, 0),
-    )
-    .into_parts();
-    let (_, second) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(3, 0),
-    )
-    .into_parts();
-    let first = one_presentation(first);
-    let second = one_presentation(second);
-    assert!(first.has_presentation_obligation());
-    assert!(!second.has_presentation_obligation());
-    second.settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Presented
-    });
-
-    let (third, third_pending) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(4, 0),
-    )
-    .into_parts();
-    assert_eq!(third.presentation_summary().retired(), 0);
-    assert!(
-        !third
-            .surface(ROOT_SURFACE)
-            .and_then(|surface| surface.paint())
-            .expect("third surface paints")
-            .interactions_current()
-    );
-
-    first.settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Presented
-    });
-    let (fourth, fourth_pending) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(5, 0),
-    )
-    .into_parts();
-    assert_eq!(
-        fourth.presentation_summary().retired_presented_eligible(),
-        1,
-    );
-
-    for pending in [third_pending, fourth_pending].into_iter().flatten() {
-        pending.settle_with(|_, full_output| {
-            full_output.drop_without_applying_deltas();
-            EguiPresentationResult::Dropped
-        });
-    }
-}
-
-#[test]
-fn held_outer_output_applies_per_surface_backpressure() {
-    let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-held-output-backpressure", single_workspace())
-        .build()
-        .expect("fixture builds");
-    let mut panes = TestPanes;
-
-    bootstrap_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(1, 0),
-    );
-
-    let (_, first) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(2, 0),
-    )
-    .into_parts();
-    let held = one_presentation(first);
-    assert!(held.has_presentation_obligation());
-
-    for sequence in 3..=259 {
-        let (_, outputs) = paint_outer_frame(
-            &context,
-            &mut dockspace,
-            &mut panes,
-            EguiFrameScheduleKey::new(sequence, 0),
-        )
-        .into_parts();
-        let output = one_presentation(outputs);
-        assert!(
-            !output.has_presentation_obligation(),
-            "a held prefix must suppress later presentation emissions"
-        );
-        drop(output);
-    }
-
-    held.settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
-    let (settled, outputs) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(260, 0),
-    )
-    .into_parts();
-    assert_eq!(settled.presentation_summary().retired_dropped(), 1);
-    assert!(one_presentation(outputs).has_presentation_obligation());
+    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -872,10 +724,7 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    one_presentation(pending).settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
+    complete_presentations(pending, EguiPresentationResult::Dropped);
 
     let (response, pending) = paint_outer_frame(
         &context,
@@ -892,10 +741,7 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
             .expect("second surface paints")
             .interactions_current()
     );
-    one_presentation(pending).settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
+    complete_presentations(pending, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -920,7 +766,7 @@ fn abandoned_outer_output_terminally_drops_without_blocking_the_stream() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    drop(one_presentation(pending));
+    drop(pending);
 
     let (response, pending) = paint_outer_frame(
         &context,
@@ -930,10 +776,7 @@ fn abandoned_outer_output_terminally_drops_without_blocking_the_stream() {
     )
     .into_parts();
     assert_eq!(response.presentation_summary().retired_dropped(), 1);
-    one_presentation(pending).settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
+    complete_presentations(pending, EguiPresentationResult::Dropped);
 }
 
 #[test]
@@ -958,10 +801,7 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    one_presentation(pending).settle_with(|_, full_output| {
-        full_output.drop_without_applying_deltas();
-        EguiPresentationResult::Dropped
-    });
+    complete_presentations(pending, EguiPresentationResult::Dropped);
 
     let response = paint_crates_io_frame(&context, &mut dockspace, &mut panes);
     assert!(!response.mutation().workspace_changed());

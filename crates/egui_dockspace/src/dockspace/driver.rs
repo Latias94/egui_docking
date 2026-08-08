@@ -34,9 +34,10 @@ use super::{
 };
 use super::{PaneFocusRequestFence, observe_surface_pane_focus};
 use crate::error::DockspaceError;
+use crate::output_ownership::OutputBatchReservation;
 use crate::pane::PaneView;
 use crate::pointer_input::PreparedPointerInput;
-use crate::presentation_settlement::EguiOuterSurfaceOutput;
+use crate::presentation_settlement::{EguiOuterOutputBatch, EguiOuterSurfaceOutput};
 use crate::projection::EguiSurfaceMeasurementSet;
 use crate::projection::EguiSurfacePaintResources;
 use crate::receiver::PaintReceiverRegistrations;
@@ -125,11 +126,11 @@ impl EguiOuterHostFrame<'_> {
         let paint = match paint {
             Some(Ok(paint)) => paint,
             Some(Err(error)) => {
-                self.inner.defer_full_output(output);
+                self.inner.defer_full_output(context, output);
                 return Err(error);
             }
             None => {
-                self.inner.defer_full_output(output);
+                self.inner.defer_full_output(context, output);
                 return Err(DockspaceError::from_source(
                     crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed {
                         surface,
@@ -138,7 +139,7 @@ impl EguiOuterHostFrame<'_> {
             }
         };
         let Some(pointer_events) = pointer_events else {
-            self.inner.defer_full_output(output);
+            self.inner.defer_full_output(context, output);
             return Err(DockspaceError::from_source(
                 crate::error::DockspaceErrorSource::OuterHostSurfaceOutputUnconfirmed { surface },
             ));
@@ -147,7 +148,7 @@ impl EguiOuterHostFrame<'_> {
             .inner
             .prepare_outer_pointer(surface, context, &pointer_events)
         {
-            self.inner.defer_full_output(output);
+            self.inner.defer_full_output(context, output);
             return Err(error);
         }
         self.inner
@@ -166,7 +167,7 @@ impl EguiOuterHostFrame<'_> {
 #[must_use = "dropping the commit terminally drops every unsettled presentation output"]
 pub struct EguiOuterFrameCommit {
     host: HostFrameResponse,
-    outputs: Vec<EguiOuterSurfaceOutput>,
+    outputs: EguiOuterOutputBatch,
 }
 
 /// Fully preflighted egui/core frame awaiting an enclosing host transaction seal.
@@ -180,6 +181,7 @@ pub struct PreparedEguiOuterFrameCommit {
     renderer: PreparedEguiFrameAcceptance,
     native_bindings: Option<PreparedNativeBindingCommit>,
     state: HostFrameState,
+    output_reservation: Option<OutputBatchReservation>,
     pane_focus_observations: Vec<PaneFocusObservation>,
     backend_ordered_input: bool,
 }
@@ -199,11 +201,8 @@ impl EguiOuterFrameCommit {
 
     /// Separates the core response from the affine renderer-bound outputs.
     ///
-    /// Each output can subsequently be split with
-    /// [`EguiOuterSurfaceOutput::into_parts`] when renderer completion arrives
-    /// after the host has consumed its [`FullOutput`].
     #[must_use]
-    pub fn into_parts(self) -> (HostFrameResponse, Vec<EguiOuterSurfaceOutput>) {
+    pub fn into_parts(self) -> (HostFrameResponse, EguiOuterOutputBatch) {
         (self.host, self.outputs)
     }
 }
@@ -266,6 +265,7 @@ impl PreparedEguiOuterFrameCommit {
             renderer,
             native_bindings,
             mut state,
+            output_reservation,
             pane_focus_observations,
             backend_ordered_input,
         } = self;
@@ -278,6 +278,7 @@ impl PreparedEguiOuterFrameCommit {
             Err(error) => {
                 drop(renderer);
                 drop(native_bindings);
+                drop(output_reservation);
                 state.finish();
                 drop(state);
                 return abort_pointer_input_after_error(dockspace, error);
@@ -358,17 +359,20 @@ impl PreparedEguiOuterFrameCommit {
             .into_iter()
             .map(|presentation| (presentation.surface(), presentation))
             .collect::<BTreeMap<_, _>>();
-        let confirmed_full_outputs = state.take_confirmed_full_outputs();
-        let deferred_texture_deltas = state.deferred_texture_deltas();
-        let outputs = confirmed_full_outputs
+        let mut confirmed_outputs = state.take_confirmed_outputs();
+        if let Some(reservation) = output_reservation.as_ref() {
+            reservation.normalize(&mut confirmed_outputs);
+        }
+        let outputs = confirmed_outputs
             .into_iter()
-            .map(|(surface, full_output)| {
+            .map(|confirmed| {
+                let (surface, context, full_output) = confirmed.into_parts();
                 EguiOuterSurfaceOutput::new(
                     surface,
                     state.native_surface_pass(surface),
+                    context,
                     full_output,
                     presentations_by_surface.remove(&surface),
-                    deferred_texture_deltas.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -380,7 +384,7 @@ impl PreparedEguiOuterFrameCommit {
         state.finish();
         Ok(EguiOuterFrameCommit {
             host: HostFrameResponse::from_transition(transition, responses),
-            outputs,
+            outputs: EguiOuterOutputBatch::new(outputs, output_reservation),
         })
     }
 
@@ -397,12 +401,14 @@ impl PreparedEguiOuterFrameCommit {
             renderer,
             native_bindings,
             mut state,
+            output_reservation,
             pane_focus_observations: _,
             backend_ordered_input: _,
         } = self;
         drop(core);
         drop(renderer);
         drop(native_bindings);
+        drop(output_reservation);
         state.finish();
         drop(state);
         dockspace.abort_pointer_input()
@@ -931,8 +937,8 @@ impl DockspaceHostFrame<'_> {
             .map_err(Into::into)
     }
 
-    pub(super) fn defer_full_output(&self, output: FullOutput) {
-        self.state.defer_full_output(output);
+    pub(super) fn defer_full_output(&self, context: &Context, output: FullOutput) {
+        self.state.defer_full_output(context, output);
     }
 
     fn prepare_surface_contribution(
@@ -1347,7 +1353,7 @@ impl DockspaceHostFrame<'_> {
                 .remove(&surface)
                 .expect("the staging slot was captured from the obligation map");
             let disposition = if self.state.native_staging_was_painted(presentation)
-                && self.state.confirmed_full_outputs().contains_key(&surface)
+                && self.state.has_confirmed_output(surface)
             {
                 HostPresentationDisposition::Painted(
                     dockspace::backend::presentation_observation::HostInteractionPresentation::default(),
@@ -1451,7 +1457,7 @@ impl DockspaceHostFrame<'_> {
             .then(|| {
                 prepared_renderer
                     .presentation_surfaces()
-                    .find(|surface| !self.state.confirmed_full_outputs().contains_key(surface))
+                    .find(|surface| !self.state.has_confirmed_output(*surface))
             })
             .flatten();
         if let Some(surface) = unbound_surface {
@@ -1489,6 +1495,10 @@ impl DockspaceHostFrame<'_> {
             }
             None => None,
         };
+        let output_reservation = self
+            .state
+            .reserve_output_batch()
+            .map_err(DockspaceError::from_source)?;
         self.state.set_semantic_source_sequence(semantic_sequence);
         let backend_ordered_input = self.state.input_authority() == EguiInputAuthority::CoreBackend;
         let state = self
@@ -1500,6 +1510,7 @@ impl DockspaceHostFrame<'_> {
             renderer: prepared_renderer,
             native_bindings: prepared_native_bindings,
             state,
+            output_reservation,
             pane_focus_observations,
             backend_ordered_input,
         })

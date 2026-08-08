@@ -113,13 +113,10 @@ fn run_frame(
         .finish()
         .expect("outer egui frame commits")
         .into_parts();
-    for output in outputs {
-        output.settle_with(|surface, full_output| {
-            assert_eq!(surface, SURFACE);
-            full_output.drop_without_applying_deltas();
-            EguiPresentationResult::Presented
-        });
-    }
+    outputs.settle_with(|surface, _| {
+        assert_eq!(surface, SURFACE);
+        EguiPresentationResult::Presented
+    });
 
     let floating = dockspace
         .workspace()

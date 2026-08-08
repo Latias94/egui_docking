@@ -27,7 +27,6 @@ mod presentation_ledger;
 pub use self::driver::{
     DockspaceHostFrame, EguiOuterFrameCommit, EguiOuterHostFrame, PreparedEguiOuterFrameCommit,
 };
-pub(crate) use self::host_frame::DeferredTextureDeltas;
 
 use std::collections::BTreeSet;
 use std::{fmt::Debug, hash::Hash};
@@ -86,6 +85,7 @@ use self::presentation_ledger::{
 };
 use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
+use crate::output_ownership::OutputTextureLedger;
 use crate::pane::PaneView;
 use crate::pointer_input::EguiPointerInput;
 use crate::presentation_settlement::PendingEguiPresentation;
@@ -119,7 +119,7 @@ pub struct Dockspace {
     pub(crate) semantic_source_sequence: SourceSequence,
     last_host_frame: Option<EguiFrameScheduleKey>,
     presentation_ledger: PresentationOutputLedger,
-    deferred_texture_deltas: host_frame::DeferredTextureDeltas,
+    output_texture_ledger: OutputTextureLedger,
     pub(crate) pointer_input: EguiPointerInput,
     pending_pointer_abort: bool,
     native_bindings: Option<NativeBindingRegistry>,
@@ -158,7 +158,7 @@ impl Dockspace {
             semantic_source_sequence: SourceSequence::default(),
             last_host_frame: None,
             presentation_ledger: PresentationOutputLedger::default(),
-            deferred_texture_deltas: host_frame::DeferredTextureDeltas::default(),
+            output_texture_ledger: OutputTextureLedger::default(),
             pointer_input: EguiPointerInput::default(),
             pending_pointer_abort: false,
             native_bindings: None,
@@ -1243,7 +1243,7 @@ impl Dockspace {
             automatic_presentation,
             outer_presentation,
             automatic_pointer,
-            self.deferred_texture_deltas.clone(),
+            self.output_texture_ledger.clone(),
             mode,
             input_authority,
             output_boundary,

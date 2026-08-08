@@ -272,6 +272,19 @@ pub(crate) enum DockspaceErrorSource {
         /// Logical surface whose final output is still unproven.
         surface: SurfaceId,
     },
+    /// The application occupied the native runtime's reserved presentation slot.
+    #[cfg(egui_backend_event_envelope)]
+    #[error("surface {surface} final output already owns a native presentation token")]
+    NativePresentationTokenOccupied {
+        /// Logical surface whose final output cannot enter native publication.
+        surface: SurfaceId,
+    },
+    /// A prior renderer output batch still owns this dockspace's texture stream.
+    #[error("a prior egui renderer output batch remains unsettled")]
+    RendererOutputBatchOutstanding,
+    /// Renderer output batch identities cannot advance without wrapping.
+    #[error("egui renderer output batch identity exhausted")]
+    RendererOutputBatchIdentityExhausted,
     /// A prior `show_surface` or unavailable-slot call invalidated this host frame.
     #[error("host frame is poisoned after an earlier surface protocol error")]
     HostFramePoisoned,
@@ -498,12 +511,15 @@ impl DockspaceErrorSource {
             | Self::PointerReceiverCandidatesMissing
             | Self::PointerReceiverEdgeMissing { .. }
             | Self::PointerReceiverRegistrationConflict => DockspaceErrorKind::HostProtocol,
+            Self::RendererOutputBatchOutstanding => DockspaceErrorKind::OperationConflict,
             #[cfg(any(feature = "backend", test))]
             Self::BackendIngressProviderMissing => DockspaceErrorKind::HostProtocol,
             #[cfg(egui_backend_event_envelope)]
             Self::OuterHostSurfaceOutputAuthorityMismatch { .. } => {
                 DockspaceErrorKind::HostProtocol
             }
+            #[cfg(egui_backend_event_envelope)]
+            Self::NativePresentationTokenOccupied { .. } => DockspaceErrorKind::HostProtocol,
             #[cfg(egui_backend_event_envelope)]
             Self::SemanticActionBackendCorrelationUnavailable { .. } => {
                 DockspaceErrorKind::HostProtocol
@@ -522,6 +538,7 @@ impl DockspaceErrorSource {
             | Self::PointerAdapterIncarnationExhausted
             | Self::PointerEdgeSequenceExhausted { .. }
             | Self::SingleSurfacePaintUnavailable { .. } => DockspaceErrorKind::Internal,
+            Self::RendererOutputBatchIdentityExhausted => DockspaceErrorKind::Internal,
         }
     }
 }

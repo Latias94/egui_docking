@@ -12,8 +12,7 @@ pub use crate::facade::{
     NativeCoreRoute, NativeViewportIncarnation, PreparedEguiOuterFrameCommit,
 };
 pub use crate::presentation_settlement::{
-    EguiNativePresentationSettlementError, EguiOuterSurfaceOutput, EguiPresentationResult,
-    EguiPresentationSettlement,
+    EguiOuterOutputBatch, EguiOuterSurfaceOutput, EguiPresentationResult,
 };
 pub use crate::receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
 pub use crate::response::{
