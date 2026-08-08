@@ -45,15 +45,25 @@ impl DockEngine {
                 Ok(candidate) => candidate,
                 Err(error) => return Ok(self.local_response_rejection(error)),
             };
-            if !candidate
+            let Some(record) = candidate
                 .plan()
                 .tab_records()
                 .iter()
-                .any(|record| *record.id() == tab)
-            {
+                .find(|record| *record.id() == tab)
+            else {
                 return Ok(self.local_response_rejection(
                     InteractionRejection::TabGestureSourceUnavailable {
                         source: TabGestureSource::Item(tab),
+                    },
+                ));
+            };
+            if !candidate
+                .plan()
+                .region_is_operable(record.drag_hit().rect(), record.layer())
+            {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::SemanticReceiverUnavailable {
+                        target: PresentationHitRegionKind::TabBody(tab),
                     },
                 ));
             }

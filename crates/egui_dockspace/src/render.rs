@@ -278,6 +278,8 @@ pub(crate) struct EguiSurfaceDraft {
 pub(crate) enum SemanticInputPosition {
     /// Reduce at the boundary immediately preceding this exact raw egui event.
     RawEvent(usize),
+    /// Preserve one exact current-frame egui response across discard passes.
+    LocalResponseAction,
     /// Reduce after the batch because this is an adapter-owned continuation.
     PostBatchContinuation,
     /// Reduce after the batch because this is a final state observation.
@@ -302,6 +304,13 @@ impl StagedSemanticInput {
     pub(crate) const fn post_batch_continuation(input: EngineInput) -> Self {
         Self {
             position: SemanticInputPosition::PostBatchContinuation,
+            input,
+        }
+    }
+
+    pub(crate) const fn local_response_action(input: EngineInput) -> Self {
+        Self {
+            position: SemanticInputPosition::LocalResponseAction,
             input,
         }
     }
@@ -585,6 +594,12 @@ pub enum EguiRendererError {
         /// Exact raw event position claimed by both semantic inputs.
         raw_event_index: usize,
     },
+    /// Repeated egui passes produced different local response actions.
+    #[error("surface {surface} produced conflicting local response actions across egui passes")]
+    MultipassLocalResponseActionConflict {
+        /// Surface whose repeated callback produced the conflict.
+        surface: SurfaceId,
+    },
     /// The map key used to submit a draft does not match its owned surface.
     #[error("surface draft map key {key} does not match owned surface {draft_surface}")]
     DraftSurfaceKeyMismatch {
@@ -866,6 +881,10 @@ impl EguiSurfaceDraft {
         )
     }
 
+    pub(crate) fn normalize_semantic_inputs(&mut self) -> Result<(), EguiRendererError> {
+        merge_multipass_semantic_inputs(self.surface, &mut self.semantic_inputs, Vec::new())
+    }
+
     pub(crate) fn set_pane_focus_observation(
         &mut self,
         pane_focus_observation: Option<PaneFocusObservation>,
@@ -884,25 +903,51 @@ fn merge_multipass_semantic_inputs(
     previous: Vec<StagedSemanticInput>,
 ) -> Result<(), EguiRendererError> {
     let mut raw_inputs = BTreeMap::<usize, StagedSemanticInput>::new();
+    let mut local_response = None;
     let mut post_batch = Vec::new();
     for input in std::mem::take(current) {
         match input.position() {
             SemanticInputPosition::RawEvent(raw_event_index) => {
                 insert_multipass_raw_input(surface, raw_event_index, input, &mut raw_inputs)?;
             }
+            SemanticInputPosition::LocalResponseAction => {
+                insert_multipass_local_response(surface, input, &mut local_response)?;
+            }
             SemanticInputPosition::PostBatchContinuation
             | SemanticInputPosition::PostBatchObservation => post_batch.push(input),
         }
     }
     for input in previous {
-        let SemanticInputPosition::RawEvent(raw_event_index) = input.position() else {
-            continue;
-        };
-        insert_multipass_raw_input(surface, raw_event_index, input, &mut raw_inputs)?;
+        match input.position() {
+            SemanticInputPosition::RawEvent(raw_event_index) => {
+                insert_multipass_raw_input(surface, raw_event_index, input, &mut raw_inputs)?;
+            }
+            SemanticInputPosition::LocalResponseAction => {
+                insert_multipass_local_response(surface, input, &mut local_response)?;
+            }
+            SemanticInputPosition::PostBatchContinuation
+            | SemanticInputPosition::PostBatchObservation => {}
+        }
     }
     current.extend(raw_inputs.into_values());
+    current.extend(local_response);
     current.extend(post_batch);
     Ok(())
+}
+
+fn insert_multipass_local_response(
+    surface: SurfaceId,
+    input: StagedSemanticInput,
+    retained: &mut Option<StagedSemanticInput>,
+) -> Result<(), EguiRendererError> {
+    match retained {
+        None => {
+            *retained = Some(input);
+            Ok(())
+        }
+        Some(current) if current == &input => Ok(()),
+        Some(_) => Err(EguiRendererError::MultipassLocalResponseActionConflict { surface }),
+    }
 }
 
 fn insert_multipass_raw_input(
@@ -942,6 +987,13 @@ mod multipass_semantic_input_tests {
         )
     }
 
+    fn local_close_input(item: u64) -> StagedSemanticInput {
+        StagedSemanticInput::local_response_action(EngineInput::RequestContentClose {
+            expected: WorkspaceVersion::default(),
+            target: ContentCloseTarget::Item(ItemId::new(item)),
+        })
+    }
+
     #[test]
     fn repeated_pass_keeps_one_affine_raw_event_input() {
         let input = close_input(3, 1);
@@ -964,6 +1016,37 @@ mod multipass_semantic_input_tests {
                 surface,
                 raw_event_index: 3,
             }) if surface == SurfaceId::new(1)
+        ));
+    }
+
+    #[test]
+    fn repeated_pass_preserves_a_prior_local_response_action() {
+        let mut current = Vec::new();
+        merge_multipass_semantic_inputs(
+            SurfaceId::new(1),
+            &mut current,
+            vec![local_close_input(1)],
+        )
+        .expect("a consumed response remains available to the final pass");
+        assert_eq!(current, [local_close_input(1)]);
+    }
+
+    #[test]
+    fn repeated_pass_deduplicates_the_same_local_response_action() {
+        let input = local_close_input(1);
+        let mut current = vec![input.clone()];
+        merge_multipass_semantic_inputs(SurfaceId::new(1), &mut current, vec![input])
+            .expect("the same response action remains affine");
+        assert_eq!(current, [local_close_input(1)]);
+    }
+
+    #[test]
+    fn one_pass_rejects_conflicting_local_response_actions() {
+        let mut current = vec![local_close_input(1), local_close_input(2)];
+        assert!(matches!(
+            merge_multipass_semantic_inputs(SurfaceId::new(1), &mut current, Vec::new()),
+            Err(EguiRendererError::MultipassLocalResponseActionConflict { surface })
+                if surface == SurfaceId::new(1)
         ));
     }
 }

@@ -925,6 +925,8 @@ impl HostFrameState {
     ) -> Result<(), crate::render::EguiRendererError> {
         if let Some(previous) = self.drafts.get_mut(&surface) {
             draft.preserve_prior_raw_event_inputs(previous)?;
+        } else {
+            draft.normalize_semantic_inputs()?;
         }
         let pass = pass.with_output_proof();
         self.drafts.insert(surface, draft);

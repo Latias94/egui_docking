@@ -391,7 +391,12 @@ impl PresentationPlan {
         }
     }
 
-    pub(crate) fn region_is_operable(&self, region: LogicalRect, layer: SceneLayerKey) -> bool {
+    /// Returns whether any authoritative area of `region` remains exposed on `layer`.
+    ///
+    /// UI adapters use this derived capability to disable framework actions for
+    /// controls fully covered by a structurally higher contained presentation.
+    #[must_use]
+    pub fn region_is_operable(&self, region: LogicalRect, layer: SceneLayerKey) -> bool {
         region_has_authoritative_area(region, layer, &self.drop_occlusions)
     }
 

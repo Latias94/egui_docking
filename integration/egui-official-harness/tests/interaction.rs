@@ -68,6 +68,42 @@ fn run_frame(
     }
 }
 
+fn run_frame_with_discard_after_dockspace(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut Panes,
+    events: Vec<Event>,
+) -> (FrameObservation, usize) {
+    let mut close_items = Vec::new();
+    let mut interactions_current = false;
+    let mut passes = 0;
+    let mut output = context.run_ui(input(events), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, panes)
+            .expect("the official-egui multipass frame advances");
+        interactions_current = response.interactions_current();
+        close_items.extend(
+            response
+                .close_requests()
+                .flat_map(|plan| plan.items().iter().map(|item| item.item())),
+        );
+        passes += 1;
+        if ui.ctx().current_pass_index() == 0 {
+            ui.ctx()
+                .request_discard("exercise local response action retention");
+        }
+    });
+    output.textures_delta.clear();
+    (
+        FrameObservation {
+            output,
+            close_items,
+            interactions_current,
+        },
+        passes,
+    )
+}
+
 struct FrameObservation {
     output: egui::FullOutput,
     close_items: Vec<ItemId>,
@@ -180,6 +216,47 @@ fn production_single_surface_same_batch_click_selects_a_tab() {
     ];
     let _ = run_frame(&context, &mut dockspace, &mut panes, click);
 
+    assert_eq!(selected_item(&dockspace), Some(SECOND));
+}
+
+#[test]
+fn production_single_surface_preserves_a_click_across_discard_passes() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("official-egui-multipass-click", workspace())
+        .build()
+        .expect("the public facade accepts a valid workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let pointer = node_center(accesskit_node(&stable.output, Role::Tab, "Second").1);
+    let click = vec![
+        Event::PointerMoved(pointer),
+        Event::PointerButton {
+            pos: pointer,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        },
+        Event::PointerButton {
+            pos: pointer,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        },
+    ];
+    let (_, passes) = run_frame_with_discard_after_dockspace(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        click,
+    );
+
+    assert!(passes >= 2, "the fixture must execute a replacement pass");
     assert_eq!(selected_item(&dockspace), Some(SECOND));
 }
 

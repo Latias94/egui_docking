@@ -46,7 +46,8 @@ use crate::render::{
     StagedSemanticInput,
 };
 use crate::renderer::{
-    ContainedResizeEdge, RenderAction, RenderActionCapture, RenderActionPosition, paint_surface,
+    ContainedResizeEdge, RenderAction, RenderActionCapture, RenderActionPosition,
+    RenderInteractionScenes, paint_surface,
 };
 use crate::response::{
     DockspaceCapability, DockspaceSurfaceStatus, DockspaceUnavailableReason, HostFrameResponse,
@@ -623,13 +624,17 @@ impl DockspaceHostFrame<'_> {
         } else {
             RenderActionCapture::CorrelatedRawEvents
         };
-        let interaction_scene = interactions_current.then(|| {
+        let current_scene = interactions_current.then(|| {
             paint_projection
                 .as_ref()
                 .expect("current interactions require a paint projection")
                 .0
         });
-        let semantic_scene = interaction_scene;
+        let interaction_scenes = RenderInteractionScenes::new(
+            local_response_current.then(|| current_scene.expect("local scene is current")),
+            pointer_receivers_current
+                .then(|| current_scene.expect("accepted snapshot scene is current")),
+        );
         let pane_focus_preparation = if pane_content_current {
             self.prepare_pane_focus_request(surface, ui.ctx(), &adapter_resources, panes)
         } else {
@@ -660,8 +665,7 @@ impl DockspaceHostFrame<'_> {
                 view.presentation_drag_preview(surface),
                 view.presentation_contained_transform_preview(surface),
                 pane_content_current,
-                interaction_scene,
-                semantic_scene,
+                interaction_scenes,
                 action_capture,
                 authoritative_hit_manifest,
                 is_gesture_source_surface,
@@ -725,6 +729,9 @@ impl DockspaceHostFrame<'_> {
             semantic_inputs.push(match position {
                 RenderActionPosition::RawEvent(raw_event_index) => {
                     StagedSemanticInput::at_raw_event(raw_event_index, input)
+                }
+                RenderActionPosition::LocalResponseAction => {
+                    StagedSemanticInput::local_response_action(input)
                 }
                 RenderActionPosition::PostBatchContinuation => {
                     StagedSemanticInput::post_batch_continuation(input)
@@ -1166,7 +1173,8 @@ impl DockspaceHostFrame<'_> {
                         .map_or(pointer_segment_count, |pointer| {
                             pointer.segment_index_before_raw_event(raw_event_index)
                         }),
-                    SemanticInputPosition::PostBatchContinuation
+                    SemanticInputPosition::LocalResponseAction
+                    | SemanticInputPosition::PostBatchContinuation
                     | SemanticInputPosition::PostBatchObservation => pointer_segment_count,
                 };
                 (
@@ -1928,8 +1936,9 @@ fn semantic_position_order(
 ) -> (u8, usize, usize) {
     match position {
         SemanticInputPosition::RawEvent(raw_event_index) => (0, raw_event_index, stable_index),
-        SemanticInputPosition::PostBatchContinuation => (1, 0, stable_index),
-        SemanticInputPosition::PostBatchObservation => (2, 0, stable_index),
+        SemanticInputPosition::LocalResponseAction => (1, 0, stable_index),
+        SemanticInputPosition::PostBatchContinuation => (2, 0, stable_index),
+        SemanticInputPosition::PostBatchObservation => (3, 0, stable_index),
     }
 }
 
@@ -1962,8 +1971,9 @@ mod tests {
         let mut positions = [
             (SemanticInputPosition::PostBatchObservation, 0),
             (SemanticInputPosition::RawEvent(7), 1),
-            (SemanticInputPosition::PostBatchContinuation, 2),
-            (SemanticInputPosition::RawEvent(3), 3),
+            (SemanticInputPosition::LocalResponseAction, 2),
+            (SemanticInputPosition::PostBatchContinuation, 3),
+            (SemanticInputPosition::RawEvent(3), 4),
         ];
 
         positions.sort_by_key(|(position, stable_index)| {
@@ -1973,9 +1983,10 @@ mod tests {
         assert_eq!(
             positions,
             [
-                (SemanticInputPosition::RawEvent(3), 3),
+                (SemanticInputPosition::RawEvent(3), 4),
                 (SemanticInputPosition::RawEvent(7), 1),
-                (SemanticInputPosition::PostBatchContinuation, 2),
+                (SemanticInputPosition::LocalResponseAction, 2),
+                (SemanticInputPosition::PostBatchContinuation, 3),
                 (SemanticInputPosition::PostBatchObservation, 0),
             ]
         );

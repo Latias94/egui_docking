@@ -133,11 +133,62 @@ impl RenderActionCapture {
     }
 }
 
+/// Scene capabilities available to one immediate-mode paint pass.
+///
+/// Current-frame framework responses may drive the local tab controls already
+/// migrated to scene-bound reducers. Controls that still need retained/native
+/// receiver identity remain gated by an accepted snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RenderInteractionScenes {
+    local_response: Option<SurfaceSceneStamp>,
+    accepted_snapshot: Option<SurfaceSceneStamp>,
+}
+
+impl RenderInteractionScenes {
+    pub(crate) const fn new(
+        local_response: Option<SurfaceSceneStamp>,
+        accepted_snapshot: Option<SurfaceSceneStamp>,
+    ) -> Self {
+        Self {
+            local_response,
+            accepted_snapshot,
+        }
+    }
+
+    const fn any(self) -> bool {
+        self.local_response.is_some() || self.accepted_snapshot.is_some()
+    }
+
+    const fn tabs(self) -> Option<SurfaceSceneStamp> {
+        match self.local_response {
+            Some(scene) => Some(scene),
+            None => self.accepted_snapshot,
+        }
+    }
+
+    const fn splitters(self) -> Option<SurfaceSceneStamp> {
+        self.accepted_snapshot
+    }
+
+    const fn retained_controls(self) -> Option<SurfaceSceneStamp> {
+        self.accepted_snapshot
+    }
+
+    const fn suppress_actions(self) -> Self {
+        Self::new(None, None)
+    }
+}
+
 /// Exact position of one renderer-observed action in the host event batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RenderActionPosition {
     /// The action was derived from this exact raw egui event.
     RawEvent(usize),
+    /// A current-frame egui [`Response`] produced this action.
+    ///
+    /// egui consumes the underlying raw event during the first pass, so this
+    /// action must survive later discard passes without being re-derived.
+    LocalResponseAction,
     /// The action is an adapter continuation observed only after the complete input batch.
     PostBatchContinuation,
 }
@@ -314,7 +365,7 @@ impl RenderOutput {
         activation: SemanticActivation,
     ) {
         if self.action_capture == RenderActionCapture::LocalResponseOrder {
-            self.push_post_batch_continuation(action);
+            self.push_local_response_action(action);
             return;
         }
         match activation {
@@ -354,6 +405,13 @@ impl RenderOutput {
         }
     }
 
+    fn push_local_response_action(&mut self, action: RenderAction) {
+        self.actions.push(PositionedRenderAction::new(
+            action,
+            RenderActionPosition::LocalResponseAction,
+        ));
+    }
+
     pub(crate) fn push_post_batch_continuation(&mut self, action: RenderAction) {
         if !self.action_capture.enabled() {
             return;
@@ -378,7 +436,7 @@ impl RenderOutput {
         match self.action_capture {
             RenderActionCapture::Disabled => return,
             RenderActionCapture::LocalResponseOrder => {
-                self.push_post_batch_continuation(action);
+                self.push_local_response_action(action);
                 return;
             }
             RenderActionCapture::CorrelatedRawEvents => {}
@@ -414,7 +472,7 @@ impl RenderOutput {
         match self.action_capture {
             RenderActionCapture::Disabled => return,
             RenderActionCapture::LocalResponseOrder => {
-                self.push_post_batch_continuation(action);
+                self.push_local_response_action(action);
                 return;
             }
             RenderActionCapture::CorrelatedRawEvents => {}
@@ -618,8 +676,7 @@ pub(crate) fn paint_surface(
     presentation_drag_preview: Option<&InteractionPreview>,
     presentation_contained_transform_preview: Option<&ContainedTransformPreview>,
     pane_content_current: bool,
-    interaction_scene: Option<SurfaceSceneStamp>,
-    semantic_scene: Option<SurfaceSceneStamp>,
+    interaction_scenes: RenderInteractionScenes,
     action_capture: RenderActionCapture,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     is_gesture_source_surface: bool,
@@ -631,25 +688,29 @@ pub(crate) fn paint_surface(
         )),
         ..RenderOutput::from_ui_with_action_capture(ui, action_capture)
     };
-    let interactions_current = plan.is_some() && interaction_scene.is_some();
+    let _interactions_current = plan.is_some() && interaction_scenes.any();
     let escape_pressed = action_capture.enabled()
-        && semantic_scene.is_some()
+        && interaction_scenes.retained_controls().is_some()
         && consume_gesture_escape(ui, interaction.status(), is_gesture_source_surface);
-    let accept_events = interactions_current && !escape_pressed;
+    let interaction_scenes = if escape_pressed {
+        interaction_scenes.suppress_actions()
+    } else {
+        interaction_scenes
+    };
     ui.painter()
         .rect_filled(surface_bounds, 0.0, style.workspace_fill);
     let Some(plan) = plan else {
         return output;
     };
     debug_assert_eq!(plan.surface(), surface);
-    let tab_scroll_owner = if accept_events {
+    let tab_scroll_owner = if interaction_scenes.retained_controls().is_some() {
         ui.input(|input| input.pointer.hover_pos())
             .and_then(|pointer| to_logical_point(pointer).ok())
             .and_then(|pointer| plan.tab_scroll_owner_at(pointer))
     } else {
         None
     };
-    let hovered_splitter = if accept_events {
+    let hovered_splitter = if interaction_scenes.splitters().is_some() {
         authoritative_splitter_target(ui, plan)
     } else {
         None
@@ -678,8 +739,7 @@ pub(crate) fn paint_surface(
             interaction,
             tab_scroll_owner,
             pane_content_current,
-            interaction_scene.filter(|_| accept_events),
-            semantic_scene.filter(|_| accept_events),
+            interaction_scenes,
             hovered_splitter,
             authoritative_hit_manifest,
             &mut output,
@@ -703,8 +763,7 @@ pub(crate) fn paint_surface(
             interaction,
             tab_scroll_owner,
             pane_content_current,
-            interaction_scene.filter(|_| accept_events),
-            semantic_scene.filter(|_| accept_events),
+            interaction_scenes,
             hovered_splitter,
             authoritative_hit_manifest,
             &mut output,
@@ -718,7 +777,7 @@ pub(crate) fn paint_surface(
         resources,
         style,
         Some(plan),
-        accept_events,
+        interaction_scenes.retained_controls().is_some(),
         &mut output,
     );
 
@@ -854,13 +913,13 @@ fn paint_root(
     interaction: &InteractionState,
     tab_scroll_owner: Option<TabBarSceneId>,
     pane_content_current: bool,
-    interaction_scene: Option<SurfaceSceneStamp>,
-    semantic_scene: Option<SurfaceSceneStamp>,
+    interaction_scenes: RenderInteractionScenes,
     hovered_splitter: Option<SplitterResizeTarget>,
     authoritative_hit_manifest: Option<&PresentationHitManifest>,
     output: &mut RenderOutput,
 ) {
-    let interactions_current = interaction_scene.is_some();
+    let tab_interaction_scene = interaction_scenes.tabs();
+    let retained_control_scene = interaction_scenes.retained_controls();
     let contained = is_contained
         .then(|| {
             plan.contained_records()
@@ -904,9 +963,10 @@ fn paint_root(
             style,
             interaction.active_drag_view(),
             tab_scroll_owner,
-            interactions_current,
+            tab_interaction_scene.is_some(),
+            retained_control_scene.is_some(),
             pane_content_current,
-            interaction_scene,
+            tab_interaction_scene,
             plan,
             authoritative_hit_manifest,
             output,
@@ -924,8 +984,8 @@ fn paint_root(
             surface,
             splitter,
             style,
-            interaction_scene,
-            semantic_scene,
+            interaction_scenes.splitters(),
+            interaction_scenes.splitters(),
             splitter_target_contains(hovered_splitter, *splitter.id()),
             output,
         );
@@ -942,7 +1002,7 @@ fn paint_root(
             workspace,
             style,
             interaction.status(),
-            interaction_scene,
+            retained_control_scene,
             output,
         );
     }
@@ -1583,8 +1643,7 @@ mod tests {
                     None,
                     None,
                     true,
-                    None,
-                    None,
+                    RenderInteractionScenes::default(),
                     RenderActionCapture::CorrelatedRawEvents,
                     None,
                     false,

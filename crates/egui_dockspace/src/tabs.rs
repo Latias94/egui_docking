@@ -74,7 +74,8 @@ pub(crate) fn paint_tabs(
     style: &DockStyle,
     active_drag: Option<ActiveDragView<'_>>,
     tab_scroll_owner: Option<TabBarSceneId>,
-    interactions_current: bool,
+    tab_interactions_current: bool,
+    retained_controls_current: bool,
     pane_content_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
     authoritative_plan: &PresentationPlan,
@@ -113,6 +114,8 @@ pub(crate) fn paint_tabs(
     let Some(tab_bar_rect) = from_logical_rect(bar.bounds()) else {
         return;
     };
+    let tab_interactions_current = tab_interactions_current
+        && authoritative_plan.region_is_operable(bar.bounds(), bar.layer());
     painter.rect_filled(tab_bar_rect, 0.0, style.tab_bar_fill);
 
     let mut tab_ui = ui.new_child(
@@ -151,11 +154,11 @@ pub(crate) fn paint_tabs(
         bar,
         visible_tabs,
         semantic_selected,
-        interactions_current,
+        tab_interactions_current,
     );
     #[cfg(egui_backend_event_envelope)]
     {
-        if interactions_current
+        if retained_controls_current
             && bar.maximum_scroll_offset() > 0.0
             && let Some(viewport) = from_logical_rect(bar.viewport()).filter(Rect::is_positive)
         {
@@ -181,7 +184,7 @@ pub(crate) fn paint_tabs(
         instance_id,
         bar,
         style,
-        interactions_current,
+        retained_controls_current,
         output,
     );
 
@@ -197,8 +200,9 @@ pub(crate) fn paint_tabs(
             semantic_selected,
             workspace,
             style,
-            interactions_current,
+            tab_interactions_current,
             interaction_scene,
+            authoritative_plan,
             output,
         );
     }
@@ -209,14 +213,14 @@ pub(crate) fn paint_tabs(
         bar,
         controls,
         style,
-        interactions_current,
+        retained_controls_current,
         authoritative_plan,
         authoritative_hit_manifest,
         output,
     );
     let key = TabStripKey::new(surface, *bar.id());
     let reveal_identity = current_tab_reveal_identity(&tab_ui, instance_id, pane, bar, active_drag);
-    let reveal_changed = interactions_current
+    let reveal_changed = retained_controls_current
         && controls
             .iter()
             .any(|control| matches!(control.id(), TabStripControlId::TabListMenu(_)))
@@ -230,11 +234,11 @@ pub(crate) fn paint_tabs(
         active_drag,
         reveal_identity,
         tab_scroll_owner,
-        interactions_current,
+        retained_controls_current,
         output,
     );
     if reveal_changed {
-        if interactions_current
+        if retained_controls_current
             && !scrolled
             && let Some(item) = reveal_identity.primary()
         {
@@ -1073,6 +1077,7 @@ fn paint_tab(
     style: &DockStyle,
     interactions_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
+    authoritative_plan: &PresentationPlan,
     output: &mut RenderOutput,
 ) {
     let (Some(rect), Some(drag_rect)) = (
@@ -1081,6 +1086,8 @@ fn paint_tab(
     ) else {
         return;
     };
+    let interactions_current = interactions_current
+        && authoritative_plan.region_is_operable(tab.drag_hit().rect(), tab.layer());
     let tab_scene = *tab.id();
     let tab_id = tab_id(ui, instance_id, tab_scene.item);
     let response = ui.interact(interact_rect(drag_rect), tab_id, Sense::click_and_drag());
@@ -1118,7 +1125,11 @@ fn paint_tab(
     let selected = tab.selected();
     paint_tab_body(ui, tab, resource, rect, style, selected, hovered, focused);
 
-    if let Some(close_rect) = tab.close_bounds().and_then(from_logical_rect) {
+    if let Some(close_bounds) = tab.close_bounds()
+        && let Some(close_rect) = from_logical_rect(close_bounds)
+    {
+        let close_interactions_current = interactions_current
+            && authoritative_plan.region_is_operable(close_bounds, tab.layer());
         paint_close_button(
             ui,
             tab,
@@ -1127,8 +1138,10 @@ fn paint_tab(
             instance_id,
             style,
             selected,
-            interactions_current,
-            interaction_scene,
+            close_interactions_current,
+            close_interactions_current
+                .then_some(interaction_scene)
+                .flatten(),
             output,
         );
     }

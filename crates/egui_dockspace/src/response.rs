@@ -460,7 +460,11 @@ impl SurfacePaintResponse {
         &self.capture_errors
     }
 
-    /// Returns whether egui's prior-pass hit geometry exactly matched this projection.
+    /// Returns whether this paint exposed at least one current docking interaction lane.
+    ///
+    /// In the ordinary single-surface facade this can mean current-frame local
+    /// tab or splitter responses. Retained/native controls still require an
+    /// accepted interaction snapshot and may remain disabled independently.
     #[must_use]
     pub const fn interactions_current(&self) -> bool {
         self.interactions_current
