@@ -618,13 +618,17 @@ fn dropped_output_retires_without_granting_interaction_authority() {
         .expect("the renderer may authoritatively drop an output");
     host.run(|_| {});
 
+    let error = host
+        .session
+        .enable_surface_pointer(SURFACE)
+        .expect_err("a dropped output grants no interaction authority");
     assert!(matches!(
-        host.session.enable_surface_pointer(SURFACE),
-        Err(dockspace::runtime::DockspaceRuntimeError::Interaction(
+        error.interaction_error(),
+        Some(
             dockspace::runtime::DockspaceInteractionError::PresentationAuthorityUnavailable {
                 surface: SURFACE
             }
-        ))
+        )
     ));
 }
 
@@ -652,11 +656,13 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
             .confirm_surface_painted(SURFACE)
             .expect("the logical output was painted");
     });
+    let error = host
+        .session
+        .enable_surface_pointer(SURFACE)
+        .expect_err("an unsettled output grants no interaction authority");
     assert!(matches!(
-        host.session.enable_surface_pointer(SURFACE),
-        Err(dockspace::runtime::DockspaceRuntimeError::Interaction(
-            DockspaceInteractionError::PresentationAuthorityUnavailable { surface: SURFACE }
-        ))
+        error.interaction_error(),
+        Some(DockspaceInteractionError::PresentationAuthorityUnavailable { surface: SURFACE })
     ));
     host.observe_painted_outputs(logical);
     host.session
@@ -1227,10 +1233,8 @@ fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
             ])
             .expect_err("the invalid second edge rejects the complete public batch");
         assert!(matches!(
-            error,
-            dockspace::runtime::DockspaceRuntimeError::Interaction(
-                DockspaceInteractionError::InvalidScrollSample
-            )
+            error.interaction_error(),
+            Some(DockspaceInteractionError::InvalidScrollSample)
         ));
     });
 
@@ -1564,10 +1568,8 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
         .publish_native_close(a1, NativeCloseState::Requested, None)
         .expect_err("the delayed A1 close must be rejected before reduction");
     assert!(matches!(
-        error,
-        dockspace::runtime::DockspaceRuntimeError::Native(NativePlatformError::StaleSurface {
-            surface: SURFACE
-        })
+        error.native_error(),
+        Some(NativePlatformError::StaleSurface { surface: SURFACE })
     ));
     host.run(|_| {});
 
@@ -1618,8 +1620,8 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
         .publish_native_snapshot(stale_snapshot)
         .expect_err("a captured snapshot cannot omit a subsequently registered binding");
     assert!(matches!(
-        error,
-        dockspace::runtime::DockspaceRuntimeError::Native(NativePlatformError::SnapshotRosterStale)
+        error.native_error(),
+        Some(NativePlatformError::SnapshotRosterStale)
     ));
     host.run(|_| {});
 

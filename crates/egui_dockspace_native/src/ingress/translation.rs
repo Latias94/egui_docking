@@ -233,7 +233,7 @@ pub(super) fn native_work_area_route_is_current(
 pub(super) fn empty_pointer_interval(
     submitted_pointer_segment: bool,
     watermark: PointerEdgeSequence,
-) -> Result<Option<PointerEdgeJournal>, dockspace::pointer_journal::PointerJournalError> {
+) -> Result<Option<PointerEdgeJournal>, dockspace::backend::pointer_journal::PointerJournalError> {
     if submitted_pointer_segment {
         return Ok(None);
     }
@@ -271,7 +271,7 @@ pub(super) fn delivery_route(
 }
 
 pub(super) fn translate_scroll_edge(
-    host: dockspace::presentation_observation::PresentationHostLease,
+    host: dockspace::backend::presentation_observation::PresentationHostLease,
     scroll: NativeScrollEdge,
     native_delivery: &NativeAuthority<NativePointerDeliveryOwner>,
     routes: &BTreeMap<ViewportId, BoundNativeRoute>,
@@ -319,7 +319,7 @@ pub(super) fn translate_scroll_edge(
 }
 
 pub(super) fn translate_scroll_delivery(
-    host: dockspace::presentation_observation::PresentationHostLease,
+    host: dockspace::backend::presentation_observation::PresentationHostLease,
     native: &NativeAuthority<NativePointerDeliveryOwner>,
     routes: &BTreeMap<ViewportId, BoundNativeRoute>,
     presented: Option<&PresentedNativePointerGraph>,

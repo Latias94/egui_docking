@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use dockspace::backend::scene::PresentationPlan;
 use dockspace::command::Edge;
 use dockspace::drop_guide::{DropGuideClusterId, DropGuideSlot};
 use dockspace::drop_target::DropTargetId;
@@ -9,7 +10,6 @@ use dockspace::interaction::{
     InteractionDelivery, InteractionOutcome, InteractionStatus, PreviewVisual,
     WorkspaceDeliveryKind,
 };
-use dockspace::scene::PresentationPlan;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
@@ -161,7 +161,7 @@ impl Fixture {
         self.dockspace
             .core_engine()
             .interaction_projection(SURFACE)
-            .map(dockspace::scene::SurfaceInteractionProjection::plan)
+            .map(dockspace::backend::scene::SurfaceInteractionProjection::plan)
             .expect("fixture surface has an acknowledged painted plan")
     }
 }
@@ -246,7 +246,7 @@ fn run_guide_case(slot: DropGuideSlot) {
         inner
             .targets()
             .iter()
-            .map(dockspace::drop_resolver::DropAffordanceTarget::slot)
+            .map(dockspace::backend::drop_resolver::DropAffordanceTarget::slot)
             .collect::<Vec<_>>(),
         CANONICAL_SLOTS,
         "active affordance must retain every inner direction"

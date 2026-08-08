@@ -7,7 +7,11 @@ This document describes the target breaking boundary for the first shipping
 longer re-exports the core or exposes its raw `DockEngine`; application-facing
 types remain at the crate root, while the low-level host protocol requires the
 explicit `backend` feature and `egui_dockspace::backend` namespace. The
-renderer-neutral core surface is still broader than this target and remains an
+renderer-neutral crate now applies the same boundary: its default module tree
+keeps reducer, frame, scene, pointer, effect, recovery, and viewport FSMs
+private, while renderer implementations explicitly opt into the unstable
+`dockspace::backend` namespace. Model, transaction, and persistence paths still
+need further consolidation into the target facade areas, so the seal remains an
 active breaking refactor.
 
 ## Goal
@@ -91,6 +95,12 @@ to the current output. Stale or missing facts degrade to `Unknown` and fail
 closed. The independent `dockspace_host_conformance` executor uses this boundary
 for `OGC-01` through `OGC-04` without importing engine internals, scene stamps,
 provider leases, or the core hit resolver.
+
+`DockspaceRuntimeError` also belongs to the facade rather than mirroring the
+reducer. Callers inspect a stable `DockspaceRuntimeErrorKind`; typed interaction
+and native failures have narrow accessors, while engine, host-frame, and scene
+compilation sources remain in the standard error chain and outside the default
+API.
 
 Pointer- and semantic-created close plans now return through the same
 `HostInputOutcome::CloseRequested` shape as application close requests, with a
@@ -188,20 +198,25 @@ The current single-surface convenience API remains honest about its scope. A
 real multi-viewport host belongs in a dedicated native runtime crate and is not
 represented by a public egui callback-order protocol.
 
-The first breaking slice is complete: the whole-crate re-export has been
-removed. Examples and the official-egui harness now declare `dockspace`
-directly when they intentionally exercise core contracts, so rustc rather than
-an API-classification script owns dependency and name resolution. Raw engine
-accessors and transition-bearing responses remain migration work and keep this
-seal open.
+The first two breaking slices are complete. The egui whole-crate re-export and
+raw engine accessor are gone. The renderer-neutral crate no longer exposes its
+backend FSM modules at their former root paths; adapters use the explicit
+`dockspace::backend` feature and namespace. Examples and the official-egui
+harness declare `dockspace` directly when they intentionally exercise core
+contracts, so rustc rather than an API-classification script owns dependency
+and name resolution. Remaining model/transition exposure and facade migration
+keep this seal open.
 
 ## Protocol Tests
 
 `dockspace_core_protocol` is workspace-private test infrastructure, not a
-production API owner. Its harness must migrate to the same narrow host-frame
-facade used by adapters, or move into `dockspace` test support. It must not keep
-`EngineInput`, scene stamps, routes, effect ledgers, or lifecycle FSMs public
-solely for fixture replay.
+production API owner. The core's 47 white-box behavior suites now compile as one
+crate-internal test target with shared support instead of forcing internal
+modules into the production API. The remaining trace harness explicitly opts
+into `dockspace/backend`; it must migrate to the same narrow host-frame facade
+used by adapters where that facade can express the trace, and must not make
+`EngineInput`, scene stamps, routes, effect ledgers, or lifecycle FSMs part of
+the default API.
 
 ## Breaking Migration Order
 

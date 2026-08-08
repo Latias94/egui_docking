@@ -3,11 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::document::{DockspaceDocumentId, DockspaceDocumentRestoreTicket};
-use dockspace::engine::BackendIngressProgress;
+use dockspace::backend::engine::BackendIngressProgress;
 use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::intent::Authority;
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, PresentationHostLease,
 };
 use dockspace::scene_manifest::MeasurementUnavailableReason;

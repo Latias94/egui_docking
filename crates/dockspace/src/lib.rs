@@ -9,22 +9,48 @@
 #[cfg(test)]
 extern crate self as dockspace;
 
+#[cfg(feature = "backend")]
+pub mod backend;
+#[cfg(test)]
 pub mod backend_ingress;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod backend_ingress;
 pub mod canonical;
 mod close_plan;
 pub mod command;
+#[cfg(test)]
 pub mod coordinates;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod coordinates;
 #[cfg(feature = "serde")]
 pub mod document;
 pub mod drop_guide;
+#[cfg(test)]
 pub mod drop_resolver;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod drop_resolver;
 pub mod drop_target;
+#[cfg(test)]
 pub mod effect;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod effect;
+#[cfg(test)]
 pub mod engine;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod engine;
 pub mod error;
 pub mod event;
 pub mod external_item_key;
+#[cfg(test)]
 pub mod frame;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod frame;
 pub mod geometry;
 pub mod graph;
 pub mod hit_region;
@@ -32,36 +58,88 @@ pub mod ids;
 pub mod intent;
 pub mod interaction;
 mod journal_presentation;
+#[cfg(test)]
 pub mod layout;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod layout;
 mod operation;
 #[cfg(feature = "serde")]
 pub mod persistence;
+#[cfg(test)]
 pub mod platform;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod platform;
 mod platform_provider;
+#[cfg(test)]
 pub mod pointer_journal;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod pointer_journal;
+#[cfg(test)]
 pub mod pointer_receiver;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod pointer_receiver;
 pub mod policy;
 pub mod presentation_config;
+#[cfg(test)]
 pub mod presentation_hit;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod presentation_hit;
+#[cfg(test)]
 pub mod presentation_observation;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod presentation_observation;
+#[cfg(test)]
 pub mod retention;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod retention;
 pub mod runtime;
+#[cfg(test)]
 pub mod scene;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod scene;
 mod scene_compiler;
 pub mod scene_manifest;
+#[cfg(test)]
 pub mod semantic_input;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod semantic_input;
+#[cfg(test)]
 pub mod semantic_manifest;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod semantic_manifest;
 mod splitter_junction_index;
+#[cfg(test)]
 pub mod surface_recovery;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod surface_recovery;
 pub mod tab_strip;
 pub mod transaction;
 pub mod transition;
 pub mod validation;
 pub mod viewport;
+#[cfg(test)]
 pub mod viewport_focus;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod viewport_focus;
 #[cfg(feature = "serde")]
 pub mod viewport_persistence;
+#[cfg(test)]
 pub mod viewport_registry;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod viewport_registry;
 mod workspace;
 
 #[cfg(test)]
@@ -77,11 +155,5 @@ pub use close_plan::{
     SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
     SurfaceRehomeTarget,
 };
-pub use platform_provider::{PlatformObservationAuthorityError, PlatformObservationLease};
-pub use scene_compiler::{PresentationCompilationError, SceneCompilationError};
-pub use surface_recovery::{
-    ConvertedMainRecovery, RootRecoveryAnchor, SurfaceRecoveryBlockedReason,
-    SurfaceRecoveryBootstrap, SurfaceRecoveryError, SurfaceRecoveryTarget,
-};
 pub use viewport::CloseObservationGeneration;
-pub use workspace::RootPresentationOwner;
+pub(crate) use workspace::RootPresentationOwner;

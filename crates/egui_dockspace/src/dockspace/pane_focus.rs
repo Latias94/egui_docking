@@ -2,16 +2,16 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use dockspace::backend_ingress::{
+use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::ingress::{
     BackendIngressCommitWatermark, BackendIngressLease, BackendIngressOrdinal,
 };
-use dockspace::frame::PanelFocus;
+use dockspace::backend::viewport_focus::{
+    PaneFocusIntentId, PaneFocusObservation, PaneFocusObservationGeneration,
+};
 use dockspace::ids::SurfaceId;
 use dockspace::transition::EngineTransition;
 use dockspace::viewport::ViewportBinding;
-use dockspace::viewport_focus::{
-    PaneFocusIntentId, PaneFocusObservation, PaneFocusObservationGeneration,
-};
 use egui::Context;
 
 use super::frame_contract::EguiFrameScheduleKey;

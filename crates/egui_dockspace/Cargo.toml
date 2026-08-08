@@ -16,7 +16,7 @@ example-app = ["dep:eframe"]
 serde = ["dockspace/serde", "dep:serde_json"]
 
 [dependencies]
-dockspace.workspace = true
+dockspace = { workspace = true, features = ["backend"] }
 eframe = { workspace = true, optional = true, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui.workspace = true
 serde_json = { workspace = true, optional = true }

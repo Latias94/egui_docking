@@ -1,4 +1,4 @@
-//! Authoritative egui facade over [`dockspace::engine::DockEngine`].
+//! Authoritative egui facade over [`dockspace::backend::engine::DockEngine`].
 
 #[cfg(any(feature = "backend", test))]
 #[path = "dockspace/backend.rs"]
@@ -31,37 +31,37 @@ pub use self::driver::{
 use std::collections::BTreeSet;
 use std::{fmt::Debug, hash::Hash};
 
-use dockspace::backend_ingress::{
+use dockspace::backend::engine::{
+    CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineError, EngineInput, HostFrameView,
+    HostPresentationDisposition, HostPresentationUnavailableReason, PreparedSurfaceContribution,
+};
+use dockspace::backend::ingress::{
     BackendIngressError, BackendIngressOrdinal, BackendIngressProviderReplacementTicket,
     BackendIngressRecorder,
 };
+use dockspace::backend::pointer_journal::{
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
+};
+use dockspace::backend::presentation_observation::{
+    HostFrameKey, HostPresentationObservation, HostPresentationObservationEntry,
+    HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
+    SurfacePresentationOutputTicket,
+};
+use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
+use dockspace::backend::viewport_focus::GlobalFocusedWindow;
 use dockspace::command::WorkspaceCommand;
 #[cfg(feature = "serde")]
 use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
 };
-use dockspace::engine::{
-    CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineError, EngineInput, HostFrameView,
-    HostPresentationDisposition, HostPresentationUnavailableReason, PreparedSurfaceContribution,
-};
 use dockspace::graph::Workspace;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
 use dockspace::interaction::InteractionStatus;
-use dockspace::pointer_journal::{
-    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
-};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::{
-    HostFrameKey, HostPresentationObservation, HostPresentationObservationEntry,
-    HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
-    SurfacePresentationOutputTicket,
-};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use dockspace::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
-use dockspace::viewport_focus::GlobalFocusedWindow;
 use dockspace::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
     NativeCloseEdge, SurfaceCloseRequest,
@@ -269,7 +269,7 @@ impl Dockspace {
     #[doc(hidden)]
     pub fn adapter_settle_backend_ingress_prefix_retirement(
         &mut self,
-        receipt: &mut dockspace::backend_ingress::BackendIngressPrefixRetirementReceipt,
+        receipt: &mut dockspace::backend::ingress::BackendIngressPrefixRetirementReceipt,
     ) -> Result<Vec<dockspace::viewport::ViewportBinding>, DockspaceError> {
         self.ensure_native_session_idle()?;
         Ok(EguiEngineOwner::settle_backend_ingress_prefix_retirement(
@@ -330,7 +330,7 @@ impl Dockspace {
     pub fn rollback_backend_ingress_to(
         &mut self,
         recorder: &mut BackendIngressRecorder,
-        savepoint: dockspace::backend_ingress::BackendIngressSavepoint,
+        savepoint: dockspace::backend::ingress::BackendIngressSavepoint,
     ) -> Result<(), DockspaceError> {
         self.ensure_native_session_idle()?;
         let lease = savepoint.lease();
@@ -379,7 +379,7 @@ impl Dockspace {
     #[cfg(any(feature = "backend", test))]
     pub fn begin_backend_ingress_provider_replacement(
         &mut self,
-        drained: &mut dockspace::backend_ingress::BackendIngressDrainReceipt,
+        drained: &mut dockspace::backend::ingress::BackendIngressDrainReceipt,
     ) -> Result<BackendIngressProviderReplacementStart, DockspaceError> {
         self.ensure_native_session_idle()?;
         if self.pointer_input.provider().is_some() {
@@ -614,8 +614,8 @@ impl Dockspace {
         &self,
         output: SurfacePresentationOutputTicket,
         emission: HostFrameKey,
-        target: dockspace::presentation_hit::PresentationHitRegionKind,
-        action: dockspace::semantic_input::SemanticReceiverAction,
+        target: dockspace::backend::presentation_hit::PresentationHitRegionKind,
+        action: dockspace::backend::semantic_input::SemanticReceiverAction,
     ) -> bool {
         self.engine
             .interaction_projection(output.surface())

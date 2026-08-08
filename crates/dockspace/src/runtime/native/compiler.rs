@@ -7,7 +7,6 @@ use super::{
     NativeInputFact, NativePlatformError, NativePlatformMode, NativePresentationFact,
     NativeWindowFacts, NativeWindowLifecycleFact,
 };
-use crate::PlatformObservationLease;
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
@@ -16,6 +15,7 @@ use crate::platform::{
     WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputObservation,
     WindowInventoryObservation, WindowPresentationObservation, WorkAreaRosterObservation,
 };
+use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,
     InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,

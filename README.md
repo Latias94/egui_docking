@@ -61,6 +61,14 @@ host protocol: no registry-only event loop can provide its missing native facts.
 These vertical slices therefore do not constitute native multi-viewport product
 support.
 
+The renderer-neutral crate follows the same split. Its default API exposes the
+model and `dockspace::runtime` facade; adapter-only reducer, scene, pointer,
+effect, recovery, and viewport state machines are private. Renderer authors and
+workspace-private protocol harnesses explicitly enable `dockspace/backend` and
+import those unstable contracts through `dockspace::backend`. This is an
+intentional breaking boundary, not a compatibility alias for the former module
+paths.
+
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The release-pinned fork carries global event
 provenance, cross-viewport receiver probing, terminal renderer results, and a

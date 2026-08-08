@@ -1,8 +1,8 @@
 //! Pure docking-guide paint planning and egui shape emission.
 
+use dockspace::backend::drop_resolver::{DropAffordance, DropGuideEligibility};
 use dockspace::command::Edge;
 use dockspace::drop_guide::DropGuideSlot;
-use dockspace::drop_resolver::{DropAffordance, DropGuideEligibility};
 use dockspace::ids::SurfaceId;
 use egui::{Color32, Painter, Rect, Stroke, StrokeKind, vec2};
 
@@ -106,7 +106,7 @@ fn paint_plan(
     };
     let active = affordance
         .active_target()
-        .map(dockspace::drop_resolver::DropAffordanceTarget::key);
+        .map(dockspace::backend::drop_resolver::DropAffordanceTarget::key);
     let facts = affordance.clusters().iter().flat_map(|cluster| {
         cluster.targets().iter().filter_map(move |target| {
             from_logical_rect(target.draw()).map(|draw| GuideButtonFact {
@@ -223,26 +223,26 @@ fn edge_emphasis(pane: Rect, edge: Edge) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use dockspace::command::MovePayload;
-    use dockspace::drop_guide::DropGuideScope;
-    use dockspace::drop_resolver::{
+    use dockspace::backend::drop_resolver::{
         DropAffordance, DropAffordanceTarget, DropResolution, resolve_drop,
     };
-    use dockspace::engine::{
+    use dockspace::backend::engine::{
         DockEngine, HostFrameView, HostPresentationDisposition, HostPresentationUnavailableReason,
     };
+    use dockspace::backend::presentation_observation::{
+        HostPresentationCaptureGeneration, HostPresentationObservation,
+        HostPresentationObservationEntry, HostPresentationProgress,
+        HostPresentationStreamObservation,
+    };
+    use dockspace::backend::scene::{PresentationPlan, SurfaceScene};
+    use dockspace::command::MovePayload;
+    use dockspace::drop_guide::DropGuideScope;
     use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
     use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::ids::{ItemId, RootId};
     use dockspace::intent::Authority;
     use dockspace::interaction::{DragGeneration, DragSessionId};
     use dockspace::policy::DockPolicy;
-    use dockspace::presentation_observation::{
-        HostPresentationCaptureGeneration, HostPresentationObservation,
-        HostPresentationObservationEntry, HostPresentationProgress,
-        HostPresentationStreamObservation,
-    };
-    use dockspace::scene::{PresentationPlan, SurfaceScene};
     use dockspace::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,
@@ -307,9 +307,9 @@ mod tests {
     }
 
     fn record_painted_or_deferred_contributions(
-        frame: dockspace::engine::CoreHostFrame,
+        frame: dockspace::backend::engine::CoreHostFrame,
         except: &[SurfaceId],
-    ) -> dockspace::engine::CoreHostPresentationFrame {
+    ) -> dockspace::backend::engine::CoreHostPresentationFrame {
         let mut frame = frame
             .into_presentation()
             .expect("test frame enters its presentation phase");
@@ -471,7 +471,7 @@ mod tests {
                 .any(|outcome| {
                     matches!(
                 outcome,
-                dockspace::presentation_observation::HostPresentationObservationOutcome::Retired {
+                dockspace::backend::presentation_observation::HostPresentationObservationOutcome::Retired {
                     promotion_eligible: true,
                     ..
                 }

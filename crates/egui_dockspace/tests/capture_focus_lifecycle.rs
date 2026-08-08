@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use dockspace::backend::scene::PresentationPlan;
 use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
@@ -8,7 +9,6 @@ use dockspace::interaction::{
     InteractionCancelReason, InteractionDelivery, InteractionEventKind, InteractionOutcome,
     InteractionStatus,
 };
-use dockspace::scene::PresentationPlan;
 use dockspace::transition::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse};
@@ -152,7 +152,7 @@ fn painted_plan(dockspace: &Dockspace) -> &PresentationPlan {
     dockspace
         .core_engine()
         .interaction_projection(SURFACE)
-        .map(dockspace::scene::SurfaceInteractionProjection::plan)
+        .map(dockspace::backend::scene::SurfaceInteractionProjection::plan)
         .expect("surface has an acknowledged painted plan")
 }
 

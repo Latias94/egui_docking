@@ -1,24 +1,24 @@
 //! Public failures produced by the egui facade.
 
-use dockspace::backend_ingress::BackendIngressError;
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostFrameError, EngineError, HostFrameHoverDropResolutionError,
     SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
+use dockspace::backend::ingress::BackendIngressError;
+use dockspace::backend::pointer_journal::{
+    PointerEdgeSequence, PointerJournalError, SurfaceLocalPointerProviderError,
+};
+use dockspace::backend::pointer_receiver::{
+    PointerReceiverObservationError, PointerReceiverReceiptBatchError,
+};
+use dockspace::backend::presentation_observation::HostPresentationEndpoint;
+use dockspace::backend::presentation_observation::HostPresentationStreamId;
+use dockspace::backend::presentation_observation::NativeStagingPresentation;
+use dockspace::backend::scene::SurfaceSceneStamp;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::interaction::InteractionRejection;
-use dockspace::pointer_journal::{
-    PointerEdgeSequence, PointerJournalError, SurfaceLocalPointerProviderError,
-};
-use dockspace::pointer_receiver::{
-    PointerReceiverObservationError, PointerReceiverReceiptBatchError,
-};
 use dockspace::presentation_config::DockPresentationConfigError;
-use dockspace::presentation_observation::HostPresentationEndpoint;
-use dockspace::presentation_observation::HostPresentationStreamId;
-use dockspace::presentation_observation::NativeStagingPresentation;
-use dockspace::scene::SurfaceSceneStamp;
 use egui::ViewportId;
 use thiserror::Error;
 

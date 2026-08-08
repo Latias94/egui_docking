@@ -1,47 +1,47 @@
 use std::collections::BTreeMap;
 
-use dockspace::engine::{
+use dockspace::backend::engine::{
     BackendIngressProgress, EngineInput, HostPresentationDisposition, HostPresentationSlot,
     HostPresentationUnavailableReason,
 };
-use dockspace::frame::PanelFocus;
-use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::intent::{Authority, PointerButton, PointerId};
-use dockspace::interaction::{InteractionDelivery, InteractionEventKind, InteractionOutcome};
-use dockspace::platform::{
+use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
     PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
     WindowCoordinateObservation, WindowInputState, WindowInventoryObservation,
     WindowPresentationObservation, WindowPresentationState, WorkAreaRosterObservation,
 };
-use dockspace::pointer_journal::{
+use dockspace::backend::pointer_journal::{
     DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, PointerCaptureOwner, PointerEdge,
     PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence,
     PointerEventDeliveryOwner,
 };
-use dockspace::pointer_receiver::{
+use dockspace::backend::pointer_receiver::{
     PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
     PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PointerReceiverUnknownReason,
     PresentedPointerReceiverObservation,
 };
-use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_hit::PresentationHitRegionKind;
+use dockspace::backend::presentation_observation::{
     HostPresentationCaptureGeneration, HostPresentationObservationEntry,
     HostPresentationOutputPayload, HostPresentationProgress, HostPresentationStreamId,
     HostPresentationStreamObservation,
 };
+use dockspace::backend::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow, PanelFocusRecord,
+    ViewportActivationRequest,
+};
+use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalRect, ScaleFactor};
+use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::intent::{Authority, PointerButton, PointerId};
+use dockspace::interaction::{InteractionDelivery, InteractionEventKind, InteractionOutcome};
+use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{
     CapabilityObservationGeneration, CoordinateObservationGeneration,
     InventoryObservationGeneration, PlatformSnapshotGeneration, PresentationObservationGeneration,
     ViewportBinding, ViewportRole, WindowToken, WorkAreaObservationGeneration, WorkAreaToken,
-};
-use dockspace::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow, PanelFocusRecord,
-    ViewportActivationRequest,
 };
 use egui::accesskit::{Action, Role};
 use egui::{Color32, Context, Id, Pos2, RawInput, Rect, TextEdit, Ui, ViewportId, vec2};
@@ -164,7 +164,7 @@ fn backend_capabilities() -> PlatformCapabilities {
 fn observed_window(
     binding: ViewportBinding,
     presentation: WindowPresentationState,
-    acknowledged_effect: Option<dockspace::effect::EffectId>,
+    acknowledged_effect: Option<dockspace::backend::effect::EffectId>,
     x: f64,
 ) -> ObservedWindow {
     ObservedWindow::new(binding)
@@ -197,7 +197,7 @@ fn platform_snapshot(
     target: Option<(
         ViewportBinding,
         WindowPresentationState,
-        Option<dockspace::effect::EffectId>,
+        Option<dockspace::backend::effect::EffectId>,
     )>,
 ) -> PlatformSnapshot {
     let mut windows = vec![observed_window(
@@ -284,7 +284,7 @@ fn outside_all_route(dockspace: &Dockspace, position: PhysicalPoint) -> DesktopR
 }
 
 fn unavailable_receiver_receipts(
-    candidates: &dockspace::pointer_receiver::PointerReceiverCandidateRoster,
+    candidates: &dockspace::backend::pointer_receiver::PointerReceiverCandidateRoster,
 ) -> PointerReceiverReceiptBatch {
     PointerReceiverReceiptBatch::new(candidates.candidates().iter().map(|candidate| {
         let observation = if candidate.receiver_is_applicable() {
@@ -301,7 +301,7 @@ fn unavailable_receiver_receipts(
 
 fn reclaim_backend_prefix(
     dockspace: &mut Dockspace,
-    recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+    recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
 ) {
     let committed = dockspace
         .core_engine()
@@ -361,7 +361,7 @@ impl PresentationCaptureClock {
 
     fn record(
         dockspace: &Dockspace,
-        recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+        recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
         entries: impl IntoIterator<Item = HostPresentationObservationEntry>,
     ) {
         for entry in entries {
@@ -374,7 +374,7 @@ impl PresentationCaptureClock {
     fn settle_and_record(
         &mut self,
         dockspace: &Dockspace,
-        recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+        recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
         outputs: Vec<EguiOuterSurfaceOutput>,
     ) {
         let entries = self.settle_presented(outputs);
@@ -567,7 +567,7 @@ fn native_roster(route: NativeCoreRoute) -> NativeBindingRoster {
 
 fn bootstrap_native_root(
     dockspace: &mut Dockspace,
-    recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+    recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
 ) -> NativeCoreRoute {
     dockspace
         .record_backend_viewport_registration(
@@ -645,7 +645,7 @@ fn bootstrap_native_root(
 
 fn paint_native_frame(
     dockspace: &mut Dockspace,
-    recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+    recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
     route: NativeCoreRoute,
     sequence: u64,
 ) -> EguiOuterFrameCommit {
@@ -654,7 +654,7 @@ fn paint_native_frame(
 
 fn paint_native_frame_with_context(
     dockspace: &mut Dockspace,
-    recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+    recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
     route: NativeCoreRoute,
     sequence: u64,
     context: &Context,
@@ -716,7 +716,7 @@ fn paint_native_frame_with_context(
 
 fn paint_native_focus_frame(
     dockspace: &mut Dockspace,
-    recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+    recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
     route: NativeCoreRoute,
     sequence: u64,
     context: &Context,

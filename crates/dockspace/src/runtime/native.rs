@@ -14,7 +14,6 @@ use super::native_effect::{
     NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession, HostFrameReport};
-use crate::PlatformObservationLease;
 use crate::backend_ingress::{
     BackendIngressBatch, BackendIngressDrainReceipt, BackendIngressOrdinal,
     BackendIngressPrefixRetirementReceipt, BackendIngressProviderReplacementTicket,
@@ -27,6 +26,7 @@ use crate::platform::{
     CloseEffectAcknowledgement, ObservedWindow, PlatformSnapshot, WindowCloseObservation,
     WindowCloseState, WindowInputState, WindowPresentationState,
 };
+use crate::platform_provider::PlatformObservationLease;
 use crate::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
 use crate::viewport::{CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken};
 use compiler::{compile_platform_snapshot, compile_unknown_inventory_snapshot};

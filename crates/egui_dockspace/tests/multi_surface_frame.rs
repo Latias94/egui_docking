@@ -1,6 +1,6 @@
+use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
-use dockspace::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::SurfaceContributionOutcome;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
@@ -613,7 +613,7 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
         .expect("a required renderer settlement must retain its exact core output identity");
     assert_eq!(
         presentation.continuation(),
-        dockspace::presentation_observation::HostPresentationContinuation::Presented,
+        dockspace::backend::presentation_observation::HostPresentationContinuation::Presented,
         "the first successful paint must schedule the boundary that grants interaction authority",
     );
     assert_eq!(settlement.native_route(), None);
@@ -675,7 +675,7 @@ fn split_presentation_stays_pending_until_a_late_renderer_result() {
         .expect("a stable paint still retains its exact renderer obligation");
     assert_eq!(
         stable_presentation.continuation(),
-        dockspace::presentation_observation::HostPresentationContinuation::None,
+        dockspace::backend::presentation_observation::HostPresentationContinuation::None,
         "current interaction authority must not turn stable paint into a repaint loop",
     );
     stable.settle_with(|_, _| EguiPresentationResult::Dropped);

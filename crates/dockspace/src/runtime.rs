@@ -1,7 +1,7 @@
 //! Narrow renderer-neutral runtime facade for application host frames.
 //!
 //! This module is the migration boundary for adapters which must not own or
-//! access [`crate::engine::DockEngine`] directly. It supports durable commands,
+//! access the backend reducer directly. It supports durable commands,
 //! close decisions, complete measurement answers, exact paint settlement, and
 //! lossless surface-local pointer batches backed by concrete final-presentation
 //! authority.
@@ -306,7 +306,7 @@ impl DockspaceHostFrame<'_> {
             .frame
             .view()
             .begin_surface_contribution(surface)
-            .map_err(DockspaceRuntimeError::SurfaceContributionBegin)?;
+            .map_err(DockspaceRuntimeError::from)?;
         let contribution = self
             .frame
             .view()
@@ -341,13 +341,13 @@ impl DockspaceHostFrame<'_> {
                 .position(|obligation| {
                     obligation.slot() == (crate::engine::HostPresentationSlot::Surface { surface })
                 })
-                .ok_or(DockspaceRuntimeError::PaintObligationUnavailable { surface })?;
+                .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
             let obligation = obligations.swap_remove(index);
             let token = frame.view().begin_surface_contribution(surface)?;
             let interaction = frame
                 .view()
                 .presentation_interaction(surface)
-                .ok_or(DockspaceRuntimeError::PaintObligationUnavailable { surface })?;
+                .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
             frame.record_painted_surface_contribution(obligation, token, interaction)?;
         }
         for obligation in obligations {
@@ -392,7 +392,7 @@ impl DockspaceHostFrame<'_> {
         self.next_source_sequence = self
             .next_source_sequence
             .checked_add(1)
-            .ok_or(DockspaceRuntimeError::SourceSequenceExhausted)?;
+            .ok_or_else(DockspaceRuntimeError::source_sequence_exhausted)?;
         let sequence = SourceSequence::new(self.next_source_sequence);
         self.frame
             .append_input(APPLICATION_INPUT_SOURCE, sequence, input)?;
@@ -527,7 +527,7 @@ impl HostFrameReport {
     fn from_transition(
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
-        native_provider: Option<crate::PlatformObservationLease>,
+        native_provider: Option<crate::platform_provider::PlatformObservationLease>,
         abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
         let mut ordered_inputs = Vec::new();
@@ -756,56 +756,194 @@ fn finish_ordered_inputs(
         .collect()
 }
 
+/// Stable category for one renderer-neutral facade failure.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockspaceRuntimeErrorKind {
+    /// Core engine construction or publication failed.
+    Engine,
+    /// The affine host-frame protocol rejected an operation.
+    HostFrame,
+    /// The private application input sequence was exhausted.
+    SourceSequenceExhausted,
+    /// The host named a surface without a matching paint obligation.
+    PaintObligationUnavailable,
+    /// A surface contribution could not begin under the frozen roster.
+    SurfaceContributionBegin,
+    /// A surface contribution answer was stale or failed compilation.
+    SurfaceContributionPrepare,
+    /// A renderer-neutral interaction capability was invalid.
+    Interaction,
+    /// The presentation sidecar could not synchronize with the core.
+    PresentationObservation,
+    /// Native lifecycle data was stale, incomplete, or invalid.
+    Native,
+}
+
 /// Failure at the renderer-neutral facade boundary.
+///
+/// Backend reducer errors remain available through [`std::error::Error::source`]
+/// without becoming part of the default product API. Product-level interaction
+/// and native errors have dedicated typed accessors.
+#[derive(Debug)]
+pub struct DockspaceRuntimeError {
+    source: DockspaceRuntimeErrorSource,
+}
+
+impl DockspaceRuntimeError {
+    /// Returns the stable facade-level error category.
+    #[must_use]
+    pub const fn kind(&self) -> DockspaceRuntimeErrorKind {
+        match &self.source {
+            DockspaceRuntimeErrorSource::Engine(_) => DockspaceRuntimeErrorKind::Engine,
+            DockspaceRuntimeErrorSource::HostFrame(_) => DockspaceRuntimeErrorKind::HostFrame,
+            DockspaceRuntimeErrorSource::SourceSequenceExhausted => {
+                DockspaceRuntimeErrorKind::SourceSequenceExhausted
+            }
+            DockspaceRuntimeErrorSource::PaintObligationUnavailable { .. } => {
+                DockspaceRuntimeErrorKind::PaintObligationUnavailable
+            }
+            DockspaceRuntimeErrorSource::SurfaceContributionBegin(_) => {
+                DockspaceRuntimeErrorKind::SurfaceContributionBegin
+            }
+            DockspaceRuntimeErrorSource::SurfaceContributionPrepare(_) => {
+                DockspaceRuntimeErrorKind::SurfaceContributionPrepare
+            }
+            DockspaceRuntimeErrorSource::Interaction(_) => DockspaceRuntimeErrorKind::Interaction,
+            DockspaceRuntimeErrorSource::PresentationObservation(_) => {
+                DockspaceRuntimeErrorKind::PresentationObservation
+            }
+            DockspaceRuntimeErrorSource::Native(_) => DockspaceRuntimeErrorKind::Native,
+        }
+    }
+
+    /// Returns the typed interaction failure when this error belongs to that lane.
+    #[must_use]
+    pub const fn interaction_error(&self) -> Option<&DockspaceInteractionError> {
+        match &self.source {
+            DockspaceRuntimeErrorSource::Interaction(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Returns the typed native-platform failure when this error belongs to that lane.
+    #[must_use]
+    pub const fn native_error(&self) -> Option<&NativePlatformError> {
+        match &self.source {
+            DockspaceRuntimeErrorSource::Native(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Returns the surface named by a missing paint obligation, when applicable.
+    #[must_use]
+    pub const fn paint_obligation_surface(&self) -> Option<SurfaceId> {
+        match self.source {
+            DockspaceRuntimeErrorSource::PaintObligationUnavailable { surface } => Some(surface),
+            _ => None,
+        }
+    }
+
+    const fn source_sequence_exhausted() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::SourceSequenceExhausted,
+        }
+    }
+
+    const fn paint_obligation_unavailable(surface: SurfaceId) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PaintObligationUnavailable { surface },
+        }
+    }
+}
+
+impl std::fmt::Display for DockspaceRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DockspaceRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        std::error::Error::source(&self.source)
+    }
+}
+
 #[derive(Debug, Error)]
-pub enum DockspaceRuntimeError {
-    /// Core engine construction or frame publication failed.
+enum DockspaceRuntimeErrorSource {
     #[error(transparent)]
     Engine(Box<EngineError>),
-    /// The affine host-frame protocol rejected one operation.
     #[error(transparent)]
     HostFrame(Box<CoreHostFrameError>),
-    /// The private application input stream cannot advance without wrapping.
     #[error("application input source sequence is exhausted")]
     SourceSequenceExhausted,
-    /// The host claimed a paint for a surface without a matching core slot.
     #[error("surface {surface} has no paintable presentation obligation in this frame")]
-    PaintObligationUnavailable {
-        /// Surface named by the paint claim.
-        surface: SurfaceId,
-    },
-    /// A surface contribution could not begin under the frozen roster.
+    PaintObligationUnavailable { surface: SurfaceId },
     #[error(transparent)]
-    SurfaceContributionBegin(#[from] SurfaceContributionBeginError),
-    /// A surface contribution answer was stale or failed compilation.
+    SurfaceContributionBegin(SurfaceContributionBeginError),
     #[error(transparent)]
     SurfaceContributionPrepare(Box<SurfaceContributionPrepareError>),
-    /// A renderer-neutral interaction capability was structurally invalid.
     #[error(transparent)]
-    Interaction(#[from] DockspaceInteractionError),
-    /// The facade presentation sidecar could not synchronize with the core.
+    Interaction(DockspaceInteractionError),
     #[error(transparent)]
-    PresentationObservation(#[from] PresentationObservationError),
-    /// Native lifecycle data was stale, incomplete, or structurally invalid.
+    PresentationObservation(PresentationObservationError),
     #[error(transparent)]
-    Native(#[from] NativePlatformError),
+    Native(NativePlatformError),
 }
 
 impl From<EngineError> for DockspaceRuntimeError {
     fn from(error: EngineError) -> Self {
-        Self::Engine(Box::new(error))
+        Self {
+            source: DockspaceRuntimeErrorSource::Engine(Box::new(error)),
+        }
     }
 }
 
 impl From<CoreHostFrameError> for DockspaceRuntimeError {
     fn from(error: CoreHostFrameError) -> Self {
-        Self::HostFrame(Box::new(error))
+        Self {
+            source: DockspaceRuntimeErrorSource::HostFrame(Box::new(error)),
+        }
+    }
+}
+
+impl From<SurfaceContributionBeginError> for DockspaceRuntimeError {
+    fn from(error: SurfaceContributionBeginError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::SurfaceContributionBegin(error),
+        }
     }
 }
 
 impl From<SurfaceContributionPrepareError> for DockspaceRuntimeError {
     fn from(error: SurfaceContributionPrepareError) -> Self {
-        Self::SurfaceContributionPrepare(Box::new(error))
+        Self {
+            source: DockspaceRuntimeErrorSource::SurfaceContributionPrepare(Box::new(error)),
+        }
+    }
+}
+
+impl From<DockspaceInteractionError> for DockspaceRuntimeError {
+    fn from(error: DockspaceInteractionError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::Interaction(error),
+        }
+    }
+}
+
+impl From<PresentationObservationError> for DockspaceRuntimeError {
+    fn from(error: PresentationObservationError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PresentationObservation(error),
+        }
+    }
+}
+
+impl From<NativePlatformError> for DockspaceRuntimeError {
+    fn from(error: NativePlatformError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::Native(error),
+        }
     }
 }
 

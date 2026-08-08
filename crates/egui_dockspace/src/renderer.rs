@@ -4,8 +4,16 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use dockspace::backend::engine::{TabListMenuNavigation, TabScrollAdjustment};
+use dockspace::backend::presentation_hit::{
+    PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
+};
+use dockspace::backend::presentation_observation::HostInteractionPresentation;
+use dockspace::backend::scene::{
+    PaneRecord, PaneSceneId, PresentationPlan, SplitterResizeTarget, SplitterSceneId,
+    SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord, TabSceneId, TabStripControlRecord,
+};
 use dockspace::command::{ItemSource, MovePayload};
-use dockspace::engine::{TabListMenuNavigation, TabScrollAdjustment};
 use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Workspace};
@@ -14,14 +22,6 @@ use dockspace::intent::CloseSceneTarget;
 use dockspace::interaction::{
     ActiveDragView, ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase,
     InteractionPreview, InteractionState, InteractionStatus, PreviewToken, PreviewVisual,
-};
-use dockspace::presentation_hit::{
-    PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
-};
-use dockspace::presentation_observation::HostInteractionPresentation;
-use dockspace::scene::{
-    PaneRecord, PaneSceneId, PresentationPlan, SplitterResizeTarget, SplitterSceneId,
-    SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord, TabSceneId, TabStripControlRecord,
 };
 use dockspace::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use egui::accesskit::Action;
@@ -71,7 +71,7 @@ pub(crate) enum RenderAction {
     },
     AdjustTabStripScroll {
         surface: SurfaceId,
-        bar: dockspace::scene::TabBarSceneId,
+        bar: dockspace::backend::scene::TabBarSceneId,
         adjustment: TabScrollAdjustment,
     },
     AdjustTabListMenuScroll {
@@ -1033,7 +1033,7 @@ fn is_complete_contained_root_drag(workspace: &Workspace, payload: &MovePayload)
         .is_some_and(|record| record.node == source.node())
         && matches!(
             workspace.presentation_for_root(source.root()),
-            Some(dockspace::RootPresentationOwner::Contained { .. })
+            Some(dockspace::backend::scene::RootPresentationOwner::Contained { .. })
         )
 }
 
@@ -1200,12 +1200,12 @@ pub(crate) fn paint_centered_label(ui: &Ui, rect: Rect, text: impl ToString, col
 
 #[cfg(test)]
 mod tests {
-    use dockspace::engine::DockEngine;
+    use dockspace::backend::engine::DockEngine;
+    use dockspace::backend::scene::TabBarSceneId;
     use dockspace::geometry::LogicalRect;
     use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
     use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
     use dockspace::policy::DockPolicy;
-    use dockspace::scene::TabBarSceneId;
     use dockspace::tab_strip::TabStripControlId;
     #[cfg(not(egui_backend_event_envelope))]
     use egui::accesskit::ActionRequest;
@@ -1514,11 +1514,15 @@ mod tests {
                     .prepare_surface_contribution(token, projection.measurements.values.clone())
                     .expect("fixture measurements compile");
                 let core_plan = match contribution.paint_candidate() {
-                    dockspace::engine::PreparedSurfacePaintCandidate::Ready(candidate) => {
+                    dockspace::backend::engine::PreparedSurfacePaintCandidate::Ready(candidate) => {
                         candidate.plan().clone()
                     }
-                    dockspace::engine::PreparedSurfacePaintCandidate::Retained { .. }
-                    | dockspace::engine::PreparedSurfacePaintCandidate::Unavailable { .. } => {
+                    dockspace::backend::engine::PreparedSurfacePaintCandidate::Retained {
+                        ..
+                    }
+                    | dockspace::backend::engine::PreparedSurfacePaintCandidate::Unavailable {
+                        ..
+                    } => {
                         panic!("fixture contribution must compile a ready plan")
                     }
                 };

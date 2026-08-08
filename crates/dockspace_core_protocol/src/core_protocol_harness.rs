@@ -1,19 +1,59 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::command::{DockTarget, Edge, WorkspaceCommand};
-use dockspace::drop_target::DropTargetId;
-use dockspace::effect::{
+use dockspace::backend::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
     EffectInvalidation, EffectPhase, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
     PlatformEffect, PlatformEffectEmission,
 };
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationSlot, HostPresentationUnavailableReason,
     PreparedSurfaceContribution, SurfaceContributionToken,
 };
+use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::platform::PlatformObservationLease;
+use dockspace::backend::platform::{
+    CapabilityRosterObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
+    PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
+    WindowCoordinateObservation, WindowInputObservation, WindowInputState,
+    WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
+    WorkAreaRosterObservation,
+};
+use dockspace::backend::pointer_journal::{
+    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector,
+    PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
+    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerEventDeliveryOwner,
+    PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
+    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
+    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
+    SurfaceLocalPointerProvider, SurfaceLocalPointerRetirementDisposition,
+    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
+};
+use dockspace::backend::pointer_receiver::{
+    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
+    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
+    PointerReceiverReceiptBatch, PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
+};
+use dockspace::backend::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
+use dockspace::backend::presentation_observation::{
+    HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEndpoint,
+    HostPresentationObservation, HostPresentationObservationEntry,
+    HostPresentationObservationOutcome, HostPresentationObservationRejection,
+    HostPresentationOutput, HostPresentationProgress, HostPresentationStreamId,
+    HostPresentationStreamObservation, PresentationHostLease, PresentationHostRetirementReason,
+    PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
+};
+use dockspace::backend::scene::TabBarSceneId;
+use dockspace::backend::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, FocusValueChange, GlobalFocusedWindow,
+    PaneFocusDisposition, PaneFocusIntent, PaneFocusIntentSource, PanelFocusRecord,
+    PendingPlatformFocus, PendingViewportActivation, PlatformFocusEvidence,
+    RecordedObserveOnlyActivation, SurfaceFocusState, ViewportActivationCause,
+    ViewportActivationRequest, unknown_focus_observation,
+};
+use dockspace::command::{DockTarget, Edge, WorkspaceCommand};
+use dockspace::drop_target::DropTargetId;
 use dockspace::event::ReductionCause;
-use dockspace::frame::PanelFocus;
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
@@ -29,39 +69,7 @@ use dockspace::interaction::{
     InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
     ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
-use dockspace::platform::{
-    CapabilityRosterObservation, InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea,
-    PlatformCapabilities, PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCoordinateObservation, WindowInputObservation, WindowInputState,
-    WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
-    WorkAreaRosterObservation,
-};
-use dockspace::pointer_journal::{
-    DesktopDockRoute, DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector,
-    PhysicalScrollCoordinates, PointerCaptureOwner, PointerEdge, PointerEdgeJournal,
-    PointerEdgeKind, PointerEdgeLocation, PointerEdgeSequence, PointerEventDeliveryOwner,
-    PointerInputLease, PointerProviderScope, PointerStreamCancelReason, ScrollCancelReason,
-    ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
-    ScrollMomentum, ScrollPhase, ScrollSequenceToken, SurfaceLocalPointerEndpoint,
-    SurfaceLocalPointerProvider, SurfaceLocalPointerRetirementDisposition,
-    SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
-};
-use dockspace::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverHoverHit,
-    PointerReceiverHoverHitDisposition, PointerReceiverObservation, PointerReceiverProbeReceipt,
-    PointerReceiverReceiptBatch, PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
-};
 use dockspace::policy::DockPolicy;
-use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
-use dockspace::presentation_observation::{
-    HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEndpoint,
-    HostPresentationObservation, HostPresentationObservationEntry,
-    HostPresentationObservationOutcome, HostPresentationObservationRejection,
-    HostPresentationOutput, HostPresentationProgress, HostPresentationStreamId,
-    HostPresentationStreamObservation, PresentationHostLease, PresentationHostRetirementReason,
-    PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
-};
-use dockspace::scene::TabBarSceneId;
 use dockspace::scene_manifest::{
     Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
     TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement,
@@ -77,14 +85,7 @@ use dockspace::viewport::{
     InputObservationGeneration, InventoryObservationGeneration, PresentationObservationGeneration,
     ViewportBinding, ViewportRole, WindowToken, WorkAreaObservationGeneration, WorkAreaToken,
 };
-use dockspace::viewport_focus::{
-    FocusObservationEnvelope, FocusObservationGeneration, FocusValueChange, GlobalFocusedWindow,
-    PaneFocusDisposition, PaneFocusIntent, PaneFocusIntentSource, PanelFocusRecord,
-    PendingPlatformFocus, PendingViewportActivation, PlatformFocusEvidence,
-    RecordedObserveOnlyActivation, SurfaceFocusState, ViewportActivationCause,
-    ViewportActivationRequest, unknown_focus_observation,
-};
-use dockspace::{ClosePlanTarget, PlatformObservationLease, SurfaceCloseDisposition};
+use dockspace::{ClosePlanTarget, SurfaceCloseDisposition};
 
 use crate::core_protocol_trace::{
     AuthorityUnavailableReasonSpec, AxisSpec, BoundaryId, CanonicalContained, CanonicalRoot,
@@ -2051,11 +2052,12 @@ impl CoreProtocolHarness {
 
     fn compile_scroll_delivery_region(
         view: HostFrameView<'_>,
-        projection: &dockspace::scene::SurfaceInteractionProjection<'_>,
+        projection: &dockspace::backend::scene::SurfaceInteractionProjection<'_>,
         root: RootKey,
         path: &crate::core_protocol_trace::StructuralPath,
         menu: bool,
-    ) -> Result<dockspace::presentation_hit::PresentationHitRegionId, CoreProtocolTraceError> {
+    ) -> Result<dockspace::backend::presentation_hit::PresentationHitRegionId, CoreProtocolTraceError>
+    {
         let tabs = resolve_node(
             view.workspace(),
             &NodeLocation {
@@ -2225,7 +2227,8 @@ impl CoreProtocolHarness {
     fn current_projection(
         view: HostFrameView<'_>,
         surface: SurfaceId,
-    ) -> Result<dockspace::scene::SurfaceInteractionProjection<'_>, CoreProtocolTraceError> {
+    ) -> Result<dockspace::backend::scene::SurfaceInteractionProjection<'_>, CoreProtocolTraceError>
+    {
         view.interaction_projection(surface).ok_or_else(|| {
             CoreProtocolTraceError::Replay("delivery surface is not interactive".into())
         })
@@ -3760,7 +3763,7 @@ fn validate_exact_presentation_roster(
 
 const fn compile_presentation_disposition(
     disposition: PresentationDispositionSpec,
-    interaction: dockspace::presentation_observation::HostInteractionPresentation,
+    interaction: dockspace::backend::presentation_observation::HostInteractionPresentation,
 ) -> HostPresentationDisposition {
     match disposition {
         PresentationDispositionSpec::Painted {} => {
@@ -5023,7 +5026,7 @@ fn observe_scroll_outcome(
 
 fn observe_scroll_receiver(
     workspace: &Workspace,
-    receiver: dockspace::presentation_hit::PresentationHitRegionId,
+    receiver: dockspace::backend::presentation_hit::PresentationHitRegionId,
 ) -> Result<ExpectedScrollReceiver, CoreProtocolTraceError> {
     match receiver.kind() {
         PresentationHitRegionKind::TabStripScroll(bar) => {
@@ -5095,7 +5098,7 @@ fn observe_scroll_suppression(
 
 fn observe_scroll_blocker(
     workspace: &Workspace,
-    blocker: dockspace::presentation_hit::PresentationHitRegionId,
+    blocker: dockspace::backend::presentation_hit::PresentationHitRegionId,
 ) -> Result<ExpectedScrollBlocker, CoreProtocolTraceError> {
     let observe_menu = |session: dockspace::tab_strip::TabListMenuSessionId| {
         let receiver = observe_scroll_bar(workspace, blocker.surface(), session.key().bar(), true)?;

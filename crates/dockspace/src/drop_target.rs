@@ -79,7 +79,7 @@ pub enum DropDestination {
 /// Adapters publish the exact durable [`crate::graph::ContainedFloating`] rectangle,
 /// including title bar and border chrome, even when a surface resize temporarily
 /// leaves part or all of it outside the ready surface bounds. The effective hit
-/// domain is this region intersected with [`crate::scene::PresentationPlan::bounds`].
+/// domain is this region intersected with the compiled surface bounds.
 /// A target on the same layer remains eligible so the floating's own content can
 /// receive drops; targets on lower layers are not candidates in that effective domain.
 #[derive(Debug, Clone, Copy, PartialEq)]

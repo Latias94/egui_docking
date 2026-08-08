@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
 
-use dockspace::SurfaceRecoveryBootstrap;
+use dockspace::backend::surface_recovery::SurfaceRecoveryBootstrap;
 use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};

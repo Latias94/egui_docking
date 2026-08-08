@@ -11,6 +11,7 @@ repository.workspace = true
 
 [features]
 default = []
+backend = []
 serde = ["dep:blake3", "dep:serde", "dep:serde_json"]
 
 [dependencies]

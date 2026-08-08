@@ -6,12 +6,12 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell;
 
-use dockspace::RootPresentationOwner;
+use dockspace::backend::scene::RootPresentationOwner;
+use dockspace::backend::scene::{PaneSceneId, TabBarSceneId, TabSceneId};
 use dockspace::geometry::{GeometryError, LogicalRect, LogicalSize};
 use dockspace::graph::{Node, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::policy::TabBarVisibility;
-use dockspace::scene::{PaneSceneId, TabBarSceneId, TabSceneId};
 use dockspace::scene_manifest::{
     Measurement, MeasurementSubmissionError, MeasurementValueError,
     PaneMinimumKey as CorePaneMinimumKey, SurfaceMeasurements, SurfaceRequirements, TabIntrinsic,

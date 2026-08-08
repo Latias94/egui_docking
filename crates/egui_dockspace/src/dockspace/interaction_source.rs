@@ -1,6 +1,6 @@
 //! Queries that map interaction payloads back to their owning surface.
 
-use dockspace::RootPresentationOwner;
+use dockspace::backend::scene::RootPresentationOwner;
 use dockspace::command::MovePayload;
 use dockspace::graph::Workspace;
 use dockspace::ids::{RootId, SurfaceId};

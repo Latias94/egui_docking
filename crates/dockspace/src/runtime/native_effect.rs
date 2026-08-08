@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
 
 use super::native::NativeSurfaceLease;
-use crate::PlatformObservationLease;
 use crate::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
@@ -13,6 +12,7 @@ use crate::effect::{
 };
 use crate::geometry::PhysicalRect;
 use crate::ids::WorkspaceEpoch;
+use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::PresentedNativeStagingPresentation;
 use crate::viewport::{PresentationObservationGeneration, ViewportBinding, ViewportRole};
 

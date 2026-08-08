@@ -1,8 +1,8 @@
+use dockspace::backend::pointer_journal::PointerEdgeKind;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::intent::PointerButton as DockPointerButton;
 use dockspace::interaction::InteractionOutcome;
-use dockspace::pointer_journal::PointerEdgeKind;
 use dockspace::transition::{
     InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
 };
@@ -106,7 +106,7 @@ fn splitter_pointer_position(dockspace: &Dockspace, split: NodeId) -> Pos2 {
     let rect = dockspace
         .core_engine()
         .interaction_projection(SURFACE)
-        .map(dockspace::scene::SurfaceInteractionProjection::plan)
+        .map(dockspace::backend::scene::SurfaceInteractionProjection::plan)
         .expect("the warmed surface has an acknowledged interaction plan")
         .splitter_records()
         .iter()

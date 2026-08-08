@@ -3,25 +3,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use dockspace::command::CommandOutcome;
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostFrameError, CoreHostPresentationFrame, DockEngine, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationObligation, HostPresentationUnavailableReason,
     PreparedSurfaceContribution, SurfaceContributionPrepareError, SurfaceContributionToken,
 };
-use dockspace::ids::SurfaceId;
-use dockspace::interaction::InteractionEventKind;
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_observation::{
     HostFrameKey, HostInteractionPresentation, HostPresentationEmissionRequest,
     HostPresentationOutput, HostPresentationOutputPayload, NativeStagingPresentation,
     PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
-use dockspace::scene::{SurfaceScene, SurfaceSceneStamp, TabBarSceneId, TabSceneId};
+use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp, TabBarSceneId, TabSceneId};
+use dockspace::backend::viewport_focus::PaneFocusObservation;
+use dockspace::command::CommandOutcome;
+use dockspace::ids::SurfaceId;
+use dockspace::interaction::InteractionEventKind;
 use dockspace::scene_manifest::SurfaceMeasurements;
 use dockspace::transition::{
     EngineTransition, InputOutcome, SurfaceContributionOutcome, WorkspaceVersion,
 };
-use dockspace::viewport_focus::PaneFocusObservation;
 use egui::{Context, Id, Rect, Ui, ViewportId};
 use thiserror::Error;
 
@@ -418,8 +418,10 @@ impl PreparedEguiFrameAcceptance {
                 continue;
             };
             let surface = match owner {
-                dockspace::RootPresentationOwner::Main { surface }
-                | dockspace::RootPresentationOwner::Contained { surface, .. } => surface,
+                dockspace::backend::scene::RootPresentationOwner::Main { surface }
+                | dockspace::backend::scene::RootPresentationOwner::Contained { surface, .. } => {
+                    surface
+                }
             };
             semantic_focus_by_surface
                 .entry(surface)
@@ -1632,10 +1634,10 @@ impl EguiDockRenderer {
                 .workspace()
                 .presentation_for_root(key.root)
                 .is_some_and(|owner| match owner {
-                    dockspace::RootPresentationOwner::Main { surface }
-                    | dockspace::RootPresentationOwner::Contained { surface, .. } => {
-                        surface == key.surface
-                    }
+                    dockspace::backend::scene::RootPresentationOwner::Main { surface }
+                    | dockspace::backend::scene::RootPresentationOwner::Contained {
+                        surface, ..
+                    } => surface == key.surface,
                 });
             let source_current = engine
                 .workspace()

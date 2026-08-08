@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use dockspace::backend::scene::{SplitterGapPresentation, SurfaceScene};
 use dockspace::drop_target::DropTargetId;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
@@ -9,7 +10,6 @@ use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
-use dockspace::scene::{SplitterGapPresentation, SurfaceScene};
 use dockspace::tab_strip::TabStripControlId;
 use dockspace::transition::WorkspaceVersion;
 use dockspace::{CloseDecision, ClosePlan, ClosePlanTarget};
@@ -831,7 +831,7 @@ fn published_tab_rect(dockspace: &Dockspace, item: ItemId) -> Option<LogicalRect
         .tab_records()
         .iter()
         .find(|tab| tab.id().item == item)
-        .map(dockspace::scene::TabRecord::visible_bounds)
+        .map(dockspace::backend::scene::TabRecord::visible_bounds)
 }
 
 #[allow(
@@ -1138,7 +1138,7 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
             dockspace
                 .core_engine()
                 .interaction_projection(SURFACE)
-                .map(dockspace::scene::SurfaceInteractionProjection::plan_stamp),
+                .map(dockspace::backend::scene::SurfaceInteractionProjection::plan_stamp),
             Some(candidate)
         );
     }
@@ -1218,7 +1218,7 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
         .core_engine()
         .interaction_projection(SURFACE)
         .and_then(|projection| projection.plan().tab_bar_records().first())
-        .map(dockspace::scene::TabBarRecord::scroll_offset)
+        .map(dockspace::backend::scene::TabBarRecord::scroll_offset)
         .expect("the overflow fixture publishes one tab bar");
     let version_before = dockspace.core_engine().version();
     assert!(selected_before.is_some());
@@ -1247,7 +1247,7 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
             .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_bar_records().first())
-            .map(dockspace::scene::TabBarRecord::scroll_offset),
+            .map(dockspace::backend::scene::TabBarRecord::scroll_offset),
         Some(scroll_before),
         "official egui wheel facts cannot authorize docking scroll"
     );
@@ -1461,7 +1461,7 @@ fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
                 .tab_records()
                 .iter()
                 .find(|tab| tab.id().item == ITEM_B)
-                .map(dockspace::scene::TabRecord::selected))
+                .map(dockspace::backend::scene::TabRecord::selected))
             == Some(true),
         "the atomically selected drag source remains selected after scrolling",
     );
@@ -2603,7 +2603,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
         .core_engine()
         .interaction_projection(SURFACE)
         .and_then(|projection| projection.plan().tab_list_menu_records().first())
-        .map(dockspace::scene::TabListMenuRecord::scroll_offset)
+        .map(dockspace::backend::scene::TabListMenuRecord::scroll_offset)
         .expect("the popup is present in the authoritative projection");
 
     let (_, mut latest_outer_offset, wheel_available_after_dockspace) =
@@ -2649,7 +2649,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
             .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_list_menu_records().first())
-            .map(dockspace::scene::TabListMenuRecord::scroll_offset),
+            .map(dockspace::backend::scene::TabListMenuRecord::scroll_offset),
         Some(menu_offset_before),
         "the same wheel cannot mutate docking state without a conforming receiver receipt"
     );
@@ -2727,7 +2727,7 @@ fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
             .core_engine()
             .interaction_projection(SURFACE)
             .and_then(|projection| projection.plan().tab_list_menu_records().first())
-            .map(dockspace::scene::TabListMenuRecord::scroll_offset)
+            .map(dockspace::backend::scene::TabListMenuRecord::scroll_offset)
             .expect("the popup is present in the authoritative projection");
 
         run_accesskit_frame(
@@ -2754,7 +2754,7 @@ fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
                 .core_engine()
                 .interaction_projection(SURFACE)
                 .and_then(|projection| projection.plan().tab_list_menu_records().first())
-                .map(dockspace::scene::TabListMenuRecord::scroll_offset),
+                .map(dockspace::backend::scene::TabListMenuRecord::scroll_offset),
             Some(menu_offset_before),
             "neither the popup nor an overlapping strip may claim an authority-incomplete wheel"
         );
@@ -4381,7 +4381,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
             .presentation_output()
             .expect("pending release preview must carry an exact core output")
             .continuation(),
-        dockspace::presentation_observation::HostPresentationContinuation::Terminal,
+        dockspace::backend::presentation_observation::HostPresentationContinuation::Terminal,
         "a dropped renderer result must still settle the pending release",
     );
     assert!(

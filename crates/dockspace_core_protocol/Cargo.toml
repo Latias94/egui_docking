@@ -10,7 +10,7 @@ readme = "README.md"
 publish = false
 
 [dependencies]
-dockspace.workspace = true
+dockspace = { workspace = true, features = ["backend"] }
 serde.workspace = true
 serde_json.workspace = true
 

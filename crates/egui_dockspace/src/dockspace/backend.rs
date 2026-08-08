@@ -1,12 +1,13 @@
 //! Narrow read-only state required by an ordered native host backend.
 
 use dockspace::ClosePlan;
-use dockspace::backend_ingress::BackendIngressCommitWatermark;
+use dockspace::backend::ingress::BackendIngressCommitWatermark;
+use dockspace::backend::platform::ObservedWorkArea;
+use dockspace::backend::platform::PlatformObservationLease;
+use dockspace::backend::scene::PresentationPlan;
+use dockspace::ids::SurfaceId;
 use dockspace::interaction::InteractionPreview;
-use dockspace::platform::ObservedWorkArea;
-use dockspace::scene::PresentationPlan;
 use dockspace::viewport::{ViewportBinding, WorkAreaGeneration};
-use dockspace::{PlatformObservationLease, ids::SurfaceId};
 
 use super::Dockspace;
 
@@ -56,7 +57,7 @@ impl Dockspace {
         self.core_engine()
             .viewport()
             .recovery_pending(surface)
-            .and_then(dockspace::frame::RecoveryPending::replacement_binding)
+            .and_then(dockspace::backend::frame::RecoveryPending::replacement_binding)
     }
 
     /// Returns the exact binding currently permitted to publish pane-focus facts.

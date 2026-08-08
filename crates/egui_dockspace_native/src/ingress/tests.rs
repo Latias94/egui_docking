@@ -1,13 +1,13 @@
 use super::route_lifecycle::{configured_child_accepts_predecessor, existing_restored_core_route};
 use super::*;
-use dockspace::effect::{DispatchFailureReason, EffectDispatchResult, EffectId};
-use dockspace::engine::BackendIngressProgress;
+use dockspace::backend::effect::{DispatchFailureReason, EffectDispatchResult, EffectId};
+use dockspace::backend::engine::BackendIngressProgress;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId, WorkspaceEpoch};
-use dockspace::pointer_receiver::PointerReceiverReceiptBatch;
+use dockspace::backend::pointer_receiver::PointerReceiverReceiptBatch;
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
-use dockspace::surface_recovery::SurfaceRecoveryBootstrap;
+use dockspace::backend::surface_recovery::SurfaceRecoveryBootstrap;
 use dockspace::viewport::{ViewportRole, WindowToken};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, NativeCoreRoute};
 

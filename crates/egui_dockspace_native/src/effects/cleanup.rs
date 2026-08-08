@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::effect::{EffectDispatchResult, EffectId};
+use dockspace::backend::effect::{EffectDispatchResult, EffectId};
 use dockspace::ids::WorkspaceEpoch;
 use egui_dockspace::backend::ExactNativeViewport;
 #[cfg(test)]
@@ -443,7 +443,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dockspace::effect::{
+    use dockspace::backend::effect::{
         DispatchFailureReason, EffectIndeterminateReason, EffectUnsupportedReason,
     };
     use egui::ViewportId;

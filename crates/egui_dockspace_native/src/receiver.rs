@@ -3,14 +3,14 @@
 use std::collections::BTreeMap;
 
 use dockspace::geometry::LogicalPoint;
-use dockspace::pointer_receiver::{
+use dockspace::backend::pointer_receiver::{
     PointerReceiverCandidate, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbe, PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
 };
-use dockspace::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
-use dockspace::scene::SurfaceInteractionProjection;
+use dockspace::backend::presentation_hit::{PresentationHitRegionKind, PresentationPointerLane};
+use dockspace::backend::scene::SurfaceInteractionProjection;
 use eframe::{
     NativePhysicalPoint, NativePointerEdge, NativePointerEdgeKind, NativePointerSequence,
     NativeViewportBinding,
@@ -360,9 +360,9 @@ fn locked_scroll_delivery(
     route: BoundNativeRoute,
     projection: SurfaceInteractionProjection<'_>,
     graph: &egui::PointerHitGraphSnapshot,
-    locked: dockspace::presentation_hit::PresentationHitRegionId,
+    locked: dockspace::backend::presentation_hit::PresentationHitRegionId,
     probe_point: LogicalPoint,
-    projected_delta: Option<dockspace::pointer_journal::FiniteScrollVector>,
+    projected_delta: Option<dockspace::backend::pointer_journal::FiniteScrollVector>,
 ) -> Result<PointerReceiverDelivery, NativeRuntimeError> {
     let unknown = PointerReceiverDeliveryDisposition::Unknown(
         PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
@@ -426,7 +426,7 @@ fn scroll_delivery_receipt(
     route: BoundNativeRoute,
     projection: SurfaceInteractionProjection<'_>,
     point: LogicalPoint,
-    scroll_probe_vector: Option<dockspace::pointer_journal::FiniteScrollVector>,
+    scroll_probe_vector: Option<dockspace::backend::pointer_journal::FiniteScrollVector>,
     graph: &egui::PointerHitGraphSnapshot,
     egui_point: Pos2,
     hit: &PointerHit,
@@ -504,7 +504,7 @@ fn scroll_delivery_lane(
     route: BoundNativeRoute,
     projection: SurfaceInteractionProjection<'_>,
     point: LogicalPoint,
-    scroll_probe_vector: Option<dockspace::pointer_journal::FiniteScrollVector>,
+    scroll_probe_vector: Option<dockspace::backend::pointer_journal::FiniteScrollVector>,
     graph: &egui::PointerHitGraphSnapshot,
     egui_point: Pos2,
 ) -> Result<PointerReceiverDeliveryDisposition, NativeRuntimeError> {
@@ -552,7 +552,7 @@ fn scroll_delivery_lane(
 }
 
 fn projected_egui_scroll_vector(
-    vector: dockspace::pointer_journal::FiniteScrollVector,
+    vector: dockspace::backend::pointer_journal::FiniteScrollVector,
 ) -> egui::Vec2 {
     egui::vec2(vector.x().signum() as f32, vector.y().signum() as f32)
 }
@@ -722,7 +722,7 @@ fn region_for_lane(
     kind: PresentationHitRegionKind,
     lane: PresentationPointerLane,
     point: LogicalPoint,
-) -> Option<dockspace::presentation_hit::PresentationHitRegionId> {
+) -> Option<dockspace::backend::presentation_hit::PresentationHitRegionId> {
     let mut regions = projection.hit_manifest().regions().iter().filter(|region| {
         region.id().kind() == kind && region.lanes().contains(lane) && region.hit().contains(point)
     });
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn receiver_probe_preserves_tiny_nonzero_f64_direction() {
         let vector =
-            dockspace::pointer_journal::FiniteScrollVector::new(f64::MAX, f64::MIN_POSITIVE)
+            dockspace::backend::pointer_journal::FiniteScrollVector::new(f64::MAX, f64::MIN_POSITIVE)
                 .expect("the core probe vector is finite");
 
         assert_eq!(projected_egui_scroll_vector(vector), egui::vec2(1.0, 1.0));

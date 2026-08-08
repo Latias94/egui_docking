@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::SurfaceCloseRequest;
-use dockspace::SurfaceRecoveryBootstrap;
+use dockspace::backend::surface_recovery::SurfaceRecoveryBootstrap;
 use dockspace::graph::Workspace;
 use dockspace::ids::SurfaceId;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};

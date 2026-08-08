@@ -9,13 +9,15 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
-use dockspace::backend_ingress::{BackendIngressBatch, BackendIngressLease};
-use dockspace::engine::{BackendIngressProgress, CoreHostFrame, EngineInput, HostFrameView};
-use dockspace::ids::SurfaceId;
-use dockspace::policy::DockPolicy;
-use dockspace::presentation_observation::{
+use dockspace::backend::engine::{
+    BackendIngressProgress, CoreHostFrame, EngineInput, HostFrameView,
+};
+use dockspace::backend::ingress::{BackendIngressBatch, BackendIngressLease};
+use dockspace::backend::presentation_observation::{
     NativeStagingPresentation, PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
+use dockspace::ids::SurfaceId;
+use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, FullOutput, RawInput, Ui};
 
@@ -150,7 +152,7 @@ impl EguiNativeInputSession {
     /// This is diagnostic-only. The affine input session remains poisoned and
     /// must not be resumed after such a failure.
     #[must_use]
-    pub fn input_prefix_error(&self) -> Option<&dockspace::engine::EngineError> {
+    pub fn input_prefix_error(&self) -> Option<&dockspace::backend::engine::EngineError> {
         self.state()
             .input_core_frame()
             .and_then(CoreHostFrame::input_prefix_error)
@@ -182,7 +184,7 @@ impl EguiNativeInputSession {
     #[must_use]
     pub fn pointer_receiver_candidates(
         &self,
-    ) -> Option<&dockspace::pointer_receiver::PointerReceiverCandidateRoster> {
+    ) -> Option<&dockspace::backend::pointer_receiver::PointerReceiverCandidateRoster> {
         self.state()
             .input_core_frame()
             .and_then(CoreHostFrame::pointer_receiver_candidates)
@@ -237,7 +239,7 @@ impl EguiNativeInputSession {
     /// session no longer owns an input-phase core capability.
     pub fn submit_pointer_receiver_receipts(
         &mut self,
-        receipts: dockspace::pointer_receiver::PointerReceiverReceiptBatch,
+        receipts: dockspace::backend::pointer_receiver::PointerReceiverReceiptBatch,
     ) -> Result<BackendIngressProgress, DockspaceError> {
         Ok(self
             .state_mut()

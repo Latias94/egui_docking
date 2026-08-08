@@ -124,11 +124,12 @@ fn unknown_inventory_capture_does_not_infer_destruction() {
 fn live_binding_cannot_be_declared_quiescent() {
     let (mut session, lease) = native_root_session();
 
+    let error = session
+        .report_native_binding_quiescence(lease)
+        .expect_err("a live binding cannot be declared quiescent");
     assert!(matches!(
-        session.report_native_binding_quiescence(lease),
-        Err(DockspaceRuntimeError::Native(
-            NativePlatformError::BindingStillLive { surface: SURFACE }
-        ))
+        error.native_error(),
+        Some(NativePlatformError::BindingStillLive { surface: SURFACE })
     ));
 }
 
@@ -144,11 +145,12 @@ fn joined_provider_replacement_rotates_surface_capabilities() {
         session.capture_native_snapshot([(predecessor, NativeWindowFacts::live())]),
         Err(NativePlatformError::ProviderReplacementPending)
     ));
+    let error = session
+        .register_native_root(SURFACE, WINDOW)
+        .expect_err("registration waits for provider replacement");
     assert!(matches!(
-        session.register_native_root(SURFACE, WINDOW),
-        Err(DockspaceRuntimeError::Native(
-            NativePlatformError::ProviderReplacementPending
-        ))
+        error.native_error(),
+        Some(NativePlatformError::ProviderReplacementPending)
     ));
 
     session
@@ -212,15 +214,16 @@ fn predecessor_effect_acknowledgement_cannot_authorize_the_successor() {
         .native_surface(SURFACE)
         .expect("the successor rebuilds the exact binding roster");
 
-    assert!(matches!(
-        session.publish_native_close(
+    let error = session
+        .publish_native_close(
             successor,
             NativeCloseState::Clear,
             Some(stale_acknowledgement),
-        ),
-        Err(DockspaceRuntimeError::Native(
-            NativePlatformError::EffectAcknowledgementProviderMismatch { surface: SURFACE }
-        ))
+        )
+        .expect_err("a predecessor acknowledgement cannot authorize the successor");
+    assert!(matches!(
+        error.native_error(),
+        Some(NativePlatformError::EffectAcknowledgementProviderMismatch { surface: SURFACE })
     ));
 }
 

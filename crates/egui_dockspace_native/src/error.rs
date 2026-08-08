@@ -137,19 +137,19 @@ pub enum NativeRuntimeError {
     DocumentPersistence(#[from] egui_dockspace::DockspaceDocumentPersistenceError),
     /// The joined core ingress recorder rejected a fact.
     #[error(transparent)]
-    BackendIngress(#[from] dockspace::backend_ingress::BackendIngressError),
+    BackendIngress(#[from] dockspace::backend::ingress::BackendIngressError),
     /// The core rejected a translated platform snapshot.
     #[error(transparent)]
-    PlatformSnapshot(#[from] dockspace::platform::PlatformSnapshotError),
+    PlatformSnapshot(#[from] dockspace::backend::platform::PlatformSnapshotError),
     /// A translated pointer segment was not contiguous.
     #[error(transparent)]
-    PointerJournal(#[from] dockspace::pointer_journal::PointerJournalError),
+    PointerJournal(#[from] dockspace::backend::pointer_journal::PointerJournalError),
     /// A native scroll sample violated the core lossless-scroll schema.
     #[error(transparent)]
-    ScrollEdge(#[from] dockspace::pointer_journal::ScrollEdgeError),
+    ScrollEdge(#[from] dockspace::backend::pointer_journal::ScrollEdgeError),
     /// A fail-closed receiver receipt roster was malformed.
     #[error(transparent)]
-    PointerReceipts(#[from] dockspace::pointer_receiver::PointerReceiverReceiptBatchError),
+    PointerReceipts(#[from] dockspace::backend::pointer_receiver::PointerReceiverReceiptBatchError),
     /// Native geometry could not be represented by the core geometry model.
     #[error(transparent)]
     Geometry(#[from] dockspace::geometry::GeometryError),

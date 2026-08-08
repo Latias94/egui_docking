@@ -3,17 +3,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use dockspace::backend_ingress::{BackendIngressLease, BackendIngressOrdinal};
-use dockspace::engine::CoreHostFramePrelude;
-use dockspace::ids::SurfaceId;
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
-use dockspace::presentation_observation::{
+use dockspace::backend::engine::CoreHostFramePrelude;
+use dockspace::backend::ingress::{BackendIngressLease, BackendIngressOrdinal};
+use dockspace::backend::presentation_observation::{
     HostFrameKey as CorePresentationEmissionKey, HostPresentationCaptureGeneration,
     HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationProgress,
     HostPresentationStreamId, HostPresentationStreamObservation,
 };
-use dockspace::retention::PresentationRetentionManifest;
+use dockspace::backend::retention::PresentationRetentionManifest;
+use dockspace::ids::SurfaceId;
+use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::transition::EngineTransition;
 use egui::{Context, ViewportId};
 

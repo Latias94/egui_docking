@@ -2,25 +2,25 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::command::WorkspaceCommand;
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostFrame, EngineInput, HostFrameView, HostPresentationDisposition, HostPresentationSlot,
     HostPresentationUnavailableReason, PreparedSurfaceContribution, PreparedSurfacePaintCandidate,
     SurfaceContributionToken,
 };
-use dockspace::frame::PanelFocus;
+use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::presentation_observation::{
+    NativeStagingPresentation, SurfacePresentationOutputTicket,
+};
+use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp};
+use dockspace::backend::viewport_focus::PaneFocusIntent;
+use dockspace::backend::viewport_focus::PaneFocusObservation;
+use dockspace::command::WorkspaceCommand;
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::ids::{RootId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::interaction::EscapeDelivery;
-use dockspace::presentation_observation::{
-    NativeStagingPresentation, SurfacePresentationOutputTicket,
-};
-use dockspace::scene::{SurfaceScene, SurfaceSceneStamp};
 use dockspace::scene_manifest::{MeasurementUnavailableReason, SurfaceMeasurements};
 use dockspace::transition::InputOutcome;
-use dockspace::viewport_focus::PaneFocusIntent;
-use dockspace::viewport_focus::PaneFocusObservation;
 use egui::{Context, FullOutput, RawInput, Ui, ViewportId};
 
 use super::engine_owner::{EguiPreparedHostFrameCommit, prepared_host_transition};
@@ -932,7 +932,7 @@ impl DockspaceHostFrame<'_> {
         &self,
         core_frame: &mut CoreHostFrame,
         pointer: &PreparedPointerInput,
-        journal: dockspace::pointer_journal::PointerEdgeJournal,
+        journal: dockspace::backend::pointer_journal::PointerEdgeJournal,
         pointer_receivers_current: bool,
     ) -> Result<(), DockspaceError> {
         self.dockspace.pointer_input.submit_prepared_segment(
@@ -1251,7 +1251,7 @@ impl DockspaceHostFrame<'_> {
                 && self.state.confirmed_full_outputs().contains_key(&surface)
             {
                 HostPresentationDisposition::Painted(
-                    dockspace::presentation_observation::HostInteractionPresentation::default(),
+                    dockspace::backend::presentation_observation::HostInteractionPresentation::default(),
                 )
             } else {
                 HostPresentationDisposition::Unavailable(

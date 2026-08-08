@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_observation::{
     HostFrameKey, HostPresentationContinuation, HostPresentationOutput, HostPresentationStreamId,
     PresentationHostLease, SurfacePresentationOutputTicket,
 };
@@ -311,7 +311,7 @@ impl NativePresentationLedger {
     pub(crate) fn consume_ordered(
         &mut self,
         dockspace: &mut Dockspace,
-        recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+        recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
         native_result: &NativePresentationResult,
     ) -> Result<(), NativeRuntimeError> {
         let result = native_result.result();
@@ -448,7 +448,7 @@ impl NativePresentationLedger {
     pub(crate) fn retire(
         &mut self,
         dockspace: &mut Dockspace,
-        recorder: &mut dockspace::backend_ingress::BackendIngressRecorder,
+        recorder: &mut dockspace::backend::ingress::BackendIngressRecorder,
         exact: ExactNativeViewport,
     ) -> Result<(), NativeRuntimeError> {
         self.presented_graphs.remove(&exact);

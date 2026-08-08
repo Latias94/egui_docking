@@ -1,25 +1,25 @@
 //! Engine ownership adapters for raw and document-bound dockspace sessions.
 
-use dockspace::backend_ingress::{
-    BackendIngressDrainReceipt, BackendIngressPrefixRetirementReceipt,
-    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
-};
-#[cfg(feature = "serde")]
-use dockspace::document::{
-    DockspaceDocumentSession, DockspaceDocumentSessionError, PreparedDockspaceSessionHostCommit,
-};
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostFramePrelude, CoreHostPresentationFrame, DockEngine, EngineError,
     OwnedPreparedHostFrameCommit, PreparedHostFrameCommit,
 };
-use dockspace::pointer_journal::{
+use dockspace::backend::ingress::{
+    BackendIngressDrainReceipt, BackendIngressPrefixRetirementReceipt,
+    BackendIngressProviderReplacementTicket, BackendIngressRecorder,
+};
+use dockspace::backend::pointer_journal::{
     PointerEdgeSequence, SurfaceLocalPointerDrainReceipt, SurfaceLocalPointerProvider,
     SurfaceLocalPointerRetirementOutcome, SurfaceLocalPointerScope,
 };
 #[cfg(test)]
-use dockspace::presentation_observation::PresentationHostRetirementReason;
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_observation::PresentationHostRetirementReason;
+use dockspace::backend::presentation_observation::{
     HostPresentationStreamId, PresentationHostLease, PresentationStreamQuiescence,
+};
+#[cfg(feature = "serde")]
+use dockspace::document::{
+    DockspaceDocumentSession, DockspaceDocumentSessionError, PreparedDockspaceSessionHostCommit,
 };
 #[cfg(test)]
 use dockspace::transition::PresentationHostRetirementOutcome;

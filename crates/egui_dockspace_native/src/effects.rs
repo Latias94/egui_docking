@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use dockspace::backend_ingress::BackendIngressRecorder;
-use dockspace::effect::{
+use dockspace::backend::ingress::BackendIngressRecorder;
+use dockspace::backend::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
     NativeCloseResolution, PlatformEffect, PlatformEffectEmission,

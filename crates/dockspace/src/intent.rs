@@ -347,7 +347,7 @@ impl SurfaceBackgroundRootOffer {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TargetAuthority {
     /// Legacy migration-only local authority. Instances can only be captured by
-    /// [`crate::engine::DockEngine::capture_local_target_observation`], and this
+    /// a core-minted local-target observation capability, and this
     /// variant will be removed with the legacy target protocol.
     #[doc(hidden)]
     Local(LocalTargetObservation),

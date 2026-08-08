@@ -1,25 +1,25 @@
 //! Conservative egui pointer-edge staging for the single-surface facade.
 
-use dockspace::engine::{CoreHostFrame, HostFrameView};
-use dockspace::geometry::LogicalPoint;
-use dockspace::ids::{SurfaceId, WorkspaceEpoch};
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::pointer_journal::{
+use dockspace::backend::engine::{CoreHostFrame, HostFrameView};
+use dockspace::backend::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerInputLease, SurfaceLocalPointerDrainReceipt,
     SurfaceLocalPointerProvider,
 };
 #[cfg(test)]
-use dockspace::pointer_journal::{SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope};
-use dockspace::pointer_receiver::{
+use dockspace::backend::pointer_journal::{SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope};
+use dockspace::backend::pointer_receiver::{
     PointerReceiverCandidateRoster, PointerReceiverDelivery, PointerReceiverDeliveryDisposition,
     PointerReceiverHoverHit, PointerReceiverHoverHitDisposition, PointerReceiverObservation,
     PointerReceiverProbe, PointerReceiverProbeReceipt, PointerReceiverReceiptBatch,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation,
 };
-use dockspace::presentation_hit::PresentationPointerLane;
+use dockspace::backend::presentation_hit::PresentationPointerLane;
 #[cfg(test)]
-use dockspace::presentation_observation::PresentationHostLease;
+use dockspace::backend::presentation_observation::PresentationHostLease;
+use dockspace::geometry::LogicalPoint;
+use dockspace::ids::{SurfaceId, WorkspaceEpoch};
+use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use egui::{Context, Event, PointerButton as EguiPointerButton, Pos2, ViewportId};
 
 use crate::DockspaceError;
@@ -216,7 +216,7 @@ fn hover_hit(
     receiver_store: &EguiDockRenderer,
     view: HostFrameView<'_>,
     surface: SurfaceId,
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::backend::scene::SurfaceInteractionProjection<'_>,
     point: Option<LogicalPoint>,
 ) -> Result<PointerReceiverHoverHit, DockspaceError> {
     let Some(point) = point else {
@@ -299,7 +299,7 @@ fn hover_hit(
 fn delivery_disposition(
     registrations: &PaintReceiverRegistrations,
     receiver_store: &EguiDockRenderer,
-    projection: dockspace::scene::SurfaceInteractionProjection<'_>,
+    projection: dockspace::backend::scene::SurfaceInteractionProjection<'_>,
     edge: PointerEdgeKind,
     drag_lane: bool,
     point: Option<LogicalPoint>,
@@ -813,7 +813,7 @@ impl EguiPointerInput {
 
 #[cfg(test)]
 pub(crate) fn enroll_surface_local_provider(
-    engine: &mut dockspace::engine::DockEngine,
+    engine: &mut dockspace::backend::engine::DockEngine,
     state: &mut EguiPointerInput,
     host: PresentationHostLease,
     surface: SurfaceId,
@@ -831,7 +831,7 @@ pub(crate) fn enroll_surface_local_provider(
 
 #[cfg(test)]
 pub(crate) fn install_surface_local_provider(
-    engine: &mut dockspace::engine::DockEngine,
+    engine: &mut dockspace::backend::engine::DockEngine,
     state: &mut EguiPointerInput,
     host: PresentationHostLease,
     surface: SurfaceId,
@@ -951,15 +951,17 @@ fn to_logical_point(point: Pos2) -> Option<LogicalPoint> {
 
 #[cfg(test)]
 mod tests {
-    use dockspace::engine::{DockEngine, HostFrameView, HostPresentationUnavailableReason};
-    use dockspace::geometry::{LogicalRect, LogicalSize};
-    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId};
-    use dockspace::presentation_observation::{
+    use dockspace::backend::engine::{
+        DockEngine, HostFrameView, HostPresentationUnavailableReason,
+    };
+    use dockspace::backend::presentation_observation::{
         HostPresentationCaptureGeneration, HostPresentationObservation,
         HostPresentationObservationEntry, HostPresentationProgress,
         HostPresentationStreamObservation,
     };
+    use dockspace::geometry::{LogicalRect, LogicalSize};
+    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::ids::{ItemId, RootId};
     use dockspace::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,
@@ -1157,7 +1159,7 @@ mod tests {
         builder.set_root(ROOT, RootRecord::new(tabs));
         builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("fixture workspace is valid");
-        let mut engine = dockspace::engine::DockEngine::new(workspace, Default::default())
+        let mut engine = dockspace::backend::engine::DockEngine::new(workspace, Default::default())
             .expect("fixture engine builds");
         let host = engine
             .create_presentation_host()
@@ -1422,7 +1424,7 @@ mod tests {
         builder.set_root(ROOT, RootRecord::new(tabs));
         builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("fixture workspace is valid");
-        let mut engine = dockspace::engine::DockEngine::new(workspace, Default::default())
+        let mut engine = dockspace::backend::engine::DockEngine::new(workspace, Default::default())
             .expect("fixture engine builds");
         let host = engine
             .create_presentation_host()

@@ -1,8 +1,8 @@
 //! Splitter painting and scene-bound non-pointer actions.
 
+use dockspace::backend::presentation_hit::PresentationHitRegionKind;
+use dockspace::backend::scene::{SplitterRecord, SurfaceSceneStamp};
 use dockspace::ids::SurfaceId;
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::scene::{SplitterRecord, SurfaceSceneStamp};
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{EventFilter, FocusDirection, Id, Key, Sense, Ui};
 

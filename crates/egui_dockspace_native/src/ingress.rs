@@ -2,20 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use dockspace::PlatformObservationLease;
-use dockspace::backend_ingress::{
+use dockspace::backend::platform::PlatformObservationLease;
+use dockspace::backend::ingress::{
     BackendIngressBatch, BackendIngressOrdinal, BackendIngressPayload,
     BackendIngressPrefixRetirementReceipt, BackendIngressRecorder, BackendIngressSavepoint,
 };
 #[cfg(test)]
-use dockspace::effect::EffectResult;
-use dockspace::effect::{EffectId, PlatformEffectEmission};
-use dockspace::engine::EngineInput;
+use dockspace::backend::effect::EffectResult;
+use dockspace::backend::effect::{EffectId, PlatformEffectEmission};
+use dockspace::backend::engine::EngineInput;
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::interaction::EscapeDelivery;
-use dockspace::platform::{
+use dockspace::backend::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
     ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
@@ -24,15 +24,15 @@ use dockspace::platform::{
     WindowInventoryObservation, WindowPresentationObservation, WindowPresentationState,
     WorkAreaRosterObservation,
 };
-use dockspace::pointer_journal::{
+use dockspace::backend::pointer_journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PhysicalScrollCoordinates,
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerEventDeliveryOwner, PointerStreamCancelReason, ScrollCancelReason,
     ScrollDeliveryEndpoint, ScrollDelta, ScrollDeviceId, ScrollEdge, ScrollModifiers,
     ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
-use dockspace::presentation_observation::PresentationHostLease;
-use dockspace::semantic_input::{
+use dockspace::backend::presentation_observation::PresentationHostLease;
+use dockspace::backend::semantic_input::{
     SemanticAccessibilityAction, SemanticDelivery, SemanticKey, SemanticReceiverAction,
     SemanticReceiverEvent,
 };
@@ -43,7 +43,7 @@ use dockspace::viewport::{
     PresentationObservationGeneration, ViewportBinding, ViewportRole, WorkAreaGeneration,
     WorkAreaObservationGeneration, WorkAreaToken,
 };
-use dockspace::viewport_focus::{
+use dockspace::backend::viewport_focus::{
     FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
 };
 use dockspace::{

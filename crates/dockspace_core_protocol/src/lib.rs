@@ -1,7 +1,7 @@
 //! Typed executable traces for the `dockspace` core protocol.
 //!
 //! This workspace-private crate owns fixture decoding, canonicalization, and a
-//! [`CoreProtocolHarness`] that directly owns a [`dockspace::engine::DockEngine`].
+//! [`CoreProtocolHarness`] that directly owns a [`dockspace::backend::engine::DockEngine`].
 //! Pointer interaction enters only through ordered [`HostFrameEvent`] values
 //! and receives core-minted candidate receipts. These traces prove core
 //! transport and causality, not an independent hit compiler or UI-adapter

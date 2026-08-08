@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use dockspace::backend_ingress::{BackendIngressOrdinal, BackendIngressRecorder};
+use dockspace::backend::ingress::{BackendIngressOrdinal, BackendIngressRecorder};
 use dockspace::document::{
     DockspaceDocumentBootstrap, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
     DockspaceDocumentId, DockspaceDocumentRestoreTicket, DockspaceDocumentSessionError,

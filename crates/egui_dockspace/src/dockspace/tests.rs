@@ -1,29 +1,29 @@
 use std::collections::BTreeMap;
 
-use dockspace::engine::{
+use dockspace::backend::engine::{
     CoreHostPresentationFrame, EngineError, HostPresentationDisposition,
     HostPresentationUnavailableReason,
+};
+use dockspace::backend::pointer_journal::{
+    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
+    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
+    SurfaceLocalPointerScope,
+};
+use dockspace::backend::pointer_receiver::{
+    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
+    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
+};
+use dockspace::backend::presentation_hit::PresentationHitRegionKind;
+use dockspace::backend::presentation_observation::{
+    HostPresentationCaptureGeneration, HostPresentationObservation,
+    HostPresentationObservationOutcome, HostPresentationObservationRejection,
+    PresentationHostRetirementReason,
 };
 use dockspace::geometry::LogicalPoint;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::interaction::{InteractionCancelReason, InteractionEventKind, InteractionStatus};
-use dockspace::pointer_journal::{
-    PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
-    PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
-    SurfaceLocalPointerScope,
-};
-use dockspace::pointer_receiver::{
-    PointerReceiverDelivery, PointerReceiverDeliveryDisposition, PointerReceiverObservation,
-    PointerReceiverProbeReceipt, PointerReceiverReceiptBatch, PresentedPointerReceiverObservation,
-};
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::{
-    HostPresentationCaptureGeneration, HostPresentationObservation,
-    HostPresentationObservationOutcome, HostPresentationObservationRejection,
-    PresentationHostRetirementReason,
-};
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::transition::SurfaceContributionOutcome;
 use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
@@ -412,7 +412,7 @@ fn submit_formal_click_escape(
     context: &Context,
     dockspace: &mut Dockspace,
     panes: &mut dyn PaneView,
-    provider: &dockspace::pointer_journal::SurfaceLocalPointerProvider,
+    provider: &dockspace::backend::pointer_journal::SurfaceLocalPointerProvider,
 ) -> HostFrameResponse {
     assert_eq!(
         dockspace.engine.pointer_provider(),
@@ -833,7 +833,7 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
     assert!(matches!(
         error,
         DockspaceError::CoreHostFrame(
-            dockspace::engine::CoreHostFrameError::PointerJournalMissingBeforePresentation {
+            dockspace::backend::engine::CoreHostFrameError::PointerJournalMissingBeforePresentation {
                 provider: missing,
             },
         ) if missing == provider

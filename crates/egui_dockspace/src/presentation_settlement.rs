@@ -4,8 +4,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use dockspace::backend::presentation_observation::HostPresentationOutput;
 use dockspace::ids::SurfaceId;
-use dockspace::presentation_observation::HostPresentationOutput;
 use egui::FullOutput;
 
 use crate::facade::{ExactNativeViewport, NativeCoreRoute};

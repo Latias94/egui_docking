@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use dockspace::presentation_hit::PresentationHitRegionKind;
-use dockspace::presentation_observation::{
+use dockspace::backend::presentation_hit::PresentationHitRegionKind;
+use dockspace::backend::presentation_observation::{
     HostFrameKey, HostPresentationOutput, PresentedSurfaceAuthority,
     SurfacePresentationOutputTicket,
 };
-use dockspace::retention::PresentationRetentionManifest;
+use dockspace::backend::retention::PresentationRetentionManifest;
 use egui::{Context, Id, LayerId, PointerButton, Pos2, Rect, Response, Sense, ViewportId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
