@@ -1,4 +1,4 @@
-//! Renderer-facing settlement for exact egui presentation outputs.
+//! Renderer-facing ownership settlement for exact egui outputs.
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -11,18 +11,27 @@ use egui::{Context, FullOutput, TexturesDelta};
 use crate::facade::{ExactNativeViewport, NativeCoreRoute};
 use crate::output_ownership::OutputBatchReservation;
 
-/// Terminal renderer result for one exact outer-host output.
+/// Renderer ownership disposition for one exact outer-host output.
+///
+/// This reports command ownership, not physical GPU presentation. Native hosts
+/// report real window presentation through their platform observation lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EguiPresentationResult {
-    /// The renderer successfully presented the exact output.
-    Presented,
-    /// The renderer terminally discarded the exact output without presenting it.
+pub enum EguiRendererOutputDisposition {
+    /// The renderer irreversibly accepted and consumed the output commands.
+    Accepted,
+    /// The renderer rejected the output without consuming commands or side effects.
+    RejectedUnconsumed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EguiRendererCompletion {
+    Accepted,
     Dropped,
 }
 
-const PRESENTATION_PENDING: u8 = 0;
-const PRESENTATION_PRESENTED: u8 = 1;
-const PRESENTATION_DROPPED: u8 = 2;
+const RENDERER_PENDING: u8 = 0;
+const RENDERER_ACCEPTED: u8 = 1;
+const RENDERER_DROPPED: u8 = 2;
 
 pub(crate) struct OuterPresentationCompletion {
     state: AtomicU8,
@@ -31,38 +40,33 @@ pub(crate) struct OuterPresentationCompletion {
 impl OuterPresentationCompletion {
     pub(crate) fn pending() -> Self {
         Self {
-            state: AtomicU8::new(PRESENTATION_PENDING),
+            state: AtomicU8::new(RENDERER_PENDING),
         }
     }
 
-    pub(crate) fn result(&self) -> Option<EguiPresentationResult> {
+    pub(crate) fn result(&self) -> Option<EguiRendererCompletion> {
         match self.state.load(Ordering::Acquire) {
-            PRESENTATION_PENDING => None,
-            PRESENTATION_PRESENTED => Some(EguiPresentationResult::Presented),
-            PRESENTATION_DROPPED => Some(EguiPresentationResult::Dropped),
+            RENDERER_PENDING => None,
+            RENDERER_ACCEPTED => Some(EguiRendererCompletion::Accepted),
+            RENDERER_DROPPED => Some(EguiRendererCompletion::Dropped),
             _ => None,
         }
     }
 
-    fn complete(&self, result: EguiPresentationResult) -> bool {
+    fn complete(&self, result: EguiRendererCompletion) -> bool {
         let state = match result {
-            EguiPresentationResult::Presented => PRESENTATION_PRESENTED,
-            EguiPresentationResult::Dropped => PRESENTATION_DROPPED,
+            EguiRendererCompletion::Accepted => RENDERER_ACCEPTED,
+            EguiRendererCompletion::Dropped => RENDERER_DROPPED,
         };
         self.state
-            .compare_exchange(
-                PRESENTATION_PENDING,
-                state,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+            .compare_exchange(RENDERER_PENDING, state, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
 
     fn drop_if_pending(&self) {
         let _ = self.state.compare_exchange(
-            PRESENTATION_PENDING,
-            PRESENTATION_DROPPED,
+            RENDERER_PENDING,
+            RENDERER_DROPPED,
             Ordering::AcqRel,
             Ordering::Acquire,
         );
@@ -70,7 +74,7 @@ impl OuterPresentationCompletion {
 }
 
 /// Private capability minted for an exact core presentation output.
-#[must_use = "the renderer should report Presented or Dropped for this output"]
+#[must_use = "the renderer must accept or terminally drop this output"]
 pub(crate) struct PendingEguiPresentation {
     output: HostPresentationOutput,
     completion: Arc<OuterPresentationCompletion>,
@@ -101,11 +105,8 @@ impl PendingEguiPresentation {
         self.output
     }
 
-    fn complete(self, result: EguiPresentationResult) {
-        debug_assert!(
-            self.completion.complete(result),
-            "an affine output capability completes exactly once"
-        );
+    fn complete(self, result: EguiRendererCompletion) {
+        let _ = self.completion.complete(result);
     }
 }
 
@@ -115,11 +116,11 @@ impl Drop for PendingEguiPresentation {
     }
 }
 
-/// One exact egui output bound to its renderer settlement obligation.
+/// One exact egui output bound to its renderer admission obligation.
 ///
 /// Instances remain owned by [`EguiOuterOutputBatch`], so renderer commands and
-/// terminal presentation disposition cannot be separated accidentally.
-#[must_use = "the bound output must be presented or terminally dropped"]
+/// terminal admission disposition cannot be separated accidentally.
+#[must_use = "the bound output must be accepted or terminally dropped"]
 pub struct EguiOuterSurfaceOutput {
     surface: SurfaceId,
     native: Option<NativeCoreRoute>,
@@ -193,48 +194,68 @@ impl EguiOuterSurfaceOutput {
             .expect("a live outer output retains its egui FullOutput")
     }
 
-    /// Returns whether this output must report a terminal renderer result.
+    /// Returns the egui texture namespace that owns this output.
     #[must_use]
-    pub const fn has_presentation_obligation(&self) -> bool {
+    pub const fn texture_context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns whether this output must report terminal renderer admission.
+    #[must_use]
+    pub const fn has_renderer_admission_obligation(&self) -> bool {
         self.presentation.is_some()
     }
 
-    fn settle_presented(&mut self) {
+    fn accept_renderer_output(&mut self) {
         self.full_output
             .as_mut()
             .expect("a live output retains renderer commands")
             .textures_delta
             .clear();
         if let Some(presentation) = self.presentation.take() {
-            presentation.complete(EguiPresentationResult::Presented);
+            presentation.complete(EguiRendererCompletion::Accepted);
         }
     }
 
     fn drop_output(&mut self) -> Option<(Context, TexturesDelta)> {
         if let Some(presentation) = self.presentation.take() {
-            presentation.complete(EguiPresentationResult::Dropped);
+            presentation.complete(EguiRendererCompletion::Dropped);
         }
         let mut output = self.full_output.take()?;
         let delta = std::mem::take(&mut output.textures_delta);
         (!delta.is_empty()).then(|| (self.context.clone(), delta))
     }
+
+    fn discard_poisoned(&mut self) {
+        if let Some(presentation) = self.presentation.take() {
+            presentation.complete(EguiRendererCompletion::Dropped);
+        }
+        if let Some(mut output) = self.full_output.take() {
+            output.textures_delta.clear();
+            output.drop_without_applying_deltas();
+        }
+    }
 }
 
 impl Drop for EguiOuterSurfaceOutput {
     fn drop(&mut self) {
-        let _ = self.drop_output();
+        if let Some((_, mut delta)) = self.drop_output() {
+            delta.clear();
+        }
     }
 }
 
 /// Ordered renderer batch for all final outputs from one host frame.
 ///
-/// The callback is invoked in exact confirmation order. Returning `Dropped`
-/// stops the batch; later outputs are not exposed because their shapes may rely
-/// on texture commands owned by an earlier output in the same namespace.
-#[must_use = "the renderer output batch must be settled or intentionally dropped"]
+/// The callback is invoked in exact confirmation order. Returning
+/// [`EguiRendererOutputDisposition::RejectedUnconsumed`] stops the batch; later
+/// outputs are not exposed because their shapes may rely on commands owned by
+/// an earlier output in the same namespace.
+#[must_use = "the renderer output batch must be submitted or intentionally dropped"]
 pub struct EguiOuterOutputBatch {
     outputs: Vec<EguiOuterSurfaceOutput>,
     reservation: Option<OutputBatchReservation>,
+    active_context: Option<Context>,
 }
 
 impl Debug for EguiOuterOutputBatch {
@@ -255,6 +276,7 @@ impl EguiOuterOutputBatch {
         Self {
             outputs,
             reservation,
+            active_context: None,
         }
     }
 
@@ -275,26 +297,34 @@ impl EguiOuterOutputBatch {
         self.outputs.iter()
     }
 
-    /// Renders and settles every output in exact generation order.
-    pub fn settle_with(
+    /// Submits every output to the renderer in exact generation order.
+    ///
+    /// `Accepted` means the callback has irreversibly consumed the renderer
+    /// commands. It does not assert that a swapchain image reached the screen.
+    /// `RejectedUnconsumed` promises that the callback performed no renderer
+    /// side effects, allowing this batch to replay the commands later.
+    pub fn submit_with(
         mut self,
-        mut settle: impl FnMut(SurfaceId, &FullOutput) -> EguiPresentationResult,
+        mut submit: impl FnMut(SurfaceId, &Context, &FullOutput) -> EguiRendererOutputDisposition,
     ) {
-        let mut dropped = false;
+        let mut rejected = false;
         for output in &mut self.outputs {
-            if dropped {
+            if rejected {
                 continue;
             }
-            let result = settle(
+            self.active_context = Some(output.context.clone());
+            let result = submit(
                 output.surface,
+                &output.context,
                 output
                     .full_output
                     .as_ref()
                     .expect("an unsettled batch output retains renderer commands"),
             );
+            self.active_context = None;
             match result {
-                EguiPresentationResult::Presented => output.settle_presented(),
-                EguiPresentationResult::Dropped => dropped = true,
+                EguiRendererOutputDisposition::Accepted => output.accept_renderer_output(),
+                EguiRendererOutputDisposition::RejectedUnconsumed => rejected = true,
             }
         }
         self.finish();
@@ -310,7 +340,28 @@ impl EguiOuterOutputBatch {
         if let Some(reservation) = self.reservation.take() {
             reservation.finish(dropped);
         } else {
-            debug_assert!(dropped.is_empty());
+            for (_, mut delta) in dropped {
+                delta.clear();
+            }
+        }
+    }
+
+    fn poison_after_renderer_panic(&mut self) {
+        let Some(poisoned) = self.active_context.take() else {
+            self.finish();
+            return;
+        };
+        let mut dropped = Vec::new();
+        for output in &mut self.outputs {
+            if output.context == poisoned {
+                output.discard_poisoned();
+            } else if let Some(delta) = output.drop_output() {
+                dropped.push(delta);
+            }
+        }
+        if let Some(reservation) = self.reservation.take() {
+            reservation.finish_after_panic(dropped, &poisoned);
+        } else {
             for (_, mut delta) in dropped {
                 delta.clear();
             }
@@ -320,6 +371,10 @@ impl EguiOuterOutputBatch {
 
 impl Drop for EguiOuterOutputBatch {
     fn drop(&mut self) {
-        self.finish();
+        if self.active_context.is_some() {
+            self.poison_after_renderer_panic();
+        } else {
+            self.finish();
+        }
     }
 }

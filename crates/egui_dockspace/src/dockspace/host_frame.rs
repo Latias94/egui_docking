@@ -15,7 +15,8 @@ use egui::{Context, FullOutput, ViewportId};
 
 use crate::error::DockspaceErrorSource;
 use crate::output_ownership::{
-    ConfirmedSurfaceOutput, ConfirmedSurfaceOutputs, OutputBatchReservation, OutputTextureLedger,
+    ConfirmedSurfaceOutput, ConfirmedSurfaceOutputs, FrameTextureCaptures, OutputBatchReservation,
+    OutputNamespaceEnrollment, OutputTextureLedger,
 };
 use crate::pointer_input::PreparedPointerInput;
 use crate::render::{EguiSurfaceDraft, PreparedStyleReplacement};
@@ -174,6 +175,8 @@ pub(super) struct HostFrameState {
     drafts: BTreeMap<SurfaceId, EguiSurfaceDraft>,
     surface_passes: BTreeMap<SurfaceId, EguiSurfacePass>,
     confirmed_outputs: ConfirmedSurfaceOutputs,
+    texture_captures: FrameTextureCaptures,
+    output_enrollments: Vec<OutputNamespaceEnrollment>,
     output_ledger: OutputTextureLedger,
     native_bindings: Option<NativeBindingCandidate>,
     native_surface_passes: BTreeMap<SurfaceId, NativeCoreRoute>,
@@ -192,9 +195,12 @@ pub(super) struct HostFrameState {
 impl Drop for HostFrameState {
     fn drop(&mut self) {
         for output in self.confirmed_outputs.take() {
-            let (_, context, output) = output.into_parts();
-            self.output_ledger.defer_output(&context, output);
+            let (_, _, output) = output.into_parts();
+            output.drop_without_applying_deltas();
         }
+        self.output_ledger
+            .defer_captures(std::mem::take(&mut self.texture_captures));
+        self.output_enrollments.clear();
     }
 }
 
@@ -420,6 +426,8 @@ impl HostFrameState {
             drafts: BTreeMap::new(),
             surface_passes: BTreeMap::new(),
             confirmed_outputs: ConfirmedSurfaceOutputs::default(),
+            texture_captures: FrameTextureCaptures::default(),
+            output_enrollments: Vec::new(),
             output_ledger,
             native_bindings: None,
             native_surface_passes: BTreeMap::new(),
@@ -882,13 +890,13 @@ impl HostFrameState {
         {
             Ok((pass, completed_pass)) => {
                 if let Err(error) = pass.consume_output_proof(surface, &mut output) {
-                    self.output_ledger.defer_output(context, output);
+                    self.defer_full_output(context, output);
                     return Err(error);
                 }
                 completed_pass
             }
             Err(error) => {
-                self.output_ledger.defer_output(context, output);
+                self.defer_full_output(context, output);
                 return Err(error);
             }
         };
@@ -987,6 +995,8 @@ impl HostFrameState {
         completed_pass: u64,
         output: FullOutput,
     ) {
+        let mut output = output;
+        self.texture_captures.capture_output(context, &mut output);
         self.confirmed_outputs
             .retain(surface, context.clone(), completed_pass, output);
     }
@@ -1106,19 +1116,56 @@ impl HostFrameState {
         self.confirmed_outputs.take()
     }
 
-    pub(super) fn reserve_output_batch(
-        &self,
-    ) -> Result<Option<OutputBatchReservation>, DockspaceErrorSource> {
-        (!self.confirmed_outputs.is_empty())
-            .then(|| {
-                self.output_ledger
-                    .reserve(self.confirmed_outputs.contexts())
-            })
-            .transpose()
+    pub(super) fn enroll_output_context(
+        &mut self,
+        context: &Context,
+    ) -> Result<(), DockspaceErrorSource> {
+        if self
+            .output_enrollments
+            .iter()
+            .any(|enrollment| enrollment.context() == context)
+        {
+            return Ok(());
+        }
+        let enrollment = self.output_ledger.enroll(context)?;
+        self.output_enrollments.push(enrollment);
+        Ok(())
     }
 
-    pub(super) fn defer_full_output(&self, context: &Context, output: FullOutput) {
-        self.output_ledger.defer_output(context, output);
+    pub(super) fn require_output_context_enrolled(
+        &self,
+        context: &Context,
+    ) -> Result<(), DockspaceErrorSource> {
+        self.output_enrollments
+            .iter()
+            .any(|enrollment| enrollment.context() == context)
+            .then_some(())
+            .ok_or(DockspaceErrorSource::RendererOutputContextNotEnrolled)
+    }
+
+    pub(super) fn reserve_output_batch(
+        &mut self,
+    ) -> Result<Option<OutputBatchReservation>, DockspaceErrorSource> {
+        if self.confirmed_outputs.is_empty() {
+            return Ok(None);
+        }
+        let contexts = self.confirmed_outputs.contexts();
+        let enrollments = std::mem::take(&mut self.output_enrollments);
+        let captures = std::mem::take(&mut self.texture_captures);
+        let reservation = self
+            .output_ledger
+            .reserve(contexts, enrollments, captures)?;
+        reservation.preflight(self.confirmed_outputs.as_slice())?;
+        Ok(Some(reservation))
+    }
+
+    pub(super) fn attach_output_batch(&mut self, reservation: &mut OutputBatchReservation) {
+        reservation.attach(self.confirmed_outputs.as_mut_slice());
+    }
+
+    pub(super) fn defer_full_output(&mut self, context: &Context, mut output: FullOutput) {
+        self.texture_captures.capture_output(context, &mut output);
+        output.drop_without_applying_deltas();
     }
 
     pub(super) const fn semantic_source_sequence(&self) -> SourceSequence {

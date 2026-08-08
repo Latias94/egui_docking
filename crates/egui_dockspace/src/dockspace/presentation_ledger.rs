@@ -19,7 +19,7 @@ use egui::{Context, ViewportId};
 
 use crate::error::DockspaceErrorSource;
 use crate::presentation_settlement::{
-    EguiPresentationResult, OuterPresentationCompletion, PendingEguiPresentation,
+    EguiRendererCompletion, OuterPresentationCompletion, PendingEguiPresentation,
 };
 #[cfg(test)]
 use crate::test_support::{
@@ -352,7 +352,7 @@ impl PresentationOutputLedger {
                 break;
             };
             settled_through = Some(*key);
-            if result == EguiPresentationResult::Presented {
+            if result == EguiRendererCompletion::Accepted {
                 presented = Some(*key);
             }
         }
@@ -538,7 +538,7 @@ impl PresentationOutputLedger {
                 };
                 settled_through = Some(*key);
                 if already_settled.is_none_or(|settled| *key > settled)
-                    && result == EguiPresentationResult::Presented
+                    && result == EguiRendererCompletion::Accepted
                 {
                     presented = Some(*key);
                 }

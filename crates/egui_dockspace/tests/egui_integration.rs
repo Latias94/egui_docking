@@ -20,7 +20,7 @@ use egui::{
     Context, Event, Frame, Id, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, RawInput, Rect,
     Sense, TouchPhase, Ui, UiBuilder, vec2,
 };
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{
     Dockspace, DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCommandOutcome,
     DockspaceSurfaceStatus, PaneView,
@@ -272,7 +272,7 @@ fn run_outer_frame_with_size(
         .finish()
         .expect("outer frame must commit atomically")
         .into_parts();
-    outputs.settle_with(|_, _| EguiPresentationResult::Presented);
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     Observation {
         pass: context.current_pass_index(),
         interactions_current: paint.interactions_current(),
@@ -4320,7 +4320,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
             )),
         "the release position was sampled after this paint and must not be claimed as drawn"
     );
-    outputs.settle_with(|_, _| EguiPresentationResult::Presented);
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     let floating = dockspace
         .core_engine()
         .workspace()
@@ -4396,7 +4396,7 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
             )),
         "the output carrying the pending token must contain its exact preview rectangle"
     );
-    outputs.settle_with(|_, _| EguiPresentationResult::Presented);
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     assert!(dockspace.core_engine().pending_release_preview().is_some());
     run_outer_frame_with_size(
         &context,

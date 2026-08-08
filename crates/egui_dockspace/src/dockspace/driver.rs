@@ -60,7 +60,7 @@ use crate::response::{
 /// Unlike ordinary egui callbacks, this capability is retained across every
 /// surface and every repeated pass in one real host frame. Finishing it returns
 /// the final [`FullOutput`] for each painted surface bound to its opaque
-/// renderer-settlement capability.
+/// renderer-admission capability.
 pub struct EguiOuterHostFrame<'a> {
     pub(super) inner: DockspaceHostFrame<'a>,
 }
@@ -116,6 +116,7 @@ impl EguiOuterHostFrame<'_> {
         input: RawInput,
         panes: &mut dyn PaneView,
     ) -> Result<SurfacePaintResponse, DockspaceError> {
+        self.inner.enroll_output_context(context)?;
         let viewport = input.viewport_id;
         let mut paint = None;
         let mut pointer_events = None;
@@ -164,7 +165,7 @@ impl EguiOuterHostFrame<'_> {
 
 /// Atomic outer-host reduction plus exact renderer-bound surface outputs.
 #[derive(Debug)]
-#[must_use = "dropping the commit terminally drops every unsettled presentation output"]
+#[must_use = "dropping the commit terminally rejects every unsubmitted renderer output"]
 pub struct EguiOuterFrameCommit {
     host: HostFrameResponse,
     outputs: EguiOuterOutputBatch,
@@ -193,7 +194,7 @@ impl EguiOuterFrameCommit {
         &self.host
     }
 
-    /// Iterates the exact surface outputs awaiting renderer settlement.
+    /// Iterates the exact surface outputs awaiting renderer admission.
     #[must_use]
     pub fn outputs(&self) -> impl ExactSizeIterator<Item = &EguiOuterSurfaceOutput> {
         self.outputs.iter()
@@ -265,7 +266,7 @@ impl PreparedEguiOuterFrameCommit {
             renderer,
             native_bindings,
             mut state,
-            output_reservation,
+            mut output_reservation,
             pane_focus_observations,
             backend_ordered_input,
         } = self;
@@ -284,6 +285,9 @@ impl PreparedEguiOuterFrameCommit {
                 return abort_pointer_input_after_error(dockspace, error);
             }
         };
+        if let Some(reservation) = output_reservation.as_mut() {
+            state.attach_output_batch(reservation);
+        }
         dockspace.engine.reconcile_document_sidecars();
         if let Some(prepared) = native_bindings {
             dockspace
@@ -359,10 +363,7 @@ impl PreparedEguiOuterFrameCommit {
             .into_iter()
             .map(|presentation| (presentation.surface(), presentation))
             .collect::<BTreeMap<_, _>>();
-        let mut confirmed_outputs = state.take_confirmed_outputs();
-        if let Some(reservation) = output_reservation.as_ref() {
-            reservation.normalize(&mut confirmed_outputs);
-        }
+        let confirmed_outputs = state.take_confirmed_outputs();
         let outputs = confirmed_outputs
             .into_iter()
             .map(|confirmed| {
@@ -937,7 +938,16 @@ impl DockspaceHostFrame<'_> {
             .map_err(Into::into)
     }
 
-    pub(super) fn defer_full_output(&self, context: &Context, output: FullOutput) {
+    pub(super) fn enroll_output_context(
+        &mut self,
+        context: &Context,
+    ) -> Result<(), DockspaceError> {
+        self.state
+            .enroll_output_context(context)
+            .map_err(Into::into)
+    }
+
+    pub(super) fn defer_full_output(&mut self, context: &Context, output: FullOutput) {
         self.state.defer_full_output(context, output);
     }
 

@@ -5,7 +5,7 @@ use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{Dockspace, DockspaceCommandOutcome, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -140,10 +140,10 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
     assert!(
         outputs
             .iter()
-            .all(|output| !output.has_presentation_obligation()),
-        "bootstrap paint must not fabricate a presentation obligation",
+            .all(|output| !output.has_renderer_admission_obligation()),
+        "bootstrap paint must not fabricate a renderer admission obligation",
     );
-    outputs.settle_with(|_, _| EguiPresentationResult::Dropped);
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::RejectedUnconsumed);
 
     let mut ready = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(2, 0))
@@ -156,10 +156,10 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
     assert!(
         pending
             .iter()
-            .all(|output| output.has_presentation_obligation()),
-        "ready paint has a settlement obligation",
+            .all(|output| output.has_renderer_admission_obligation()),
+        "ready paint has a renderer admission obligation",
     );
-    pending.settle_with(|_, _| EguiPresentationResult::Presented);
+    pending.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
 
     let mut settled = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
@@ -176,8 +176,8 @@ fn official_egui_consumes_the_outer_presentation_protocol() {
     assert!(
         pending
             .iter()
-            .all(|output| output.has_presentation_obligation()),
-        "the next output has a settlement obligation",
+            .all(|output| output.has_renderer_admission_obligation()),
+        "the next output has a renderer admission obligation",
     );
-    pending.settle_with(|_, _| EguiPresentationResult::Dropped);
+    pending.submit_with(|_, _, _| EguiRendererOutputDisposition::RejectedUnconsumed);
 }

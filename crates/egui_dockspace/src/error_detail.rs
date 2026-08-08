@@ -282,6 +282,18 @@ pub(crate) enum DockspaceErrorSource {
     /// A prior renderer output batch still owns this dockspace's texture stream.
     #[error("a prior egui renderer output batch remains unsettled")]
     RendererOutputBatchOutstanding,
+    /// The host produced output before enrolling its egui texture namespace.
+    #[error("egui renderer output context was not enrolled before input consumption")]
+    RendererOutputContextNotEnrolled,
+    /// A renderer panic left this egui texture namespace in an indeterminate state.
+    #[error("egui renderer texture namespace is poisoned after an indeterminate submission")]
+    RendererTextureNamespacePoisoned,
+    /// A private renderer batch reservation was already consumed or lost.
+    #[error("egui renderer output batch reservation is unavailable")]
+    RendererOutputReservationUnavailable,
+    /// Captured texture commands have no matching final output namespace.
+    #[error("captured egui texture namespace has no matching final surface output")]
+    RendererOutputTextureNamespaceMissing,
     /// Renderer output batch identities cannot advance without wrapping.
     #[error("egui renderer output batch identity exhausted")]
     RendererOutputBatchIdentityExhausted,
@@ -492,6 +504,7 @@ impl DockspaceErrorSource {
             | Self::OuterHostSurfaceOutputAlreadyConfirmed { .. }
             | Self::OuterHostSurfaceFullOutputMissing { .. }
             | Self::OuterHostSurfaceOutputUnconfirmed { .. }
+            | Self::RendererOutputContextNotEnrolled
             | Self::HostFramePoisoned
             | Self::SurfaceContributionBegin(_)
             | Self::SurfaceContributionPrepare(_)
@@ -538,7 +551,10 @@ impl DockspaceErrorSource {
             | Self::PointerAdapterIncarnationExhausted
             | Self::PointerEdgeSequenceExhausted { .. }
             | Self::SingleSurfacePaintUnavailable { .. } => DockspaceErrorKind::Internal,
-            Self::RendererOutputBatchIdentityExhausted => DockspaceErrorKind::Internal,
+            Self::RendererTextureNamespacePoisoned
+            | Self::RendererOutputReservationUnavailable
+            | Self::RendererOutputTextureNamespaceMissing
+            | Self::RendererOutputBatchIdentityExhausted => DockspaceErrorKind::Internal,
         }
     }
 }

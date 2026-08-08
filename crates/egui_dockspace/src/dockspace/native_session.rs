@@ -470,6 +470,17 @@ impl EguiNativePresentationSession {
         self.state().native_staging_presentations()
     }
 
+    /// Enrolls one egui texture namespace before the host consumes its input.
+    ///
+    /// Split hosted-cycle integrations must call this before entering
+    /// [`Context::run_ui`]. Owned [`Self::run_native_surface`] and
+    /// [`Self::run_native_staging`] calls perform the enrollment themselves.
+    pub fn enroll_output_context(&mut self, context: &Context) -> Result<(), DockspaceError> {
+        self.state_mut()
+            .enroll_output_context(context)
+            .map_err(Into::into)
+    }
+
     /// Measures and paints one post-input surface pass.
     ///
     /// # Errors
@@ -492,6 +503,9 @@ impl EguiNativePresentationSession {
                 },
             ));
         }
+        self.state()
+            .require_output_context_enrolled(ui.ctx())
+            .map_err(DockspaceError::from_source)?;
         self.state_mut().record_native_surface_pass(route)?;
         let surface = route.surface();
         self.with_driver(dockspace, |driver| driver.show_surface(surface, ui, panes))
@@ -517,6 +531,9 @@ impl EguiNativePresentationSession {
                 },
             ));
         }
+        self.state()
+            .require_output_context_enrolled(ui.ctx())
+            .map_err(DockspaceError::from_source)?;
         self.state_mut().record_native_surface_pass(route)?;
         self.with_driver(dockspace, |driver| {
             driver.show_native_staging(presentation, ui)
@@ -538,6 +555,7 @@ impl EguiNativePresentationSession {
         input: RawInput,
         panes: &mut dyn PaneView,
     ) -> Result<SurfacePaintResponse, DockspaceError> {
+        self.enroll_output_context(context)?;
         let route = self.state().resolve_native_callback(native)?;
         if input.viewport_id != native.viewport() {
             return Err(DockspaceError::from_source(
@@ -582,8 +600,8 @@ impl EguiNativePresentationSession {
     /// Runs one complete non-interactive native staging egui pass.
     ///
     /// The returned request is the exact core slot represented by the output.
-    /// Renderer presentation is still reported later through the affine output
-    /// settlement returned by [`Self::finish`].
+    /// Renderer ownership is still settled later through the affine output
+    /// batch returned by [`Self::finish`].
     pub fn run_native_staging(
         &mut self,
         dockspace: &mut Dockspace,
@@ -591,6 +609,7 @@ impl EguiNativePresentationSession {
         context: &Context,
         input: RawInput,
     ) -> Result<NativeStagingPresentation, DockspaceError> {
+        self.enroll_output_context(context)?;
         let (route, presentation) = self.state().resolve_native_staging_callback(native)?;
         if input.viewport_id != native.viewport() {
             return Err(DockspaceError::from_source(
@@ -650,6 +669,9 @@ impl EguiNativePresentationSession {
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
+        self.state()
+            .require_output_context_enrolled(context)
+            .map_err(DockspaceError::from_source)?;
         validate_native_presentation_token(surface, output)?;
         self.with_driver(dockspace, |driver| {
             driver.confirm_external_surface_output(surface, context, native.viewport(), output)
@@ -659,7 +681,7 @@ impl EguiNativePresentationSession {
     /// Confirms one externally-owned staging output at the final roster boundary.
     ///
     /// The callback route, core staging request, and exact native lifetime are
-    /// revalidated before the [`FullOutput`] enters the affine settlement path.
+    /// revalidated before the [`FullOutput`] enters the affine admission path.
     /// Successful confirmation moves the output out of the supplied slot until
     /// the enclosing frame commits.
     pub fn confirm_native_staging_output(
@@ -673,6 +695,9 @@ impl EguiNativePresentationSession {
         self.state()
             .validate_native_surface_output(route.surface(), native)?;
         let surface = route.surface();
+        self.state()
+            .require_output_context_enrolled(context)
+            .map_err(DockspaceError::from_source)?;
         validate_native_presentation_token(surface, output)?;
         self.with_driver(dockspace, |driver| {
             driver.confirm_external_surface_output(surface, context, native.viewport(), output)

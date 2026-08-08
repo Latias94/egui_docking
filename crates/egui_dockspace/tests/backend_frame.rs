@@ -45,7 +45,7 @@ use egui::accesskit::{Action, Role};
 use egui::{Color32, Context, Id, Pos2, RawInput, Rect, TextEdit, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{
     EguiFrameScheduleKey, EguiNativeInputSession, EguiNativePresentationSession,
-    EguiOuterFrameCommit, EguiOuterOutputBatch, EguiPresentationResult, ExactNativeViewport,
+    EguiOuterFrameCommit, EguiOuterOutputBatch, EguiRendererOutputDisposition, ExactNativeViewport,
     NativeBindingRoster, NativeCoreRoute, NativeViewportIncarnation,
 };
 use egui_dockspace::{Dockspace, DockspaceErrorKind, DockspaceSurfaceCommitStatus, PaneView};
@@ -329,7 +329,7 @@ impl PresentationCaptureClock {
             .iter()
             .filter_map(|output| output.presentation_output())
             .collect::<Vec<_>>();
-        outputs.settle_with(|_, _| EguiPresentationResult::Presented);
+        outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
         presentations
             .into_iter()
             .map(|output| {
@@ -380,8 +380,8 @@ impl PresentationCaptureClock {
     }
 }
 
-fn settle_outputs_dropped(outputs: EguiOuterOutputBatch) {
-    outputs.settle_with(|_, _| EguiPresentationResult::Dropped);
+fn reject_outputs_unconsumed(outputs: EguiOuterOutputBatch) {
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::RejectedUnconsumed);
 }
 
 fn empty_native_bindings() -> NativeBindingRoster {
@@ -495,7 +495,7 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
     let commit = presentation
         .finish(&mut target)
         .expect("outer frame must publish document and sidecars atomically");
-    settle_outputs_dropped(commit.into_parts().1);
+    reject_outputs_unconsumed(commit.into_parts().1);
 
     assert!(!target.has_pending_document_restore());
     assert!(!target.core_engine().policy().allows_contained_floating());
@@ -618,7 +618,7 @@ fn bootstrap_native_root(
     let commit = presentation
         .finish(dockspace)
         .expect("bootstrap registration must publish atomically");
-    settle_outputs_dropped(commit.into_parts().1);
+    reject_outputs_unconsumed(commit.into_parts().1);
     let committed = dockspace
         .core_engine()
         .backend_ingress_commit_watermark()
@@ -901,7 +901,7 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
             .is_empty(),
         "an acknowledged unchanged focus sample must not grow the recorder",
     );
-    settle_outputs_dropped(acknowledged.into_parts().1);
+    reject_outputs_unconsumed(acknowledged.into_parts().1);
 }
 
 #[test]
@@ -968,7 +968,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
         .record_ready_backend_pane_focus_observations(&mut recorder)
         .expect("the sampled focus must reserve a predecessor ingress position");
     assert_eq!(predecessor_ordinals.len(), 1);
-    settle_outputs_dropped(sampled.into_parts().1);
+    reject_outputs_unconsumed(sampled.into_parts().1);
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     assert!(
         recorder.recorded_through() > dockspace.core_engine().backend_ingress_committed_through(),
@@ -1044,7 +1044,7 @@ fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_repl
             .is_empty(),
         "the committed replay must not be emitted a third time",
     );
-    settle_outputs_dropped(acknowledged.into_parts().1);
+    reject_outputs_unconsumed(acknowledged.into_parts().1);
 }
 
 #[test]
@@ -1152,7 +1152,7 @@ fn native_presentation_session_rejects_a_different_dockspace_instance() {
     let commit = presentation
         .finish(&mut dockspace)
         .expect("the exact facade must commit its owned session");
-    settle_outputs_dropped(commit.into_parts().1);
+    reject_outputs_unconsumed(commit.into_parts().1);
 }
 
 #[test]
@@ -1169,13 +1169,13 @@ fn native_renderer_output_batch_retains_the_exact_incarnation() {
     let (_, outputs) = committed.into_parts();
     assert_eq!(outputs.len(), 1);
     let output = outputs.iter().next().expect("one native output must exist");
-    assert!(!output.has_presentation_obligation());
+    assert!(!output.has_renderer_admission_obligation());
     assert_eq!(output.native_route(), Some(route));
     assert_eq!(output.native_binding(), Some(route.native()));
     assert_eq!(output.presentation_output(), None);
-    outputs.settle_with(|surface, _| {
+    outputs.submit_with(|surface, _, _| {
         assert_eq!(surface, SURFACE);
-        EguiPresentationResult::Presented
+        EguiRendererOutputDisposition::Accepted
     });
 }
 
@@ -1721,10 +1721,10 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
     assert!(
         unavailable
             .outputs()
-            .all(|output| !output.has_presentation_obligation()),
+            .all(|output| !output.has_renderer_admission_obligation()),
         "an omitted staging pass cannot manufacture a presentation obligation"
     );
-    settle_outputs_dropped(unavailable.into_parts().1);
+    reject_outputs_unconsumed(unavailable.into_parts().1);
     reclaim_backend_prefix(&mut dockspace, &mut recorder);
     sequence += 1;
 
@@ -1796,7 +1796,7 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         .next()
         .expect("one staging FullOutput must be retained");
     assert_eq!(output.native_route(), Some(target_route));
-    assert!(output.has_presentation_obligation());
+    assert!(output.has_renderer_admission_obligation());
     assert!(matches!(
         output
             .presentation_output()
@@ -1805,9 +1805,9 @@ fn run_native_staging_request(order: ReleasePresentationOrder) {
         HostPresentationOutputPayload::NativeStaging { presentation }
             if presentation == painted
     ));
-    outputs.settle_with(|surface, _| {
+    outputs.submit_with(|surface, _, _| {
         assert_eq!(surface, request_binding.surface());
-        EguiPresentationResult::Presented
+        EguiRendererOutputDisposition::Accepted
     });
 }
 
@@ -1971,10 +1971,10 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
     assert!(
         outputs
             .iter()
-            .all(|output| !output.has_presentation_obligation()),
+            .all(|output| !output.has_renderer_admission_obligation()),
         "a prepared-only first paint must not be relabelled as the frozen bootstrap output",
     );
-    settle_outputs_dropped(outputs);
+    reject_outputs_unconsumed(outputs);
 }
 
 #[test]
@@ -2060,10 +2060,10 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
     assert!(
         commit
             .outputs()
-            .all(|output| !output.has_presentation_obligation()),
+            .all(|output| !output.has_renderer_admission_obligation()),
         "the old-style paint must not become authoritative after terminal configuration"
     );
-    settle_outputs_dropped(commit.into_parts().1);
+    reject_outputs_unconsumed(commit.into_parts().1);
 }
 
 #[test]
@@ -2162,5 +2162,5 @@ fn dropped_backend_configuration_rolls_back_and_replays_the_same_ingress() {
         .finish(&mut dockspace)
         .expect("retry must publish atomically");
     assert_eq!(dockspace.style(), &replacement_style);
-    settle_outputs_dropped(commit.into_parts().1);
+    reject_outputs_unconsumed(commit.into_parts().1);
 }

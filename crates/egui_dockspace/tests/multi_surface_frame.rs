@@ -4,7 +4,7 @@ use dockspace::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{
     EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterOutputBatch, EguiOuterSurfaceOutput,
-    EguiPresentationResult, HostFrameResponse,
+    EguiRendererOutputDisposition, HostFrameResponse,
 };
 use egui_dockspace::{
     Dockspace, DockspaceErrorKind, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, PaneView,
@@ -171,10 +171,10 @@ fn bootstrap_outer_frame(
     assert!(
         outputs
             .iter()
-            .all(|output| !output.has_presentation_obligation()),
-        "a prepared-only bootstrap paint must not create a presentation obligation",
+            .all(|output| !output.has_renderer_admission_obligation()),
+        "a prepared-only bootstrap paint must not create renderer admission",
     );
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 fn bootstrap_multi_surface_outer_frame(
@@ -191,10 +191,10 @@ fn bootstrap_multi_surface_outer_frame(
     assert!(
         outputs
             .iter()
-            .all(|output| !output.has_presentation_obligation()),
-        "prepared-only bootstrap paints must not create presentation obligations",
+            .all(|output| !output.has_renderer_admission_obligation()),
+        "prepared-only bootstrap paints must not create renderer admission",
     );
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 fn one_output(outputs: &EguiOuterOutputBatch) -> &EguiOuterSurfaceOutput {
@@ -202,8 +202,8 @@ fn one_output(outputs: &EguiOuterOutputBatch) -> &EguiOuterSurfaceOutput {
     outputs.iter().next().expect("one output token exists")
 }
 
-fn complete_presentations(presentations: EguiOuterOutputBatch, result: EguiPresentationResult) {
-    presentations.settle_with(|_, _| result);
+fn submit_outputs(outputs: EguiOuterOutputBatch, disposition: EguiRendererOutputDisposition) {
+    outputs.submit_with(|_, _, _| disposition);
 }
 
 #[test]
@@ -309,14 +309,14 @@ fn outer_host_frame_commits_the_complete_multi_surface_roster_once() {
     assert!(
         presentations
             .iter()
-            .all(|output| !output.has_presentation_obligation())
+            .all(|output| !output.has_renderer_admission_obligation())
     );
     assert!(!response.mutation().workspace_changed());
     assert!(response.mutation().published_state_changed());
     assert_eq!(response.surfaces().len(), 2);
     assert!(response.surface(ROOT_SURFACE).is_some());
     assert!(response.surface(CHILD_SURFACE).is_some());
-    complete_presentations(presentations, EguiPresentationResult::Presented);
+    submit_outputs(presentations, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -348,13 +348,13 @@ fn multi_surface_renderer_results_settle_independently() {
     assert!(
         first
             .iter()
-            .all(EguiOuterSurfaceOutput::has_presentation_obligation)
+            .all(EguiOuterSurfaceOutput::has_renderer_admission_obligation)
     );
-    first.settle_with(|surface, _| {
+    first.submit_with(|surface, _, _| {
         let result = if surface == ROOT_SURFACE {
-            EguiPresentationResult::Presented
+            EguiRendererOutputDisposition::Accepted
         } else {
-            EguiPresentationResult::Dropped
+            EguiRendererOutputDisposition::RejectedUnconsumed
         };
         result
     });
@@ -371,7 +371,7 @@ fn multi_surface_renderer_results_settle_independently() {
     assert_eq!(summary.observed(), 2);
     assert_eq!(summary.retired_presented_eligible(), 1);
     assert_eq!(summary.retired_dropped(), 1);
-    complete_presentations(pending, EguiPresentationResult::Presented);
+    submit_outputs(pending, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn outer_host_frame_replaces_an_earlier_egui_pass_before_reduction() {
             .status(),
         DockspaceSurfaceCommitStatus::Ready,
     );
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -484,21 +484,22 @@ fn outer_host_surface_run_returns_only_its_owned_full_output() {
     let (_, outputs) = host.finish().expect("confirmed frame commits").into_parts();
     assert_eq!(outputs.len(), 1);
     let output = one_output(&outputs);
-    assert!(output.has_presentation_obligation());
+    assert!(output.has_renderer_admission_obligation());
     assert!(
         output
             .full_output()
             .viewport_output
             .contains_key(&context.viewport_id())
     );
-    outputs.settle_with(|surface, full_output| {
+    outputs.submit_with(|surface, texture_context, full_output| {
         assert_eq!(surface, ROOT_SURFACE);
+        assert_eq!(texture_context, &context);
         assert!(
             full_output
                 .viewport_output
                 .contains_key(&context.viewport_id())
         );
-        EguiPresentationResult::Presented
+        EguiRendererOutputDisposition::Accepted
     });
 }
 
@@ -536,7 +537,7 @@ fn outer_host_rejects_replacing_a_surface_run_with_another_context() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -562,19 +563,98 @@ fn presentation_token_can_settle_on_the_renderer_thread() {
     .into_parts();
 
     assert_eq!(pending.len(), 1);
-    assert!(one_output(&pending).has_presentation_obligation());
+    assert!(one_output(&pending).has_renderer_admission_obligation());
 
     std::thread::spawn(move || {
-        pending.settle_with(|_, _| EguiPresentationResult::Presented);
+        pending.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     })
     .join()
     .expect("renderer thread does not panic");
 }
 
 #[test]
-fn unsettled_output_batch_blocks_the_next_batch_until_renderer_settlement() {
+fn unsettled_renderer_batch_rejects_before_consuming_egui_input() {
     let context = one_pass_context();
     let mut dockspace = Dockspace::builder("outer-batch-backpressure", single_workspace())
+        .build()
+        .expect("fixture builds");
+    let mut panes = CountingPane::default();
+
+    bootstrap_outer_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        EguiFrameScheduleKey::new(1, 0),
+    );
+    let (_, pending) = paint_outer_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        EguiFrameScheduleKey::new(2, 0),
+    )
+    .into_parts();
+    let output = one_output(&pending);
+    assert!(output.has_renderer_admission_obligation());
+    assert!(
+        output
+            .full_output()
+            .viewport_output
+            .contains_key(&context.viewport_id())
+    );
+
+    let ui_calls_before = panes.ui_calls;
+    let cumulative_pass_before = context.cumulative_pass_nr();
+    let input_events_before = context.input(|input| input.events.clone());
+    let mut rejected_input = input();
+    rejected_input
+        .events
+        .push(egui::Event::Text("must-not-be-consumed".into()));
+    let mut blocked = dockspace
+        .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
+        .expect("next outer host frame begins");
+    assert_eq!(
+        blocked
+            .run_surface(ROOT_SURFACE, &context, rejected_input, &mut panes)
+            .expect_err("renderer backpressure must reject before Context::run_ui")
+            .kind(),
+        DockspaceErrorKind::OperationConflict,
+    );
+    assert_eq!(panes.ui_calls, ui_calls_before);
+    assert_eq!(context.cumulative_pass_nr(), cumulative_pass_before);
+    assert_eq!(
+        context.input(|input| input.events.clone()),
+        input_events_before,
+        "the rejected RawInput must not become egui input state",
+    );
+    drop(blocked);
+
+    pending.submit_with(|surface, _, _| {
+        assert_eq!(surface, ROOT_SURFACE);
+        EguiRendererOutputDisposition::Accepted
+    });
+
+    let (after_result, outputs) = paint_outer_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        EguiFrameScheduleKey::new(4, 0),
+    )
+    .into_parts();
+    assert_eq!(
+        after_result
+            .presentation_summary()
+            .retired_presented_eligible(),
+        1,
+        "the late result must complete the exact obligation once",
+    );
+    assert!(one_output(&outputs).has_renderer_admission_obligation());
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
+}
+
+#[test]
+fn renderer_panic_poison_fails_closed_without_replaying_texture_commands() {
+    let context = one_pass_context();
+    let mut dockspace = Dockspace::builder("outer-renderer-panic", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -592,50 +672,22 @@ fn unsettled_output_batch_blocks_the_next_batch_until_renderer_settlement() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    let output = one_output(&pending);
-    assert!(output.has_presentation_obligation());
-    assert!(
-        output
-            .full_output()
-            .viewport_output
-            .contains_key(&context.viewport_id())
-    );
+
+    let renderer_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pending.submit_with(|_, _, _| panic!("renderer failed after indeterminate side effects"));
+    }));
+    assert!(renderer_panic.is_err());
 
     let mut blocked = dockspace
         .begin_outer_frame(EguiFrameScheduleKey::new(3, 0))
-        .expect("next outer host frame begins");
-    blocked
-        .run_surface(ROOT_SURFACE, &context, input(), &mut panes)
-        .expect("the next surface run may be prepared");
+        .expect("the core frame can still begin");
     assert_eq!(
         blocked
-            .finish()
-            .expect_err("an unsettled renderer batch applies backpressure")
+            .run_surface(ROOT_SURFACE, &context, input(), &mut panes)
+            .expect_err("an indeterminate renderer namespace must fail closed")
             .kind(),
-        DockspaceErrorKind::OperationConflict,
+        DockspaceErrorKind::Internal,
     );
-
-    pending.settle_with(|surface, _| {
-        assert_eq!(surface, ROOT_SURFACE);
-        EguiPresentationResult::Presented
-    });
-
-    let (after_result, outputs) = paint_outer_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        EguiFrameScheduleKey::new(4, 0),
-    )
-    .into_parts();
-    assert_eq!(
-        after_result
-            .presentation_summary()
-            .retired_presented_eligible(),
-        1,
-        "the late result must complete the exact obligation once",
-    );
-    assert!(one_output(&outputs).has_presentation_obligation());
-    complete_presentations(outputs, EguiPresentationResult::Presented);
 }
 
 #[test]
@@ -659,7 +711,7 @@ fn dropping_an_output_batch_terminally_drops_the_output() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    assert!(one_output(&pending).has_presentation_obligation());
+    assert!(one_output(&pending).has_renderer_admission_obligation());
     drop(pending);
 
     let (response, outputs) = paint_outer_frame(
@@ -670,7 +722,7 @@ fn dropping_an_output_batch_terminally_drops_the_output() {
     )
     .into_parts();
     assert_eq!(response.presentation_summary().retired_dropped(), 1);
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -689,8 +741,8 @@ fn output_batch_without_an_obligation_settles_as_a_no_op() {
     )
     .into_parts();
     assert_eq!(one_output(&outputs).surface(), ROOT_SURFACE);
-    assert!(!one_output(&outputs).has_presentation_obligation());
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    assert!(!one_output(&outputs).has_renderer_admission_obligation());
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
     let (next, outputs) = paint_outer_frame(
         &context,
         &mut dockspace,
@@ -699,7 +751,7 @@ fn output_batch_without_an_obligation_settles_as_a_no_op() {
     )
     .into_parts();
     assert_eq!(next.presentation_summary().observed(), 0);
-    complete_presentations(outputs, EguiPresentationResult::Presented);
+    submit_outputs(outputs, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -724,7 +776,7 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    complete_presentations(pending, EguiPresentationResult::Dropped);
+    submit_outputs(pending, EguiRendererOutputDisposition::RejectedUnconsumed);
 
     let (response, pending) = paint_outer_frame(
         &context,
@@ -741,7 +793,7 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
             .expect("second surface paints")
             .interactions_current()
     );
-    complete_presentations(pending, EguiPresentationResult::Presented);
+    submit_outputs(pending, EguiRendererOutputDisposition::Accepted);
 }
 
 #[test]
@@ -776,7 +828,7 @@ fn abandoned_outer_output_terminally_drops_without_blocking_the_stream() {
     )
     .into_parts();
     assert_eq!(response.presentation_summary().retired_dropped(), 1);
-    complete_presentations(pending, EguiPresentationResult::Dropped);
+    submit_outputs(pending, EguiRendererOutputDisposition::RejectedUnconsumed);
 }
 
 #[test]
@@ -801,7 +853,7 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
         EguiFrameScheduleKey::new(2, 0),
     )
     .into_parts();
-    complete_presentations(pending, EguiPresentationResult::Dropped);
+    submit_outputs(pending, EguiRendererOutputDisposition::RejectedUnconsumed);
 
     let response = paint_crates_io_frame(&context, &mut dockspace, &mut panes);
     assert!(!response.mutation().workspace_changed());

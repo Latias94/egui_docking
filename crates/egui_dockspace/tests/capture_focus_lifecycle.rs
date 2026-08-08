@@ -8,7 +8,9 @@ use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresent
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::runtime::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult, HostFrameResponse};
+use egui_dockspace::backend::{
+    EguiFrameScheduleKey, EguiRendererOutputDisposition, HostFrameResponse,
+};
 use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -118,9 +120,9 @@ fn run_input(
         .finish()
         .expect("outer host frame commits")
         .into_parts();
-    outputs.settle_with(|surface, _| {
+    outputs.submit_with(|surface, _, _| {
         assert_eq!(surface, SURFACE);
-        EguiPresentationResult::Presented
+        EguiRendererOutputDisposition::Accepted
     });
     response
 }
@@ -668,7 +670,7 @@ fn finish_multipass_terminal_frame(
         .finish()
         .expect("outer host frame commits")
         .into_parts();
-    outputs.settle_with(|_, _| EguiPresentationResult::Presented);
+    outputs.submit_with(|_, _, _| EguiRendererOutputDisposition::Accepted);
     assert_eq!(panes.passes, BTreeSet::from([0, 1]));
     (response, panes)
 }

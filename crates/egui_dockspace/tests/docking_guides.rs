@@ -8,7 +8,7 @@ use dockspace::drop_target::DropTargetId;
 use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -85,9 +85,9 @@ impl Fixture {
             .finish()
             .expect("outer guide frame commits")
             .into_parts();
-        outputs.settle_with(|surface, _| {
+        outputs.submit_with(|surface, _, _| {
             assert_eq!(surface, SURFACE);
-            EguiPresentationResult::Presented
+            EguiRendererOutputDisposition::Accepted
         });
         let _ = response;
     }

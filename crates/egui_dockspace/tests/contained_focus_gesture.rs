@@ -7,7 +7,7 @@ use dockspace::intent::{
     ContainedHorizontalResizeEdge, ContainedResizeEdges, ContainedTransformKind,
 };
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::backend::{EguiFrameScheduleKey, EguiPresentationResult};
+use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -113,9 +113,9 @@ fn run_frame(
         .finish()
         .expect("outer egui frame commits")
         .into_parts();
-    outputs.settle_with(|surface, _| {
+    outputs.submit_with(|surface, _, _| {
         assert_eq!(surface, SURFACE);
-        EguiPresentationResult::Presented
+        EguiRendererOutputDisposition::Accepted
     });
 
     let floating = dockspace
