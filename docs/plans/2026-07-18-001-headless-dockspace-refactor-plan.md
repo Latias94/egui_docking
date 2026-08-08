@@ -11,6 +11,8 @@ execution: code
 
 # Headless Dockspace and egui_dockspace Fearless Refactor - Plan
 
+> **Superseded:** This July plan is retained as historical implementation evidence. The active implementation contract is [Fearless dockspace product-boundary refactor](2026-08-08-001-refactor-dockspace-product-boundary-plan.md), which intentionally replaces the broad presentation/provider protocol and execution order described below.
+
 ## Goal Capsule
 
 | Field | Contract |
