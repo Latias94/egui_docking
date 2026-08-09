@@ -7,7 +7,9 @@ use dockspace::backend::ingress::BackendIngressOrdinal;
 use dockspace::backend::interaction::InteractionOutcome;
 use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
-use dockspace::command::{CloseCommitOutcome, CommandOutcome};
+use dockspace::command::CloseCommitOutcome;
+#[cfg(any(feature = "backend", test))]
+use dockspace::command::CommandOutcome;
 use dockspace::error::CommandError;
 use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
 use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
@@ -73,6 +75,7 @@ impl DockspaceMutation {
 }
 
 /// Product-level result of one checked workspace command.
+#[cfg(any(feature = "backend", test))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum DockspaceCommandOutcome {
     /// The command committed or produced a valid no-op.
@@ -89,12 +92,14 @@ pub enum DockspaceCommandOutcome {
 }
 
 /// Atomic publication plus the exact result of one checked workspace command.
+#[cfg(any(feature = "backend", test))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockspaceCommandResult {
     mutation: DockspaceMutation,
     outcome: DockspaceCommandOutcome,
 }
 
+#[cfg(any(feature = "backend", test))]
 impl DockspaceCommandResult {
     pub(crate) fn from_transition(transition: &EngineTransition) -> Option<Self> {
         let outcome =

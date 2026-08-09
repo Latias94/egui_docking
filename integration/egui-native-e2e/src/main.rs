@@ -65,7 +65,7 @@ impl SmokeApp {
     ) -> Result<Self, SmokeError> {
         let mut policy = DockPolicy::new();
         policy.set_allow_native_surfaces(true);
-        let dockspace = Dockspace::builder("native-e2e", workspace())
+        let dockspace = Dockspace::backend_builder("native-e2e", workspace())
             .policy(policy)
             .build()?;
         let roster =

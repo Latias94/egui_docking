@@ -1,7 +1,8 @@
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
 use egui::{Context, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, DockspaceCapability, DockspaceUnavailableReason, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceCapability, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, DockspaceUnavailableReason, ItemId, PaneView, RootId, SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
@@ -27,12 +28,12 @@ impl PaneView for TestPane {
     fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
 }
 
-fn workspace() -> Workspace {
-    let mut builder = Workspace::builder();
-    let tabs = builder.insert_node(Node::tabs([ITEM]));
-    builder.set_root(ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    builder.build().expect("fixture workspace is valid")
+fn layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([ITEM])),
+    )])
+    .expect("fixture layout is valid")
 }
 
 fn capability(dockspace: &mut Dockspace, context: &Context) -> DockspaceCapability {
@@ -59,7 +60,7 @@ fn capability(dockspace: &mut Dockspace, context: &Context) -> DockspaceCapabili
 #[test]
 fn callback_only_contained_tear_off_requires_presentation_settlement() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("contained-tear-off", workspace())
+    let mut dockspace = Dockspace::builder("contained-tear-off", layout())
         .build()
         .expect("fixture facade builds");
 

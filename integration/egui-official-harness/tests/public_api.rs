@@ -6,7 +6,8 @@ use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{
-    Dockspace, DockspaceActionOutcome, DockspaceActionStatus, PaneView,
+    Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceLayout, DockspaceNode,
+    DockspaceRootLayout, DockspaceSurfaceLayout, PaneView,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -39,6 +40,14 @@ fn workspace() -> Workspace {
     builder.build().expect("the smoke workspace is valid")
 }
 
+fn product_layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([ITEM])),
+    )])
+    .expect("the smoke layout is valid")
+}
+
 fn raw_input() -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))),
@@ -51,7 +60,7 @@ fn official_egui_consumes_the_public_single_surface_facade() {
     let _native_options = eframe::NativeOptions::default();
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-consumer", workspace())
+    let mut dockspace = Dockspace::builder("official-egui-consumer", product_layout())
         .build()
         .expect("the public facade accepts a valid workspace");
     let view = dockspace.view();
@@ -129,7 +138,7 @@ fn official_egui_consumes_the_public_single_surface_facade() {
 #[test]
 fn official_egui_consumes_the_outer_presentation_protocol() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("official-egui-outer-host", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-outer-host", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = SmokePanes::default();

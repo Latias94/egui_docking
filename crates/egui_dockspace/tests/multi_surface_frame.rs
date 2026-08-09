@@ -209,7 +209,7 @@ fn submit_outputs(outputs: EguiOuterOutputBatch, disposition: EguiRendererOutput
 #[test]
 fn bootstrap_paints_the_application_pane_in_a_disabled_scope() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("bootstrap-pane", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("bootstrap-pane", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = CountingPane::default();
@@ -227,7 +227,7 @@ fn crates_io_facade_uses_local_responses_without_synthesizing_presentation_autho
     // This integration target links `egui_dockspace` without `cfg(test)`, so no
     // test-only terminal-presentation provider can authorize these frames.
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("crates-io-paint-only", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("crates-io-paint-only", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = CountingPane::default();
@@ -262,7 +262,7 @@ fn crates_io_facade_uses_local_responses_without_synthesizing_presentation_autho
 #[test]
 fn single_surface_host_frame_commits_through_the_core_capability() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("core-host-frame", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("core-host-frame", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -289,9 +289,10 @@ fn single_surface_host_frame_commits_through_the_core_capability() {
 fn outer_host_frame_commits_the_complete_multi_surface_roster_once() {
     let root_context = one_pass_context();
     let child_context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-complete-roster", multi_surface_workspace())
-        .build()
-        .expect("fixture builds");
+    let mut dockspace =
+        Dockspace::backend_builder("outer-complete-roster", multi_surface_workspace())
+            .build()
+            .expect("fixture builds");
     let mut panes = TestPanes;
     let (response, presentations) = paint_multi_surface_outer_frame(
         &root_context,
@@ -326,9 +327,10 @@ fn outer_host_frame_commits_the_complete_multi_surface_roster_once() {
 fn multi_surface_renderer_results_settle_independently() {
     let root_context = one_pass_context();
     let child_context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-independent-results", multi_surface_workspace())
-        .build()
-        .expect("fixture builds");
+    let mut dockspace =
+        Dockspace::backend_builder("outer-independent-results", multi_surface_workspace())
+            .build()
+            .expect("fixture builds");
     let mut panes = TestPanes;
 
     bootstrap_multi_surface_outer_frame(
@@ -383,7 +385,7 @@ fn outer_host_frame_replaces_an_earlier_egui_pass_before_reduction() {
     context.options_mut(|options| {
         options.max_passes = 2.try_into().expect("two is non-zero");
     });
-    let mut dockspace = Dockspace::builder("outer-final-pass", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-final-pass", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = DiscardingPane::default();
@@ -416,7 +418,7 @@ fn outer_host_frame_replaces_an_earlier_egui_pass_before_reduction() {
 #[test]
 fn outer_host_frame_rejects_a_duplicate_callback_in_the_same_pass() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-duplicate-pass", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-duplicate-pass", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -443,7 +445,7 @@ fn outer_host_frame_rejects_a_duplicate_callback_in_the_same_pass() {
 #[test]
 fn outer_host_frame_rejects_an_unconfirmed_final_output() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-unconfirmed-output", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-unconfirmed-output", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -466,7 +468,7 @@ fn outer_host_frame_rejects_an_unconfirmed_final_output() {
 #[test]
 fn outer_host_surface_run_returns_only_its_owned_full_output() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-owned-output", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-owned-output", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -510,7 +512,7 @@ fn outer_host_surface_run_returns_only_its_owned_full_output() {
 fn outer_host_rejects_replacing_a_surface_run_with_another_context() {
     let first_context = one_pass_context();
     let second_context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-context-replacement", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-context-replacement", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -546,9 +548,10 @@ fn outer_host_rejects_replacing_a_surface_run_with_another_context() {
 #[test]
 fn presentation_token_can_settle_on_the_renderer_thread() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-token-renderer-thread", single_workspace())
-        .build()
-        .expect("fixture builds");
+    let mut dockspace =
+        Dockspace::backend_builder("outer-token-renderer-thread", single_workspace())
+            .build()
+            .expect("fixture builds");
     let mut panes = TestPanes;
 
     bootstrap_outer_frame(
@@ -578,7 +581,7 @@ fn presentation_token_can_settle_on_the_renderer_thread() {
 #[test]
 fn unsettled_renderer_batch_rejects_before_consuming_egui_input() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-batch-backpressure", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-batch-backpressure", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = CountingPane::default();
@@ -657,7 +660,7 @@ fn unsettled_renderer_batch_rejects_before_consuming_egui_input() {
 #[test]
 fn renderer_panic_poison_fails_closed_without_replaying_texture_commands() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-renderer-panic", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-renderer-panic", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -696,7 +699,7 @@ fn renderer_panic_poison_fails_closed_without_replaying_texture_commands() {
 #[test]
 fn dropping_an_output_batch_terminally_drops_the_output() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-batch-drop", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-batch-drop", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -731,7 +734,7 @@ fn dropping_an_output_batch_terminally_drops_the_output() {
 #[test]
 fn output_batch_without_an_obligation_settles_as_a_no_op() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-batch-no-op", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-batch-no-op", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -760,7 +763,7 @@ fn output_batch_without_an_obligation_settles_as_a_no_op() {
 #[test]
 fn dropped_outer_output_retires_without_granting_interaction_authority() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-dropped-output", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-dropped-output", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -803,7 +806,7 @@ fn dropped_outer_output_retires_without_granting_interaction_authority() {
 #[test]
 fn abandoned_outer_output_terminally_drops_without_blocking_the_stream() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-abandoned-output", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-abandoned-output", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -838,7 +841,7 @@ fn abandoned_outer_output_terminally_drops_without_blocking_the_stream() {
 #[test]
 fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("outer-to-ordinary", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("outer-to-ordinary", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -874,7 +877,7 @@ fn ordinary_frame_settles_completed_outer_output_without_mode_switch_back() {
 #[test]
 fn explicit_single_surface_host_frames_use_local_responses_without_presentation_facts() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("retained-surface-slot", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("retained-surface-slot", single_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;
@@ -943,7 +946,7 @@ fn explicit_single_surface_host_frames_use_local_responses_without_presentation_
 
 #[test]
 fn omitted_single_surface_callback_becomes_an_explicit_deferred_contribution() {
-    let mut dockspace = Dockspace::builder("deferred-surface-slot", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("deferred-surface-slot", single_workspace())
         .build()
         .expect("fixture builds");
 
@@ -962,7 +965,7 @@ fn omitted_single_surface_callback_becomes_an_explicit_deferred_contribution() {
 
 #[test]
 fn explicit_unavailable_slot_uses_the_core_unavailable_preparation_path() {
-    let mut dockspace = Dockspace::builder("explicit-unavailable-slot", single_workspace())
+    let mut dockspace = Dockspace::backend_builder("explicit-unavailable-slot", single_workspace())
         .build()
         .expect("fixture builds");
     let mut host = dockspace
@@ -987,7 +990,7 @@ fn explicit_unavailable_slot_uses_the_core_unavailable_preparation_path() {
 #[test]
 fn crates_io_facade_rejects_multi_surface_workspace_before_paint() {
     let context = one_pass_context();
-    let mut dockspace = Dockspace::builder("strict-single", multi_surface_workspace())
+    let mut dockspace = Dockspace::backend_builder("strict-single", multi_surface_workspace())
         .build()
         .expect("fixture builds");
     let mut panes = TestPanes;

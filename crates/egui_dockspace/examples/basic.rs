@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 
 use dockspace::geometry::LogicalRect;
-use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use eframe::egui;
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, PaneView, RootId,
+    SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(1);
@@ -38,10 +40,9 @@ struct DockspaceApp {
 
 impl DockspaceApp {
     fn new() -> Self {
-        let workspace = example_workspace();
-        let dockspace = Dockspace::builder("basic", workspace)
+        let dockspace = Dockspace::builder("basic", example_layout())
             .build()
-            .expect("the static example workspace is valid");
+            .expect("the static example layout is valid");
         Self {
             dockspace,
             panes: ExamplePanes::new(),
@@ -69,30 +70,26 @@ impl eframe::App for DockspaceApp {
     }
 }
 
-fn example_workspace() -> Workspace {
-    let mut builder = Workspace::builder();
-    let editors = builder.insert_node(Node::tabs([EDITOR, PREVIEW]));
-    let outline = builder.insert_node(Node::tabs([OUTLINE]));
-    let main = builder.insert_node(
-        Node::split(Axis::Horizontal, [outline, editors], [0.24, 0.76])
-            .expect("the static split is valid"),
-    );
-    let inspector = builder.insert_node(Node::tabs([INSPECTOR]));
-
-    builder.set_root(MAIN_ROOT, RootRecord::new(main).with_central(editors));
-    builder.set_root(FLOATING_ROOT, RootRecord::new(inspector));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
-    builder.set_contained_floating(
+fn example_layout() -> DockspaceLayout {
+    let main = DockspaceNode::split(
+        DockspaceAxis::Horizontal,
+        [
+            (DockspaceNode::tabs([OUTLINE]), 0.24),
+            (DockspaceNode::central_tabs([EDITOR, PREVIEW]), 0.76),
+        ],
+    )
+    .expect("the static split is valid");
+    let contained = DockspaceContainedLayout::new(
         FLOATING,
-        ContainedFloating::new(
-            FLOATING_ROOT,
-            LogicalRect::new(690.0, 90.0, 310.0, 300.0).expect("the static rect is valid"),
-        ),
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([INSPECTOR])),
+        LogicalRect::new(690.0, 90.0, 310.0, 300.0).expect("the static rect is valid"),
     );
-    builder
-        .attach_contained(SURFACE, FLOATING)
-        .expect("the example surface exists");
-    builder.build().expect("the example workspace is valid")
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, main),
+    )
+    .with_contained(contained)])
+    .expect("the example layout is valid")
 }
 
 struct ExamplePane {

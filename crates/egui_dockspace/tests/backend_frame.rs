@@ -407,9 +407,10 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
     let current = source_bootstrap
         .ensure_external_item_key("pane/current")
         .expect("source identity must allocate");
-    let mut source = Dockspace::builder("backend-document-source", document_workspace([current]))
-        .build()
-        .expect("source dockspace must build");
+    let mut source =
+        Dockspace::backend_builder("backend-document-source", document_workspace([current]))
+            .build()
+            .expect("source dockspace must build");
     source
         .bind_document_persistence(source_bootstrap)
         .expect("source persistence must bind");
@@ -430,9 +431,10 @@ fn queued_document_restore_commits_through_the_native_outer_frame() {
             .expect("target identity must allocate"),
         current
     );
-    let mut target = Dockspace::builder("backend-document-target", document_workspace([current]))
-        .build()
-        .expect("target dockspace must build");
+    let mut target =
+        Dockspace::backend_builder("backend-document-target", document_workspace([current]))
+            .build()
+            .expect("target dockspace must build");
     target
         .bind_document_persistence(target_bootstrap)
         .expect("target persistence must bind");
@@ -770,7 +772,7 @@ fn paint_native_focus_frame(
 
 #[test]
 fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles() {
-    let mut dockspace = Dockspace::builder("native-pane-focus", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-pane-focus", workspace())
         .build()
         .expect("fixture must build");
     let mut recorder = dockspace
@@ -906,9 +908,10 @@ fn native_pane_focus_is_requested_sampled_and_acknowledged_across_three_cycles()
 
 #[test]
 fn uncommitted_native_pane_focus_observation_replays_after_backend_provider_replacement() {
-    let mut dockspace = Dockspace::builder("native-pane-focus-provider-replacement", workspace())
-        .build()
-        .expect("fixture must build");
+    let mut dockspace =
+        Dockspace::backend_builder("native-pane-focus-provider-replacement", workspace())
+            .build()
+            .expect("fixture must build");
     let mut recorder = dockspace
         .create_backend_ingress_provider(PointerEdgeSequence::new(0))
         .expect("predecessor backend provider must enroll");
@@ -1054,7 +1057,7 @@ fn native_session_is_owned_and_blocks_competing_facade_mutations() {
     assert_static::<EguiNativeInputSession>();
     assert_static::<EguiNativePresentationSession>();
 
-    let mut dockspace = Dockspace::builder("native-session-lease", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-session-lease", workspace())
         .build()
         .expect("fixture must build");
     dockspace
@@ -1091,7 +1094,7 @@ fn native_session_is_owned_and_blocks_competing_facade_mutations() {
 
 #[test]
 fn native_presentation_session_rejects_a_different_dockspace_instance() {
-    let mut dockspace = Dockspace::builder("native-session-owner", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-session-owner", workspace())
         .build()
         .expect("fixture must build");
     let mut recorder = dockspace
@@ -1131,7 +1134,7 @@ fn native_presentation_session_rejects_a_different_dockspace_instance() {
     let mut presentation = input_session
         .into_presentation()
         .expect("completed input must enter presentation");
-    let mut other = Dockspace::builder("native-session-other", workspace())
+    let mut other = Dockspace::backend_builder("native-session-other", workspace())
         .build()
         .expect("second fixture must build");
 
@@ -1157,7 +1160,7 @@ fn native_presentation_session_rejects_a_different_dockspace_instance() {
 
 #[test]
 fn native_renderer_output_batch_retains_the_exact_incarnation() {
-    let mut dockspace = Dockspace::builder("native-settlement-incarnation", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-settlement-incarnation", workspace())
         .build()
         .expect("fixture must build");
     let mut recorder = dockspace
@@ -1181,7 +1184,7 @@ fn native_renderer_output_batch_retains_the_exact_incarnation() {
 
 #[test]
 fn core_backend_publishes_actionable_accesskit_tree() {
-    let mut dockspace = Dockspace::builder("native-accesskit-tree", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-accesskit-tree", workspace())
         .build()
         .expect("fixture must build");
     let mut recorder = dockspace
@@ -1310,7 +1313,7 @@ fn commit_source_cycle(
 fn run_native_staging_request(order: ReleasePresentationOrder) {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let mut dockspace = Dockspace::builder("native-staging-output", workspace())
+    let mut dockspace = Dockspace::backend_builder("native-staging-output", workspace())
         .policy(policy)
         .build()
         .expect("fixture must build");
@@ -1823,7 +1826,7 @@ fn release_before_presented_preview_waits_for_a_later_presentation_boundary() {
 
 #[test]
 fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
-    let mut dockspace = Dockspace::builder("backend-frame", workspace())
+    let mut dockspace = Dockspace::backend_builder("backend-frame", workspace())
         .build()
         .expect("fixture must build");
     let mut recorder = dockspace
@@ -1979,7 +1982,7 @@ fn backend_batch_retries_after_aborted_presentation_and_commits_with_paint() {
 
 #[test]
 fn backend_terminal_configuration_commits_policy_and_style_atomically() {
-    let mut dockspace = Dockspace::builder("backend-configuration", workspace())
+    let mut dockspace = Dockspace::backend_builder("backend-configuration", workspace())
         .build()
         .expect("fixture must build");
     let original_style = dockspace.style().clone();
@@ -2068,7 +2071,7 @@ fn backend_terminal_configuration_commits_policy_and_style_atomically() {
 
 #[test]
 fn dropped_backend_configuration_rolls_back_and_replays_the_same_ingress() {
-    let mut dockspace = Dockspace::builder("backend-configuration-rollback", workspace())
+    let mut dockspace = Dockspace::backend_builder("backend-configuration-rollback", workspace())
         .build()
         .expect("fixture must build");
     let original_style = dockspace.style().clone();

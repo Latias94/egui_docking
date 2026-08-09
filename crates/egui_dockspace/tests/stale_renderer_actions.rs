@@ -83,7 +83,7 @@ fn close_center(dockspace: &Dockspace) -> Pos2 {
 fn restored_epoch_rejects_prior_scene_close_release_without_a_request() {
     let context = Context::default();
     let original = workspace();
-    let mut dockspace = Dockspace::builder("stale-actions", original.clone())
+    let mut dockspace = Dockspace::backend_builder("stale-actions", original.clone())
         .build()
         .expect("fixture facade builds");
     let mut pane = TestPane;

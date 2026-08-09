@@ -16,6 +16,6 @@ pub use crate::presentation_settlement::{
 };
 pub use crate::receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
 pub use crate::response::{
-    BackendEffectReceipt, HostFrameResponse, PresentationObservationSummary, SurfaceCommitResponse,
-    SurfacePaintResponse,
+    BackendEffectReceipt, DockspaceCommandOutcome, DockspaceCommandResult, HostFrameResponse,
+    PresentationObservationSummary, SurfaceCommitResponse, SurfacePaintResponse,
 };

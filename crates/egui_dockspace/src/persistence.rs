@@ -309,12 +309,14 @@ impl Dockspace {
     }
 
     /// Returns the validated workspace carried by the queued backend restore.
+    #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
     pub fn pending_document_restore_workspace(&self) -> Option<&Workspace> {
         self.engine.adapter_pending_backend_restore_workspace()
     }
 
     /// Compares the queued document's logical surfaces with the current workspace.
+    #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
     pub fn pending_document_restore_matches_current_surface_roster(&self) -> Option<bool> {
         let pending = self.pending_document_restore_workspace()?;
@@ -323,6 +325,7 @@ impl Dockspace {
             .map(|(surface, _)| surface)
             .collect::<BTreeSet<_>>();
         let current = self
+            .core_engine()
             .workspace()
             .surfaces()
             .map(|(surface, _)| surface)
@@ -438,7 +441,7 @@ mod tests {
         workspace: Workspace,
         bootstrap: DockspaceDocumentBootstrap,
     ) -> Dockspace {
-        let mut dockspace = Dockspace::builder(id, workspace)
+        let mut dockspace = Dockspace::backend_builder(id, workspace)
             .build()
             .expect("fixture facade must build");
         dockspace
@@ -475,7 +478,7 @@ mod tests {
         workspace: Workspace,
         keys: ExternalItemKeyMap,
     ) -> Dockspace {
-        let mut dockspace = Dockspace::builder(id, workspace)
+        let mut dockspace = Dockspace::backend_builder(id, workspace)
             .build()
             .expect("fixture facade must build");
         dockspace
@@ -493,7 +496,7 @@ mod tests {
     }
 
     fn unbound_facade(id: &'static str) -> Dockspace {
-        Dockspace::builder(id, workspace())
+        Dockspace::backend_builder(id, workspace())
             .build()
             .expect("fixture facade must build")
     }
@@ -676,7 +679,7 @@ mod tests {
 
     #[test]
     fn untrusted_facade_import_rejects_swapped_valid_keys_before_binding() {
-        let mut dockspace = Dockspace::builder("untrusted-import", workspace())
+        let mut dockspace = Dockspace::backend_builder("untrusted-import", workspace())
             .build()
             .expect("fixture facade must build");
 

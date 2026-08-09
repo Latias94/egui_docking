@@ -51,9 +51,10 @@ fn build_app(
     policy.set_allow_native_surfaces(true);
     policy.set_contained_fallback(ContainedFallback::Enabled);
 
-    let mut dockspace = Dockspace::builder("native-multiview", example_workspace(fallback_ids))
-        .policy(policy)
-        .build()?;
+    let mut dockspace =
+        Dockspace::backend_builder("native-multiview", example_workspace(fallback_ids))
+            .policy(policy)
+            .build()?;
     let restored =
         restore_document_from_storage(&mut dockspace, storage, |document, item, key| {
             document == DOCUMENT_ID && fallback_ids.item_for_key(key) == Some(item)

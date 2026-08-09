@@ -106,7 +106,7 @@ mod tests {
 
     fn bound_dockspace(next_generation: u64) -> Dockspace {
         let (bootstrap, item) = bootstrap(next_generation);
-        let mut dockspace = Dockspace::builder("native-persistence", workspace(item))
+        let mut dockspace = Dockspace::backend_builder("native-persistence", workspace(item))
             .build()
             .expect("native persistence dockspace must build");
         dockspace
@@ -133,7 +133,7 @@ mod tests {
         let workspace = builder
             .build()
             .expect("two-surface persistence workspace is valid");
-        let mut dockspace = Dockspace::builder("native-persistence-two", workspace)
+        let mut dockspace = Dockspace::backend_builder("native-persistence-two", workspace)
             .build()
             .expect("two-surface native persistence dockspace must build");
         dockspace
@@ -160,7 +160,7 @@ mod tests {
         storage.set_string(NATIVE_DOCKSPACE_DOCUMENT_STORAGE_KEY, json);
 
         let (_, fallback_item) = bootstrap(0);
-        let mut target = Dockspace::builder("native-restore", workspace(fallback_item))
+        let mut target = Dockspace::backend_builder("native-restore", workspace(fallback_item))
             .build()
             .expect("unbound restore target must build");
         let restored =

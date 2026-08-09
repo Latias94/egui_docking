@@ -1,8 +1,9 @@
 use dockspace::geometry::LogicalRect;
-use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use egui::{Button, Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, PaneView, RootId, SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);
@@ -32,24 +33,18 @@ impl PaneView for TestPanes {
     }
 }
 
-fn workspace() -> Workspace {
-    let mut builder = Workspace::builder();
-    let main = builder.insert_node(Node::tabs([REAR_ITEM]));
-    let floating = builder.insert_node(Node::tabs([FRONT_ITEM]));
-    builder.set_root(MAIN_ROOT, RootRecord::new(main));
-    builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(MAIN_ROOT));
-    builder.set_contained_floating(
+fn layout() -> DockspaceLayout {
+    let contained = DockspaceContainedLayout::new(
         FLOATING,
-        ContainedFloating::new(
-            FLOATING_ROOT,
-            LogicalRect::new(180.0, 80.0, 240.0, 200.0).expect("floating rect is valid"),
-        ),
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([FRONT_ITEM])),
+        LogicalRect::new(180.0, 80.0, 240.0, 200.0).expect("floating rect is valid"),
     );
-    builder
-        .attach_contained(SURFACE, FLOATING)
-        .expect("surface exists");
-    builder.build().expect("occlusion fixture is valid")
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([REAR_ITEM])),
+    )
+    .with_contained(contained)])
+    .expect("occlusion fixture is valid")
 }
 
 fn rear_button_rect() -> Rect {
@@ -99,7 +94,7 @@ fn run_frame(
 #[test]
 fn front_floating_blank_content_blocks_rear_pane_widgets() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("contained-widget-occlusion", workspace())
+    let mut dockspace = Dockspace::builder("contained-widget-occlusion", layout())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes::default();

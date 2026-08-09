@@ -142,7 +142,7 @@ use crate::interaction::{
     ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
-use crate::model::{DockspaceView, ProductAction};
+use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
 use crate::operation::{
     PreparedContentClose, PreparedSurfaceContentClose, prepare_content_close,
     prepare_surface_content_close,
@@ -1866,6 +1866,19 @@ enum JournalClickDelivery<'snapshot> {
 }
 
 impl DockEngine {
+    /// Creates an engine from stable product layout data and explicit policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invariant error if exact semantic requirements cannot be derived.
+    pub fn from_layout_with_presentation_config(
+        layout: DockspaceLayout,
+        policy: DockPolicy,
+        presentation_config: DockPresentationConfig,
+    ) -> Result<Self, EngineError> {
+        Self::new_with_presentation_config(layout.into_workspace(), policy, presentation_config)
+    }
+
     /// Creates an engine from a strictly validated workspace and explicit policy.
     ///
     /// # Errors

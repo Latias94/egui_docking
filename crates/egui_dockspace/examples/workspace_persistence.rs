@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
 use eframe::egui;
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -37,9 +38,9 @@ impl PersistenceApp {
         let console = bootstrap
             .ensure_external_item_key("pane/console")
             .expect("the console identity must fit");
-        let mut dockspace = Dockspace::builder("persistence", example_workspace(document, console))
+        let mut dockspace = Dockspace::builder("persistence", example_layout(document, console))
             .build()
-            .expect("the static example workspace is valid");
+            .expect("the static example layout is valid");
         dockspace
             .bind_document_persistence(bootstrap)
             .expect("the static persistence identity must bind");
@@ -106,17 +107,20 @@ impl eframe::App for PersistenceApp {
     }
 }
 
-fn example_workspace(document_item: ItemId, console_item: ItemId) -> Workspace {
-    let mut builder = Workspace::builder();
-    let document = builder.insert_node(Node::tabs([document_item]));
-    let console = builder.insert_node(Node::tabs([console_item]));
-    let root = builder.insert_node(
-        Node::split(Axis::Vertical, [document, console], [0.72, 0.28])
-            .expect("the static split is valid"),
-    );
-    builder.set_root(ROOT, RootRecord::new(root).with_central(document));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    builder.build().expect("the example workspace is valid")
+fn example_layout(document_item: ItemId, console_item: ItemId) -> DockspaceLayout {
+    let root = DockspaceNode::split(
+        DockspaceAxis::Vertical,
+        [
+            (DockspaceNode::central_tabs([document_item]), 0.72),
+            (DockspaceNode::tabs([console_item]), 0.28),
+        ],
+    )
+    .expect("the static split is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, root),
+    )])
+    .expect("the example layout is valid")
 }
 
 struct PersistencePanes {

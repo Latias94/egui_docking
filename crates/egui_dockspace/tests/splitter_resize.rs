@@ -161,7 +161,7 @@ fn keyboard_and_accesskit_adjustments_are_scene_bound_one_shot_commits() {
     let context = Context::default();
     let salt = "scene-bound-splitter-adjustment";
     let (workspace, split) = split_workspace(false);
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture dockspace must build");
     let mut panes = TestPanes;
@@ -234,7 +234,7 @@ fn presentation_acknowledgement_restores_splitter_input_in_the_same_host_frame()
     let context = Context::default();
     let salt = "unacknowledged-splitter-keyboard";
     let (workspace, split) = split_workspace(false);
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture dockspace must build");
     let mut panes = TestPanes;
@@ -294,7 +294,7 @@ fn fully_occluded_splitter_with_old_focus_exposes_no_action_and_cannot_adjust() 
     let (workspace, split) = split_workspace(false);
     let (occluded, occluded_split) = split_workspace(true);
     assert_eq!(occluded_split, split);
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture dockspace must build");
     let mut panes = TestPanes;

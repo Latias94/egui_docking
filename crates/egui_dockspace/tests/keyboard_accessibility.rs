@@ -222,7 +222,7 @@ fn arrow_home_and_end_keep_tab_selection_and_focus_together() {
     let context = Context::default();
     let (workspace, tabs) = tabs_workspace();
     let salt = "tab-keyboard-focus";
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture facade must build");
     let mut panes = TestPanes;
@@ -355,7 +355,7 @@ fn focused_close_button_accepts_enter_and_space_without_a_pointer_click() {
     ] {
         let context = Context::default();
         let (workspace, tabs) = tabs_workspace();
-        let mut dockspace = Dockspace::builder(salt, workspace)
+        let mut dockspace = Dockspace::backend_builder(salt, workspace)
             .build()
             .expect("fixture facade must build");
         let mut panes = TestPanes;
@@ -434,7 +434,7 @@ fn consecutive_splitter_key_adjustments_retain_focus_and_both_commit() {
     let context = Context::default();
     let (workspace, split) = split_workspace();
     let salt = "splitter-keyboard-focus";
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture facade must build");
     let mut panes = TestPanes;
@@ -543,7 +543,7 @@ enum AdjustmentEvent {
 fn committed_adjustment(salt: &'static str, event: AdjustmentEvent) -> Vec<f32> {
     let context = Context::default();
     let (workspace, split) = split_workspace();
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture facade must build");
     let mut panes = TestPanes;
@@ -638,7 +638,7 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
         builder.set_root(ROOT, RootRecord::new(tabs));
         builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("tabs fixture must be valid");
-        let mut dockspace = Dockspace::builder(salt, workspace)
+        let mut dockspace = Dockspace::backend_builder(salt, workspace)
             .build()
             .expect("fixture facade must build");
         let mut panes = TestPanes;
@@ -769,7 +769,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
     ] {
         let context = Context::default();
         let (workspace, tabs) = tabs_workspace();
-        let mut dockspace = Dockspace::builder(salt, workspace)
+        let mut dockspace = Dockspace::backend_builder(salt, workspace)
             .build()
             .expect("fixture facade must build");
         let mut panes = TestPanes;
@@ -822,7 +822,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
     let context = Context::default();
     let (workspace, tabs) = tabs_workspace();
     let salt = "stale-close-accesskit";
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture facade must build");
     let mut panes = TestPanes;
@@ -858,7 +858,7 @@ fn same_tick_selection_supersedes_before_submission_and_disables_the_painted_res
     let context = Context::default();
     let (workspace, tabs) = tabs_workspace();
     let salt = "same-tick-selection-supersedes-contribution";
-    let mut dockspace = Dockspace::builder(salt, workspace)
+    let mut dockspace = Dockspace::backend_builder(salt, workspace)
         .build()
         .expect("fixture facade must build");
     let mut panes = TestPanes;

@@ -642,9 +642,10 @@ fn warm(context: &Context, dockspace: &mut Dockspace, panes: &mut TestPanes) -> 
 fn equal_width_title_changes_refresh_paint_resources_without_changing_scene_identity() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("equal-width-title-refresh", single_workspace([ITEM_A]))
-        .build()
-        .expect("facade must build");
+    let mut dockspace =
+        Dockspace::backend_builder("equal-width-title-refresh", single_workspace([ITEM_A]))
+            .build()
+            .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
     panes.monospace_titles = true;
     panes.titles.insert(ITEM_A, "AAAA".to_owned());
@@ -941,7 +942,7 @@ fn paint_projection_is_authoritative(dockspace: &Dockspace) -> bool {
 #[test]
 fn inactive_tab_pointer_down_selects_and_arms_in_one_core_revision() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "inactive-tab-atomic-pointer-activation",
         single_workspace([ITEM_A, ITEM_B]),
     )
@@ -980,7 +981,7 @@ fn inactive_tab_pointer_down_selects_and_arms_in_one_core_revision() {
 fn same_frame_press_and_release_still_activate_an_inactive_tab() {
     let context = Context::default();
     let mut dockspace =
-        Dockspace::builder("same-frame-tab-click", single_workspace([ITEM_A, ITEM_B]))
+        Dockspace::backend_builder("same-frame-tab-click", single_workspace([ITEM_A, ITEM_B]))
             .build()
             .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -1013,7 +1014,7 @@ fn same_frame_press_and_release_still_activate_an_inactive_tab() {
 fn same_frame_press_and_release_requests_one_exact_tab_close() {
     let context = Context::default();
     let mut dockspace =
-        Dockspace::builder("same-frame-tab-close", single_workspace([ITEM_A, ITEM_B]))
+        Dockspace::backend_builder("same-frame-tab-close", single_workspace([ITEM_A, ITEM_B]))
             .build()
             .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -1056,7 +1057,7 @@ fn same_frame_press_and_release_requests_one_exact_tab_close() {
 fn painted_prepared_contribution_requires_a_later_host_sequence_acknowledgement() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
-    let mut dockspace = Dockspace::builder("ready-scene", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("ready-scene", workspace.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
@@ -1111,7 +1112,7 @@ fn external_discards_before_or_after_dockspace_never_acknowledge_an_earlier_pass
         context.options_mut(|options| {
             options.max_passes = 4.try_into().expect("four is non-zero");
         });
-        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A]))
+        let mut dockspace = Dockspace::backend_builder(salt, single_workspace([ITEM_A]))
             .build()
             .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A]);
@@ -1176,9 +1177,10 @@ fn omitted_final_pass_cannot_acknowledge_an_earlier_dockspace_pass() {
     context.options_mut(|options| {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
-    let mut dockspace = Dockspace::builder("omitted-final-pass", single_workspace([ITEM_A]))
-        .build()
-        .expect("facade must build");
+    let mut dockspace =
+        Dockspace::backend_builder("omitted-final-pass", single_workspace([ITEM_A]))
+            .build()
+            .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
 
     let mut bootstrap_passes = Vec::new();
@@ -1231,7 +1233,7 @@ fn omitted_final_pass_cannot_acknowledge_an_earlier_dockspace_pass() {
 fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B, ITEM_C]);
-    let mut dockspace = Dockspace::builder("tab-overflow", workspace)
+    let mut dockspace = Dockspace::backend_builder("tab-overflow", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
@@ -1348,7 +1350,7 @@ fn authority_incomplete_wheel_does_not_disturb_keyboard_focus() {
     let context = Context::default();
     context.enable_accesskit();
     let size = vec2(220.0, 200.0);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "focused-tab-wheel-guard",
         single_workspace([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E]),
     )
@@ -1415,7 +1417,7 @@ fn authority_incomplete_wheel_does_not_disturb_keyboard_focus() {
 fn authority_incomplete_wheel_does_not_disturb_an_active_drag() {
     let context = Context::default();
     let size = vec2(220.0, 200.0);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "dragged-tab-wheel-guard",
         single_workspace([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E]),
     )
@@ -1500,7 +1502,7 @@ fn authority_incomplete_wheel_does_not_choose_an_overlapping_tab_strip() {
     let floating_rect =
         LogicalRect::new(0.0, 60.0, 180.0, 160.0).expect("floating fixture rect is valid");
     let workspace = overlapping_overflow_workspace(floating_rect);
-    let mut dockspace = Dockspace::builder("floating-wheel-owner", workspace)
+    let mut dockspace = Dockspace::backend_builder("floating-wheel-owner", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E, ITEM_F, ITEM_G]);
@@ -1551,7 +1553,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
     let floating_rect =
         LogicalRect::new(0.0, 60.0, 180.0, 160.0).expect("floating fixture rect is valid");
     let workspace = overlapping_overflow_workspace(floating_rect);
-    let mut dockspace = Dockspace::builder("floating-edge-owner", workspace)
+    let mut dockspace = Dockspace::backend_builder("floating-edge-owner", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C, ITEM_D, ITEM_E, ITEM_F, ITEM_G]);
@@ -1655,7 +1657,7 @@ fn frontmost_floating_tab_strip_exclusively_owns_overlapping_drag_edge_scroll() 
 fn fully_hidden_overflow_item_addition_and_removal_force_a_fresh_multipass() {
     let context = Context::default();
     let size = vec2(180.0, 200.0);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "overflow-fingerprint",
         single_workspace([ITEM_A, ITEM_B, ITEM_C]),
     )
@@ -1736,9 +1738,10 @@ fn overflow_menu_accesskit_and_keyboard_selection_reveal_hidden_tabs() {
         let context = Context::default();
         context.enable_accesskit();
         let size = vec2(180.0, 200.0);
-        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
-            .build()
-            .expect("facade must build");
+        let mut dockspace =
+            Dockspace::backend_builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
+                .build()
+                .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
         let stable = run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1859,9 +1862,10 @@ fn keyboard_opening_overflow_menu_does_not_activate_its_first_item() {
         let context = Context::default();
         context.enable_accesskit();
         let size = vec2(180.0, 200.0);
-        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
-            .build()
-            .expect("facade must build");
+        let mut dockspace =
+            Dockspace::backend_builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
+                .build()
+                .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
 
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1920,9 +1924,10 @@ fn external_popup_state_does_not_override_the_authoritative_overflow_menu() {
         let context = Context::default();
         context.enable_accesskit();
         let size = vec2(180.0, 200.0);
-        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
-            .build()
-            .expect("facade must build");
+        let mut dockspace =
+            Dockspace::backend_builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
+                .build()
+                .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
 
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -1996,7 +2001,7 @@ fn overflow_popup_rounding_stays_inside_a_non_grid_host_when_opening_above() {
             vec2(screen.width(), 32.0),
         );
         let items = numbered_items(2_000, 32);
-        let mut dockspace = Dockspace::builder(
+        let mut dockspace = Dockspace::backend_builder(
             ("strict-popup-rounding", pixels_per_point.to_bits()),
             single_workspace(items.iter().copied()),
         )
@@ -2102,7 +2107,7 @@ fn popup_smaller_than_its_frame_closes_without_resurrecting_adapter_state() {
     let screen = Rect::from_min_size(Pos2::new(10.17, 20.23), vec2(180.03, 140.03));
     let dock = Rect::from_min_size(screen.min, screen.size());
     let items = numbered_items(2_100, 16);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "overflow-popup-smaller-than-frame",
         single_workspace(items.iter().copied()),
     )
@@ -2218,7 +2223,7 @@ fn popup_closes_when_a_solid_scrollbar_cannot_fit_the_host_width() {
     let screen = Rect::from_min_size(Pos2::new(10.17, 20.23), vec2(180.0, 140.0));
     let dock = screen;
     let items = numbered_items(2_200, 32);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "overflow-scrollbar-wider-than-host",
         single_workspace(items.iter().copied()),
     )
@@ -2343,7 +2348,7 @@ fn overflow_scrollbar_and_rows_keep_their_first_frame_width_allocation() {
     });
     let size = vec2(180.03, 140.03);
     let items = numbered_items(1_500, 32);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "overflow-scrollbar-allocation",
         single_workspace(items.iter().copied()),
     )
@@ -2489,7 +2494,7 @@ fn overflow_scrollbar_accesskit_adjustments_commit_one_row_steps() {
     context.enable_accesskit();
     let size = vec2(180.0, 140.0);
     let items = numbered_items(1_700, 32);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "overflow-scrollbar-accesskit-adjustment",
         single_workspace(items.iter().copied()),
     )
@@ -2558,7 +2563,7 @@ fn authority_incomplete_wheel_is_not_consumed_as_docking_input() {
     let salt = "overflow-ancestor-scroll";
     let size = vec2(220.0, 180.0);
     let items = numbered_items(1_600, 64);
-    let mut dockspace = Dockspace::builder(salt, single_workspace(items.iter().copied()))
+    let mut dockspace = Dockspace::backend_builder(salt, single_workspace(items.iter().copied()))
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items(items.iter().copied());
@@ -2695,7 +2700,7 @@ fn authority_incomplete_popup_wheel_never_mutates_a_docking_scroll_owner() {
         let underlay_items = numbered_items(3_000, 4);
         let workspace =
             popup_overlapping_tab_strip_workspace(&popup_items, &underlay_items, floating_underlay);
-        let mut dockspace = Dockspace::builder(salt, workspace)
+        let mut dockspace = Dockspace::backend_builder(salt, workspace)
             .build()
             .expect("facade must build");
         let mut panes = TestPanes::with_items(popup_items.iter().chain(&underlay_items).copied());
@@ -2804,9 +2809,10 @@ fn stale_overflow_clicks_cannot_activate_or_dismiss_a_remeasured_popup() {
         let context = Context::default();
         context.enable_accesskit();
         let size = vec2(180.0, 200.0);
-        let mut dockspace = Dockspace::builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
-            .build()
-            .expect("facade must build");
+        let mut dockspace =
+            Dockspace::backend_builder(salt, single_workspace([ITEM_A, ITEM_B, ITEM_C]))
+                .build()
+                .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B, ITEM_C]);
 
         run_accesskit_frame(&context, &mut dockspace, &mut panes, size, Vec::new());
@@ -2895,7 +2901,7 @@ fn authoritative_overflow_gap_click_keeps_the_popup_open() {
         style.spacing.item_spacing.y = 12.0;
     });
     let size = vec2(180.0, 200.0);
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "authoritative-overflow-gap-click",
         single_workspace([ITEM_A, ITEM_B, ITEM_C]),
     )
@@ -2954,7 +2960,7 @@ fn authoritative_overflow_gap_click_keeps_the_popup_open() {
 fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
-    let mut dockspace = Dockspace::builder("stale-pane-fail-closed", workspace)
+    let mut dockspace = Dockspace::backend_builder("stale-pane-fail-closed", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
@@ -3045,7 +3051,7 @@ fn stale_style_projection_disables_pane_widgets_until_the_plan_is_current() {
 fn stale_selection_paints_current_pane_without_running_superseded_callback() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B]);
-    let mut dockspace = Dockspace::builder("selected-pane-fingerprint", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("selected-pane-fingerprint", workspace.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -3144,9 +3150,10 @@ fn stale_selection_paints_current_pane_without_running_superseded_callback() {
 #[test]
 fn workspace_replacement_bootstrap_paints_only_the_current_pane() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("replacement-pane-identity", single_workspace([ITEM_A]))
-        .build()
-        .expect("facade must build");
+    let mut dockspace =
+        Dockspace::backend_builder("replacement-pane-identity", single_workspace([ITEM_A]))
+            .build()
+            .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     warm(&context, &mut dockspace, &mut panes);
 
@@ -3182,7 +3189,7 @@ fn workspace_replacement_bootstrap_paints_only_the_current_pane() {
 #[test]
 fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("relocated-pane-identity", split_workspace())
+    let mut dockspace = Dockspace::backend_builder("relocated-pane-identity", split_workspace())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -3273,7 +3280,7 @@ fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
     let workspace = builder
         .build()
         .expect("rootless contained fixture is valid");
-    let mut dockspace = Dockspace::builder("pane-owner-change", workspace)
+    let mut dockspace = Dockspace::backend_builder("pane-owner-change", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
@@ -3322,7 +3329,7 @@ fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
 #[test]
 fn stale_selection_uses_current_missing_pane_state() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "stale-selection-current-missing",
         single_workspace([ITEM_A, ITEM_B]),
     )
@@ -3350,7 +3357,7 @@ fn stale_selection_uses_current_missing_pane_state() {
 #[test]
 fn stale_selection_uses_currently_recovered_pane_state() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "stale-selection-current-recovered",
         single_workspace([ITEM_A, ITEM_B]),
     )
@@ -3381,7 +3388,7 @@ fn stale_selection_uses_currently_recovered_pane_state() {
 fn stale_selection_accessibility_uses_current_pane_identity() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "stale-selection-current-accessibility",
         single_workspace([ITEM_A, ITEM_B]),
     )
@@ -3427,7 +3434,7 @@ fn stale_selection_accessibility_uses_current_pane_identity() {
 fn missing_pane_is_reported_and_recovers_without_topology_changes() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A]);
-    let mut dockspace = Dockspace::builder("missing-pane", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("missing-pane", workspace.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::default();
@@ -3467,7 +3474,7 @@ fn disabled_close_policy_removes_the_egui_affordance() {
     let mut item_rule = DockItemRule::default();
     item_rule.set_close_capability(Some(CloseCapability::Disabled));
     policy.set_item_rule(ITEM_A, item_rule);
-    let mut dockspace = Dockspace::builder("disabled-close", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("disabled-close", workspace.clone())
         .policy(policy)
         .build()
         .expect("facade must build");
@@ -3503,7 +3510,7 @@ fn hidden_tab_bar_gives_the_full_leaf_to_content_without_tab_accessibility() {
         TabBarVisibility::Hidden,
         TabBarInteraction::Enabled,
     ));
-    let mut dockspace = Dockspace::builder("hidden-tab-bar", workspace)
+    let mut dockspace = Dockspace::backend_builder("hidden-tab-bar", workspace)
         .policy(policy)
         .build()
         .expect("facade must build");
@@ -3553,7 +3560,7 @@ fn disabled_tab_bar_paints_static_chrome_without_input_or_accessibility_actions(
     ));
     let mut policy = DockPolicy::default();
     policy.set_target_rule(DockTargetRuleKey::Item(ITEM_A), target_rule);
-    let mut dockspace = Dockspace::builder("disabled-tab-bar", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("disabled-tab-bar", workspace.clone())
         .policy(policy)
         .build()
         .expect("facade must build");
@@ -3648,7 +3655,7 @@ fn contained_close_accepts_keyboard_and_accesskit_activation_without_pointer_geo
         let workspace = contained_workspace(
             LogicalRect::new(100.0, 80.0, 260.0, 190.0).expect("contained rect is valid"),
         );
-        let mut dockspace = Dockspace::builder(salt, workspace.clone())
+        let mut dockspace = Dockspace::backend_builder(salt, workspace.clone())
             .build()
             .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -3739,7 +3746,7 @@ fn contained_resize_edges_expose_truthful_one_axis_accessibility_and_keyboard_eq
         context.enable_accesskit();
         let original =
             LogicalRect::new(100.0, 80.0, 240.0, 180.0).expect("contained rect is valid");
-        let mut dockspace = Dockspace::builder(salt, contained_workspace(original))
+        let mut dockspace = Dockspace::backend_builder(salt, contained_workspace(original))
             .build()
             .expect("facade must build");
         let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -3788,7 +3795,7 @@ fn contained_resize_edges_expose_truthful_one_axis_accessibility_and_keyboard_eq
     let context = Context::default();
     context.enable_accesskit();
     let original = LogicalRect::new(100.0, 80.0, 240.0, 180.0).expect("contained rect is valid");
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "contained-resize-accessibility-tree",
         contained_workspace(original),
     )
@@ -3849,7 +3856,7 @@ fn contained_edge_adjustment_clamps_at_minimum_without_moving_the_opposite_ancho
     let context = Context::default();
     context.enable_accesskit();
     let original = LogicalRect::new(100.0, 80.0, 125.0, 180.0).expect("contained rect is valid");
-    let mut dockspace = Dockspace::builder(
+    let mut dockspace = Dockspace::backend_builder(
         "contained-resize-minimum-clamp",
         contained_workspace(original),
     )
@@ -3884,7 +3891,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
     policy_context.enable_accesskit();
     let mut policy = DockPolicy::default();
     policy.set_allow_contained_transform(false);
-    let mut policy_dockspace = Dockspace::builder(
+    let mut policy_dockspace = Dockspace::backend_builder(
         "contained-resize-policy-disabled",
         contained_workspace(original),
     )
@@ -3913,7 +3920,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
 
     let stale_context = Context::default();
     stale_context.enable_accesskit();
-    let mut stale_dockspace = Dockspace::builder(
+    let mut stale_dockspace = Dockspace::backend_builder(
         "contained-resize-stale-projection",
         contained_workspace(original),
     )
@@ -3963,7 +3970,7 @@ fn contained_edge_adjustment_obeys_policy_and_stale_projection_authority() {
 fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
     let context = Context::default();
     let original = single_workspace([ITEM_A]);
-    let mut dockspace = Dockspace::builder("tab-close-max-edge", original.clone())
+    let mut dockspace = Dockspace::backend_builder("tab-close-max-edge", original.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A]);
@@ -3994,7 +4001,7 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
 
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder("splitter-max-edge", original.clone())
+    let mut dockspace = Dockspace::backend_builder("splitter-max-edge", original.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4036,7 +4043,7 @@ fn tab_close_and_splitter_max_edges_are_not_interaction_owned() {
 fn multipass_observes_a_command_submitted_between_passes() {
     let context = Context::default();
     let workspace = single_workspace([ITEM_A, ITEM_B]);
-    let mut dockspace = Dockspace::builder("multipass-boundary", workspace.clone())
+    let mut dockspace = Dockspace::backend_builder("multipass-boundary", workspace.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4097,7 +4104,7 @@ fn multipass_observes_a_command_submitted_between_passes() {
 fn host_smaller_than_splitter_thickness_publishes_a_ready_degraded_scene() {
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder("collapsed-host", original.clone())
+    let mut dockspace = Dockspace::backend_builder("collapsed-host", original.clone())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4172,7 +4179,7 @@ fn contained_measurements_clip_presentation_without_rewriting_durable_bounds() {
     let context = Context::default();
     let original = LogicalRect::new(550.0, 330.0, 200.0, 160.0).expect("finite rect");
     let workspace = contained_workspace(original);
-    let mut dockspace = Dockspace::builder("contained-clamp", workspace)
+    let mut dockspace = Dockspace::backend_builder("contained-clamp", workspace)
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4227,7 +4234,7 @@ fn contained_measurements_clip_presentation_without_rewriting_durable_bounds() {
 fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() {
     let context = Context::default();
     let original = LogicalRect::new(140.0, 90.0, 220.0, 160.0).expect("finite rect");
-    let mut dockspace = Dockspace::builder("contained-move", contained_workspace(original))
+    let mut dockspace = Dockspace::backend_builder("contained-move", contained_workspace(original))
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4443,9 +4450,10 @@ fn contained_move_waits_for_a_release_beyond_the_last_painted_pointer_preview() 
 fn contained_north_west_resize_preserves_opposite_anchor_and_clamps_constraints() {
     let context = Context::default();
     let original = LogicalRect::new(120.0, 80.0, 240.0, 180.0).expect("finite rect");
-    let mut dockspace = Dockspace::builder("contained-resize", contained_workspace(original))
-        .build()
-        .expect("facade must build");
+    let mut dockspace =
+        Dockspace::backend_builder("contained-resize", contained_workspace(original))
+            .build()
+            .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
     warm_outer_with_size(&context, &mut dockspace, &mut panes, vec2(600.0, 400.0));
 
@@ -4513,7 +4521,7 @@ fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
     let context = Context::default();
     let original = LogicalRect::new(120.0, 80.0, 220.0, 150.0).expect("finite rect");
     let mut dockspace =
-        Dockspace::builder("stale-contained-release", contained_workspace(original))
+        Dockspace::backend_builder("stale-contained-release", contained_workspace(original))
             .build()
             .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);
@@ -4584,7 +4592,7 @@ fn stale_projection_release_uses_current_unknown_target_and_cancels_drag() {
 #[test]
 fn stale_projection_still_releases_active_split_resize() {
     let context = Context::default();
-    let mut dockspace = Dockspace::builder("stale-resize-release", split_workspace())
+    let mut dockspace = Dockspace::backend_builder("stale-resize-release", split_workspace())
         .build()
         .expect("facade must build");
     let mut panes = TestPanes::with_items([ITEM_A, ITEM_B]);

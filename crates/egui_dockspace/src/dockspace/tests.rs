@@ -55,7 +55,7 @@ fn workspace() -> Workspace {
 
 #[test]
 fn command_result_separates_rejection_from_published_protocol_state() {
-    let mut dockspace = Dockspace::builder("command-result", workspace())
+    let mut dockspace = Dockspace::backend_builder("command-result", workspace())
         .build()
         .expect("facade builds");
     let result = dockspace
@@ -500,7 +500,7 @@ fn submit_formal_click_escape(
 fn real_pressed_click_escape_is_callback_order_independent() {
     for source_order in [[false, true], [true, false]] {
         let host_context = multipass_context();
-        let mut dockspace = Dockspace::builder("pressed-escape-order", workspace())
+        let mut dockspace = Dockspace::backend_builder("pressed-escape-order", workspace())
             .build()
             .expect("facade builds");
         let mut panes = TestPanes;
@@ -534,7 +534,7 @@ fn real_pressed_click_escape_is_callback_order_independent() {
 #[test]
 fn already_retired_pointer_abort_compacts_the_exact_tombstone() {
     let context = multipass_context();
-    let mut dockspace = Dockspace::builder("retired-pointer-abort", workspace())
+    let mut dockspace = Dockspace::backend_builder("retired-pointer-abort", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
@@ -596,7 +596,7 @@ fn already_retired_pointer_abort_compacts_the_exact_tombstone() {
 #[test]
 fn dropped_outer_frame_retires_captured_pointer_instead_of_discarding_release() {
     let context = multipass_context();
-    let mut dockspace = Dockspace::builder("dropped-outer-release", workspace())
+    let mut dockspace = Dockspace::backend_builder("dropped-outer-release", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
@@ -649,7 +649,7 @@ fn dropped_outer_frame_retires_captured_pointer_instead_of_discarding_release() 
 #[test]
 fn post_pointer_prepare_error_drops_core_guard_before_retiring_provider() {
     let context = multipass_context();
-    let mut dockspace = Dockspace::builder("post-pointer-prepare-error", workspace())
+    let mut dockspace = Dockspace::backend_builder("post-pointer-prepare-error", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
@@ -714,7 +714,7 @@ fn post_pointer_prepare_error_drops_core_guard_before_retiring_provider() {
 #[test]
 fn deferred_pointer_abort_retries_before_the_next_public_boundary() {
     let context = multipass_context();
-    let mut dockspace = Dockspace::builder("deferred-pointer-abort", workspace())
+    let mut dockspace = Dockspace::backend_builder("deferred-pointer-abort", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
@@ -771,7 +771,7 @@ fn deferred_pointer_abort_retries_before_the_next_public_boundary() {
 
 #[test]
 fn outer_frame_without_a_surface_callback_submits_an_empty_pointer_interval() {
-    let mut dockspace = Dockspace::builder("empty-outer-pointer-interval", workspace())
+    let mut dockspace = Dockspace::backend_builder("empty-outer-pointer-interval", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -805,7 +805,7 @@ fn outer_frame_without_a_surface_callback_submits_an_empty_pointer_interval() {
 fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
     let context = context();
     let mut panes = TestPanes;
-    let mut dockspace = Dockspace::builder("missing-outer-pointer-capture", workspace())
+    let mut dockspace = Dockspace::backend_builder("missing-outer-pointer-capture", workspace())
         .build()
         .expect("facade builds");
     establish_outer_pointer_provider(&context, &mut dockspace, &mut panes);
@@ -854,7 +854,7 @@ fn confirmed_outer_surface_without_pointer_capture_fails_closed() {
 #[test]
 fn successful_pointer_abort_cancels_the_active_gesture_and_compacts_its_guard() {
     let context = multipass_context();
-    let mut dockspace = Dockspace::builder("successful-pointer-abort", workspace())
+    let mut dockspace = Dockspace::backend_builder("successful-pointer-abort", workspace())
         .build()
         .expect("facade builds");
     let mut panes = TestPanes;
@@ -897,7 +897,7 @@ fn successful_pointer_abort_cancels_the_active_gesture_and_compacts_its_guard() 
 
 #[test]
 fn repeated_surface_local_abort_keeps_pointer_retention_constant() {
-    let mut dockspace = Dockspace::builder("pointer-abort-soak", workspace())
+    let mut dockspace = Dockspace::backend_builder("pointer-abort-soak", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -923,7 +923,7 @@ fn repeated_surface_local_abort_keeps_pointer_retention_constant() {
 
 #[test]
 fn explicit_host_frames_do_not_infer_final_presentation() {
-    let mut dockspace = Dockspace::builder("paint-ticket", workspace())
+    let mut dockspace = Dockspace::backend_builder("paint-ticket", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -976,7 +976,7 @@ fn explicit_host_frames_do_not_infer_final_presentation() {
 
 #[test]
 fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
-    let mut dockspace = Dockspace::builder("automatic-presentation", workspace())
+    let mut dockspace = Dockspace::backend_builder("automatic-presentation", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1008,9 +1008,10 @@ fn automatic_frames_without_terminal_provider_do_not_create_pending_outputs() {
 
 #[test]
 fn accepted_terminal_watermarks_bound_the_automatic_emission_map() {
-    let mut dockspace = Dockspace::builder("automatic-presentation-retirement", workspace())
-        .build()
-        .expect("facade builds");
+    let mut dockspace =
+        Dockspace::backend_builder("automatic-presentation-retirement", workspace())
+            .build()
+            .expect("facade builds");
     let context = multipass_context();
     let mut panes = TestPanes;
     let mut observed_multi_emission_boundary = false;
@@ -1039,7 +1040,7 @@ fn accepted_terminal_watermarks_bound_the_automatic_emission_map() {
 
 #[test]
 fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
-    let mut dockspace = Dockspace::builder("automatic-presentation-unknown", workspace())
+    let mut dockspace = Dockspace::backend_builder("automatic-presentation-unknown", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1082,7 +1083,7 @@ fn unknown_capture_keeps_outputs_for_a_later_terminal_retry() {
 
 #[test]
 fn presentation_follow_up_pass_requires_accepted_promotion() {
-    let mut dockspace = Dockspace::builder("presentation-follow-up", workspace())
+    let mut dockspace = Dockspace::backend_builder("presentation-follow-up", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1129,7 +1130,7 @@ fn presentation_follow_up_pass_requires_accepted_promotion() {
 
 #[test]
 fn missing_surface_callback_submits_explicit_deferred_unavailable_fact() {
-    let mut dockspace = Dockspace::builder("missing-surface", workspace())
+    let mut dockspace = Dockspace::backend_builder("missing-surface", workspace())
         .build()
         .expect("facade builds");
     let response = dockspace
@@ -1149,7 +1150,7 @@ fn missing_surface_callback_submits_explicit_deferred_unavailable_fact() {
 
 #[test]
 fn host_frame_key_cannot_repeat_after_a_successful_commit() {
-    let mut dockspace = Dockspace::builder("host-key", workspace())
+    let mut dockspace = Dockspace::backend_builder("host-key", workspace())
         .build()
         .expect("facade builds");
     let key = EguiFrameScheduleKey::new(1, 0);
@@ -1169,7 +1170,7 @@ fn host_frame_key_cannot_repeat_after_a_successful_commit() {
 
 #[test]
 fn dropped_owned_surface_draft_does_not_publish_adapter_sidecars() {
-    let mut dockspace = Dockspace::builder("owned-draft-abort", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-abort", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1199,7 +1200,7 @@ fn dropped_owned_surface_draft_does_not_publish_adapter_sidecars() {
 
 #[test]
 fn duplicate_owned_draft_staging_does_not_publish_adapter_sidecars() {
-    let mut dockspace = Dockspace::builder("owned-draft-duplicate", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-duplicate", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1236,7 +1237,7 @@ fn duplicate_owned_draft_staging_does_not_publish_adapter_sidecars() {
 
 #[test]
 fn failed_core_finish_does_not_publish_owned_draft_sidecars() {
-    let mut dockspace = Dockspace::builder("owned-draft-finish-error", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-finish-error", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1266,7 +1267,7 @@ fn failed_core_finish_does_not_publish_owned_draft_sidecars() {
 
 #[test]
 fn owned_core_candidate_cannot_overwrite_an_advanced_host_frontier() {
-    let mut dockspace = Dockspace::builder("owned-candidate-stale-fence", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-candidate-stale-fence", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1299,7 +1300,7 @@ fn owned_core_candidate_cannot_overwrite_an_advanced_host_frontier() {
 
 #[test]
 fn cross_renderer_preflight_rejects_before_core_commit() {
-    let mut dockspace = Dockspace::builder("owned-draft-cross-renderer", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-cross-renderer", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1341,7 +1342,7 @@ fn cross_renderer_preflight_rejects_before_core_commit() {
 
 #[test]
 fn changed_style_preflight_rejects_before_core_commit() {
-    let mut dockspace = Dockspace::builder("owned-draft-style", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-style", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1391,7 +1392,7 @@ fn changed_style_preflight_rejects_before_core_commit() {
 
 #[test]
 fn prepared_core_and_renderer_commit_owned_sidecars_once() {
-    let mut dockspace = Dockspace::builder("owned-draft-success", workspace())
+    let mut dockspace = Dockspace::backend_builder("owned-draft-success", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1435,7 +1436,7 @@ fn prepared_core_and_renderer_commit_owned_sidecars_once() {
 
 #[test]
 fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() {
-    let mut dockspace = Dockspace::builder("receiver-retention-authority", workspace())
+    let mut dockspace = Dockspace::backend_builder("receiver-retention-authority", workspace())
         .build()
         .expect("facade builds");
     let context = context();
@@ -1496,7 +1497,7 @@ fn receiver_resources_remain_queryable_until_core_reclaims_the_exact_emission() 
 
 #[test]
 fn ten_thousand_presented_outputs_keep_receiver_sidecars_bounded() {
-    let mut dockspace = Dockspace::builder("receiver-retention-soak", workspace())
+    let mut dockspace = Dockspace::backend_builder("receiver-retention-soak", workspace())
         .build()
         .expect("facade builds");
     let context = context();

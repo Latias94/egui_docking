@@ -49,11 +49,11 @@ mod behavior_tests;
 pub use builder::DockspaceBuilder;
 pub use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
-    DockspaceActionRejection, DockspaceContainedView, DockspaceLayout, DockspaceNode,
-    DockspaceNodeView, DockspaceRootLayout, DockspaceRootView, DockspaceSplitView,
-    DockspaceSurfaceLayout, DockspaceSurfaceView, DockspaceTabsView, DockspaceView,
-    FloatingPresentationId, InvalidDockFraction, ItemId, PreparedDockAction, RootId, SurfaceId,
-    WorkspaceVersion,
+    DockspaceActionRejection, DockspaceAxis, DockspaceContainedLayout, DockspaceContainedView,
+    DockspaceLayout, DockspaceLayoutError, DockspaceNode, DockspaceNodeView, DockspaceRootLayout,
+    DockspaceRootView, DockspaceSplitView, DockspaceSurfaceLayout, DockspaceSurfaceView,
+    DockspaceTabsView, DockspaceView, FloatingPresentationId, InvalidDockFraction, ItemId,
+    PreparedDockAction, RootId, SurfaceId, WorkspaceVersion,
 };
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
@@ -63,8 +63,10 @@ pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
 pub use response::{
     DockspaceActionResult, DockspaceActionStatus, DockspaceCapability, DockspaceCloseItem,
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRequest, DockspaceCloseResult,
-    DockspaceCommandOutcome, DockspaceCommandResult, DockspaceInteractionCapabilities,
-    DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
-    DockspaceUnavailableReason,
+    DockspaceInteractionCapabilities, DockspaceMutation, DockspaceResponse,
+    DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, DockspaceUnavailableReason,
 };
+#[cfg(any(feature = "backend", test))]
+#[doc(hidden)]
+pub use response::{DockspaceCommandOutcome, DockspaceCommandResult};
 pub use style::{DockStyle, DockStyleError};

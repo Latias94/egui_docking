@@ -597,7 +597,7 @@ mod tests {
         let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
         builder.set_root(root, RootRecord::new(tabs));
         builder.set_surface(surface, SurfacePresentation::with_main(root));
-        Dockspace::builder(
+        Dockspace::backend_builder(
             "native-presentation-retention",
             builder.build().expect("the test workspace is valid"),
         )

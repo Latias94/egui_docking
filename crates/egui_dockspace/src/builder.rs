@@ -2,7 +2,9 @@
 
 use std::{fmt::Debug, hash::Hash};
 
+#[cfg(any(feature = "backend", test))]
 use dockspace::graph::Workspace;
+use dockspace::model::DockspaceLayout;
 use dockspace::policy::DockPolicy;
 use egui::Id;
 
@@ -13,17 +15,33 @@ use crate::style::DockStyle;
 /// Builder for one authoritative egui docking workspace.
 pub struct DockspaceBuilder {
     id: Id,
-    workspace: Workspace,
+    source: DockspaceBuilderSource,
     policy: DockPolicy,
     style: DockStyle,
 }
 
+enum DockspaceBuilderSource {
+    Layout(DockspaceLayout),
+    #[cfg(any(feature = "backend", test))]
+    BackendWorkspace(Workspace),
+}
+
 impl DockspaceBuilder {
-    /// Starts a builder with a stable egui identity and validated workspace candidate.
-    pub fn new(id_salt: impl Hash + Debug, workspace: Workspace) -> Self {
+    /// Starts a builder with a stable egui identity and product layout.
+    pub fn new(id_salt: impl Hash + Debug, layout: DockspaceLayout) -> Self {
         Self {
             id: Id::new(("egui_dockspace", id_salt)),
-            workspace,
+            source: DockspaceBuilderSource::Layout(layout),
+            policy: DockPolicy::default(),
+            style: DockStyle::default(),
+        }
+    }
+
+    #[cfg(any(feature = "backend", test))]
+    pub(crate) fn from_backend_workspace(id_salt: impl Hash + Debug, workspace: Workspace) -> Self {
+        Self {
+            id: Id::new(("egui_dockspace", id_salt)),
+            source: DockspaceBuilderSource::BackendWorkspace(workspace),
             policy: DockPolicy::default(),
             style: DockStyle::default(),
         }
@@ -47,9 +65,17 @@ impl DockspaceBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`DockspaceError`] when style or workspace validation fails.
+    /// Returns [`DockspaceError`] when style, layout, or backend workspace validation fails.
     pub fn build(self) -> Result<Dockspace, DockspaceError> {
         self.style.validate().map_err(DockspaceError::from_detail)?;
-        Dockspace::from_parts(self.id, self.workspace, self.policy, self.style)
+        match self.source {
+            DockspaceBuilderSource::Layout(layout) => {
+                Dockspace::from_layout_parts(self.id, layout, self.policy, self.style)
+            }
+            #[cfg(any(feature = "backend", test))]
+            DockspaceBuilderSource::BackendWorkspace(workspace) => {
+                Dockspace::from_parts(self.id, workspace, self.policy, self.style)
+            }
+        }
     }
 }

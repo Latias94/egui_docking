@@ -268,7 +268,7 @@ fn assert_cancelled_without_commit(
 fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
     let context = Context::default();
     let original = single_workspace();
-    let mut dockspace = Dockspace::builder("armed-focus-loss", original.clone())
+    let mut dockspace = Dockspace::backend_builder("armed-focus-loss", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -326,7 +326,7 @@ fn armed_drag_survives_local_focus_loss_without_moving_the_item() {
 fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder("drag-pointer-gone", original.clone())
+    let mut dockspace = Dockspace::backend_builder("drag-pointer-gone", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -406,7 +406,7 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
 fn active_resize_survives_local_button_state_without_a_release_edge() {
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder("resize-capture-loss", original.clone())
+    let mut dockspace = Dockspace::backend_builder("resize-capture-loss", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -457,7 +457,7 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
     let context = Context::default();
     let rect = LogicalRect::new(140.0, 90.0, 220.0, 160.0).expect("finite rect");
     let original = contained_workspace(rect);
-    let mut dockspace = Dockspace::builder("contained-focus-loss", original.clone())
+    let mut dockspace = Dockspace::backend_builder("contained-focus-loss", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -532,7 +532,7 @@ fn contained_title_drag_survives_local_focus_loss_without_committing_the_preview
 fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
     let context = Context::default();
     let original = single_workspace();
-    let mut dockspace = Dockspace::builder("release-before-focus-loss", original.clone())
+    let mut dockspace = Dockspace::backend_builder("release-before-focus-loss", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -577,7 +577,7 @@ fn matching_release_keeps_pre_drag_release_semantics_when_focus_is_lost() {
 fn escape_keeps_priority_when_pointer_capture_is_lost() {
     let context = Context::default();
     let original = single_workspace();
-    let mut dockspace = Dockspace::builder("escape-before-capture-loss", original.clone())
+    let mut dockspace = Dockspace::backend_builder("escape-before-capture-loss", original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -621,7 +621,7 @@ fn escape_keeps_priority_when_pointer_capture_is_lost() {
 fn prepare_multipass_drag(name: &'static str) -> (Context, Workspace, Dockspace, Pos2) {
     let context = Context::default();
     let original = split_workspace();
-    let mut dockspace = Dockspace::builder(name, original.clone())
+    let mut dockspace = Dockspace::backend_builder(name, original.clone())
         .build()
         .expect("dockspace builds");
     let mut panes = TestPanes;
@@ -724,9 +724,10 @@ fn contained_max_edge_is_excluded_from_resize_gesture_ownership() {
     let context = Context::default();
     let rect = LogicalRect::new(120.0, 80.0, 240.0, 180.0).expect("fixture rect is valid");
     let original = contained_workspace(rect);
-    let mut dockspace = Dockspace::builder("contained-half-open-max-edge", original.clone())
-        .build()
-        .expect("dockspace builds");
+    let mut dockspace =
+        Dockspace::backend_builder("contained-half-open-max-edge", original.clone())
+            .build()
+            .expect("dockspace builds");
     let mut panes = TestPanes;
     warm(&context, &mut dockspace, &mut panes);
     #[allow(

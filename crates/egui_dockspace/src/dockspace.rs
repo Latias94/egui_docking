@@ -51,15 +51,17 @@ use dockspace::backend::presentation_observation::{
 use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::backend::viewport_focus::GlobalFocusedWindow;
+#[cfg(any(feature = "backend", test))]
 use dockspace::command::WorkspaceCommand;
 #[cfg(feature = "serde")]
 use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
 };
+#[cfg(any(feature = "backend", test))]
 use dockspace::graph::Workspace;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
-use dockspace::model::{DockPlacement, DockspaceView, ItemId, PreparedDockAction};
+use dockspace::model::{DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction};
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
@@ -92,9 +94,11 @@ use crate::pointer_input::EguiPointerInput;
 use crate::presentation_settlement::PendingEguiPresentation;
 use crate::receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
 use crate::render::EguiDockRenderer;
+#[cfg(any(feature = "backend", test))]
+use crate::response::DockspaceCommandResult;
 use crate::response::{
-    DockspaceActionResult, DockspaceCloseResult, DockspaceCommandResult, DockspaceMutation,
-    DockspaceResponse, HostFrameResponse, SurfaceCommitResponse,
+    DockspaceActionResult, DockspaceCloseResult, DockspaceMutation, DockspaceResponse,
+    HostFrameResponse, SurfaceCommitResponse,
 };
 use crate::style::DockStyle;
 
@@ -128,11 +132,34 @@ pub struct Dockspace {
 }
 
 impl Dockspace {
-    /// Starts a builder for a stable egui instance and renderer-neutral workspace.
-    pub fn builder(id_salt: impl Hash + Debug, workspace: Workspace) -> DockspaceBuilder {
-        DockspaceBuilder::new(id_salt, workspace)
+    /// Starts a builder for a stable egui instance and product docking layout.
+    pub fn builder(id_salt: impl Hash + Debug, layout: DockspaceLayout) -> DockspaceBuilder {
+        DockspaceBuilder::new(id_salt, layout)
     }
 
+    /// Starts an adapter/backend builder from a validated runtime workspace.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
+    pub fn backend_builder(id_salt: impl Hash + Debug, workspace: Workspace) -> DockspaceBuilder {
+        DockspaceBuilder::from_backend_workspace(id_salt, workspace)
+    }
+
+    pub(crate) fn from_layout_parts(
+        id: Id,
+        layout: DockspaceLayout,
+        policy: DockPolicy,
+        style: DockStyle,
+    ) -> Result<Self, DockspaceError> {
+        let presentation_config = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
+        let engine =
+            DockEngine::from_layout_with_presentation_config(layout, policy, presentation_config)
+                .map_err(DockspaceError::from_detail)?;
+        Self::from_engine_parts(id, engine, style)
+    }
+
+    #[cfg(any(feature = "backend", test))]
     pub(crate) fn from_parts(
         id: Id,
         workspace: Workspace,
@@ -142,9 +169,17 @@ impl Dockspace {
         let presentation_config = style
             .presentation_config()
             .map_err(DockspaceError::from_detail)?;
-        let mut engine =
+        let engine =
             DockEngine::new_with_presentation_config(workspace, policy, presentation_config)
                 .map_err(DockspaceError::from_detail)?;
+        Self::from_engine_parts(id, engine, style)
+    }
+
+    fn from_engine_parts(
+        id: Id,
+        mut engine: DockEngine,
+        style: DockStyle,
+    ) -> Result<Self, DockspaceError> {
         let presentation_host = engine
             .create_presentation_host()
             .map_err(DockspaceError::from_detail)?;
@@ -174,6 +209,8 @@ impl Dockspace {
     }
 
     /// Returns the currently published workspace.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     #[must_use]
     pub fn workspace(&self) -> &Workspace {
         self.core_engine().workspace()
@@ -605,6 +642,8 @@ impl Dockspace {
     }
 
     /// Submits one exact checked workspace command at an explicit application boundary.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     pub fn submit_command(
         &mut self,
         command: WorkspaceCommand,
@@ -859,6 +898,8 @@ impl Dockspace {
     }
 
     /// Submits an epoch-advancing complete workspace replacement.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     pub fn replace_workspace(
         &mut self,
         workspace: Workspace,

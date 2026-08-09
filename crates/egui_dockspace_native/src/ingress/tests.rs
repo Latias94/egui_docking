@@ -20,7 +20,7 @@ fn test_dockspace() -> Dockspace {
     let tabs = builder.insert_node(Node::tabs([ItemId::new(1)]));
     builder.set_root(root, RootRecord::new(tabs));
     builder.set_surface(HOST_SURFACE, SurfacePresentation::with_main(root));
-    Dockspace::builder(
+    Dockspace::backend_builder(
         "native-ingress-transaction",
         builder.build().expect("the test workspace is valid"),
     )
@@ -39,7 +39,7 @@ fn restored_test_dockspace() -> Dockspace {
     builder.set_root(child_root, RootRecord::new(child_tabs));
     builder.set_surface(HOST_SURFACE, SurfacePresentation::with_main(host_root));
     builder.set_surface(CHILD_SURFACE, SurfacePresentation::with_main(child_root));
-    Dockspace::builder(
+    Dockspace::backend_builder(
         "native-pending-registration-retirement",
         builder.build().expect("the test workspace is valid"),
     )

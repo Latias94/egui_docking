@@ -246,7 +246,7 @@ fn key_press(key: Key) -> Vec<Event> {
 fn production_single_surface_click_selects_a_tab() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-interaction", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-interaction", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -284,7 +284,7 @@ fn production_single_surface_click_selects_a_tab() {
 fn production_single_surface_same_batch_click_selects_a_tab() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-batched-click", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-batched-click", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -319,7 +319,7 @@ fn production_single_surface_tab_drag_reorders_with_response_authority() {
     context.options_mut(|options| {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
-    let mut dockspace = Dockspace::builder("official-egui-tab-reorder", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-tab-reorder", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -372,7 +372,7 @@ fn production_single_surface_tab_drag_reorders_with_response_authority() {
 fn production_single_surface_tab_drag_docks_to_the_top_guide() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-top-dock", split_workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-top-dock", split_workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -424,7 +424,7 @@ fn production_single_surface_tab_drag_docks_to_the_top_guide() {
 fn production_single_surface_contained_title_redocks_through_the_canonical_drop_path() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-contained-redock", contained_workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-contained-redock", contained_workspace())
         .build()
         .expect("the public facade accepts a contained workspace");
     let mut panes = Panes;
@@ -485,7 +485,7 @@ fn production_single_surface_contained_title_redocks_through_the_canonical_drop_
 fn production_single_surface_contained_title_moves_without_a_dock_target() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-contained-move", contained_workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-contained-move", contained_workspace())
         .build()
         .expect("the public facade accepts a contained workspace");
     let mut panes = Panes;
@@ -550,7 +550,7 @@ fn production_single_surface_contained_title_moves_without_a_dock_target() {
 fn production_single_surface_contained_resize_commits_on_release() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-contained-resize", contained_workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-contained-resize", contained_workspace())
         .build()
         .expect("the public facade accepts a contained workspace");
     let mut panes = Panes;
@@ -627,7 +627,7 @@ fn production_single_surface_preserves_a_click_across_discard_passes() {
     context.options_mut(|options| {
         options.max_passes = 4.try_into().expect("four is non-zero");
     });
-    let mut dockspace = Dockspace::builder("official-egui-multipass-click", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-multipass-click", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -665,7 +665,7 @@ fn production_single_surface_preserves_a_click_across_discard_passes() {
 fn production_single_surface_keyboard_navigation_uses_local_actions() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-keyboard", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-keyboard", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -732,7 +732,7 @@ fn production_single_surface_keyboard_navigation_uses_local_actions() {
 fn production_single_surface_splitter_drag_commits_only_on_release() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-splitter", split_workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-splitter", split_workspace())
         .build()
         .expect("the public facade accepts a valid split workspace");
     let mut panes = Panes;
@@ -791,7 +791,7 @@ fn production_single_surface_splitter_drag_commits_only_on_release() {
 fn production_single_surface_accesskit_click_selects_a_tab() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-accesskit", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-accesskit", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;
@@ -814,7 +814,7 @@ fn production_single_surface_accesskit_click_selects_a_tab() {
 fn production_single_surface_close_button_requests_the_exact_tab() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder("official-egui-close", workspace())
+    let mut dockspace = Dockspace::backend_builder("official-egui-close", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
     let mut panes = Panes;

@@ -57,7 +57,7 @@ impl Fixture {
         builder.set_root(ROOT, RootRecord::new(split));
         builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
         let workspace = builder.build().expect("guide fixture is valid");
-        let dockspace = Dockspace::builder(("docking-guide", slot), workspace)
+        let dockspace = Dockspace::backend_builder(("docking-guide", slot), workspace)
             .build()
             .expect("guide facade builds");
         Self {

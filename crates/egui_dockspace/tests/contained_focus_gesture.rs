@@ -353,7 +353,7 @@ fn exercise_rear_gesture(gesture: Gesture) {
     let context = Context::default();
     let original = LogicalRect::new(80.0, 70.0, 240.0, 180.0).expect("finite fixture");
     let mut dockspace =
-        Dockspace::builder("rear-contained-gesture", overlapping_workspace(original))
+        Dockspace::backend_builder("rear-contained-gesture", overlapping_workspace(original))
             .build()
             .expect("facade must build");
     let mut panes = TestPanes;
