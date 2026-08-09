@@ -35,6 +35,28 @@ impl PaintedSurfaceOutput {
     }
 }
 
+impl super::DockspaceSession {
+    /// Reports one actual renderer result for a previously painted output.
+    ///
+    /// The terminal fact is submitted at the next host-frame prelude. A
+    /// `Presented` result may grant interaction authority after publication;
+    /// a `Dropped` result retires the output without granting authority.
+    /// Multiple reports for the same surface stream may arrive before that
+    /// prelude; the facade coalesces them by exact output order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error carrying the original affine capability when it is
+    /// foreign, stale, or already retired.
+    pub fn report_surface_presentation(
+        &mut self,
+        output: PaintedSurfaceOutput,
+        result: SurfacePresentationResult,
+    ) -> Result<(), SurfacePresentationReportError> {
+        self.presentation.report(output, result)
+    }
+}
+
 /// Terminal result reported by the renderer for one exact output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfacePresentationResult {
@@ -44,38 +66,26 @@ pub enum SurfacePresentationResult {
     Dropped,
 }
 
-impl SurfacePresentationResult {
-    const fn authority(self, output: HostFrameKey) -> Authority<Option<HostFrameKey>> {
-        match self {
-            Self::Presented => Authority::Known(Some(output)),
-            Self::Dropped => Authority::Known(None),
-        }
-    }
-}
-
-/// Typed rejection while settling a final-presentation capability.
+/// Typed rejection while reporting one final-presentation result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PresentationSettlementRejection {
+pub enum SurfacePresentationReportRejection {
     /// The output did not originate from this session or is no longer pending.
     #[error("painted output is foreign, stale, or already retired")]
     OutputNotPending,
-    /// One stream already selected a terminal output for its next capture.
-    #[error("presentation stream already has a settled output awaiting observation")]
-    SettlementAlreadyPending,
 }
 
-/// Failed affine settlement with the original capability preserved for retry.
+/// Failed presentation report with the original affine output preserved for retry.
 #[derive(Debug, Error)]
 #[error("{rejection}")]
-pub struct PresentationSettlementError {
-    rejection: PresentationSettlementRejection,
+pub struct SurfacePresentationReportError {
+    rejection: SurfacePresentationReportRejection,
     output: PaintedSurfaceOutput,
 }
 
-impl PresentationSettlementError {
+impl SurfacePresentationReportError {
     /// Returns the typed fail-closed rejection.
     #[must_use]
-    pub const fn rejection(&self) -> PresentationSettlementRejection {
+    pub const fn rejection(&self) -> SurfacePresentationReportRejection {
         self.rejection
     }
 
@@ -84,58 +94,66 @@ impl PresentationSettlementError {
     pub fn into_output(self) -> PaintedSurfaceOutput {
         self.output
     }
-
-    /// Splits the error into its rejection and unconsumed capability.
-    #[must_use]
-    pub fn into_parts(self) -> (PresentationSettlementRejection, PaintedSurfaceOutput) {
-        (self.rejection, self.output)
-    }
 }
 
 /// Failure while synchronizing the facade presentation sidecar with the core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PresentationObservationError {
+pub(super) enum PresentationObservationError {
     /// The facade and core disagree about the exact pending stream roster.
     #[error("presentation sidecar does not match the core-owned pending stream roster")]
     PendingRosterMismatch,
     /// A provider capture generation cannot advance without wrapping.
     #[error("presentation capture generation is exhausted")]
     CaptureGenerationExhausted,
-    /// A previously recorded backend settlement changed before core accepted
+    /// A previously recorded backend report changed before core accepted
     /// it, which would make replay ambiguous.
-    #[error("backend presentation settlement changed before core acceptance")]
-    BackendSettlementConflict,
+    #[error("backend presentation report changed before core acceptance")]
+    BackendReportConflict,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct RuntimePresentationState {
     pending: BTreeMap<HostPresentationStreamId, Vec<HostPresentationOutput>>,
-    settlements: BTreeMap<HostPresentationStreamId, PendingPresentationSettlement>,
+    results: BTreeMap<HostPresentationStreamId, BTreeMap<HostFrameKey, SurfacePresentationResult>>,
     capture_generations: BTreeMap<HostPresentationStreamId, HostPresentationCaptureGeneration>,
-    backend_recorded: BTreeMap<HostPresentationStreamId, RecordedPresentationSettlement>,
+    backend_recorded: BTreeMap<HostPresentationStreamId, RecordedPresentationReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingPresentationSettlement {
+struct PendingPresentationReport {
     settled_through: HostFrameKey,
-    result: SurfacePresentationResult,
+    presented: Option<HostFrameKey>,
+}
+
+impl PendingPresentationReport {
+    const fn authority(self) -> Authority<Option<HostFrameKey>> {
+        Authority::Known(self.presented)
+    }
+
+    fn record(&mut self, output: HostFrameKey, result: SurfacePresentationResult) {
+        if output > self.settled_through {
+            self.settled_through = output;
+        }
+        if result == SurfacePresentationResult::Presented
+            && self.presented.is_none_or(|presented| output > presented)
+        {
+            self.presented = Some(output);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RecordedPresentationSettlement {
+struct RecordedPresentationReport {
     provider: BackendIngressLease,
     generation: HostPresentationCaptureGeneration,
-    settlement: PendingPresentationSettlement,
+    report: PendingPresentationReport,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct SubmittedPresentationObservation {
     captured: BTreeMap<
         HostPresentationStreamId,
-        (
-            HostPresentationCaptureGeneration,
-            PendingPresentationSettlement,
-        ),
+        (HostPresentationCaptureGeneration, PendingPresentationReport),
     >,
 }
 
@@ -144,8 +162,33 @@ impl RuntimePresentationState {
         self.backend_recorded.clear();
     }
 
+    fn compile_report(
+        &self,
+        stream: HostPresentationStreamId,
+    ) -> Option<PendingPresentationReport> {
+        let pending = self.pending.get(&stream)?;
+        let results = self.results.get(&stream)?;
+        let mut report: Option<PendingPresentationReport> = None;
+        for output in pending {
+            let Some(result) = results.get(&output.key()).copied() else {
+                break;
+            };
+            match &mut report {
+                Some(report) => report.record(output.key(), result),
+                None => {
+                    report = Some(PendingPresentationReport {
+                        settled_through: output.key(),
+                        presented: (result == SurfacePresentationResult::Presented)
+                            .then_some(output.key()),
+                    });
+                }
+            }
+        }
+        report
+    }
+
     /// Submits the rendering host's bootstrap observation and records terminal
-    /// output settlements in the joined backend ingress order.
+    /// output reports in the joined backend ingress order.
     ///
     /// The prelude deliberately receives `NoUpdate`: terminal presentation is
     /// a backend fact and must be reduced in the same causal stream as native
@@ -170,9 +213,6 @@ impl RuntimePresentationState {
         let provider = recorder.lease();
         let mut submitted = SubmittedPresentationObservation::default();
         for stream in scope {
-            let Some(settlement) = self.settlements.get(&stream).copied() else {
-                continue;
-            };
             let generation = self
                 .capture_generations
                 .get(&stream)
@@ -182,37 +222,42 @@ impl RuntimePresentationState {
                 .ok_or(PresentationObservationError::CaptureGenerationExhausted)?;
 
             let recorded = self.backend_recorded.get(&stream).copied();
-            match recorded {
+            let report = match recorded {
                 Some(recorded)
-                    if recorded.provider == provider
-                        && recorded.generation == generation
-                        && recorded.settlement == settlement => {}
+                    if recorded.provider == provider && recorded.generation == generation =>
+                {
+                    recorded.report
+                }
                 Some(_) => {
-                    return Err(PresentationObservationError::BackendSettlementConflict.into());
+                    return Err(PresentationObservationError::BackendReportConflict.into());
                 }
                 None => {
+                    let Some(report) = self.compile_report(stream) else {
+                        continue;
+                    };
                     let entry = HostPresentationObservationEntry::new(
                         stream,
                         HostPresentationStreamObservation::Captured {
                             generation,
                             progress: HostPresentationProgress::Retired {
-                                settled_through: settlement.settled_through,
-                                presented: settlement.result.authority(settlement.settled_through),
+                                settled_through: report.settled_through,
+                                presented: report.authority(),
                             },
                         },
                     );
                     engine.record_backend_presentation_observation(recorder, entry)?;
                     self.backend_recorded.insert(
                         stream,
-                        RecordedPresentationSettlement {
+                        RecordedPresentationReport {
                             provider,
                             generation,
-                            settlement,
+                            report,
                         },
                     );
+                    report
                 }
-            }
-            submitted.captured.insert(stream, (generation, settlement));
+            };
+            submitted.captured.insert(stream, (generation, report));
         }
         Ok(submitted)
     }
@@ -237,7 +282,7 @@ impl RuntimePresentationState {
         let mut submitted = SubmittedPresentationObservation::default();
         let mut entries = Vec::with_capacity(scope.len());
         for stream in scope {
-            let observation = if let Some(settlement) = self.settlements.get(&stream).copied() {
+            let observation = if let Some(report) = self.compile_report(stream) {
                 let generation = self
                     .capture_generations
                     .get(&stream)
@@ -245,12 +290,12 @@ impl RuntimePresentationState {
                     .unwrap_or_default()
                     .checked_next()
                     .ok_or(PresentationObservationError::CaptureGenerationExhausted)?;
-                submitted.captured.insert(stream, (generation, settlement));
+                submitted.captured.insert(stream, (generation, report));
                 HostPresentationStreamObservation::Captured {
                     generation,
                     progress: HostPresentationProgress::Retired {
-                        settled_through: settlement.settled_through,
-                        presented: settlement.result.authority(settlement.settled_through),
+                        settled_through: report.settled_through,
+                        presented: report.authority(),
                     },
                 }
             } else {
@@ -268,37 +313,29 @@ impl RuntimePresentationState {
         clippy::needless_pass_by_value,
         reason = "the painted-output capability is affine and must be consumed"
     )]
-    pub(super) fn settle(
+    pub(super) fn report(
         &mut self,
         output: PaintedSurfaceOutput,
         result: SurfacePresentationResult,
-    ) -> Result<(), PresentationSettlementError> {
+    ) -> Result<(), SurfacePresentationReportError> {
         let raw_output = output.output;
         let Some(pending) = self.pending.get(&raw_output.stream()) else {
-            return Err(PresentationSettlementError {
-                rejection: PresentationSettlementRejection::OutputNotPending,
+            return Err(SurfacePresentationReportError {
+                rejection: SurfacePresentationReportRejection::OutputNotPending,
                 output,
             });
         };
         if !pending.contains(&raw_output) {
-            return Err(PresentationSettlementError {
-                rejection: PresentationSettlementRejection::OutputNotPending,
+            return Err(SurfacePresentationReportError {
+                rejection: SurfacePresentationReportRejection::OutputNotPending,
                 output,
             });
         }
-        if self.settlements.contains_key(&raw_output.stream()) {
-            return Err(PresentationSettlementError {
-                rejection: PresentationSettlementRejection::SettlementAlreadyPending,
-                output,
-            });
-        }
-        self.settlements.insert(
-            raw_output.stream(),
-            PendingPresentationSettlement {
-                settled_through: raw_output.key(),
-                result,
-            },
-        );
+        let stream = raw_output.stream();
+        self.results
+            .entry(stream)
+            .or_default()
+            .insert(raw_output.key(), result);
         Ok(())
     }
 
@@ -318,12 +355,12 @@ impl RuntimePresentationState {
             else {
                 continue;
             };
-            let Some((submitted_generation, settlement)) = submitted.captured.get(stream) else {
+            let Some((submitted_generation, report)) = submitted.captured.get(stream) else {
                 continue;
             };
             if generation != submitted_generation
-                || settled_through != &settlement.settled_through
-                || presented != &settlement.result.authority(settlement.settled_through)
+                || settled_through != &report.settled_through
+                || presented != &report.authority()
             {
                 continue;
             }
@@ -341,7 +378,13 @@ impl RuntimePresentationState {
             if remove_stream {
                 self.pending.remove(stream);
             }
-            self.settlements.remove(stream);
+            let remove_results = self.results.get_mut(stream).is_some_and(|results| {
+                results.retain(|output, _| *output > *settled_through);
+                results.is_empty()
+            });
+            if remove_results {
+                self.results.remove(stream);
+            }
             self.backend_recorded.remove(stream);
         }
     }

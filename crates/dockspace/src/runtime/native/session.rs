@@ -30,16 +30,18 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error when the core cannot mint platform authority.
+    /// The returned bindings are the complete current native roster and must
+    /// be retained by the host for future asynchronous facts.
     pub fn enable_native_platform(
         &mut self,
         mode: NativePlatformMode,
-    ) -> Result<(), DockspaceRuntimeError> {
+    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         if self.native_handoff.is_some() {
             return Err(NativePlatformError::ProviderReplacementPending.into());
         }
         if let Some(native) = &self.native {
             return if native.mode == mode {
-                Ok(())
+                Ok(native.bindings.values().copied().collect())
             } else {
                 Err(NativePlatformError::ProviderModeConflict.into())
             };
@@ -49,8 +51,9 @@ impl DockspaceSession {
             .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
         let mut native = RuntimeNativeState::new(recorder, mode);
         native.commit(&self.engine);
+        let bindings = native.bindings.values().copied().collect();
         self.native = Some(native);
-        Ok(())
+        Ok(bindings)
     }
 
     /// Revokes the current joined provider and starts one atomic successor handoff.
@@ -97,8 +100,11 @@ impl DockspaceSession {
     /// # Errors
     ///
     /// Returns an error when no reserved replacement exists or the core rejects
-    /// successor activation.
-    pub fn finish_native_provider_replacement(&mut self) -> Result<(), DockspaceRuntimeError> {
+    /// successor activation. Success returns the successor's complete binding
+    /// roster; predecessor bindings remain permanently stale.
+    pub fn finish_native_provider_replacement(
+        &mut self,
+    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
         let presentation_host = self.presentation_host;
         let mode = match self.native_handoff.as_mut() {
             Some(RuntimeNativeHandoff::Replacing { mode, ticket, .. }) => {
@@ -121,8 +127,16 @@ impl DockspaceSession {
                 .as_ref()
                 .is_some_and(|native| native.mode == mode)
         );
+        let bindings = self
+            .native
+            .as_ref()
+            .expect("replacement activation installs the successor state")
+            .bindings
+            .values()
+            .copied()
+            .collect();
         self.native_handoff = None;
-        Ok(())
+        Ok(bindings)
     }
 
     /// Abandons one reserved joined handoff and leaves the session unenrolled.
@@ -187,12 +201,6 @@ impl DockspaceSession {
         }
     }
 
-    /// Returns the current exact native binding for one logical surface.
-    #[must_use]
-    pub fn native_surface(&self, surface: SurfaceId) -> Option<NativeSurfaceLease> {
-        self.native.as_ref()?.bindings.get(&surface).copied()
-    }
-
     /// Captures one retryable exact-set native platform snapshot.
     ///
     /// Every currently registered native surface must appear exactly once.
@@ -201,11 +209,11 @@ impl DockspaceSession {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unavailable provider, stale or duplicate leases,
+    /// Returns an error for an unavailable provider, stale or duplicate bindings,
     /// an incomplete roster, or generation exhaustion.
     pub fn capture_native_snapshot(
         &self,
-        observations: impl IntoIterator<Item = (NativeSurfaceLease, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<NativePlatformSnapshot, NativePlatformError> {
         self.native_state()?
             .capture_snapshot(self.version().epoch(), observations)
@@ -261,7 +269,7 @@ impl DockspaceSession {
                 native
                     .bindings
                     .get(&binding.surface())
-                    .is_none_or(|lease| lease.binding != *binding)
+                    .is_none_or(|current| current.binding != *binding)
             })
         {
             return Err(NativePlatformError::SnapshotRosterStale.into());
@@ -287,21 +295,21 @@ impl DockspaceSession {
     /// Returns a typed stale-surface, acknowledgement, or generation error.
     pub fn publish_native_close(
         &mut self,
-        lease: NativeSurfaceLease,
+        binding: NativeSurfaceBinding,
         state: NativeCloseState,
         acknowledgement: Option<NativeCloseEffectAcknowledgement>,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected_epoch = self.version().epoch();
         let native = self.native_state_mut()?;
-        if native.bindings.get(&lease.surface()) != Some(&lease) {
+        if native.bindings.get(&binding.surface()) != Some(&binding) {
             return Err(NativePlatformError::StaleSurface {
-                surface: lease.surface(),
+                surface: binding.surface(),
             }
             .into());
         }
         let generation = native
             .close_generations
-            .get(&lease.binding)
+            .get(&binding.binding)
             .copied()
             .unwrap_or(0)
             .checked_add(1)
@@ -313,13 +321,13 @@ impl DockspaceSession {
         let acknowledgement = match acknowledgement {
             Some(acknowledgement) if acknowledgement.provider != native.provider() => {
                 return Err(NativePlatformError::EffectAcknowledgementProviderMismatch {
-                    surface: lease.surface(),
+                    surface: binding.surface(),
                 }
                 .into());
             }
-            Some(acknowledgement) if acknowledgement.binding != lease.binding => {
+            Some(acknowledgement) if acknowledgement.binding != binding.binding => {
                 return Err(NativePlatformError::EffectAcknowledgementBindingMismatch {
-                    surface: lease.surface(),
+                    surface: binding.surface(),
                 }
                 .into());
             }
@@ -331,13 +339,13 @@ impl DockspaceSession {
         native.record_close(
             expected_epoch,
             WindowCloseObservation::new(
-                lease.binding,
+                binding.binding,
                 CloseObservationGeneration::new(generation),
                 Authority::Known(state),
                 acknowledgement,
             ),
         )?;
-        native.close_generations.insert(lease.binding, generation);
+        native.close_generations.insert(binding.binding, generation);
         Ok(())
     }
 
@@ -373,7 +381,7 @@ impl DockspaceSession {
         if native
             .bindings
             .get(&surface)
-            .is_none_or(|lease| lease.binding != result.binding)
+            .is_none_or(|current| current.binding != result.binding)
         {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::StaleSurface { surface },
@@ -394,15 +402,15 @@ impl DockspaceSession {
     ///
     /// # Errors
     ///
-    /// Returns an error when the lease belongs to another provider, remains
+    /// Returns an error when the binding belongs to another provider, remains
     /// live, was not retired by this provider, or the joined recorder rejects
     /// the permanent boundary.
     pub fn report_native_binding_quiescence(
         &mut self,
-        lease: NativeSurfaceLease,
+        binding: NativeSurfaceBinding,
     ) -> Result<(), DockspaceRuntimeError> {
         self.native_state_mut()?
-            .record_binding_quiescence(lease)
+            .record_binding_quiescence(binding)
             .map_err(Into::into)
     }
 
@@ -491,7 +499,7 @@ fn validate_close_request(
     if native
         .bindings
         .get(&binding.surface())
-        .is_none_or(|lease| lease.binding != binding)
+        .is_none_or(|current| current.binding != binding)
     {
         return Err(NativePlatformError::StaleSurface {
             surface: binding.surface(),

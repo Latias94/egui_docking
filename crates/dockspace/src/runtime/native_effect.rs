@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
-use super::native::NativeSurfaceLease;
+use super::native::NativeSurfaceBinding;
 use crate::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
@@ -62,7 +62,7 @@ pub enum NativeEffectOperation {
     /// Create one hidden native window.
     CreateWindow {
         /// Exact logical/native binding to create.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Exact requested outer placement.
         placement: PhysicalRect,
         /// Requested ownership role.
@@ -71,7 +71,7 @@ pub enum NativeEffectOperation {
     /// Show a previously staged hidden native window.
     ShowWindow {
         /// Exact logical/native binding to show.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Hidden observation which must causally precede the show.
         after_hidden: NativeHiddenPresentationProof,
         /// Exact retained staging output which must have been presented first.
@@ -80,29 +80,29 @@ pub enum NativeEffectOperation {
     /// Close a staging window created by an operation which did not complete.
     CompensatingClose {
         /// Exact logical/native binding to close.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Create or replacement effect whose staged lifetime is being compensated.
         compensates: NativeEffectHandle,
     },
     /// Cancel an application-root native close request.
     CancelRootClose {
         /// Exact logical/native binding whose close must be cancelled.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
     },
     /// Retain ownership of a child window.
     RetainChild {
         /// Exact logical/native child binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
     },
     /// Release and destroy a child window.
     ReleaseChild {
         /// Exact logical/native child binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
     },
     /// Observe a destructive predecessor without executing it again.
     ObserveCleanup {
         /// Exact logical/native binding under observation.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Destructive operation whose delayed result is being observed.
         predecessor: NativeEffectHandle,
         /// Previous observation request in this provider lane.
@@ -111,12 +111,12 @@ pub enum NativeEffectOperation {
     /// Request closure of an application-root window.
     RequestRootClose {
         /// Exact logical/native root binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
     },
     /// Change pointer pass-through for one exact native binding.
     SetPointerPassthrough {
         /// Exact logical/native binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Whether the native window must ignore pointer input.
         enabled: bool,
         /// Previous request in this exact property lane.
@@ -125,14 +125,14 @@ pub enum NativeEffectOperation {
     /// Request native focus for one exact binding.
     RequestFocus {
         /// Exact logical/native binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Previous request in the global native-focus lane.
         after: Option<NativeEffectHandle>,
     },
     /// Create a replacement native lifetime at an exact outer placement.
     RequestReplacement {
         /// Exact replacement binding.
-        surface: NativeSurfaceLease,
+        surface: NativeSurfaceBinding,
         /// Exact requested outer placement.
         placement: PhysicalRect,
         /// Requested ownership role.
@@ -152,7 +152,7 @@ pub enum NativeEffectOperation {
 impl NativeEffectOperation {
     /// Returns the exact logical/native surface affected by this operation.
     #[must_use]
-    pub const fn surface(&self) -> NativeSurfaceLease {
+    pub const fn surface(&self) -> NativeSurfaceBinding {
         match self {
             Self::CreateWindow { surface, .. }
             | Self::ShowWindow { surface, .. }
@@ -165,7 +165,7 @@ impl NativeEffectOperation {
             | Self::SetPointerPassthrough { surface, .. }
             | Self::RequestFocus { surface, .. }
             | Self::RequestReplacement { surface, .. } => *surface,
-            Self::ResolveNativeClose { close, .. } => close.native_surface(),
+            Self::ResolveNativeClose { close, .. } => close.binding(),
         }
     }
 }
@@ -214,7 +214,7 @@ impl NativeEffectRequest {
         abandoned: NativeEffectDropQueue,
     ) -> Self {
         let binding = emission.effect().binding();
-        let surface = NativeSurfaceLease::from_binding(emission.provider(), binding);
+        let surface = NativeSurfaceBinding::from_binding(emission.provider(), binding);
         let (operation, correlation) = match emission.effect() {
             PlatformEffect::CreateWindow {
                 placement, role, ..

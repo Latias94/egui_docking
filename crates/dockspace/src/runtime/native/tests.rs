@@ -12,7 +12,7 @@ const ROOT: RootId = RootId::new(1);
 const ITEM: ItemId = ItemId::new(1);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 
-fn native_root_session() -> (DockspaceSession, NativeSurfaceLease) {
+fn native_root_session() -> (DockspaceSession, NativeSurfaceBinding) {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
@@ -37,18 +37,23 @@ fn native_root_session() -> (DockspaceSession, NativeSurfaceLease) {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the registration frame settles every surface");
     let report = frame.commit().expect("the registration frame commits");
-    let lease = match report.inputs() {
-        [super::super::HostInputOutcome::NativeSurfaceRegistered { lease }] => *lease,
+    let binding = match report.inputs() {
+        [super::super::HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
         outcomes => panic!("expected one native registration, got {outcomes:?}"),
     };
-    (session, lease)
+    (session, binding)
 }
 
 #[test]
 fn live_window_facts_leave_independent_authority_unknown() {
-    let (_session, lease) = native_root_session();
-    let compiled = compile_window_fact(lease.provider, lease.binding, NativeWindowFacts::live(), 1)
-        .expect("inventory-only facts compile");
+    let (_session, binding) = native_root_session();
+    let compiled = compile_window_fact(
+        binding.provider,
+        binding.binding,
+        NativeWindowFacts::live(),
+        1,
+    )
+    .expect("inventory-only facts compile");
     let window = compiled
         .window
         .expect("a live binding remains in inventory");
@@ -104,14 +109,14 @@ fn live_window_facts_leave_independent_authority_unknown() {
 
 #[test]
 fn unknown_inventory_capture_does_not_infer_destruction() {
-    let (session, lease) = native_root_session();
+    let (session, binding) = native_root_session();
 
     let snapshot = session
         .capture_native_inventory_unknown()
         .expect("the active provider captures an inventory tombstone");
 
-    assert_eq!(snapshot.provider, lease.provider);
-    assert_eq!(snapshot.bindings, vec![lease.binding]);
+    assert_eq!(snapshot.provider, binding.provider);
+    assert_eq!(snapshot.bindings, vec![binding.binding]);
     assert!(matches!(
         snapshot.snapshot.inventory_observation().roster(),
         Authority::Unknown(AuthorityUnavailableReason::NotReported)
@@ -122,10 +127,10 @@ fn unknown_inventory_capture_does_not_infer_destruction() {
 
 #[test]
 fn live_binding_cannot_be_declared_quiescent() {
-    let (mut session, lease) = native_root_session();
+    let (mut session, binding) = native_root_session();
 
     let error = session
-        .report_native_binding_quiescence(lease)
+        .report_native_binding_quiescence(binding)
         .expect_err("a live binding cannot be declared quiescent");
     assert!(matches!(
         error.native_error(),
@@ -140,7 +145,6 @@ fn joined_provider_replacement_rotates_surface_capabilities() {
     session
         .begin_native_provider_replacement()
         .expect("the predecessor drains into one joined reservation");
-    assert_eq!(session.native_surface(SURFACE), None);
     assert!(matches!(
         session.capture_native_snapshot([(predecessor, NativeWindowFacts::live())]),
         Err(NativePlatformError::ProviderReplacementPending)
@@ -153,12 +157,12 @@ fn joined_provider_replacement_rotates_surface_capabilities() {
         Some(NativePlatformError::ProviderReplacementPending)
     ));
 
-    session
-        .finish_native_provider_replacement()
-        .expect("the joined successor activates");
     let successor = session
-        .native_surface(SURFACE)
-        .expect("the successor rebuilds the exact binding roster");
+        .finish_native_provider_replacement()
+        .expect("the joined successor activates")
+        .into_iter()
+        .find(|binding| binding.surface() == SURFACE)
+        .expect("the successor reports the exact binding roster");
     assert_ne!(successor, predecessor);
     assert_eq!(successor.surface(), predecessor.surface());
     assert_eq!(successor.window_token(), predecessor.window_token());
@@ -181,18 +185,17 @@ fn replacement_abort_leaves_the_session_unenrolled_until_explicit_reenable() {
         .abort_native_provider_replacement()
         .expect("the reserved successor aborts");
 
-    assert_eq!(session.native_surface(SURFACE), None);
     assert!(matches!(
         session.capture_native_snapshot(std::iter::empty()),
         Err(NativePlatformError::ProviderUnavailable)
     ));
 
-    session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
-        .expect("the host explicitly enrolls a fresh provider");
     let successor = session
-        .native_surface(SURFACE)
-        .expect("reenrollment reconstructs the current binding roster");
+        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .expect("the host explicitly enrolls a fresh provider")
+        .into_iter()
+        .find(|binding| binding.surface() == SURFACE)
+        .expect("reenrollment returns the current binding roster");
     assert_ne!(successor, predecessor);
 }
 
@@ -207,12 +210,12 @@ fn predecessor_effect_acknowledgement_cannot_authorize_the_successor() {
     session
         .begin_native_provider_replacement()
         .expect("the predecessor drains into one joined reservation");
-    session
-        .finish_native_provider_replacement()
-        .expect("the joined successor activates");
     let successor = session
-        .native_surface(SURFACE)
-        .expect("the successor rebuilds the exact binding roster");
+        .finish_native_provider_replacement()
+        .expect("the joined successor activates")
+        .into_iter()
+        .find(|binding| binding.surface() == SURFACE)
+        .expect("the successor reports the exact binding roster");
 
     let error = session
         .publish_native_close(
@@ -229,16 +232,16 @@ fn predecessor_effect_acknowledgement_cannot_authorize_the_successor() {
 
 #[test]
 fn destroyed_fact_can_acknowledge_the_exact_destructive_effect() {
-    let (_session, lease) = native_root_session();
+    let (_session, binding) = native_root_session();
     let effect = EffectId::new(7);
     let acknowledgement = NativeCloseEffectAcknowledgement {
-        provider: lease.provider,
-        binding: lease.binding,
+        provider: binding.provider,
+        binding: binding.binding,
         effect,
     };
     let compiled = compile_window_fact(
-        lease.provider,
-        lease.binding,
+        binding.provider,
+        binding.binding,
         NativeWindowFacts::destroyed_after(acknowledgement),
         1,
     )

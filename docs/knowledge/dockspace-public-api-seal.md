@@ -133,9 +133,9 @@ stable across distinct presented outputs.
 
 The OGC-04 slice adds opaque native root bindings without exposing provider
 leases or `ViewportBinding`. An adapter supplies a reusable host window token,
-receives a core-minted `NativeSurfaceLease`, and publishes one exact-set native
+receives a core-minted `NativeSurfaceBinding`, and publishes one exact-set native
 snapshot. Snapshot and per-binding close generations live in a private session
-sidecar and advance only when the complete host frame commits. A delayed lease
+sidecar and advance only when the complete host frame commits. A delayed binding
 from binding A1 is rejected before it can be redirected to binding A2, even
 when both use the same host token. Frame reports expose only the sorted logical
 surfaces whose presentation authority changed, so repaint remains core-derived

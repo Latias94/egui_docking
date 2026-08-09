@@ -578,24 +578,6 @@ impl SurfacePointerRetirement {
 }
 
 impl DockspaceSession {
-    /// Settles one actual renderer result for a previously painted output.
-    ///
-    /// The terminal fact is submitted at the next host-frame prelude. A
-    /// `Presented` result may grant interaction authority after publication;
-    /// a `Dropped` result retires the output without granting authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error carrying the original affine capability when it is
-    /// foreign, stale, or conflicts with another pending settlement.
-    pub fn settle_presentation(
-        &mut self,
-        output: super::PaintedSurfaceOutput,
-        result: super::SurfacePresentationResult,
-    ) -> Result<(), super::PresentationSettlementError> {
-        self.presentation.settle(output, result)
-    }
-
     /// Enables one presented surface as the sole surface-local pointer endpoint.
     ///
     /// # Errors

@@ -24,7 +24,7 @@ pub use interaction::{
 };
 pub use native::{
     HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformMode,
-    NativePlatformSnapshot, NativeSurfaceCloseRequest, NativeSurfaceLease, NativeWindowFacts,
+    NativePlatformSnapshot, NativeSurfaceBinding, NativeSurfaceCloseRequest, NativeWindowFacts,
     NativeWindowInputState, NativeWindowPresentationState,
 };
 pub use native_effect::{
@@ -43,9 +43,10 @@ pub use paint::{
     SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
     UniformSurfaceMetrics,
 };
+use presentation::PresentationObservationError;
 pub use presentation::{
-    PaintedSurfaceOutput, PresentationObservationError, PresentationSettlementError,
-    PresentationSettlementRejection, SurfacePresentationResult,
+    PaintedSurfaceOutput, SurfacePresentationReportError, SurfacePresentationReportRejection,
+    SurfacePresentationResult,
 };
 
 use std::collections::BTreeSet;
@@ -703,8 +704,8 @@ pub enum HostInputOutcome {
     },
     /// One existing native root window was bound to a logical surface.
     NativeSurfaceRegistered {
-        /// Opaque exact-incarnation capability for later platform facts.
-        lease: NativeSurfaceLease,
+        /// Opaque exact-incarnation binding for later platform facts.
+        binding: NativeSurfaceBinding,
     },
     /// Native registration named a surface which was not admissible.
     NativeSurfaceRegistrationRejected {
@@ -839,7 +840,7 @@ impl HostFrameReport {
                 }),
                 InputOutcome::ViewportRegistered { binding } => {
                     native_provider.map(|provider| HostInputOutcome::NativeSurfaceRegistered {
-                        lease: NativeSurfaceLease::from_binding(provider, *binding),
+                        binding: NativeSurfaceBinding::from_binding(provider, *binding),
                     })
                 }
                 InputOutcome::ViewportRegistrationRejected { surface } => {
@@ -979,8 +980,8 @@ impl HostFrameReport {
     /// Takes the affine capabilities for outputs actually painted by this frame.
     ///
     /// The host must consume each capability through
-    /// [`DockspaceSession::settle_presentation`] only after its renderer reports
-    /// whether that exact output was presented or dropped.
+    /// [`DockspaceSession::report_surface_presentation`] only after its renderer
+    /// reports whether that exact output was presented or dropped.
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
     }
@@ -1346,7 +1347,7 @@ mod tests {
             .pop()
             .expect("runtime paint emits one exact output");
         session
-            .settle_presentation(output, SurfacePresentationResult::Presented)
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
             .expect("runtime renderer presents the exact output");
         let mut observed = session
             .begin_host_frame()

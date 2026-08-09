@@ -1,4 +1,4 @@
-//! Opaque native-window lifecycle capabilities for renderer-neutral hosts.
+//! Opaque native-window lifecycle facts and bindings for renderer-neutral hosts.
 
 mod compiler;
 mod session;
@@ -35,7 +35,7 @@ use compiler::{compile_platform_snapshot, compile_unknown_inventory_snapshot};
 ///
 /// A token may be reused after exact destruction. It is not sufficient input
 /// authority by itself; every observation also carries a core-minted
-/// [`NativeSurfaceLease`].
+/// [`NativeSurfaceBinding`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct HostWindowToken(u64);
@@ -52,17 +52,17 @@ impl HostWindowToken {
     }
 }
 
-/// Opaque exact-incarnation capability for one native docking surface.
+/// Opaque exact-incarnation binding for one native docking surface.
 ///
 /// The value is copyable so asynchronous callbacks may retain it. No accessor
 /// exposes the core incarnation, workspace epoch, or authority domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NativeSurfaceLease {
+pub struct NativeSurfaceBinding {
     provider: PlatformObservationLease,
     binding: ViewportBinding,
 }
 
-impl NativeSurfaceLease {
+impl NativeSurfaceBinding {
     pub(super) const fn from_binding(
         provider: PlatformObservationLease,
         binding: ViewportBinding,
@@ -108,10 +108,10 @@ impl NativeSurfaceCloseRequest {
         self.edge.binding().surface()
     }
 
-    /// Returns the exact provider-bound native surface capability.
+    /// Returns the exact provider-bound native surface binding.
     #[must_use]
-    pub const fn native_surface(&self) -> NativeSurfaceLease {
-        NativeSurfaceLease::from_binding(self.provider, self.edge.binding())
+    pub const fn binding(&self) -> NativeSurfaceBinding {
+        NativeSurfaceBinding::from_binding(self.provider, self.edge.binding())
     }
 }
 
@@ -367,7 +367,7 @@ pub enum NativePlatformError {
     #[error("native platform provider replacement is not pending")]
     ProviderReplacementUnavailable,
     /// A callback named an older binding incarnation for this logical surface.
-    #[error("native surface {surface} lease is stale")]
+    #[error("native surface {surface} binding is stale")]
     StaleSurface {
         /// Stable logical surface named by the stale capability.
         surface: SurfaceId,
@@ -439,7 +439,7 @@ pub(super) struct RuntimeNativeState {
     pending_pointer_checkpoint: Option<BackendIngressOrdinal>,
     mode: NativePlatformMode,
     snapshot_generation: u64,
-    bindings: BTreeMap<SurfaceId, NativeSurfaceLease>,
+    bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     retired_bindings: BTreeSet<ViewportBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
 }
@@ -582,27 +582,27 @@ impl RuntimeNativeState {
 
     fn record_binding_quiescence(
         &mut self,
-        lease: NativeSurfaceLease,
+        binding: NativeSurfaceBinding,
     ) -> Result<(), NativePlatformError> {
-        if lease.provider != self.provider() {
+        if binding.provider != self.provider() {
             return Err(NativePlatformError::ProviderSuperseded);
         }
-        if self.bindings.get(&lease.surface()) == Some(&lease) {
+        if self.bindings.get(&binding.surface()) == Some(&binding) {
             return Err(NativePlatformError::BindingStillLive {
-                surface: lease.surface(),
+                surface: binding.surface(),
             });
         }
-        if !self.retired_bindings.remove(&lease.binding) {
+        if !self.retired_bindings.remove(&binding.binding) {
             return Err(NativePlatformError::BindingNotRetired {
-                surface: lease.surface(),
+                surface: binding.surface(),
             });
         }
         if self
             .recorder
-            .record_platform_binding_quiescence(lease.binding)
+            .record_platform_binding_quiescence(binding.binding)
             .is_err()
         {
-            self.retired_bindings.insert(lease.binding);
+            self.retired_bindings.insert(binding.binding);
             return Err(NativePlatformError::ProtocolInvariant);
         }
         Ok(())
@@ -631,18 +631,18 @@ impl RuntimeNativeState {
 
     fn validate_snapshot_roster(
         &self,
-        observations: impl IntoIterator<Item = (NativeSurfaceLease, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<BTreeMap<ViewportBinding, NativeWindowFacts>, NativePlatformError> {
         let mut supplied = BTreeMap::new();
-        for (lease, facts) in observations {
-            if self.bindings.get(&lease.surface()) != Some(&lease) {
+        for (binding, facts) in observations {
+            if self.bindings.get(&binding.surface()) != Some(&binding) {
                 return Err(NativePlatformError::StaleSurface {
-                    surface: lease.surface(),
+                    surface: binding.surface(),
                 });
             }
-            if supplied.insert(lease.binding, facts).is_some() {
+            if supplied.insert(binding.binding, facts).is_some() {
                 return Err(NativePlatformError::DuplicateSurface {
-                    surface: lease.surface(),
+                    surface: binding.surface(),
                 });
             }
         }
@@ -655,7 +655,7 @@ impl RuntimeNativeState {
     fn capture_snapshot(
         &self,
         expected_epoch: WorkspaceEpoch,
-        observations: impl IntoIterator<Item = (NativeSurfaceLease, NativeWindowFacts)>,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<NativePlatformSnapshot, NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
@@ -680,33 +680,37 @@ impl RuntimeNativeState {
             provider: self.provider(),
             expected_epoch,
             generation,
-            bindings: self.bindings.values().map(|lease| lease.binding).collect(),
+            bindings: self
+                .bindings
+                .values()
+                .map(|binding| binding.binding)
+                .collect(),
             snapshot,
         })
     }
 
     pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) {
-        let next_bindings: BTreeMap<SurfaceId, NativeSurfaceLease> = engine
+        let next_bindings: BTreeMap<SurfaceId, NativeSurfaceBinding> = engine
             .viewport()
             .registry()
             .records()
             .map(|(surface, record)| {
                 (
                     surface,
-                    NativeSurfaceLease::from_binding(self.provider(), record.binding()),
+                    NativeSurfaceBinding::from_binding(self.provider(), record.binding()),
                 )
             })
             .collect();
-        for lease in self.bindings.values() {
-            if next_bindings.get(&lease.surface()) != Some(lease) {
-                self.retired_bindings.insert(lease.binding);
+        for binding in self.bindings.values() {
+            if next_bindings.get(&binding.surface()) != Some(binding) {
+                self.retired_bindings.insert(binding.binding);
             }
         }
         self.bindings = next_bindings;
         self.close_generations.retain(|binding, _| {
             self.bindings
                 .get(&binding.surface())
-                .is_some_and(|lease| lease.binding == *binding)
+                .is_some_and(|current| current.binding == *binding)
         });
     }
 
