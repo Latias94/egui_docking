@@ -72,6 +72,93 @@ impl<'a> DockspaceView<'a> {
                 rect: contained.rect,
             })
     }
+
+    /// Locates one open item through stable product identities.
+    ///
+    /// This query hides runtime node identities and returns `None` when the item is not open.
+    #[must_use]
+    pub fn item(self, item: ItemId) -> Option<DockspaceItemView<'a>> {
+        let (root, tabs, tab_index) = self.workspace.locate_item_by_id(item)?;
+        let Node::Tabs { items, selected } = self.workspace.node(tabs)? else {
+            return None;
+        };
+        let (surface, contained) = match self.workspace.presentation_for_root(root)? {
+            crate::RootPresentationOwner::Main { surface } => (surface, None),
+            crate::RootPresentationOwner::Contained { surface, floating } => {
+                (surface, Some(floating))
+            }
+        };
+        Some(DockspaceItemView {
+            item,
+            surface,
+            root,
+            contained,
+            tab_index,
+            tabs: DockspaceTabsView {
+                items,
+                selected: *selected,
+                central: self
+                    .workspace
+                    .root(root)
+                    .is_some_and(|record| record.central == Some(tabs)),
+            },
+        })
+    }
+}
+
+/// Read-only product location of one open item.
+#[derive(Debug, Clone, Copy)]
+pub struct DockspaceItemView<'a> {
+    item: ItemId,
+    surface: SurfaceId,
+    root: RootId,
+    contained: Option<FloatingPresentationId>,
+    tab_index: usize,
+    tabs: DockspaceTabsView<'a>,
+}
+
+impl<'a> DockspaceItemView<'a> {
+    /// Returns the stable item identity.
+    #[must_use]
+    pub const fn item(self) -> ItemId {
+        self.item
+    }
+
+    /// Returns the logical surface presenting this item.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the stable root currently owning this item.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.root
+    }
+
+    /// Returns the contained-floating presentation, or `None` for a main root.
+    #[must_use]
+    pub const fn contained(self) -> Option<FloatingPresentationId> {
+        self.contained
+    }
+
+    /// Returns the item's visual index within its current tabs leaf.
+    #[must_use]
+    pub const fn tab_index(self) -> usize {
+        self.tab_index
+    }
+
+    /// Returns the current tabs leaf without exposing its runtime node identity.
+    #[must_use]
+    pub const fn tabs(self) -> DockspaceTabsView<'a> {
+        self.tabs
+    }
+
+    /// Returns whether this item is selected in its current tabs leaf.
+    #[must_use]
+    pub fn is_selected(self) -> bool {
+        self.tabs.selected() == Some(self.item)
+    }
 }
 
 /// Read-only product view of one logical surface.

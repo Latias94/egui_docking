@@ -221,14 +221,14 @@ pub enum InputOutcome {
         /// Published version, unchanged by this input.
         version: WorkspaceVersion,
     },
-    /// One item-centric product action committed or produced a valid no-op.
+    /// One stable item- or root-centric product action committed or produced a valid no-op.
     ProductActionProcessed {
         /// Product-visible action result without runtime graph identities.
         outcome: crate::model::DockspaceActionOutcome,
         /// Current workspace version after processing this input.
         version: WorkspaceVersion,
     },
-    /// One item-centric product action was deterministically rejected.
+    /// One stable item- or root-centric product action was deterministically rejected.
     ProductActionRejected {
         /// Stable actionable rejection category.
         reason: crate::model::DockspaceActionRejection,

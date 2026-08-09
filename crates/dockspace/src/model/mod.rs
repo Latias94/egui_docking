@@ -22,6 +22,6 @@ pub use layout::{
 };
 pub use revision::WorkspaceVersion;
 pub use view::{
-    DockspaceContainedView, DockspaceNodeView, DockspaceRootView, DockspaceSplitView,
-    DockspaceSurfaceView, DockspaceTabsView, DockspaceView,
+    DockspaceContainedView, DockspaceItemView, DockspaceNodeView, DockspaceRootView,
+    DockspaceSplitView, DockspaceSurfaceView, DockspaceTabsView, DockspaceView,
 };

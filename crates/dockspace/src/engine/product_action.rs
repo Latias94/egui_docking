@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::command::{
-    DockFraction as CommandDockFraction, DockTarget, Edge as CommandEdge, RootContent,
+    DockFraction as CommandDockFraction, DockTarget, Edge as CommandEdge, NodeSource, RootContent,
 };
 use crate::ids::NodeId;
 use crate::model::{
@@ -18,7 +18,17 @@ enum ProductActionPlan {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+struct CompleteRootMainPlan {
+    command: WorkspaceCommand,
+    disposition: CompleteRootMainDisposition,
+}
+
+enum CompleteRootMainDisposition {
+    Rehome,
+    PromoteContained { floating: FloatingPresentationId },
+}
+
+#[derive(Debug)]
 enum ProductCommandContext {
     Select {
         item: ItemId,
@@ -47,6 +57,22 @@ enum ProductCommandContext {
         root: RootId,
         surface: SurfaceId,
         floating: FloatingPresentationId,
+    },
+    DockRootMove {
+        root: RootId,
+        target_root: RootId,
+        items: Vec<ItemId>,
+    },
+    DockRootRehomeMain {
+        root: RootId,
+        surface: SurfaceId,
+        items: Vec<ItemId>,
+    },
+    DockRootPromoteContained {
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+        items: Vec<ItemId>,
     },
 }
 
@@ -77,6 +103,16 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockItem { item, placement })
     }
 
+    /// Prepares one complete-root docking action against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_dock_root(
+        &self,
+        root: RootId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::DockRoot { root, placement })
+    }
+
     const fn prepare_product_action(&self, action: ProductAction) -> PreparedDockAction {
         PreparedDockAction::new(self.authority_domain, self.version, action)
     }
@@ -105,6 +141,11 @@ impl DockEngine {
             ProductAction::DockItem { item, placement } => EngineInput::DockItem {
                 expected,
                 item,
+                placement,
+            },
+            ProductAction::DockRoot { root, placement } => EngineInput::DockRoot {
+                expected,
+                root,
                 placement,
             },
         })
@@ -216,6 +257,9 @@ impl DockEngine {
                 let source = self.capture_product_item(item)?;
                 self.compile_product_move(item, source, placement)
             }
+            ProductAction::DockRoot { root, placement } => {
+                self.compile_product_root_move(root, placement)
+            }
         }
     }
 
@@ -275,11 +319,7 @@ impl DockEngine {
             });
         };
 
-        let index = WorkspaceIndex::build(&self.workspace, self.version)
-            .map_err(|_| DockspaceActionRejection::Conflict)?;
-        let complete_root = index
-            .capture_complete_root_source(&self.workspace, self.version, &payload)
-            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        let complete_root = self.capture_complete_root_payload(&payload)?;
         let Some(complete_root) = complete_root else {
             self.require_rootless_surface(surface)?;
             let root = self.next_product_root()?;
@@ -298,9 +338,108 @@ impl DockEngine {
             });
         };
 
+        let plan = self.compile_complete_root_main(source_root, complete_root, surface)?;
+        let context = match plan.disposition {
+            CompleteRootMainDisposition::Rehome => ProductCommandContext::DockRehomeMain {
+                item,
+                root: source_root,
+                surface,
+            },
+            CompleteRootMainDisposition::PromoteContained { floating } => {
+                ProductCommandContext::DockPromoteContained {
+                    item,
+                    root: source_root,
+                    surface,
+                    floating,
+                }
+            }
+        };
+        Ok(ProductActionPlan::Command {
+            command: plan.command,
+            context,
+        })
+    }
+
+    fn compile_product_root_move(
+        &self,
+        root: RootId,
+        placement: DockPlacement,
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        let record = self
+            .workspace
+            .root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
+        let source = self
+            .workspace
+            .capture_node_source(root, record.node)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        let items = self.workspace.collect_items_in_subtree(record.node);
+        if items.is_empty() {
+            return Err(DockspaceActionRejection::Conflict);
+        }
+        let payload = match self.workspace.node(record.node) {
+            Some(Node::Tabs { .. }) => MovePayload::Tabs(source),
+            Some(Node::Split { .. }) => MovePayload::Subtree(source),
+            None => return Err(DockspaceActionRejection::Conflict),
+        };
+
+        let DockPlacement::Main(surface) = placement else {
+            let (target, target_root) = self.capture_product_target(placement)?;
+            return Ok(ProductActionPlan::Command {
+                command: WorkspaceCommand::Move { payload, target },
+                context: ProductCommandContext::DockRootMove {
+                    root,
+                    target_root,
+                    items,
+                },
+            });
+        };
+
+        let complete_root = self
+            .capture_complete_root_payload(&payload)?
+            .ok_or(DockspaceActionRejection::Conflict)?;
+        let plan = self.compile_complete_root_main(root, complete_root, surface)?;
+        let context = match plan.disposition {
+            CompleteRootMainDisposition::Rehome => ProductCommandContext::DockRootRehomeMain {
+                root,
+                surface,
+                items,
+            },
+            CompleteRootMainDisposition::PromoteContained { floating } => {
+                ProductCommandContext::DockRootPromoteContained {
+                    root,
+                    surface,
+                    floating,
+                    items,
+                }
+            }
+        };
+        Ok(ProductActionPlan::Command {
+            command: plan.command,
+            context,
+        })
+    }
+
+    fn capture_complete_root_payload(
+        &self,
+        payload: &MovePayload,
+    ) -> Result<Option<NodeSource>, DockspaceActionRejection> {
+        let index = WorkspaceIndex::build(&self.workspace, self.version)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        index
+            .capture_complete_root_source(&self.workspace, self.version, payload)
+            .map_err(|_| DockspaceActionRejection::Conflict)
+    }
+
+    fn compile_complete_root_main(
+        &self,
+        root: RootId,
+        source: NodeSource,
+        surface: SurfaceId,
+    ) -> Result<CompleteRootMainPlan, DockspaceActionRejection> {
         let owner = self
             .workspace
-            .presentation_for_root(source_root)
+            .presentation_for_root(root)
             .ok_or(DockspaceActionRejection::Conflict)?;
         match owner {
             crate::RootPresentationOwner::Contained {
@@ -308,46 +447,33 @@ impl DockEngine {
                 floating,
             } if current_surface == surface => {
                 self.require_rootless_surface(surface)?;
-                Ok(ProductActionPlan::Command {
+                Ok(CompleteRootMainPlan {
                     command: WorkspaceCommand::PromoteContained {
-                        source: complete_root,
+                        source,
                         surface,
                         floating,
                     },
-                    context: ProductCommandContext::DockPromoteContained {
-                        item,
-                        root: source_root,
-                        surface,
-                        floating,
-                    },
+                    disposition: CompleteRootMainDisposition::PromoteContained { floating },
                 })
             }
             crate::RootPresentationOwner::Main {
                 surface: current_surface,
-            } if current_surface == surface => Ok(ProductActionPlan::Command {
+            } if current_surface == surface => Ok(CompleteRootMainPlan {
                 command: WorkspaceCommand::RehomeRoot {
-                    source: complete_root,
+                    source,
                     target: RootPresentationTarget::Main { surface },
                 },
-                context: ProductCommandContext::DockRehomeMain {
-                    item,
-                    root: source_root,
-                    surface,
-                },
+                disposition: CompleteRootMainDisposition::Rehome,
             }),
             crate::RootPresentationOwner::Main { .. }
             | crate::RootPresentationOwner::Contained { .. } => {
                 self.require_rootless_surface(surface)?;
-                Ok(ProductActionPlan::Command {
+                Ok(CompleteRootMainPlan {
                     command: WorkspaceCommand::RehomeRoot {
-                        source: complete_root,
+                        source,
                         target: RootPresentationTarget::Main { surface },
                     },
-                    context: ProductCommandContext::DockRehomeMain {
-                        item,
-                        root: source_root,
-                        surface,
-                    },
+                    disposition: CompleteRootMainDisposition::Rehome,
                 })
             }
         }
@@ -575,6 +701,73 @@ impl ProductCommandContext {
                     changed,
                 })
             }
+            (
+                Self::DockRootMove {
+                    root,
+                    target_root,
+                    items: expected_items,
+                },
+                CommandOutcome::Moved {
+                    items,
+                    source_root,
+                    target_root: moved_target,
+                    ..
+                },
+            ) if items == expected_items && source_root == root && moved_target == target_root => {
+                Ok(DockspaceActionOutcome::RootDocked {
+                    root,
+                    target_root,
+                    items: expected_items,
+                    changed,
+                })
+            }
+            (
+                Self::DockRootRehomeMain {
+                    root: expected_root,
+                    surface: target_surface,
+                    items,
+                },
+                CommandOutcome::RootRehomed {
+                    root,
+                    surface,
+                    floating: None,
+                    changed: outcome_changed,
+                },
+            ) if root == expected_root
+                && target_surface == surface
+                && changed == outcome_changed =>
+            {
+                Ok(DockspaceActionOutcome::RootDocked {
+                    root,
+                    target_root: root,
+                    items,
+                    changed,
+                })
+            }
+            (
+                Self::DockRootPromoteContained {
+                    root: expected_root,
+                    surface: target_surface,
+                    floating: expected_floating,
+                    items,
+                },
+                CommandOutcome::ContainedPromoted {
+                    surface,
+                    root,
+                    floating,
+                },
+            ) if root == expected_root
+                && target_surface == surface
+                && floating == expected_floating
+                && changed =>
+            {
+                Ok(DockspaceActionOutcome::RootDocked {
+                    root,
+                    target_root: root,
+                    items,
+                    changed,
+                })
+            }
             _ => Err(EngineError::ReductionCauseInvariant {
                 detail: "product action command outcome did not match its compiled action",
             }),
@@ -618,6 +811,9 @@ fn product_command_rejection(
                     placement: DockPlacement::Main(_),
                     ..
                 } | ProductAction::DockItem {
+                    placement: DockPlacement::Main(_),
+                    ..
+                } | ProductAction::DockRoot {
                     placement: DockPlacement::Main(_),
                     ..
                 }

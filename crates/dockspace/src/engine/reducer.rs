@@ -1324,6 +1324,21 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::DockRoot {
+                expected,
+                root,
+                placement,
+            } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                ProductAction::DockRoot {
+                    root: *root,
+                    placement: *placement,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::RequestContentClose { expected, target } => self
                 .reduce_content_close_request(
                     input.sequence,

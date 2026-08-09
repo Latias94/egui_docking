@@ -6,6 +6,7 @@ use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::interaction::{InteractionPreview, PreviewVisual};
+use crate::model::DockspaceAxis;
 use crate::policy::TabBarInteraction;
 use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
@@ -475,8 +476,11 @@ impl SplitterPaintRecord<'_> {
     }
 
     #[must_use]
-    pub const fn axis(self) -> Axis {
-        self.record.axis()
+    pub const fn axis(self) -> DockspaceAxis {
+        match self.record.axis() {
+            Axis::Horizontal => DockspaceAxis::Horizontal,
+            Axis::Vertical => DockspaceAxis::Vertical,
+        }
     }
 
     #[must_use]

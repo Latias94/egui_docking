@@ -128,6 +128,17 @@ pub enum DockspaceActionOutcome {
         /// Whether topology or tab order changed.
         changed: bool,
     },
+    /// A complete root was merged into another placement or rehomed as one unit.
+    RootDocked {
+        /// Stable root moved as the payload authority.
+        root: RootId,
+        /// Root which owns the payload after the action.
+        target_root: RootId,
+        /// Stable items moved with the complete root in traversal order.
+        items: Vec<ItemId>,
+        /// Whether topology, presentation ownership, or tab order changed.
+        changed: bool,
+    },
 }
 
 impl DockspaceActionOutcome {
@@ -135,7 +146,9 @@ impl DockspaceActionOutcome {
     #[must_use]
     pub const fn changed(&self) -> bool {
         match self {
-            Self::Selected { changed, .. } | Self::Docked { changed, .. } => *changed,
+            Self::Selected { changed, .. }
+            | Self::Docked { changed, .. }
+            | Self::RootDocked { changed, .. } => *changed,
             Self::Opened { .. } => true,
             Self::Existing { .. } => false,
         }
@@ -235,6 +248,10 @@ pub(crate) enum ProductAction {
     },
     DockItem {
         item: ItemId,
+        placement: DockPlacement,
+    },
+    DockRoot {
+        root: RootId,
         placement: DockPlacement,
     },
 }

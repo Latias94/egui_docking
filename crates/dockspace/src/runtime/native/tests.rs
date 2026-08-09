@@ -5,7 +5,7 @@ use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::policy::DockPolicy;
-use crate::scene_manifest::MeasurementUnavailableReason;
+use crate::runtime::SurfaceUnavailableReason;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -34,7 +34,7 @@ fn native_root_session() -> (DockspaceSession, NativeSurfaceLease) {
         .begin_host_frame()
         .expect("the registration frame begins");
     frame
-        .complete_unpainted_surfaces(MeasurementUnavailableReason::Deferred)
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the registration frame settles every surface");
     let report = frame.commit().expect("the registration frame commits");
     let lease = match report.inputs() {

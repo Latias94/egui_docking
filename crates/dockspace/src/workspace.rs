@@ -410,20 +410,30 @@ impl Workspace {
         &self,
         item: ItemId,
     ) -> Result<Option<ItemSource>, CommandError> {
-        let Some(tabs) = self.nodes.iter().find_map(|(tabs, node)| match node {
-            Node::Tabs { items, .. } if items.contains(&item) => Some(tabs),
-            Node::Tabs { .. } | Node::Split { .. } => None,
-        }) else {
-            return Ok(None);
-        };
-        let Some(root) = self
-            .roots
-            .iter()
-            .find_map(|(root, record)| self.subtree_contains(record.node, tabs).then_some(*root))
-        else {
+        let Some((root, tabs, _)) = self.locate_item_by_id(item) else {
             return Ok(None);
         };
         self.capture_item_source(root, tabs, item).map(Some)
+    }
+
+    /// Locates one open item without capturing a structural fingerprint.
+    ///
+    /// This is the lightweight query counterpart to
+    /// [`Self::capture_item_source_by_id`]. Mutation paths must still capture a
+    /// source fingerprint before constructing a command.
+    pub(crate) fn locate_item_by_id(&self, item: ItemId) -> Option<(RootId, NodeId, usize)> {
+        let (tabs, tab_index) = self.nodes.iter().find_map(|(tabs, node)| match node {
+            Node::Tabs { items, .. } => items
+                .iter()
+                .position(|candidate| *candidate == item)
+                .map(|index| (tabs, index)),
+            Node::Split { .. } => None,
+        })?;
+        let root = self
+            .roots
+            .iter()
+            .find_map(|(root, record)| self.subtree_contains(record.node, tabs).then_some(*root))?;
+        Some((root, tabs, tab_index))
     }
 
     /// Captures one source node and the complete state of its owning root.

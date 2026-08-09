@@ -8,9 +8,8 @@ use crate::model::{
 };
 use crate::runtime::{
     DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome,
+    HostFrameReport, HostInputOutcome, SurfaceUnavailableReason,
 };
-use crate::scene_manifest::MeasurementUnavailableReason;
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
 const ROOTLESS_SURFACE: SurfaceId = SurfaceId::new(20);
@@ -44,7 +43,7 @@ fn session() -> DockspaceSession {
 
 fn commit(mut frame: DockspaceHostFrame<'_>) -> HostFrameReport {
     frame
-        .complete_unpainted_surfaces(MeasurementUnavailableReason::Deferred)
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("test host answers the frozen surface roster");
     frame.commit().expect("product action frame commits")
 }
@@ -135,6 +134,148 @@ fn product_actions_select_open_and_dock_without_runtime_node_ids() {
         .expect("central tabs remain queryable");
     assert_eq!(tabs.items(), &[FIRST, SECOND, NEW_ITEM, FLOATING]);
     assert!(session.view().root(CONTAINED_ROOT).is_none());
+}
+
+#[test]
+fn docking_a_complete_root_preserves_group_order_and_selection() {
+    const SOURCE_SURFACE: SurfaceId = SurfaceId::new(30);
+    const SOURCE_ROOT: RootId = RootId::new(300);
+    const SOURCE_FIRST: ItemId = ItemId::new(5);
+    const SOURCE_SECOND: ItemId = ItemId::new(6);
+
+    let target = DockspaceSurfaceLayout::new(
+        MAIN_SURFACE,
+        DockspaceRootLayout::new(
+            MAIN_ROOT,
+            DockspaceNode::tabs_with_selection([FIRST, SECOND], Some(SECOND))
+                .expect("target selection validates"),
+        ),
+    );
+    let source = DockspaceSurfaceLayout::new(
+        SOURCE_SURFACE,
+        DockspaceRootLayout::new(
+            SOURCE_ROOT,
+            DockspaceNode::tabs_with_selection([SOURCE_FIRST, SOURCE_SECOND], Some(SOURCE_SECOND))
+                .expect("source selection validates"),
+        ),
+    );
+    let layout = DockspaceLayout::new([target, source]).expect("root-dock layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("root-dock session initializes");
+
+    let mut frame = session.begin_host_frame().expect("root-dock frame begins");
+    frame
+        .dock_root_current(SOURCE_ROOT, DockPlacement::Center(DockAnchor::Item(SECOND)))
+        .expect("complete-root docking stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootDocked {
+                root: SOURCE_ROOT,
+                target_root: MAIN_ROOT,
+                items: vec![SOURCE_FIRST, SOURCE_SECOND],
+                changed: true,
+            },
+        )]
+    );
+    let tabs = session
+        .view()
+        .root(MAIN_ROOT)
+        .and_then(|root| root.content())
+        .and_then(|content| content.tabs())
+        .expect("merged tabs remain product-visible");
+    assert_eq!(tabs.items(), &[FIRST, SECOND, SOURCE_FIRST, SOURCE_SECOND]);
+    assert_eq!(tabs.selected(), Some(SOURCE_SECOND));
+    let moved = session
+        .view()
+        .item(SOURCE_SECOND)
+        .expect("the moved item has one stable product location");
+    assert_eq!(moved.surface(), MAIN_SURFACE);
+    assert_eq!(moved.root(), MAIN_ROOT);
+    assert_eq!(moved.contained(), None);
+    assert_eq!(moved.tab_index(), 3);
+    assert!(moved.is_selected());
+    assert!(session.view().root(SOURCE_ROOT).is_none());
+    assert!(session.view().surface(SOURCE_SURFACE).is_none());
+}
+
+#[test]
+fn prepared_root_docking_rejects_a_newer_workspace_revision() {
+    const SOURCE_SURFACE: SurfaceId = SurfaceId::new(30);
+    const SOURCE_ROOT: RootId = RootId::new(300);
+    const SOURCE_ITEM: ItemId = ItemId::new(5);
+
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            MAIN_SURFACE,
+            DockspaceRootLayout::new(MAIN_ROOT, DockspaceNode::tabs([FIRST, SECOND])),
+        ),
+        DockspaceSurfaceLayout::new(
+            SOURCE_SURFACE,
+            DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([SOURCE_ITEM])),
+        ),
+    ])
+    .expect("prepared root layout validates");
+    let mut session = DockspaceSession::from_layout(layout, crate::policy::DockPolicy::default())
+        .expect("prepared root session initializes");
+    let prepared =
+        session.prepare_dock_root(SOURCE_ROOT, DockPlacement::Center(DockAnchor::Item(FIRST)));
+
+    let mut frame = session.begin_host_frame().expect("stale root frame begins");
+    frame
+        .select_item_current(SECOND)
+        .expect("selection advances the candidate revision");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("stale root action is structurally accepted");
+    let report = commit(frame);
+
+    assert!(matches!(
+        report.inputs(),
+        [
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            }),
+            HostInputOutcome::StaleRejected { .. },
+        ]
+    ));
+    assert!(session.view().root(SOURCE_ROOT).is_some());
+}
+
+#[test]
+fn root_action_promotes_a_contained_root_without_item_inference() {
+    let mut session = session();
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained root action frame begins");
+    frame
+        .dock_root_current(CONTAINED_ROOT, DockPlacement::Main(ROOTLESS_SURFACE))
+        .expect("contained root promotion stages");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootDocked {
+                root: CONTAINED_ROOT,
+                target_root: CONTAINED_ROOT,
+                items: vec![FLOATING],
+                changed: true,
+            },
+        )]
+    );
+    let surface = session
+        .view()
+        .surface(ROOTLESS_SURFACE)
+        .expect("promoted surface remains product-visible");
+    assert_eq!(
+        surface.main_root().map(|root| root.id()),
+        Some(CONTAINED_ROOT)
+    );
+    assert_eq!(surface.contained_count(), 0);
 }
 
 #[test]

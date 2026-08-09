@@ -456,6 +456,15 @@ pub enum EngineInput {
         /// Item-, root-, or surface-centric destination.
         placement: crate::model::DockPlacement,
     },
+    /// Move one complete root to a stable product placement.
+    DockRoot {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable root moved as one payload.
+        root: RootId,
+        /// Item-, root-, or surface-centric destination.
+        placement: crate::model::DockPlacement,
+    },
     /// Request a core-owned close plan for stable application content.
     RequestContentClose {
         /// Version from which the stable target was selected.
@@ -693,6 +702,7 @@ impl EngineInput {
             | Self::SelectItem { .. }
             | Self::OpenItem { .. }
             | Self::DockItem { .. }
+            | Self::DockRoot { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }

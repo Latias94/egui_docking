@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceRuntimeError, DockspaceSession,
-    SurfacePaintPlan, UniformSurfaceMetrics,
+    SurfacePaintPlan, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use crate::engine::EngineError;
 use crate::geometry::{LogicalPoint, LogicalRect};
@@ -25,7 +25,7 @@ use crate::pointer_receiver::{
 };
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
 use crate::scene::SurfaceScene;
-use crate::scene_manifest::{Measurement, MeasurementUnavailableReason, SurfaceMeasurements};
+use crate::scene_manifest::{Measurement, SurfaceMeasurements};
 
 /// Exact presented surface capability used to qualify known-empty facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -838,7 +838,7 @@ impl DockspaceHostFrame<'_> {
     /// satisfy the frozen surface roster.
     pub fn complete_unpainted_surfaces(
         &mut self,
-        reason: MeasurementUnavailableReason,
+        reason: SurfaceUnavailableReason,
     ) -> Result<(), DockspaceRuntimeError> {
         self.complete_pointer_input()?;
         let surfaces = self.frame.surfaces().collect::<Vec<_>>();
@@ -857,7 +857,7 @@ impl DockspaceHostFrame<'_> {
             } else {
                 self.frame
                     .view()
-                    .prepare_surface_unavailable_contribution(token, reason)?
+                    .prepare_surface_unavailable_contribution(token, reason.into())?
             };
             self.frame.push_surface_contribution(contribution)?;
         }

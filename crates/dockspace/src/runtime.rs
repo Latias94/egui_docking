@@ -1,7 +1,7 @@
 //! Narrow renderer-neutral runtime facade for application host frames.
 //!
 //! This module is the migration boundary for adapters which must not own or
-//! access the backend reducer directly. It supports durable commands,
+//! access the backend reducer directly. It supports revision-bound product actions,
 //! close decisions, complete measurement answers, exact paint settlement, and
 //! lossless surface-local pointer batches backed by concrete final-presentation
 //! authority.
@@ -79,6 +79,33 @@ use crate::{ClosePlan, CloseResolutionOutcome, SurfaceCloseRequest};
 
 const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
+
+/// Why a host could not provide one surface's measurements in the current frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceUnavailableReason {
+    /// The active renderer cannot measure the required values.
+    Unsupported,
+    /// The owning surface cannot currently be measured.
+    SurfaceUnavailable,
+    /// Application content required for measurement is not currently available.
+    ContentUnavailable,
+    /// Font or text shaping data is not ready for this contribution.
+    TextMetricsUnavailable,
+    /// The host intentionally deferred the contribution to a later frame.
+    Deferred,
+}
+
+impl From<SurfaceUnavailableReason> for MeasurementUnavailableReason {
+    fn from(reason: SurfaceUnavailableReason) -> Self {
+        match reason {
+            SurfaceUnavailableReason::Unsupported => Self::Unsupported,
+            SurfaceUnavailableReason::SurfaceUnavailable => Self::SurfaceUnavailable,
+            SurfaceUnavailableReason::ContentUnavailable => Self::ContentUnavailable,
+            SurfaceUnavailableReason::TextMetricsUnavailable => Self::TextMetricsUnavailable,
+            SurfaceUnavailableReason::Deferred => Self::Deferred,
+        }
+    }
+}
 
 /// Renderer-neutral owner of one docking workspace and one application host.
 ///
@@ -185,6 +212,15 @@ impl DockspaceSession {
         placement: DockPlacement,
     ) -> PreparedDockAction {
         self.engine.prepare_dock_item(item, placement)
+    }
+
+    /// Prepares one complete-root move against the exact published workspace version.
+    pub const fn prepare_dock_root(
+        &self,
+        root: crate::ids::RootId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.engine.prepare_dock_root(root, placement)
     }
 
     /// Begins one affine application host frame.
@@ -373,6 +409,24 @@ impl DockspaceHostFrame<'_> {
         })
     }
 
+    /// Docks one complete root at a stable product placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn dock_root_current(
+        &mut self,
+        root: crate::ids::RootId,
+        placement: DockPlacement,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::DockRoot {
+            expected: self.frame.view().version(),
+            root,
+            placement,
+        })
+    }
+
     /// Submits one action against the exact published revision which prepared it.
     ///
     /// # Errors
@@ -460,7 +514,7 @@ impl DockspaceHostFrame<'_> {
     pub fn defer_surface(
         &mut self,
         surface: SurfaceId,
-        reason: MeasurementUnavailableReason,
+        reason: SurfaceUnavailableReason,
     ) -> Result<(), DockspaceRuntimeError> {
         self.complete_pointer_input()?;
         let token = self
@@ -471,7 +525,7 @@ impl DockspaceHostFrame<'_> {
         let contribution = self
             .frame
             .view()
-            .prepare_surface_unavailable_contribution(token, reason)?;
+            .prepare_surface_unavailable_contribution(token, reason.into())?;
         self.frame.push_surface_contribution(contribution)?;
         Ok(())
     }
@@ -562,12 +616,52 @@ impl DockspaceHostFrame<'_> {
     }
 }
 
+/// Product-visible topology change produced by an approved close decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DockspaceCloseOutcome {
+    /// One item was removed from its root.
+    ItemClosed {
+        /// Closed item.
+        item: crate::ids::ItemId,
+        /// Root which owned the item before close.
+        root: crate::ids::RootId,
+    },
+    /// One complete root and all of its items were removed atomically.
+    RootClosed {
+        /// Closed root.
+        root: crate::ids::RootId,
+        /// Items removed with the root.
+        items: Vec<crate::ids::ItemId>,
+    },
+    /// One complete surface roster and all of its items were removed atomically.
+    SurfaceClosed {
+        /// Closed surface.
+        surface: SurfaceId,
+        /// Items removed with the surface.
+        items: Vec<crate::ids::ItemId>,
+    },
+}
+
+/// Stable rejection category for an approved close whose topology commit failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum DockspaceCloseRejection {
+    /// Current policy rejected the close mutation.
+    #[error("current docking policy rejects the close")]
+    PolicyDenied,
+    /// Current topology no longer satisfies the frozen close plan.
+    #[error("current docking topology conflicts with the close plan")]
+    Conflict,
+    /// The core detected an internal invariant failure while applying the close.
+    #[error("dockspace could not apply the validated close plan")]
+    Internal,
+}
+
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
-    /// One item-centric product action committed or produced a valid no-op.
+    /// One stable item- or root-centric product action committed or produced a valid no-op.
     ProductActionApplied(DockspaceActionOutcome),
-    /// One item-centric product action was rejected without mutation.
+    /// One stable item- or root-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
     /// One checked durable command applied or produced a valid no-op.
     #[cfg(any(feature = "backend", test))]
@@ -603,7 +697,7 @@ pub enum HostInputOutcome {
         /// Latest retained close plan, when the request exists.
         plan: Option<ClosePlan>,
         /// Checked topology result after the final allow.
-        application: Option<Result<CloseCommitOutcome, CommandError>>,
+        application: Option<Result<DockspaceCloseOutcome, DockspaceCloseRejection>>,
         /// Whether this input changed durable topology.
         changed: bool,
     },
@@ -740,7 +834,7 @@ impl HostFrameReport {
                 } => Some(HostInputOutcome::CloseDecisionProcessed {
                     resolution: *resolution,
                     plan: plan.clone(),
-                    application: application.clone(),
+                    application: application.as_ref().map(map_close_application),
                     changed: *changed,
                 }),
                 InputOutcome::ViewportRegistered { binding } => {
@@ -919,6 +1013,37 @@ fn interaction_close_request(outcome: &InteractionOutcome) -> Option<HostInputOu
             })
         }
         _ => None,
+    }
+}
+
+fn map_close_application(
+    application: &Result<CloseCommitOutcome, CommandError>,
+) -> Result<DockspaceCloseOutcome, DockspaceCloseRejection> {
+    match application {
+        Ok(CloseCommitOutcome::ItemClosed { item, root }) => {
+            Ok(DockspaceCloseOutcome::ItemClosed {
+                item: *item,
+                root: *root,
+            })
+        }
+        Ok(CloseCommitOutcome::RootClosed { root, items }) => {
+            Ok(DockspaceCloseOutcome::RootClosed {
+                root: *root,
+                items: items.clone(),
+            })
+        }
+        Ok(CloseCommitOutcome::SurfaceClosed { surface, items }) => {
+            Ok(DockspaceCloseOutcome::SurfaceClosed {
+                surface: *surface,
+                items: items.clone(),
+            })
+        }
+        Err(CommandError::Policy(_)) => Err(DockspaceCloseRejection::PolicyDenied),
+        Err(error) => Err(if error.is_expected_rejection() {
+            DockspaceCloseRejection::Conflict
+        } else {
+            DockspaceCloseRejection::Internal
+        }),
     }
 }
 
@@ -1227,9 +1352,7 @@ mod tests {
             .begin_host_frame()
             .expect("runtime presentation observation frame begins");
         observed
-            .complete_unpainted_surfaces(
-                crate::scene_manifest::MeasurementUnavailableReason::Deferred,
-            )
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("runtime presentation observation settles the surface roster");
         observed
             .commit()
