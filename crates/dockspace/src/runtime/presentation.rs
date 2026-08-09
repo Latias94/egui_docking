@@ -200,10 +200,6 @@ impl RuntimePresentationState {
         }
     }
 
-    pub(super) fn discard_uncommitted_backend_records(&mut self) {
-        self.backend_recorded.clear();
-    }
-
     fn compile_report(
         &self,
         stream: HostPresentationStreamId,

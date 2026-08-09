@@ -1094,20 +1094,6 @@ impl BackendIngressRecorder {
         }
     }
 
-    /// Returns a non-consuming proof snapshot for core replacement preflight.
-    ///
-    /// The snapshot does not stop this recorder and must never be submitted as
-    /// the actual handoff receipt. It exists only so a runtime can validate the
-    /// core transition before consuming its sole producer.
-    pub(crate) fn drain_preview(&self) -> BackendIngressDrainReceipt {
-        BackendIngressDrainReceipt {
-            lease: self.lease,
-            recorded_through: self.last_ordinal,
-            pointer_through: self.pointer_through,
-            consumed: false,
-        }
-    }
-
     /// Records one complete platform snapshot at the next backend position.
     pub fn record_platform_snapshot(
         &mut self,

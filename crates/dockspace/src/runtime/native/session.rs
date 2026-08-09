@@ -1,22 +1,16 @@
-//! Session orchestration for native facts, effects, and joined provider handoff.
+//! Session orchestration for native facts and effects.
 
 use super::*;
 use crate::intent::Authority;
 
 impl DockspaceSession {
     fn native_state(&self) -> Result<&RuntimeNativeState, NativePlatformError> {
-        if self.native_handoff.is_some() {
-            return Err(NativePlatformError::ProviderReplacementPending);
-        }
         self.native
             .as_ref()
             .ok_or(NativePlatformError::ProviderUnavailable)
     }
 
     fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, NativePlatformError> {
-        if self.native_handoff.is_some() {
-            return Err(NativePlatformError::ProviderReplacementPending);
-        }
         self.native
             .as_mut()
             .ok_or(NativePlatformError::ProviderUnavailable)
@@ -24,9 +18,9 @@ impl DockspaceSession {
 
     /// Enrolls the session-owned native platform observation source.
     ///
-    /// The method enrolls exactly once. Transport replacement is available
-    /// through the joined begin/finish/abort methods without exposing provider
-    /// tickets or reissuing existing surface bindings.
+    /// The method enrolls exactly once and never reissues existing surface
+    /// bindings. Provider replacement remains an internal core concern until a
+    /// real native coordinator defines a product-level restart operation.
     ///
     /// # Errors
     ///
@@ -38,9 +32,6 @@ impl DockspaceSession {
         &mut self,
         mode: NativePlatformMode,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        if self.native_handoff.is_some() {
-            return Err(NativePlatformError::ProviderReplacementPending.into());
-        }
         if let Some(native) = &self.native {
             return if native.mode == mode {
                 Err(NativePlatformError::ProviderAlreadyEnabled.into())
@@ -56,151 +47,6 @@ impl DockspaceSession {
         let bindings = native.bindings.values().copied().collect();
         self.native = Some(native);
         Ok(bindings)
-    }
-
-    /// Revokes the current joined provider and starts one atomic successor handoff.
-    ///
-    /// Calling this method again after a transient start failure retries the same
-    /// core-owned drain proof. No platform, pointer, or ordering ticket is
-    /// exposed through the public façade.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no native provider is active or the core cannot
-    /// reserve the joined successor. A failed reservation retains the exact
-    /// drained proof for a later retry.
-    pub fn begin_native_provider_replacement(
-        &mut self,
-    ) -> Result<HostFrameReport, DockspaceRuntimeError> {
-        if self.native_handoff.is_none() {
-            let Some(mut native) = self.native.take() else {
-                return Err(NativePlatformError::ProviderUnavailable.into());
-            };
-            if let Err(error) = native.record_abandoned_effects(&self.abandoned_native_effects) {
-                self.native = Some(native);
-                return Err(error.into());
-            }
-            if let Err(error) = native.reclaim_committed_prefix(&mut self.engine) {
-                self.native = Some(native);
-                return Err(error);
-            }
-            if let Err(error) = native.validate_replacement(&self.engine) {
-                self.native = Some(native);
-                return Err(error);
-            }
-            self.native_handoff = Some(native.into_drain());
-            self.presentation.discard_uncommitted_backend_records();
-        }
-        self.start_drained_native_handoff()
-    }
-
-    /// Activates the reserved joined provider successor.
-    ///
-    /// Failure leaves the affine ticket inside the session so the exact same
-    /// handoff can be retried without reissuing or reconstructing authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no reserved replacement exists or the core rejects
-    /// successor activation. Success returns the successor's complete binding
-    /// roster; predecessor bindings remain permanently stale.
-    pub fn finish_native_provider_replacement(
-        &mut self,
-    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        let presentation_host = self.presentation_host;
-        let mode = match self.native_handoff.as_mut() {
-            Some(RuntimeNativeHandoff::Replacing { mode, ticket, .. }) => {
-                let recorder = self
-                    .engine
-                    .finish_backend_ingress_provider_replacement(ticket, presentation_host)?;
-                let mode = *mode;
-                let mut native = RuntimeNativeState::new(recorder, mode);
-                native.commit(&self.engine);
-                self.native = Some(native);
-                mode
-            }
-            Some(RuntimeNativeHandoff::Drained { .. }) => {
-                return Err(NativePlatformError::ProviderReplacementPending.into());
-            }
-            None => return Err(NativePlatformError::ProviderReplacementUnavailable.into()),
-        };
-        debug_assert!(
-            self.native
-                .as_ref()
-                .is_some_and(|native| native.mode == mode)
-        );
-        let bindings = self
-            .native
-            .as_ref()
-            .expect("replacement activation installs the successor state")
-            .bindings
-            .values()
-            .copied()
-            .collect();
-        self.native_handoff = None;
-        Ok(bindings)
-    }
-
-    /// Abandons one reserved joined handoff and leaves the session unenrolled.
-    ///
-    /// The predecessor remains permanently revoked. The returned report carries
-    /// any effects or repaint requirements emitted by the core-owned abort.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no reserved replacement exists. A merely drained
-    /// start must first be retried through [`Self::begin_native_provider_replacement`].
-    pub fn abort_native_provider_replacement(
-        &mut self,
-    ) -> Result<HostFrameReport, DockspaceRuntimeError> {
-        match self.native_handoff.as_ref() {
-            Some(RuntimeNativeHandoff::Replacing { .. }) => {}
-            Some(RuntimeNativeHandoff::Drained { .. }) => {
-                return Err(NativePlatformError::ProviderReplacementPending.into());
-            }
-            None => return Err(NativePlatformError::ProviderReplacementUnavailable.into()),
-        }
-        let transition = self.engine.abort_backend_ingress_provider_replacement()?;
-        debug_assert!(transition.reduced_inputs().is_empty());
-        debug_assert!(transition.platform_effects().is_empty());
-        self.native_handoff = None;
-        Ok(HostFrameReport::from_transition(
-            &transition,
-            Vec::new(),
-            None,
-            self.abandoned_native_effects.clone(),
-        ))
-    }
-
-    fn start_drained_native_handoff(&mut self) -> Result<HostFrameReport, DockspaceRuntimeError> {
-        let Some(handoff) = self.native_handoff.take() else {
-            return Err(NativePlatformError::ProviderReplacementUnavailable.into());
-        };
-        let RuntimeNativeHandoff::Drained { mode, mut receipt } = handoff else {
-            self.native_handoff = Some(handoff);
-            return Err(NativePlatformError::ProviderReplacementPending.into());
-        };
-        match self
-            .engine
-            .begin_backend_ingress_provider_replacement(&mut receipt)
-        {
-            Ok(start) => {
-                let (ticket, transition) = start.into_parts();
-                debug_assert!(transition.reduced_inputs().is_empty());
-                debug_assert!(transition.platform_effects().is_empty());
-                self.native_handoff = Some(RuntimeNativeHandoff::Replacing { mode, ticket });
-                Ok(HostFrameReport::from_transition(
-                    &transition,
-                    Vec::new(),
-                    None,
-                    self.abandoned_native_effects.clone(),
-                ))
-            }
-            Err(error) => {
-                self.native_handoff = Some(RuntimeNativeHandoff::Drained { mode, receipt });
-                Err(error.into())
-            }
-        }
     }
 
     /// Captures one retryable exact-set native platform snapshot.
@@ -361,12 +207,6 @@ impl DockspaceSession {
         &mut self,
         result: NativeEffectResult,
     ) -> Result<(), NativeEffectSubmissionError> {
-        if self.native_handoff.is_some() {
-            return Err(NativeEffectSubmissionError::new(
-                NativePlatformError::ProviderReplacementPending,
-                result,
-            ));
-        }
         let Some(native) = self.native.as_mut() else {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::ProviderUnavailable,

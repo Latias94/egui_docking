@@ -118,7 +118,6 @@ pub struct DockspaceSession {
     presentation: presentation::RuntimePresentationState,
     pointer: Option<interaction::RuntimePointerState>,
     native: Option<native::RuntimeNativeState>,
-    native_handoff: Option<native::RuntimeNativeHandoff>,
     abandoned_native_effects: native_effect::NativeEffectDropQueue,
     committed_source_sequence: u64,
 }
@@ -165,7 +164,6 @@ impl DockspaceSession {
             presentation: presentation::RuntimePresentationState::default(),
             pointer: None,
             native: None,
-            native_handoff: None,
             abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
             committed_source_sequence: 0,
         })
@@ -233,9 +231,6 @@ impl DockspaceSession {
     /// Returns an error when presentation output is awaiting an explicit host
     /// observation or the core rejects the frame prelude.
     pub fn begin_host_frame(&mut self) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        if self.native_handoff.is_some() {
-            return Err(NativePlatformError::ProviderReplacementPending.into());
-        }
         self.reconcile_surface_pointer_provider()?;
         if let Some(native) = self.native.as_mut() {
             native.record_abandoned_effects(&self.abandoned_native_effects)?;

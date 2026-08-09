@@ -13,10 +13,9 @@ use super::native_effect::{
     NativeCloseEffectAcknowledgement, NativeEffectResult, NativeEffectSubmissionError,
     NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
 };
-use super::{DockspaceRuntimeError, DockspaceSession, HostFrameReport};
+use super::{DockspaceRuntimeError, DockspaceSession};
 use crate::backend_ingress::{
-    BackendIngressBatch, BackendIngressDrainReceipt, BackendIngressOrdinal,
-    BackendIngressPrefixRetirementReceipt, BackendIngressProviderReplacementTicket,
+    BackendIngressBatch, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
     BackendIngressRecorder,
 };
 use crate::engine::EngineInput;
@@ -363,12 +362,6 @@ pub enum NativePlatformError {
     /// The provider is already enrolled under another structural mode.
     #[error("native platform provider is already active under a different mode")]
     ProviderModeConflict,
-    /// A joined provider handoff is pending and must be finished, retried, or aborted.
-    #[error("native platform provider replacement is pending")]
-    ProviderReplacementPending,
-    /// No joined provider handoff is pending.
-    #[error("native platform provider replacement is not pending")]
-    ProviderReplacementUnavailable,
     /// A callback named an older binding incarnation for this logical surface.
     #[error("native surface {surface} binding is stale")]
     StaleSurface {
@@ -448,18 +441,6 @@ pub(super) struct RuntimeNativeState {
 }
 
 #[derive(Debug)]
-pub(super) enum RuntimeNativeHandoff {
-    Drained {
-        mode: NativePlatformMode,
-        receipt: BackendIngressDrainReceipt,
-    },
-    Replacing {
-        mode: NativePlatformMode,
-        ticket: BackendIngressProviderReplacementTicket,
-    },
-}
-
-#[derive(Debug)]
 struct CompiledNativeWindow {
     is_live: bool,
     window: Option<ObservedWindow>,
@@ -486,15 +467,6 @@ impl RuntimeNativeState {
 
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {
         &mut self.recorder
-    }
-
-    fn validate_replacement(
-        &self,
-        engine: &crate::engine::DockEngine,
-    ) -> Result<(), DockspaceRuntimeError> {
-        engine
-            .validate_backend_ingress_provider_replacement(&self.recorder.drain_preview())
-            .map_err(DockspaceRuntimeError::from)
     }
 
     pub(super) fn prepare_batch(
@@ -715,13 +687,5 @@ impl RuntimeNativeState {
                 .get(&binding.surface())
                 .is_some_and(|current| current.binding == *binding)
         });
-    }
-
-    fn into_drain(self) -> RuntimeNativeHandoff {
-        debug_assert!(self.pending_prefix_retirement.is_none());
-        RuntimeNativeHandoff::Drained {
-            mode: self.mode,
-            receipt: self.recorder.drain(),
-        }
     }
 }
