@@ -273,7 +273,7 @@ The precise method names and storage layout are implementation-time decisions. T
 
 **Files:** `crates/dockspace/src/viewport/`, `crates/dockspace/src/effects/`, `crates/dockspace/src/close/`, new `crates/dockspace/tests/native_coordinator.rs`, `crates/egui_dockspace_native/src/`, `crates/egui_dockspace_native/tests/native_lifecycle.rs`, `integration/egui-native-e2e/src/main.rs`.
 
-**Approach:** Keep binding incarnation, complete surface roster, ordered desktop pointer, typed effect result, close/recovery semantics, and the compact create sequence `CreateHidden → StagingAccepted → Visible → TransferOwnership → FirstLiveAccepted`. Move OS event-loop and renderer scheduling into native adapter code. Keep source content visible until first-live acceptance and process main plus contained roots atomically on surface destruction.
+**Approach:** Keep binding incarnation, complete surface roster, ordered desktop pointer, typed effect result, close/recovery semantics, and the compact create sequence `CreateHidden → StagingAccepted → Visible → TransferOwnership → FirstLiveAccepted`. Add one concrete managed-native enrollment instead of a caller-selectable capability mode. The public pointer lane must distinguish surface-local exact coordinates, desktop-global hover, outside-all work-area placement, delivery endpoint, and capture owner; delivery and hover probes are independent. Native receiver resolution is a small synchronous host callback over product descriptors, while ordinals, receipts, provider lifetimes, and replay remain private. Do not synthesize empty pointer records for frames without input; complete pointer state is an explicit host fact. Move OS event-loop and renderer scheduling into native adapter code. Keep source content visible until first-live acceptance and process main plus contained roots atomically on surface destruction.
 
 **Test scenarios:**
 
@@ -282,6 +282,7 @@ The precise method names and storage layout are implementation-time decisions. T
 - Destroying a surface rehomes all main and contained roots, or reports an explicit unavailable outcome.
 - Create/show/focus/first-live failure leaves source ownership recoverable and does not strand a pending effect.
 - A stale binding incarnation or delayed pointer event is rejected without affecting the successor window.
+- A failed host-frame/drop replays the same native edge, while an explicit terminal pointer fact ends the old gesture exactly once.
 
 **Verification:** Native helper tests cover each lifecycle transition and the existing single real-window smoke passes through the new coordinator.
 
