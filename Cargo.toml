@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/dockspace",
-    "crates/dockspace_core_protocol",
     "crates/dockspace_host_conformance",
     "crates/egui_dockspace",
 ]

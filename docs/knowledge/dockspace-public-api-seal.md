@@ -233,22 +233,20 @@ receipts, native close edges, presentation-settlement counts, and product-level
 surface status. It no longer exposes raw transitions or surface-contribution
 FSM values. Remaining model consolidation keeps this seal open.
 
-## Protocol Tests
+## Conformance Tests
 
-`dockspace_core_protocol` is workspace-private test infrastructure, not a
-production API owner. The core's 47 white-box behavior suites now compile as one
-crate-internal test target with shared support instead of forcing internal
-modules into the production API. The remaining trace harness explicitly opts
-into `dockspace/backend`; it must migrate to the same narrow host-frame facade
-used by adapters where that facade can express the trace, and must not make
-`EngineInput`, scene stamps, routes, effect ledgers, or lifecycle FSMs part of
-the default API.
+The custom `dockspace_core_protocol` trace schema and direct-engine harness have
+been retired. Core invariants remain in crate-local Rust tests, while
+product-visible ordering, paint, pointer, close, and observed-root behavior run
+through `dockspace_host_conformance` using only the public host-frame facade.
+No adapter-conformance crate serializes reducer inputs or imports `EngineInput`,
+scene stamps, routes, effect ledgers, or lifecycle FSMs.
 
 ## Breaking Migration Order
 
 1. Complete opaque presentation observations and remove public scene-stamp and
    generation leaks from those capabilities.
-2. Define the new facade types and migrate egui and protocol test callers to
+2. Define the new facade types and migrate egui plus black-box host fixtures to
    them.
 3. Remove egui's duplicate projection and replace raw hit processing with
    core-plan views and presented-authority-backed semantic input.

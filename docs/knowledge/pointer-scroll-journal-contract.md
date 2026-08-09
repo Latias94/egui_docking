@@ -575,11 +575,11 @@ it again. Conversely, an edge whose actual top receiver is an application
 scroll container is `Blocked` for docking and remains available to that
 framework receiver.
 
-## Trace Contract
+## Behavioral Test Contract
 
-`dockspace_core_protocol` must preserve every scroll fact required to expose a
-provider or reducer defect. A trace scroll edge records semantic fixture names,
-not core-minted tickets or candidate IDs:
+Focused core and public-host tests must preserve every scroll fact required to
+expose a provider or reducer defect. Tests use typed Rust fixtures directly,
+without a serialized protocol schema or caller-supplied core tickets:
 
 - provider lease/incarnation, journal sequence, pointer stream, and device;
 - the algebraic pointer edge kind, including `ContactEnded` for a normal
@@ -594,16 +594,16 @@ not core-minted tickets or candidate IDs:
   and `ReductionCause::PointerEdge`;
 - expected terminal or suppression reason.
 
-Trace fixtures must not ask the harness to choose the frontmost receiver from
-the same core manifest under test. Direct-engine traces prove transport,
-validation, causality, and rollback. Independent hit-compiler and adapter
-runners supply separate receiver evidence and are required for conformance.
+Core-local fixtures must not choose the frontmost receiver from the same
+manifest under test and then present that choice as adapter evidence. Core tests
+prove transport, validation, causality, and rollback; independent host and UI
+tests supply receiver evidence and are required for conformance.
 
 ## Test Matrix
 
 | Area | Required cases | Pass condition |
 | --- | --- | --- |
-| Schema | Finite and non-finite vectors; every unit; valid and invalid phase/token/delta combinations | Invalid journals reject atomically; valid fields round-trip without aggregation |
+| Typed facts | Finite and non-finite vectors; every unit; valid and invalid phase/token/delta combinations | Invalid journals reject atomically; valid facts retain their exact values without aggregation |
 | Discrete conversion | Point, physical pixel, line, page, both signs, fractional values, simultaneous axes, modifiers | Exact policy conversion and deterministic primary-axis result |
 | Clamp and containment | Minimum, maximum, partial application, zero delta | Exact applied/remainder values; no lower or ancestor fallthrough |
 | Receiver proof | Menu over backdrop; backdrop over strip; external modal; application scroll area; no receiver; unknown | Only the exact top receiver mutates docking state |
@@ -615,7 +615,7 @@ runners supply separate receiver evidence and are required for conformance.
 | Tab strip | Hidden members; manual fractional scroll; selected/focused reveal; buttons; resize clamp | Full ranges remain exact and reveal is a separate obligation |
 | Tab-list menu | Popup open/close; backdrop; focus; row removal; scroll then selection | Routing and presentation revisions change independently and deterministically |
 | Rollback | Late invalid receipt after earlier valid scroll edges | Offset, session, popup state, tick, and watermark all roll back |
-| Adapter parity | In-memory, fork-backed egui, and Open GPUI runners replay the same semantic traces | Canonical outcomes and causes match without shared hit-resolution code |
+| Adapter parity | In-memory, fork-backed egui, and Open GPUI runners execute the same named scenarios | Canonical outcomes and causes match without shared hit-resolution code |
 | Scale | 16, 128, and 1024 tabs across representative surfaces | No workspace clone or fingerprint build per scroll edge; hit lookup is bounded by the hit index and offset mutation is constant-time |
 
 Property tests must cover journal segmentation, sequence ABA, phase-state

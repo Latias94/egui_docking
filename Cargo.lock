@@ -467,15 +467,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dockspace_core_protocol"
-version = "0.1.0"
-dependencies = [
- "dockspace",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "dockspace_host_conformance"
 version = "0.1.0"
 dependencies = [
