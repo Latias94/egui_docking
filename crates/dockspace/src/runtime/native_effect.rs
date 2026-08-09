@@ -7,24 +7,13 @@ use thiserror::Error;
 use super::native::NativeSurfaceBinding;
 use crate::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
-    EffectIndeterminateReason, EffectResult, EffectTransition, EffectUnsupportedReason,
-    NativeCloseResolution, PlatformEffect, PlatformEffectEmission,
+    EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
+    PlatformEffect, PlatformEffectEmission,
 };
 use crate::geometry::PhysicalRect;
 use crate::ids::WorkspaceEpoch;
 use crate::platform_provider::PlatformObservationLease;
-use crate::presentation_observation::PresentedNativeStagingPresentation;
-use crate::viewport::{PresentationObservationGeneration, ViewportBinding, ViewportRole};
-
-/// Opaque stable identity of one core-emitted native effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NativeEffectHandle(EffectId);
-
-impl NativeEffectHandle {
-    pub(super) const fn from_core(effect: EffectId) -> Self {
-        Self(effect)
-    }
-}
+use crate::viewport::{ViewportBinding, ViewportRole};
 
 /// Public native-window ownership role without exposing viewport internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,14 +33,6 @@ impl From<ViewportRole> for NativeSurfaceRole {
     }
 }
 
-/// Opaque hidden-presentation generation required before a native show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeHiddenPresentationProof(PresentationObservationGeneration);
-
-/// Opaque first-live staging output proof required before a native show.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativePreShowPresentationProof(PresentedNativeStagingPresentation);
-
 /// Exact adapter operation requested by the core.
 ///
 /// The order in [`super::HostFrameReport::take_native_effects`] is normative.
@@ -62,7 +43,7 @@ pub enum NativeEffectOperation {
     /// Create one hidden native window.
     CreateWindow {
         /// Exact logical/native binding to create.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
         /// Exact requested outer placement.
         placement: PhysicalRect,
         /// Requested ownership role.
@@ -71,68 +52,54 @@ pub enum NativeEffectOperation {
     /// Show a previously staged hidden native window.
     ShowWindow {
         /// Exact logical/native binding to show.
-        surface: NativeSurfaceBinding,
-        /// Hidden observation which must causally precede the show.
-        after_hidden: NativeHiddenPresentationProof,
-        /// Exact retained staging output which must have been presented first.
-        after_pre_show: NativePreShowPresentationProof,
+        binding: NativeSurfaceBinding,
     },
     /// Close a staging window created by an operation which did not complete.
     CompensatingClose {
         /// Exact logical/native binding to close.
-        surface: NativeSurfaceBinding,
-        /// Create or replacement effect whose staged lifetime is being compensated.
-        compensates: NativeEffectHandle,
+        binding: NativeSurfaceBinding,
     },
     /// Cancel an application-root native close request.
     CancelRootClose {
         /// Exact logical/native binding whose close must be cancelled.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
     },
     /// Retain ownership of a child window.
     RetainChild {
         /// Exact logical/native child binding.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
     },
     /// Release and destroy a child window.
     ReleaseChild {
         /// Exact logical/native child binding.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
     },
-    /// Observe a destructive predecessor without executing it again.
-    ObserveCleanup {
+    /// Await one delayed destructive result without executing it again.
+    AwaitCleanup {
         /// Exact logical/native binding under observation.
-        surface: NativeSurfaceBinding,
-        /// Destructive operation whose delayed result is being observed.
-        predecessor: NativeEffectHandle,
-        /// Previous observation request in this provider lane.
-        after: Option<NativeEffectHandle>,
+        binding: NativeSurfaceBinding,
     },
     /// Request closure of an application-root window.
     RequestRootClose {
         /// Exact logical/native root binding.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
     },
     /// Change pointer pass-through for one exact native binding.
     SetPointerPassthrough {
         /// Exact logical/native binding.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
         /// Whether the native window must ignore pointer input.
         enabled: bool,
-        /// Previous request in this exact property lane.
-        after: Option<NativeEffectHandle>,
     },
     /// Request native focus for one exact binding.
     RequestFocus {
         /// Exact logical/native binding.
-        surface: NativeSurfaceBinding,
-        /// Previous request in the global native-focus lane.
-        after: Option<NativeEffectHandle>,
+        binding: NativeSurfaceBinding,
     },
     /// Create a replacement native lifetime at an exact outer placement.
     RequestReplacement {
         /// Exact replacement binding.
-        surface: NativeSurfaceBinding,
+        binding: NativeSurfaceBinding,
         /// Exact requested outer placement.
         placement: PhysicalRect,
         /// Requested ownership role.
@@ -144,27 +111,25 @@ pub enum NativeEffectOperation {
         close: super::NativeSurfaceCloseRequest,
         /// Whether the host must accept or cancel the close.
         resolution: NativeCloseDisposition,
-        /// Previous resolution request in this native-close lane.
-        after: Option<NativeEffectHandle>,
     },
 }
 
 impl NativeEffectOperation {
-    /// Returns the exact logical/native surface affected by this operation.
+    /// Returns the exact native binding affected by this operation.
     #[must_use]
-    pub const fn surface(&self) -> NativeSurfaceBinding {
+    pub const fn binding(&self) -> NativeSurfaceBinding {
         match self {
-            Self::CreateWindow { surface, .. }
-            | Self::ShowWindow { surface, .. }
-            | Self::CompensatingClose { surface, .. }
-            | Self::CancelRootClose { surface }
-            | Self::RetainChild { surface }
-            | Self::ReleaseChild { surface }
-            | Self::ObserveCleanup { surface, .. }
-            | Self::RequestRootClose { surface }
-            | Self::SetPointerPassthrough { surface, .. }
-            | Self::RequestFocus { surface, .. }
-            | Self::RequestReplacement { surface, .. } => *surface,
+            Self::CreateWindow { binding, .. }
+            | Self::ShowWindow { binding, .. }
+            | Self::CompensatingClose { binding, .. }
+            | Self::CancelRootClose { binding }
+            | Self::RetainChild { binding }
+            | Self::ReleaseChild { binding }
+            | Self::AwaitCleanup { binding }
+            | Self::RequestRootClose { binding }
+            | Self::SetPointerPassthrough { binding, .. }
+            | Self::RequestFocus { binding, .. }
+            | Self::RequestReplacement { binding, .. } => *binding,
             Self::ResolveNativeClose { close, .. } => close.binding(),
         }
     }
@@ -199,13 +164,20 @@ enum NativeEffectCorrelationKind {
 
 /// One affine core-emitted request which has not yet been classified by the host.
 ///
-/// Consuming the request yields the operation and the sole dispatch receipt.
-/// The type deliberately does not implement `Clone` or `Copy`.
+/// The type deliberately does not implement `Clone` or `Copy`. The request is
+/// itself the sole response capability: inspect [`Self::operation`], execute it,
+/// then consume the request through one terminal method.
 #[must_use = "native effects must be dispatched, rejected, or retained explicitly"]
 #[derive(Debug)]
 pub struct NativeEffectRequest {
-    operation: Option<NativeEffectOperation>,
-    receipt: Option<NativeEffectReceipt>,
+    operation: NativeEffectOperation,
+    provider: PlatformObservationLease,
+    binding: ViewportBinding,
+    effect: EffectId,
+    epoch: WorkspaceEpoch,
+    correlation: NativeEffectCorrelationKind,
+    cleanup: Option<CleanupObservationToken>,
+    abandoned: Option<NativeEffectDropQueue>,
 }
 
 impl NativeEffectRequest {
@@ -214,75 +186,70 @@ impl NativeEffectRequest {
         abandoned: NativeEffectDropQueue,
     ) -> Self {
         let binding = emission.effect().binding();
-        let surface = NativeSurfaceBinding::from_binding(emission.provider(), binding);
+        let native_binding = NativeSurfaceBinding::from_binding(emission.provider(), binding);
         let (operation, correlation) = match emission.effect() {
             PlatformEffect::CreateWindow {
                 placement, role, ..
             } => (
                 NativeEffectOperation::CreateWindow {
-                    surface,
+                    binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
                 },
                 NativeEffectCorrelationKind::ExternalFact,
             ),
-            PlatformEffect::ShowWindow {
-                after_hidden,
-                after_pre_show,
-                ..
-            } => (
+            PlatformEffect::ShowWindow { .. } => (
                 NativeEffectOperation::ShowWindow {
-                    surface,
-                    after_hidden: NativeHiddenPresentationProof(*after_hidden),
-                    after_pre_show: NativePreShowPresentationProof(*after_pre_show),
+                    binding: native_binding,
                 },
                 NativeEffectCorrelationKind::Presentation,
             ),
-            PlatformEffect::CompensatingClose { compensates, .. } => (
+            PlatformEffect::CompensatingClose { .. } => (
                 NativeEffectOperation::CompensatingClose {
-                    surface,
-                    compensates: NativeEffectHandle::from_core(*compensates),
+                    binding: native_binding,
                 },
                 NativeEffectCorrelationKind::Close,
             ),
             PlatformEffect::CancelRootClose { .. } => (
-                NativeEffectOperation::CancelRootClose { surface },
+                NativeEffectOperation::CancelRootClose {
+                    binding: native_binding,
+                },
                 NativeEffectCorrelationKind::Close,
             ),
             PlatformEffect::RetainChild { .. } => (
-                NativeEffectOperation::RetainChild { surface },
+                NativeEffectOperation::RetainChild {
+                    binding: native_binding,
+                },
                 NativeEffectCorrelationKind::ExternalFact,
             ),
             PlatformEffect::ReleaseChild { .. } => (
-                NativeEffectOperation::ReleaseChild { surface },
+                NativeEffectOperation::ReleaseChild {
+                    binding: native_binding,
+                },
                 NativeEffectCorrelationKind::Close,
             ),
-            PlatformEffect::ContinueCleanup {
-                predecessor, after, ..
-            } => (
-                NativeEffectOperation::ObserveCleanup {
-                    surface,
-                    predecessor: NativeEffectHandle::from_core(*predecessor),
-                    after: after.map(NativeEffectHandle::from_core),
+            PlatformEffect::ContinueCleanup { .. } => (
+                NativeEffectOperation::AwaitCleanup {
+                    binding: native_binding,
                 },
                 NativeEffectCorrelationKind::Cleanup,
             ),
             PlatformEffect::RequestRootClose { .. } => (
-                NativeEffectOperation::RequestRootClose { surface },
+                NativeEffectOperation::RequestRootClose {
+                    binding: native_binding,
+                },
                 NativeEffectCorrelationKind::Close,
             ),
-            PlatformEffect::SetPointerPassthrough { enabled, after, .. } => (
+            PlatformEffect::SetPointerPassthrough { enabled, .. } => (
                 NativeEffectOperation::SetPointerPassthrough {
-                    surface,
+                    binding: native_binding,
                     enabled: *enabled,
-                    after: after.map(NativeEffectHandle::from_core),
                 },
                 NativeEffectCorrelationKind::Input,
             ),
-            PlatformEffect::RequestFocus { after, .. } => (
+            PlatformEffect::RequestFocus { .. } => (
                 NativeEffectOperation::RequestFocus {
-                    surface,
-                    after: after.map(NativeEffectHandle::from_core),
+                    binding: native_binding,
                 },
                 NativeEffectCorrelationKind::ExternalFact,
             ),
@@ -290,7 +257,7 @@ impl NativeEffectRequest {
                 placement, role, ..
             } => (
                 NativeEffectOperation::RequestReplacement {
-                    surface,
+                    binding: native_binding,
                     placement: *placement,
                     role: (*role).into(),
                 },
@@ -311,113 +278,70 @@ impl NativeEffectRequest {
                             *edge,
                         ),
                         resolution: (*resolution).into(),
-                        after: fence.after_effect().map(NativeEffectHandle::from_core),
                     },
                     NativeEffectCorrelationKind::Close,
                 )
             }
         };
         Self {
-            operation: Some(operation),
-            receipt: Some(NativeEffectReceipt {
-                provider: emission.provider(),
-                binding,
-                effect: emission.id(),
-                epoch: emission.epoch(),
-                correlation,
-                cleanup: emission.cleanup_observation_token(),
-                abandoned: Some(abandoned),
-            }),
+            operation,
+            provider: emission.provider(),
+            binding,
+            effect: emission.id(),
+            epoch: emission.epoch(),
+            correlation,
+            cleanup: emission.cleanup_observation_token(),
+            abandoned: Some(abandoned),
         }
     }
 
-    /// Consumes the affine request into the operation and its sole dispatch receipt.
+    /// Returns the exact operation without exposing core effect-ledger identity.
     #[must_use]
-    pub fn into_parts(mut self) -> (NativeEffectOperation, NativeEffectReceipt) {
-        let operation = self
-            .operation
-            .take()
-            .expect("an armed native effect request retains its operation");
-        let receipt = self
-            .receipt
-            .take()
-            .expect("an armed native effect request retains its receipt");
-        (operation, receipt)
-    }
-}
-
-impl PartialEq for NativeEffectRequest {
-    fn eq(&self, other: &Self) -> bool {
-        self.operation == other.operation && self.receipt == other.receipt
-    }
-}
-
-impl Drop for NativeEffectRequest {
-    fn drop(&mut self) {
-        drop(self.receipt.take());
-    }
-}
-
-/// Session-owned sink for affine requests abandoned after core delivery.
-///
-/// This is intentionally a small private queue rather than a second effect
-/// dispatcher. The next joined backend frame records the terminal result in
-/// the same ordered ingress stream as ordinary host results.
-#[derive(Debug, Clone, Default)]
-pub(super) struct NativeEffectDropQueue(Arc<Mutex<Vec<NativeEffectResult>>>);
-
-impl NativeEffectDropQueue {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<NativeEffectResult>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    pub const fn operation(&self) -> &NativeEffectOperation {
+        &self.operation
     }
 
-    fn push(&self, result: NativeEffectResult) {
-        self.lock().push(result);
-    }
-
-    pub(super) fn take_for(&self, provider: PlatformObservationLease) -> Vec<NativeEffectResult> {
-        let pending = std::mem::take(&mut *self.lock());
-        pending
-            .into_iter()
-            .filter(|result| result.provider == provider)
-            .collect()
-    }
-}
-
-/// Sole dispatch receipt for one exact native effect emission.
-///
-/// Successful dispatch is not proof that platform state changed. Use
-/// [`Self::accepted`] and publish the resulting correlation through a later
-/// exact platform observation.
-#[must_use = "an effect receipt must be accepted or converted into a typed failure"]
-#[derive(Debug)]
-pub struct NativeEffectReceipt {
-    provider: PlatformObservationLease,
-    binding: ViewportBinding,
-    effect: EffectId,
-    epoch: WorkspaceEpoch,
-    correlation: NativeEffectCorrelationKind,
-    cleanup: Option<CleanupObservationToken>,
-    abandoned: Option<NativeEffectDropQueue>,
-}
-
-impl NativeEffectReceipt {
-    /// Returns the opaque effect identity used to correlate reducer outcomes.
+    /// Records successful dispatch and returns any exact later-observation capability.
+    ///
+    /// `None` means the operation is completed by ordinary inventory, focus, or
+    /// lifecycle facts rather than a property acknowledgement.
     #[must_use]
-    pub const fn handle(&self) -> NativeEffectHandle {
-        NativeEffectHandle(self.effect)
-    }
-
-    /// Converts a successful dispatch into an opaque later-observation correlation.
-    #[must_use]
-    pub fn accepted(mut self) -> NativeEffectCorrelation {
+    pub fn accepted(mut self) -> Option<NativeEffectAcknowledgement> {
         self.abandoned = None;
-        NativeEffectCorrelation {
-            provider: self.provider,
-            binding: self.binding,
-            effect: self.effect,
-            kind: self.correlation,
-            cleanup: self.cleanup,
+        match self.correlation {
+            NativeEffectCorrelationKind::Input => Some(NativeEffectAcknowledgement::Input(
+                NativeInputEffectAcknowledgement {
+                    provider: self.provider,
+                    binding: self.binding,
+                    effect: self.effect,
+                },
+            )),
+            NativeEffectCorrelationKind::Presentation => {
+                Some(NativeEffectAcknowledgement::Presentation(
+                    NativePresentationEffectAcknowledgement {
+                        provider: self.provider,
+                        binding: self.binding,
+                        effect: self.effect,
+                    },
+                ))
+            }
+            NativeEffectCorrelationKind::Close => Some(NativeEffectAcknowledgement::Close(
+                NativeCloseEffectAcknowledgement {
+                    provider: self.provider,
+                    binding: self.binding,
+                    effect: self.effect,
+                },
+            )),
+            NativeEffectCorrelationKind::Cleanup => Some(NativeEffectAcknowledgement::Cleanup(
+                NativeCleanupObservation {
+                    provider: self.provider,
+                    provider_binding: self.binding,
+                    token: self
+                        .cleanup
+                        .expect("cleanup effects carry an exact observation token"),
+                },
+            )),
+            NativeEffectCorrelationKind::ExternalFact => None,
         }
     }
 
@@ -449,9 +373,10 @@ impl NativeEffectReceipt {
     }
 }
 
-impl PartialEq for NativeEffectReceipt {
+impl PartialEq for NativeEffectRequest {
     fn eq(&self, other: &Self) -> bool {
-        self.provider == other.provider
+        self.operation == other.operation
+            && self.provider == other.provider
             && self.binding == other.binding
             && self.effect == other.effect
             && self.epoch == other.epoch
@@ -460,7 +385,7 @@ impl PartialEq for NativeEffectReceipt {
     }
 }
 
-impl Drop for NativeEffectReceipt {
+impl Drop for NativeEffectRequest {
     fn drop(&mut self) {
         let Some(abandoned) = self.abandoned.take() else {
             return;
@@ -477,73 +402,47 @@ impl Drop for NativeEffectReceipt {
     }
 }
 
-/// Opaque proof retained after the host successfully submitted one effect.
+/// Session-owned sink for affine requests abandoned after core delivery.
 ///
-/// Dispatch success alone never completes the effect. Convert this proof into
-/// the matching property acknowledgement, or retain it until an external
-/// inventory/focus fact proves the operation.
-#[derive(Debug, PartialEq)]
-pub struct NativeEffectCorrelation {
-    provider: PlatformObservationLease,
-    binding: ViewportBinding,
-    effect: EffectId,
-    kind: NativeEffectCorrelationKind,
-    cleanup: Option<CleanupObservationToken>,
+/// This is intentionally a small private queue rather than a second effect
+/// dispatcher. The next joined backend frame records the terminal result in
+/// the same ordered ingress stream as ordinary host results.
+#[derive(Debug, Clone, Default)]
+pub(super) struct NativeEffectDropQueue(Arc<Mutex<Vec<NativeEffectResult>>>);
+
+impl NativeEffectDropQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<NativeEffectResult>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, result: NativeEffectResult) {
+        self.lock().push(result);
+    }
+
+    pub(super) fn take_for(&self, provider: PlatformObservationLease) -> Vec<NativeEffectResult> {
+        let pending = std::mem::take(&mut *self.lock());
+        pending
+            .into_iter()
+            .filter(|result| result.provider == provider)
+            .collect()
+    }
 }
 
-impl NativeEffectCorrelation {
-    /// Converts a pointer-input property effect into an exact acknowledgement.
-    pub fn into_input_acknowledgement(self) -> Result<NativeInputEffectAcknowledgement, Self> {
-        if self.kind != NativeEffectCorrelationKind::Input {
-            return Err(self);
-        }
-        Ok(NativeInputEffectAcknowledgement {
-            provider: self.provider,
-            binding: self.binding,
-            effect: self.effect,
-        })
-    }
-
-    /// Converts a window-presentation effect into an exact acknowledgement.
-    pub fn into_presentation_acknowledgement(
-        self,
-    ) -> Result<NativePresentationEffectAcknowledgement, Self> {
-        if self.kind != NativeEffectCorrelationKind::Presentation {
-            return Err(self);
-        }
-        Ok(NativePresentationEffectAcknowledgement {
-            provider: self.provider,
-            binding: self.binding,
-            effect: self.effect,
-        })
-    }
-
-    /// Converts a close-property effect into an exact acknowledgement.
-    pub fn into_close_acknowledgement(self) -> Result<NativeCloseEffectAcknowledgement, Self> {
-        if self.kind != NativeEffectCorrelationKind::Close {
-            return Err(self);
-        }
-        Ok(NativeCloseEffectAcknowledgement {
-            provider: self.provider,
-            binding: self.binding,
-            effect: self.effect,
-        })
-    }
-
-    /// Converts an observation-only cleanup continuation into its delayed-result authority.
-    pub fn into_cleanup_observation(self) -> Result<NativeCleanupObservation, Self> {
-        if self.kind != NativeEffectCorrelationKind::Cleanup {
-            return Err(self);
-        }
-        let Some(token) = self.cleanup else {
-            return Err(self);
-        };
-        Ok(NativeCleanupObservation {
-            provider: self.provider,
-            provider_binding: self.binding,
-            token,
-        })
-    }
+/// Exact follow-up capability produced after successful effect dispatch.
+///
+/// Internal effect identities and causal predecessor chains remain private.
+/// The host receives only the later fact it can authoritatively report.
+#[non_exhaustive]
+#[derive(Debug, PartialEq)]
+pub enum NativeEffectAcknowledgement {
+    /// Correlate a later pointer-input property observation.
+    Input(NativeInputEffectAcknowledgement),
+    /// Correlate a later window-presentation property observation.
+    Presentation(NativePresentationEffectAcknowledgement),
+    /// Correlate a later close or destruction observation.
+    Close(NativeCloseEffectAcknowledgement),
+    /// Correlate one delayed destructive predecessor result.
+    Cleanup(NativeCleanupObservation),
 }
 
 /// Exact pointer-input effect acknowledgement for one native observation.
@@ -663,14 +562,6 @@ impl NativeEffectSubmissionError {
     }
 }
 
-impl NativeEffectResult {
-    /// Returns the opaque effect identity used to correlate reducer outcomes.
-    #[must_use]
-    pub const fn handle(&self) -> NativeEffectHandle {
-        NativeEffectHandle(self.result.effect())
-    }
-}
-
 /// Adapter-level reason an effect was not dispatched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeDispatchFailure {
@@ -728,42 +619,6 @@ impl From<NativeIndeterminateReason> for EffectIndeterminateReason {
     }
 }
 
-/// Stable facade classification of one reported effect result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeEffectReportOutcome {
-    /// The result changed the live effect ledger.
-    Applied,
-    /// The same exact result was already accepted.
-    Duplicate,
-    /// The observation did not occur after the request delivery fence.
-    CausalityBarrier,
-    /// The result belongs to an older workspace epoch.
-    StaleEpoch,
-    /// The effect identity is unknown.
-    UnknownEffect,
-    /// The effect reached terminal state and its detailed record was compacted.
-    RetiredTerminal,
-    /// The result names a different native binding.
-    BindingMismatch,
-    /// The reporting provider never received the effect.
-    ProviderMismatch,
-}
-
-impl From<EffectTransition> for NativeEffectReportOutcome {
-    fn from(transition: EffectTransition) -> Self {
-        match transition {
-            EffectTransition::Applied => Self::Applied,
-            EffectTransition::Duplicate => Self::Duplicate,
-            EffectTransition::CausalityBarrier => Self::CausalityBarrier,
-            EffectTransition::StaleEpoch => Self::StaleEpoch,
-            EffectTransition::UnknownEffect => Self::UnknownEffect,
-            EffectTransition::RetiredTerminal => Self::RetiredTerminal,
-            EffectTransition::BindingMismatch => Self::BindingMismatch,
-            EffectTransition::ProviderMismatch => Self::ProviderMismatch,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,7 +628,7 @@ mod tests {
     use crate::viewport::{InventoryGeneration, WindowIncarnation, WindowToken};
 
     #[test]
-    fn property_effect_operation_retains_its_causal_predecessor() {
+    fn property_effect_request_hides_ledger_links_and_returns_typed_acknowledgement() {
         let domain = EngineAuthorityDomainId::new_for_test(91);
         let mut providers = PlatformObservationAuthority::new(domain);
         let provider = providers.create().expect("the test provider mints");
@@ -810,34 +665,33 @@ mod tests {
             .pop()
             .expect("one successor emission exists");
 
-        let (first_operation, first_receipt) =
-            NativeEffectRequest::from_emission(&first_emission, NativeEffectDropQueue::default())
-                .into_parts();
+        let first_request =
+            NativeEffectRequest::from_emission(&first_emission, NativeEffectDropQueue::default());
         assert!(matches!(
-            first_operation,
-            NativeEffectOperation::SetPointerPassthrough {
-                enabled: true,
-                after: None,
-                ..
-            }
+            first_request.operation(),
+            NativeEffectOperation::SetPointerPassthrough { enabled: true, .. }
         ));
-        assert_eq!(first_receipt.handle(), NativeEffectHandle::from_core(first));
+        let Some(NativeEffectAcknowledgement::Input(first_acknowledgement)) =
+            first_request.accepted()
+        else {
+            panic!("pointer pass-through returns one input acknowledgement");
+        };
+        assert_eq!(first_acknowledgement.provider, provider);
+        assert_eq!(first_acknowledgement.binding, binding);
+        assert_eq!(first_acknowledgement.effect, first);
 
-        let (second_operation, second_receipt) =
-            NativeEffectRequest::from_emission(&second_emission, NativeEffectDropQueue::default())
-                .into_parts();
+        let second_request =
+            NativeEffectRequest::from_emission(&second_emission, NativeEffectDropQueue::default());
         assert!(matches!(
-            second_operation,
-            NativeEffectOperation::SetPointerPassthrough {
-                enabled: false,
-                after: Some(predecessor),
-                ..
-            } if predecessor == NativeEffectHandle::from_core(first)
+            second_request.operation(),
+            NativeEffectOperation::SetPointerPassthrough { enabled: false, .. }
         ));
-        assert_eq!(
-            second_receipt.handle(),
-            NativeEffectHandle::from_core(second)
-        );
+        let Some(NativeEffectAcknowledgement::Input(second_acknowledgement)) =
+            second_request.accepted()
+        else {
+            panic!("the successor returns one input acknowledgement");
+        };
+        assert_eq!(second_acknowledgement.effect, second);
     }
 
     #[test]
@@ -874,13 +728,13 @@ mod tests {
 
         let results = abandoned.take_for(provider);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].handle(), NativeEffectHandle::from_core(effect));
+        assert_eq!(results[0].result.effect(), effect);
         assert_eq!(results[0].binding, binding);
         assert!(abandoned.take_for(provider).is_empty());
     }
 
     #[test]
-    fn dropped_dispatch_receipt_records_the_same_terminal_failure() {
+    fn accepting_an_external_fact_effect_disarms_the_drop_failure() {
         let domain = EngineAuthorityDomainId::new_for_test(93);
         let mut providers = PlatformObservationAuthority::new(domain);
         let provider = providers.create().expect("the test provider mints");
@@ -892,7 +746,7 @@ mod tests {
             WindowIncarnation::new(1),
         );
         let mut ledger = EffectLedger::default();
-        let effect = ledger
+        ledger
             .request(PlatformEffect::RequestFocus {
                 binding,
                 after: None,
@@ -904,13 +758,14 @@ mod tests {
             .pop()
             .expect("one emission exists");
         let abandoned = NativeEffectDropQueue::default();
-        let (_operation, receipt) =
-            NativeEffectRequest::from_emission(&emission, abandoned.clone()).into_parts();
+        let request = NativeEffectRequest::from_emission(&emission, abandoned.clone());
+        assert!(matches!(
+            request.operation(),
+            NativeEffectOperation::RequestFocus { .. }
+        ));
 
-        drop(receipt);
+        assert_eq!(request.accepted(), None);
 
-        let results = abandoned.take_for(provider);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].handle(), NativeEffectHandle::from_core(effect));
+        assert!(abandoned.take_for(provider).is_empty());
     }
 }

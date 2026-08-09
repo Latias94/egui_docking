@@ -29,11 +29,10 @@ pub use native::{
 };
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseEffectAcknowledgement,
-    NativeDispatchFailure, NativeEffectCorrelation, NativeEffectHandle, NativeEffectOperation,
-    NativeEffectReceipt, NativeEffectReportOutcome, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeHiddenPresentationProof, NativeIndeterminateReason,
-    NativeInputEffectAcknowledgement, NativePreShowPresentationProof,
-    NativePresentationEffectAcknowledgement, NativeSurfaceRole, NativeUnsupportedReason,
+    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeEffectResult, NativeEffectSubmissionError, NativeIndeterminateReason,
+    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement, NativeSurfaceRole,
+    NativeUnsupportedReason,
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizePaintRecord, DockspaceDragPreview, DockspaceGuideScope,
@@ -739,13 +738,6 @@ pub enum HostInputOutcome {
         /// Plan retaining the cancellation obligation.
         plan: ClosePlan,
     },
-    /// One negative or indeterminate native effect result was reduced.
-    NativeEffectResultReported {
-        /// Opaque exact effect identity.
-        effect: NativeEffectHandle,
-        /// Stable result classification.
-        outcome: NativeEffectReportOutcome,
-    },
     /// Native facts captured against an older workspace epoch were inert.
     NativePlatformSnapshotStale,
     /// Native ingress from a superseded provider was inert.
@@ -886,12 +878,7 @@ impl HostFrameReport {
                         }
                     })
                 }
-                InputOutcome::PlatformEffectReported {
-                    effect, transition, ..
-                } => Some(HostInputOutcome::NativeEffectResultReported {
-                    effect: NativeEffectHandle::from_core(*effect),
-                    outcome: (*transition).into(),
-                }),
+                InputOutcome::PlatformEffectReported { .. } => None,
                 InputOutcome::PlatformSnapshotStale { .. } => {
                     Some(HostInputOutcome::NativePlatformSnapshotStale)
                 }
