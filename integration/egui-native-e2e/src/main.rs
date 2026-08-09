@@ -4,10 +4,10 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dockspace::command::Edge;
+use dockspace::backend::command::Edge;
 use dockspace::drop_target::DropTargetId;
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
 use dockspace::backend::interaction::PreviewVisual;
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::WindowToken;

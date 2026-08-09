@@ -4,10 +4,13 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use dockspace::backend::command::{ItemSource, MovePayload};
 use dockspace::backend::engine::{
     LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase,
     TabListMenuNavigation, TabScrollAdjustment,
 };
+use dockspace::backend::graph::{Axis, Workspace};
+use dockspace::backend::ids::{FloatingPresentationId, RootId, SurfaceId};
 use dockspace::backend::interaction::{
     ActiveDragView, ActiveResizeView, ContainedTransformPaintAcknowledgement,
     ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase, InteractionPreview,
@@ -21,11 +24,8 @@ use dockspace::backend::scene::{
     PaneRecord, PaneSceneId, PresentationPlan, SplitterResizeTarget, SplitterSceneId,
     SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord, TabSceneId, TabStripControlRecord,
 };
-use dockspace::command::{ItemSource, MovePayload};
 use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-use dockspace::graph::{Axis, Workspace};
-use dockspace::ids::{FloatingPresentationId, RootId, SurfaceId};
 use dockspace::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use dockspace::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use egui::accesskit::Action;
@@ -130,7 +130,7 @@ pub(crate) enum RenderAction {
     AdjustContainedResize {
         scene: SurfaceSceneStamp,
         surface: SurfaceId,
-        root: dockspace::ids::RootId,
+        root: dockspace::backend::ids::RootId,
         floating: FloatingPresentationId,
         expected_rect: LogicalRect,
         minimum_size: LogicalSize,
@@ -1396,10 +1396,10 @@ pub(crate) fn paint_centered_label(ui: &Ui, rect: Rect, text: impl ToString, col
 #[cfg(test)]
 mod tests {
     use dockspace::backend::engine::DockEngine;
+    use dockspace::backend::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
+    use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
     use dockspace::backend::scene::TabBarSceneId;
     use dockspace::geometry::LogicalRect;
-    use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
-    use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
     use dockspace::policy::DockPolicy;
     use dockspace::tab_strip::TabStripControlId;
     #[cfg(not(egui_backend_event_envelope))]

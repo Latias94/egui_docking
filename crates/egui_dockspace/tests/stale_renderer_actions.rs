@@ -1,5 +1,5 @@
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};
 

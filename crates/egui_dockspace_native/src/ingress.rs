@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use dockspace::backend::effect::EffectResult;
 use dockspace::backend::effect::{EffectId, PlatformEffectEmission};
 use dockspace::backend::engine::EngineInput;
+use dockspace::backend::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::backend::ingress::{
     BackendIngressBatch, BackendIngressOrdinal, BackendIngressPayload,
     BackendIngressPrefixRetirementReceipt, BackendIngressRecorder, BackendIngressSavepoint,
@@ -37,7 +38,6 @@ use dockspace::backend::viewport_focus::{
     FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
 };
 use dockspace::geometry::{PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::viewport::{
     CapabilityObservationGeneration, CloseObservationGeneration, CoordinateObservationGeneration,

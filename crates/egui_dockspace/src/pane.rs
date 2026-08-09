@@ -1,6 +1,6 @@
 //! Application-owned pane rendering contract.
 
-use dockspace::ids::ItemId;
+use dockspace::backend::ids::ItemId;
 use egui::{Context, Id, Ui, Vec2, WidgetText};
 
 /// Exact adapter observation of one application's pane focus target.

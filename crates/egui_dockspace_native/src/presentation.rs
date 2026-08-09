@@ -52,7 +52,7 @@ pub(crate) struct PreparedNativePresentationBatch {
     base_serial: u64,
     next_serial: u64,
     presentation_host: PresentationHostLease,
-    outputs: BTreeMap<dockspace::ids::SurfaceId, PreparedNativePresentationOutput>,
+    outputs: BTreeMap<dockspace::backend::ids::SurfaceId, PreparedNativePresentationOutput>,
 }
 
 #[derive(Clone)]
@@ -588,8 +588,8 @@ fn native_presentation_result(outcome: &PaintOutcome) -> EguiPresentationResult 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId, SurfaceId};
+    use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
     fn test_dockspace() -> Dockspace {
         let surface = SurfaceId::new(1);
         let root = RootId::new(1);

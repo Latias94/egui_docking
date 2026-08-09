@@ -6,11 +6,11 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::cell::Cell;
 
+use dockspace::backend::graph::{Node, Workspace};
+use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::backend::scene::RootPresentationOwner;
 use dockspace::backend::scene::{PaneSceneId, TabBarSceneId, TabSceneId};
 use dockspace::geometry::{GeometryError, LogicalRect, LogicalSize};
-use dockspace::graph::{Node, Workspace};
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::policy::TabBarVisibility;
 use dockspace::runtime::WorkspaceVersion;
 use dockspace::scene_manifest::{
@@ -416,7 +416,7 @@ pub enum ProjectionError {
     #[error("surface {surface} references missing contained presentation {floating}")]
     MissingFloating {
         surface: SurfaceId,
-        floating: dockspace::ids::FloatingPresentationId,
+        floating: dockspace::backend::ids::FloatingPresentationId,
     },
     #[error("workspace does not contain root {root}")]
     MissingRoot { root: RootId },

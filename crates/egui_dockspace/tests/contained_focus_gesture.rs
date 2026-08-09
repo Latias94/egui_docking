@@ -1,8 +1,10 @@
+use dockspace::backend::command::MovePayload;
+use dockspace::backend::graph::{
+    ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+};
+use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
-use dockspace::command::MovePayload;
 use dockspace::geometry::{LogicalPoint, LogicalRect};
-use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::intent::{
     ContainedHorizontalResizeEdge, ContainedResizeEdges, ContainedTransformKind,
 };

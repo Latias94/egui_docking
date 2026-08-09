@@ -11,9 +11,9 @@ use dockspace::backend::effect::{
     EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
     PlatformEffect, PlatformEffectEmission,
 };
+use dockspace::backend::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::backend::ingress::BackendIngressRecorder;
 use dockspace::geometry::PhysicalRect;
-use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::viewport::{ViewportBinding, ViewportRole};
 use eframe::{
     NativeEffectCorrelation, NativeEffectDispatchOutcome, NativeEffectProperty, NativeEffectResult,
@@ -314,7 +314,7 @@ impl PendingNativeCreateOrigin {
 #[derive(Clone, Copy, Debug)]
 struct RestoredCreateToken {
     runtime: u64,
-    surface: dockspace::ids::SurfaceId,
+    surface: dockspace::backend::ids::SurfaceId,
     viewport: ViewportId,
 }
 
@@ -646,7 +646,7 @@ impl NativeEffectDriver {
     pub(crate) fn retire_restored_viewport(
         &mut self,
         viewport: ViewportId,
-        surface: dockspace::ids::SurfaceId,
+        surface: dockspace::backend::ids::SurfaceId,
     ) -> Result<(), NativeRuntimeError> {
         if self
             .restored_creates
@@ -1710,7 +1710,7 @@ mod tests {
 
         let token = RestoredCreateToken {
             runtime: 7,
-            surface: dockspace::ids::SurfaceId::new(11),
+            surface: dockspace::backend::ids::SurfaceId::new(11),
             viewport: ViewportId::from_hash_of("restored-create-terminal"),
         };
         assert!(

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use dockspace::backend::effect::{EffectDispatchResult, EffectId};
-use dockspace::ids::WorkspaceEpoch;
+use dockspace::backend::ids::WorkspaceEpoch;
 use egui_dockspace::backend::ExactNativeViewport;
 #[cfg(test)]
 use egui_dockspace::backend::NativeViewportIncarnation;

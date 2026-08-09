@@ -3,11 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use dockspace::backend::command::CommandOutcome;
 use dockspace::backend::engine::{
     CoreHostFrameError, CoreHostPresentationFrame, DockEngine, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationObligation, HostPresentationUnavailableReason,
     PreparedSurfaceContribution, SurfaceContributionPrepareError, SurfaceContributionToken,
 };
+use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::interaction::InteractionEventKind;
 use dockspace::backend::presentation_observation::{
     HostFrameKey, HostInteractionPresentation, HostPresentationEmissionRequest,
@@ -17,8 +19,6 @@ use dockspace::backend::presentation_observation::{
 use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp, TabBarSceneId, TabSceneId};
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::backend::viewport_focus::PaneFocusObservation;
-use dockspace::command::CommandOutcome;
-use dockspace::ids::SurfaceId;
 use dockspace::runtime::WorkspaceVersion;
 use dockspace::scene_manifest::SurfaceMeasurements;
 use egui::{Context, Id, Rect, Ui, ViewportId};
@@ -360,7 +360,10 @@ pub(crate) struct PreparedEguiFrameAcceptance {
     renderer_style_revision: u64,
     surfaces: Vec<PreparedEguiSurfaceAcceptance>,
     native_staging_outputs: Vec<HostPresentationOutput>,
-    committed_selections: BTreeSet<(dockspace::ids::NodeId, dockspace::ids::ItemId)>,
+    committed_selections: BTreeSet<(
+        dockspace::backend::ids::NodeId,
+        dockspace::backend::ids::ItemId,
+    )>,
     semantic_focus_requests: Vec<TabSceneId>,
 }
 
@@ -992,8 +995,8 @@ fn insert_multipass_raw_input(
 #[cfg(test)]
 mod multipass_semantic_input_tests {
     use super::*;
-    use dockspace::command::ContentCloseTarget;
-    use dockspace::ids::ItemId;
+    use dockspace::backend::command::ContentCloseTarget;
+    use dockspace::backend::ids::ItemId;
 
     fn close_input(raw_event_index: usize, item: u64) -> StagedSemanticInput {
         StagedSemanticInput::at_raw_event(
@@ -1633,7 +1636,10 @@ impl EguiDockRenderer {
     fn accept_surface(
         &mut self,
         engine: &DockEngine,
-        committed_selections: &BTreeSet<(dockspace::ids::NodeId, dockspace::ids::ItemId)>,
+        committed_selections: &BTreeSet<(
+            dockspace::backend::ids::NodeId,
+            dockspace::backend::ids::ItemId,
+        )>,
         semantic_focus_requests: &[TabSceneId],
         outcome: SurfaceContributionOutcome,
         output: Option<HostPresentationOutput>,
@@ -1718,7 +1724,10 @@ impl EguiDockRenderer {
     fn accept_tab_keyboard_focus_continuations(
         &self,
         engine: &DockEngine,
-        committed_selections: &BTreeSet<(dockspace::ids::NodeId, dockspace::ids::ItemId)>,
+        committed_selections: &BTreeSet<(
+            dockspace::backend::ids::NodeId,
+            dockspace::backend::ids::ItemId,
+        )>,
         semantic_focus_requests: &[TabSceneId],
         update: StagedTabStripStateUpdate,
     ) {
@@ -1732,7 +1741,7 @@ impl EguiDockRenderer {
             let selection_committed = committed_selections.contains(&(key.node, continuation.item));
             let selected_after = matches!(
                 engine.workspace().node(key.node),
-                Some(dockspace::graph::Node::Tabs { selected: Some(item), .. })
+                Some(dockspace::backend::graph::Node::Tabs { selected: Some(item), .. })
                     if *item == continuation.item
             );
             let presentation_matches = engine
@@ -1762,7 +1771,7 @@ impl EguiDockRenderer {
             );
             let selected_after = matches!(
                 engine.workspace().node(tab.tabs),
-                Some(dockspace::graph::Node::Tabs { selected: Some(item), .. })
+                Some(dockspace::backend::graph::Node::Tabs { selected: Some(item), .. })
                     if *item == tab.item
             );
             if selected_after

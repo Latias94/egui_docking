@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use dockspace::command::{
+use dockspace::backend::command::{
     CloseCommitOutcome, CommandOutcome, ContentCloseTarget, DockFraction, DockTarget, Edge,
     MovePayload, WorkspaceCommand,
 };
+use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::error::{CommandError, ReferenceRole};
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceInteractionError, DockspaceReceiverDescriptor,
@@ -54,7 +54,7 @@ struct DeterministicHost {
 impl DeterministicHost {
     fn new(workspace: Workspace) -> Self {
         Self {
-            session: DockspaceSession::new(workspace, DockPolicy::default())
+            session: DockspaceSession::from_backend_workspace(workspace, DockPolicy::default())
                 .expect("the conformance workspace must initialize"),
         }
     }

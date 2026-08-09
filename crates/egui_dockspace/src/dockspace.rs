@@ -31,10 +31,15 @@ pub use self::driver::{
 use std::collections::BTreeSet;
 use std::{fmt::Debug, hash::Hash};
 
+#[cfg(any(feature = "backend", test))]
+use dockspace::backend::command::WorkspaceCommand;
 use dockspace::backend::engine::{
     CoreHostFrame, CoreHostFramePrelude, DockEngine, EngineError, EngineInput, HostFrameView,
     HostPresentationDisposition, HostPresentationUnavailableReason, PreparedSurfaceContribution,
 };
+#[cfg(any(feature = "backend", test))]
+use dockspace::backend::graph::Workspace;
+use dockspace::backend::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::backend::ingress::{
     BackendIngressError, BackendIngressOrdinal, BackendIngressProviderReplacementTicket,
     BackendIngressRecorder,
@@ -51,15 +56,10 @@ use dockspace::backend::presentation_observation::{
 use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::backend::viewport_focus::GlobalFocusedWindow;
-#[cfg(any(feature = "backend", test))]
-use dockspace::command::WorkspaceCommand;
 #[cfg(feature = "serde")]
 use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
 };
-#[cfg(any(feature = "backend", test))]
-use dockspace::graph::Workspace;
-use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
 use dockspace::model::{DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction};
 use dockspace::policy::DockPolicy;

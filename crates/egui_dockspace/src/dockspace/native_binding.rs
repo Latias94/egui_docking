@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use dockspace::backend::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 use dockspace::backend::ingress::BackendIngressLease;
 use dockspace::backend::transition::{EngineTransition, InputOutcome};
-use dockspace::ids::{EngineAuthorityDomainId, SurfaceId, WorkspaceEpoch};
 use dockspace::viewport::{ViewportBinding, WindowIncarnation, WindowToken};
 use egui::ViewportId;
 use thiserror::Error;
@@ -1120,8 +1120,8 @@ pub(super) enum NativeRouteLookupError {
 #[cfg(test)]
 mod tests {
     use dockspace::backend::engine::DockEngine;
+    use dockspace::backend::graph::Workspace;
     use dockspace::backend::pointer_journal::PointerEdgeSequence;
-    use dockspace::graph::Workspace;
     use dockspace::policy::DockPolicy;
 
     use super::*;

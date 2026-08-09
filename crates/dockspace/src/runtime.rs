@@ -52,13 +52,16 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
-use crate::command::{CloseCommitOutcome, CommandOutcome, ContentCloseTarget, WorkspaceCommand};
+use crate::command::{CloseCommitOutcome, ContentCloseTarget};
+#[cfg(any(feature = "backend", test))]
+use crate::command::{CommandOutcome, WorkspaceCommand};
 use crate::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
     HostPresentationUnavailableReason, SurfaceContributionBeginError,
     SurfaceContributionPrepareError,
 };
 use crate::error::CommandError;
+#[cfg(any(feature = "backend", test))]
 use crate::graph::Workspace;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::interaction::InteractionOutcome;
@@ -105,17 +108,26 @@ impl DockspaceSession {
         layout: DockspaceLayout,
         policy: crate::policy::DockPolicy,
     ) -> Result<Self, DockspaceRuntimeError> {
-        Self::new(layout.into_workspace(), policy)
+        Self::from_workspace(layout.into_workspace(), policy)
     }
 
-    /// Creates one session from a strictly validated workspace and policy.
+    /// Creates one backend session from a strictly validated runtime workspace and policy.
     ///
     /// # Errors
     ///
     /// Returns an error when the workspace is invalid or the core cannot mint
     /// the private presentation-host identity.
-    pub fn new(
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
+    pub fn from_backend_workspace(
         workspace: Workspace,
+        policy: crate::policy::DockPolicy,
+    ) -> Result<Self, DockspaceRuntimeError> {
+        Self::from_workspace(workspace, policy)
+    }
+
+    fn from_workspace(
+        workspace: crate::graph::Workspace,
         policy: crate::policy::DockPolicy,
     ) -> Result<Self, DockspaceRuntimeError> {
         let mut engine = DockEngine::new(workspace, policy)?;
@@ -133,6 +145,8 @@ impl DockspaceSession {
     }
 
     /// Returns the currently published, strictly validated workspace.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     #[must_use]
     pub const fn workspace(&self) -> &Workspace {
         self.engine.workspace()
@@ -269,6 +283,8 @@ impl DockspaceHostFrame<'_> {
     }
 
     /// Returns the post-input candidate workspace visible inside this frame.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     #[must_use]
     pub fn workspace(&self) -> &Workspace {
         self.frame.view().workspace()
@@ -289,6 +305,8 @@ impl DockspaceHostFrame<'_> {
     ///
     /// Returns an error when the affine frame is poisoned or its private source
     /// sequence cannot advance.
+    #[cfg(any(feature = "backend", test))]
+    #[doc(hidden)]
     pub fn submit_command(
         &mut self,
         command: WorkspaceCommand,
@@ -552,6 +570,7 @@ pub enum HostInputOutcome {
     /// One item-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
     /// One checked durable command applied or produced a valid no-op.
+    #[cfg(any(feature = "backend", test))]
     CommandApplied {
         /// Structured command result.
         outcome: CommandOutcome,
@@ -559,6 +578,7 @@ pub enum HostInputOutcome {
         changed: bool,
     },
     /// One checked durable command was consumed without mutation.
+    #[cfg(any(feature = "backend", test))]
     CommandRejected(CommandError),
     /// One content-close request opened or reused a plan.
     CloseRequested {
@@ -681,12 +701,14 @@ impl HostFrameReport {
         let mut ordered_inputs = Vec::new();
         for reduced in transition.reduced_inputs() {
             let outcome = match reduced.outcome() {
+                #[cfg(any(feature = "backend", test))]
                 InputOutcome::CommandProcessed {
                     outcome, changed, ..
                 } => Some(HostInputOutcome::CommandApplied {
                     outcome: outcome.clone(),
                     changed: *changed,
                 }),
+                #[cfg(any(feature = "backend", test))]
                 InputOutcome::CommandRejected { error, .. } => {
                     Some(HostInputOutcome::CommandRejected(error.clone()))
                 }
@@ -1128,7 +1150,7 @@ mod tests {
         let tabs = builder.insert_node(crate::graph::Node::tabs([item]));
         builder.set_root(root, crate::graph::RootRecord::new(tabs).with_central(tabs));
         builder.set_surface(surface, crate::graph::SurfacePresentation::with_main(root));
-        DockspaceSession::new(
+        DockspaceSession::from_backend_workspace(
             builder.build().expect("runtime test workspace validates"),
             crate::policy::DockPolicy::default(),
         )

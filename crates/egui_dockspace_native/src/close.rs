@@ -1,7 +1,7 @@
 //! Application decisions for core-owned native close plans.
 
-use dockspace::graph::Workspace;
-use dockspace::ids::ItemId;
+use dockspace::backend::graph::Workspace;
+use dockspace::backend::ids::ItemId;
 use dockspace::policy::CloseCapability;
 use dockspace::{
     CloseDecision, CloseDecisionToken, ClosePlanTarget, CloseRequestId, DeferredCloseDecision,

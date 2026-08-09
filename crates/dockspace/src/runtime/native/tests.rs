@@ -17,7 +17,7 @@ fn native_root_session() -> (DockspaceSession, NativeSurfaceLease) {
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::new(
+    let mut session = DockspaceSession::from_backend_workspace(
         builder
             .build()
             .expect("the native test workspace validates"),

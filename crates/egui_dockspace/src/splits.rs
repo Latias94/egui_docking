@@ -1,10 +1,10 @@
 //! Splitter painting and scene-bound non-pointer actions.
 
 use dockspace::backend::engine::LocalSplitterGesturePhase;
+use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::interaction::ActiveResizeView;
 use dockspace::backend::presentation_hit::PresentationHitRegionKind;
 use dockspace::backend::scene::{SplitterRecord, SplitterResizeTarget, SurfaceSceneStamp};
-use dockspace::ids::SurfaceId;
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{EventFilter, FocusDirection, Id, Key, PointerButton, Sense, Ui};
 
@@ -35,7 +35,7 @@ pub(crate) fn paint_splitter(
     let Some(draw_rect) = from_logical_rect(plan.draw_bounds()) else {
         return;
     };
-    let horizontal = plan.axis() == dockspace::graph::Axis::Horizontal;
+    let horizontal = plan.axis() == dockspace::backend::graph::Axis::Horizontal;
     let id = ui.make_persistent_id((
         "egui_dockspace",
         instance_id,
@@ -265,11 +265,13 @@ fn configure_accessibility(
         node.set_role(Role::Splitter);
         node.set_bounds(accesskit_bounds(hit_rect));
         node.set_label("Resize panes");
-        node.set_orientation(if plan.axis() == dockspace::graph::Axis::Horizontal {
-            Orientation::Vertical
-        } else {
-            Orientation::Horizontal
-        });
+        node.set_orientation(
+            if plan.axis() == dockspace::backend::graph::Axis::Horizontal {
+                Orientation::Vertical
+            } else {
+                Orientation::Horizontal
+            },
+        );
         if interactions_current {
             node.add_action(Action::Focus);
             node.add_action(Action::Increment);

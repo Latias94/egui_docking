@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use dockspace::backend::effect::PlatformEffect;
 use dockspace::backend::engine::{BackendIngressProgress, EngineInput};
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
 use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
@@ -31,8 +33,6 @@ use dockspace::backend::viewport_focus::{
     ViewportActivationRequest,
 };
 use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;

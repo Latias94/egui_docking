@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use dockspace::backend::command::WorkspaceCommand;
 use dockspace::backend::effect::PlatformEffectEmission;
 use dockspace::backend::engine::{
     CoreHostFrame, EngineInput, HostFrameView, HostPresentationDisposition, HostPresentationSlot,
@@ -9,6 +10,7 @@ use dockspace::backend::engine::{
     SurfaceContributionToken,
 };
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::ids::{RootId, SurfaceId};
 use dockspace::backend::interaction::EscapeDelivery;
 use dockspace::backend::presentation_observation::{
     NativeStagingPresentation, SurfacePresentationOutputTicket,
@@ -17,9 +19,7 @@ use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp};
 use dockspace::backend::transition::InputOutcome;
 use dockspace::backend::viewport_focus::PaneFocusIntent;
 use dockspace::backend::viewport_focus::PaneFocusObservation;
-use dockspace::command::WorkspaceCommand;
 use dockspace::geometry::{LogicalRect, LogicalSize};
-use dockspace::ids::{RootId, SurfaceId};
 use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::scene_manifest::{MeasurementUnavailableReason, SurfaceMeasurements};
 use egui::{Context, FullOutput, RawInput, Ui, ViewportId};
@@ -1805,7 +1805,7 @@ impl DockspaceHostFrame<'_> {
         scene: SurfaceSceneStamp,
         surface: SurfaceId,
         root: RootId,
-        floating: dockspace::ids::FloatingPresentationId,
+        floating: dockspace::backend::ids::FloatingPresentationId,
         expected_rect: LogicalRect,
         minimum_size: LogicalSize,
         edge: ContainedResizeEdge,

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};

@@ -4,6 +4,36 @@
 //! types may change whenever the core authority protocol changes. Applications
 //! should use [`crate::runtime`] instead.
 
+/// Canonicalization internals used by backend diagnostics and tests.
+pub mod canonical {
+    pub use crate::canonical::*;
+}
+
+/// Checked graph mutation commands and captured sources.
+pub mod command {
+    pub use crate::command::*;
+}
+
+/// Runtime workspace graph records and builders.
+pub mod graph {
+    pub use crate::graph::*;
+}
+
+/// Stable and runtime identity types used by adapter protocols.
+pub mod ids {
+    pub use crate::ids::*;
+}
+
+/// Atomic workspace transaction protocol.
+pub mod transaction {
+    pub use crate::transaction::*;
+}
+
+/// Strict workspace validation internals.
+pub mod validation {
+    pub use crate::validation::*;
+}
+
 /// Ordered backend ingress records and receipts.
 pub mod ingress {
     pub use crate::backend_ingress::*;

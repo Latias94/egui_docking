@@ -1,7 +1,7 @@
 //! Public runtime failures.
 
-use dockspace::ids::ItemId;
-use dockspace::ids::SurfaceId;
+use dockspace::backend::ids::ItemId;
+use dockspace::backend::ids::SurfaceId;
 use dockspace::viewport::WindowToken;
 use egui::ViewportId;
 use thiserror::Error;

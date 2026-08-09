@@ -2,14 +2,14 @@
 
 use std::collections::BTreeSet;
 
+use dockspace::backend::graph::Workspace;
+use dockspace::backend::ids::{ItemId, SurfaceId};
 use dockspace::backend::ingress::{BackendIngressOrdinal, BackendIngressRecorder};
 use dockspace::document::{
     DockspaceDocumentBootstrap, DockspaceDocumentDecodeError, DockspaceDocumentEnvelope,
     DockspaceDocumentId, DockspaceDocumentRestoreTicket, DockspaceDocumentSessionError,
 };
 use dockspace::external_item_key::ExternalItemKeyMap;
-use dockspace::graph::Workspace;
-use dockspace::ids::{ItemId, SurfaceId};
 use dockspace::viewport_persistence::{ViewportPlacementPreference, ViewportPlacementPreferences};
 use thiserror::Error;
 
@@ -358,14 +358,18 @@ impl Dockspace {
 
 #[cfg(test)]
 mod tests {
-    use dockspace::command::{RootContent, WorkspaceCommand};
+    use dockspace::backend::command::{RootContent, WorkspaceCommand};
+    use dockspace::backend::graph::{
+        ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+    };
+    use dockspace::backend::ids::{
+        FloatingPresentationId, ItemId, RootId, SourceSequence, SurfaceId,
+    };
     use dockspace::document::{
         DockspaceDocumentDecodeError, DockspaceDocumentRestoreError, DockspaceDocumentSessionError,
     };
     use dockspace::external_item_key::{ExternalItemKeyMap, ExternalItemKeyReconcileError};
     use dockspace::geometry::{LogicalRect, PhysicalRect};
-    use dockspace::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SourceSequence, SurfaceId};
     use dockspace::viewport_persistence::{
         ViewportPlacementPreference, ViewportPlacementPreferences,
     };

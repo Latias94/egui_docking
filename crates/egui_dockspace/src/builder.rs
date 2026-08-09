@@ -3,7 +3,7 @@
 use std::{fmt::Debug, hash::Hash};
 
 #[cfg(any(feature = "backend", test))]
-use dockspace::graph::Workspace;
+use dockspace::backend::graph::Workspace;
 use dockspace::model::DockspaceLayout;
 use dockspace::policy::DockPolicy;
 use egui::Id;

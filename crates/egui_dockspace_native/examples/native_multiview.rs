@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::io;
 
+use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
 use dockspace::backend::surface_recovery::SurfaceRecoveryBootstrap;
 use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
 use dockspace::policy::{ContainedFallback, DockPolicy};
 use dockspace::viewport::WindowToken;
 use eframe::egui;

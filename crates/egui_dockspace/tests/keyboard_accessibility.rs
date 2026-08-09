@@ -1,5 +1,5 @@
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, NodeId, RootId, SurfaceId};
+use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId};
 use dockspace::{CloseDecision, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
 use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
@@ -662,7 +662,9 @@ fn tab_activation_requires_an_acknowledged_projection_after_external_selection()
             .capture_item_source(ROOT, tabs, ITEM_A)
             .expect("selection source must capture");
         dockspace
-            .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+            .submit_command(dockspace::backend::command::WorkspaceCommand::Select {
+                source: select_a,
+            })
             .expect("selection command must commit immediately");
         assert_eq!(
             dockspace
@@ -792,7 +794,9 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
             .capture_item_source(ROOT, tabs, ITEM_A)
             .expect("selection source must capture");
         dockspace
-            .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+            .submit_command(dockspace::backend::command::WorkspaceCommand::Select {
+                source: select_a,
+            })
             .expect("external selection invalidates the presented tab projection");
         context.options_mut(|options| {
             options.max_passes = 1.try_into().expect("one is non-zero");
@@ -833,7 +837,7 @@ fn stale_close_keyboard_and_accesskit_requests_do_not_open_close_plans() {
         .capture_item_source(ROOT, tabs, ITEM_A)
         .expect("selection source must capture");
     dockspace
-        .submit_command(dockspace::command::WorkspaceCommand::Select { source: select_a })
+        .submit_command(dockspace::backend::command::WorkspaceCommand::Select { source: select_a })
         .expect("external selection invalidates the presented tab projection");
     context.options_mut(|options| {
         options.max_passes = 1.try_into().expect("one is non-zero");

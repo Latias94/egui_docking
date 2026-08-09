@@ -1,6 +1,7 @@
 //! Conservative egui pointer-edge staging for the single-surface facade.
 
 use dockspace::backend::engine::{CoreHostFrame, HostFrameView};
+use dockspace::backend::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::backend::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerInputLease, SurfaceLocalPointerDrainReceipt,
@@ -18,7 +19,6 @@ use dockspace::backend::presentation_hit::PresentationPointerLane;
 #[cfg(test)]
 use dockspace::backend::presentation_observation::PresentationHostLease;
 use dockspace::geometry::LogicalPoint;
-use dockspace::ids::{SurfaceId, WorkspaceEpoch};
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use egui::{Context, Event, PointerButton as EguiPointerButton, Pos2, ViewportId};
 
@@ -958,14 +958,14 @@ mod tests {
     use dockspace::backend::engine::{
         DockEngine, HostFrameView, HostPresentationUnavailableReason,
     };
+    use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::backend::ids::{ItemId, RootId};
     use dockspace::backend::presentation_observation::{
         HostPresentationCaptureGeneration, HostPresentationObservation,
         HostPresentationObservationEntry, HostPresentationProgress,
         HostPresentationStreamObservation,
     };
     use dockspace::geometry::{LogicalRect, LogicalSize};
-    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId};
     use dockspace::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,

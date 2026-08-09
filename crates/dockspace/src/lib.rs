@@ -16,9 +16,11 @@ pub mod backend_ingress;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod backend_ingress;
-pub mod canonical;
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod canonical;
 mod close_plan;
-pub mod command;
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod command;
 #[cfg(test)]
 pub mod coordinates;
 #[cfg(not(test))]
@@ -56,13 +58,14 @@ pub mod frame;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod frame;
 pub mod geometry;
-pub mod graph;
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod graph;
 #[cfg(test)]
 pub mod hit_region;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod hit_region;
-pub mod ids;
+mod ids;
 pub mod intent;
 #[cfg(test)]
 pub mod interaction;
@@ -137,13 +140,15 @@ pub mod surface_recovery;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod surface_recovery;
 pub mod tab_strip;
-pub mod transaction;
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod transaction;
 #[cfg(test)]
 pub mod transition;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod transition;
-pub mod validation;
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod validation;
 pub mod viewport;
 #[cfg(test)]
 pub mod viewport_focus;

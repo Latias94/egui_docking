@@ -1,8 +1,8 @@
 use dockspace::geometry::LogicalRect;
-use dockspace::graph::{
+use dockspace::backend::graph::{
     Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
 };
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};

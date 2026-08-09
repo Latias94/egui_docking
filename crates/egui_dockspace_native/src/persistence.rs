@@ -1,7 +1,7 @@
 //! Thin eframe storage bridge for the atomic dockspace document.
 
+use dockspace::backend::ids::ItemId;
 use dockspace::document::DockspaceDocumentId;
-use dockspace::ids::ItemId;
 use eframe::Storage;
 use egui_dockspace::{Dockspace, DockspaceDocumentLoad};
 
@@ -40,9 +40,9 @@ pub fn restore_document_from_storage(
 mod tests {
     use std::collections::BTreeMap;
 
+    use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
     use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
-    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId, SurfaceId};
     use dockspace::viewport::WindowToken;
     use egui_dockspace::PaneView;
 

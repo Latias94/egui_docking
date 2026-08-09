@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::SurfaceCloseRequest;
+use dockspace::backend::graph::Workspace;
+use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::surface_recovery::SurfaceRecoveryBootstrap;
-use dockspace::graph::Workspace;
-use dockspace::ids::SurfaceId;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
 use dockspace::viewport_persistence::{ViewportPlacementPreference, WindowPresentationPreference};
 use egui::{ViewportBuilder, ViewportId};
@@ -386,9 +386,9 @@ impl RuntimeViewportSpec {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::backend::ids::{ItemId, RootId};
     use dockspace::geometry::{PhysicalRect, PhysicalSize, ScaleFactor};
-    use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId};
     use dockspace::viewport_persistence::{
         ViewportPlacementPreference, WindowPresentationPreference,
     };

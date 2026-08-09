@@ -1,9 +1,9 @@
 //! Pure docking-guide paint planning and egui shape emission.
 
+use dockspace::backend::command::Edge;
 use dockspace::backend::drop_resolver::{DropAffordance, DropGuideEligibility};
-use dockspace::command::Edge;
+use dockspace::backend::ids::SurfaceId;
 use dockspace::drop_guide::DropGuideSlot;
-use dockspace::ids::SurfaceId;
 use egui::{Color32, Painter, Rect, Stroke, StrokeKind, vec2};
 
 use crate::renderer::from_logical_rect;
@@ -223,12 +223,15 @@ fn edge_emphasis(pane: Rect, edge: Edge) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::backend::command::MovePayload;
     use dockspace::backend::drop_resolver::{
         DropAffordance, DropAffordanceTarget, DropResolution, resolve_drop,
     };
     use dockspace::backend::engine::{
         DockEngine, HostFrameView, HostPresentationDisposition, HostPresentationUnavailableReason,
     };
+    use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
+    use dockspace::backend::ids::{ItemId, RootId};
     use dockspace::backend::interaction::{DragGeneration, DragSessionId};
     use dockspace::backend::presentation_observation::{
         HostPresentationCaptureGeneration, HostPresentationObservation,
@@ -237,11 +240,8 @@ mod tests {
     };
     use dockspace::backend::scene::{PresentationPlan, SurfaceScene};
     use dockspace::backend::transition::SurfaceContributionOutcome;
-    use dockspace::command::MovePayload;
     use dockspace::drop_guide::DropGuideScope;
     use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-    use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-    use dockspace::ids::{ItemId, RootId};
     use dockspace::intent::Authority;
     use dockspace::policy::DockPolicy;
     use dockspace::scene_manifest::{

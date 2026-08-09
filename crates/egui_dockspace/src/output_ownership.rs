@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use dockspace::ids::SurfaceId;
+use dockspace::backend::ids::SurfaceId;
 use egui::{Context, FullOutput, TexturesDelta};
 
 use crate::error::DockspaceErrorSource;

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use dockspace::backend::command::{DockTarget, Edge, WorkspaceCommand};
 use dockspace::backend::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectIndeterminateReason,
     EffectInvalidation, EffectPhase, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
@@ -12,6 +13,12 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::event::ReductionCause;
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::graph::{
+    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder,
+};
+use dockspace::backend::ids::{
+    FloatingPresentationId, ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
+};
 use dockspace::backend::interaction::{
     EscapeDelivery, InteractionCancelReason, InteractionEventKind, InteractionOutcome,
     InteractionStatus, PreviewResolutionStatus, PreviewVisual, ScrollReductionOutcome,
@@ -61,16 +68,9 @@ use dockspace::backend::viewport_focus::{
     RecordedObserveOnlyActivation, SurfaceFocusState, ViewportActivationCause,
     ViewportActivationRequest, unknown_focus_observation,
 };
-use dockspace::command::{DockTarget, Edge, WorkspaceCommand};
 use dockspace::drop_target::DropTargetId;
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
-};
-use dockspace::graph::{
-    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace, WorkspaceBuilder,
-};
-use dockspace::ids::{
-    FloatingPresentationId, ItemId, NodeId, RootId, SourceSequence, StableInputSourceId, SurfaceId,
 };
 use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::policy::DockPolicy;
@@ -4016,7 +4016,7 @@ fn compile_command(
 fn capture_tab_target(
     workspace: &Workspace,
     target: &NodeLocation,
-) -> Result<dockspace::command::TabTarget, CoreProtocolTraceError> {
+) -> Result<dockspace::backend::command::TabTarget, CoreProtocolTraceError> {
     let node = resolve_node(workspace, target)?;
     workspace
         .capture_tab_target(RootId::new(target.root.0), node)
@@ -4028,7 +4028,7 @@ fn capture_tab_target(
 fn capture_item(
     workspace: &Workspace,
     source: &ItemLocation,
-) -> Result<dockspace::command::ItemSource, CoreProtocolTraceError> {
+) -> Result<dockspace::backend::command::ItemSource, CoreProtocolTraceError> {
     let node = resolve_node(
         workspace,
         &NodeLocation {

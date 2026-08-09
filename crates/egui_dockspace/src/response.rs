@@ -2,16 +2,16 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::backend::command::CloseCommitOutcome;
+#[cfg(any(feature = "backend", test))]
+use dockspace::backend::command::CommandOutcome;
 use dockspace::backend::effect::{EffectId, EffectTransition};
+use dockspace::backend::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
 use dockspace::backend::ingress::BackendIngressOrdinal;
 use dockspace::backend::interaction::InteractionOutcome;
 use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
-use dockspace::command::CloseCommitOutcome;
-#[cfg(any(feature = "backend", test))]
-use dockspace::command::CommandOutcome;
 use dockspace::error::CommandError;
-use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
 use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use dockspace::policy::CloseCapability;
 use dockspace::runtime::WorkspaceVersion;

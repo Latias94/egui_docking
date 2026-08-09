@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use dockspace::backend::frame::PanelFocus;
+use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::ingress::{
     BackendIngressCommitWatermark, BackendIngressLease, BackendIngressOrdinal,
 };
@@ -10,7 +11,6 @@ use dockspace::backend::transition::EngineTransition;
 use dockspace::backend::viewport_focus::{
     PaneFocusIntentId, PaneFocusObservation, PaneFocusObservationGeneration,
 };
-use dockspace::ids::SurfaceId;
 use dockspace::viewport::ViewportBinding;
 use egui::Context;
 

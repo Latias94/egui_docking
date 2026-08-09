@@ -8,11 +8,13 @@ longer re-exports the core or exposes its raw `DockEngine`; application-facing
 types remain at the crate root, while the low-level host protocol requires the
 explicit `backend` feature and `egui_dockspace::backend` namespace. The
 renderer-neutral crate now applies the same boundary: its default module tree
-keeps reducer, frame, scene, pointer, effect, recovery, and viewport FSMs
-private, while renderer implementations explicitly opt into the unstable
-`dockspace::backend` namespace. Model, transaction, and persistence paths still
-need further consolidation into the target facade areas, so the seal remains an
-active breaking refactor.
+keeps reducer, frame, scene, pointer, effect, recovery, viewport FSMs, raw graph,
+checked command, transaction, canonicalization, validation, and runtime identity
+modules private. Renderer implementations explicitly opt into the unstable
+`dockspace::backend` namespace. Product construction uses `DockspaceLayout`,
+read access uses `DockspaceView`, and mutations use revision-bound product
+actions. Persistence and close paths still need further consolidation into the
+target facade areas, so the seal remains an active breaking refactor.
 
 ## Goal
 

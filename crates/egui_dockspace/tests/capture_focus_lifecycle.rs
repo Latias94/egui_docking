@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 
+use dockspace::backend::graph::{
+    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+};
+use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::scene::PresentationPlan;
 use dockspace::drop_guide::{DropGuideScope, DropGuideSlot};
 use dockspace::geometry::LogicalRect;
-use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::runtime::WorkspaceVersion;
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{
@@ -335,7 +337,7 @@ fn active_drag_survives_local_pointer_gone_without_delivering_a_drop() {
     let moved = inner_guide_point(
         &dockspace,
         ITEM_B,
-        DropGuideSlot::Edge(dockspace::command::Edge::Right),
+        DropGuideSlot::Edge(dockspace::backend::command::Edge::Right),
     );
 
     run_frame(

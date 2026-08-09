@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 
+use dockspace::backend::graph::{
+    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+};
+use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
 use dockspace::backend::scene::{SplitterGapPresentation, SurfaceScene};
 use dockspace::backend::transition::WorkspaceVersion;
 use dockspace::drop_target::DropTargetId;
 use dockspace::geometry::LogicalRect;
-use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
@@ -907,7 +909,7 @@ fn select_item(dockspace: &mut Dockspace, item: ItemId) {
         })
         .expect("selected pane source must capture");
     let result = dockspace
-        .submit_command(dockspace::command::WorkspaceCommand::Select { source })
+        .submit_command(dockspace::backend::command::WorkspaceCommand::Select { source })
         .expect("selection command must commit immediately");
     assert!(matches!(
         result.outcome(),
@@ -1320,7 +1322,7 @@ fn authority_incomplete_wheel_does_not_mutate_overflowing_tabs() {
         .capture_item_source(MAIN_ROOT, tabs, ITEM_C)
         .expect("hidden item source captures");
     dockspace
-        .submit_command(dockspace::command::WorkspaceCommand::Select { source })
+        .submit_command(dockspace::backend::command::WorkspaceCommand::Select { source })
         .expect("selection command commits immediately");
     assert_eq!(selected_item(&dockspace, MAIN_ROOT), Some(ITEM_C));
     let painted_selection =
@@ -3221,9 +3223,9 @@ fn relocated_pane_retargets_to_its_stable_tabs_retained_geometry() {
     let target_rect = panes.last_ui_rect(ITEM_B).expect("target pane was painted");
     assert_ne!(source_rect, target_rect);
     dockspace
-        .submit_command(dockspace::command::WorkspaceCommand::Move {
-            payload: dockspace::command::MovePayload::Item(source),
-            target: dockspace::command::DockTarget::Center(target),
+        .submit_command(dockspace::backend::command::WorkspaceCommand::Move {
+            payload: dockspace::backend::command::MovePayload::Item(source),
+            target: dockspace::backend::command::DockTarget::Center(target),
         })
         .expect("move must commit immediately");
     assert_eq!(
@@ -3296,11 +3298,13 @@ fn presentation_owner_change_does_not_run_pane_through_old_contained_chrome() {
         .last_ui_rect(ITEM_A)
         .expect("contained pane was painted");
     dockspace
-        .submit_command(dockspace::command::WorkspaceCommand::PromoteContained {
-            source,
-            surface: SURFACE,
-            floating: FLOATING,
-        })
+        .submit_command(
+            dockspace::backend::command::WorkspaceCommand::PromoteContained {
+                source,
+                surface: SURFACE,
+                floating: FLOATING,
+            },
+        )
         .expect("contained root promotion must commit immediately");
     assert_eq!(
         dockspace
@@ -4061,7 +4065,7 @@ fn multipass_observes_a_command_submitted_between_passes() {
                 .ok()
         })
         .expect("item source must capture");
-    let mut command = Some(dockspace::command::WorkspaceCommand::Select { source });
+    let mut command = Some(dockspace::backend::command::WorkspaceCommand::Select { source });
     let mut versions = Vec::new();
     let mut workspaces = Vec::new();
     let mut submitted_workspace = None;

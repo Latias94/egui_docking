@@ -12,11 +12,11 @@ use std::sync::{Arc, Weak};
 use dockspace::backend::engine::{
     BackendIngressProgress, CoreHostFrame, EngineInput, HostFrameView,
 };
+use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::ingress::{BackendIngressBatch, BackendIngressLease};
 use dockspace::backend::presentation_observation::{
     NativeStagingPresentation, PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
-use dockspace::ids::SurfaceId;
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, FullOutput, RawInput, Ui};
@@ -323,7 +323,7 @@ impl EguiNativeConfigurationSession {
     fn append_configuration(
         &mut self,
         input: EngineInput,
-    ) -> Result<dockspace::ids::SourceSequence, DockspaceError> {
+    ) -> Result<dockspace::backend::ids::SourceSequence, DockspaceError> {
         let sequence = self
             .state()
             .semantic_source_sequence()
