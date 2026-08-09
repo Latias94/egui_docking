@@ -4,19 +4,13 @@ use super::*;
 use crate::intent::Authority;
 
 impl DockspaceSession {
-    fn native_state(&self) -> Result<&RuntimeNativeState, NativePlatformError> {
-        self.native
-            .as_ref()
-            .ok_or(NativePlatformError::ProviderUnavailable)
-    }
-
     fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, NativePlatformError> {
         self.native
             .as_mut()
             .ok_or(NativePlatformError::ProviderUnavailable)
     }
 
-    /// Enrolls the session-owned native platform observation source.
+    /// Enrolls exact observation of externally owned native root windows.
     ///
     /// The method enrolls exactly once and never reissues existing surface
     /// bindings. Provider replacement remains an internal core concern until a
@@ -28,108 +22,57 @@ impl DockspaceSession {
     /// mint platform authority.
     /// The returned bindings are the complete current native roster and must
     /// be retained by the host for future asynchronous facts.
-    pub fn enable_native_platform(
+    pub fn enable_observed_native_roots(
         &mut self,
-        mode: NativePlatformMode,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
-        if let Some(native) = &self.native {
-            return if native.mode == mode {
-                Err(NativePlatformError::ProviderAlreadyEnabled.into())
-            } else {
-                Err(NativePlatformError::ProviderModeConflict.into())
-            };
+        if self.native.is_some() {
+            return Err(NativePlatformError::ProviderAlreadyEnabled.into());
         }
         let recorder = self
             .engine
             .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
-        let mut native = RuntimeNativeState::new(recorder, mode);
+        let mut native = RuntimeNativeState::new(recorder);
         native.commit(&self.engine);
         let bindings = native.bindings.values().copied().collect();
         self.native = Some(native);
         Ok(bindings)
     }
 
-    /// Captures one retryable exact-set native platform snapshot.
+    /// Records one exact-set native platform snapshot in backend order.
     ///
     /// Every currently registered native surface must appear exactly once.
-    /// The returned value carries no core authority until it is recorded through
-    /// [`Self::publish_native_snapshot`].
+    /// Validation and recording are one atomic facade operation. A rejected
+    /// roster cannot be published later against a different workspace or
+    /// binding incarnation.
     ///
     /// # Errors
     ///
     /// Returns an error for an unavailable provider, stale or duplicate bindings,
     /// an incomplete roster, or generation exhaustion.
-    pub fn capture_native_snapshot(
-        &self,
+    pub fn report_native_snapshot(
+        &mut self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
-    ) -> Result<NativePlatformSnapshot, NativePlatformError> {
-        self.native_state()?
-            .capture_snapshot(self.version().epoch(), observations)
+    ) -> Result<(), DockspaceRuntimeError> {
+        let expected_epoch = self.version().epoch();
+        self.native_state_mut()?
+            .record_snapshot_facts(expected_epoch, observations)?;
+        Ok(())
     }
 
-    /// Captures an explicit Unknown native-window inventory tombstone.
+    /// Records an explicit Unknown native-window inventory tombstone.
     ///
     /// This revokes retained inventory authority without guessing that any
-    /// surface was destroyed. The capture remains bound to the current provider,
-    /// workspace epoch, and logical binding roster until it is durably recorded
-    /// through [`Self::publish_native_snapshot`].
+    /// surface was destroyed. Recording is durable within the facade-owned
+    /// producer and replays until a host-frame commit advances the core watermark.
     ///
     /// # Errors
     ///
     /// Returns an error when native authority is unavailable or the provider
     /// generation cannot advance.
-    pub fn capture_native_inventory_unknown(
-        &self,
-    ) -> Result<NativePlatformSnapshot, NativePlatformError> {
-        self.native_state()?
-            .capture_unknown_inventory_snapshot(self.version().epoch())
-    }
-
-    /// Records one complete native platform snapshot in the joined backend order.
-    ///
-    /// Recording is durable within the facade-owned producer: dropping or
-    /// rejecting the next host frame does not lose the physical fact. The exact
-    /// immutable record is replayed until a host-frame commit advances the core
-    /// watermark.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a superseded provider, stale workspace or binding
-    /// roster, or a non-contiguous provider generation.
-    pub fn publish_native_snapshot(
-        &mut self,
-        snapshot: NativePlatformSnapshot,
-    ) -> Result<(), DockspaceRuntimeError> {
-        let current_epoch = self.version().epoch();
-        let native = self.native_state_mut()?;
-        if native.provider() != snapshot.provider {
-            return Err(NativePlatformError::ProviderSuperseded.into());
-        }
-        if snapshot.expected_epoch != current_epoch {
-            return Err(NativePlatformError::StaleWorkspace.into());
-        }
-        let expected_generation = native.next_snapshot_generation()?;
-        if expected_generation != snapshot.generation {
-            return Err(NativePlatformError::SnapshotGenerationStale.into());
-        }
-        if snapshot.bindings.len() != native.bindings.len()
-            || snapshot.bindings.iter().any(|binding| {
-                native
-                    .bindings
-                    .get(&binding.surface())
-                    .is_none_or(|current| current.binding != *binding)
-            })
-        {
-            return Err(NativePlatformError::SnapshotRosterStale.into());
-        }
-
-        let generation = snapshot.generation;
-        let bindings = snapshot.bindings.clone();
-        native.record_snapshot(snapshot)?;
-        native.snapshot_generation = generation;
-        for binding in bindings {
-            native.close_generations.insert(binding, generation);
-        }
+    pub fn report_native_inventory_unknown(&mut self) -> Result<(), DockspaceRuntimeError> {
+        let expected_epoch = self.version().epoch();
+        self.native_state_mut()?
+            .record_unknown_inventory(expected_epoch)?;
         Ok(())
     }
 
@@ -269,15 +212,7 @@ impl DockspaceSession {
     ) -> Result<(), DockspaceRuntimeError> {
         let expected = self.version();
         self.native_state_mut()?
-            .recorder_mut()
-            .record_viewport_registration(
-                expected,
-                surface,
-                token.into_core(),
-                ViewportRole::Root,
-                None,
-            )
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+            .record_root_registration(expected, surface, token.into_core())?;
         Ok(())
     }
 

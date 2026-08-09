@@ -25,7 +25,7 @@ fn native_root_session() -> (DockspaceSession, NativeSurfaceBinding) {
     )
     .expect("the native test session initializes");
     session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .enable_observed_native_roots()
         .expect("the test provider enrolls");
     session
         .register_native_root(SURFACE, WINDOW)
@@ -108,21 +108,21 @@ fn live_window_facts_leave_independent_authority_unknown() {
 }
 
 #[test]
-fn unknown_inventory_capture_does_not_infer_destruction() {
-    let (session, binding) = native_root_session();
-
-    let snapshot = session
-        .capture_native_inventory_unknown()
-        .expect("the active provider captures an inventory tombstone");
-
-    assert_eq!(snapshot.provider, binding.provider);
-    assert_eq!(snapshot.bindings, vec![binding.binding]);
+fn unknown_inventory_compilation_does_not_infer_destruction() {
+    let snapshot = compile_unknown_inventory_snapshot(1)
+        .expect("the provider compiles an inventory tombstone");
+    let capabilities = snapshot
+        .capability_observation()
+        .known_roster()
+        .expect("the observed-root capability roster is exact");
+    assert!(capabilities.authoritative_inventory().is_supported());
+    assert!(!capabilities.native_window_lifecycle().is_supported());
     assert!(matches!(
-        snapshot.snapshot.inventory_observation().roster(),
+        snapshot.inventory_observation().roster(),
         Authority::Unknown(AuthorityUnavailableReason::NotReported)
     ));
-    assert!(snapshot.snapshot.window_observations().is_empty());
-    assert!(snapshot.snapshot.close_observations().is_empty());
+    assert!(snapshot.window_observations().is_empty());
+    assert!(snapshot.close_observations().is_empty());
 }
 
 #[test]
@@ -143,14 +143,14 @@ fn repeated_native_enable_never_reissues_live_bindings() {
     let (mut session, binding) = native_root_session();
 
     let error = session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .enable_observed_native_roots()
         .expect_err("repeated enrollment cannot recapture the current binding roster");
     assert!(matches!(
         error.native_error(),
         Some(NativePlatformError::ProviderAlreadyEnabled)
     ));
     session
-        .capture_native_snapshot([(binding, NativeWindowFacts::live())])
+        .report_native_snapshot([(binding, NativeWindowFacts::live())])
         .expect("the originally issued binding remains the sole live capability");
 }
 

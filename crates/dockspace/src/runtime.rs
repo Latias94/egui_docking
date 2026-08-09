@@ -23,9 +23,9 @@ pub use interaction::{
     SurfaceScrollSequenceId,
 };
 pub use native::{
-    HostWindowToken, NativeCloseState, NativePlatformError, NativePlatformMode,
-    NativePlatformSnapshot, NativeSurfaceBinding, NativeSurfaceCloseRequest, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState,
+    HostWindowToken, NativeCloseState, NativePlatformError, NativeSurfaceBinding,
+    NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState,
 };
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseEffectAcknowledgement,

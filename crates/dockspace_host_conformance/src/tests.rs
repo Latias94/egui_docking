@@ -9,11 +9,10 @@ use dockspace::runtime::{
     DockspaceCloseOutcome, DockspaceHostFrame, DockspaceInteractionError,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
-    NativePlatformError, NativePlatformMode, NativePlatformSnapshot, NativeSurfaceBinding,
-    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    NativePlatformError, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
+    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
     SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
@@ -98,9 +97,12 @@ impl DeterministicHost {
         self.run(|_| {})
     }
 
-    fn publish_native_snapshot(&mut self, snapshot: NativePlatformSnapshot) -> HostFrameReport {
+    fn report_native_snapshot(
+        &mut self,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+    ) -> HostFrameReport {
         self.session
-            .publish_native_snapshot(snapshot)
+            .report_native_snapshot(observations)
             .expect("the native snapshot joins the backend ingress order");
         self.run(|_| {})
     }
@@ -662,7 +664,7 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
 fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
     let mut host = DeterministicHost::new(tabs_layout([A]));
     host.session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .enable_observed_native_roots()
         .expect("the joined presentation lane is active");
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
@@ -1133,7 +1135,7 @@ impl InteractionFixture {
     fn attach_native_surface(&mut self) -> NativeSurfaceBinding {
         self.host
             .session
-            .enable_native_platform(NativePlatformMode::ObservedRoots)
+            .enable_observed_native_roots()
             .expect("the deterministic host enrolls one native platform provider");
         let registration = self.host.register_native_root(SURFACE, WINDOW);
         let binding = match registration.inputs() {
@@ -1144,12 +1146,8 @@ impl InteractionFixture {
         let physical = PhysicalRect::new(0.0, 0.0, 640.0, 360.0)
             .expect("the fixture physical bounds are valid");
         let scale = ScaleFactor::new(1.0).expect("the fixture scale is valid");
-        let snapshot = self
-            .host
-            .session
-            .capture_native_snapshot([(binding, ready_window_facts(physical, scale))])
-            .expect("the host captures one complete native roster");
-        self.host.publish_native_snapshot(snapshot);
+        self.host
+            .report_native_snapshot([(binding, ready_window_facts(physical, scale))]);
 
         let bounds =
             LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
@@ -1522,12 +1520,9 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
     let _presented_target = fixture.current_target();
     let before = fixture.host.version();
 
-    let snapshot = fixture
+    let invalidated = fixture
         .host
-        .session
-        .capture_native_snapshot([(binding, NativeWindowFacts::live())])
-        .expect("unavailable facts are an explicit complete-roster tombstone");
-    let invalidated = fixture.host.publish_native_snapshot(snapshot);
+        .report_native_snapshot([(binding, NativeWindowFacts::live())]);
     assert_eq!(invalidated.repaint_surfaces(), &[SURFACE]);
     assert!(
         fixture
@@ -1562,7 +1557,7 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
 fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     let mut host = DeterministicHost::new(tabs_layout([A, B]));
     host.session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .enable_observed_native_roots()
         .expect("the deterministic host enrolls one native platform provider");
 
     let registered_a1 = host.register_native_root(SURFACE, WINDOW);
@@ -1570,11 +1565,7 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
         [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
         outcomes => panic!("expected A1 registration, got {outcomes:?}"),
     };
-    let destroyed = host
-        .session
-        .capture_native_snapshot([(a1, NativeWindowFacts::destroyed())])
-        .expect("A1 destruction is one exact complete-roster fact");
-    host.publish_native_snapshot(destroyed);
+    host.report_native_snapshot([(a1, NativeWindowFacts::destroyed())]);
 
     let registered_a2 = host.register_native_root(SURFACE, WINDOW);
     let a2 = match registered_a2.inputs() {
@@ -1588,11 +1579,7 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     let physical =
         PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the A2 physical bounds are valid");
     let scale = ScaleFactor::new(1.0).expect("the A2 scale is valid");
-    let ready_a2 = host
-        .session
-        .capture_native_snapshot([(a2, ready_window_facts(physical, scale))])
-        .expect("the next snapshot advances beyond A2's close observation");
-    host.publish_native_snapshot(ready_a2);
+    host.report_native_snapshot([(a2, ready_window_facts(physical, scale))]);
 
     let before = host.version();
     let error = host
@@ -1609,7 +1596,7 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
 }
 
 #[test]
-fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
+fn ogc_04_incomplete_snapshot_is_rejected_before_recording() {
     let layout = DockspaceLayout::new([
         DockspaceSurfaceLayout::new(
             SURFACE,
@@ -1623,7 +1610,7 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
     .expect("the two-surface native layout is valid");
     let mut host = DeterministicHost::new(layout);
     host.session
-        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .enable_observed_native_roots()
         .expect("the deterministic host enrolls one native platform provider");
 
     let first_registration = host.register_native_root(SURFACE, WINDOW);
@@ -1634,11 +1621,6 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
     let physical =
         PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the physical bounds are valid");
     let scale = ScaleFactor::new(1.0).expect("the scale is valid");
-    let stale_snapshot = host
-        .session
-        .capture_native_snapshot([(first, ready_window_facts(physical, scale))])
-        .expect("the snapshot exactly covers the roster at capture time");
-
     let second_registration = host.register_native_root(SECOND_SURFACE, SECOND_WINDOW);
     let second = match second_registration.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { binding }]
@@ -1651,18 +1633,46 @@ fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
 
     let error = host
         .session
-        .publish_native_snapshot(stale_snapshot)
-        .expect_err("a captured snapshot cannot omit a subsequently registered binding");
+        .report_native_snapshot([(first, ready_window_facts(physical, scale))])
+        .expect_err("an incomplete roster must be rejected before it is recorded");
     assert!(matches!(
         error.native_error(),
-        Some(NativePlatformError::SnapshotRosterStale)
+        Some(NativePlatformError::IncompleteRoster)
     ));
     host.run(|_| {});
 
+    host.report_native_snapshot([
+        (first, ready_window_facts(physical, scale)),
+        (second, ready_window_facts(physical, scale)),
+    ]);
+}
+
+#[test]
+fn ogc_04_snapshot_waits_for_a_pending_roster_registration() {
+    let mut host = DeterministicHost::new(tabs_layout([A]));
     host.session
-        .capture_native_snapshot([
-            (first, ready_window_facts(physical, scale)),
-            (second, ready_window_facts(physical, scale)),
-        ])
-        .expect("the host-owned bindings can capture the new exact roster");
+        .enable_observed_native_roots()
+        .expect("the deterministic host enrolls one native platform provider");
+    host.session
+        .register_native_root(SURFACE, WINDOW)
+        .expect("the root registration joins the pending recorder prefix");
+
+    let error = host
+        .session
+        .report_native_snapshot([])
+        .expect_err("facts cannot be validated against the pre-registration roster");
+    assert!(matches!(
+        error.native_error(),
+        Some(NativePlatformError::BindingRosterUnsettled)
+    ));
+
+    let registration = host.run(|_| {});
+    let binding = match registration.inputs() {
+        [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected one native registration, got {outcomes:?}"),
+    };
+    let physical =
+        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the physical bounds are valid");
+    let scale = ScaleFactor::new(1.0).expect("the scale is valid");
+    host.report_native_snapshot([(binding, ready_window_facts(physical, scale))]);
 }

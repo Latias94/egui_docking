@@ -133,13 +133,16 @@ stable across distinct presented outputs.
 
 The OGC-04 slice adds opaque native root bindings without exposing provider
 leases or `ViewportBinding`. An adapter supplies a reusable host window token,
-receives a core-minted `NativeSurfaceBinding`, and publishes one exact-set native
-snapshot. Snapshot and per-binding close generations live in a private session
-sidecar and advance only when the complete host frame commits. A delayed binding
-from binding A1 is rejected before it can be redirected to binding A2, even
-when both use the same host token. Frame reports expose only the sorted logical
-surfaces whose presentation authority changed, so repaint remains core-derived
-without leaking scene stamps.
+receives a core-minted `NativeSurfaceBinding`, and atomically validates and
+records one exact-set native snapshot. No public prepared snapshot can survive a
+workspace or binding-roster change, and callers cannot opt into managed-window
+capabilities that this observed-root slice does not implement. Snapshot and
+per-binding close generations live in a private session sidecar; the joined
+recorder replays an accepted fact until a host-frame commit advances the core
+watermark. A delayed binding from binding A1 is rejected before it can be
+redirected to binding A2, even when both use the same host token. Frame reports
+expose only the sorted logical surfaces whose presentation authority changed,
+so repaint remains core-derived without leaking scene stamps.
 
 This is still a vertical slice rather than the complete facade. Tab-strip
 control and popup paint records, semantic-manifest views, native child recovery,

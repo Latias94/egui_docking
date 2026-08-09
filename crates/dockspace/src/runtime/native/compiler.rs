@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
-    NativeInputFact, NativePlatformError, NativePlatformMode, NativePresentationFact,
-    NativeWindowFacts, NativeWindowLifecycleFact,
+    NativeInputFact, NativePlatformError, NativePresentationFact, NativeWindowFacts,
+    NativeWindowLifecycleFact,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
@@ -24,7 +24,6 @@ use crate::viewport::{
 use crate::viewport_focus::{FocusObservationEnvelope, FocusObservationGeneration};
 
 pub(super) fn compile_unknown_inventory_snapshot(
-    mode: NativePlatformMode,
     generation: u64,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
@@ -32,7 +31,7 @@ pub(super) fn compile_unknown_inventory_snapshot(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(native_capabilities(mode)),
+            Authority::Known(observed_root_capabilities()),
         ),
         FocusObservationEnvelope::new(
             FocusObservationGeneration::new(generation),
@@ -52,7 +51,6 @@ pub(super) fn compile_unknown_inventory_snapshot(
 
 pub(super) fn compile_platform_snapshot(
     provider: PlatformObservationLease,
-    mode: NativePlatformMode,
     generation: u64,
     supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
@@ -75,7 +73,7 @@ pub(super) fn compile_platform_snapshot(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(native_capabilities(mode)),
+            Authority::Known(observed_root_capabilities()),
         ),
         FocusObservationEnvelope::new(
             FocusObservationGeneration::new(generation),
@@ -94,17 +92,13 @@ pub(super) fn compile_platform_snapshot(
     .map_err(|_| NativePlatformError::ProtocolInvariant)
 }
 
-fn native_capabilities(mode: NativePlatformMode) -> PlatformCapabilities {
+fn observed_root_capabilities() -> PlatformCapabilities {
     let unsupported = |requirement| {
         PlatformCapability::unsupported(requirement, PlatformCapabilityReason::BackendUnsupported)
     };
     let mut capabilities = PlatformCapabilities::default();
-    capabilities.set_native_window_lifecycle(match mode {
-        NativePlatformMode::ObservedRoots => {
-            unsupported(PlatformRequirement::NativeWindowLifecycle)
-        }
-        NativePlatformMode::ManagedWindows => PlatformCapability::Supported,
-    });
+    capabilities
+        .set_native_window_lifecycle(unsupported(PlatformRequirement::NativeWindowLifecycle));
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
     capabilities.set_hovered_window(unsupported(PlatformRequirement::HoveredWindow));
     capabilities
@@ -123,10 +117,7 @@ fn native_capabilities(mode: NativePlatformMode) -> PlatformCapabilities {
         .set_global_focus_observation(unsupported(PlatformRequirement::GlobalFocusObservation));
     capabilities
         .set_window_activation_control(unsupported(PlatformRequirement::WindowActivationControl));
-    capabilities.set_close_cancellation(match mode {
-        NativePlatformMode::ObservedRoots => unsupported(PlatformRequirement::CloseCancellation),
-        NativePlatformMode::ManagedWindows => PlatformCapability::Supported,
-    });
+    capabilities.set_close_cancellation(unsupported(PlatformRequirement::CloseCancellation));
     capabilities
 }
 

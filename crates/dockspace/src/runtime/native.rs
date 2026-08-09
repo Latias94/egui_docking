@@ -22,8 +22,8 @@ use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
 use crate::platform::{
-    CloseEffectAcknowledgement, ObservedWindow, PlatformSnapshot, WindowCloseObservation,
-    WindowCloseState, WindowInputState, WindowPresentationState,
+    CloseEffectAcknowledgement, ObservedWindow, WindowCloseObservation, WindowCloseState,
+    WindowInputState, WindowPresentationState,
 };
 use crate::platform_provider::PlatformObservationLease;
 use crate::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
@@ -121,18 +121,6 @@ pub enum NativeCloseState {
     Clear,
     /// The exact binding has a pending native close request.
     Requested,
-}
-
-/// Structural capability mode owned by the native runtime facade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativePlatformMode {
-    /// Observe an exact roster of externally owned root windows.
-    ///
-    /// The facade will not claim native create, replacement, or close-cancellation
-    /// support in this mode.
-    ObservedRoots,
-    /// Dispatch the complete native lifecycle effect protocol.
-    ManagedWindows,
 }
 
 /// Exact pointer-input state reported for one native window.
@@ -337,16 +325,6 @@ impl NativeWindowFacts {
     }
 }
 
-/// Retryable complete native snapshot minted by one session sidecar.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativePlatformSnapshot {
-    provider: PlatformObservationLease,
-    expected_epoch: WorkspaceEpoch,
-    generation: u64,
-    bindings: Vec<ViewportBinding>,
-    snapshot: PlatformSnapshot,
-}
-
 /// Native lifecycle failure at the stable facade boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NativePlatformError {
@@ -359,9 +337,6 @@ pub enum NativePlatformError {
     /// A native provider is already enrolled for this session.
     #[error("native platform provider is already active")]
     ProviderAlreadyEnabled,
-    /// The provider is already enrolled under another structural mode.
-    #[error("native platform provider is already active under a different mode")]
-    ProviderModeConflict,
     /// A callback named an older binding incarnation for this logical surface.
     #[error("native surface {surface} binding is stale")]
     StaleSurface {
@@ -377,6 +352,9 @@ pub enum NativePlatformError {
     /// A complete snapshot did not exactly cover the current binding roster.
     #[error("native snapshot roster is incomplete or contains a foreign surface")]
     IncompleteRoster,
+    /// A preceding roster mutation has not reached a committed host boundary.
+    #[error("native binding roster is not yet settled")]
+    BindingRosterUnsettled,
     /// A binding is still live and therefore cannot be declared permanently quiescent.
     #[error("native surface {surface} is still live and cannot be quiesced")]
     BindingStillLive {
@@ -389,18 +367,9 @@ pub enum NativePlatformError {
         /// Stable logical surface named by the invalid quiescence capability.
         surface: SurfaceId,
     },
-    /// A snapshot was captured against an older workspace epoch.
-    #[error("native snapshot belongs to an older workspace epoch")]
-    StaleWorkspace,
     /// Provider-owned observation generations cannot advance without wrapping.
     #[error("native observation generation is exhausted")]
     GenerationExhausted,
-    /// Snapshot generation is no longer the next provider-owned generation.
-    #[error("native platform snapshot generation is stale")]
-    SnapshotGenerationStale,
-    /// The live binding roster changed after this snapshot was captured.
-    #[error("native platform snapshot was captured for an older binding roster")]
-    SnapshotRosterStale,
     /// Destroyed inventory facts also carried live-window properties.
     #[error("destroyed native surface {surface} also reported live-window properties")]
     DestroyedSurfaceHasLiveFacts {
@@ -433,8 +402,8 @@ pub(super) struct RuntimeNativeState {
     recorder: BackendIngressRecorder,
     pending_prefix_retirement: Option<BackendIngressPrefixRetirementReceipt>,
     pending_pointer_checkpoint: Option<BackendIngressOrdinal>,
-    mode: NativePlatformMode,
     snapshot_generation: u64,
+    binding_roster_unsettled: bool,
     bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     retired_bindings: BTreeSet<ViewportBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
@@ -448,13 +417,13 @@ struct CompiledNativeWindow {
 }
 
 impl RuntimeNativeState {
-    fn new(recorder: BackendIngressRecorder, mode: NativePlatformMode) -> Self {
+    fn new(recorder: BackendIngressRecorder) -> Self {
         Self {
             recorder,
             pending_prefix_retirement: None,
             pending_pointer_checkpoint: None,
-            mode,
             snapshot_generation: 0,
+            binding_roster_unsettled: false,
             bindings: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
             close_generations: BTreeMap::new(),
@@ -521,16 +490,6 @@ impl RuntimeNativeState {
             let _ = engine.settle_backend_ingress_prefix_retirement(receipt)?;
             self.pending_prefix_retirement = None;
         }
-        Ok(())
-    }
-
-    fn record_snapshot(
-        &mut self,
-        snapshot: NativePlatformSnapshot,
-    ) -> Result<(), NativePlatformError> {
-        self.recorder
-            .record_platform_snapshot(snapshot.expected_epoch, snapshot.snapshot)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         Ok(())
     }
 
@@ -608,6 +567,9 @@ impl RuntimeNativeState {
         &self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<BTreeMap<ViewportBinding, NativeWindowFacts>, NativePlatformError> {
+        if self.binding_roster_unsettled {
+            return Err(NativePlatformError::BindingRosterUnsettled);
+        }
         let mut supplied = BTreeMap::new();
         for (binding, facts) in observations {
             if self.bindings.get(&binding.surface()) != Some(&binding) {
@@ -627,41 +589,54 @@ impl RuntimeNativeState {
         Ok(supplied)
     }
 
-    fn capture_snapshot(
-        &self,
+    fn record_snapshot_facts(
+        &mut self,
         expected_epoch: WorkspaceEpoch,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
-    ) -> Result<NativePlatformSnapshot, NativePlatformError> {
+    ) -> Result<(), NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
-        let snapshot =
-            compile_platform_snapshot(self.provider(), self.mode, generation, &supplied)?;
-        Ok(NativePlatformSnapshot {
-            provider: self.provider(),
-            expected_epoch,
-            generation,
-            bindings: supplied.into_keys().collect(),
-            snapshot,
-        })
+        let snapshot = compile_platform_snapshot(self.provider(), generation, &supplied)?;
+        self.recorder
+            .record_platform_snapshot(expected_epoch, snapshot)
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        self.binding_roster_unsettled = supplied
+            .values()
+            .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }));
+        self.snapshot_generation = generation;
+        for binding in supplied.into_keys() {
+            self.close_generations.insert(binding, generation);
+        }
+        Ok(())
     }
 
-    fn capture_unknown_inventory_snapshot(
-        &self,
+    fn record_unknown_inventory(
+        &mut self,
         expected_epoch: WorkspaceEpoch,
-    ) -> Result<NativePlatformSnapshot, NativePlatformError> {
+    ) -> Result<(), NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
-        let snapshot = compile_unknown_inventory_snapshot(self.mode, generation)?;
-        Ok(NativePlatformSnapshot {
-            provider: self.provider(),
-            expected_epoch,
-            generation,
-            bindings: self
-                .bindings
-                .values()
-                .map(|binding| binding.binding)
-                .collect(),
-            snapshot,
-        })
+        let snapshot = compile_unknown_inventory_snapshot(generation)?;
+        self.recorder
+            .record_platform_snapshot(expected_epoch, snapshot)
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        self.snapshot_generation = generation;
+        for binding in self.bindings.values() {
+            self.close_generations.insert(binding.binding, generation);
+        }
+        Ok(())
+    }
+
+    fn record_root_registration(
+        &mut self,
+        expected: crate::model::WorkspaceVersion,
+        surface: SurfaceId,
+        token: WindowToken,
+    ) -> Result<(), NativePlatformError> {
+        self.recorder
+            .record_viewport_registration(expected, surface, token, ViewportRole::Root, None)
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        self.binding_roster_unsettled = true;
+        Ok(())
     }
 
     pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) {
@@ -687,5 +662,6 @@ impl RuntimeNativeState {
                 .get(&binding.surface())
                 .is_some_and(|current| current.binding == *binding)
         });
+        self.binding_roster_unsettled = false;
     }
 }
