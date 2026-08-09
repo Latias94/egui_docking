@@ -10,6 +10,7 @@ use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceCont
 use dockspace::command::{CloseCommitOutcome, CommandOutcome};
 use dockspace::error::CommandError;
 use dockspace::ids::{ItemId, ReducerCausalOrdinal, SurfaceId};
+use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use dockspace::policy::CloseCapability;
 use dockspace::runtime::WorkspaceVersion;
 use dockspace::{
@@ -132,6 +133,70 @@ impl DockspaceCommandResult {
     #[must_use]
     pub const fn outcome(&self) -> &DockspaceCommandOutcome {
         &self.outcome
+    }
+}
+
+/// Product-level terminal status of one revision-bound item action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DockspaceActionStatus {
+    /// The action committed or produced a valid product no-op.
+    Applied(DockspaceActionOutcome),
+    /// Current policy or topology deterministically rejected the action.
+    Rejected(DockspaceActionRejection),
+    /// The action was prepared from an older published workspace version.
+    Stale {
+        /// Version carried by the prepared action.
+        expected: WorkspaceVersion,
+        /// Version accepted by the reducer boundary.
+        accepted: WorkspaceVersion,
+    },
+}
+
+/// Atomic publication plus the exact result of one product item action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockspaceActionResult {
+    mutation: DockspaceMutation,
+    status: DockspaceActionStatus,
+}
+
+impl DockspaceActionResult {
+    pub(crate) fn from_transition(transition: &EngineTransition) -> Option<Self> {
+        let status =
+            transition
+                .reduced_inputs()
+                .iter()
+                .find_map(|input| match input.outcome() {
+                    InputOutcome::ProductActionProcessed { outcome, .. } => {
+                        Some(DockspaceActionStatus::Applied(outcome.clone()))
+                    }
+                    InputOutcome::ProductActionRejected { reason, .. } => {
+                        Some(DockspaceActionStatus::Rejected(*reason))
+                    }
+                    InputOutcome::StaleRejected {
+                        expected,
+                        accepted_base,
+                    } => Some(DockspaceActionStatus::Stale {
+                        expected: *expected,
+                        accepted: *accepted_base,
+                    }),
+                    _ => None,
+                })?;
+        Some(Self {
+            mutation: DockspaceMutation::from_transition(transition),
+            status,
+        })
+    }
+
+    /// Returns the atomic publication summary.
+    #[must_use]
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
+    }
+
+    /// Returns the exact product-action status.
+    #[must_use]
+    pub const fn status(&self) -> &DockspaceActionStatus {
+        &self.status
     }
 }
 

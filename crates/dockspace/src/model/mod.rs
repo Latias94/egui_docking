@@ -6,18 +6,21 @@
 
 mod action;
 mod layout;
+mod revision;
 mod view;
 
 pub use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 pub(crate) use action::ProductAction;
 pub use action::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
-    DockspaceActionRejection, InvalidDockFraction,
+    DockspaceActionRejection, InvalidDockFraction, PreparedDockAction,
+    PreparedDockActionAuthorityMismatch,
 };
 pub use layout::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceLayoutError, DockspaceNode,
     DockspaceRootLayout, DockspaceSurfaceLayout,
 };
+pub use revision::WorkspaceVersion;
 pub use view::{
     DockspaceContainedView, DockspaceNodeView, DockspaceRootView, DockspaceSplitView,
     DockspaceSurfaceView, DockspaceTabsView, DockspaceView,

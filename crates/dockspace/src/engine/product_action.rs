@@ -6,7 +6,7 @@ use crate::command::{
 use crate::ids::NodeId;
 use crate::model::{
     DockAnchor, DockEdge, DockPlacement, DockspaceActionOutcome, DockspaceActionRejection,
-    ProductAction,
+    PreparedDockAction, PreparedDockActionAuthorityMismatch, ProductAction,
 };
 use crate::workspace::WorkspaceIndex;
 
@@ -51,6 +51,65 @@ enum ProductCommandContext {
 }
 
 impl DockEngine {
+    /// Prepares one selection action against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_select_item(&self, item: ItemId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::SelectItem { item })
+    }
+
+    /// Prepares one open action against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_open_item(
+        &self,
+        item: ItemId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::OpenItem { item, placement })
+    }
+
+    /// Prepares one docking action against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_dock_item(
+        &self,
+        item: ItemId,
+        placement: DockPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::DockItem { item, placement })
+    }
+
+    const fn prepare_product_action(&self, action: ProductAction) -> PreparedDockAction {
+        PreparedDockAction::new(self.authority_domain, self.version, action)
+    }
+
+    /// Converts one core-issued product action into exact reducer input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreparedDockActionAuthorityMismatch`] when the action was
+    /// prepared by another engine authority domain.
+    pub fn accept_prepared_action(
+        &self,
+        prepared: PreparedDockAction,
+    ) -> Result<EngineInput, PreparedDockActionAuthorityMismatch> {
+        let (authority_domain, expected, action) = prepared.into_parts();
+        if authority_domain != self.authority_domain {
+            return Err(PreparedDockActionAuthorityMismatch);
+        }
+        Ok(match action {
+            ProductAction::SelectItem { item } => EngineInput::SelectItem { expected, item },
+            ProductAction::OpenItem { item, placement } => EngineInput::OpenItem {
+                expected,
+                item,
+                placement,
+            },
+            ProductAction::DockItem { item, placement } => EngineInput::DockItem {
+                expected,
+                item,
+                placement,
+            },
+        })
+    }
+
     pub(super) fn reduce_product_action(
         &mut self,
         input: InputSequence,

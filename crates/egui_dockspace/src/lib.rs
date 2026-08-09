@@ -47,15 +47,24 @@ mod test_support;
 mod behavior_tests;
 
 pub use builder::DockspaceBuilder;
+pub use dockspace::model::{
+    DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
+    DockspaceActionRejection, DockspaceContainedView, DockspaceLayout, DockspaceNode,
+    DockspaceNodeView, DockspaceRootLayout, DockspaceRootView, DockspaceSplitView,
+    DockspaceSurfaceLayout, DockspaceSurfaceView, DockspaceTabsView, DockspaceView,
+    FloatingPresentationId, InvalidDockFraction, ItemId, PreparedDockAction, RootId, SurfaceId,
+    WorkspaceVersion,
+};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
 #[cfg(feature = "serde")]
 pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
 pub use response::{
-    DockspaceCapability, DockspaceCloseItem, DockspaceCloseOutcome, DockspaceClosePlan,
-    DockspaceCloseRequest, DockspaceCloseResult, DockspaceCommandOutcome, DockspaceCommandResult,
-    DockspaceInteractionCapabilities, DockspaceMutation, DockspaceResponse,
-    DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, DockspaceUnavailableReason,
+    DockspaceActionResult, DockspaceActionStatus, DockspaceCapability, DockspaceCloseItem,
+    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRequest, DockspaceCloseResult,
+    DockspaceCommandOutcome, DockspaceCommandResult, DockspaceInteractionCapabilities,
+    DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
+    DockspaceUnavailableReason,
 };
 pub use style::{DockStyle, DockStyleError};

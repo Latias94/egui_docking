@@ -142,7 +142,7 @@ use crate::interaction::{
     ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
-use crate::model::ProductAction;
+use crate::model::{DockspaceView, ProductAction};
 use crate::operation::{
     PreparedContentClose, PreparedSurfaceContentClose, prepare_content_close,
     prepare_surface_content_close,
@@ -2029,6 +2029,13 @@ impl DockEngine {
         &self.workspace
     }
 
+    /// Returns the published item/surface-centric product view.
+    #[must_use]
+    pub fn product_view(&self) -> DockspaceView<'_> {
+        DockspaceView::new(&self.workspace)
+    }
+
+    #[cfg(feature = "serde")]
     pub(crate) const fn authority_domain(&self) -> EngineAuthorityDomainId {
         self.authority_domain
     }

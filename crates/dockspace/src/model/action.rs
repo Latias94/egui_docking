@@ -1,6 +1,8 @@
 use thiserror::Error;
 
-use crate::ids::{ItemId, RootId, SurfaceId};
+use crate::ids::{EngineAuthorityDomainId, ItemId, RootId, SurfaceId};
+
+use super::WorkspaceVersion;
 
 /// Stable item or central-region anchor used by product docking actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -177,6 +179,50 @@ pub enum DockspaceActionRejection {
     #[error("stable presentation identity space is exhausted")]
     IdentityExhausted,
 }
+
+/// Session- and revision-bound product docking action.
+///
+/// A prepared action preserves the exact published workspace version from
+/// which its stable placement was derived. The core validates its opaque
+/// authority domain before turning it into reducer input.
+#[derive(Debug)]
+#[must_use = "a prepared docking action must be submitted or deliberately discarded"]
+pub struct PreparedDockAction {
+    authority_domain: EngineAuthorityDomainId,
+    expected: WorkspaceVersion,
+    action: ProductAction,
+}
+
+impl PreparedDockAction {
+    pub(crate) const fn new(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        action: ProductAction,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            action,
+        }
+    }
+
+    /// Returns the published workspace version from which this action was prepared.
+    #[must_use]
+    pub const fn expected_version(&self) -> WorkspaceVersion {
+        self.expected
+    }
+
+    pub(crate) const fn into_parts(
+        self,
+    ) -> (EngineAuthorityDomainId, WorkspaceVersion, ProductAction) {
+        (self.authority_domain, self.expected, self.action)
+    }
+}
+
+/// A prepared product action was submitted to a different dockspace session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("prepared docking action belongs to another dockspace authority domain")]
+pub struct PreparedDockActionAuthorityMismatch;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ProductAction {

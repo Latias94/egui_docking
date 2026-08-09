@@ -59,6 +59,7 @@ use dockspace::document::{
 use dockspace::graph::Workspace;
 use dockspace::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::intent::Authority;
+use dockspace::model::{DockPlacement, DockspaceView, ItemId, PreparedDockAction};
 use dockspace::policy::DockPolicy;
 use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
@@ -92,8 +93,8 @@ use crate::presentation_settlement::PendingEguiPresentation;
 use crate::receiver::{PaintReceiverFingerprint, PaintReceiverLookup};
 use crate::render::EguiDockRenderer;
 use crate::response::{
-    DockspaceCloseResult, DockspaceCommandResult, DockspaceMutation, DockspaceResponse,
-    HostFrameResponse, SurfaceCommitResponse,
+    DockspaceActionResult, DockspaceCloseResult, DockspaceCommandResult, DockspaceMutation,
+    DockspaceResponse, HostFrameResponse, SurfaceCommitResponse,
 };
 use crate::style::DockStyle;
 
@@ -178,10 +179,100 @@ impl Dockspace {
         self.core_engine().workspace()
     }
 
+    /// Returns the published item/surface-centric product view.
+    #[must_use]
+    pub fn view(&self) -> DockspaceView<'_> {
+        self.core_engine().product_view()
+    }
+
     /// Returns the current durable workspace version.
     #[must_use]
     pub fn version(&self) -> dockspace::runtime::WorkspaceVersion {
         self.core_engine().version()
+    }
+
+    /// Prepares one revision-bound selection action from the published workspace.
+    #[must_use]
+    pub fn prepare_select_item(&self, item: ItemId) -> PreparedDockAction {
+        self.core_engine().prepare_select_item(item)
+    }
+
+    /// Prepares one revision-bound open action from the published workspace.
+    #[must_use]
+    pub fn prepare_open_item(&self, item: ItemId, placement: DockPlacement) -> PreparedDockAction {
+        self.core_engine().prepare_open_item(item, placement)
+    }
+
+    /// Prepares one revision-bound docking action from the published workspace.
+    #[must_use]
+    pub fn prepare_dock_item(&self, item: ItemId, placement: DockPlacement) -> PreparedDockAction {
+        self.core_engine().prepare_dock_item(item, placement)
+    }
+
+    /// Submits one core-issued product action against its exact source revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action belongs to another dockspace facade or
+    /// the application input boundary cannot publish atomically. Stale actions
+    /// are returned as [`crate::DockspaceActionStatus::Stale`].
+    pub fn submit_prepared_action(
+        &mut self,
+        prepared: PreparedDockAction,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        let input = self
+            .core_engine()
+            .accept_prepared_action(prepared)
+            .map_err(DockspaceError::from_detail)?;
+        let transition = self.submit_application_input(input)?;
+        DockspaceActionResult::from_transition(&transition)
+            .ok_or(
+                crate::error::DockspaceErrorSource::ApplicationOutcomeUnavailable {
+                    operation: "product action",
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    /// Selects one currently open item against the current published revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application boundary cannot publish atomically.
+    pub fn select_item_current(
+        &mut self,
+        item: ItemId,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        let prepared = self.prepare_select_item(item);
+        self.submit_prepared_action(prepared)
+    }
+
+    /// Opens one item at a stable placement against the current published revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application boundary cannot publish atomically.
+    pub fn open_item_current(
+        &mut self,
+        item: ItemId,
+        placement: DockPlacement,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        let prepared = self.prepare_open_item(item, placement);
+        self.submit_prepared_action(prepared)
+    }
+
+    /// Docks one open item at a stable placement against the current published revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the application boundary cannot publish atomically.
+    pub fn dock_item_current(
+        &mut self,
+        item: ItemId,
+        placement: DockPlacement,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        let prepared = self.prepare_dock_item(item, placement);
+        self.submit_prepared_action(prepared)
     }
 
     /// Returns the current declarative docking policy.

@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use dockspace::command::WorkspaceCommand;
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, Role};
 use egui::{Context, RawInput, Rect, Ui, ViewportId, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
-use egui_dockspace::{Dockspace, DockspaceCommandOutcome, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceActionOutcome, DockspaceActionStatus, PaneView,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -53,23 +54,26 @@ fn official_egui_consumes_the_public_single_surface_facade() {
     let mut dockspace = Dockspace::builder("official-egui-consumer", workspace())
         .build()
         .expect("the public facade accepts a valid workspace");
-    let root_node = dockspace
-        .workspace()
-        .root(ROOT)
-        .expect("the fixture root exists")
-        .node;
-    let source = dockspace
-        .workspace()
-        .capture_item_source(ROOT, root_node, ITEM)
-        .expect("the fixture item source is current");
-    let command = dockspace
-        .submit_command(WorkspaceCommand::Select { source })
-        .expect("the public command boundary reduces one checked command");
+    let view = dockspace.view();
+    assert_eq!(
+        view.surface(SURFACE)
+            .and_then(|surface| surface.main_root())
+            .map(|root| root.id()),
+        Some(ROOT),
+    );
+    let prepared = dockspace.prepare_select_item(ITEM);
+    assert_eq!(prepared.expected_version(), dockspace.version());
+    let action = dockspace
+        .submit_prepared_action(prepared)
+        .expect("the product action boundary reduces one checked action");
     assert!(matches!(
-        command.outcome(),
-        DockspaceCommandOutcome::Applied(_)
+        action.status(),
+        DockspaceActionStatus::Applied(DockspaceActionOutcome::Selected {
+            item: ITEM,
+            changed: false,
+        })
     ));
-    assert!(!command.mutation().workspace_changed());
+    assert!(!action.mutation().workspace_changed());
     let mut panes = SmokePanes::default();
     let mut last_repaint_delay = Duration::ZERO;
     let mut last_tree = None;

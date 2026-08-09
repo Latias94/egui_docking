@@ -12,10 +12,11 @@ use crate::event::WorkspaceEvent;
 use crate::frame::{ViewportFrameTransition, ViewportReconciliation};
 use crate::ids::{
     InputSequence, ItemId, NativeCreateSagaId, ReducerTickId, RootId, SourceSequence,
-    StableInputSourceId, SurfaceId, WorkspaceEpoch, WorkspaceRevision,
+    StableInputSourceId, SurfaceId, WorkspaceEpoch,
 };
 use crate::intent::Authority;
 use crate::interaction::{InteractionEvent, InteractionOutcome};
+pub use crate::model::WorkspaceVersion;
 use crate::platform_provider::{PlatformObservationAuthorityError, PlatformObservationLease};
 use crate::pointer_journal::{
     AnyButtonDownAuthority, PointerCaptureOwner, PointerEdge, PointerEdgeTicket, PointerStreamId,
@@ -32,33 +33,6 @@ use crate::scene_manifest::MeasurementAuthorityError;
 use crate::tab_strip::TabListMenuSessionId;
 use crate::viewport::ViewportBinding;
 use crate::viewport_focus::FocusDelta;
-
-/// Version of all workspace and policy state used to derive semantic input.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct WorkspaceVersion {
-    epoch: WorkspaceEpoch,
-    revision: WorkspaceRevision,
-}
-
-impl WorkspaceVersion {
-    /// Creates a version from distinct replacement and mutation counters.
-    #[must_use]
-    pub const fn new(epoch: WorkspaceEpoch, revision: WorkspaceRevision) -> Self {
-        Self { epoch, revision }
-    }
-
-    /// Returns the replacement epoch.
-    #[must_use]
-    pub const fn epoch(self) -> WorkspaceEpoch {
-        self.epoch
-    }
-
-    /// Returns the mutation revision within the current epoch.
-    #[must_use]
-    pub const fn revision(self) -> WorkspaceRevision {
-        self.revision
-    }
-}
 
 /// Normative source-class priority used by the single reducer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

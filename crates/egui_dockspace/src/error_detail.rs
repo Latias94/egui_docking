@@ -37,6 +37,9 @@ pub(crate) enum DockspaceErrorSource {
         /// Stable facade operation name used for diagnostics.
         operation: &'static str,
     },
+    /// A prepared product action belongs to another core authority domain.
+    #[error("prepared dockspace action is invalid for this facade: {0}")]
+    PreparedActionAuthority(#[from] dockspace::model::PreparedDockActionAuthorityMismatch),
     /// The session-owned persistence identity boundary rejected an operation.
     #[cfg(feature = "serde")]
     #[error("dockspace document session failed: {0}")]
@@ -537,6 +540,7 @@ impl DockspaceErrorSource {
             Self::SemanticActionBackendCorrelationUnavailable { .. } => {
                 DockspaceErrorKind::HostProtocol
             }
+            Self::PreparedActionAuthority(_) => DockspaceErrorKind::OperationConflict,
             Self::ApplicationOutcomeUnavailable { .. }
             | Self::Renderer(_)
             | Self::Engine(_)
