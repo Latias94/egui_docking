@@ -144,6 +144,12 @@ redirected to binding A2, even when both use the same host token. Frame reports
 expose only the sorted logical surfaces whose presentation authority changed,
 so repaint remains core-derived without leaking scene stamps.
 
+Native failures follow the same boundary: provider leases, recorder invariants,
+and exact backend error variants remain private. Product hosts receive only a
+stable `NativeHostErrorKind` and retain any affine effect result that could not
+be recorded, so retry and cleanup remain possible without freezing the internal
+provider FSM as public ABI.
+
 This is still a vertical slice rather than the complete facade. Tab-strip
 control and popup paint records, semantic-manifest views, native child recovery,
 provider handoff, effect execution, and desktop-global routing remain outside

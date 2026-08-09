@@ -325,9 +325,29 @@ impl NativeWindowFacts {
     }
 }
 
-/// Native lifecycle failure at the stable facade boundary.
+/// Stable product-level category for a native host failure.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeHostErrorKind {
+    /// No observed-root host is enrolled for the session.
+    NotEnabled,
+    /// An observed-root host is already enrolled.
+    AlreadyEnabled,
+    /// A callback or acknowledgement names an older binding incarnation.
+    StaleBinding,
+    /// The host supplied facts that are malformed or incomplete.
+    InvalidFacts,
+    /// The requested operation conflicts with the current host lifecycle.
+    OperationConflict,
+    /// The enrolled observed-root host cannot perform the requested operation.
+    Unsupported,
+    /// The host crossed an internal protocol boundary unexpectedly.
+    Internal,
+}
+
+/// Exact native lifecycle failure retained inside the runtime implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum NativePlatformError {
+pub(super) enum NativePlatformError {
     /// No native provider was enrolled for this session.
     #[error("no facade-owned native platform provider is active")]
     ProviderUnavailable,
@@ -395,6 +415,30 @@ pub enum NativePlatformError {
     /// renderer-neutral façade has no receiver-proof API for it yet.
     #[error("native desktop pointer input requires a receiver-proof adapter")]
     DesktopPointerInputUnsupported,
+}
+
+impl NativePlatformError {
+    pub(super) const fn kind(&self) -> NativeHostErrorKind {
+        match self {
+            Self::ProviderUnavailable => NativeHostErrorKind::NotEnabled,
+            Self::ProviderAlreadyEnabled => NativeHostErrorKind::AlreadyEnabled,
+            Self::ProviderSuperseded | Self::StaleSurface { .. } => {
+                NativeHostErrorKind::StaleBinding
+            }
+            Self::DuplicateSurface { .. }
+            | Self::IncompleteRoster
+            | Self::DestroyedSurfaceHasLiveFacts { .. }
+            | Self::EffectAcknowledgementBindingMismatch { .. }
+            | Self::EffectAcknowledgementProviderMismatch { .. } => {
+                NativeHostErrorKind::InvalidFacts
+            }
+            Self::BindingRosterUnsettled
+            | Self::BindingStillLive { .. }
+            | Self::BindingNotRetired { .. } => NativeHostErrorKind::OperationConflict,
+            Self::DesktopPointerInputUnsupported => NativeHostErrorKind::Unsupported,
+            Self::GenerationExhausted | Self::ProtocolInvariant => NativeHostErrorKind::Internal,
+        }
+    }
 }
 
 #[derive(Debug)]

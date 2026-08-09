@@ -9,7 +9,7 @@ use dockspace::runtime::{
     DockspaceCloseOutcome, DockspaceHostFrame, DockspaceInteractionError,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
-    NativePlatformError, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeHostErrorKind, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
     SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
@@ -1587,8 +1587,8 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
         .publish_native_close(a1, NativeCloseState::Requested, None)
         .expect_err("the delayed A1 close must be rejected before reduction");
     assert!(matches!(
-        error.native_error(),
-        Some(NativePlatformError::StaleSurface { surface: SURFACE })
+        error.native_kind(),
+        Some(NativeHostErrorKind::StaleBinding)
     ));
     host.run(|_| {});
 
@@ -1636,8 +1636,8 @@ fn ogc_04_incomplete_snapshot_is_rejected_before_recording() {
         .report_native_snapshot([(first, ready_window_facts(physical, scale))])
         .expect_err("an incomplete roster must be rejected before it is recorded");
     assert!(matches!(
-        error.native_error(),
-        Some(NativePlatformError::IncompleteRoster)
+        error.native_kind(),
+        Some(NativeHostErrorKind::InvalidFacts)
     ));
     host.run(|_| {});
 
@@ -1662,8 +1662,8 @@ fn ogc_04_snapshot_waits_for_a_pending_roster_registration() {
         .report_native_snapshot([])
         .expect_err("facts cannot be validated against the pre-registration roster");
     assert!(matches!(
-        error.native_error(),
-        Some(NativePlatformError::BindingRosterUnsettled)
+        error.native_kind(),
+        Some(NativeHostErrorKind::OperationConflict)
     ));
 
     let registration = host.run(|_| {});

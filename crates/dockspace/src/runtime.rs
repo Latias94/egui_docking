@@ -12,6 +12,8 @@ mod native_effect;
 mod paint;
 mod presentation;
 
+use native::NativePlatformError;
+
 pub use crate::model::{PreparedDockAction, WorkspaceVersion};
 pub use crate::transition::{ContentCloseRequestRejection, SurfaceCloseRequestRejection};
 pub use interaction::{
@@ -23,7 +25,7 @@ pub use interaction::{
     SurfaceScrollSequenceId,
 };
 pub use native::{
-    HostWindowToken, NativeCloseState, NativePlatformError, NativeSurfaceBinding,
+    HostWindowToken, NativeCloseState, NativeHostErrorKind, NativeSurfaceBinding,
     NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState,
 };
@@ -1114,11 +1116,11 @@ impl DockspaceRuntimeError {
         }
     }
 
-    /// Returns the typed native-platform failure when this error belongs to that lane.
+    /// Returns the stable native-host failure category when this error belongs to that lane.
     #[must_use]
-    pub const fn native_error(&self) -> Option<&NativePlatformError> {
+    pub const fn native_kind(&self) -> Option<NativeHostErrorKind> {
         match &self.source {
-            DockspaceRuntimeErrorSource::Native(error) => Some(error),
+            DockspaceRuntimeErrorSource::Native(error) => Some(error.kind()),
             _ => None,
         }
     }

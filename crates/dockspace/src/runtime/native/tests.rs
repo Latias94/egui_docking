@@ -133,8 +133,8 @@ fn live_binding_cannot_be_declared_quiescent() {
         .report_native_binding_quiescence(binding)
         .expect_err("a live binding cannot be declared quiescent");
     assert!(matches!(
-        error.native_error(),
-        Some(NativePlatformError::BindingStillLive { surface: SURFACE })
+        error.native_kind(),
+        Some(NativeHostErrorKind::OperationConflict)
     ));
 }
 
@@ -146,8 +146,8 @@ fn repeated_native_enable_never_reissues_live_bindings() {
         .enable_observed_native_roots()
         .expect_err("repeated enrollment cannot recapture the current binding roster");
     assert!(matches!(
-        error.native_error(),
-        Some(NativePlatformError::ProviderAlreadyEnabled)
+        error.native_kind(),
+        Some(NativeHostErrorKind::AlreadyEnabled)
     ));
     session
         .report_native_snapshot([(binding, NativeWindowFacts::live())])

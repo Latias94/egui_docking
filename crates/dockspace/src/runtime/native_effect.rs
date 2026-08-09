@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
-use super::native::NativeSurfaceBinding;
+use super::native::{NativeHostErrorKind, NativeSurfaceBinding};
 use crate::effect::{
     CleanupObservationToken, DispatchFailureReason, EffectDispatchResult, EffectId,
     EffectIndeterminateReason, EffectResult, EffectUnsupportedReason, NativeCloseResolution,
@@ -549,16 +549,18 @@ impl NativeEffectSubmissionError {
         Self { error, result }
     }
 
-    /// Returns the structural producer error without consuming the result capability.
+    /// Returns the stable product-level failure category without consuming the
+    /// result capability.
     #[must_use]
-    pub const fn error(&self) -> &super::native::NativePlatformError {
-        &self.error
+    pub const fn kind(&self) -> NativeHostErrorKind {
+        self.error.kind()
     }
 
-    /// Returns both the error and the unconsumed result for retry or cleanup correlation.
+    /// Returns the failure category and the unconsumed result for retry or
+    /// cleanup correlation.
     #[must_use]
-    pub fn into_parts(self) -> (super::native::NativePlatformError, NativeEffectResult) {
-        (self.error, self.result)
+    pub fn into_parts(self) -> (NativeHostErrorKind, NativeEffectResult) {
+        (self.error.kind(), self.result)
     }
 }
 
