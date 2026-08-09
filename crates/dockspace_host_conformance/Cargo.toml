@@ -10,7 +10,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-dockspace = { workspace = true, features = ["backend"] }
+dockspace.workspace = true
 
 [lints]
 workspace = true

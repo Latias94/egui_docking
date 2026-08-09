@@ -1,28 +1,23 @@
-use std::collections::BTreeMap;
-
-use dockspace::backend::command::{
-    CloseCommitOutcome, CommandOutcome, ContentCloseTarget, DockFraction, DockTarget, Edge,
-    MovePayload, WorkspaceCommand,
-};
-use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::error::{CommandError, ReferenceRole};
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::model::{
+    DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome, DockspaceAxis,
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceTabsView,
+    DockspaceView, ItemId, RootId, SurfaceId, WorkspaceVersion,
+};
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceInteractionError, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState, NativePlatformError,
-    NativePlatformMode, NativePlatformSnapshot, NativeSurfaceLease, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, PresentationSettlementRejection,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    DockspaceCloseOutcome, DockspaceHostFrame, DockspaceInteractionError,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
+    NativePlatformError, NativePlatformMode, NativePlatformSnapshot, NativeSurfaceLease,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    PresentationSettlementRejection, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
+    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
     SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    UniformSurfaceMetrics,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
-use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::{CloseDecision, CloseResolutionOutcome};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -52,15 +47,19 @@ struct DeterministicHost {
 }
 
 impl DeterministicHost {
-    fn new(workspace: Workspace) -> Self {
+    fn new(layout: DockspaceLayout) -> Self {
         Self {
-            session: DockspaceSession::from_backend_workspace(workspace, DockPolicy::default())
+            session: DockspaceSession::from_layout(layout, DockPolicy::default())
                 .expect("the conformance workspace must initialize"),
         }
     }
 
-    fn workspace(&self) -> &Workspace {
-        self.session.workspace()
+    fn view(&self) -> DockspaceView<'_> {
+        self.session.view()
+    }
+
+    fn version(&self) -> WorkspaceVersion {
+        self.session.version()
     }
 
     fn run(&mut self, mutate: impl FnOnce(&mut DockspaceHostFrame<'_>)) -> HostFrameReport {
@@ -70,7 +69,7 @@ impl DeterministicHost {
             .expect("the deterministic host frame must begin");
         mutate(&mut frame);
         frame
-            .complete_unpainted_surfaces(MeasurementUnavailableReason::Deferred)
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("the driver explicitly settles every unpainted surface");
         frame
             .commit()
@@ -118,37 +117,33 @@ impl DeterministicHost {
     }
 }
 
-fn tabs_workspace(items: impl IntoIterator<Item = ItemId>) -> (Workspace, NodeId) {
-    let mut builder = Workspace::builder();
-    let tabs = builder.insert_node(Node::tabs(items));
-    builder.set_root(ROOT, RootRecord::new(tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    (builder.build().expect("the tabs workspace is valid"), tabs)
+fn tabs_layout(items: impl IntoIterator<Item = ItemId>) -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::tabs(items)),
+    )])
+    .expect("the tabs layout is valid")
 }
 
-fn tabs_containing(workspace: &Workspace, item: ItemId) -> NodeId {
-    workspace
-        .nodes()
-        .find_map(|(node, record)| match record {
-            Node::Tabs { items, .. } if items.contains(&item) => Some(node),
-            Node::Tabs { .. } | Node::Split { .. } => None,
-        })
-        .expect("the item must remain owned by one tabs node")
+fn tabs_containing(view: DockspaceView<'_>, item: ItemId) -> Option<DockspaceTabsView<'_>> {
+    view.item(item).map(|item| item.tabs())
 }
 
-fn assert_command_applied(report: &HostFrameReport) {
+fn assert_product_dock_applied(report: &HostFrameReport, item: ItemId) {
     assert!(matches!(
         report.inputs(),
-        [HostInputOutcome::CommandApplied {
-            outcome: CommandOutcome::Moved { changed: true, .. },
-            changed: true,
-        }]
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Docked {
+                item: moved,
+                changed: true,
+                ..
+            }
+        )] if *moved == item
     ));
 }
 
 fn pointer_close_host() -> (DeterministicHost, DockspaceReceiverDescriptor) {
-    let (workspace, _) = tabs_workspace([A, B]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A, B]));
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
     let metrics =
@@ -292,7 +287,7 @@ fn request_pointer_close_with_contact_end(
 #[test]
 fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
     let (mut host, close) = pointer_close_host();
-    let before = host.workspace().clone();
+    let before = host.version();
 
     let veto_plan = request_pointer_close(&mut host, &close);
     let veto_item = veto_plan
@@ -313,7 +308,7 @@ fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
             ..
         }] if *request == veto_plan.request()
     ));
-    assert_eq!(host.workspace(), &before);
+    assert_eq!(host.version(), before);
 
     let allow_plan = request_pointer_close(&mut host, &close);
     let allow_item = allow_plan
@@ -334,18 +329,18 @@ fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
         allow.inputs(),
         [HostInputOutcome::CloseDecisionProcessed {
             resolution: CloseResolutionOutcome::Approved { request },
-            application: Some(Ok(CloseCommitOutcome::ItemClosed { item: A, .. })),
+            application: Some(Ok(DockspaceCloseOutcome::ItemClosed { item: A, .. })),
             changed: true,
             ..
         }] if *request == allow_plan.request()
     ));
-    assert!(!host.workspace().item_multiset().contains_key(&A));
+    assert!(tabs_containing(host.view(), A).is_none());
 }
 
 #[test]
 fn runtime_contact_end_allows_the_same_pointer_identity_to_start_a_new_gesture() {
     let (mut host, close) = pointer_close_host();
-    let before = host.workspace().clone();
+    let before = host.version();
 
     let first_plan = request_pointer_close_with_contact_end(&mut host, &close);
     let first_item = first_plan
@@ -384,7 +379,7 @@ fn runtime_contact_end_allows_the_same_pointer_identity_to_start_a_new_gesture()
             .expect("the successor contact close plan can be retired");
     });
 
-    assert_eq!(host.workspace(), &before);
+    assert_eq!(host.version(), before);
 }
 
 #[test]
@@ -392,19 +387,18 @@ fn host_report_preserves_application_and_pointer_close_order() {
     let (mut host, close) = pointer_close_host();
 
     let (receiver, surface) = press_pointer_close(&mut host, &close);
-    let select_a = host
-        .workspace()
-        .capture_item_source(ROOT, tabs_containing(host.workspace(), A), A)
-        .expect("item A remains current");
     let application_first = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Select { source: select_a })
+            .select_item_current(A)
             .expect("the no-op selection joins the host frame");
         submit_pointer_close_release(frame, receiver, surface);
     });
     let first_plan = match application_first.inputs() {
         [
-            HostInputOutcome::CommandApplied { changed: false, .. },
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: A,
+                changed: false,
+            }),
             HostInputOutcome::CloseRequested {
                 plan,
                 reused: false,
@@ -429,14 +423,10 @@ fn host_report_preserves_application_and_pointer_close_order() {
     });
 
     let (receiver, surface) = press_pointer_close(&mut host, &close);
-    let select_a = host
-        .workspace()
-        .capture_item_source(ROOT, tabs_containing(host.workspace(), A), A)
-        .expect("item A remains current after veto");
     let pointer_first = host.run(|frame| {
         submit_pointer_close_release(frame, receiver, surface);
         frame
-            .submit_command(WorkspaceCommand::Select { source: select_a })
+            .select_item_current(A)
             .expect("the later no-op selection joins the host frame");
     });
     let second_plan = match pointer_first.inputs() {
@@ -446,7 +436,10 @@ fn host_report_preserves_application_and_pointer_close_order() {
                 reused: false,
                 origin: HostCloseRequestOrigin::Interaction,
             },
-            HostInputOutcome::CommandApplied { changed: false, .. },
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: A,
+                changed: false,
+            }),
         ] => plan.clone(),
         outcomes => panic!("pointer then application order changed: {outcomes:?}"),
     };
@@ -468,20 +461,17 @@ fn host_report_preserves_application_and_pointer_close_order() {
 
 #[test]
 fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
-    let mut builder = Workspace::builder();
-    let left = builder.insert_node(Node::tabs([A]));
-    let right = builder.insert_node(Node::tabs([B]));
-    let split = builder.insert_node(
-        Node::equal_split(Axis::Horizontal, [left, right])
-            .expect("the renderer fixture split is valid"),
-    );
-    builder.set_root(ROOT, RootRecord::new(split));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut host = DeterministicHost::new(
-        builder
-            .build()
-            .expect("the renderer fixture workspace is canonical"),
-    );
+    let split = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([A]), DockspaceNode::tabs([B])],
+    )
+    .expect("the renderer fixture split is valid");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, split),
+    )])
+    .expect("the renderer fixture layout is canonical");
+    let mut host = DeterministicHost::new(layout);
     let bounds = LogicalRect::new(0.0, 0.0, 800.0, 480.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(80.0, 60.0).expect("the fixture minimum is valid");
     let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
@@ -528,7 +518,7 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
 
         let splitters = plan.splitters().collect::<Vec<_>>();
         assert_eq!(splitters.len(), 1);
-        assert_eq!(splitters[0].axis(), Axis::Horizontal);
+        assert_eq!(splitters[0].axis(), DockspaceAxis::Horizontal);
         assert!(splitters[0].operable());
         assert!(splitters[0].hit_bounds().width() > 0.0);
         first_visuals.push(splitters[0].visual_id());
@@ -588,8 +578,7 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
 
 #[test]
 fn dropped_output_retires_without_granting_interaction_authority() {
-    let (workspace, _) = tabs_workspace([A]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A]));
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
     let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
@@ -634,8 +623,7 @@ fn dropped_output_retires_without_granting_interaction_authority() {
 
 #[test]
 fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
-    let (workspace, _) = tabs_workspace([A]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A]));
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
     let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
@@ -672,8 +660,7 @@ fn surface_pointer_waits_for_the_current_endpoint_to_be_presented() {
 
 #[test]
 fn rejected_settlement_returns_its_affine_output_for_retry() {
-    let (workspace, _) = tabs_workspace([A]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A]));
     let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
     let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
@@ -738,146 +725,124 @@ fn rejected_settlement_returns_its_affine_output_for_retry() {
 
 #[test]
 fn ogc_01_repeated_same_axis_docks_flatten_and_stale_targets_are_inert() {
-    let (workspace, original_tabs) = tabs_workspace([A, B, C]);
-    let mut host = DeterministicHost::new(workspace);
-
-    let stale_target = host
-        .workspace()
-        .capture_inner_edge_target(
-            ROOT,
-            original_tabs,
-            Edge::Right,
-            DockFraction::new(0.5).expect("the fixture fraction is valid"),
-        )
-        .expect("the original target is current");
-    let source_b = host
-        .workspace()
-        .capture_item_source(ROOT, original_tabs, B)
-        .expect("item B is current");
+    let mut host = DeterministicHost::new(tabs_layout([A, B, C]));
+    let fraction = DockFraction::new(0.5).expect("the fixture fraction is valid");
+    let stale_action = host.session.prepare_dock_item(
+        A,
+        DockPlacement::InnerEdge {
+            anchor: DockAnchor::Item(B),
+            edge: DockEdge::Right,
+            fraction,
+        },
+    );
     let first = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Move {
-                payload: MovePayload::Item(source_b),
-                target: DockTarget::InnerEdge(stale_target.clone()),
-            })
-            .expect("the first checked move must append");
+            .dock_item_current(
+                B,
+                DockPlacement::InnerEdge {
+                    anchor: DockAnchor::Item(A),
+                    edge: DockEdge::Right,
+                    fraction,
+                },
+            )
+            .expect("the first product move must append");
     });
-    assert_command_applied(&first);
+    assert_product_dock_applied(&first, B);
 
-    let b_tabs = tabs_containing(host.workspace(), B);
-    let source_c = host
-        .workspace()
-        .capture_item_source(ROOT, original_tabs, C)
-        .expect("item C remains in the original tabs");
-    let target_b = host
-        .workspace()
-        .capture_inner_edge_target(
-            ROOT,
-            b_tabs,
-            Edge::Right,
-            DockFraction::new(0.5).expect("the fixture fraction is valid"),
-        )
-        .expect("the second target is current");
     let second = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Move {
-                payload: MovePayload::Item(source_c),
-                target: DockTarget::InnerEdge(target_b),
-            })
-            .expect("the second checked move must append");
+            .dock_item_current(
+                C,
+                DockPlacement::InnerEdge {
+                    anchor: DockAnchor::Item(B),
+                    edge: DockEdge::Right,
+                    fraction,
+                },
+            )
+            .expect("the second product move must append");
     });
-    assert_command_applied(&second);
+    assert_product_dock_applied(&second, C);
 
-    let root_node = host.workspace().root(ROOT).expect("the root remains").node;
-    let Node::Split { axis, children, .. } = host
-        .workspace()
-        .node(root_node)
-        .expect("the canonical root node remains")
-    else {
-        panic!("the root must be a same-axis split");
-    };
-    assert_eq!(*axis, Axis::Horizontal);
-    assert_eq!(children.len(), 3, "same-axis wrappers must flatten");
-    host.workspace()
-        .validate()
-        .expect("the flattened workspace remains canonical");
+    let split = host
+        .view()
+        .root(ROOT)
+        .and_then(|root| root.content())
+        .and_then(|node| node.split())
+        .expect("the root must be a same-axis split");
+    assert_eq!(split.axis(), DockspaceAxis::Horizontal);
+    assert_eq!(split.child_count(), 3, "same-axis wrappers must flatten");
 
-    let before_stale = host.workspace().clone();
-    let current_source = host
-        .workspace()
-        .capture_item_source(ROOT, tabs_containing(host.workspace(), A), A)
-        .expect("item A is current");
+    let before_stale = host.version();
     let stale = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Move {
-                payload: MovePayload::Item(current_source),
-                target: DockTarget::InnerEdge(stale_target),
-            })
-            .expect("a stale checked command is still structurally accepted");
+            .submit_prepared_action(stale_action)
+            .expect("a stale product action is still structurally accepted");
     });
     assert!(matches!(
         stale.inputs(),
-        [HostInputOutcome::CommandRejected(CommandError::StaleNode {
-            role: ReferenceRole::Target,
-            ..
-        })]
+        [HostInputOutcome::StaleRejected { .. }]
     ));
-    assert_eq!(host.workspace(), &before_stale);
+    assert_eq!(host.version(), before_stale);
 }
 
 #[test]
-fn ogc_02_merge_and_close_preserve_target_local_mru_atomically() {
-    let mut builder = Workspace::builder();
-    let target_tabs = builder.insert_node(Node::tabs_with_selection([A, B, C], Some(C)));
-    let source_tabs = builder.insert_node(Node::tabs([X]));
-    builder.set_root(ROOT, RootRecord::new(target_tabs));
-    builder.set_root(SOURCE_ROOT, RootRecord::new(source_tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let source_surface = SurfaceId::new(2);
-    builder.set_surface(source_surface, SurfacePresentation::with_main(SOURCE_ROOT));
-    let mut host = DeterministicHost::new(builder.build().expect("the merge workspace is valid"));
+fn ogc_02_merge_and_close_restore_the_previous_target_selection_atomically() {
+    let target = DockspaceNode::tabs_with_selection([A, B, C], Some(C))
+        .expect("the target selection is valid");
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(SURFACE, DockspaceRootLayout::new(ROOT, target)),
+        DockspaceSurfaceLayout::new(
+            SECOND_SURFACE,
+            DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([X])),
+        ),
+    ])
+    .expect("the merge layout is valid");
+    let mut host = DeterministicHost::new(layout);
 
-    let select_b = host
-        .workspace()
-        .capture_item_source(ROOT, target_tabs, B)
-        .expect("target item B is current");
-    host.run(|frame| {
+    let select = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Select { source: select_b })
-            .expect("selection must append");
+            .select_item_current(B)
+            .expect("selection must append through the product contract");
     });
+    assert!(matches!(
+        select.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Selected {
+                item: B,
+                changed: true,
+            }
+        )]
+    ));
     assert_eq!(
-        host.workspace().tab_mru(target_tabs),
-        Some([B, C, A].as_slice())
+        tabs_containing(host.view(), B).and_then(DockspaceTabsView::selected),
+        Some(B)
     );
 
-    let source = host
-        .workspace()
-        .capture_node_source(SOURCE_ROOT, source_tabs)
-        .expect("the source tabs are current");
-    let target = host
-        .workspace()
-        .capture_tab_target(ROOT, target_tabs)
-        .expect("the target tabs are current");
-    let before_items = host.workspace().item_multiset();
     let merge = host.run(|frame| {
         frame
-            .submit_command(WorkspaceCommand::Move {
-                payload: MovePayload::Tabs(source),
-                target: DockTarget::Center(target),
-            })
-            .expect("the merge must append");
+            .dock_root_current(SOURCE_ROOT, DockPlacement::Center(DockAnchor::Item(B)))
+            .expect("the merge must append through the product contract");
     });
-    assert_command_applied(&merge);
-    assert_eq!(host.workspace().item_multiset(), before_items);
+    assert!(matches!(
+        merge.inputs(),
+        [HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::RootDocked {
+                root: SOURCE_ROOT,
+                target_root: ROOT,
+                items,
+                changed: true,
+            }
+        )] if items == &[X]
+    ));
     assert_eq!(
-        host.workspace().tab_mru(target_tabs),
-        Some([X, B, C, A].as_slice())
+        tabs_containing(host.view(), X).and_then(DockspaceTabsView::selected),
+        Some(X),
+        "merging a selected source makes the moved item current"
     );
 
     let request = host.run(|frame| {
         frame
-            .request_close(ContentCloseTarget::Item(X))
+            .request_close_item(X)
             .expect("the close request must append");
     });
     let plan = match request.inputs() {
@@ -905,32 +870,16 @@ fn ogc_02_merge_and_close_preserve_target_local_mru_atomically() {
         close.inputs(),
         [HostInputOutcome::CloseDecisionProcessed {
             resolution: CloseResolutionOutcome::Approved { request },
-            application: Some(Ok(CloseCommitOutcome::ItemClosed { item: X, .. })),
+            application: Some(Ok(DockspaceCloseOutcome::ItemClosed { item: X, .. })),
             changed: true,
             ..
         }] if *request == plan.request()
     ));
 
-    let Node::Tabs { items, selected } = host
-        .workspace()
-        .node(target_tabs)
-        .expect("the target tabs remain")
-    else {
-        panic!("the target remains a tabs node");
-    };
-    assert_eq!(items, &[A, B, C]);
-    assert_eq!(*selected, Some(B));
-    assert_eq!(
-        host.workspace().tab_mru(target_tabs),
-        Some([B, C, A].as_slice())
-    );
-    assert_eq!(
-        host.workspace().item_multiset(),
-        BTreeMap::from([(A, 1), (B, 1), (C, 1)])
-    );
-    host.workspace()
-        .validate()
-        .expect("the merge-close workflow remains canonical");
+    let tabs = tabs_containing(host.view(), B).expect("the target tabs remain");
+    assert_eq!(tabs.items(), &[A, B, C]);
+    assert_eq!(tabs.selected(), Some(B));
+    assert!(tabs_containing(host.view(), X).is_none());
 }
 
 struct InteractionFixture {
@@ -941,20 +890,17 @@ struct InteractionFixture {
 
 impl InteractionFixture {
     fn new() -> Self {
-        let mut builder = Workspace::builder();
-        let source_tabs = builder.insert_node(Node::tabs([A, B]));
-        let target_tabs = builder.insert_node(Node::tabs([C]));
-        let split = builder.insert_node(
-            Node::equal_split(Axis::Horizontal, [source_tabs, target_tabs])
-                .expect("the fixture split is valid"),
-        );
-        builder.set_root(ROOT, RootRecord::new(split));
-        builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-        let mut host = DeterministicHost::new(
-            builder
-                .build()
-                .expect("the interaction workspace is canonical"),
-        );
+        let split = DockspaceNode::equal_split(
+            DockspaceAxis::Horizontal,
+            [DockspaceNode::tabs([A, B]), DockspaceNode::tabs([C])],
+        )
+        .expect("the fixture split is valid");
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, split),
+        )])
+        .expect("the interaction layout is canonical");
+        let mut host = DeterministicHost::new(layout);
         let bounds =
             LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture surface bounds are valid");
         let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
@@ -1151,7 +1097,7 @@ fn runtime_pointer_batch_preserves_order_and_explicit_cancellation() {
     let press = source.center();
     let moved = LogicalPoint::new(press.x() + 24.0, press.y() + 24.0)
         .expect("the threshold-crossing point is valid");
-    let before = fixture.host.workspace().clone();
+    let before = fixture.host.version();
 
     fixture.host.run(|frame| {
         frame
@@ -1183,7 +1129,7 @@ fn runtime_pointer_batch_preserves_order_and_explicit_cancellation() {
             .expect("one batch preserves press, move, then cancellation order");
     });
 
-    assert_eq!(fixture.host.workspace(), &before);
+    assert_eq!(fixture.host.version(), before);
     fixture.host.run(|frame| {
         let plan = frame
             .paint_plan(SURFACE)
@@ -1201,7 +1147,7 @@ fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
     let mut fixture = InteractionFixture::new();
     let source = fixture.current_source();
     let press = source.center();
-    let before = fixture.host.workspace().clone();
+    let before = fixture.host.version();
 
     fixture.host.run(|frame| {
         let error = frame
@@ -1238,7 +1184,7 @@ fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
         ));
     });
 
-    assert_eq!(fixture.host.workspace(), &before);
+    assert_eq!(fixture.host.version(), before);
     fixture.host.run(|frame| {
         let plan = frame
             .paint_plan(SURFACE)
@@ -1253,8 +1199,7 @@ fn runtime_pointer_batch_prevalidates_before_reducing_any_prefix() {
 
 #[test]
 fn runtime_pointer_batch_routes_discrete_and_smooth_scroll_to_the_core_owner() {
-    let (workspace, _) = tabs_workspace([A, B, C, X]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A, B, C, X]));
     let bounds = LogicalRect::new(0.0, 0.0, 220.0, 180.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
     let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
@@ -1383,7 +1328,7 @@ fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
     let mut fixture = InteractionFixture::new();
     fixture.begin_drag_without_target();
     let target = fixture.current_target();
-    let before = fixture.host.workspace().clone();
+    let before = fixture.host.version();
 
     fixture.host.run(|frame| {
         frame
@@ -1397,7 +1342,7 @@ fn ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview() {
             .expect("the first target hit is reported exactly on release");
     });
 
-    assert_eq!(fixture.host.workspace(), &before);
+    assert_eq!(fixture.host.version(), before);
 }
 
 #[test]
@@ -1406,7 +1351,7 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     cached.begin_drag_without_target();
     cached.preview_target();
     cached.paint_preview();
-    let before_cached = cached.host.workspace().clone();
+    let before_cached = cached.host.version();
     let point = cached.current_target().center();
     cached.host.run(|frame| {
         frame
@@ -1419,7 +1364,7 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
             ))
             .expect("absence of a current hover fact is represented as unknown");
     });
-    assert_eq!(cached.host.workspace(), &before_cached);
+    assert_eq!(cached.host.version(), before_cached);
 
     let mut stale = InteractionFixture::new();
     stale.begin_drag_without_target();
@@ -1427,7 +1372,7 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
     stale.paint_preview();
     let old_target = stale.current_target();
     stale.paint_preview();
-    let before_stale = stale.host.workspace().clone();
+    let before_stale = stale.host.version();
     stale.host.run(|frame| {
         frame
             .submit_surface_pointer(SurfacePointerInput::new(
@@ -1439,7 +1384,7 @@ fn ogc_03_cached_or_stale_receiver_cannot_authorize_release() {
             ))
             .expect("the facade converts a stale concrete receiver into fail-closed evidence");
     });
-    assert_eq!(stale.host.workspace(), &before_stale);
+    assert_eq!(stale.host.version(), before_stale);
 }
 
 #[test]
@@ -1462,16 +1407,9 @@ fn ogc_03_current_painted_preview_commits_exactly_once() {
             .expect("the current receiver reports release over the painted preview");
     });
 
-    let target_tabs = tabs_containing(fixture.host.workspace(), C);
-    assert!(matches!(
-        fixture.host.workspace().node(target_tabs),
-        Some(Node::Tabs { items, .. }) if items == &[C, A]
-    ));
-    fixture
-        .host
-        .workspace()
-        .validate()
-        .expect("the delivered topology remains canonical");
+    let target_tabs = tabs_containing(fixture.host.view(), C)
+        .expect("the delivered target tabs remain product-visible");
+    assert_eq!(target_tabs.items(), &[C, A]);
 }
 
 #[test]
@@ -1486,7 +1424,7 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
     assert_eq!(retirement.surface(), SURFACE);
     let lease = fixture.attach_native_surface();
     let _presented_target = fixture.current_target();
-    let before = fixture.host.workspace().clone();
+    let before = fixture.host.version();
 
     let snapshot = fixture
         .host
@@ -1521,13 +1459,12 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
             .is_none(),
         "stale geometry cannot regain receiver authority without a new presentation"
     );
-    assert_eq!(fixture.host.workspace(), &before);
+    assert_eq!(fixture.host.version(), before);
 }
 
 #[test]
 fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
-    let (workspace, _) = tabs_workspace([A, B]);
-    let mut host = DeterministicHost::new(workspace);
+    let mut host = DeterministicHost::new(tabs_layout([A, B]));
     host.session
         .enable_native_platform(NativePlatformMode::ObservedRoots)
         .expect("the deterministic host enrolls one native platform provider");
@@ -1562,7 +1499,7 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
         .expect("the next snapshot advances beyond A2's close observation");
     host.publish_native_snapshot(ready_a2);
 
-    let before = host.workspace().clone();
+    let before = host.version();
     let error = host
         .session
         .publish_native_close(a1, NativeCloseState::Requested, None)
@@ -1573,24 +1510,24 @@ fn ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding() {
     ));
     host.run(|_| {});
 
-    assert_eq!(host.workspace(), &before);
+    assert_eq!(host.version(), before);
     assert_eq!(host.session.native_surface(SURFACE), Some(a2));
 }
 
 #[test]
 fn ogc_04_snapshot_captured_before_roster_change_is_rejected_at_publish() {
-    let mut builder = Workspace::builder();
-    let first_tabs = builder.insert_node(Node::tabs([A]));
-    let second_tabs = builder.insert_node(Node::tabs([B]));
-    builder.set_root(ROOT, RootRecord::new(first_tabs));
-    builder.set_root(SOURCE_ROOT, RootRecord::new(second_tabs));
-    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    builder.set_surface(SECOND_SURFACE, SurfacePresentation::with_main(SOURCE_ROOT));
-    let mut host = DeterministicHost::new(
-        builder
-            .build()
-            .expect("the two-surface native workspace is valid"),
-    );
+    let layout = DockspaceLayout::new([
+        DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::tabs([A])),
+        ),
+        DockspaceSurfaceLayout::new(
+            SECOND_SURFACE,
+            DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::tabs([B])),
+        ),
+    ])
+    .expect("the two-surface native layout is valid");
+    let mut host = DeterministicHost::new(layout);
     host.session
         .enable_native_platform(NativePlatformMode::ObservedRoots)
         .expect("the deterministic host enrolls one native platform provider");
