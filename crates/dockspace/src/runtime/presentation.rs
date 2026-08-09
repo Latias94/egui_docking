@@ -1,6 +1,7 @@
 //! Private final-presentation sidecar for the public runtime facade.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
@@ -21,10 +22,12 @@ use crate::transition::EngineTransition;
 ///
 /// This capability is not presentation authority. The renderer may consume it
 /// only after receiving an exact final-presentation result for that output.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 #[must_use = "a painted output must be explicitly confirmed after final presentation"]
 pub struct PaintedSurfaceOutput {
     output: HostPresentationOutput,
+    abandoned: PresentationDropQueue,
+    armed: bool,
 }
 
 impl PaintedSurfaceOutput {
@@ -32,6 +35,26 @@ impl PaintedSurfaceOutput {
     #[must_use]
     pub const fn surface(&self) -> SurfaceId {
         self.output.surface()
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl PartialEq for PaintedSurfaceOutput {
+    fn eq(&self, other: &Self) -> bool {
+        self.output == other.output
+    }
+}
+
+impl Eq for PaintedSurfaceOutput {}
+
+impl Drop for PaintedSurfaceOutput {
+    fn drop(&mut self) {
+        if self.armed {
+            self.abandoned.push(self.output);
+        }
     }
 }
 
@@ -66,30 +89,15 @@ pub enum SurfacePresentationResult {
     Dropped,
 }
 
-/// Typed rejection while reporting one final-presentation result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum SurfacePresentationReportRejection {
-    /// The output did not originate from this session or is no longer pending.
-    #[error("painted output is foreign, stale, or already retired")]
-    OutputNotPending,
-}
-
-/// Failed presentation report with the original affine output preserved for retry.
+/// Failed presentation report with the original affine output preserved.
 #[derive(Debug, Error)]
-#[error("{rejection}")]
+#[error("painted output is foreign, stale, or already retired")]
 pub struct SurfacePresentationReportError {
-    rejection: SurfacePresentationReportRejection,
     output: PaintedSurfaceOutput,
 }
 
 impl SurfacePresentationReportError {
-    /// Returns the typed fail-closed rejection.
-    #[must_use]
-    pub const fn rejection(&self) -> SurfacePresentationReportRejection {
-        self.rejection
-    }
-
-    /// Recovers the unconsumed affine output capability.
+    /// Recovers the unconsumed affine output for caller-controlled handling.
     #[must_use]
     pub fn into_output(self) -> PaintedSurfaceOutput {
         self.output
@@ -117,6 +125,28 @@ pub(super) struct RuntimePresentationState {
     results: BTreeMap<HostPresentationStreamId, BTreeMap<HostFrameKey, SurfacePresentationResult>>,
     capture_generations: BTreeMap<HostPresentationStreamId, HostPresentationCaptureGeneration>,
     backend_recorded: BTreeMap<HostPresentationStreamId, RecordedPresentationReport>,
+    abandoned: PresentationDropQueue,
+}
+
+/// Session-owned sink for painted outputs abandoned after core emission.
+///
+/// This is a small private terminal-result queue. It prevents a forgotten
+/// affine output from blocking every newer result in the same ordered stream.
+#[derive(Debug, Clone, Default)]
+struct PresentationDropQueue(Arc<Mutex<Vec<HostPresentationOutput>>>);
+
+impl PresentationDropQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<HostPresentationOutput>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, output: HostPresentationOutput) {
+        self.lock().push(output);
+    }
+
+    fn take(&self) -> Vec<HostPresentationOutput> {
+        std::mem::take(&mut *self.lock())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,11 +164,7 @@ impl PendingPresentationReport {
         if output > self.settled_through {
             self.settled_through = output;
         }
-        if result == SurfacePresentationResult::Presented
-            && self.presented.is_none_or(|presented| output > presented)
-        {
-            self.presented = Some(output);
-        }
+        self.presented = (result == SurfacePresentationResult::Presented).then_some(output);
     }
 }
 
@@ -158,6 +184,22 @@ pub(super) struct SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    fn drain_abandoned(&mut self) {
+        for output in self.abandoned.take() {
+            let is_pending = self
+                .pending
+                .get(&output.stream())
+                .is_some_and(|pending| pending.contains(&output));
+            if is_pending {
+                self.results
+                    .entry(output.stream())
+                    .or_default()
+                    .entry(output.key())
+                    .or_insert(SurfacePresentationResult::Dropped);
+            }
+        }
+    }
+
     pub(super) fn discard_uncommitted_backend_records(&mut self) {
         self.backend_recorded.clear();
     }
@@ -202,6 +244,7 @@ impl RuntimePresentationState {
         engine: &DockEngine,
         recorder: &mut BackendIngressRecorder,
     ) -> Result<SubmittedPresentationObservation, super::DockspaceRuntimeError> {
+        self.drain_abandoned();
         let scope = prelude
             .pending_presentation_streams()
             .collect::<BTreeSet<_>>();
@@ -263,9 +306,10 @@ impl RuntimePresentationState {
     }
 
     pub(super) fn submit_observation(
-        &self,
+        &mut self,
         prelude: &mut CoreHostFramePrelude,
     ) -> Result<SubmittedPresentationObservation, PresentationObservationError> {
+        self.drain_abandoned();
         let scope = prelude
             .pending_presentation_streams()
             .collect::<BTreeSet<_>>();
@@ -318,24 +362,20 @@ impl RuntimePresentationState {
         output: PaintedSurfaceOutput,
         result: SurfacePresentationResult,
     ) -> Result<(), SurfacePresentationReportError> {
+        let mut output = output;
         let raw_output = output.output;
         let Some(pending) = self.pending.get(&raw_output.stream()) else {
-            return Err(SurfacePresentationReportError {
-                rejection: SurfacePresentationReportRejection::OutputNotPending,
-                output,
-            });
+            return Err(SurfacePresentationReportError { output });
         };
         if !pending.contains(&raw_output) {
-            return Err(SurfacePresentationReportError {
-                rejection: SurfacePresentationReportRejection::OutputNotPending,
-                output,
-            });
+            return Err(SurfacePresentationReportError { output });
         }
         let stream = raw_output.stream();
         self.results
             .entry(stream)
             .or_default()
             .insert(raw_output.key(), result);
+        output.disarm();
         Ok(())
     }
 
@@ -401,7 +441,11 @@ impl RuntimePresentationState {
                     .entry(output.stream())
                     .or_default()
                     .push(output);
-                PaintedSurfaceOutput { output }
+                PaintedSurfaceOutput {
+                    output,
+                    abandoned: self.abandoned.clone(),
+                    armed: true,
+                }
             })
             .collect()
     }

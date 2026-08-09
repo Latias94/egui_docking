@@ -139,6 +139,22 @@ fn live_binding_cannot_be_declared_quiescent() {
 }
 
 #[test]
+fn repeated_native_enable_never_reissues_live_bindings() {
+    let (mut session, binding) = native_root_session();
+
+    let error = session
+        .enable_native_platform(NativePlatformMode::ObservedRoots)
+        .expect_err("repeated enrollment cannot recapture the current binding roster");
+    assert!(matches!(
+        error.native_error(),
+        Some(NativePlatformError::ProviderAlreadyEnabled)
+    ));
+    session
+        .capture_native_snapshot([(binding, NativeWindowFacts::live())])
+        .expect("the originally issued binding remains the sole live capability");
+}
+
+#[test]
 fn joined_provider_replacement_rotates_surface_capabilities() {
     let (mut session, predecessor) = native_root_session();
 

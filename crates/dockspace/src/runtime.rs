@@ -45,8 +45,7 @@ pub use paint::{
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
-    PaintedSurfaceOutput, SurfacePresentationReportError, SurfacePresentationReportRejection,
-    SurfacePresentationResult,
+    PaintedSurfaceOutput, SurfacePresentationReportError, SurfacePresentationResult,
 };
 
 use std::collections::BTreeSet;

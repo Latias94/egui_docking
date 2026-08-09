@@ -357,6 +357,9 @@ pub enum NativePlatformError {
     /// The submitted snapshot belongs to a superseded provider.
     #[error("native snapshot belongs to a superseded platform provider")]
     ProviderSuperseded,
+    /// A native provider is already enrolled for this session.
+    #[error("native platform provider is already active")]
+    ProviderAlreadyEnabled,
     /// The provider is already enrolled under another structural mode.
     #[error("native platform provider is already active under a different mode")]
     ProviderModeConflict,

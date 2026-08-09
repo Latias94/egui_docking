@@ -24,12 +24,14 @@ impl DockspaceSession {
 
     /// Enrolls the session-owned native platform observation source.
     ///
-    /// Repeating this call is inert. Transport replacement is available through
-    /// the joined begin/finish/abort methods without exposing provider tickets.
+    /// The method enrolls exactly once. Transport replacement is available
+    /// through the joined begin/finish/abort methods without exposing provider
+    /// tickets or reissuing existing surface bindings.
     ///
     /// # Errors
     ///
-    /// Returns an error when the core cannot mint platform authority.
+    /// Returns an error when a provider is already enrolled or the core cannot
+    /// mint platform authority.
     /// The returned bindings are the complete current native roster and must
     /// be retained by the host for future asynchronous facts.
     pub fn enable_native_platform(
@@ -41,7 +43,7 @@ impl DockspaceSession {
         }
         if let Some(native) = &self.native {
             return if native.mode == mode {
-                Ok(native.bindings.values().copied().collect())
+                Err(NativePlatformError::ProviderAlreadyEnabled.into())
             } else {
                 Err(NativePlatformError::ProviderModeConflict.into())
             };

@@ -730,6 +730,96 @@ fn presentation_reports_queue_behind_a_dropped_joined_host_frame() {
 }
 
 #[test]
+fn latest_terminal_result_is_independent_of_prelude_batching() {
+    let mut host = DeterministicHost::new(tabs_layout([A]));
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the surface measurements are complete");
+    });
+
+    let mut first_report = host.run(|frame| {
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the first output is painted");
+    });
+    let first = first_report
+        .take_painted_outputs()
+        .pop()
+        .expect("the first paint emits one capability");
+    let mut second_report = host.run(|frame| {
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the second output is painted");
+    });
+    let second = second_report
+        .take_painted_outputs()
+        .pop()
+        .expect("the second paint emits one capability");
+
+    host.session
+        .report_surface_presentation(first, SurfacePresentationResult::Presented)
+        .expect("the earlier output reached final presentation");
+    host.session
+        .report_surface_presentation(second, SurfacePresentationResult::Dropped)
+        .expect("the later output was authoritatively dropped");
+    host.run(|_| {});
+
+    assert!(
+        host.session.presented_surface(SURFACE).is_none(),
+        "the latest terminal output must revoke older presentation authority"
+    );
+}
+
+#[test]
+fn abandoned_output_does_not_block_newer_out_of_order_result() {
+    let mut host = DeterministicHost::new(tabs_layout([A]));
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the fixture bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the fixture minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0)
+        .expect("the fixture measurements are valid");
+    host.run(|frame| {
+        frame
+            .measure_surface(SURFACE, metrics)
+            .expect("the surface measurements are complete");
+    });
+
+    let mut first_report = host.run(|frame| {
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the first output is painted");
+    });
+    let first = first_report
+        .take_painted_outputs()
+        .pop()
+        .expect("the first paint emits one capability");
+    let mut second_report = host.run(|frame| {
+        frame
+            .confirm_surface_painted(SURFACE)
+            .expect("the second output is painted");
+    });
+    let second = second_report
+        .take_painted_outputs()
+        .pop()
+        .expect("the second paint emits one capability");
+
+    host.session
+        .report_surface_presentation(second, SurfacePresentationResult::Presented)
+        .expect("the newer result may arrive before the older terminal fact");
+    drop(first);
+    host.run(|_| {});
+
+    assert!(
+        host.session.presented_surface(SURFACE).is_some(),
+        "dropping the older capability must retire it and unblock the newer result"
+    );
+}
+
+#[test]
 fn ogc_01_repeated_same_axis_docks_flatten_and_stale_targets_are_inert() {
     let mut host = DeterministicHost::new(tabs_layout([A, B, C]));
     let fraction = DockFraction::new(0.5).expect("the fixture fraction is valid");
