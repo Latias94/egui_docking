@@ -800,7 +800,7 @@ impl DockEngine {
                             policy,
                         )?);
                     } else {
-                        outcomes.push(self.finish_journal_drag_release(
+                        outcomes.push(self.finish_drag_release(
                             cause,
                             focus_causal,
                             session,
@@ -1475,7 +1475,7 @@ impl DockEngine {
 
         let cause = pending.cause;
         let policy = self.policy.clone();
-        let outcome = self.deliver_journal_drag_release(
+        let outcome = self.deliver_drag_release(
             cause,
             pending.focus_causal,
             pending.session,
@@ -1497,7 +1497,7 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish_journal_drag_release(
+    pub(super) fn finish_drag_release(
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
@@ -1523,7 +1523,7 @@ impl DockEngine {
                 InteractionRejection::TargetChanged,
             ));
         }
-        self.deliver_journal_drag_release(
+        self.deliver_drag_release(
             cause,
             focus_causal,
             session,
@@ -1536,7 +1536,7 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn deliver_journal_drag_release(
+    pub(super) fn deliver_drag_release(
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
@@ -2347,6 +2347,21 @@ impl DockEngine {
                 }
                 (source.root, source.tabs, bar.layer())
             }
+            TabGestureSource::ContainedTitle { root, floating } => {
+                let contained = plan
+                    .contained_record(floating)
+                    .filter(|record| record.root() == root)
+                    .ok_or(InteractionRejection::TabGestureSourceUnavailable { source })?;
+                if !contained.title_drag_hit().contains(point) {
+                    return Err(InteractionRejection::TabGestureHitMismatch { source });
+                }
+                let node = self
+                    .workspace
+                    .root(root)
+                    .map(|record| record.node)
+                    .ok_or(InteractionRejection::TabGestureSourceUnavailable { source })?;
+                (root, node, contained.layer())
+            }
         };
         if let Some(occluding) = plan
             .drop_occlusions()
@@ -2468,7 +2483,9 @@ impl DockEngine {
     ) -> Result<InteractionOutcome, EngineError> {
         let mut candidate_events = Vec::new();
         let mut commands = Vec::with_capacity(2);
-        if let Some(contained) = &prepared.contained {
+        if !matches!(owner, GestureOwner::LocalResponse { .. })
+            && let Some(contained) = &prepared.contained
+        {
             commands.push(WorkspaceCommand::RaiseContained {
                 source: prepared.source_node.clone(),
                 floating: contained.floating,
@@ -2570,6 +2587,10 @@ impl DockEngine {
                 .workspace
                 .capture_node_source(prepared.root, prepared.tabs)
                 .map(MovePayload::Tabs),
+            TabGestureSource::ContainedTitle { .. } => self
+                .workspace
+                .capture_node_source(prepared.root, prepared.tabs)
+                .map(MovePayload::Subtree),
         };
         let payload = payload.map_err(|source| EngineError::PointerInteractionInvariant {
             cause,

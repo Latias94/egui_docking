@@ -1,6 +1,9 @@
 //! Explicit contained-floating chrome without `Area` or `Window` state.
 
-use dockspace::backend::interaction::InteractionStatus;
+use dockspace::backend::engine::LocalContainedGesturePhase;
+use dockspace::backend::interaction::{
+    ActiveContainedTransformView, ActiveDragView, InteractionStatus,
+};
 use dockspace::backend::presentation_hit::PresentationHitRegionKind;
 use dockspace::backend::scene::{
     ContainedRecord, ContainedResizeDirection, PresentationPlan, SurfaceSceneStamp,
@@ -8,7 +11,7 @@ use dockspace::backend::scene::{
 use dockspace::geometry::{LogicalRect, LogicalSize};
 use dockspace::graph::Workspace;
 use dockspace::ids::{FloatingPresentationId, RootId, SurfaceId};
-use dockspace::intent::CloseSceneTarget;
+use dockspace::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{
     CursorIcon, EventFilter, FocusDirection, Id, Key, Rect, Sense, Stroke, StrokeKind, TextStyle,
@@ -19,8 +22,10 @@ use crate::hit::{interact_rect, semantic_activation_fact};
 use crate::projection::EguiSurfacePaintResources;
 use crate::renderer::{
     ContainedResizeEdge, RenderAction, RenderOutput, accesskit_bounds, from_logical_rect,
+    to_logical_point,
 };
 use crate::style::DockStyle;
+use crate::tabs::capture_local_tab_gesture;
 
 #[derive(Clone, Copy)]
 struct ResizeContext {
@@ -113,9 +118,13 @@ pub(crate) fn paint_chrome_and_interact(
     style: &DockStyle,
     status: InteractionStatus,
     interaction_scene: Option<SurfaceSceneStamp>,
+    local_gesture_scene: Option<SurfaceSceneStamp>,
+    active_drag: Option<ActiveDragView<'_>>,
+    active_transform: Option<ActiveContainedTransformView<'_>>,
     output: &mut RenderOutput,
 ) {
     let interactions_current = interaction_scene.is_some();
+    let local_gesture_current = local_gesture_scene.is_some();
     let root = floating.root();
     let floating_id = floating.floating();
     let title = floating_title(plan, root, resources);
@@ -182,6 +191,24 @@ pub(crate) fn paint_chrome_and_interact(
             });
         }
     }
+    let local_drag_continuation =
+        active_drag.is_some_and(|drag| drag.local_response_surface() == Some(surface));
+    if local_gesture_current || local_drag_continuation {
+        let allow_capture = title_drag_available || local_drag_continuation;
+        if allow_capture {
+            capture_local_tab_gesture(
+                &title_response,
+                surface,
+                TabGestureSource::ContainedTitle {
+                    root,
+                    floating: floating_id,
+                },
+                local_gesture_scene,
+                active_drag,
+                output,
+            );
+        }
+    }
 
     paint_resize_handles(
         ui,
@@ -189,6 +216,8 @@ pub(crate) fn paint_chrome_and_interact(
         floating,
         &resize,
         interactions_current,
+        local_gesture_scene,
+        active_transform,
         style.splitter_keyboard_step,
         output,
     );
@@ -215,6 +244,8 @@ fn paint_resize_handles(
     floating: &ContainedRecord,
     resize: &ResizeContext,
     interactions_current: bool,
+    local_gesture_scene: Option<SurfaceSceneStamp>,
+    active_transform: Option<ActiveContainedTransformView<'_>>,
     keyboard_step: f32,
     output: &mut RenderOutput,
 ) {
@@ -247,6 +278,15 @@ fn paint_resize_handles(
                 floating: resize.floating,
                 direction,
             },
+        );
+        capture_local_contained_resize(
+            &response,
+            resize.surface,
+            resize.floating,
+            direction,
+            local_gesture_scene,
+            active_transform,
+            output,
         );
         let semantic_enabled = interactions_current && resize.status == InteractionStatus::Idle;
         if let (Some(edge), Some(expected_rect)) = (edge, resize.expected_rect)
@@ -283,13 +323,74 @@ fn paint_resize_handles(
         } else if response.has_focus() && !retained_pending_focus {
             response.surrender_focus();
         }
-        if !interactions_current {
+        if !interactions_current && local_gesture_scene.is_none() {
             continue;
         }
         if response.hovered() || response.dragged() {
             ui.ctx().set_cursor_icon(resize_cursor(direction));
         }
     }
+}
+
+fn capture_local_contained_resize(
+    response: &egui::Response,
+    surface: SurfaceId,
+    floating: FloatingPresentationId,
+    direction: ContainedResizeDirection,
+    scene: Option<SurfaceSceneStamp>,
+    active_transform: Option<ActiveContainedTransformView<'_>>,
+    output: &mut RenderOutput,
+) {
+    let owns_active = active_transform.is_some_and(|transform| {
+        transform.surface() == surface && transform.floating() == floating
+    });
+    let Some(scene) = scene else {
+        if owns_active && response.drag_stopped_by(egui::PointerButton::Primary) {
+            output.push_local_response_action(RenderAction::LocalContainedGesture {
+                surface,
+                floating,
+                kind: ContainedGestureKind::Resize(direction),
+                phase: LocalContainedGesturePhase::Cancel,
+            });
+        }
+        return;
+    };
+    let current = response
+        .interact_pointer_pos()
+        .and_then(|position| to_logical_point(position).ok());
+    let phase = if response.drag_started_by(egui::PointerButton::Primary) {
+        let (Some(current), Some(initial)) = (
+            current,
+            response
+                .interact_pointer_pos()
+                .map(|position| position - response.total_drag_delta().unwrap_or_default())
+                .and_then(|position| to_logical_point(position).ok()),
+        ) else {
+            return;
+        };
+        LocalContainedGesturePhase::Begin {
+            scene,
+            initial,
+            current,
+        }
+    } else if response.drag_stopped_by(egui::PointerButton::Primary) {
+        current.map_or(LocalContainedGesturePhase::Cancel, |current| {
+            LocalContainedGesturePhase::Release { scene, current }
+        })
+    } else if response.dragged_by(egui::PointerButton::Primary) {
+        let Some(current) = current else {
+            return;
+        };
+        LocalContainedGesturePhase::Move { scene, current }
+    } else {
+        return;
+    };
+    output.push_local_response_action(RenderAction::LocalContainedGesture {
+        surface,
+        floating,
+        kind: ContainedGestureKind::Resize(direction),
+        phase,
+    });
 }
 
 #[derive(Clone, Copy)]

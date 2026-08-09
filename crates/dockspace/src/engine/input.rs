@@ -1,7 +1,7 @@
 //! Public engine input protocol and opaque prepared interaction proofs.
 
 use super::*;
-use crate::scene::TabSceneId;
+use crate::intent::TabGestureSource;
 
 /// A document-validated workspace replacement carrying its opaque allocator lineage.
 ///
@@ -283,15 +283,49 @@ pub enum LocalTabGesturePhase {
     },
     /// Update the active drag at an absolute logical point.
     Move {
+        /// Current Ready scene which still authorizes the local response.
+        scene: SurfaceSceneStamp,
         /// Current pointer location in the source surface.
         current: LogicalPoint,
     },
     /// Release the active drag at an absolute logical point.
     Release {
+        /// Current Ready scene which still authorizes the local response.
+        scene: SurfaceSceneStamp,
         /// Current pointer location in the source surface.
         current: LogicalPoint,
     },
     /// Cancel the active local drag without changing durable layout.
+    Cancel,
+}
+
+/// One current-frame contained-floating transform fact from a framework response.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LocalContainedGesturePhase {
+    /// Begin a transform from an exact Ready scene and absolute logical points.
+    Begin {
+        /// Ready scene which owned the contained chrome response.
+        scene: SurfaceSceneStamp,
+        /// Pointer location when the framework crossed its drag threshold.
+        initial: LogicalPoint,
+        /// Current pointer location in the owner surface.
+        current: LogicalPoint,
+    },
+    /// Update the active transform at an absolute logical point.
+    Move {
+        /// Current Ready scene which still authorizes the local response.
+        scene: SurfaceSceneStamp,
+        /// Current pointer location in the owner surface.
+        current: LogicalPoint,
+    },
+    /// Release the active transform against the last painted preview.
+    Release {
+        /// Current Ready scene which still authorizes the local response.
+        scene: SurfaceSceneStamp,
+        /// Exact absolute release point in the owner surface.
+        current: LogicalPoint,
+    },
+    /// Cancel the matching local transform without changing durable geometry.
     Cancel,
 }
 
@@ -495,10 +529,23 @@ pub enum EngineInput {
         expected: WorkspaceVersion,
         /// Logical surface which owns the framework response.
         surface: SurfaceId,
-        /// Stable tab identity which owns the response.
-        source: TabSceneId,
+        /// Stable tab or tab-group identity which owns the response.
+        source: TabGestureSource,
         /// Begin, move, release, or cancellation fact.
         phase: LocalTabGesturePhase,
+    },
+    /// Reduce one current-frame contained-floating resize through the core transform FSM.
+    LocalContainedGesture {
+        /// Workspace version from which the response was captured.
+        expected: WorkspaceVersion,
+        /// Surface whose Ready scene owned the response.
+        surface: SurfaceId,
+        /// Stable contained presentation identity.
+        floating: FloatingPresentationId,
+        /// Exact contained chrome gesture represented by the response.
+        kind: crate::intent::ContainedGestureKind,
+        /// Current framework gesture phase.
+        phase: LocalContainedGesturePhase,
     },
     /// Activate one exact current tab-strip control without fabricating pointer delivery.
     ActivateTabStripControl {
@@ -654,6 +701,7 @@ impl EngineInput {
             | Self::AdjustSplitterResize { .. }
             | Self::LocalSplitterGesture { .. }
             | Self::LocalTabGesture { .. }
+            | Self::LocalContainedGesture { .. }
             | Self::ActivateTabStripControl { .. }
             | Self::ActivateTabListMenuRow { .. }
             | Self::DismissTabListMenu { .. }

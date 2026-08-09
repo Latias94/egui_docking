@@ -12,7 +12,7 @@ use dockspace::backend::scene::{
 use dockspace::command::MovePayload;
 use dockspace::graph::{Node, Workspace};
 use dockspace::ids::{ItemId, SurfaceId};
-use dockspace::intent::CloseSceneTarget;
+use dockspace::intent::{CloseSceneTarget, TabGestureSource};
 use dockspace::policy::TabBarInteraction;
 use dockspace::tab_strip::TabStripControlId;
 use egui::accesskit::{Action, HasPopup, Orientation, Role};
@@ -204,6 +204,7 @@ pub(crate) fn paint_tabs(
             semantic_selected,
             workspace,
             style,
+            active_drag,
             tab_interactions_current,
             interaction_scene,
             local_gesture_scene,
@@ -1080,6 +1081,7 @@ fn paint_tab(
     semantic_selected: Option<ItemId>,
     workspace: &Workspace,
     style: &DockStyle,
+    active_drag: Option<ActiveDragView<'_>>,
     interactions_current: bool,
     interaction_scene: Option<SurfaceSceneStamp>,
     local_gesture_scene: Option<SurfaceSceneStamp>,
@@ -1134,8 +1136,9 @@ fn paint_tab(
     capture_local_tab_gesture(
         &response,
         surface,
-        tab_scene,
-        local_gesture_scene.filter(|_| interactions_current),
+        TabGestureSource::Item(tab_scene),
+        local_gesture_scene,
+        active_drag,
         output,
     );
 
@@ -1231,14 +1234,24 @@ fn paint_tab(
     }
 }
 
-fn capture_local_tab_gesture(
+pub(crate) fn capture_local_tab_gesture(
     response: &Response,
     surface: SurfaceId,
-    source: TabSceneId,
+    source: TabGestureSource,
     scene: Option<SurfaceSceneStamp>,
+    active_drag: Option<ActiveDragView<'_>>,
     output: &mut RenderOutput,
 ) {
+    let owns_active =
+        active_drag.is_some_and(|drag| drag.local_response_surface() == Some(surface));
     let Some(scene) = scene else {
+        if owns_active && response.drag_stopped_by(egui::PointerButton::Primary) {
+            output.push_local_response_action(RenderAction::LocalTabGesture {
+                surface,
+                source,
+                phase: LocalTabGesturePhase::Cancel,
+            });
+        }
         return;
     };
     let current = response
@@ -1261,13 +1274,13 @@ fn capture_local_tab_gesture(
         }
     } else if response.drag_stopped_by(egui::PointerButton::Primary) {
         current.map_or(LocalTabGesturePhase::Cancel, |current| {
-            LocalTabGesturePhase::Release { current }
+            LocalTabGesturePhase::Release { scene, current }
         })
     } else if response.dragged_by(egui::PointerButton::Primary) {
         let Some(current) = current else {
             return;
         };
-        LocalTabGesturePhase::Move { current }
+        LocalTabGesturePhase::Move { scene, current }
     } else {
         return;
     };

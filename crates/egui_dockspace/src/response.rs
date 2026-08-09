@@ -469,9 +469,11 @@ impl DockspaceInteractionCapabilities {
 
     /// Returns whether current-pass egui responses may emit supported local actions.
     ///
-    /// This currently covers tab selection, tab keyboard navigation, and tab
-    /// close requests. It does not authorize overflow controls, splitters,
-    /// contained-window controls, or pointer gestures.
+    /// This covers the semantic and gesture actions already routed through the
+    /// core reducer, including tab actions, tab docking, splitter resizing, and
+    /// contained-floating gestures. It does not imply that a retained
+    /// presentation was accepted or that core-owned pointer receivers are
+    /// authoritative.
     #[must_use]
     pub const fn local_actions_current(self) -> bool {
         self.local_actions_current

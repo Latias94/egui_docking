@@ -4,6 +4,7 @@ mod close_workflow;
 mod contained_geometry;
 mod host_frame;
 mod input;
+mod local_contained;
 mod local_response;
 mod native_admission;
 mod pointer_contained;
@@ -46,10 +47,11 @@ use self::contained_geometry::{
 };
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
-    EngineInput, LocalSplitterGesturePhase, LocalTabGesturePhase, PreparedTabListMenuDismiss,
-    PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation, PreparedTabListMenuScroll,
-    PreparedTabStripControlActivation, PreparedTabStripScroll, TabListMenuNavigation,
-    TabScrollAdjustment, TabScrollAdjustmentError, ValidatedWorkspaceRestore,
+    EngineInput, LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase,
+    PreparedTabListMenuDismiss, PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation,
+    PreparedTabListMenuScroll, PreparedTabStripControlActivation, PreparedTabStripScroll,
+    TabListMenuNavigation, TabScrollAdjustment, TabScrollAdjustmentError,
+    ValidatedWorkspaceRestore,
 };
 use self::native_admission::NativeAdmissionState;
 use self::presentation_authority::PresentationAuthorityState;
@@ -125,19 +127,19 @@ use crate::intent::{
 };
 use crate::interaction::{
     ActiveContainedTransform, ActiveResize, ClickSessionId, ClickStart,
-    ContainedTransformPaintAcknowledgement, ContainedTransformPlacement, ContainedTransformPreview,
-    ContainedTransformSessionId, ContainedTransformStart, DragArmStart, DragGestureAuthority,
-    EscapeDelivery, FrozenClickAction, FrozenCloseClick, FrozenContainedDragOrigin,
-    FrozenDragOrigin, FrozenPresentationAuthority, FrozenResizeHandle,
-    FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick, FrozenTabListMenuRowClick,
-    FrozenTabStripControlClick, GestureOwner, InteractionCancelReason, InteractionCounterError,
-    InteractionDelivery, InteractionEvent, InteractionEventKind, InteractionOutcome,
-    InteractionRejection, InteractionState, InteractionStatus, JournalDragSourceGeometry,
-    JournalDragThresholdOrigin, PaintAcknowledgement, PreparedNativeTearOff, PreviewProof,
-    PreviewResolutionStatus, PreviewVisual, ResizeGestureAuthority, ResizeStart,
-    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
-    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
-    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    ContainedTransformGestureAuthority, ContainedTransformPaintAcknowledgement,
+    ContainedTransformPlacement, ContainedTransformPreview, ContainedTransformSessionId,
+    ContainedTransformStart, DragArmStart, DragGestureAuthority, EscapeDelivery, FrozenClickAction,
+    FrozenCloseClick, FrozenContainedDragOrigin, FrozenDragOrigin, FrozenPresentationAuthority,
+    FrozenResizeHandle, FrozenTabListMenuBackdropClick, FrozenTabListMenuBlockerClick,
+    FrozenTabListMenuRowClick, FrozenTabStripControlClick, GestureOwner, InteractionCancelReason,
+    InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
+    InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
+    JournalDragSourceGeometry, JournalDragThresholdOrigin, PaintAcknowledgement,
+    PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus, PreviewVisual,
+    ResizeGestureAuthority, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
+    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
+    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::ProductAction;
@@ -1775,7 +1777,7 @@ struct PreparedContainedGesture {
     scene: SurfaceSceneStamp,
     surface_bounds: crate::geometry::LogicalRect,
     coordinate_capture: SurfaceCoordinateCapture,
-    presentation: FrozenPresentationAuthority,
+    presentation: ContainedTransformGestureAuthority,
     source_layout_facts: Option<std::sync::Arc<crate::scene::PresentationLayoutFacts>>,
 }
 
@@ -2300,7 +2302,7 @@ impl DockEngine {
                     return false;
                 };
                 draft.origin.surface() == *surface
-                    && transform.presentation == draft.origin
+                    && transform.presentation.presented() == Some(draft.origin)
                     && transform.surface == *surface
                     && transform.root == *root
                     && transform.floating == *floating
@@ -3747,6 +3749,15 @@ impl DockEngine {
         {
             return false;
         }
+        self.valid_contained_command_structure(drag, proposal, command)
+    }
+
+    fn valid_contained_command_structure(
+        &self,
+        drag: &crate::interaction::ActiveDrag,
+        proposal: crate::intent::ContainedTearOffProposal,
+        command: &WorkspaceCommand,
+    ) -> bool {
         match command {
             WorkspaceCommand::UpdateContainedPresentation {
                 source,

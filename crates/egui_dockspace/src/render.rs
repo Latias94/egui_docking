@@ -278,6 +278,9 @@ pub(crate) struct EguiSurfaceDraft {
 pub(crate) enum SemanticInputPosition {
     /// Reduce at the boundary immediately preceding this exact raw egui event.
     RawEvent(usize),
+    /// Confirm a preview after the adapter painted it and before local actions
+    /// from the same pass are reduced.
+    PresentationAcknowledgement,
     /// Preserve one exact current-frame egui response across discard passes.
     LocalResponseAction,
     /// Reduce after the batch because this is an adapter-owned continuation.
@@ -311,6 +314,13 @@ impl StagedSemanticInput {
     pub(crate) const fn local_response_action(input: EngineInput) -> Self {
         Self {
             position: SemanticInputPosition::LocalResponseAction,
+            input,
+        }
+    }
+
+    pub(crate) const fn presentation_acknowledgement(input: EngineInput) -> Self {
+        Self {
+            position: SemanticInputPosition::PresentationAcknowledgement,
             input,
         }
     }
@@ -903,12 +913,16 @@ fn merge_multipass_semantic_inputs(
     previous: Vec<StagedSemanticInput>,
 ) -> Result<(), EguiRendererError> {
     let mut raw_inputs = BTreeMap::<usize, StagedSemanticInput>::new();
+    let mut presentation_acknowledgements = Vec::new();
     let mut local_response = None;
     let mut post_batch = Vec::new();
     for input in std::mem::take(current) {
         match input.position() {
             SemanticInputPosition::RawEvent(raw_event_index) => {
                 insert_multipass_raw_input(surface, raw_event_index, input, &mut raw_inputs)?;
+            }
+            SemanticInputPosition::PresentationAcknowledgement => {
+                presentation_acknowledgements.push(input);
             }
             SemanticInputPosition::LocalResponseAction => {
                 insert_multipass_local_response(surface, input, &mut local_response)?;
@@ -922,6 +936,9 @@ fn merge_multipass_semantic_inputs(
             SemanticInputPosition::RawEvent(raw_event_index) => {
                 insert_multipass_raw_input(surface, raw_event_index, input, &mut raw_inputs)?;
             }
+            // A prior pass's paint acknowledgement is superseded by the final
+            // pass, which paints the preview again and records its own receipt.
+            SemanticInputPosition::PresentationAcknowledgement => {}
             SemanticInputPosition::LocalResponseAction => {
                 insert_multipass_local_response(surface, input, &mut local_response)?;
             }
@@ -930,6 +947,7 @@ fn merge_multipass_semantic_inputs(
         }
     }
     current.extend(raw_inputs.into_values());
+    current.extend(presentation_acknowledgements);
     current.extend(local_response);
     current.extend(post_batch);
     Ok(())

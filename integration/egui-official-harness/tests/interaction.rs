@@ -1,11 +1,16 @@
-use dockspace::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
-use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::geometry::LogicalRect;
+use dockspace::graph::{
+    Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
+};
+use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
+const FLOATING_ROOT: RootId = RootId::new(2);
+const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 
@@ -44,6 +49,29 @@ fn split_workspace() -> Workspace {
     builder.set_root(ROOT, RootRecord::new(split));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     builder.build().expect("the split workspace is valid")
+}
+
+fn contained_workspace() -> Workspace {
+    let mut builder = Workspace::builder();
+    let main = builder.insert_node(Node::tabs([FIRST]));
+    let floating = builder.insert_node(Node::tabs([SECOND]));
+    builder.set_root(ROOT, RootRecord::new(main));
+    builder.set_root(FLOATING_ROOT, RootRecord::new(floating));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    builder.set_contained_floating(
+        FLOATING,
+        ContainedFloating::new(
+            FLOATING_ROOT,
+            LogicalRect::new(500.0, 260.0, 240.0, 220.0)
+                .expect("the contained fixture rectangle is valid"),
+        ),
+    );
+    builder
+        .attach_contained(SURFACE, FLOATING)
+        .expect("the fixture surface exists");
+    builder
+        .build()
+        .expect("the contained interaction workspace is valid")
 }
 
 fn input(events: Vec<Event>) -> RawInput {
@@ -390,6 +418,206 @@ fn production_single_surface_tab_drag_docks_to_the_top_guide() {
     );
 
     assert_eq!(root_axis(&dockspace), Some(Axis::Vertical));
+}
+
+#[test]
+fn production_single_surface_contained_title_redocks_through_the_canonical_drop_path() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("official-egui-contained-redock", contained_workspace())
+        .build()
+        .expect("the public facade accepts a contained workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = node_center(accesskit_node(&stable.output, Role::TitleBar, "Second").1);
+    let top_guide = Pos2::new(400.0, 40.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(top_guide)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(top_guide),
+            Event::PointerButton {
+                pos: top_guide,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+
+    assert_eq!(root_axis(&dockspace), Some(Axis::Vertical));
+    assert!(dockspace.workspace().contained_floating(FLOATING).is_none());
+    assert!(
+        dockspace
+            .workspace()
+            .surface(SURFACE)
+            .expect("the surface remains present")
+            .contained
+            .is_empty()
+    );
+}
+
+#[test]
+fn production_single_surface_contained_title_moves_without_a_dock_target() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("official-egui-contained-move", contained_workspace())
+        .build()
+        .expect("the public facade accepts a contained workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = dockspace
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the contained floating exists")
+        .rect;
+    let source = node_center(accesskit_node(&stable.output, Role::TitleBar, "Second").1);
+    let destination = source + vec2(-120.0, 80.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(destination)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(destination),
+            Event::PointerButton {
+                pos: destination,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+
+    let committed = dockspace
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the contained floating remains present")
+        .rect;
+    assert_eq!(committed.width(), initial.width());
+    assert_eq!(committed.height(), initial.height());
+    assert_eq!(committed.x(), initial.x() - 120.0);
+    assert_eq!(committed.y(), initial.y() + 80.0);
+}
+
+#[test]
+fn production_single_surface_contained_resize_commits_on_release() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("official-egui-contained-resize", contained_workspace())
+        .build()
+        .expect("the public facade accepts a contained workspace");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = dockspace
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the contained floating exists")
+        .rect;
+    let source = Pos2::new(initial.max().x() as f32 - 1.0, initial.min().y() as f32 + 100.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let moved = Pos2::new(source.x + 30.0, source.y);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+    assert_eq!(
+        dockspace
+            .workspace()
+            .contained_floating(FLOATING)
+            .expect("the contained floating remains present")
+            .rect,
+        initial
+    );
+
+    // Release at the last painted preview. A new point would require one more
+    // paint/ack cycle before it can be committed.
+    let released = moved;
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(released),
+            Event::PointerButton {
+                pos: released,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            },
+        ],
+    );
+    let committed = dockspace
+        .workspace()
+        .contained_floating(FLOATING)
+        .expect("the contained floating remains present")
+        .rect;
+    assert_eq!(committed.min(), initial.min());
+    assert!(committed.max().x() > initial.max().x());
 }
 
 #[test]

@@ -555,6 +555,20 @@ impl DockspaceHostFrame<'_> {
                 .active_resize_view()
                 .is_some_and(|resize| resize.local_response_surface() == Some(surface))
         };
+        let local_drag_continuation = {
+            let view = self.view();
+            view.interaction()
+                .active_drag_view()
+                .is_some_and(|drag| drag.local_response_surface() == Some(surface))
+        };
+        let local_contained_continuation = {
+            let view = self.view();
+            view.interaction()
+                .active_contained_transform_view()
+                .is_some_and(|transform| {
+                    transform.journal_stream().is_none() && transform.surface() == surface
+                })
+        };
         let contribution = match contribution_measurements {
             Some(measurements) => EguiSurfaceContribution::Prepared(
                 self.prepare_surface_contribution(surface, measurements)?,
@@ -627,9 +641,11 @@ impl DockspaceHostFrame<'_> {
             && framework_actions_enabled
             && self.state.mode() == EguiHostFrameMode::SingleSurface
             && !presentation_authority_available;
-        let local_resize_continuation_current = framework_actions_enabled
+        let local_gesture_continuation_current = framework_actions_enabled
             && self.state.mode() == EguiHostFrameMode::SingleSurface
-            && local_resize_continuation;
+            && (local_resize_continuation
+                || local_drag_continuation
+                || local_contained_continuation);
         let pointer_receivers_current =
             !projection_changed && scene_ready && chrome_matches_scene && painted_authority_current;
         let interaction_capabilities = crate::response::DockspaceInteractionCapabilities::new(
@@ -639,7 +655,7 @@ impl DockspaceHostFrame<'_> {
         );
         let action_capture = if !framework_actions_enabled {
             RenderActionCapture::Disabled
-        } else if local_response_current || local_resize_continuation_current {
+        } else if local_response_current || local_gesture_continuation_current {
             RenderActionCapture::LocalResponseOrder
         } else {
             RenderActionCapture::CorrelatedRawEvents
@@ -668,7 +684,7 @@ impl DockspaceHostFrame<'_> {
         });
         let local_gesture_hit_manifest = paint_projection
             .as_ref()
-            .filter(|_| local_response_current || local_resize_continuation_current)
+            .filter(|_| local_response_current || local_gesture_continuation_current)
             .map(|(_, _, _, manifest)| manifest);
         let mut output = {
             let view = self.view();
@@ -757,6 +773,9 @@ impl DockspaceHostFrame<'_> {
                 }
                 RenderActionPosition::LocalResponseAction => {
                     StagedSemanticInput::local_response_action(input)
+                }
+                RenderActionPosition::PresentationAcknowledgement => {
+                    StagedSemanticInput::presentation_acknowledgement(input)
                 }
                 RenderActionPosition::PostBatchContinuation => {
                     StagedSemanticInput::post_batch_continuation(input)
@@ -1207,7 +1226,8 @@ impl DockspaceHostFrame<'_> {
                         .map_or(pointer_segment_count, |pointer| {
                             pointer.segment_index_before_raw_event(raw_event_index)
                         }),
-                    SemanticInputPosition::LocalResponseAction
+                    SemanticInputPosition::PresentationAcknowledgement
+                    | SemanticInputPosition::LocalResponseAction
                     | SemanticInputPosition::PostBatchContinuation
                     | SemanticInputPosition::PostBatchObservation => pointer_segment_count,
                 };
@@ -1732,6 +1752,30 @@ impl DockspaceHostFrame<'_> {
                 source: *source,
                 phase: *phase,
             },
+            RenderAction::LocalContainedGesture {
+                surface,
+                floating,
+                kind,
+                phase,
+            } => EngineInput::LocalContainedGesture {
+                expected,
+                surface: *surface,
+                floating: *floating,
+                kind: *kind,
+                phase: *phase,
+            },
+            RenderAction::AcknowledgePreview { acknowledgement } => {
+                EngineInput::AcknowledgePreview {
+                    expected,
+                    acknowledgement: acknowledgement.clone(),
+                }
+            }
+            RenderAction::AcknowledgeContainedTransformPreview { acknowledgement } => {
+                EngineInput::AcknowledgeContainedTransformPreview {
+                    expected,
+                    acknowledgement: *acknowledgement,
+                }
+            }
             RenderAction::AdjustContainedResize {
                 scene,
                 surface,
@@ -1995,9 +2039,10 @@ fn semantic_position_order(
 ) -> (u8, usize, usize) {
     match position {
         SemanticInputPosition::RawEvent(raw_event_index) => (0, raw_event_index, stable_index),
-        SemanticInputPosition::LocalResponseAction => (1, 0, stable_index),
-        SemanticInputPosition::PostBatchContinuation => (2, 0, stable_index),
-        SemanticInputPosition::PostBatchObservation => (3, 0, stable_index),
+        SemanticInputPosition::PresentationAcknowledgement => (1, 0, stable_index),
+        SemanticInputPosition::LocalResponseAction => (2, 0, stable_index),
+        SemanticInputPosition::PostBatchContinuation => (3, 0, stable_index),
+        SemanticInputPosition::PostBatchObservation => (4, 0, stable_index),
     }
 }
 
@@ -2033,6 +2078,7 @@ mod tests {
             (SemanticInputPosition::LocalResponseAction, 2),
             (SemanticInputPosition::PostBatchContinuation, 3),
             (SemanticInputPosition::RawEvent(3), 4),
+            (SemanticInputPosition::PresentationAcknowledgement, 5),
         ];
 
         positions.sort_by_key(|(position, stable_index)| {
@@ -2044,6 +2090,7 @@ mod tests {
             [
                 (SemanticInputPosition::RawEvent(3), 4),
                 (SemanticInputPosition::RawEvent(7), 1),
+                (SemanticInputPosition::PresentationAcknowledgement, 5),
                 (SemanticInputPosition::LocalResponseAction, 2),
                 (SemanticInputPosition::PostBatchContinuation, 3),
                 (SemanticInputPosition::PostBatchObservation, 0),

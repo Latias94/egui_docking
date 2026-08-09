@@ -5,12 +5,13 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use dockspace::backend::engine::{
-    LocalSplitterGesturePhase, LocalTabGesturePhase, TabListMenuNavigation, TabScrollAdjustment,
+    LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase,
+    TabListMenuNavigation, TabScrollAdjustment,
 };
 use dockspace::backend::interaction::{
-    ActiveDragView, ActiveResizeView, ContainedTransformPreview, ContainedTransformPreviewToken,
-    DragPhase, InteractionPreview, InteractionState, InteractionStatus, PreviewToken,
-    PreviewVisual,
+    ActiveDragView, ActiveResizeView, ContainedTransformPaintAcknowledgement,
+    ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase, InteractionPreview,
+    InteractionState, InteractionStatus, PaintAcknowledgement, PreviewToken, PreviewVisual,
 };
 use dockspace::backend::presentation_hit::{
     PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
@@ -25,7 +26,7 @@ use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use dockspace::graph::{Axis, Workspace};
 use dockspace::ids::{FloatingPresentationId, RootId, SurfaceId};
-use dockspace::intent::CloseSceneTarget;
+use dockspace::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use dockspace::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use egui::accesskit::Action;
 use egui::{
@@ -111,8 +112,20 @@ pub(crate) enum RenderAction {
     },
     LocalTabGesture {
         surface: SurfaceId,
-        source: TabSceneId,
+        source: TabGestureSource,
         phase: LocalTabGesturePhase,
+    },
+    LocalContainedGesture {
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+        kind: ContainedGestureKind,
+        phase: LocalContainedGesturePhase,
+    },
+    AcknowledgePreview {
+        acknowledgement: PaintAcknowledgement,
+    },
+    AcknowledgeContainedTransformPreview {
+        acknowledgement: ContainedTransformPaintAcknowledgement,
     },
     AdjustContainedResize {
         scene: SurfaceSceneStamp,
@@ -201,6 +214,9 @@ impl RenderInteractionScenes {
 pub(crate) enum RenderActionPosition {
     /// The action was derived from this exact raw egui event.
     RawEvent(usize),
+    /// The adapter painted a core-owned preview and can acknowledge it before
+    /// reducing same-pass local response actions.
+    PresentationAcknowledgement,
     /// A current-frame egui [`Response`] produced this action.
     ///
     /// egui consumes the underlying raw event during the first pass, so this
@@ -436,6 +452,16 @@ impl RenderOutput {
         self.actions.push(PositionedRenderAction::new(
             action,
             RenderActionPosition::PostBatchContinuation,
+        ));
+    }
+
+    pub(crate) fn push_presentation_acknowledgement(&mut self, action: RenderAction) {
+        if !self.action_capture.enabled() {
+            return;
+        }
+        self.actions.push(PositionedRenderAction::new(
+            action,
+            RenderActionPosition::PresentationAcknowledgement,
         ));
     }
 
@@ -818,6 +844,14 @@ pub(crate) fn paint_surface(
         presentation_drag_preview,
         style,
     );
+    if interaction_scenes.local_tabs().is_some()
+        && output.painted_drag_preview == presentation_drag_preview.map(|preview| preview.token())
+        && let Some(preview) = presentation_drag_preview
+    {
+        output.push_presentation_acknowledgement(RenderAction::AcknowledgePreview {
+            acknowledgement: preview.acknowledgement(),
+        });
+    }
     drop_guides::paint(
         &ui.painter_at(surface_bounds),
         surface,
@@ -831,6 +865,17 @@ pub(crate) fn paint_surface(
         presentation_contained_transform_preview,
         style,
     );
+    if interaction_scenes.local_tabs().is_some()
+        && output.painted_contained_transform_preview
+            == presentation_contained_transform_preview.map(|preview| preview.token())
+        && let Some(preview) = presentation_contained_transform_preview
+    {
+        output.push_presentation_acknowledgement(
+            RenderAction::AcknowledgeContainedTransformPreview {
+                acknowledgement: preview.acknowledgement(),
+            },
+        );
+    }
     paint_drag_ghost(
         ui,
         plan,
@@ -1052,6 +1097,9 @@ fn paint_root(
             style,
             interaction.status(),
             retained_control_scene,
+            local_tab_gesture_scene,
+            interaction.active_drag_view(),
+            interaction.active_contained_transform_view(),
             output,
         );
     }

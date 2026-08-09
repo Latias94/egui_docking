@@ -191,6 +191,17 @@ pub enum TabGestureSource {
     Item(TabSceneId),
     /// Drag the whole exact painted tab stack from its grip region.
     Group(TabBarSceneId),
+    /// Drag the exact title region of one contained floating root.
+    ///
+    /// Unlike a tab-group grip, the title region represents the complete
+    /// contained subtree and therefore preserves the floating presentation
+    /// identity while the core derives the payload from the current scene.
+    ContainedTitle {
+        /// Root presented by the contained floating.
+        root: RootId,
+        /// Stable contained presentation identity.
+        floating: FloatingPresentationId,
+    },
 }
 
 /// Exact painted close control claimed by a renderer activation.

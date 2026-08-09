@@ -537,7 +537,9 @@ impl DockEngine {
                 }
             }
             InteractionStatus::ContainedTransforming { session } => {
-                if let Ok(transform) = self.interaction.active_contained_transform(session) {
+                if let Ok(transform) = self.interaction.active_contained_transform(session)
+                    && transform.presentation.presented().is_some()
+                {
                     self.insert_current_viewport_binding(
                         &mut dependencies.owner_bindings,
                         transform.surface,

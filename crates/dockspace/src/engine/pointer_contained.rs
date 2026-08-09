@@ -10,11 +10,58 @@ impl DockEngine {
         kind: ContainedGestureKind,
         point: crate::geometry::LogicalPoint,
     ) -> Result<PreparedContainedGesture, InteractionRejection> {
-        let surface = presentation.surface();
-        if presentation.scene().requirement().workspace_epoch() != self.version.epoch() {
+        self.prepare_contained_gesture(
+            presentation.surface(),
+            presentation.scene(),
+            presentation.plan(),
+            presentation.coordinate_capture(),
+            floating,
+            kind,
+            point,
+            ContainedTransformGestureAuthority::Presented(Self::freeze_journal_presentation(
+                presentation,
+            )),
+        )
+    }
+
+    pub(super) fn prepare_local_contained_gesture(
+        &self,
+        candidate: &crate::scene::SurfacePlanScene,
+        floating: crate::ids::FloatingPresentationId,
+        kind: ContainedGestureKind,
+        point: crate::geometry::LogicalPoint,
+    ) -> Result<PreparedContainedGesture, InteractionRejection> {
+        let surface = candidate.stamp().surface();
+        self.prepare_contained_gesture(
+            surface,
+            candidate.stamp(),
+            candidate.plan(),
+            candidate.coordinate_capture(),
+            floating,
+            kind,
+            point,
+            ContainedTransformGestureAuthority::LocalReady {
+                surface,
+                coordinates: candidate.coordinate_capture(),
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_contained_gesture(
+        &self,
+        surface: SurfaceId,
+        scene: SurfaceSceneStamp,
+        plan: &PresentationPlan,
+        coordinate_capture: SurfaceCoordinateCapture,
+        floating: crate::ids::FloatingPresentationId,
+        kind: ContainedGestureKind,
+        point: crate::geometry::LogicalPoint,
+        presentation: ContainedTransformGestureAuthority,
+    ) -> Result<PreparedContainedGesture, InteractionRejection> {
+        if scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
         }
-        let plan = presentation.plan();
         if !plan.bounds().contains(point) {
             return Err(InteractionRejection::ContainedGesturePointerOutsideSurface { surface });
         }
@@ -89,10 +136,10 @@ impl DockEngine {
             source,
             expected_roster,
             kind,
-            scene: presentation.scene(),
+            scene,
             surface_bounds: plan.bounds(),
-            coordinate_capture: presentation.coordinate_capture(),
-            presentation: Self::freeze_journal_presentation(presentation),
+            coordinate_capture,
+            presentation,
             source_layout_facts: plan.layout_facts().cloned().map(std::sync::Arc::new),
         })
     }
@@ -107,70 +154,99 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
+        self.activate_prepared_contained_gesture(
+            cause,
+            owner,
+            Some(capture_authority),
+            threshold_origin,
+            prepared,
+            policy,
+            events,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn activate_prepared_contained_gesture(
+        &mut self,
+        cause: ReductionCause,
+        owner: GestureOwner,
+        capture_authority: Option<Authority<PointerCaptureOwner>>,
+        threshold_origin: Option<JournalDragThresholdOrigin>,
+        prepared: PreparedContainedGesture,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InteractionOutcome, EngineError> {
         let mut candidate_events = Vec::new();
         let mut activation_changed = false;
-        let raise = WorkspaceCommand::RaiseContained {
-            source: prepared.source.clone(),
-            floating: prepared.floating,
-            expected_roster: prepared.expected_roster.clone(),
-        };
-        let mut workspace = self.clone_workspace_candidate();
-        match WorkspaceTransaction::from_commands([raise]).apply(&mut workspace, policy) {
-            Ok(report) => {
-                if let Some(surface) =
-                    self.first_workspace_publication_mismatch(&workspace, None, None)
-                {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(
-                            CommandError::SurfaceLifecycleFrozen { surface },
-                        ),
-                    ));
+        // A local egui response already owns the current painted chrome. Do
+        // not enqueue a second RaiseContained transaction here: changing the
+        // roster during begin would invalidate the very scene which supplied
+        // the response before the first local preview can be painted. The
+        // journal/native path still raises through its retained transaction.
+        if !matches!(owner, GestureOwner::LocalResponse { .. }) {
+            let raise = WorkspaceCommand::RaiseContained {
+                source: prepared.source.clone(),
+                floating: prepared.floating,
+                expected_roster: prepared.expected_roster.clone(),
+            };
+            let mut workspace = self.clone_workspace_candidate();
+            match WorkspaceTransaction::from_commands([raise]).apply(&mut workspace, policy) {
+                Ok(report) => {
+                    if let Some(surface) =
+                        self.first_workspace_publication_mismatch(&workspace, None, None)
+                    {
+                        return Ok(InteractionOutcome::Rejected(
+                            InteractionRejection::CommandRejected(
+                                CommandError::SurfaceLifecycleFrozen { surface },
+                            ),
+                        ));
+                    }
+                    let changed = report.changed();
+                    let outcomes = report.into_outcomes();
+                    let publication = match self.stage_workspace_publication(workspace, policy) {
+                        Ok(publication) => publication,
+                        Err(source) if source.is_expected_rejection() => {
+                            return Ok(InteractionOutcome::Rejected(
+                                InteractionRejection::CommandRejected(source),
+                            ));
+                        }
+                        Err(source) => {
+                            return Err(EngineError::PointerInteractionInvariant {
+                                cause,
+                                detail: source.to_string(),
+                            });
+                        }
+                    };
+                    self.publish_workspace(publication);
+                    self.reconcile_viewport_focus_authority();
+                    activation_changed = changed;
+                    if changed {
+                        self.advance_revision_caused(cause)?;
+                        candidate_events.extend(outcomes.into_iter().map(|outcome| {
+                            WorkspaceEvent::new_caused(
+                                cause,
+                                self.version,
+                                WorkspaceEventKind::CommandCommitted(outcome),
+                            )
+                        }));
+                    }
                 }
-                let changed = report.changed();
-                let outcomes = report.into_outcomes();
-                let publication = match self.stage_workspace_publication(workspace, policy) {
-                    Ok(publication) => publication,
-                    Err(source) if source.is_expected_rejection() => {
+                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                    let title_drag_policy_rejection =
+                        matches!(prepared.kind, ContainedGestureKind::TitleDrag)
+                            && matches!(&source, CommandError::Policy(_));
+                    if !title_drag_policy_rejection {
                         return Ok(InteractionOutcome::Rejected(
                             InteractionRejection::CommandRejected(source),
                         ));
                     }
-                    Err(source) => {
-                        return Err(EngineError::PointerInteractionInvariant {
-                            cause,
-                            detail: source.to_string(),
-                        });
-                    }
-                };
-                self.publish_workspace(publication);
-                self.reconcile_viewport_focus_authority();
-                activation_changed = changed;
-                if changed {
-                    self.advance_revision_caused(cause)?;
-                    candidate_events.extend(outcomes.into_iter().map(|outcome| {
-                        WorkspaceEvent::new_caused(
-                            cause,
-                            self.version,
-                            WorkspaceEventKind::CommandCommitted(outcome),
-                        )
-                    }));
                 }
-            }
-            Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
-                let title_drag_policy_rejection =
-                    matches!(prepared.kind, ContainedGestureKind::TitleDrag)
-                        && matches!(&source, CommandError::Policy(_));
-                if !title_drag_policy_rejection {
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(source),
-                    ));
+                Err(source) => {
+                    return Err(EngineError::PointerInteractionInvariant {
+                        cause,
+                        detail: source.to_string(),
+                    });
                 }
-            }
-            Err(source) => {
-                return Err(EngineError::PointerInteractionInvariant {
-                    cause,
-                    detail: source.to_string(),
-                });
             }
         }
 
@@ -210,12 +286,12 @@ impl DockEngine {
                     initial_pointer: prepared.initial_pointer,
                     minimum_size: prepared.minimum_size,
                 });
-                let continuation = activation_changed
-                    .then(|| {
+                let continuation = if activation_changed {
+                    prepared.presentation.presented().and_then(|presentation| {
                         self.scene_gesture_continuation_draft(
                             cause,
                             owner,
-                            prepared.presentation,
+                            presentation,
                             SceneGestureContinuationSource::Drag {
                                 payload: payload.clone(),
                                 source_surface: drag_source.source_surface,
@@ -226,27 +302,25 @@ impl DockEngine {
                             },
                         )
                     })
-                    .flatten();
+                } else {
+                    None
+                };
                 let (session, replaced) = self
                     .interaction
                     .arm_drag(DragArmStart {
                         epoch: self.version.epoch(),
                         owner,
-                        journal_capture_authority: Some(capture_authority),
+                        journal_capture_authority: capture_authority,
                         button: prepared.button,
                         payload,
                         source_surface: drag_source.source_surface,
                         initial_pointer: Some(prepared.initial_pointer),
-                        journal_threshold_origin: Some(threshold_origin.ok_or(
-                            EngineError::ReductionCauseInvariant {
-                                detail: "journal contained title drag has no threshold origin",
-                            },
-                        )?),
+                        journal_threshold_origin: threshold_origin,
                         complete_root: drag_source.complete_root,
                         partial_detachable: drag_source.partial_detachable,
                         origin,
                         source_validated_at: self.version,
-                        presentation: DragGestureAuthority::Presented(prepared.presentation),
+                        presentation: prepared.presentation.into_drag(),
                         source_layout_facts: prepared.source_layout_facts,
                         journal_source_geometry: None,
                         continuation,
@@ -263,7 +337,9 @@ impl DockEngine {
                 InteractionOutcome::DragArmed { session, replaced }
             }
             ContainedGestureKind::Resize(direction) => {
-                let continuation = if activation_changed {
+                let continuation = if activation_changed
+                    && prepared.presentation.presented().is_some()
+                {
                     let source = self
                         .workspace
                         .capture_node_source(prepared.root, prepared.source.node())
@@ -283,7 +359,10 @@ impl DockEngine {
                     self.scene_gesture_continuation_draft(
                         cause,
                         owner,
-                        prepared.presentation,
+                        prepared
+                            .presentation
+                            .presented()
+                            .expect("checked contained transform has presented authority"),
                         SceneGestureContinuationSource::ContainedTransform {
                             source,
                             surface: prepared.surface,
@@ -303,7 +382,7 @@ impl DockEngine {
                         self.version.epoch(),
                         ContainedTransformStart {
                             owner,
-                            journal_capture_authority: Some(capture_authority),
+                            journal_capture_authority: capture_authority,
                             button: prepared.button,
                             surface: prepared.surface,
                             root: prepared.root,
@@ -421,7 +500,7 @@ impl DockEngine {
             Ok(point) => point,
             Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
-        match self.publish_journal_contained_transform_preview(
+        match self.publish_contained_transform_preview_at_point(
             cause,
             owner,
             session,
@@ -469,7 +548,7 @@ impl DockEngine {
                     .collect());
             }
         };
-        let (placement, preview) = match self.publish_journal_contained_transform_preview(
+        let (placement, preview) = match self.publish_contained_transform_preview_at_point(
             cause,
             owner,
             session,
@@ -517,7 +596,7 @@ impl DockEngine {
             )?);
             return Ok(outcomes);
         }
-        outcomes.push(self.deliver_journal_contained_transform_release(
+        outcomes.push(self.deliver_contained_transform_release(
             cause,
             session,
             transform,
@@ -566,7 +645,7 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn deliver_journal_contained_transform_release(
+    pub(super) fn deliver_contained_transform_release(
         &mut self,
         cause: ReductionCause,
         session: ContainedTransformSessionId,
@@ -604,7 +683,7 @@ impl DockEngine {
         })
     }
 
-    fn publish_journal_contained_transform_preview(
+    pub(super) fn publish_contained_transform_preview_at_point(
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
@@ -622,8 +701,7 @@ impl DockEngine {
         if transform.owner != owner {
             return Ok(Err(InteractionRejection::SessionMismatch));
         }
-        let placement = match self.resolve_journal_contained_transform_placement(&transform, point)
-        {
+        let placement = match self.resolve_contained_transform_placement(&transform, point) {
             Ok(placement) => placement,
             Err(error) => return Ok(Err(error)),
         };
@@ -650,11 +728,27 @@ impl DockEngine {
         Ok(Ok((placement, preview)))
     }
 
-    fn resolve_journal_contained_transform_placement(
+    pub(super) fn resolve_contained_transform_placement(
         &self,
         transform: &ActiveContainedTransform,
         current_pointer: crate::geometry::LogicalPoint,
     ) -> Result<ContainedTransformPlacement, InteractionRejection> {
+        if !Self::coordinate_capture_matches_current(
+            transform.coordinate_capture,
+            self.viewport.viewport(transform.surface),
+            self.viewport
+                .surface_coordinate_authority(transform.surface),
+        ) || transform
+            .presentation
+            .local_coordinates()
+            .is_some_and(|coordinates| coordinates != transform.coordinate_capture)
+        {
+            return Err(
+                InteractionRejection::ContainedGestureCoordinateAuthorityUnavailable {
+                    surface: transform.surface,
+                },
+            );
+        }
         if transform.scene.requirement().workspace_epoch() != self.version.epoch() {
             return Err(InteractionRejection::StaleScene);
         }
@@ -734,7 +828,7 @@ impl DockEngine {
 
         let cause = pending.cause;
         let policy = self.policy.clone();
-        let outcome = self.deliver_journal_contained_transform_release(
+        let outcome = self.deliver_contained_transform_release(
             cause,
             pending.session,
             pending.transform,

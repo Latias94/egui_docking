@@ -786,6 +786,16 @@ impl<'state> ActiveDragView<'state> {
         self.owner.stream()
     }
 
+    /// Returns the local-response owner surface when no physical pointer
+    /// provider owns this drag.
+    #[must_use]
+    pub const fn local_response_surface(self) -> Option<SurfaceId> {
+        match self.owner {
+            GestureOwner::Stream(_) => None,
+            GestureOwner::LocalResponse { surface } => Some(surface),
+        }
+    }
+
     /// Returns the pointer button which armed the drag.
     #[must_use]
     pub const fn button(self) -> PointerButton {
@@ -1888,6 +1898,44 @@ pub(crate) enum DragGestureAuthority {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ContainedTransformGestureAuthority {
+    Presented(FrozenPresentationAuthority),
+    LocalReady {
+        surface: SurfaceId,
+        coordinates: SurfaceCoordinateCapture,
+    },
+}
+
+impl ContainedTransformGestureAuthority {
+    pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
+        match self {
+            Self::Presented(authority) => Some(authority),
+            Self::LocalReady { .. } => None,
+        }
+    }
+
+    pub(crate) const fn local_coordinates(self) -> Option<SurfaceCoordinateCapture> {
+        match self {
+            Self::Presented(_) => None,
+            Self::LocalReady { coordinates, .. } => Some(coordinates),
+        }
+    }
+
+    pub(crate) const fn into_drag(self) -> DragGestureAuthority {
+        match self {
+            Self::Presented(authority) => DragGestureAuthority::Presented(authority),
+            Self::LocalReady {
+                surface,
+                coordinates,
+            } => DragGestureAuthority::LocalReady {
+                surface,
+                coordinates,
+            },
+        }
+    }
+}
+
 impl DragGestureAuthority {
     pub(crate) const fn presented(self) -> Option<FrozenPresentationAuthority> {
         match self {
@@ -2148,7 +2196,7 @@ pub(crate) struct ActiveContainedTransform {
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) surface_bounds: LogicalRect,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) presentation: ContainedTransformGestureAuthority,
     pub(crate) continuation: Option<SceneGestureContinuation>,
     pub(crate) preview: Option<PublishedContainedTransformPreview>,
 }
@@ -2168,7 +2216,7 @@ pub(crate) struct ContainedTransformStart {
     pub(crate) scene: SurfaceSceneStamp,
     pub(crate) surface_bounds: LogicalRect,
     pub(crate) coordinate_capture: SurfaceCoordinateCapture,
-    pub(crate) presentation: FrozenPresentationAuthority,
+    pub(crate) presentation: ContainedTransformGestureAuthority,
     pub(crate) continuation: Option<SceneGestureContinuationDraft>,
 }
 
@@ -2286,7 +2334,7 @@ impl InteractionState {
             ActiveGesture::Armed(drag) => drag.presentation.presented(),
             ActiveGesture::Dragging(drag) => drag.presentation.presented(),
             ActiveGesture::Resizing(resize) => resize.authority.presented(),
-            ActiveGesture::ContainedTransforming(transform) => Some(transform.presentation),
+            ActiveGesture::ContainedTransforming(transform) => transform.presentation.presented(),
         }
     }
 

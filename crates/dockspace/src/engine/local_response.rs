@@ -115,7 +115,7 @@ impl DockEngine {
         expected: WorkspaceVersion,
         application_base: WorkspaceVersion,
         surface: SurfaceId,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
         phase: LocalTabGesturePhase,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -145,19 +145,21 @@ impl DockEngine {
                 events,
                 interaction_events,
             )?,
-            LocalTabGesturePhase::Move { current } => self.update_local_tab_gesture(
+            LocalTabGesturePhase::Move { scene, current } => self.update_local_tab_gesture(
                 cause,
                 owner,
                 source,
+                scene,
                 current,
                 policy,
                 interaction_events,
             )?,
-            LocalTabGesturePhase::Release { current } => self.release_local_tab_gesture(
+            LocalTabGesturePhase::Release { scene, current } => self.release_local_tab_gesture(
                 cause,
                 focus_causal,
                 owner,
                 source,
+                scene,
                 current,
                 policy,
                 events,
@@ -179,22 +181,23 @@ impl DockEngine {
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         owner: GestureOwner,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
         scene: SurfaceSceneStamp,
         initial: LogicalPoint,
-        _current: LogicalPoint,
+        current: LogicalPoint,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
-        _interaction_events: &mut Vec<InteractionEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         if self.interaction.status() != InteractionStatus::Idle {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::SessionMismatch,
             ));
         }
-        let prepared = match self.local_response_candidate(scene).and_then(|candidate| {
-            self.prepare_local_tab_gesture(candidate, TabGestureSource::Item(source), initial)
-        }) {
+        let prepared = match self
+            .local_response_candidate(scene)
+            .and_then(|candidate| self.prepare_local_tab_gesture(candidate, source, initial))
+        {
             Ok(prepared) => prepared,
             Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
         };
@@ -217,6 +220,25 @@ impl DockEngine {
         {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
+        if current != initial {
+            let drag = self
+                .interaction
+                .active_drag(session)
+                .map_err(|source| EngineError::PointerInteractionInvariant {
+                    cause,
+                    detail: format!("local tab drag session disappeared after begin: {source:?}"),
+                })?
+                .clone();
+            let evaluation =
+                self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
+            let _ = self.apply_preview_evaluation(
+                cause,
+                owner,
+                session,
+                evaluation,
+                interaction_events,
+            )?;
+        }
         Ok(InteractionOutcome::DragBegan { session })
     }
 
@@ -224,7 +246,8 @@ impl DockEngine {
         &mut self,
         cause: ReductionCause,
         owner: GestureOwner,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
+        scene: SurfaceSceneStamp,
         current: LogicalPoint,
         policy: &DockPolicySnapshot,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -241,7 +264,7 @@ impl DockEngine {
                 detail: format!("local tab drag session disappeared: {source:?}"),
             })?
             .clone();
-        let evaluation = self.resolve_local_tab_preview(cause, &drag, current, policy)?;
+        let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
         self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?
             .ok_or(EngineError::ReductionCauseInvariant {
                 detail: "local tab preview evaluation produced no outcome",
@@ -254,7 +277,8 @@ impl DockEngine {
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
         owner: GestureOwner,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
+        scene: SurfaceSceneStamp,
         current: LogicalPoint,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
@@ -272,76 +296,27 @@ impl DockEngine {
                 detail: format!("local tab release session disappeared: {source:?}"),
             })?
             .clone();
-        let evaluation = self.resolve_local_tab_preview(cause, &drag, current, policy)?;
-        let PreviewDecision::Publish { proof, .. } = evaluation.decision else {
+        let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
+        if !matches!(evaluation.decision, PreviewDecision::Publish { .. }) {
             return self.cancel_local_tab_release(cause, session, interaction_events);
-        };
-        let PreviewProof::Dock { target, command } = *proof else {
-            return self.cancel_local_tab_release(cause, session, interaction_events);
-        };
-        let pane_focus = match self.freeze_payload_focus(&drag.payload) {
-            Ok(focus) => focus,
-            Err(error) => {
-                let _ = self.cancel_local_tab_release(cause, session, interaction_events)?;
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::CommandRejected(error),
-                ));
-            }
-        };
-        let released_status = self.interaction.status();
-        let _ = self
+        }
+        let drag = self
             .interaction
             .take_drag_for_release(session, owner, PointerButton::Primary)
             .map_err(|source| EngineError::PointerInteractionInvariant {
                 cause,
                 detail: format!("local tab release could not consume drag: {source:?}"),
             })?;
-        let (outcome, changed) =
-            match self.apply_journal_workspace_command(cause, &command, policy, events)? {
-                Ok(result) => result,
-                Err(error) => {
-                    let reason = InteractionCancelReason::LocalResponseCancelled;
-                    interaction_events.push(InteractionEvent::new_caused(
-                        cause,
-                        self.version,
-                        InteractionEventKind::Cancelled {
-                            status: released_status,
-                            reason,
-                        },
-                    ));
-                    return Ok(InteractionOutcome::Rejected(
-                        InteractionRejection::CommandRejected(error),
-                    ));
-                }
-            };
-        if let Some(binding) = self
-            .viewport
-            .viewport(target.surface())
-            .filter(|record| record.can_accept_activation())
-            .map(crate::viewport_registry::ViewportRecord::binding)
-        {
-            let _ = self.start_viewport_activation(
-                ViewportActivationRequest::drop_committed(binding, pane_focus),
-                focus_causal,
-                events,
-            )?;
-        }
-        interaction_events.push(InteractionEvent::new_caused(
+        self.finish_drag_release(
             cause,
-            self.version,
-            InteractionEventKind::Delivered {
-                session,
-                kind: WorkspaceDeliveryKind::Dock,
-            },
-        ));
-        Ok(InteractionOutcome::DragDelivered {
+            focus_causal,
             session,
-            delivery: InteractionDelivery::Workspace {
-                kind: WorkspaceDeliveryKind::Dock,
-                outcome,
-                changed,
-            },
-        })
+            drag,
+            evaluation.decision,
+            policy,
+            events,
+            interaction_events,
+        )
     }
 
     fn cancel_local_tab_release(
@@ -369,7 +344,7 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         owner: GestureOwner,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> InteractionOutcome {
         let Ok(session) = self.local_tab_session(owner, source) else {
@@ -392,7 +367,7 @@ impl DockEngine {
     fn local_tab_session(
         &self,
         owner: GestureOwner,
-        source: crate::scene::TabSceneId,
+        source: TabGestureSource,
     ) -> Result<crate::interaction::DragSessionId, InteractionRejection> {
         let InteractionStatus::Dragging { session } = self.interaction.status() else {
             return Err(InteractionRejection::NoActiveGesture);
@@ -401,11 +376,23 @@ impl DockEngine {
         if drag.owner != owner {
             return Err(InteractionRejection::SessionMismatch);
         }
-        let MovePayload::Item(item) = &drag.payload else {
+        let GestureOwner::LocalResponse { surface } = owner else {
             return Err(InteractionRejection::SessionMismatch);
         };
-        if item.root() != source.root || item.tabs() != source.tabs || item.item() != source.item {
-            return Err(InteractionRejection::SessionMismatch);
+        match (source, &drag.payload) {
+            (TabGestureSource::Item(source), MovePayload::Item(item))
+                if item.root() == source.root
+                    && item.tabs() == source.tabs
+                    && item.item() == source.item => {}
+            (TabGestureSource::Group(source), MovePayload::Tabs(tabs))
+                if tabs.root() == source.root && tabs.node() == source.tabs => {}
+            (
+                TabGestureSource::ContainedTitle { root, floating },
+                MovePayload::Subtree(subtree),
+            ) if subtree.root() == root
+                && self.workspace.presentation_for_root(root)
+                    == Some(crate::RootPresentationOwner::Contained { surface, floating }) => {}
+            _ => return Err(InteractionRejection::SessionMismatch),
         }
         Ok(session)
     }
@@ -414,6 +401,7 @@ impl DockEngine {
         &self,
         cause: ReductionCause,
         drag: &crate::interaction::ActiveDrag,
+        scene: SurfaceSceneStamp,
         point: LogicalPoint,
         policy: &DockPolicySnapshot,
     ) -> Result<PreviewEvaluation, EngineError> {
@@ -422,19 +410,13 @@ impl DockEngine {
                 PreviewDecision::Clear(PreviewResolutionStatus::Unavailable),
             ));
         }
-        let Some(candidate) = self
-            .presentation_authority
-            .scene
-            .surface(drag.source_surface)
-            .and_then(SurfaceScene::ready)
-            .map(crate::scene::ReadySurfaceScene::candidate)
-            .filter(|candidate| {
-                candidate.stamp().requirement().workspace_epoch() == self.version.epoch()
-            })
-        else {
-            return Ok(PreviewEvaluation::without_affordance(
-                PreviewDecision::Clear(PreviewResolutionStatus::Unavailable),
-            ));
+        let candidate = match self.local_response_candidate(scene) {
+            Ok(candidate) if candidate.stamp().surface() == drag.source_surface => candidate,
+            Ok(_) | Err(_) => {
+                return Ok(PreviewEvaluation::without_affordance(
+                    PreviewDecision::Clear(PreviewResolutionStatus::Unavailable),
+                ));
+            }
         };
         let query = resolve_presented_drop(
             candidate.stamp(),
@@ -478,9 +460,9 @@ impl DockEngine {
                     }),
                 }
             }
-            DropResolution::KnownNone(_) => {
-                PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)
-            }
+            DropResolution::KnownNone(_) => self
+                .resolve_local_contained_move_preview(cause, drag, candidate, point, policy)?
+                .unwrap_or(PreviewDecision::Clear(PreviewResolutionStatus::KnownNone)),
             DropResolution::Rejected(_) => {
                 PreviewDecision::Clear(PreviewResolutionStatus::Rejected)
             }
@@ -489,6 +471,103 @@ impl DockEngine {
             }
         };
         Ok(PreviewEvaluation::new(decision, affordance))
+    }
+
+    fn resolve_local_contained_move_preview(
+        &self,
+        cause: ReductionCause,
+        drag: &crate::interaction::ActiveDrag,
+        candidate: &crate::scene::SurfacePlanScene,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+    ) -> Result<Option<PreviewDecision>, EngineError> {
+        let FrozenDragOrigin::Contained(origin) = &drag.origin else {
+            return Ok(None);
+        };
+        let DragGestureAuthority::LocalReady {
+            surface,
+            coordinates,
+        } = drag.presentation
+        else {
+            return Ok(Some(PreviewDecision::Clear(
+                PreviewResolutionStatus::Unavailable,
+            )));
+        };
+        if surface != drag.source_surface
+            || surface != origin.surface
+            || surface != candidate.stamp().surface()
+            || coordinates != candidate.coordinate_capture()
+        {
+            return Ok(Some(PreviewDecision::Clear(
+                PreviewResolutionStatus::Unavailable,
+            )));
+        }
+
+        let requested =
+            match translated_contained_rect(origin.source_rect, origin.initial_pointer, point) {
+                Ok(requested) => requested,
+                Err(()) => {
+                    return Ok(Some(PreviewDecision::Clear(
+                        PreviewResolutionStatus::Rejected,
+                    )));
+                }
+            };
+        let bounds = candidate.plan().bounds();
+        let clamped = match clamp_contained_rect(surface, bounds, requested, origin.minimum_size) {
+            Ok(clamped) => clamped,
+            Err(_) => {
+                return Ok(Some(PreviewDecision::Clear(
+                    PreviewResolutionStatus::Rejected,
+                )));
+            }
+        };
+        let placement = ContainedPlacementProof::new(
+            candidate.stamp(),
+            surface,
+            requested,
+            origin.minimum_size,
+            bounds,
+            clamped,
+        );
+        let proposal = crate::intent::ContainedTearOffProposal::new(
+            origin.root,
+            origin.floating,
+            placement,
+            ContainedPosition::Front,
+        );
+        let Some(command) = self.contained_presentation_command(
+            &drag.payload,
+            proposal,
+            drag.complete_root.clone(),
+            Some(origin),
+        ) else {
+            return Ok(Some(PreviewDecision::Clear(
+                PreviewResolutionStatus::Rejected,
+            )));
+        };
+        if !self.valid_contained_command_structure(drag, proposal, &command)
+            || self
+                .stage_journal_workspace_command(cause, &command, policy)?
+                .is_err()
+        {
+            return Ok(Some(PreviewDecision::Clear(
+                PreviewResolutionStatus::Rejected,
+            )));
+        }
+
+        Ok(Some(PreviewDecision::Publish {
+            scene: placement.scene(),
+            visual: PreviewVisual::Contained {
+                surface,
+                rect: proposal.rect(),
+                fallback: false,
+            },
+            proof: Box::new(PreviewProof::Contained {
+                command,
+                proposal,
+                fallback: false,
+            }),
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -640,7 +719,7 @@ impl DockEngine {
         Ok(resize.session())
     }
 
-    fn local_response_rejection(&self, outcome: InteractionRejection) -> InputOutcome {
+    pub(super) fn local_response_rejection(&self, outcome: InteractionRejection) -> InputOutcome {
         InputOutcome::InteractionProcessed {
             outcome: InteractionOutcome::Rejected(outcome),
             version: self.version,
