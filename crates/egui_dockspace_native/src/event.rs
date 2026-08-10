@@ -2,8 +2,64 @@
 
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::egui::ViewportId;
-use winit::event::WindowEvent;
+use winit::event::{PointerWindowRoute, WindowEvent};
 use winit::window::WindowId;
+
+use crate::viewport_map::NativeViewportMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativePointerRouteSnapshot {
+    Unknown,
+    None,
+    Dock(NativeSurfaceBinding),
+    Foreign,
+}
+
+impl NativePointerRouteSnapshot {
+    fn from_winit(route: PointerWindowRoute, viewports: &NativeViewportMap) -> Self {
+        match route {
+            PointerWindowRoute::Unknown => Self::Unknown,
+            PointerWindowRoute::None => Self::None,
+            PointerWindowRoute::Window(window) => viewports
+                .binding_for_window(window)
+                .map_or(Self::Foreign, Self::Dock),
+            PointerWindowRoute::Foreign => Self::Foreign,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativePointerRoutes {
+    delivery: NativePointerRouteSnapshot,
+    hover: NativePointerRouteSnapshot,
+    capture: NativePointerRouteSnapshot,
+}
+
+impl NativePointerRoutes {
+    pub(crate) const fn from_binding(binding: Option<NativeSurfaceBinding>) -> Self {
+        let delivery = match binding {
+            Some(binding) => NativePointerRouteSnapshot::Dock(binding),
+            None => NativePointerRouteSnapshot::Unknown,
+        };
+        Self {
+            delivery,
+            hover: NativePointerRouteSnapshot::Unknown,
+            capture: NativePointerRouteSnapshot::Unknown,
+        }
+    }
+
+    pub(crate) const fn delivery(self) -> NativePointerRouteSnapshot {
+        self.delivery
+    }
+
+    pub(crate) const fn hover(self) -> NativePointerRouteSnapshot {
+        self.hover
+    }
+
+    pub(crate) const fn capture(self) -> NativePointerRouteSnapshot {
+        self.capture
+    }
+}
 
 /// One immutable native event in the order observed by eframe.
 ///
@@ -16,21 +72,22 @@ pub struct NativeWindowEventRecord {
     window_id: WindowId,
     viewport_id: Option<ViewportId>,
     binding: Option<NativeSurfaceBinding>,
+    pointer_routes: Option<NativePointerRoutes>,
     event: WindowEvent,
 }
 
 impl NativeWindowEventRecord {
     pub(crate) fn from_eframe(
         event: eframe::NativeWindowEvent<'_>,
-        binding: Option<NativeSurfaceBinding>,
+        viewports: &NativeViewportMap,
     ) -> Self {
-        Self {
-            ordinal: event.ordinal().get(),
-            window_id: event.window_id(),
-            viewport_id: event.viewport_id(),
-            binding,
-            event: event.event().clone(),
-        }
+        Self::from_parts(
+            event.ordinal().get(),
+            event.window_id(),
+            event.viewport_id(),
+            event.event().clone(),
+            viewports,
+        )
     }
 
     /// Returns the exact eframe event ordinal.
@@ -60,6 +117,10 @@ impl NativeWindowEventRecord {
         self.binding
     }
 
+    pub(crate) const fn pointer_routes(&self) -> Option<NativePointerRoutes> {
+        self.pointer_routes
+    }
+
     /// Returns the exact cloned winit event.
     #[must_use]
     pub const fn event(&self) -> &WindowEvent {
@@ -79,6 +140,61 @@ impl NativeWindowEventRecord {
             window_id,
             viewport_id,
             binding,
+            pointer_routes: None,
+            event,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_snapshot(
+        ordinal: u64,
+        window_id: WindowId,
+        viewport_id: Option<ViewportId>,
+        event: WindowEvent,
+        viewports: &NativeViewportMap,
+    ) -> Self {
+        Self::from_parts(ordinal, window_id, viewport_id, event, viewports)
+    }
+
+    fn from_parts(
+        ordinal: u64,
+        window_id: WindowId,
+        viewport_id: Option<ViewportId>,
+        event: WindowEvent,
+        viewports: &NativeViewportMap,
+    ) -> Self {
+        let binding = viewports.binding_for_event(window_id, viewport_id);
+        let delivery = match binding {
+            Some(binding) => NativePointerRouteSnapshot::Dock(binding),
+            None if viewport_id.is_some() => NativePointerRouteSnapshot::Unknown,
+            None => NativePointerRouteSnapshot::Foreign,
+        };
+        let pointer_routes = match &event {
+            WindowEvent::CursorMoved { facts, .. }
+            | WindowEvent::MouseWheel { facts, .. }
+            | WindowEvent::MouseInput { facts, .. } => Some(NativePointerRoutes {
+                delivery,
+                hover: NativePointerRouteSnapshot::from_winit(facts.hover, viewports),
+                capture: NativePointerRouteSnapshot::from_winit(facts.capture, viewports),
+            }),
+            WindowEvent::PointerCaptureChanged { capture, .. } => Some(NativePointerRoutes {
+                delivery,
+                hover: NativePointerRouteSnapshot::Unknown,
+                capture: NativePointerRouteSnapshot::from_winit(*capture, viewports),
+            }),
+            WindowEvent::PanGesture { .. } => Some(NativePointerRoutes {
+                delivery,
+                hover: NativePointerRouteSnapshot::Unknown,
+                capture: NativePointerRouteSnapshot::Unknown,
+            }),
+            _ => None,
+        };
+        Self {
+            ordinal,
+            window_id,
+            viewport_id,
+            binding,
+            pointer_routes,
             event,
         }
     }

@@ -12,6 +12,7 @@ mod coordinator;
 mod error;
 mod event;
 mod mailbox;
+mod pointer_event;
 mod viewport_map;
 
 pub use error::{

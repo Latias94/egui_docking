@@ -260,10 +260,7 @@ impl NativeHostBridge {
 
 impl NativeHostHandler for NativeHostBridge {
     fn on_window_event(&self, event: NativeWindowEvent<'_>) {
-        let binding = self
-            .lock_viewports()
-            .binding_for_event(event.window_id(), event.viewport_id());
-        let record = NativeWindowEventRecord::from_eframe(event, binding);
+        let record = NativeWindowEventRecord::from_eframe(event, &self.lock_viewports());
         let mut records = self.lock();
         if records.active {
             records.journal.push_back(HostRecord::WindowEvent(record));

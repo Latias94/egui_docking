@@ -23,6 +23,7 @@ use crate::error::{
 use crate::mailbox::NativeHostBridge;
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
+use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::viewport_map::NativeViewportMap;
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
@@ -37,6 +38,7 @@ pub(crate) struct NativeCoordinator {
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PaintedSurfaceOutput>,
+    pointer_translator: NativePointerTranslator,
 }
 
 impl std::fmt::Debug for NativeCoordinator {
@@ -52,6 +54,7 @@ impl std::fmt::Debug for NativeCoordinator {
                     .unwrap_or_else(PoisonError::into_inner),
             )
             .field("pending_outputs", &self.pending_outputs.len())
+            .field("pointer_translator", &self.pointer_translator)
             .finish_non_exhaustive()
     }
 }
@@ -74,6 +77,7 @@ impl NativeCoordinator {
             bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
             viewports,
             pending_outputs: BTreeMap::new(),
+            pointer_translator: NativePointerTranslator::default(),
         })
     }
 
@@ -207,6 +211,33 @@ impl NativeCoordinator {
             Ok(())
         } else {
             Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into())
+        }
+    }
+
+    /// Reduces the journal head when it is a pointer event.
+    ///
+    /// The translator is copied before reduction. Smooth-scroll sequence state
+    /// is published only after the core accepts the corresponding input and the
+    /// immutable callback record is acknowledged, so a rejected edge remains
+    /// replayable without advancing the adapter-owned sequence state.
+    pub(crate) fn reduce_next_pointer_event(&mut self) -> Result<bool, NativeRuntimeError> {
+        let Some(record) = self.next_window_event()? else {
+            return Ok(false);
+        };
+        let mut candidate = self.pointer_translator;
+        match candidate.translate(&record) {
+            NativePointerTranslation::NotPointer => Ok(false),
+            NativePointerTranslation::Ignored => {
+                self.acknowledge_window_event(record.ordinal())?;
+                self.pointer_translator = candidate;
+                Ok(true)
+            }
+            NativePointerTranslation::Input(input) => {
+                self.record_pointer(input)?;
+                self.acknowledge_window_event(record.ordinal())?;
+                self.pointer_translator = candidate;
+                Ok(true)
+            }
         }
     }
 
@@ -596,56 +627,56 @@ mod tests {
 
     #[test]
     fn coordinator_owns_registration_and_viewport_identity() {
-        let mut coordinator = coordinator();
-        let (first, second) = register_roots(&mut coordinator);
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
         let child = ViewportId::from_hash_of("second-native-surface");
 
-        coordinator
+        native
             .bind_viewport(ViewportId::ROOT, WindowId::from(11), first)
             .expect("root viewport binds");
-        coordinator
+        native
             .bind_viewport(child, WindowId::from(22), second)
             .expect("child viewport binds");
 
-        assert_eq!(coordinator.viewport_binding(ViewportId::ROOT), Some(first));
-        assert_eq!(coordinator.surface_viewport(SECOND_SURFACE), Some(child));
+        assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(first));
+        assert_eq!(native.surface_viewport(SECOND_SURFACE), Some(child));
         assert_eq!(
-            coordinator
+            native
                 .unbind_viewport(child, second)
                 .expect("exact child binding retires"),
             second
         );
-        assert_eq!(coordinator.surface_viewport(SECOND_SURFACE), None);
+        assert_eq!(native.surface_viewport(SECOND_SURFACE), None);
     }
 
     #[test]
     fn viewport_mapping_rejects_aliasing_without_mutation() {
-        let mut coordinator = coordinator();
-        let (first, second) = register_roots(&mut coordinator);
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
         let child = ViewportId::from_hash_of("second-native-surface");
-        coordinator
+        native
             .bind_viewport(ViewportId::ROOT, WindowId::from(11), first)
             .expect("root viewport binds");
-        coordinator
+        native
             .bind_viewport(child, WindowId::from(22), second)
             .expect("child viewport binds");
 
         assert!(matches!(
-            coordinator.bind_viewport(ViewportId::ROOT, WindowId::from(22), second),
+            native.bind_viewport(ViewportId::ROOT, WindowId::from(22), second),
             Err(NativeViewportBindingError::ViewportAlreadyBound {
                 viewport: ViewportId::ROOT,
                 existing: FIRST_SURFACE,
             })
         ));
         assert!(matches!(
-            coordinator.bind_viewport(child, WindowId::from(11), first),
+            native.bind_viewport(child, WindowId::from(11), first),
             Err(NativeViewportBindingError::ViewportAlreadyBound {
                 viewport,
                 existing: SECOND_SURFACE,
             }) if viewport == child
         ));
-        assert_eq!(coordinator.viewport_binding(ViewportId::ROOT), Some(first));
-        assert_eq!(coordinator.viewport_binding(child), Some(second));
+        assert_eq!(native.viewport_binding(ViewportId::ROOT), Some(first));
+        assert_eq!(native.viewport_binding(child), Some(second));
     }
 
     #[test]
@@ -673,25 +704,25 @@ mod tests {
 
     #[test]
     fn stale_unbind_cannot_remove_the_current_viewport_binding() {
-        let mut coordinator = coordinator();
-        let (first, second) = register_roots(&mut coordinator);
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
         let child = ViewportId::from_hash_of("second-native-surface");
-        coordinator
+        native
             .bind_viewport(child, WindowId::from(22), second)
             .expect("child viewport binds");
 
         assert!(matches!(
-            coordinator.unbind_viewport(child, first),
+            native.unbind_viewport(child, first),
             Err(NativeViewportBindingError::BindingMismatch { viewport, .. })
                 if viewport == child
         ));
-        assert_eq!(coordinator.viewport_binding(child), Some(second));
+        assert_eq!(native.viewport_binding(child), Some(second));
     }
 
     #[test]
     fn output_reservation_binds_only_after_the_ui_callback_updates_the_viewport() {
-        let mut coordinator = coordinator();
-        let (first, second) = register_roots(&mut coordinator);
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
         let mut reservation = OutputReservation::unbound();
 
         assert_eq!(reservation.binding(), None);
@@ -760,5 +791,194 @@ mod tests {
             .expect("test host settles every surface");
         frame.commit().expect("frame commits");
         assert!(!coordinator.bridge.event_boundary_pending());
+    }
+
+    #[test]
+    fn pointer_routes_are_frozen_before_viewport_replacement() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{
+            DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute,
+        };
+
+        use crate::event::NativePointerRouteSnapshot;
+
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
+        let first_window = WindowId::from(11);
+        let second_window = WindowId::from(22);
+        let child = ViewportId::from_hash_of("second-native-surface");
+        native
+            .bind_viewport(ViewportId::ROOT, first_window, first)
+            .expect("root viewport binds");
+        native
+            .bind_viewport(child, second_window, second)
+            .expect("child viewport binds");
+
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
+                desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
+                modifiers: None,
+                hover: PointerWindowRoute::Window(second_window),
+                capture: PointerWindowRoute::Window(first_window),
+            },
+        };
+        let record = {
+            let viewports = native
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            NativeWindowEventRecord::for_test_snapshot(
+                7,
+                first_window,
+                Some(ViewportId::ROOT),
+                event,
+                &viewports,
+            )
+        };
+
+        let mut successor_source = coordinator();
+        let (successor, _) = register_roots(&mut successor_source);
+        native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(ViewportId::ROOT, first, WindowId::from(33), successor)
+            .expect("test viewport replacement succeeds");
+
+        let routes = record.pointer_routes().expect("pointer routes are frozen");
+        assert_eq!(routes.delivery(), NativePointerRouteSnapshot::Dock(first));
+        assert_eq!(routes.hover(), NativePointerRouteSnapshot::Dock(second));
+        assert_eq!(routes.capture(), NativePointerRouteSnapshot::Dock(first));
+        assert_ne!(
+            routes.delivery(),
+            NativePointerRouteSnapshot::Dock(successor)
+        );
+    }
+
+    #[test]
+    fn pointer_translation_preserves_delivery_hover_and_capture() {
+        use dockspace::geometry::PhysicalPoint;
+        use dockspace::runtime::{
+            NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+            NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+            NativePointerOwner,
+        };
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{
+            DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute,
+        };
+
+        use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
+
+        let mut native = coordinator();
+        let (first, second) = register_roots(&mut native);
+        let first_window = WindowId::from(11);
+        let second_window = WindowId::from(22);
+        let child = ViewportId::from_hash_of("second-native-surface");
+        native
+            .bind_viewport(ViewportId::ROOT, first_window, first)
+            .expect("root viewport binds");
+        native
+            .bind_viewport(child, second_window, second)
+            .expect("child viewport binds");
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
+                desktop_position: Some(PhysicalPosition::new(110.0, 220.0)),
+                modifiers: None,
+                hover: PointerWindowRoute::Window(second_window),
+                capture: PointerWindowRoute::Window(first_window),
+            },
+        };
+        let record = {
+            let viewports = native
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            NativeWindowEventRecord::for_test_snapshot(
+                8,
+                first_window,
+                Some(ViewportId::ROOT),
+                event,
+                &viewports,
+            )
+        };
+
+        let mut translator = NativePointerTranslator::default();
+        let actual = translator.translate(&record);
+        let expected = NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(
+                    PhysicalPoint::new(110.0, 220.0).expect("test point validates"),
+                ),
+                NativePointerHover::Dock(second),
+                None,
+            ),
+            NativePointerOwner::Native(first),
+            NativePointerOwner::Native(first),
+        );
+        assert_eq!(actual, NativePointerTranslation::Input(expected));
+    }
+
+    #[test]
+    fn pointer_reduction_acknowledges_only_after_core_acceptance() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{
+            DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute,
+        };
+
+        let mut native = coordinator();
+        let (first, _) = register_roots(&mut native);
+        let window = WindowId::from(11);
+        native
+            .bind_viewport(ViewportId::ROOT, window, first)
+            .expect("root viewport binds");
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                surface_position: Some(PhysicalPosition::new(10.0, 20.0)),
+                desktop_position: Some(PhysicalPosition::new(10.0, 20.0)),
+                modifiers: None,
+                hover: PointerWindowRoute::Window(window),
+                capture: PointerWindowRoute::Window(window),
+            },
+        };
+        let record = {
+            let viewports = native
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            NativeWindowEventRecord::for_test_snapshot(
+                9,
+                window,
+                Some(ViewportId::ROOT),
+                event,
+                &viewports,
+            )
+        };
+        native.bridge.push_record(HostRecord::WindowEvent(record));
+
+        assert!(
+            native
+                .reduce_next_pointer_event()
+                .expect("core accepts the current pointer binding")
+        );
+        assert!(
+            native
+                .next_window_event()
+                .expect("the accepted pointer event is acknowledged")
+                .is_none()
+        );
     }
 }

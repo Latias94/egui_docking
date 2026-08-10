@@ -111,6 +111,12 @@ impl NativeViewportMap {
         self.viewports.get(&viewport).map(|route| route.binding)
     }
 
+    pub(crate) fn binding_for_window(&self, window: WindowId) -> Option<NativeSurfaceBinding> {
+        self.windows
+            .get(&window)
+            .and_then(|viewport| self.binding(*viewport))
+    }
+
     pub(crate) fn binding_for_event(
         &self,
         window: WindowId,
