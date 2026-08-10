@@ -92,8 +92,10 @@ presentation obligations stay in `dockspace`.
 
 Document persistence is not part of the new default product facade yet. The
 legacy document/session implementation remains available only through the
-opt-in backend migration path (`serde` currently enables that backend) and is
-not a stable crates.io contract. The next
+opt-in backend migration path (`egui_dockspace`'s `serde` feature enables that
+backend); raw document, workspace-snapshot, and viewport-sidecar modules remain
+private when `dockspace` enables `serde` without `backend`. This is not a stable
+crates.io contract. The next
 product slice will add one session-owned document facade that atomically binds
 workspace topology, external pane identities, and viewport placement; until
 that lands, applications should treat `DockspaceLayout` as construction input

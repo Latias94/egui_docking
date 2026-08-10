@@ -26,8 +26,11 @@ pub mod coordinates;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod coordinates;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", any(feature = "backend", test)))]
 pub mod document;
+#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+#[allow(dead_code)]
+mod document;
 #[cfg(any(feature = "backend", test))]
 pub mod drop_guide;
 #[cfg(not(any(feature = "backend", test)))]
@@ -92,8 +95,11 @@ pub mod layout;
 mod layout;
 pub mod model;
 mod operation;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", any(feature = "backend", test)))]
 pub mod persistence;
+#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+#[allow(dead_code)]
+mod persistence;
 #[cfg(test)]
 pub mod platform;
 #[cfg(not(test))]
@@ -175,8 +181,11 @@ pub mod viewport_focus;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod viewport_focus;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", any(feature = "backend", test)))]
 pub mod viewport_persistence;
+#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+#[allow(dead_code)]
+mod viewport_persistence;
 #[cfg(test)]
 pub mod viewport_registry;
 #[cfg(not(test))]
