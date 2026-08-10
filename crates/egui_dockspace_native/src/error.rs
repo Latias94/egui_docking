@@ -39,10 +39,12 @@ enum NativeRuntimeErrorSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum NativeHostProtocolError {
-    #[error("a native window event must be acknowledged before beginning the next host frame")]
-    WindowEventPending,
+    #[error("a native callback record must be acknowledged before beginning the next host frame")]
+    CallbackRecordPending,
     #[error("the native window event acknowledgement does not match the journal head")]
     WindowEventAcknowledgementMismatch,
+    #[error("the viewport creation failure acknowledgement does not match the journal head")]
+    ViewportCreateFailureAcknowledgementMismatch,
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
 }
@@ -160,6 +162,14 @@ pub enum NativeViewportBindingError {
         viewport: ViewportId,
         /// Surface currently assigned to the viewport.
         existing: SurfaceId,
+    },
+    /// The viewport already has a different native window attached.
+    #[error("native viewport {viewport:?} is already attached to window {existing:?}")]
+    ViewportWindowAlreadyAttached {
+        /// Eframe viewport whose reserved binding already has a window.
+        viewport: ViewportId,
+        /// Existing native window.
+        existing: WindowId,
     },
     /// The surface is already assigned to another viewport.
     #[error("native surface {surface} is already assigned to viewport {existing:?}")]

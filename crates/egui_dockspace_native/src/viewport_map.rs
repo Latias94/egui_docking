@@ -11,7 +11,7 @@ use crate::NativeViewportBindingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeViewportRoute {
-    window: WindowId,
+    window: Option<WindowId>,
     binding: NativeSurfaceBinding,
 }
 
@@ -23,6 +23,56 @@ pub(crate) struct NativeViewportMap {
 }
 
 impl NativeViewportMap {
+    pub(crate) fn reserve(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        if let Some(existing) = self.viewports.get(&viewport).copied() {
+            if existing.binding == binding {
+                return Ok(());
+            }
+            return Err(NativeViewportBindingError::ViewportAlreadyBound {
+                viewport,
+                existing: existing.binding.surface(),
+            });
+        }
+        self.validate_surface_unclaimed(viewport, binding)?;
+        self.insert(viewport, None, binding);
+        Ok(())
+    }
+
+    pub(crate) fn attach(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        window: WindowId,
+    ) -> Result<(), NativeViewportBindingError> {
+        let Some(current) = self.viewports.get(&viewport).copied() else {
+            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
+        };
+        Self::validate_binding(viewport, expected, current)?;
+        if let Some(existing) = current.window {
+            if existing == window {
+                return Ok(());
+            }
+            return Err(NativeViewportBindingError::ViewportWindowAlreadyAttached {
+                viewport,
+                existing,
+            });
+        }
+        self.validate_window_unclaimed(viewport, window)?;
+        self.viewports.insert(
+            viewport,
+            NativeViewportRoute {
+                window: Some(window),
+                binding: current.binding,
+            },
+        );
+        self.windows.insert(window, viewport);
+        Ok(())
+    }
+
     pub(crate) fn bind(
         &mut self,
         viewport: ViewportId,
@@ -30,7 +80,7 @@ impl NativeViewportMap {
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         if let Some(existing) = self.viewports.get(&viewport).copied() {
-            if existing.window == window && existing.binding == binding {
+            if existing.window == Some(window) && existing.binding == binding {
                 return Ok(());
             }
             return Err(NativeViewportBindingError::ViewportAlreadyBound {
@@ -39,7 +89,24 @@ impl NativeViewportMap {
             });
         }
         self.validate_unclaimed_peers(viewport, window, binding)?;
-        self.insert(viewport, window, binding);
+        self.insert(viewport, Some(window), binding);
+        Ok(())
+    }
+
+    pub(crate) fn reserve_replacement(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        let current = self.validate_replacement(viewport, expected, successor)?;
+        if current.binding == successor {
+            return Ok(());
+        }
+        if let Some(window) = current.window {
+            self.windows.remove(&window);
+        }
+        self.insert(viewport, None, successor);
         Ok(())
     }
 
@@ -50,39 +117,12 @@ impl NativeViewportMap {
         successor_window: WindowId,
         successor: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
-        let Some(current) = self.viewports.get(&viewport).copied() else {
-            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
-        };
-        if current.binding != expected {
-            return Err(NativeViewportBindingError::BindingMismatch {
-                viewport,
-                expected: expected.surface(),
-                current: current.binding.surface(),
-            });
+        let current = self.validate_replacement(viewport, expected, successor)?;
+        self.validate_window_unclaimed(viewport, successor_window)?;
+        if let Some(window) = current.window {
+            self.windows.remove(&window);
         }
-        if successor.surface() != expected.surface() {
-            return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
-                viewport,
-                expected: expected.surface(),
-                successor: successor.surface(),
-            });
-        }
-        if let Some(existing) = self.windows.get(&successor_window).copied()
-            && existing != viewport
-        {
-            return Err(NativeViewportBindingError::WindowAlreadyBound {
-                window: successor_window,
-                existing,
-            });
-        }
-        debug_assert_eq!(
-            self.surfaces.get(&successor.surface()).copied(),
-            Some(viewport),
-            "viewport and surface indexes must remain symmetric",
-        );
-
-        self.windows.remove(&current.window);
-        self.insert(viewport, successor_window, successor);
+        self.insert(viewport, Some(successor_window), successor);
         Ok(())
     }
 
@@ -102,7 +142,9 @@ impl NativeViewportMap {
             });
         }
         self.viewports.remove(&viewport);
-        self.windows.remove(&current.window);
+        if let Some(window) = current.window {
+            self.windows.remove(&window);
+        }
         self.surfaces.remove(&current.binding.surface());
         Ok(current.binding)
     }
@@ -139,11 +181,28 @@ impl NativeViewportMap {
         window: WindowId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
+        self.validate_window_unclaimed(viewport, window)?;
+        self.validate_surface_unclaimed(viewport, binding)
+    }
+
+    fn validate_window_unclaimed(
+        &self,
+        viewport: ViewportId,
+        window: WindowId,
+    ) -> Result<(), NativeViewportBindingError> {
         if let Some(existing) = self.windows.get(&window).copied()
             && existing != viewport
         {
             return Err(NativeViewportBindingError::WindowAlreadyBound { window, existing });
         }
+        Ok(())
+    }
+
+    fn validate_surface_unclaimed(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
         if let Some(existing) = self.surfaces.get(&binding.surface()).copied()
             && existing != viewport
         {
@@ -155,10 +214,57 @@ impl NativeViewportMap {
         Ok(())
     }
 
-    fn insert(&mut self, viewport: ViewportId, window: WindowId, binding: NativeSurfaceBinding) {
+    fn validate_binding(
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        current: NativeViewportRoute,
+    ) -> Result<(), NativeViewportBindingError> {
+        if current.binding != expected {
+            return Err(NativeViewportBindingError::BindingMismatch {
+                viewport,
+                expected: expected.surface(),
+                current: current.binding.surface(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_replacement(
+        &self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> Result<NativeViewportRoute, NativeViewportBindingError> {
+        let Some(current) = self.viewports.get(&viewport).copied() else {
+            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
+        };
+        Self::validate_binding(viewport, expected, current)?;
+        if successor.surface() != expected.surface() {
+            return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
+                viewport,
+                expected: expected.surface(),
+                successor: successor.surface(),
+            });
+        }
+        debug_assert_eq!(
+            self.surfaces.get(&successor.surface()).copied(),
+            Some(viewport),
+            "viewport and surface indexes must remain symmetric",
+        );
+        Ok(current)
+    }
+
+    fn insert(
+        &mut self,
+        viewport: ViewportId,
+        window: Option<WindowId>,
+        binding: NativeSurfaceBinding,
+    ) {
         self.viewports
             .insert(viewport, NativeViewportRoute { window, binding });
-        self.windows.insert(window, viewport);
+        if let Some(window) = window {
+            self.windows.insert(window, viewport);
+        }
         self.surfaces.insert(binding.surface(), viewport);
     }
 }

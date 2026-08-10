@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{
-    NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativeWindowEvent,
+    NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken,
+    NativeViewportCreateFailure, NativeWindowEvent,
 };
 
 use crate::event::NativeWindowEventRecord;
@@ -14,10 +15,34 @@ use crate::viewport_map::NativeViewportMap;
 #[derive(Debug, Clone)]
 pub(crate) enum HostRecord {
     WindowEvent(NativeWindowEventRecord),
+    ViewportCreateFailed(NativeViewportCreateFailureRecord),
     Output {
         result: NativeOutputResult,
         submitted: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeViewportCreateFailureRecord {
+    viewport: eframe::egui::ViewportId,
+    binding: NativeSurfaceBinding,
+}
+
+impl NativeViewportCreateFailureRecord {
+    pub(crate) const fn new(
+        viewport: eframe::egui::ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Self {
+        Self { viewport, binding }
+    }
+
+    pub(crate) const fn viewport(self) -> eframe::egui::ViewportId {
+        self.viewport
+    }
+
+    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+        self.binding
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +126,23 @@ impl HostRecords {
         true
     }
 
+    fn record_viewport_create_failure(
+        &mut self,
+        failure: NativeViewportCreateFailureRecord,
+    ) -> bool {
+        if !self.active {
+            return false;
+        }
+        if self.journal.iter().any(
+            |record| matches!(record, HostRecord::ViewportCreateFailed(existing) if *existing == failure),
+        ) {
+            return true;
+        }
+        self.journal
+            .push_back(HostRecord::ViewportCreateFailed(failure));
+        true
+    }
+
     fn deactivate(&mut self) {
         self.active = false;
         self.journal.clear();
@@ -136,8 +178,24 @@ impl NativeHostBridge {
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
         match self.lock().journal.front() {
             Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
-            Some(HostRecord::Output { .. }) | None => None,
+            Some(HostRecord::ViewportCreateFailed(_) | HostRecord::Output { .. }) | None => None,
         }
+    }
+
+    pub(crate) fn front_viewport_create_failure(
+        &self,
+    ) -> Option<NativeViewportCreateFailureRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::ViewportCreateFailed(failure)) => Some(*failure),
+            Some(HostRecord::WindowEvent(_) | HostRecord::Output { .. }) | None => None,
+        }
+    }
+
+    pub(crate) fn has_pending_input(&self) -> bool {
+        matches!(
+            self.lock().journal.front(),
+            Some(HostRecord::WindowEvent(_) | HostRecord::ViewportCreateFailed(_))
+        )
     }
 
     pub(crate) fn acknowledge_event(&self, ordinal: u64) -> bool {
@@ -145,6 +203,22 @@ impl NativeHostBridge {
         let matches = matches!(
             records.journal.front(),
             Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
+        );
+        if matches {
+            records.journal.pop_front();
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
+    pub(crate) fn acknowledge_viewport_create_failure(
+        &self,
+        expected: NativeViewportCreateFailureRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let matches = matches!(
+            records.journal.front(),
+            Some(HostRecord::ViewportCreateFailed(failure)) if *failure == expected
         );
         if matches {
             records.journal.pop_front();
@@ -163,7 +237,7 @@ impl NativeHostBridge {
             .iter()
             .map_while(|record| match record {
                 HostRecord::Output { result, submitted } => Some((*result, *submitted)),
-                HostRecord::WindowEvent(_) => None,
+                HostRecord::WindowEvent(_) | HostRecord::ViewportCreateFailed(_) => None,
             })
             .collect();
 
@@ -246,6 +320,29 @@ impl NativeHostBridge {
         self.lock().deactivate();
     }
 
+    fn record_viewport_create_failure(&self, viewport: eframe::egui::ViewportId) -> NativeHostWake {
+        let Some(binding) = self.lock_viewports().binding(viewport) else {
+            return NativeHostWake::Wait;
+        };
+        if !self
+            .lock()
+            .record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
+                viewport, binding,
+            ))
+        {
+            return NativeHostWake::Wait;
+        }
+        NativeHostWake::RepaintRoot
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_viewport_create_failure_for_test(
+        &self,
+        viewport: eframe::egui::ViewportId,
+    ) -> NativeHostWake {
+        self.record_viewport_create_failure(viewport)
+    }
+
     #[cfg(test)]
     pub(crate) fn push_record(&self, record: HostRecord) {
         self.lock().journal.push_back(record);
@@ -275,5 +372,9 @@ impl NativeHostHandler for NativeHostBridge {
             return NativeHostWake::Wait;
         }
         NativeHostWake::RepaintRoot
+    }
+
+    fn on_viewport_create_failed(&self, failure: NativeViewportCreateFailure) -> NativeHostWake {
+        self.record_viewport_create_failure(failure.viewport_id())
     }
 }

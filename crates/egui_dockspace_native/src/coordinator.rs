@@ -20,9 +20,9 @@ use winit::window::WindowId;
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
-use crate::mailbox::NativeHostBridge;
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
+use crate::mailbox::{NativeHostBridge, NativeViewportCreateFailureRecord};
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::viewport_map::NativeViewportMap;
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -117,6 +117,52 @@ impl NativeCoordinator {
             .bind(viewport, window, binding)
     }
 
+    /// Reserves one eframe viewport for an exact binding before eframe creates its window.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the binding is stale or the viewport/surface is already reserved by
+    /// another exact peer.
+    pub fn reserve_viewport(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        if !self.session.is_current_native_binding(binding) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: binding.surface(),
+            });
+        }
+        self.viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve(viewport, binding)
+    }
+
+    /// Attaches the native window created for an exact reserved viewport binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the reservation changed or the window is already attached elsewhere.
+    pub fn attach_viewport_window(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        window: WindowId,
+    ) -> Result<(), NativeViewportBindingError> {
+        if !self.session.is_current_native_binding(expected) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: expected.surface(),
+            });
+        }
+        self.viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .attach(viewport, expected, window)
+    }
+
     /// Replaces one viewport association only after proving its predecessor.
     ///
     /// This explicit compare-and-replace operation prevents a delayed A1
@@ -143,6 +189,32 @@ impl NativeCoordinator {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .replace(viewport, expected, successor_window, successor)
+    }
+
+    /// Replaces one exact viewport reservation before the successor window exists.
+    ///
+    /// The predecessor window route is removed immediately, so any late callback from it becomes
+    /// unknown rather than acquiring the successor's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the predecessor is stale or the successor changes logical surface.
+    pub fn reserve_viewport_replacement(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        if !self.session.is_current_native_binding(successor) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: successor.surface(),
+            });
+        }
+        self.viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve_replacement(viewport, expected, successor)
     }
 
     /// Removes one viewport association after proving its exact incarnation.
@@ -212,6 +284,50 @@ impl NativeCoordinator {
         } else {
             Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into())
         }
+    }
+
+    /// Returns the next exact deferred-viewport creation failure in callback order.
+    ///
+    /// The binding is frozen when eframe reports the failed OS attempt, so replacing the viewport
+    /// before the next root update cannot retarget the failure to a newer incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an earlier renderer settlement cannot be applied.
+    pub fn next_viewport_create_failure(
+        &mut self,
+    ) -> Result<Option<NativeViewportCreateFailureRecord>, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        Ok(self.bridge.front_viewport_create_failure())
+    }
+
+    /// Acknowledges one exact viewport creation failure after the driver has converted it into the
+    /// matching affine native-effect result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `failure` is the callback journal head.
+    pub fn acknowledge_viewport_create_failure(
+        &self,
+        failure: NativeViewportCreateFailureRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        if !self.bridge.acknowledge_viewport_create_failure(failure) {
+            return Err(
+                NativeHostProtocolError::ViewportCreateFailureAcknowledgementMismatch.into(),
+            );
+        }
+        let mut viewports = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if viewports.binding(failure.viewport()) == Some(failure.binding()) {
+            let removed = viewports.remove_viewport(failure.viewport(), failure.binding());
+            debug_assert!(
+                removed.is_ok(),
+                "exact failed reservation must be removable"
+            );
+        }
+        Ok(())
     }
 
     /// Reduces the journal head when it is a pointer event.
@@ -360,8 +476,8 @@ impl NativeCoordinator {
         resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<NativeHostFrame<'_>, NativeRuntimeError> {
         self.prepare_output_prefix()?;
-        if self.bridge.front_event().is_some() {
-            return Err(NativeHostProtocolError::WindowEventPending.into());
+        if self.bridge.has_pending_input() {
+            return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
         Ok(NativeHostFrame {
             frame: self.session.begin_native_host_frame(resolve)?,
@@ -655,6 +771,46 @@ mod tests {
     }
 
     #[test]
+    fn viewport_reservation_requires_exact_window_attachment() {
+        let mut native = coordinator();
+        let (_, second) = register_roots(&mut native);
+        let child = ViewportId::from_hash_of("reserved-native-surface");
+        let window = WindowId::from(22);
+
+        native
+            .reserve_viewport(child, second)
+            .expect("child viewport reserves before OS creation");
+        assert_eq!(native.viewport_binding(child), Some(second));
+        assert_eq!(
+            native
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .binding_for_event(window, Some(child)),
+            None
+        );
+
+        native
+            .attach_viewport_window(child, second, window)
+            .expect("exact created window attaches");
+        assert_eq!(
+            native
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .binding_for_event(window, Some(child)),
+            Some(second)
+        );
+        assert!(matches!(
+            native.attach_viewport_window(child, second, WindowId::from(23)),
+            Err(NativeViewportBindingError::ViewportWindowAlreadyAttached {
+                viewport,
+                existing,
+            }) if viewport == child && existing == window
+        ));
+    }
+
+    #[test]
     fn viewport_mapping_rejects_aliasing_without_mutation() {
         let mut native = coordinator();
         let (first, second) = register_roots(&mut native);
@@ -722,6 +878,98 @@ mod tests {
                 if viewport == child
         ));
         assert_eq!(native.viewport_binding(child), Some(second));
+    }
+
+    #[test]
+    fn reserved_replacement_revokes_the_predecessor_window_route() {
+        let mut native = coordinator();
+        let (_, predecessor) = register_roots(&mut native);
+        let child = ViewportId::from_hash_of("replacement-native-surface");
+        let predecessor_window = WindowId::from(22);
+        native
+            .bind_viewport(child, predecessor_window, predecessor)
+            .expect("predecessor binds");
+
+        let mut successor_source = coordinator();
+        let (_, successor) = register_roots(&mut successor_source);
+        native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve_replacement(child, predecessor, successor)
+            .expect("successor reservation replaces the exact predecessor");
+
+        let viewports = native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(viewports.binding(child), Some(successor));
+        assert_eq!(
+            viewports.binding_for_event(predecessor_window, Some(child)),
+            None
+        );
+    }
+
+    #[test]
+    fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
+        let mut native = coordinator();
+        let (_, failed_binding) = register_roots(&mut native);
+        let child = ViewportId::from_hash_of("failed-native-surface");
+        native
+            .reserve_viewport(child, failed_binding)
+            .expect("failed viewport was reserved before scheduling");
+        assert_eq!(
+            native.bridge.record_viewport_create_failure_for_test(child),
+            NativeHostWake::RepaintRoot
+        );
+        assert_eq!(
+            native.bridge.record_viewport_create_failure_for_test(child),
+            NativeHostWake::RepaintRoot,
+            "duplicate backend retries retain one terminal callback record"
+        );
+
+        let failure = native
+            .next_viewport_create_failure()
+            .expect("failure prefix is readable")
+            .expect("failed create is retained");
+        assert_eq!(failure.viewport(), child);
+        assert_eq!(failure.binding(), failed_binding);
+        assert_eq!(
+            native
+                .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+                .expect_err("unacknowledged create failure blocks the host frame")
+                .kind(),
+            crate::NativeRuntimeErrorKind::HostProtocol
+        );
+
+        let mut successor_source = coordinator();
+        let (_, successor) = register_roots(&mut successor_source);
+        native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reserve_replacement(child, failed_binding, successor)
+            .expect("test replaces the viewport after the callback");
+        assert_eq!(failure.binding(), failed_binding);
+
+        native
+            .acknowledge_viewport_create_failure(failure)
+            .expect("exact frozen failure is acknowledged");
+        assert_eq!(native.viewport_binding(child), Some(successor));
+        assert!(
+            native
+                .next_viewport_create_failure()
+                .expect("failure prefix remains readable")
+                .is_none(),
+            "duplicate failure callbacks are coalesced"
+        );
+        let mut frame = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("acknowledged failure releases the callback boundary");
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("test host settles every surface");
+        frame.commit().expect("host frame commits");
     }
 
     #[test]
