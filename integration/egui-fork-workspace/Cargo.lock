@@ -532,11 +532,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_dockspace"
+version = "0.1.0"
+dependencies = [
+ "dockspace",
+ "egui",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "egui_dockspace_native"
 version = "0.1.0"
 dependencies = [
  "dockspace",
  "eframe",
+ "egui_dockspace",
  "thiserror 2.0.19",
  "winit",
 ]

@@ -24,13 +24,13 @@ not expose native multi-viewport support. The former 0.35 hosted-cycle runtime
 and its scenario harness were deleted instead of being mechanically ported.
 The new 0.36.1 fork exposes only graph-neutral event-time pointer facts and an
 opaque renderer `Presented`/`NotPresented` callback. The unpublished native
-crate now owns one thin `NativeCoordinator` around `DockspaceSession`; it does
-not own a second docking engine, effect ledger, presentation ledger, or input
-state machine. It preserves raw cross-window event order, exact viewport
-bindings, affine painted-output settlement, typed snapshots, pointer facts,
-close facts, and native effect results. A complete eframe application driver,
-platform effect executor, and the single real two-window smoke are still U7
-work, so native multiview is not yet a runnable product path.
+crate keeps its callback coordinator private and owns one `DockspaceSession`; it
+does not own a second docking engine, effect ledger, presentation ledger, or
+input state machine. Its sessionless egui render seam reuses the same
+core-derived product paint code as the ordinary facade. A complete eframe
+application driver, platform effect executor, and the single real two-window
+smoke are still U7 work, so native multiview is not yet a runnable product
+path.
 
 The ordinary crates.io `show_single_surface` convenience path now owns one
 renderer-neutral `DockspaceSession` and treats the current egui `Response` as

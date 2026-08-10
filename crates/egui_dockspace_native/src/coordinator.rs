@@ -1,7 +1,6 @@
 //! Thin coordinator between eframe callbacks and the renderer-neutral session.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::model::SurfaceId;
@@ -16,6 +15,7 @@ use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputStatus, NativeOutputToken,
     NativeWindowEvent, egui::ViewportId,
 };
+use egui_dockspace::{DockStyle, PaneView};
 use winit::window::WindowId;
 
 use crate::error::{
@@ -284,7 +284,7 @@ impl NativeHostHandler for NativeHostBridge {
 /// those records at the next root update, acknowledges each accepted window
 /// event, renders one affine host frame, and explicitly binds every painted
 /// output to the eframe output token that produced it.
-pub struct NativeCoordinator {
+pub(crate) struct NativeCoordinator {
     session: DockspaceSession,
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
@@ -694,7 +694,7 @@ impl Drop for NativeCoordinator {
 
 /// Affine native host frame which commits the output barrier and only then
 /// releases later callback records.
-pub struct NativeHostFrame<'session> {
+pub(crate) struct NativeHostFrame<'session> {
     frame: DockspaceHostFrame<'session>,
     bridge: Arc<NativeHostBridge>,
 }
@@ -707,21 +707,60 @@ impl std::fmt::Debug for NativeHostFrame<'_> {
     }
 }
 
-impl<'session> Deref for NativeHostFrame<'session> {
-    type Target = DockspaceHostFrame<'session>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.frame
-    }
-}
-
-impl DerefMut for NativeHostFrame<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.frame
-    }
-}
-
 impl NativeHostFrame<'_> {
+    pub(crate) fn complete_unpainted_surfaces(
+        &mut self,
+        reason: dockspace::runtime::SurfaceUnavailableReason,
+    ) -> Result<(), NativeRuntimeError> {
+        self.frame
+            .complete_unpainted_surfaces(reason)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn paint_surface(
+        &mut self,
+        instance_id: eframe::egui::Id,
+        surface: SurfaceId,
+        ui: &mut eframe::egui::Ui,
+        panes: &mut dyn PaneView,
+        style: &DockStyle,
+    ) -> Result<egui_dockspace::native_support::NativeSurfacePaint, NativeRuntimeError> {
+        egui_dockspace::native_support::paint_surface(
+            &mut self.frame,
+            instance_id,
+            surface,
+            ui,
+            panes,
+            style,
+        )
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn measure_surface(
+        &mut self,
+        surface: SurfaceId,
+        ui: &eframe::egui::Ui,
+        panes: &dyn PaneView,
+        style: &DockStyle,
+    ) -> Result<(), NativeRuntimeError> {
+        egui_dockspace::native_support::measure_surface(
+            &mut self.frame,
+            surface,
+            ui,
+            panes,
+            style,
+        )
+        .map(|_| ())
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn confirm_surface_painted(
+        &mut self,
+        surface: SurfaceId,
+    ) -> Result<(), NativeRuntimeError> {
+        self.frame.confirm_surface_painted(surface).map_err(Into::into)
+    }
+
     /// Commits the core frame and releases all presentation records included in
     /// that committed causal boundary.
     ///

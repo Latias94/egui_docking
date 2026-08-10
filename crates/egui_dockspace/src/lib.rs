@@ -35,6 +35,9 @@ mod facade;
 mod floating;
 #[cfg(any(feature = "backend", test))]
 mod hit;
+#[cfg(all(feature = "native-render-support", not(any(feature = "backend", test))))]
+#[doc(hidden)]
+pub mod native_support;
 #[cfg(any(feature = "backend", test))]
 mod output_ownership;
 #[cfg(all(feature = "serde", feature = "backend"))]

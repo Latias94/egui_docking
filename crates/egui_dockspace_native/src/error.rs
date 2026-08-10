@@ -4,6 +4,7 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceRuntimeError, PaintedSurfaceOutput, SurfacePresentationReportError,
 };
+use egui_dockspace::DockspaceError;
 use eframe::{NativeOutputToken, egui::ViewportId};
 use thiserror::Error;
 use winit::window::WindowId;
@@ -18,6 +19,8 @@ pub enum NativeRuntimeErrorKind {
     Presentation,
     /// The host attempted to cross an uncommitted callback-order boundary.
     HostProtocol,
+    /// The egui renderer could not represent a core paint or measurement fact.
+    Adapter,
 }
 
 /// Failure while reducing one native coordinator cycle.
@@ -31,6 +34,7 @@ enum NativeRuntimeErrorSource {
     Dockspace(Box<DockspaceRuntimeError>),
     Presentation(Box<SurfacePresentationReportError>),
     HostProtocol(NativeHostProtocolError),
+    Adapter(Box<DockspaceError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -51,6 +55,7 @@ impl NativeRuntimeError {
             NativeRuntimeErrorSource::Dockspace(_) => NativeRuntimeErrorKind::Dockspace,
             NativeRuntimeErrorSource::Presentation(_) => NativeRuntimeErrorKind::Presentation,
             NativeRuntimeErrorSource::HostProtocol(_) => NativeRuntimeErrorKind::HostProtocol,
+            NativeRuntimeErrorSource::Adapter(_) => NativeRuntimeErrorKind::Adapter,
         }
     }
 
@@ -80,6 +85,9 @@ impl std::fmt::Display for NativeRuntimeError {
             NativeRuntimeErrorKind::HostProtocol => {
                 "native callback records are not ready for the next host frame"
             }
+            NativeRuntimeErrorKind::Adapter => {
+                "egui could not represent the core-owned native surface"
+            }
         };
         formatter.write_str(message)
     }
@@ -91,6 +99,7 @@ impl std::error::Error for NativeRuntimeError {
             NativeRuntimeErrorSource::Dockspace(source) => source.as_ref(),
             NativeRuntimeErrorSource::Presentation(source) => source.as_ref(),
             NativeRuntimeErrorSource::HostProtocol(source) => source,
+            NativeRuntimeErrorSource::Adapter(source) => source.as_ref(),
         })
     }
 }
@@ -115,6 +124,14 @@ impl From<NativeHostProtocolError> for NativeRuntimeError {
     fn from(source: NativeHostProtocolError) -> Self {
         Self {
             source: NativeRuntimeErrorSource::HostProtocol(source),
+        }
+    }
+}
+
+impl From<DockspaceError> for NativeRuntimeError {
+    fn from(source: DockspaceError) -> Self {
+        Self {
+            source: NativeRuntimeErrorSource::Adapter(Box::new(source)),
         }
     }
 }
