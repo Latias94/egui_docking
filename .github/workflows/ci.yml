@@ -65,3 +65,20 @@ jobs:
         run: >-
           cargo test --manifest-path integration/egui-official-harness/Cargo.toml
           --locked
+
+  fork-native:
+    name: Fork-backed native coordinator
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy, rustfmt
+      - uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fork-native
+
+      - name: Run pinned native workspace tests
+        run: python3 scripts/run_egui_fork_harness.py

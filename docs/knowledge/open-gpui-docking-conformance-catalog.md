@@ -71,9 +71,9 @@ below records partial progress without promoting an incomplete case.
 | `OGC-02` | `host-driver` | `dockspace_host_conformance::tests::ogc_02_merge_and_close_preserve_target_local_mru_atomically` | Passing |
 | `OGC-03` | `host-driver` | `dockspace_host_conformance::tests::ogc_03_release_on_first_target_hit_is_inert_without_a_painted_preview`; `...::ogc_03_cached_or_stale_receiver_cannot_authorize_release`; `...::ogc_03_current_painted_preview_commits_exactly_once` | Passing |
 | `OGC-04` | `host-driver` | `dockspace_host_conformance::tests::ogc_04_stale_window_facts_clear_preview_and_require_repaint`; `...::ogc_04_late_a1_close_cannot_mutate_same_token_a2_binding` | Passing |
-| `OGC-05` | `fork-native-e2e` | `integration/egui-native-e2e` dynamically creates a real child window from an outside-all release and waits for first-live interaction authority before continuing; grab-offset and multi-item payload assertions remain outstanding. | Partial |
-| `OGC-06` | `fork-native-e2e` | `integration/egui-native-e2e` refuses to continue until the created child has a live authoritative scene; minimized, unsupported, and failed-create negative cases remain helper-level tests. | Partial |
-| `OGC-07` | `fork-native-e2e` | `integration/egui-native-e2e` redocks the dynamically created child into the real root window, then verifies exact item ownership and source-surface retirement; multi-item order and selection remain outstanding. | Partial |
+| `OGC-05` | `fork-native-smoke` | Planned on the rebuilt 0.36 coordinator. The obsolete 0.35 scenario runner was deleted rather than treated as current product evidence. | Planned |
+| `OGC-06` | `fork-native-smoke` | Planned after the first-live barrier is connected to the 0.36 renderer settlement seam. | Planned |
+| `OGC-07` | `fork-native-smoke` | Planned after cross-window pointer routing and effect execution are connected to the same `DockspaceSession`. | Planned |
 
 The host-driver crate depends on the public `dockspace::runtime` facade and
 never imports or owns `DockEngine`. Its deterministic driver explicitly marks

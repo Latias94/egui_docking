@@ -1,27 +1,21 @@
-//! Fork-backed native host runtime for `egui_dockspace`.
+//! Minimal fork-backed native coordinator for `dockspace`.
 //!
-//! This crate is intentionally unpublished. It is compiled only against the
-//! release-pinned egui fork, while the base adapter remains compatible with the
-//! official egui release.
+//! The crate deliberately owns no docking graph, renderer, platform effect
+//! ledger, or presentation state machine. [`NativeCoordinator`] is a thin
+//! bridge between the renderer-neutral [`dockspace::runtime::DockspaceSession`]
+//! and the pinned eframe 0.36 native host seam.
 
 #![forbid(unsafe_code)]
 
-mod app;
-mod close;
-mod configuration;
-mod effects;
+mod coordinator;
 mod error;
-mod ingress;
-mod persistence;
-mod presentation;
-mod receiver;
-mod viewport;
+mod event;
+mod viewport_map;
 
-pub use app::{NativeDockspaceApp, NativeRuntimeStatus};
-pub use close::{
-    AllowNativeClose, NativeCloseHandler, NativeCloseItemRequest, NativeDeferredCloseRequest,
-    NativeSurfaceCloseContext, VetoNativeClose,
+pub use coordinator::{NativeCoordinator, NativeHostFrame};
+pub use error::{
+    NativeOutputBindingError, NativeOutputBindingErrorKind, NativeOutputReservationError,
+    NativeOutputReservationErrorKind, NativeRuntimeError, NativeRuntimeErrorKind,
+    NativeViewportBindingError,
 };
-pub use error::NativeRuntimeError;
-pub use persistence::{NATIVE_DOCKSPACE_DOCUMENT_STORAGE_KEY, restore_document_from_storage};
-pub use viewport::{NativeSurfaceSpec, NativeViewportRoster};
+pub use event::NativeWindowEventRecord;

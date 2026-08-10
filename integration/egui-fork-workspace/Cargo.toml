@@ -2,18 +2,15 @@
 resolver = "3"
 members = [
     "../../crates/egui_dockspace_native",
-    "../egui-fork-harness",
-    "../egui-native-e2e",
 ]
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-egui = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-emath = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-epaint_default_fonts = { git = "https://github.com/Latias94/egui", rev = "5016206ba71228d11e594ff2c1dd1887da904486" }
-winit = { git = "https://github.com/Latias94/winit", rev = "c4e37f29ca448d0bfb10f5d223479154091c5898" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+egui = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+emath = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "e0d48d299c38a238a724354bf63c92e609bec7d4" }
+winit = { git = "https://github.com/Latias94/winit", rev = "4176f8aa1663ac804bf63030afbb6c2d0afe4ad7" }

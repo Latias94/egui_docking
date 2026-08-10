@@ -3,7 +3,7 @@ name = "egui_dockspace_native"
 description = "Unpublished fork-backed native runtime for egui_dockspace"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.95"
 workspace = "../../integration/egui-fork-workspace"
 authors = ["Mingzhen Zhuang <superfrankie621@gmail.com>"]
 license = "MIT OR Apache-2.0"
@@ -11,11 +11,10 @@ repository = "https://github.com/Latias94/egui_docking"
 publish = false
 
 [dependencies]
-dockspace = { path = "../dockspace", default-features = false, features = ["backend"] }
-eframe = { version = "=0.35.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
-egui = { version = "=0.35.0", default-features = false }
-egui_dockspace = { path = "../egui_dockspace", features = ["backend", "serde"] }
+dockspace = { path = "../dockspace", default-features = false }
+eframe = { version = "=0.36.1", default-features = false, features = ["glow", "native-host-seam", "wayland", "x11"] }
 thiserror = "2.0.18"
+winit = { version = "=0.30.13", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -25,7 +24,3 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
-
-[[example]]
-name = "native_multiview"
-path = "examples/native_multiview.rs"

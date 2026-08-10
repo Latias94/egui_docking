@@ -12,31 +12,25 @@ The repository is split into three layers:
   transactional native viewports and desktop-global input.
 
 The rewrite intentionally has no compatibility layer for the former
-`egui_docking` or `egui_tiles` public APIs and persistence formats. The design
-contract and implementation sequence are recorded in
-[`docs/plans/2026-07-18-001-headless-dockspace-refactor-plan.md`](docs/plans/2026-07-18-001-headless-dockspace-refactor-plan.md).
+`egui_docking` or `egui_tiles` public APIs and persistence formats. The current
+design contract and implementation sequence are recorded in
+[`docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md`](docs/plans/2026-08-08-001-refactor-dockspace-product-boundary-plan.md).
 
 ## Status
 
 The new architecture is under active implementation. The renderer-neutral
 behavior contract is executable, but the crates.io adapter intentionally does
-not expose native multi-viewport support. The empty `native` feature was removed
-rather than presenting test scaffolding as a product capability. The
-release-pinned fork now provides a complete-roster, input-before-paint hosted
-cycle for both native renderers. The unpublished native runtime connects that
-cycle to exact viewport incarnations, the desktop-global pointer journal,
-native effects, hidden staging, affine renderer settlement, and the previously
-presented immutable receiver graph. The trial example now restores two logical
-surfaces into two independently owned OS windows through the same hosted-cycle
-path. Docking-owned child close requests now retain their exact event order and
-window incarnation, open a core-owned `ClosePlan`, and settle application
-allow, veto, or deferred decisions through causally acknowledged `Destroy` or
-`CancelClose` effects. Root application shutdown remains a separate host
-responsibility. This is a runnable trial path, not a native support claim. The
-real-window smoke gate now automates dynamic tear-off and cross-window redock
-through the native event loop. Hardware-input coverage, mixed-DPI monitor
-transfer, close/focus failure matrices, bounded core ledgers, and an
-upstream-reviewable fork patch series are still release blockers.
+not expose native multi-viewport support. The former 0.35 hosted-cycle runtime
+and its scenario harness were deleted instead of being mechanically ported.
+The new 0.36.1 fork exposes only graph-neutral event-time pointer facts and an
+opaque renderer `Presented`/`NotPresented` callback. The unpublished native
+crate now owns one thin `NativeCoordinator` around `DockspaceSession`; it does
+not own a second docking engine, effect ledger, presentation ledger, or input
+state machine. It preserves raw cross-window event order, exact viewport
+bindings, affine painted-output settlement, typed snapshots, pointer facts,
+close facts, and native effect results. A complete eframe application driver,
+platform effect executor, and the single real two-window smoke are still U7
+work, so native multiview is not yet a runnable product path.
 
 The ordinary crates.io `show_single_surface` convenience path now treats the
 current egui `Response` as local receiver evidence. A Ready single-surface frame
@@ -83,18 +77,12 @@ intentional breaking boundary, not a compatibility alias for the former module
 paths.
 
 The base crate resolves the official egui release and treats receiver facts that
-upstream cannot prove as `Unknown`. The release-pinned fork carries global event
-provenance, cross-viewport receiver probing, terminal renderer results, and a
-complete-roster input-before-paint hosted-cycle SPI. Native lifecycle ownership
-lives in the unpublished `egui_dockspace_native` runtime. The excluded native
-workspace pins the public fork commit
-`5016206ba71228d11e594ff2c1dd1887da904486` and the event-fact Winit commit
-`c4e37f29ca448d0bfb10f5d223479154091c5898`; the single native smoke,
-deterministic conformance suites, bounded long-session ledgers, performance
-gates, an upstream-reviewable patch series, and the sealed public facade remain
-release blockers. Egui no longer computes a second docking geometry plan: it submits intrinsic
-measurements and paint resources, then paints the core-owned
-`PresentationPlan` directly.
+upstream cannot prove as `Unknown`. The excluded native workspace pins the
+public egui/eframe fork commit
+`e0d48d299c38a238a724354bf63c92e609bec7d4` and the event-fact Winit commit
+`4176f8aa1663ac804bf63030afbb6c2d0afe4ad7`. The fork remains graph-neutral;
+all docking topology, receiver challenges, native lifecycle meaning, and
+presentation obligations stay in `dockspace`.
 
 ## Persistence
 
@@ -142,14 +130,17 @@ cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml -
 
 Upstream egui `0.36.1` commit
 `4c1f2fae95475a40e524884ebb298bcb1714b08e` is the clean baseline for the
-next native vertical slice. The current `repo-ref/egui-release` revision
-`5016206ba71228d11e594ff2c1dd1887da904486` and Winit revision
-`c4e37f29ca448d0bfb10f5d223479154091c5898` are retained only as behavior and
-patch references. Their former 0.35 adapter/native build gate is intentionally
-suspended because the product crate now targets egui 0.36.1; mixing those two
-dependency families would not be a reproducible compatibility claim. U7 will
-create one clean 0.36.1 fork/native workspace and one focused real-window smoke
-after the minimal seams are proven.
+native vertical slice. The fork-backed workspace is reproducible from the two
+pushed revisions above and can be checked without custom cfg injection or a
+separate target directory:
+
+```text
+python3 scripts/run_egui_fork_harness.py
+```
+
+The former 0.35 harness and E2E scenario runner were removed. U7 will add one
+ordinary real-window smoke only after the 0.36 coordinator has a complete app,
+effect, and viewport lifecycle path.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example deliberately
 uses the registry-only paint path and is not an interaction or multiview demo.
