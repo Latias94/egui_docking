@@ -11,6 +11,7 @@
 mod coordinator;
 mod error;
 mod event;
+mod host_frame;
 mod mailbox;
 mod pointer_event;
 mod viewport_map;
