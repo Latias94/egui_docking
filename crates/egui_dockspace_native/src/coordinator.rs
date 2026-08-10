@@ -35,8 +35,25 @@ enum HostRecord {
 
 #[derive(Debug, Clone, Copy)]
 struct OutputReservation {
-    binding: NativeSurfaceBinding,
+    binding: Option<NativeSurfaceBinding>,
     terminal_recorded: bool,
+}
+
+impl OutputReservation {
+    const fn unbound() -> Self {
+        Self {
+            binding: None,
+            terminal_recorded: false,
+        }
+    }
+
+    fn attach(&mut self, binding: NativeSurfaceBinding) -> bool {
+        if let Some(existing) = self.binding {
+            return existing == binding;
+        }
+        self.binding = Some(binding);
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -57,18 +74,24 @@ impl HostRecords {
         }
     }
 
-    fn reserve_output(&mut self, token: NativeOutputToken, binding: NativeSurfaceBinding) -> bool {
+    fn reserve_output(&mut self, token: NativeOutputToken) -> bool {
         if !self.active || self.output_reservations.contains_key(&token) {
             return false;
         }
-        self.output_reservations.insert(
-            token,
-            OutputReservation {
-                binding,
-                terminal_recorded: false,
-            },
-        );
+        self.output_reservations
+            .insert(token, OutputReservation::unbound());
         true
+    }
+
+    fn attach_output_binding(
+        &mut self,
+        token: NativeOutputToken,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(reservation) = self.output_reservations.get_mut(&token) else {
+            return false;
+        };
+        reservation.attach(binding)
     }
 
     fn record_output(&mut self, result: NativeOutputResult) -> bool {
@@ -153,22 +176,20 @@ impl NativeHostBridge {
             .collect()
     }
 
-    fn reserve_output(&self, token: NativeOutputToken, binding: NativeSurfaceBinding) -> bool {
-        self.lock().reserve_output(token, binding)
+    fn reserve_output(&self, token: NativeOutputToken) -> bool {
+        self.lock().reserve_output(token)
     }
 
-    fn reserve_output_for_current_viewport(&self, token: NativeOutputToken) {
-        let binding = self.lock_viewports().binding(token.viewport_id());
-        if let Some(binding) = binding {
-            self.reserve_output(token, binding);
-        }
+    fn has_output_reservation(&self, token: NativeOutputToken) -> bool {
+        self.lock().output_reservations.contains_key(&token)
     }
 
-    fn output_binding(&self, token: NativeOutputToken) -> Option<NativeSurfaceBinding> {
-        self.lock()
-            .output_reservations
-            .get(&token)
-            .map(|reservation| reservation.binding)
+    fn attach_output_binding(
+        &self,
+        token: NativeOutputToken,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.lock().attach_output_binding(token, binding)
     }
 
     fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
@@ -246,7 +267,7 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_output_begin(&self, token: NativeOutputToken) {
-        self.reserve_output_for_current_viewport(token);
+        self.reserve_output(token);
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
@@ -580,13 +601,13 @@ impl NativeCoordinator {
         token: NativeOutputToken,
         output: PaintedSurfaceOutput,
     ) -> Result<(), NativeOutputBindingError> {
-        let Some(binding) = self.bridge.output_binding(token) else {
+        if !self.bridge.has_output_reservation(token) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::TokenNotReserved,
                 token,
                 output,
             ));
-        };
+        }
         if self.pending_outputs.contains_key(&token) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::OutputAlreadyBound,
@@ -594,9 +615,21 @@ impl NativeCoordinator {
                 output,
             ));
         }
+        let Some(binding) = self.viewport_binding(token.viewport_id()) else {
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::ViewportUnbound,
+                token,
+                output,
+            ));
+        };
         if !output.matches_native_binding(binding) {
-            let abandoned = self.bridge.abandon_output(token);
-            debug_assert!(abandoned, "unsubmitted reservation must remain abandonable");
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::BindingMismatch,
+                token,
+                output,
+            ));
+        }
+        if !self.bridge.attach_output_binding(token, binding) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::BindingMismatch,
                 token,
@@ -614,14 +647,17 @@ impl NativeCoordinator {
     /// This method must be used for mapped viewport callbacks which finish
     /// without a matching [`PaintedSurfaceOutput`].
     ///
-    /// Returns `false` when the token is unknown or its presentation result has
-    /// already entered a core host-frame boundary.
-    pub fn abandon_output_token(&mut self, token: NativeOutputToken) -> bool {
+    /// Returns [`NativeHostWake::Wait`] when the token is unknown or its
+    /// presentation result has already entered a core host-frame boundary.
+    /// A successful abandon requests another root update so the core can
+    /// consume the affine output's explicit dropped terminal.
+    #[must_use]
+    pub fn abandon_output_token(&mut self, token: NativeOutputToken) -> NativeHostWake {
         if !self.bridge.abandon_output(token) {
-            return false;
+            return NativeHostWake::Wait;
         }
         self.pending_outputs.remove(&token);
-        true
+        NativeHostWake::RepaintRoot
     }
 
     fn prepare_output_prefix(&mut self) -> Result<(), NativeRuntimeError> {
@@ -867,6 +903,19 @@ mod tests {
                 if viewport == child
         ));
         assert_eq!(coordinator.viewport_binding(child), Some(second));
+    }
+
+    #[test]
+    fn output_reservation_binds_only_after_the_ui_callback_updates_the_viewport() {
+        let mut coordinator = coordinator();
+        let (first, second) = register_roots(&mut coordinator);
+        let mut reservation = OutputReservation::unbound();
+
+        assert_eq!(reservation.binding, None);
+        assert!(reservation.attach(second));
+        assert_eq!(reservation.binding, Some(second));
+        assert!(reservation.attach(second));
+        assert!(!reservation.attach(first));
     }
 
     #[test]

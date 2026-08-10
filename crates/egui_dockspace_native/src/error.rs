@@ -189,6 +189,8 @@ pub enum NativeViewportBindingError {
 pub enum NativeOutputBindingErrorKind {
     /// The token was not reserved during its viewport callback.
     TokenNotReserved,
+    /// The viewport had no exact current native binding when paint completed.
+    ViewportUnbound,
     /// The output was emitted for another exact native binding.
     BindingMismatch,
     /// The token already owns another pending painted output.
