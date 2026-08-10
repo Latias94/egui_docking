@@ -10,14 +10,16 @@ use crate::model::DockspaceAxis;
 use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
-    ContainedRecord, ContainedResizeDirection, ContainedResizeRecord, PresentationPlan,
-    SplitterGapPresentation, SplitterGapRecord, SplitterJunctionId, SplitterJunctionRecord,
-    SplitterRecord, SplitterSceneId, TabBarSceneId, TabSceneId,
+    ContainedRecord, ContainedResizeRecord, PresentationPlan, SplitterGapPresentation,
+    SplitterGapRecord, SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId,
+    TabBarSceneId, TabSceneId,
 };
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
+mod actions;
 mod tab_chrome;
 mod tabs;
+pub use actions::ContainedResizeDirection;
 pub use tab_chrome::{
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabStripControlKind, TabStripControlPaintRecord,
@@ -416,7 +418,7 @@ pub struct ContainedResizePaintRecord {
 impl ContainedResizePaintRecord {
     #[must_use]
     pub const fn direction(self) -> ContainedResizeDirection {
-        self.record.direction()
+        ContainedResizeDirection::from_core(self.record.direction())
     }
 
     #[must_use]

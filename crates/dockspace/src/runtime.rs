@@ -27,8 +27,8 @@ pub use interaction::{
     SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
     SurfaceScrollSequenceId,
 };
-pub use local_action::PreparedSurfaceAction;
 use local_action::PreparedSurfaceActionAuthorityMismatch;
+pub use local_action::{PreparedSurfaceAction, SurfaceGesturePhase};
 pub use measurement::{
     MeasurementValueError, SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabListMenuMetrics,
     TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
@@ -54,10 +54,10 @@ pub use native_effect::{
     NativeUnsupportedReason,
 };
 pub use paint::{
-    ContainedPaintRecord, ContainedResizePaintRecord, DockspaceDragPreview, DockspaceGuideScope,
-    DockspacePaintLayer, DockspacePreviewVisual, DockspaceReceiverDescriptor,
-    DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind, DropGuidePaintRecord,
-    DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
+    ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
+    DockspaceDragPreview, DockspaceGuideScope, DockspacePaintLayer, DockspacePreviewVisual,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind,
+    DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
     SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
     SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
     TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,

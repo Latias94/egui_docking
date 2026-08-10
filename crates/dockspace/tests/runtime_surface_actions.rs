@@ -1,10 +1,12 @@
-use crate::geometry::{LogicalRect, LogicalSize};
+use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::ids::{ItemId, RootId, SurfaceId};
-use crate::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
+use crate::model::{
+    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+};
 use crate::policy::DockPolicy;
 use crate::runtime::{
     DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostInputOutcome,
-    PreparedSurfaceAction, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -20,6 +22,36 @@ fn session() -> DockspaceSession {
     .expect("surface-action test layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("surface-action test session initializes")
+}
+
+fn split_session() -> DockspaceSession {
+    let content = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [
+            DockspaceNode::central_tabs([FIRST]),
+            DockspaceNode::tabs([SECOND]),
+        ],
+    )
+    .expect("surface-action split validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, content),
+    )])
+    .expect("surface-action split layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("surface-action split session initializes")
+}
+
+fn split_weights(session: &DockspaceSession) -> Vec<f32> {
+    session
+        .view()
+        .surface(SURFACE)
+        .and_then(|surface| surface.main_root())
+        .and_then(|root| root.content())
+        .and_then(|content| content.split())
+        .expect("the test main root remains split")
+        .weights()
+        .collect()
 }
 
 fn metrics() -> UniformSurfaceMetrics {
@@ -188,4 +220,69 @@ fn cross_session_surface_action_is_rejected_without_poisoning_the_frame() {
             .expect("first item remains open")
             .is_selected()
     );
+}
+
+#[test]
+fn opaque_splitter_actions_drive_the_core_resize_session() {
+    let mut session = split_session();
+    install_ready_candidate(&mut session);
+    let before = split_weights(&session);
+
+    let mut prepare = session.begin_host_frame().expect("paint frame begins");
+    let plan = prepare
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("split candidate is paintable");
+    let splitter = plan
+        .splitters()
+        .next()
+        .expect("the equal split has one splitter");
+    let bounds = splitter.hit_bounds();
+    let initial = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("splitter center validates");
+    let released = LogicalPoint::new(initial.x() + 48.0, initial.y())
+        .expect("splitter release point validates");
+    let press = plan
+        .prepare_splitter_gesture(
+            splitter.visual_id(),
+            SurfaceGesturePhase::Begin {
+                initial,
+                current: initial,
+            },
+        )
+        .expect("the exact operable splitter prepares a press");
+    let release = plan
+        .prepare_splitter_gesture(
+            splitter.visual_id(),
+            SurfaceGesturePhase::Release { current: released },
+        )
+        .expect("the exact operable splitter prepares a release");
+    prepare
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unchanged candidate is retained");
+    prepare.commit().expect("paint pass commits");
+
+    let mut press_frame = session.begin_host_frame().expect("press frame begins");
+    press_frame
+        .submit_surface_action(press)
+        .expect("splitter press is accepted");
+    press_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("pressed surface measures");
+    press_frame.commit().expect("splitter press commits");
+    assert_eq!(split_weights(&session), before);
+
+    let mut release_frame = session.begin_host_frame().expect("release frame begins");
+    release_frame
+        .submit_surface_action(release)
+        .expect("splitter release is accepted");
+    release_frame
+        .measure_surface(SURFACE, metrics())
+        .expect("released surface measures");
+    release_frame.commit().expect("splitter release commits");
+
+    assert_ne!(split_weights(&session), before);
 }

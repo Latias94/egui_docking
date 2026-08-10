@@ -5,10 +5,40 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::engine::EngineInput;
+use crate::engine::{LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase};
+use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
-use crate::intent::CloseSceneTarget;
+use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use crate::model::WorkspaceVersion;
-use crate::scene::{SurfaceSceneStamp, TabSceneId};
+use crate::scene::{SplitterResizeTarget, SurfaceSceneStamp, TabSceneId};
+
+/// One current-frame framework gesture expressed in surface-logical coordinates.
+///
+/// The adapter reports only the phase and exact points observed by its widget
+/// system. Structural targets, scene identity, and reducer input remain sealed
+/// inside [`PreparedSurfaceAction`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceGesturePhase {
+    /// Begins one gesture after the framework crossed its drag threshold.
+    Begin {
+        /// Logical point at which the gesture began.
+        initial: LogicalPoint,
+        /// Current logical point reported by the same framework response.
+        current: LogicalPoint,
+    },
+    /// Updates an active gesture.
+    Move {
+        /// Current logical point.
+        current: LogicalPoint,
+    },
+    /// Commits an active gesture at its exact release point.
+    Release {
+        /// Exact logical release point.
+        current: LogicalPoint,
+    },
+    /// Cancels the matching active gesture without a durable mutation.
+    Cancel,
+}
 
 /// One affine framework action captured from an exact [`super::SurfacePaintPlan`].
 ///
@@ -52,6 +82,56 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn local_tab_gesture(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        source: TabGestureSource,
+        phase: LocalTabGesturePhase,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::LocalTabGesture { source, phase },
+        }
+    }
+
+    pub(super) const fn local_splitter_gesture(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        target: SplitterResizeTarget,
+        phase: LocalSplitterGesturePhase,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::LocalSplitterGesture { target, phase },
+        }
+    }
+
+    pub(super) const fn local_contained_gesture(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        floating: crate::ids::FloatingPresentationId,
+        kind: ContainedGestureKind,
+        phase: LocalContainedGesturePhase,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::LocalContainedGesture {
+                floating,
+                kind,
+                phase,
+            },
+        }
+    }
+
     /// Returns the published workspace version from which the action was prepared.
     #[must_use]
     pub const fn expected_version(&self) -> WorkspaceVersion {
@@ -82,6 +162,31 @@ impl PreparedSurfaceAction {
                 scene,
                 target,
             },
+            SurfaceAction::LocalTabGesture { source, phase } => EngineInput::LocalTabGesture {
+                expected: self.expected,
+                surface: self.surface,
+                source,
+                phase,
+            },
+            SurfaceAction::LocalSplitterGesture { target, phase } => {
+                EngineInput::LocalSplitterGesture {
+                    expected: self.expected,
+                    surface: self.surface,
+                    target,
+                    phase,
+                }
+            }
+            SurfaceAction::LocalContainedGesture {
+                floating,
+                kind,
+                phase,
+            } => EngineInput::LocalContainedGesture {
+                expected: self.expected,
+                surface: self.surface,
+                floating,
+                kind,
+                phase,
+            },
         })
     }
 }
@@ -107,6 +212,19 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         target: CloseSceneTarget,
     },
+    LocalTabGesture {
+        source: TabGestureSource,
+        phase: LocalTabGesturePhase,
+    },
+    LocalSplitterGesture {
+        target: SplitterResizeTarget,
+        phase: LocalSplitterGesturePhase,
+    },
+    LocalContainedGesture {
+        floating: crate::ids::FloatingPresentationId,
+        kind: ContainedGestureKind,
+        phase: LocalContainedGesturePhase,
+    },
 }
 
 impl SurfaceAction {
@@ -114,6 +232,9 @@ impl SurfaceAction {
         match self {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
+            Self::LocalTabGesture { .. } => "tab-gesture",
+            Self::LocalSplitterGesture { .. } => "splitter-gesture",
+            Self::LocalContainedGesture { .. } => "contained-gesture",
         }
     }
 }
