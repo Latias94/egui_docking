@@ -15,46 +15,6 @@ use crate::scene::{
     SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId, TabBarRecord,
     TabBarSceneId, TabRecord, TabSceneId, TabStripMemberVisibility,
 };
-use crate::scene_manifest::{TabIntrinsic, TabStripMetrics};
-
-use super::DockspaceInteractionError;
-
-/// Uniform measurements for a renderer whose panes and tabs share one metric.
-///
-/// Rich adapters should answer the same manifest through per-item callbacks;
-/// this profile is the compact path for deterministic hosts and examples.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UniformSurfaceMetrics {
-    pub(super) bounds: LogicalRect,
-    pub(super) pane_minimum: LogicalSize,
-    pub(super) tab_intrinsic: TabIntrinsic,
-    pub(super) tab_strip: TabStripMetrics,
-}
-
-impl UniformSurfaceMetrics {
-    /// Validates one complete uniform measurement profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the tab content width is negative or non-finite.
-    pub fn new(
-        bounds: LogicalRect,
-        pane_minimum: LogicalSize,
-        tab_content_width: f64,
-    ) -> Result<Self, DockspaceInteractionError> {
-        let tab_intrinsic = TabIntrinsic::new(tab_content_width)
-            .map_err(|_| DockspaceInteractionError::InvalidMeasurementProfile)?;
-        let tab_strip = TabStripMetrics::new(0.0, 0.0)
-            .map_err(|_| DockspaceInteractionError::InvalidMeasurementProfile)?;
-        Ok(Self {
-            bounds,
-            pane_minimum,
-            tab_intrinsic,
-            tab_strip,
-        })
-    }
-}
-
 /// Stable renderer identity whose structural storage remains core-private.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DockspaceVisualId(VisualIdentity);
@@ -96,6 +56,18 @@ pub enum DockspaceVisualKind {
 }
 
 impl DockspaceVisualId {
+    pub(super) const fn from_pane_scene(id: crate::scene::PaneSceneId) -> Self {
+        Self(VisualIdentity::Pane(id))
+    }
+
+    pub(super) const fn from_tab_scene(id: TabSceneId) -> Self {
+        Self(VisualIdentity::Tab(id))
+    }
+
+    pub(super) const fn from_tab_bar_scene(id: TabBarSceneId) -> Self {
+        Self(VisualIdentity::TabBar(id))
+    }
+
     /// Returns the stable semantic class without exposing graph storage IDs.
     #[must_use]
     pub const fn kind(self) -> DockspaceVisualKind {

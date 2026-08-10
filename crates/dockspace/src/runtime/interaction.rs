@@ -25,7 +25,6 @@ use crate::pointer_receiver::{
 };
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
 use crate::scene::SurfaceScene;
-use crate::scene_manifest::{Measurement, SurfaceMeasurements};
 
 /// Exact presented surface capability used to qualify known-empty facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,6 +511,9 @@ pub enum DockspaceInteractionError {
     /// The uniform writer disagreed with the exact core manifest.
     #[error("uniform measurement writer could not answer the core manifest exactly")]
     MeasurementRosterInvariant,
+    /// A product measurement answer used a value variant for another request kind.
+    #[error("surface measurement answer does not match its core-derived request")]
+    MeasurementAnswerMismatch,
     /// A pointer provider is already active for another surface.
     #[error("a surface-local pointer provider is already active for another surface")]
     PointerProviderAlreadyActive,
@@ -742,47 +744,21 @@ impl DockspaceHostFrame<'_> {
         surface: SurfaceId,
         metrics: UniformSurfaceMetrics,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.complete_pointer_input()?;
-        if self.surface_answered(surface) {
-            return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
-        }
-        let requirements = self
-            .frame
-            .view()
-            .presentation_requirements()
-            .surface(surface)
-            .ok_or(DockspaceInteractionError::SurfaceOutsideRoster { surface })?;
-        let mut measurements = SurfaceMeasurements::new(requirements.ticket());
-        measurements
-            .set_bounds(requirements.bounds(), Measurement::Measured(metrics.bounds))
-            .map_err(|_| DockspaceInteractionError::MeasurementRosterInvariant)?;
-        if let Some(key) = requirements.popup_plane_bounds() {
-            measurements
-                .set_popup_plane_bounds(key, Measurement::Measured(metrics.bounds))
-                .map_err(|_| DockspaceInteractionError::MeasurementRosterInvariant)?;
-        }
-        for key in requirements.pane_minimums() {
-            measurements
-                .insert_pane_minimum(key, Measurement::Measured(metrics.pane_minimum))
-                .map_err(|_| DockspaceInteractionError::MeasurementRosterInvariant)?;
-        }
-        for key in requirements.tab_intrinsics() {
-            measurements
-                .insert_tab_intrinsic(key, Measurement::Measured(metrics.tab_intrinsic))
-                .map_err(|_| DockspaceInteractionError::MeasurementRosterInvariant)?;
-        }
-        for key in requirements.tab_strips() {
-            measurements
-                .insert_tab_strip(key, Measurement::Measured(metrics.tab_strip))
-                .map_err(|_| DockspaceInteractionError::MeasurementRosterInvariant)?;
-        }
-        let token = self.frame.view().begin_surface_contribution(surface)?;
-        let contribution = self
-            .frame
-            .view()
-            .prepare_surface_contribution(token, measurements)?;
-        self.frame.push_surface_contribution(contribution)?;
-        Ok(())
+        self.measure_surface_with(surface, |request| match request {
+            super::SurfaceMeasurementRequest::DockBounds { .. }
+            | super::SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
+                super::SurfaceMeasurementAnswer::Bounds(metrics.bounds)
+            }
+            super::SurfaceMeasurementRequest::PaneMinimum { .. } => {
+                super::SurfaceMeasurementAnswer::PaneMinimum(metrics.pane_minimum)
+            }
+            super::SurfaceMeasurementRequest::TabIntrinsic { .. } => {
+                super::SurfaceMeasurementAnswer::TabIntrinsic(metrics.tab_intrinsic.content_width())
+            }
+            super::SurfaceMeasurementRequest::TabStrip { .. } => {
+                super::SurfaceMeasurementAnswer::TabStrip(metrics.tab_strip)
+            }
+        })
     }
 
     /// Freezes pointer input and returns the current candidate plan which the
@@ -1138,7 +1114,7 @@ impl DockspaceHostFrame<'_> {
         Ok(PointerReceiverObservation::Presented(presented))
     }
 
-    fn surface_answered(&self, surface: SurfaceId) -> bool {
+    pub(super) fn surface_answered(&self, surface: SurfaceId) -> bool {
         self.painted_surfaces.contains(&surface)
             || self
                 .frame

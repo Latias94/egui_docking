@@ -79,6 +79,8 @@ mod recovery_policy_authority;
 mod reducer_ticks;
 #[path = "../tests/rootless_structural.rs"]
 mod rootless_structural;
+#[path = "../tests/runtime_measurement.rs"]
+mod runtime_measurement;
 #[path = "../tests/splitter_resize_regressions.rs"]
 mod splitter_resize_regressions;
 #[path = "../tests/surface_scene_exchange.rs"]

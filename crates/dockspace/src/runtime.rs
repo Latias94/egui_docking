@@ -7,6 +7,7 @@
 //! authority.
 
 mod interaction;
+mod measurement;
 mod native;
 mod native_effect;
 mod paint;
@@ -23,6 +24,11 @@ pub use interaction::{
     SurfacePointerRetirement, SurfaceScrollCancelReason, SurfaceScrollDelta, SurfaceScrollDeviceId,
     SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
     SurfaceScrollSequenceId,
+};
+pub use measurement::{
+    MeasurementValueError, SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabListMenuMetrics,
+    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
+    UniformSurfaceMetrics,
 };
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
@@ -49,7 +55,6 @@ pub use paint::{
     DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind, DropGuidePaintRecord,
     DropGuideTargetPaintRecord, PanePaintRecord, SplitterJunctionPaintRecord, SplitterPaintRecord,
     SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
-    UniformSurfaceMetrics,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{

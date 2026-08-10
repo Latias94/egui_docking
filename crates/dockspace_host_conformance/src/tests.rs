@@ -18,12 +18,13 @@ use dockspace::runtime::{
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
     NativeScrollSequenceId, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceUnavailableReason,
+    TabStripMetrics, UniformSurfaceMetrics,
 };
 use dockspace::{CloseDecision, CloseResolutionOutcome};
 
@@ -513,11 +514,29 @@ fn runtime_paint_plan_exposes_complete_stable_renderer_geometry() {
     let mut host = DeterministicHost::new(layout);
     let bounds = LogicalRect::new(0.0, 0.0, 800.0, 480.0).expect("the fixture bounds are valid");
     let minimum = LogicalSize::new(80.0, 60.0).expect("the fixture minimum is valid");
-    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
-        .expect("the fixture measurements are valid");
     host.run(|frame| {
         frame
-            .measure_surface(SURFACE, metrics)
+            .measure_surface_with(SURFACE, |request| match request {
+                SurfaceMeasurementRequest::DockBounds { .. }
+                | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
+                    SurfaceMeasurementAnswer::Bounds(bounds)
+                }
+                SurfaceMeasurementRequest::PaneMinimum { visual, .. } => {
+                    assert_eq!(visual.kind(), DockspaceVisualKind::Pane);
+                    SurfaceMeasurementAnswer::PaneMinimum(minimum)
+                }
+                SurfaceMeasurementRequest::TabIntrinsic { visual, .. } => {
+                    assert_eq!(visual.kind(), DockspaceVisualKind::Tab);
+                    SurfaceMeasurementAnswer::TabIntrinsic(96.0)
+                }
+                SurfaceMeasurementRequest::TabStrip { visual, .. } => {
+                    assert_eq!(visual.kind(), DockspaceVisualKind::TabBar);
+                    SurfaceMeasurementAnswer::TabStrip(
+                        TabStripMetrics::new(0.0, 0.0)
+                            .expect("the fixture tab-strip metrics are valid"),
+                    )
+                }
+            })
             .expect("the renderer supplies the complete measurement manifest");
     });
 
