@@ -323,7 +323,7 @@ impl DockEngine {
                 }
             }
             Some(provider) => {
-                if !pointer_segment_submitted {
+                if backend_ingress.is_none() && !pointer_segment_submitted {
                     return Err(EngineError::HostFramePointerJournalMissing { provider });
                 }
                 if pending_pointer_segment.is_some() {

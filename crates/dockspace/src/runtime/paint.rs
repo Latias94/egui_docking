@@ -165,6 +165,24 @@ pub struct DockspaceReceiverDescriptor {
 }
 
 impl DockspaceReceiverDescriptor {
+    pub(super) fn from_projection_region(
+        output: SurfacePresentationOutputTicket,
+        region: PresentationHitRegionId,
+        bounds: LogicalRect,
+    ) -> Option<Self> {
+        Some(Self {
+            output,
+            region,
+            role: receiver_role(region.kind())?,
+            bounds,
+            center: LogicalPoint::new(
+                bounds.x() + bounds.width() * 0.5,
+                bounds.y() + bounds.height() * 0.5,
+            )
+            .ok()?,
+        })
+    }
+
     /// Returns a stable visual identity for renderer widget keys.
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
@@ -873,17 +891,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         region: PresentationHitRegionId,
         bounds: LogicalRect,
     ) -> Option<DockspaceReceiverDescriptor> {
-        Some(DockspaceReceiverDescriptor {
-            output: self.output,
-            region,
-            role: receiver_role(region.kind())?,
-            bounds,
-            center: LogicalPoint::new(
-                bounds.x() + bounds.width() * 0.5,
-                bounds.y() + bounds.height() * 0.5,
-            )
-            .ok()?,
-        })
+        DockspaceReceiverDescriptor::from_projection_region(self.output, region, bounds)
     }
 }
 

@@ -1,4 +1,6 @@
-use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
+use dockspace::geometry::{
+    LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
+};
 use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome, DockspaceAxis,
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, DockspaceTabsView,
@@ -8,11 +10,17 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceCloseOutcome, DockspaceHostFrame, DockspaceInteractionError,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, NativeCloseState,
-    NativeHostErrorKind, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
-    SurfacePointerId, SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken,
+    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
+    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
+    NativeScrollSequenceId, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
     SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
     SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
@@ -75,6 +83,24 @@ impl DeterministicHost {
             .expect("the host frame must commit atomically")
     }
 
+    fn run_native(
+        &mut self,
+        resolve: impl FnMut(dockspace::runtime::NativeReceiverQuery) -> NativeReceiverAnswer,
+        mutate: impl FnOnce(&mut DockspaceHostFrame<'_>),
+    ) -> HostFrameReport {
+        let mut frame = self
+            .session
+            .begin_native_host_frame(resolve)
+            .expect("the managed native host frame must begin");
+        mutate(&mut frame);
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the driver explicitly settles every unpainted surface");
+        frame
+            .commit()
+            .expect("the managed native frame must commit atomically")
+    }
+
     fn observe_painted_outputs(&mut self, mut report: HostFrameReport) {
         let outputs = report.take_painted_outputs();
         assert_eq!(outputs.len(), 1, "the fixture paints one logical surface");
@@ -105,6 +131,17 @@ impl DeterministicHost {
             .report_native_snapshot(observations)
             .expect("the native snapshot joins the backend ingress order");
         self.run(|_| {})
+    }
+
+    fn report_managed_native_snapshot(
+        &mut self,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        work_areas: NativeWorkAreaRoster,
+    ) -> HostFrameReport {
+        self.session
+            .report_managed_native_snapshot(observations, work_areas)
+            .expect("the managed native snapshot joins the backend ingress order");
+        self.run_native(|_| NativeReceiverAnswer::Unknown, |_| {})
     }
 
     fn publish_native_close(
@@ -1551,6 +1588,381 @@ fn ogc_04_stale_window_facts_revoke_receiver_authority_and_require_repaint() {
         "stale geometry cannot regain receiver authority without a new presentation"
     );
     assert_eq!(fixture.host.version(), before);
+}
+
+#[test]
+fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
+    let mut host = DeterministicHost::new(tabs_layout([A, B]));
+    host.session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed desktop coordinator enrolls");
+    let registration = host.register_native_root(SURFACE, WINDOW);
+    let binding = match registration.inputs() {
+        [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected one native registration, got {outcomes:?}"),
+    };
+    let physical =
+        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the native window bounds are valid");
+    let scale = ScaleFactor::new(1.0).expect("the native window scale is valid");
+    host.report_managed_native_snapshot(
+        [(binding, ready_window_facts(physical, scale))],
+        NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
+            HostWorkAreaToken::new(1),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("the work area is valid"),
+            scale,
+        )]),
+    );
+
+    let bounds = LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("the bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 72.0).expect("the metrics are valid");
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the native surface is measured");
+        },
+    );
+    let mut tab = None;
+    let paint = host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the native paint plan is available")
+                .expect("the native surface is ready");
+            tab = plan.tab_receiver(B);
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the native output was painted");
+        },
+    );
+    host.observe_painted_outputs(paint);
+    let tab = tab.expect("item B exposes a tab receiver");
+    let receiver = host
+        .session
+        .bind_presented_receiver(&tab)
+        .expect("the tab receiver is bound to the accepted output");
+    let point = receiver.center();
+    let desktop = PhysicalPoint::new(point.x(), point.y()).expect("the desktop point is valid");
+    let location = NativeDesktopPointerLocation::new(
+        NativeDesktopPosition::Exact(desktop),
+        NativePointerHover::Dock(binding),
+        None,
+    );
+    host.session
+        .record_native_pointer(NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            location,
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::Native(binding),
+        ))
+        .expect("the press records without exposing a sequence");
+    host.session
+        .record_native_pointer(NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            location,
+            NativePointerOwner::Native(binding),
+            NativePointerOwner::None,
+        ))
+        .expect("the release records after the press");
+
+    let mut abandoned_queries = Vec::new();
+    drop(
+        host.session
+            .begin_native_host_frame(|query| {
+                abandoned_queries.push(query);
+                NativeReceiverAnswer::Dock(receiver)
+            })
+            .expect("the first native attempt begins before being abandoned"),
+    );
+    let mut retry_queries = Vec::new();
+    host.run_native(
+        |query| {
+            retry_queries.push(query);
+            assert_eq!(query.surface(), SURFACE);
+            assert_eq!(query.point(), Some(point));
+            NativeReceiverAnswer::Dock(receiver)
+        },
+        |_| {},
+    );
+    assert_eq!(
+        abandoned_queries, retry_queries,
+        "the failed frame replays the exact lane questions"
+    );
+    assert_eq!(
+        retry_queries
+            .iter()
+            .map(|query| query.purpose().clone())
+            .collect::<Vec<_>>(),
+        vec![
+            NativeReceiverPurpose::ClickDelivery,
+            NativeReceiverPurpose::DragDelivery,
+        ],
+        "the frozen press resolves its click and drag lanes independently"
+    );
+    assert_eq!(
+        tabs_containing(host.view(), B)
+            .expect("item B remains in one tabs group")
+            .selected(),
+        Some(B),
+        "the resolved native click selects the inactive tab"
+    );
+}
+
+#[test]
+fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
+    let mut host = DeterministicHost::new(tabs_layout([A, B, C, X]));
+    host.session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed desktop coordinator enrolls");
+    let registration = host.register_native_root(SURFACE, WINDOW);
+    let binding = match registration.inputs() {
+        [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected one native registration, got {outcomes:?}"),
+    };
+    let physical = PhysicalRect::new(0.0, 0.0, 220.0, 180.0).expect("the native bounds are valid");
+    let scale = ScaleFactor::new(1.0).expect("the native scale is valid");
+    host.report_managed_native_snapshot(
+        [(binding, ready_window_facts(physical, scale))],
+        NativeWorkAreaRoster::Exact(vec![NativeWorkAreaFacts::new(
+            HostWorkAreaToken::new(1),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("the work area is valid"),
+            scale,
+        )]),
+    );
+
+    let bounds = LogicalRect::new(0.0, 0.0, 220.0, 180.0).expect("the bounds are valid");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("the minimum is valid");
+    let metrics = UniformSurfaceMetrics::new(bounds, minimum, 96.0)
+        .expect("the fixture measurements are valid");
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the first pass measures the overflow strip");
+        },
+    );
+    let mut scroll_receiver = None;
+    let paint = host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the native strip is paintable")
+                .expect("the native surface has one paint plan");
+            scroll_receiver = plan
+                .receivers()
+                .find(|receiver| receiver.role() == DockspaceReceiverRole::TabStripScroll);
+            frame
+                .confirm_surface_painted(SURFACE)
+                .expect("the native overflow output was painted");
+        },
+    );
+    host.observe_painted_outputs(paint);
+    let receiver = host
+        .session
+        .bind_presented_receiver(
+            &scroll_receiver.expect("the overflow strip exposes a scroll receiver"),
+        )
+        .expect("the scroll receiver belongs to the presented native output");
+    let center = receiver.center();
+    let exact = NativeDesktopPointerLocation::new(
+        NativeDesktopPosition::Exact(
+            PhysicalPoint::new(center.x(), center.y()).expect("the desktop point is valid"),
+        ),
+        NativePointerHover::Dock(binding),
+        None,
+    );
+    let continuation = NativeDesktopPointerLocation::new(
+        NativeDesktopPosition::Unknown,
+        NativePointerHover::Dock(binding),
+        None,
+    );
+    let modifiers = NativeScrollModifiers::Exact {
+        shift: false,
+        control: false,
+        alt: false,
+        command: false,
+    };
+    let smooth = NativeScrollSequenceId::new(1);
+    for (location, phase) in [
+        (
+            exact,
+            NativeScrollPhase::Discrete {
+                delta: NativeScrollDelta::Lines { x: -1.0, y: 0.0 },
+            },
+        ),
+        (
+            exact,
+            NativeScrollPhase::Begin {
+                sequence: smooth,
+                delta: Some(NativeScrollDelta::Lines { x: -0.5, y: 0.0 }),
+            },
+        ),
+        (
+            continuation,
+            NativeScrollPhase::Update {
+                sequence: smooth,
+                delta: NativeScrollDelta::Lines { x: -0.5, y: 0.0 },
+            },
+        ),
+        (
+            continuation,
+            NativeScrollPhase::End {
+                sequence: smooth,
+                delta: None,
+            },
+        ),
+    ] {
+        host.session
+            .record_native_pointer(NativePointerInput::new(
+                NativePointerId::new(21),
+                NativePointerEvent::Scrolled(NativeScrollEvent::new(
+                    NativeScrollDeviceId::new(4),
+                    phase,
+                    NativeScrollMomentum::Direct,
+                    modifiers,
+                )),
+                location,
+                NativePointerOwner::Native(binding),
+                NativePointerOwner::None,
+            ))
+            .expect("the ordered native scroll edge records");
+    }
+
+    let mut purposes = Vec::new();
+    host.run_native(
+        |query| {
+            purposes.push(query.purpose().clone());
+            assert_eq!(query.surface(), SURFACE);
+            assert_eq!(query.point(), Some(center));
+            NativeReceiverAnswer::Dock(receiver)
+        },
+        |_| {},
+    );
+    assert_eq!(
+        purposes.len(),
+        4,
+        "each scroll edge retains one delivery proof"
+    );
+    assert!(matches!(
+        purposes[0],
+        NativeReceiverPurpose::ScrollDelivery(NativeScrollReceiverChallenge::Spatial {
+            projected_delta: Some(_),
+        })
+    ));
+    assert!(matches!(
+        purposes[1],
+        NativeReceiverPurpose::ScrollDelivery(NativeScrollReceiverChallenge::Spatial {
+            projected_delta: Some(_),
+        })
+    ));
+    for purpose in &purposes[2..] {
+        let NativeReceiverPurpose::ScrollDelivery(NativeScrollReceiverChallenge::Locked {
+            receiver: locked,
+            ..
+        }) = purpose
+        else {
+            panic!("smooth continuation must name its frozen receiver");
+        };
+        assert_eq!(*locked, receiver);
+    }
+    assert!(matches!(
+        purposes[3],
+        NativeReceiverPurpose::ScrollDelivery(NativeScrollReceiverChallenge::Locked {
+            projected_delta: None,
+            ..
+        })
+    ));
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            frame
+                .measure_surface(SURFACE, metrics)
+                .expect("the changed scroll state recompiles");
+        },
+    );
+    host.run_native(
+        |_| NativeReceiverAnswer::Unknown,
+        |frame| {
+            let plan = frame
+                .paint_plan(SURFACE)
+                .expect("the native strip remains paintable")
+                .expect("the native surface retains one paint plan");
+            let bar = plan.tab_bars().next().expect("the tabs retain one bar");
+            assert!(
+                bar.scroll_offset() > 0.0,
+                "native scroll changed the core-owned offset"
+            );
+        },
+    );
+}
+
+#[test]
+fn unowned_native_scroll_fails_closed_without_receiver_queries() {
+    let mut host = DeterministicHost::new(tabs_layout([A, B]));
+    host.session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed desktop coordinator enrolls");
+    let exact = PhysicalPoint::new(16.0, 24.0).expect("the desktop point is valid");
+    let modifiers = NativeScrollModifiers::Exact {
+        shift: false,
+        control: false,
+        alt: false,
+        command: false,
+    };
+    for (position, hover, delivery) in [
+        (
+            NativeDesktopPosition::Exact(exact),
+            NativePointerHover::Foreign,
+            NativePointerOwner::Foreign,
+        ),
+        (
+            NativeDesktopPosition::Exact(exact),
+            NativePointerHover::OutsideAll,
+            NativePointerOwner::None,
+        ),
+        (
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            NativePointerOwner::Unknown,
+        ),
+    ] {
+        host.session
+            .record_native_pointer(NativePointerInput::new(
+                NativePointerId::new(31),
+                NativePointerEvent::Scrolled(NativeScrollEvent::new(
+                    NativeScrollDeviceId::new(7),
+                    NativeScrollPhase::Discrete {
+                        delta: NativeScrollDelta::Lines { x: 0.0, y: -1.0 },
+                    },
+                    NativeScrollMomentum::Direct,
+                    modifiers,
+                )),
+                NativeDesktopPointerLocation::new(position, hover, None),
+                delivery,
+                NativePointerOwner::None,
+            ))
+            .expect("a legal unowned scroll edge records");
+    }
+
+    let mut queries = 0;
+    host.run_native(
+        |_| {
+            queries += 1;
+            NativeReceiverAnswer::Unknown
+        },
+        |_| {},
+    );
+    assert_eq!(
+        queries, 0,
+        "foreign, outside-all, and unknown scroll facts do not query dock receivers"
+    );
 }
 
 #[test]

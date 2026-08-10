@@ -622,6 +622,7 @@ impl DockEngine {
         scope: SurfaceLocalPointerScope,
         committed_through: PointerEdgeSequence,
     ) -> Result<SurfaceLocalPointerProvider, EngineError> {
+        let scope = self.freeze_native_scope(scope)?;
         let lease = self.create_pointer_provider_inner(
             PointerProviderScope::SurfaceLocal(scope),
             committed_through,
@@ -630,6 +631,31 @@ impl DockEngine {
         self.pointer_journal
             .bind_surface_local_producer(lease, provider.monitor());
         Ok(provider)
+    }
+
+    fn freeze_native_scope(
+        &self,
+        scope: SurfaceLocalPointerScope,
+    ) -> Result<SurfaceLocalPointerScope, EngineError> {
+        let SurfaceLocalPointerEndpoint::Native(binding) = scope.endpoint() else {
+            return Ok(scope);
+        };
+        if scope.coordinate_generation().is_some() {
+            return Ok(scope);
+        }
+        let generation = self
+            .viewport
+            .viewport(binding.surface())
+            .filter(|record| record.binding() == binding)
+            .map(crate::viewport_registry::ViewportRecord::coordinate_generation)
+            .ok_or(EngineError::PointerProviderScope {
+                detail: format!("native endpoint {binding:?} has no current coordinate authority"),
+            })?;
+        Ok(SurfaceLocalPointerScope::new_native(
+            scope.host(),
+            binding,
+            generation,
+        ))
     }
 
     pub(crate) fn create_current_surface_local_pointer_provider(
@@ -667,7 +693,7 @@ impl DockEngine {
                 SurfaceLocalPointerEndpoint::Native(binding)
             }
         };
-        let scope = SurfaceLocalPointerScope::new(host, endpoint);
+        let scope = self.freeze_native_scope(SurfaceLocalPointerScope::new(host, endpoint))?;
         self.validate_pointer_provider_scope(PointerProviderScope::SurfaceLocal(scope))?;
         Ok(scope)
     }
@@ -931,15 +957,23 @@ impl DockEngine {
             });
         }
         if let SurfaceLocalPointerEndpoint::Native(binding) = local.endpoint() {
-            let current = self
+            let current_record = self
                 .viewport
                 .viewport(surface)
-                .map(|record| record.binding());
-            if current != Some(binding) {
+                .filter(|record| record.binding() == binding);
+            if current_record.is_none() {
                 return Err(EngineError::PointerProviderScope {
                     detail: format!(
                         "native endpoint {binding:?} is not the current binding for surface {surface:?}"
                     ),
+                });
+            }
+            if let Some(submitted_generation) = local.coordinate_generation()
+                && current_record
+                    .is_some_and(|record| record.coordinate_generation() != submitted_generation)
+            {
+                return Err(EngineError::PointerProviderScope {
+                    detail: format!("native endpoint {binding:?} has stale coordinate generation"),
                 });
             }
         }

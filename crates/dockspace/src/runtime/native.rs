@@ -1,6 +1,8 @@
 //! Opaque native-window lifecycle facts and bindings for renderer-neutral hosts.
 
 mod compiler;
+mod pointer;
+mod receiver;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -15,8 +17,7 @@ use super::native_effect::{
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
 use crate::backend_ingress::{
-    BackendIngressBatch, BackendIngressOrdinal, BackendIngressPrefixRetirementReceipt,
-    BackendIngressRecorder,
+    BackendIngressBatch, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
 };
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, ScaleFactor};
@@ -26,9 +27,20 @@ use crate::platform::{
     WindowInputState, WindowPresentationState,
 };
 use crate::platform_provider::PlatformObservationLease;
-use crate::pointer_journal::{PointerEdgeJournal, PointerEdgeSequence};
-use crate::viewport::{CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken};
+use crate::viewport::{
+    CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
+    WorkAreaToken,
+};
 use compiler::{compile_platform_snapshot, compile_unknown_inventory_snapshot};
+pub use pointer::{
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+};
+pub(in crate::runtime) use receiver::resolve_receiver_observation;
 
 /// Adapter-owned opaque native-window token.
 ///
@@ -59,6 +71,109 @@ impl HostWindowToken {
 pub struct NativeSurfaceBinding {
     provider: PlatformObservationLease,
     binding: ViewportBinding,
+}
+
+/// Adapter-owned identity for one platform work area.
+///
+/// The token is not a geometry proof by itself. Hosts must obtain the binding
+/// from the current committed native snapshot before using it in an outside-all
+/// pointer route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct HostWorkAreaToken(u64);
+
+impl HostWorkAreaToken {
+    /// Creates a stable adapter token without exposing a platform handle.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    const fn into_core(self) -> WorkAreaToken {
+        WorkAreaToken::new(self.0)
+    }
+}
+
+/// Exact work-area facts supplied by a managed native host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeWorkAreaFacts {
+    token: HostWorkAreaToken,
+    bounds: PhysicalRect,
+    scale_factor: ScaleFactor,
+}
+
+/// Complete work-area authority supplied with one managed native snapshot.
+///
+/// Absence is not a fact. A host must explicitly report either the complete
+/// exact roster or that the roster is currently unavailable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NativeWorkAreaRoster {
+    /// Complete current platform work-area roster.
+    Exact(Vec<NativeWorkAreaFacts>),
+    /// Work-area authority is unavailable at this causal boundary.
+    Unknown,
+}
+
+impl NativeWorkAreaFacts {
+    /// Creates one exact physical work-area observation.
+    #[must_use]
+    pub const fn new(
+        token: HostWorkAreaToken,
+        bounds: PhysicalRect,
+        scale_factor: ScaleFactor,
+    ) -> Self {
+        Self {
+            token,
+            bounds,
+            scale_factor,
+        }
+    }
+
+    pub(super) const fn token(self) -> WorkAreaToken {
+        self.token.into_core()
+    }
+
+    pub(super) const fn bounds(self) -> PhysicalRect {
+        self.bounds
+    }
+
+    pub(super) const fn scale_factor(self) -> ScaleFactor {
+        self.scale_factor
+    }
+}
+
+/// Exact current work-area binding used by an outside-all pointer edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeWorkAreaBinding {
+    provider: PlatformObservationLease,
+    generation: WorkAreaGeneration,
+    token: WorkAreaToken,
+}
+
+impl NativeWorkAreaBinding {
+    pub(super) const fn new(
+        provider: PlatformObservationLease,
+        generation: WorkAreaGeneration,
+        token: WorkAreaToken,
+    ) -> Self {
+        Self {
+            provider,
+            generation,
+            token,
+        }
+    }
+
+    /// Returns the stable adapter-owned work-area token.
+    #[must_use]
+    pub const fn token(self) -> HostWorkAreaToken {
+        HostWorkAreaToken(self.token.get())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeHostProfile {
+    ObservedRoots,
+    ManagedDesktop,
 }
 
 impl NativeSurfaceBinding {
@@ -329,9 +444,9 @@ impl NativeWindowFacts {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeHostErrorKind {
-    /// No observed-root host is enrolled for the session.
+    /// No native host is enrolled for the session.
     NotEnabled,
-    /// An observed-root host is already enrolled.
+    /// A native host is already enrolled.
     AlreadyEnabled,
     /// A callback or acknowledgement names an older binding incarnation.
     StaleBinding,
@@ -339,7 +454,7 @@ pub enum NativeHostErrorKind {
     InvalidFacts,
     /// The requested operation conflicts with the current host lifecycle.
     OperationConflict,
-    /// The enrolled observed-root host cannot perform the requested operation.
+    /// The enrolled native host cannot perform the requested operation.
     Unsupported,
     /// The host crossed an internal protocol boundary unexpectedly.
     Internal,
@@ -357,6 +472,9 @@ pub(super) enum NativePlatformError {
     /// A native provider is already enrolled for this session.
     #[error("native platform provider is already active")]
     ProviderAlreadyEnabled,
+    /// A surface-local pointer provider prevents desktop-global enrollment.
+    #[error("surface-local pointer provider is already active")]
+    PointerProviderAlreadyEnabled,
     /// A callback named an older binding incarnation for this logical surface.
     #[error("native surface {surface} binding is stale")]
     StaleSurface {
@@ -411,10 +529,22 @@ pub(super) enum NativePlatformError {
     /// Facade-owned typed facts violated an internal platform invariant.
     #[error("facade-owned native platform data violated an internal invariant")]
     ProtocolInvariant,
-    /// A private joined recorder contains a desktop pointer segment, but the
-    /// renderer-neutral façade has no receiver-proof API for it yet.
-    #[error("native desktop pointer input requires a receiver-proof adapter")]
-    DesktopPointerInputUnsupported,
+    /// An operation was submitted through the wrong native host profile.
+    #[error("native operation is unavailable for the enrolled host profile")]
+    HostProfileMismatch,
+    /// A managed snapshot supplied an empty, duplicate, or invalid work-area roster.
+    #[error("managed native work-area roster is invalid")]
+    InvalidWorkAreaRoster,
+    /// Native pointer facts are contradictory or name a stale capability.
+    #[error("managed native pointer facts are invalid or stale")]
+    InvalidPointerFacts,
+    /// The desktop pointer sequence cannot advance without wrapping.
+    #[error("managed native pointer sequence is exhausted")]
+    PointerSequenceExhausted,
+    /// A desktop pointer segment needs exact receiver facts, but the host did
+    /// not provide its synchronous resolver for this frame.
+    #[error("native desktop pointer input requires a receiver resolver")]
+    ReceiverResolverRequired,
 }
 
 impl NativePlatformError {
@@ -427,29 +557,37 @@ impl NativePlatformError {
             }
             Self::DuplicateSurface { .. }
             | Self::IncompleteRoster
+            | Self::InvalidWorkAreaRoster
+            | Self::InvalidPointerFacts
             | Self::DestroyedSurfaceHasLiveFacts { .. }
             | Self::EffectAcknowledgementBindingMismatch { .. }
             | Self::EffectAcknowledgementProviderMismatch { .. } => {
                 NativeHostErrorKind::InvalidFacts
             }
-            Self::BindingRosterUnsettled
+            Self::PointerProviderAlreadyEnabled
+            | Self::BindingRosterUnsettled
             | Self::BindingStillLive { .. }
             | Self::BindingNotRetired { .. } => NativeHostErrorKind::OperationConflict,
-            Self::DesktopPointerInputUnsupported => NativeHostErrorKind::Unsupported,
-            Self::GenerationExhausted | Self::ProtocolInvariant => NativeHostErrorKind::Internal,
+            Self::ReceiverResolverRequired | Self::HostProfileMismatch => {
+                NativeHostErrorKind::Unsupported
+            }
+            Self::GenerationExhausted
+            | Self::PointerSequenceExhausted
+            | Self::ProtocolInvariant => NativeHostErrorKind::Internal,
         }
     }
 }
 
 #[derive(Debug)]
 pub(super) struct RuntimeNativeState {
+    pub(super) profile: NativeHostProfile,
     recorder: BackendIngressRecorder,
     pending_prefix_retirement: Option<BackendIngressPrefixRetirementReceipt>,
-    pending_pointer_checkpoint: Option<BackendIngressOrdinal>,
     snapshot_generation: u64,
     binding_roster_unsettled: bool,
     bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     retired_bindings: BTreeSet<ViewportBinding>,
+    work_areas: BTreeMap<WorkAreaToken, NativeWorkAreaBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
 }
 
@@ -461,15 +599,16 @@ struct CompiledNativeWindow {
 }
 
 impl RuntimeNativeState {
-    fn new(recorder: BackendIngressRecorder) -> Self {
+    fn new(recorder: BackendIngressRecorder, profile: NativeHostProfile) -> Self {
         Self {
+            profile,
             recorder,
             pending_prefix_retirement: None,
-            pending_pointer_checkpoint: None,
             snapshot_generation: 0,
             binding_roster_unsettled: false,
             bindings: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
+            work_areas: BTreeMap::new(),
             close_generations: BTreeMap::new(),
         }
     }
@@ -487,25 +626,6 @@ impl RuntimeNativeState {
         engine: &crate::engine::DockEngine,
     ) -> Result<BackendIngressBatch, NativePlatformError> {
         let committed = engine.backend_ingress_committed_through();
-        if self
-            .pending_pointer_checkpoint
-            .is_some_and(|checkpoint| checkpoint <= committed)
-        {
-            self.pending_pointer_checkpoint = None;
-        }
-        if self.pending_pointer_checkpoint.is_none() {
-            let checkpoint = PointerEdgeJournal::new(
-                self.recorder.pointer_through(),
-                self.recorder.pointer_through(),
-                Vec::new(),
-            )
-            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-            let ordinal = self
-                .recorder
-                .record_pointer_segment(checkpoint)
-                .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-            self.pending_pointer_checkpoint = Some(ordinal);
-        }
         self.recorder
             .batch_after(committed)
             .map_err(|_| NativePlatformError::ProtocolInvariant)
@@ -637,10 +757,22 @@ impl RuntimeNativeState {
         &mut self,
         expected_epoch: WorkspaceEpoch,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        work_areas: NativeWorkAreaRoster,
     ) -> Result<(), NativePlatformError> {
+        if self.profile == NativeHostProfile::ObservedRoots
+            && !matches!(work_areas, NativeWorkAreaRoster::Unknown)
+        {
+            return Err(NativePlatformError::HostProfileMismatch);
+        }
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
-        let snapshot = compile_platform_snapshot(self.provider(), generation, &supplied)?;
+        let snapshot = compile_platform_snapshot(
+            self.profile,
+            self.provider(),
+            generation,
+            &supplied,
+            &work_areas,
+        )?;
         self.recorder
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
@@ -659,7 +791,7 @@ impl RuntimeNativeState {
         expected_epoch: WorkspaceEpoch,
     ) -> Result<(), NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
-        let snapshot = compile_unknown_inventory_snapshot(generation)?;
+        let snapshot = compile_unknown_inventory_snapshot(self.profile, generation)?;
         self.recorder
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
@@ -701,6 +833,20 @@ impl RuntimeNativeState {
             }
         }
         self.bindings = next_bindings;
+        self.work_areas = engine
+            .viewport()
+            .work_areas()
+            .map(|(token, _)| {
+                (
+                    token,
+                    NativeWorkAreaBinding::new(
+                        self.provider(),
+                        engine.viewport().work_area_generation(),
+                        token,
+                    ),
+                )
+            })
+            .collect();
         self.close_generations.retain(|binding, _| {
             self.bindings
                 .get(&binding.surface())

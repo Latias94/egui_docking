@@ -115,9 +115,9 @@ Pointer- and semantic-created close plans now return through the same
 `HostInputOutcome::CloseRequested` shape as application close requests, with a
 small product-level origin instead of a mirrored reducer FSM. Their decision
 tokens therefore reach a second adapter, which can veto or allow them through
-the same affine host-frame API. Delivery and hover facts are independently
-composable, including exact `DeliveryAndHoverHit` release challenges; no fact is
-discarded merely because both lanes are required by one physical edge. Other
+the same affine host-frame API. Delivery and hover remain independent
+event-time routes, but one physical edge asks at most one receiver question;
+the runtime does not expose an unreachable combined challenge. Other
 interaction terminals remain private until the facade defines equally narrow,
 actionable product outcomes for them.
 
@@ -131,18 +131,23 @@ be traversed without reconstructing projection state, that guide clusters
 include center and four directional targets, and that visual identities remain
 stable across distinct presented outputs.
 
-The OGC-04 slice adds opaque native root bindings without exposing provider
-leases or `ViewportBinding`. An adapter supplies a reusable host window token,
-receives a core-minted `NativeSurfaceBinding`, and atomically validates and
-records one exact-set native snapshot. No public prepared snapshot can survive a
-workspace or binding-roster change, and callers cannot opt into managed-window
-capabilities that this observed-root slice does not implement. Snapshot and
-per-binding close generations live in a private session sidecar; the joined
-recorder replays an accepted fact until a host-frame commit advances the core
-watermark. A delayed binding from binding A1 is rejected before it can be
-redirected to binding A2, even when both use the same host token. Frame reports
-expose only the sorted logical surfaces whose presentation authority changed,
-so repaint remains core-derived without leaking scene stamps.
+The native slice adds opaque window and work-area bindings without exposing
+provider leases or `ViewportBinding`. An adapter supplies reusable host tokens,
+receives core-minted `NativeSurfaceBinding` and `NativeWorkAreaBinding` values,
+and atomically validates complete window and explicit exact-or-unknown work-area
+rosters. The fixed managed-host profile cannot claim global focus or activation
+control, and platforms without exact desktop-global facts must stay on the
+surface-local input lane. No public prepared fact can survive a workspace,
+binding-incarnation, coordinate-generation, or work-area-generation change.
+
+Desktop pointer input uses product types for event-time hover, physical
+position, delivery, capture, button state, scroll phase, and modifiers. A
+surface-local pointer provider and the managed desktop provider are mutually
+exclusive. Empty host frames do not invent pointer checkpoints. Receiver
+resolution is synchronous and asks only for an opaque presented surface or
+receiver capability; provider sequence numbers, receipts, and replay remain
+private. A delayed A1 binding is rejected before it can act on A2, even when
+both use the same host token.
 
 Native failures follow the same boundary: provider leases, recorder invariants,
 and exact backend error variants remain private. Product hosts receive only a
@@ -150,13 +155,11 @@ stable `NativeHostErrorKind` and retain any affine effect result that could not
 be recorded, so retry and cleanup remain possible without freezing the internal
 provider FSM as public ABI.
 
-This is still a vertical slice rather than the complete facade. Tab-strip
-control and popup paint records, semantic-manifest views, native child recovery,
-provider handoff, effect execution, and desktop-global routing remain outside
-this root-binding slice. Rich adapters need semantic per-item measurement
-callbacks, ordered multi-edge keyboard/accessibility input, global/native
-routing, persistence, and lifecycle/effect execution behind equally opaque
-capabilities before they can migrate.
+This remains a renderer-neutral coordinator rather than a native product
+runtime. OS event-loop scheduling, platform-specific event-time probes,
+renderer wakeups, and real-window lifecycle execution belong in the unpublished
+native adapter. Rich adapters still need ordered keyboard/accessibility input,
+persistence, and one real two-window lifecycle path before they can migrate.
 
 ## Internal Implementation Categories
 

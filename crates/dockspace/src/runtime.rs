@@ -25,9 +25,16 @@ pub use interaction::{
     SurfaceScrollSequenceId,
 };
 pub use native::{
-    HostWindowToken, NativeCloseState, NativeHostErrorKind, NativeSurfaceBinding,
+    HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
+    NativeDesktopPosition, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
     NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState,
+    NativeWindowPresentationState, NativeWorkAreaBinding, NativeWorkAreaFacts,
+    NativeWorkAreaRoster,
 };
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseEffectAcknowledgement,
@@ -232,6 +239,37 @@ impl DockspaceSession {
     /// Returns an error when presentation output is awaiting an explicit host
     /// observation or the core rejects the frame prelude.
     pub fn begin_host_frame(&mut self) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        self.begin_host_frame_with_native_resolver(None)
+    }
+
+    /// Begins one native host frame and synchronously resolves every frozen
+    /// receiver question through product-level descriptors.
+    ///
+    /// The callback never sees pointer leases, provider sequences, backend
+    /// ordinals, candidate identities, or receipts. A failed frame retains the
+    /// original native edge for an exact retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no managed native host is active, presentation
+    /// authority is unavailable, or the core rejects the ordered input prefix.
+    pub fn begin_native_host_frame(
+        &mut self,
+        mut resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
+    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        let Some(native) = self.native.as_ref() else {
+            return Err(NativePlatformError::ProviderUnavailable.into());
+        };
+        if native.profile != native::NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch.into());
+        }
+        self.begin_host_frame_with_native_resolver(Some(&mut resolve))
+    }
+
+    fn begin_host_frame_with_native_resolver(
+        &mut self,
+        mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.reconcile_surface_pointer_provider()?;
         if let Some(native) = self.native.as_mut() {
             native.record_abandoned_effects(&self.abandoned_native_effects)?;
@@ -264,23 +302,34 @@ impl DockspaceSession {
             submitted_presentation,
             painted_surfaces: BTreeSet::new(),
         };
-        if host_frame.session.native.is_some() {
-            let batch = host_frame
-                .session
-                .native
-                .as_mut()
-                .expect("native state checked above")
-                .prepare_batch(&host_frame.session.engine)?;
+        if let Some(native) = host_frame.session.native.as_mut() {
+            let batch = native.prepare_batch(&host_frame.session.engine)?;
             let mut progress = host_frame.frame.submit_backend_ingress(batch)?;
             while progress == crate::engine::BackendIngressProgress::ReceiverReceiptsRequired {
                 let candidates = host_frame
                     .frame
                     .pointer_receiver_candidates()
                     .ok_or(NativePlatformError::ProtocolInvariant)?;
-                if !candidates.candidates().is_empty() {
-                    return Err(NativePlatformError::DesktopPointerInputUnsupported.into());
-                }
-                let receipts = crate::pointer_receiver::PointerReceiverReceiptBatch::new([])
+                let receipts = candidates
+                    .candidates()
+                    .iter()
+                    .map(|candidate| {
+                        let observation = if candidate.receiver_is_applicable() {
+                            let resolver = resolver
+                                .as_deref_mut()
+                                .ok_or(NativePlatformError::ReceiverResolverRequired)?;
+                            native::resolve_receiver_observation(
+                                &host_frame.frame,
+                                candidate,
+                                resolver,
+                            )?
+                        } else {
+                            crate::pointer_receiver::PointerReceiverObservation::NotApplicable
+                        };
+                        Ok(candidate.receipt(observation))
+                    })
+                    .collect::<Result<Vec<_>, DockspaceRuntimeError>>()?;
+                let receipts = crate::pointer_receiver::PointerReceiverReceiptBatch::new(receipts)
                     .map_err(|_| NativePlatformError::ProtocolInvariant)?;
                 progress = host_frame
                     .frame

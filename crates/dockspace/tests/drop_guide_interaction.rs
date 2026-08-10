@@ -212,10 +212,6 @@ fn exact_observation(
         PointerReceiverProbeRequest::HoverHit => vec![PointerReceiverProbeReceipt::HoverHit(
             hover.expect("candidate requires hover"),
         )],
-        PointerReceiverProbeRequest::DeliveryAndHoverHit => vec![
-            PointerReceiverProbeReceipt::Delivery(delivery.expect("candidate requires delivery")),
-            PointerReceiverProbeReceipt::HoverHit(hover.expect("candidate requires hover")),
-        ],
     };
     PointerReceiverObservation::Presented(
         PresentedPointerReceiverObservation::new(probes)

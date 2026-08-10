@@ -332,7 +332,13 @@ impl DockEngine {
                     ..
                 }),
                 _,
-            ) => ObservedScrollReceiver::Unknown,
+            ) if !matches!(
+                edge.delivery_owner(),
+                Authority::Known(PointerEventDeliveryOwner::Native(_))
+            ) =>
+            {
+                ObservedScrollReceiver::Unknown
+            }
             (Some(_), Authority::Unknown(_)) => ObservedScrollReceiver::Unknown,
             (Some(_), Authority::Known(modifiers))
                 if modifiers.control() || modifiers.command() =>
@@ -343,7 +349,7 @@ impl DockEngine {
         };
         if let ObservedScrollReceiver::Known { presentation, .. } = &observed
             && self
-                .validate_scroll_delivery_endpoint(cause, edge, presentation)?
+                .validate_scroll_delivery_endpoint(cause, stream, edge, presentation)?
                 .is_none()
         {
             return Err(scroll_invariant(
@@ -352,7 +358,9 @@ impl DockEngine {
             ));
         }
         match scroll.phase() {
-            ScrollPhase::Discrete => self.reduce_discrete_scroll(cause, edge, scroll, observed),
+            ScrollPhase::Discrete => {
+                self.reduce_discrete_scroll(cause, stream, edge, scroll, observed)
+            }
             ScrollPhase::Begin => self.begin_smooth_scroll(cause, stream, edge, scroll, observed),
             ScrollPhase::Update => {
                 self.update_smooth_scroll(cause, stream, edge, scroll, observed, false)
@@ -440,12 +448,13 @@ impl DockEngine {
     fn reduce_discrete_scroll(
         &mut self,
         cause: ReductionCause,
+        stream: PointerStreamId,
         edge: &PointerEdge,
         scroll: ScrollEdge,
         observed: ObservedScrollReceiver<'_>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
         let phase = ScrollPhase::Discrete;
-        match self.resolve_initial_scroll_owner(cause, edge, observed)? {
+        match self.resolve_initial_scroll_owner(cause, stream, edge, observed)? {
             Ok(owner) => self
                 .apply_scroll_delta(cause, None, owner, scroll)
                 .map(|outcome| outcome.into_iter().collect()),
@@ -477,7 +486,7 @@ impl DockEngine {
             .ok_or_else(|| scroll_invariant(cause, "scroll session identity space is exhausted"))?;
         self.scroll_interaction.advance_token_watermark(key);
 
-        match self.resolve_initial_scroll_owner(cause, edge, observed)? {
+        match self.resolve_initial_scroll_owner(cause, stream, edge, observed)? {
             Ok(owner) => {
                 self.scroll_interaction.active.insert(
                     key,
@@ -637,7 +646,7 @@ impl DockEngine {
                 presentation,
             } => {
                 let Some(endpoint) =
-                    self.validate_scroll_delivery_endpoint(cause, edge, presentation)?
+                    self.validate_scroll_delivery_endpoint(cause, key.stream, edge, presentation)?
                 else {
                     if terminal {
                         return self.terminate_scroll_session(
@@ -820,6 +829,7 @@ impl DockEngine {
     fn resolve_initial_scroll_owner(
         &self,
         cause: ReductionCause,
+        stream: PointerStreamId,
         edge: &PointerEdge,
         observed: ObservedScrollReceiver<'_>,
     ) -> Result<Result<ScrollOwner, ScrollSuppressionReason>, EngineError> {
@@ -836,7 +846,7 @@ impl DockEngine {
         match disposition {
             PointerReceiverDeliveryDisposition::Dock(region) => {
                 let Some(endpoint) =
-                    self.validate_scroll_delivery_endpoint(cause, edge, presentation)?
+                    self.validate_scroll_delivery_endpoint(cause, stream, edge, presentation)?
                 else {
                     return Ok(Err(ScrollSuppressionReason::ReceiverUnknown));
                 };
@@ -929,10 +939,11 @@ impl DockEngine {
     fn validate_scroll_delivery_endpoint(
         &self,
         cause: ReductionCause,
+        stream: PointerStreamId,
         edge: &PointerEdge,
         presentation: &JournalSurfacePresentation,
     ) -> Result<Option<ScrollDeliveryEndpoint>, EngineError> {
-        let Authority::Known(endpoint) = (match edge.kind() {
+        let submitted = match edge.kind() {
             PointerEdgeKind::Scrolled(scroll) => scroll.delivery(),
             _ => {
                 return Err(scroll_invariant(
@@ -940,23 +951,57 @@ impl DockEngine {
                     "scroll reducer received a non-scroll pointer edge",
                 ));
             }
-        }) else {
-            return Ok(None);
         };
         let authority = presentation.authority();
-        if endpoint.surface() != presentation.surface()
-            || endpoint.binding() != authority.binding()
-            || endpoint.coordinate_generation() != authority.coordinate_generation()
-            || self
-                .presentation_authority
-                .presentation
-                .host_for_stream(authority.stream())
-                != Some(endpoint.host())
+        let host = self
+            .presentation_authority
+            .presentation
+            .host_for_stream(authority.stream())
+            .ok_or_else(|| {
+                scroll_invariant(cause, "scroll presentation has no owning host lease")
+            })?;
+        let endpoint = ScrollDeliveryEndpoint::new(
+            host,
+            presentation.surface(),
+            authority.binding(),
+            authority.coordinate_generation(),
+        )
+        .map_err(|_| {
+            scroll_invariant(
+                cause,
+                "scroll presentation produced an invalid delivery endpoint",
+            )
+        })?;
+        if let Authority::Known(submitted) = submitted
+            && submitted != endpoint
         {
             return Err(scroll_invariant(
                 cause,
                 "scroll delivery endpoint differs from final-presentation authority",
             ));
+        }
+        let expected_owner = match stream.lease().scope() {
+            PointerProviderScope::SurfaceLocal(_) => PointerEventDeliveryOwner::ProviderEndpoint,
+            PointerProviderScope::DesktopGlobal => {
+                let Some(binding) = endpoint.binding() else {
+                    return Err(scroll_invariant(
+                        cause,
+                        "desktop scroll presentation has no native binding",
+                    ));
+                };
+                PointerEventDeliveryOwner::Native(binding)
+            }
+        };
+        match edge.delivery_owner() {
+            Authority::Known(actual) if actual == expected_owner => {}
+            Authority::Known(_) => {
+                return Err(scroll_invariant(
+                    cause,
+                    "scroll edge delivery owner differs from final-presentation authority",
+                ));
+            }
+            Authority::Unknown(_) if !matches!(submitted, Authority::Known(_)) => return Ok(None),
+            Authority::Unknown(_) => {}
         }
         Ok(Some(endpoint))
     }
@@ -1168,10 +1213,29 @@ impl DockEngine {
                 coordinates: Authority::Unknown(_),
                 ..
             } => {
-                return Err(scroll_invariant(
-                    cause,
-                    "physical scroll application reached core without coordinate authority",
-                ));
+                let Some(binding) = owner.endpoint.binding() else {
+                    return Err(scroll_invariant(
+                        cause,
+                        "physical scroll application has no native delivery binding",
+                    ));
+                };
+                let coordinates = self
+                    .viewport
+                    .viewport(binding.surface())
+                    .filter(|record| {
+                        record.binding() == binding
+                            && record.coordinate_generation()
+                                == owner.endpoint.coordinate_generation()
+                            && record.has_coordinate_authority()
+                    })
+                    .and_then(|record| record.coordinates())
+                    .ok_or_else(|| {
+                        scroll_invariant(
+                            cause,
+                            "physical scroll delta has no reducer-current coordinate authority",
+                        )
+                    })?;
+                component / coordinates.presentation_scale_factor().get()
             }
         };
         let requested = -content_delta;

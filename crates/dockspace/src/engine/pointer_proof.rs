@@ -1,6 +1,8 @@
 //! Pointer receiver and presentation authority validation.
 
 use super::*;
+use crate::pointer_journal::DesktopDockRoute;
+use crate::pointer_receiver::PointerReceiverDeliveryRequest;
 
 pub(super) fn pointer_receiver_candidate_spec(
     engine: &DockEngine,
@@ -11,53 +13,63 @@ pub(super) fn pointer_receiver_candidate_spec(
         let PointerEdgeKind::Scrolled(scroll) = edge.kind() else {
             unreachable!("the branch is restricted to scroll edges");
         };
-        let delivery_point = match edge.location() {
-            PointerEdgeLocation::SurfaceLocal {
-                position: Authority::Known(point),
-            } => Some(point),
-            PointerEdgeLocation::SurfaceLocal {
-                position: Authority::Unknown(_),
-            } => None,
-            PointerEdgeLocation::Desktop { .. } => validated_desktop_delivery_route(engine, edge)
-                .and_then(DesktopRouteValidation::dock_route)
-                .map(|route| route.surface_position()),
+        let challenge = engine.scroll_receiver_challenge(stream, scroll);
+        let (delivery_surface, delivery_point) = match challenge {
+            ScrollReceiverChallenge::Locked {
+                receiver,
+                probe_point,
+                ..
+            } => (Some(receiver.surface()), Some(probe_point)),
+            _ => match edge.location() {
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Known(point),
+                } => (
+                    stream
+                        .lease()
+                        .scope()
+                        .surface_local()
+                        .map(|scope| scope.surface()),
+                    Some(point),
+                ),
+                PointerEdgeLocation::SurfaceLocal {
+                    position: Authority::Unknown(_),
+                } => (
+                    stream
+                        .lease()
+                        .scope()
+                        .surface_local()
+                        .map(|scope| scope.surface()),
+                    None,
+                ),
+                PointerEdgeLocation::Desktop { .. } => {
+                    let route = validated_desktop_delivery_route(engine, edge)
+                        .and_then(DesktopRouteValidation::dock_route);
+                    let surface = match scroll.delivery() {
+                        Authority::Known(endpoint) => Some(endpoint.surface()),
+                        Authority::Unknown(_) => route.map(|route| route.binding().surface()),
+                    };
+                    (surface, route.map(DesktopDockRoute::surface_position))
+                }
+            },
         };
         return PointerReceiverCandidateSpec::scroll_delivery(
             edge.sequence(),
+            delivery_surface,
             delivery_point,
-            engine.scroll_receiver_challenge(stream, scroll),
+            challenge,
         );
     }
-    let (receiver_route, hover_point) = match edge.location() {
-        PointerEdgeLocation::SurfaceLocal {
-            position: Authority::Known(point),
-        } => (true, Some(point)),
-        PointerEdgeLocation::SurfaceLocal {
-            position: Authority::Unknown(_),
-        } => (true, None),
-        PointerEdgeLocation::Desktop { route } => match route
-            .validate_against_registry(engine.authority_domain, engine.viewport.registry())
-            .dock_route()
-        {
-            Some(route) => (true, Some(route.surface_position())),
-            None => (false, None),
-        },
-    };
-    if !receiver_route {
-        return PointerReceiverCandidateSpec::not_applicable(edge.sequence());
-    }
-
     let owns_stream = engine.interaction.active_stream() == Some(stream);
     let (delivery, hover) = match (engine.interaction.status(), edge.kind(), owns_stream) {
         (InteractionStatus::Idle, PointerEdgeKind::ButtonPressed(PointerButton::Primary), _) => {
-            (true, false)
+            (PointerReceiverDeliveryRequest::ClickAndDrag, false)
         }
         (
             InteractionStatus::Pressed { .. },
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
-        ) => (true, false),
+        ) => (PointerReceiverDeliveryRequest::Click, false),
         (
             InteractionStatus::Armed { .. } | InteractionStatus::Dragging { .. },
             PointerEdgeKind::Moved,
@@ -68,17 +80,53 @@ pub(super) fn pointer_receiver_candidate_spec(
             PointerEdgeKind::ButtonReleased(PointerButton::Primary)
             | PointerEdgeKind::ContactEnded(PointerButton::Primary),
             true,
-        ) => (false, true),
-        _ => (false, false),
+        ) => (PointerReceiverDeliveryRequest::None, true),
+        _ => (PointerReceiverDeliveryRequest::None, false),
     };
-    match (delivery, hover) {
-        (false, false) => PointerReceiverCandidateSpec::not_applicable(edge.sequence()),
-        (true, false) => PointerReceiverCandidateSpec::delivery(edge.sequence(), hover_point),
-        (false, true) => PointerReceiverCandidateSpec::hover_hit(edge.sequence(), hover_point),
-        (true, true) => {
-            PointerReceiverCandidateSpec::delivery_and_hover_hit(edge.sequence(), hover_point)
-        }
+    if delivery != PointerReceiverDeliveryRequest::None {
+        let (surface, point) = match edge.location() {
+            PointerEdgeLocation::SurfaceLocal { position } => (
+                stream
+                    .lease()
+                    .scope()
+                    .surface_local()
+                    .map(|scope| scope.surface()),
+                position.known().copied(),
+            ),
+            PointerEdgeLocation::Desktop { .. } => {
+                let route = validated_desktop_delivery_route(engine, edge)
+                    .and_then(DesktopRouteValidation::dock_route);
+                (
+                    route.map(|route| route.binding().surface()),
+                    route.map(DesktopDockRoute::surface_position),
+                )
+            }
+        };
+        return PointerReceiverCandidateSpec::delivery(edge.sequence(), surface, point, delivery);
     }
+    if hover {
+        let (surface, point) = match edge.location() {
+            PointerEdgeLocation::SurfaceLocal { position } => (
+                stream
+                    .lease()
+                    .scope()
+                    .surface_local()
+                    .map(|scope| scope.surface()),
+                position.known().copied(),
+            ),
+            PointerEdgeLocation::Desktop { route } => {
+                let route = route
+                    .validate_against_registry(engine.authority_domain, engine.viewport.registry())
+                    .dock_route();
+                (
+                    route.map(|route| route.binding().surface()),
+                    route.map(DesktopDockRoute::surface_position),
+                )
+            }
+        };
+        return PointerReceiverCandidateSpec::hover_hit(edge.sequence(), surface, point);
+    }
+    PointerReceiverCandidateSpec::not_applicable(edge.sequence())
 }
 
 /// Joins the edge-local delivery binding with the independent desktop position.
@@ -273,11 +321,7 @@ impl DockEngine {
                             (PresentationPointerLane::Drag, delivery.drag()),
                             (PresentationPointerLane::Scroll, delivery.scroll()),
                         ] {
-                            let desktop_route = if lane == PresentationPointerLane::Scroll {
-                                desktop_delivery_route
-                            } else {
-                                desktop_hover_route
-                            };
+                            let desktop_route = desktop_delivery_route;
                             if lane == PresentationPointerLane::Scroll
                                 && matches!(edge.kind(), PointerEdgeKind::Scrolled(scroll)
                                     if matches!(scroll.phase(), crate::pointer_journal::ScrollPhase::Discrete | crate::pointer_journal::ScrollPhase::Begin))
@@ -732,8 +776,10 @@ impl DockEngine {
                         Some(DesktopRouteValidation::Known(ValidatedDesktopRoute::Foreign {
                             ..
                         })) => Ok(JournalClickDelivery::Blocked),
-                        Some(DesktopRouteValidation::Known(ValidatedDesktopRoute::Dock(_)))
-                        | Some(DesktopRouteValidation::Unavailable(_))
+                        Some(
+                            DesktopRouteValidation::Known(ValidatedDesktopRoute::Dock(_))
+                            | DesktopRouteValidation::Unavailable(_),
+                        )
                         | None => Ok(JournalClickDelivery::Unknown),
                     },
                     PointerEdgeLocation::SurfaceLocal { .. } => {
@@ -774,10 +820,23 @@ impl DockEngine {
                 })?;
                 Ok(JournalClickDelivery::Dock(region, presentation))
             }
-            PointerReceiverDeliveryDisposition::DockCanvas
-            | PointerReceiverDeliveryDisposition::NoReceiver => {
+            PointerReceiverDeliveryDisposition::DockCanvas => {
                 Ok(JournalClickDelivery::KnownMismatch)
             }
+            PointerReceiverDeliveryDisposition::NoReceiver => match edge.location() {
+                PointerEdgeLocation::Desktop { .. } => match desktop_route {
+                    Some(DesktopRouteValidation::Known(ValidatedDesktopRoute::Foreign {
+                        ..
+                    })) => Ok(JournalClickDelivery::Blocked),
+                    Some(DesktopRouteValidation::Unavailable(_)) | None => {
+                        Ok(JournalClickDelivery::Unknown)
+                    }
+                    Some(DesktopRouteValidation::Known(
+                        ValidatedDesktopRoute::Dock(_) | ValidatedDesktopRoute::NoWindow { .. },
+                    )) => Ok(JournalClickDelivery::KnownMismatch),
+                },
+                PointerEdgeLocation::SurfaceLocal { .. } => Ok(JournalClickDelivery::KnownMismatch),
+            },
             PointerReceiverDeliveryDisposition::Blocked => Ok(JournalClickDelivery::Blocked),
             PointerReceiverDeliveryDisposition::Unknown(_) => Ok(JournalClickDelivery::Unknown),
         }

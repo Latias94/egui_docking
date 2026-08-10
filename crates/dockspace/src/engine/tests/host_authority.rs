@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::pointer_journal::SurfaceLocalPointerRetirementDisposition;
-use crate::viewport::PresentationObservationGeneration;
+use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration};
 
 fn register_test_root_viewport(
     engine: &mut DockEngine,
@@ -148,6 +148,43 @@ fn native_surface_local_lease_cannot_freeze_a_reincarnated_binding_frame() {
         engine.pointer_provider(),
         Some(provider_a.lease()),
         "sealed frame admission must fail closed without mutating the ledger"
+    );
+}
+
+#[test]
+fn native_surface_local_enrollment_rejects_a_stale_coordinate_generation() {
+    let mut engine = single_surface_engine(SOURCE_SURFACE, SOURCE_ROOT, ItemId::new(1));
+    let host = engine
+        .create_presentation_host()
+        .expect("test presentation host must mint");
+    let binding =
+        register_test_root_viewport(&mut engine, host, SOURCE_SURFACE, WindowToken::new(710));
+    establish_native_surface_stream(&mut engine, host, binding);
+    let current = engine
+        .viewport()
+        .viewport(SOURCE_SURFACE)
+        .expect("the native viewport remains current")
+        .coordinate_generation();
+    let stale = CoordinateGeneration::new(current.get().saturating_sub(1));
+    assert_ne!(stale, current);
+    assert!(matches!(
+        engine.create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new_native(host, binding, stale),
+            PointerEdgeSequence::new(0),
+        ),
+        Err(EngineError::PointerProviderScope { .. })
+    ));
+
+    let provider = engine
+        .create_surface_local_pointer_provider(
+            SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Native(binding)),
+            PointerEdgeSequence::new(0),
+        )
+        .expect("the convenience constructor freezes the current generation");
+    assert_eq!(
+        engine.pointer_provider(),
+        Some(provider.lease()),
+        "rejected stale enrollment leaves the provider lane available"
     );
 }
 

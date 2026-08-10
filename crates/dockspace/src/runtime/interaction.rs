@@ -43,6 +43,22 @@ pub struct PresentedDockReceiver {
 }
 
 impl PresentedDockReceiver {
+    pub(super) fn from_projection_region(
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+        region: crate::presentation_hit::PresentationHitRegionId,
+    ) -> Option<Self> {
+        let record = projection.hit_manifest().region(region)?;
+        let descriptor = DockspaceReceiverDescriptor::from_projection_region(
+            projection.output_ticket(),
+            region,
+            record.hit().rect(),
+        )?;
+        Some(Self {
+            descriptor,
+            authority: projection.authority(),
+        })
+    }
+
     /// Returns the exact receiver rectangle presented by the renderer.
     #[must_use]
     pub const fn bounds(self) -> LogicalRect {
@@ -53,6 +69,10 @@ impl PresentedDockReceiver {
     #[must_use]
     pub const fn center(self) -> LogicalPoint {
         self.descriptor.center()
+    }
+
+    pub(super) const fn region(self) -> crate::presentation_hit::PresentationHitRegionId {
+        self.descriptor.region
     }
 }
 
@@ -415,8 +435,8 @@ impl<'receiver> SurfacePointerReceiverFacts<'receiver> {
 
     /// Adds the exact framework receiver which accepted delivery.
     ///
-    /// This composes independently with hover facts so one release can answer
-    /// a `DeliveryAndHoverHit` challenge without discarding either fact.
+    /// Delivery and hover remain independent event-time facts even though one
+    /// physical edge asks at most one receiver question.
     #[must_use]
     pub const fn with_delivery(mut self, receiver: &'receiver PresentedDockReceiver) -> Self {
         self.delivery = ReceiverFact::Dock(receiver);
@@ -1089,7 +1109,7 @@ impl DockspaceHostFrame<'_> {
         candidate: &PointerReceiverCandidate,
         facts: SurfacePointerReceiverFacts<'_>,
     ) -> Result<PointerReceiverObservation, DockspaceRuntimeError> {
-        if candidate.probes().is_not_applicable() {
+        if !candidate.receiver_is_applicable() {
             return Ok(PointerReceiverObservation::NotApplicable);
         }
         let projection = self.frame.view().interaction_projection(surface);
@@ -1271,7 +1291,7 @@ fn hover_fact(
         .map_err(|_| DockspaceInteractionError::PointerProtocolInvariant.into())
 }
 
-fn receiver_matches(
+pub(super) fn receiver_matches(
     receiver: &PresentedDockReceiver,
     projection: &crate::scene::SurfaceInteractionProjection<'_>,
 ) -> bool {
@@ -1283,7 +1303,7 @@ fn receiver_matches(
             .is_some()
 }
 
-fn surface_matches(
+pub(super) fn surface_matches(
     surface: &PresentedDockspaceSurface,
     projection: &crate::scene::SurfaceInteractionProjection<'_>,
 ) -> bool {

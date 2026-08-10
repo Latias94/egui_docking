@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::intent::Authority;
+use crate::pointer_journal::PointerEdgeSequence;
 
 impl DockspaceSession {
     fn native_state_mut(&mut self) -> Result<&mut RuntimeNativeState, NativePlatformError> {
@@ -25,14 +26,50 @@ impl DockspaceSession {
     pub fn enable_observed_native_roots(
         &mut self,
     ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
+        self.enroll_native_host(NativeHostProfile::ObservedRoots, None)
+    }
+
+    /// Enrolls the sole desktop-global coordinator for managed native windows.
+    ///
+    /// The fixed capability profile requires complete window inventory,
+    /// event-time desktop pointer facts, explicit work-area authority, and
+    /// typed effect settlement. The initial pointer roster is enrolled in the
+    /// same operation; no platform or pointer record can precede it. Platforms
+    /// which cannot provide those facts should use surface-local input instead
+    /// of enabling this coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial roster is invalid, another native or
+    /// surface-local pointer provider is active, or the core cannot mint joined
+    /// platform/input authority.
+    pub fn enable_managed_native_host(
+        &mut self,
+        initial_pointer_roster: NativePointerRoster,
+    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
+        let checkpoint = pointer::compile_initial_pointer_authority(initial_pointer_roster)?;
+        self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint))
+    }
+
+    fn enroll_native_host(
+        &mut self,
+        profile: NativeHostProfile,
+        pointer_checkpoint: Option<crate::pointer_journal::PointerAuthorityCheckpoint>,
+    ) -> Result<Vec<NativeSurfaceBinding>, DockspaceRuntimeError> {
+        if self.pointer.is_some() {
+            return Err(NativePlatformError::PointerProviderAlreadyEnabled.into());
+        }
         if self.native.is_some() {
             return Err(NativePlatformError::ProviderAlreadyEnabled.into());
         }
         let recorder = self
             .engine
             .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
-        let mut native = RuntimeNativeState::new(recorder);
+        let mut native = RuntimeNativeState::new(recorder, profile);
         native.commit(&self.engine);
+        if let Some(checkpoint) = pointer_checkpoint {
+            native.record_initial_pointer_authority(checkpoint);
+        }
         let bindings = native.bindings.values().copied().collect();
         self.native = Some(native);
         Ok(bindings)
@@ -54,8 +91,68 @@ impl DockspaceSession {
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected_epoch = self.version().epoch();
-        self.native_state_mut()?
-            .record_snapshot_facts(expected_epoch, observations)?;
+        let native = self.native_state_mut()?;
+        if native.profile != NativeHostProfile::ObservedRoots {
+            return Err(NativePlatformError::HostProfileMismatch.into());
+        }
+        native.record_snapshot_facts(
+            expected_epoch,
+            observations,
+            NativeWorkAreaRoster::Unknown,
+        )?;
+        Ok(())
+    }
+
+    /// Records one complete managed native window and work-area snapshot.
+    ///
+    /// Both rosters are explicit facts at the same platform generation. An
+    /// unavailable work-area roster revokes prior placement authority; it does
+    /// not preserve the previous exact roster implicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile, stale or incomplete window
+    /// bindings, or an invalid exact work-area roster.
+    pub fn report_managed_native_snapshot(
+        &mut self,
+        observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
+        work_areas: NativeWorkAreaRoster,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let expected_epoch = self.version().epoch();
+        let native = self.native_state_mut()?;
+        if native.profile != NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch.into());
+        }
+        native.record_snapshot_facts(expected_epoch, observations, work_areas)?;
+        Ok(())
+    }
+
+    /// Returns the latest committed exact binding for one platform work area.
+    ///
+    /// A snapshot recorded but not yet committed cannot mint route authority.
+    #[must_use]
+    pub fn native_work_area(&self, token: HostWorkAreaToken) -> Option<NativeWorkAreaBinding> {
+        self.native
+            .as_ref()
+            .filter(|native| native.profile == NativeHostProfile::ManagedDesktop)
+            .and_then(|native| native.work_areas.get(&token.into_core()).copied())
+    }
+
+    /// Records one desktop-global native pointer edge in host event order.
+    ///
+    /// The runtime assigns the provider sequence and retains the edge until a
+    /// host frame resolves its receiver query and commits. A failed frame does
+    /// not consume the edge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile, stale window or work-area
+    /// bindings, contradictory route facts, or sequence exhaustion.
+    pub fn record_native_pointer(
+        &mut self,
+        input: NativePointerInput,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.native_state_mut()?.record_pointer(input)?;
         Ok(())
     }
 

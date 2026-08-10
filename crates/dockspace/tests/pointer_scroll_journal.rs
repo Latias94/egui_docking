@@ -499,7 +499,6 @@ fn smooth_continuation_freezes_its_receiver_without_a_pointer_position() {
         .pointer_receiver_candidates()
         .expect("continuation requests current presentation proof")
         .candidates()[0];
-    assert_eq!(candidate.route_point(), None);
     let Some(ScrollReceiverChallenge::Locked {
         receiver,
         probe_point,
@@ -508,6 +507,7 @@ fn smooth_continuation_freezes_its_receiver_without_a_pointer_position() {
     else {
         panic!("the active sequence must request its frozen receiver");
     };
+    assert_eq!(candidate.route_point(), Some(probe_point));
     assert_eq!(receiver, fixture.region);
     assert!(
         fixture

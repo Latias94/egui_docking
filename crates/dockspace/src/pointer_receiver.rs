@@ -209,8 +209,19 @@ pub enum PointerReceiverProbeRequest {
     Delivery,
     /// Request the point-bound hover-drop hit only.
     HoverHit,
-    /// Request both independent receiver facts.
-    DeliveryAndHoverHit,
+}
+
+/// Exact delivery lanes requested from one renderer receiver observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerReceiverDeliveryRequest {
+    /// This candidate has no delivery-receiver role.
+    None,
+    /// Only the click lane must be resolved.
+    Click,
+    /// Click and drag lanes must be resolved independently.
+    ClickAndDrag,
+    /// Only the scroll lane must be resolved.
+    Scroll,
 }
 
 /// Core-owned receiver and derivative requirement for one scroll edge.
@@ -270,7 +281,6 @@ impl PointerReceiverProbeRequest {
             (self, probe),
             (Self::Delivery, PointerReceiverProbe::Delivery)
                 | (Self::HoverHit, PointerReceiverProbe::HoverHit)
-                | (Self::DeliveryAndHoverHit, _)
         )
     }
 
@@ -287,10 +297,6 @@ impl PointerReceiverProbeRequest {
             Self::NotApplicable => &[],
             Self::Delivery => &[PointerReceiverProbe::Delivery],
             Self::HoverHit => &[PointerReceiverProbe::HoverHit],
-            Self::DeliveryAndHoverHit => &[
-                PointerReceiverProbe::Delivery,
-                PointerReceiverProbe::HoverHit,
-            ],
         }
     }
 }
@@ -300,8 +306,11 @@ impl PointerReceiverProbeRequest {
 pub struct PointerReceiverCandidate {
     id: PointerReceiverCandidateId,
     probes: PointerReceiverProbeRequest,
+    delivery_surface: Option<SurfaceId>,
     route_point: Option<LogicalPoint>,
+    hover_surface: Option<SurfaceId>,
     hover_point: Option<LogicalPoint>,
+    delivery_request: PointerReceiverDeliveryRequest,
     scroll_challenge: Option<ScrollReceiverChallenge>,
 }
 
@@ -318,6 +327,15 @@ impl PointerReceiverCandidate {
         self.probes
     }
 
+    /// Returns the exact logical surface which received the physical edge.
+    ///
+    /// This is independent from [`Self::hover_surface`]. A captured native
+    /// pointer may be delivered through one window while hovering another.
+    #[must_use]
+    pub const fn delivery_surface(&self) -> Option<SurfaceId> {
+        self.delivery_surface
+    }
+
     /// Returns the surface-local point validated by core for this edge route.
     ///
     /// This is available independently from [`Self::hover_point`]. Delivery-only
@@ -328,6 +346,12 @@ impl PointerReceiverCandidate {
         self.route_point
     }
 
+    /// Returns the exact logical surface under the pointer for the hover probe.
+    #[must_use]
+    pub const fn hover_surface(&self) -> Option<SurfaceId> {
+        self.hover_surface
+    }
+
     /// Returns the exact edge point a known hover hit must echo.
     ///
     /// `None` means the provider's surface-local position was unavailable. A
@@ -336,6 +360,10 @@ impl PointerReceiverCandidate {
     #[must_use]
     pub const fn hover_point(&self) -> Option<LogicalPoint> {
         self.hover_point
+    }
+
+    pub(crate) const fn delivery_request(&self) -> PointerReceiverDeliveryRequest {
+        self.delivery_request
     }
 
     /// Returns the core-owned scroll receiver and derivative requirement.
@@ -371,8 +399,11 @@ impl PointerReceiverCandidate {
 pub(crate) struct PointerReceiverCandidateSpec {
     sequence: PointerEdgeSequence,
     probes: PointerReceiverProbeRequest,
+    delivery_surface: Option<SurfaceId>,
     route_point: Option<LogicalPoint>,
+    hover_surface: Option<SurfaceId>,
     hover_point: Option<LogicalPoint>,
+    delivery_request: PointerReceiverDeliveryRequest,
     scroll_challenge: Option<ScrollReceiverChallenge>,
 }
 
@@ -385,65 +416,80 @@ impl PointerReceiverCandidateSpec {
         Self {
             sequence,
             probes: PointerReceiverProbeRequest::NotApplicable,
+            delivery_surface: None,
             route_point: None,
+            hover_surface: None,
             hover_point: None,
+            delivery_request: PointerReceiverDeliveryRequest::None,
             scroll_challenge: None,
         }
     }
 
     pub(crate) const fn delivery(
         sequence: PointerEdgeSequence,
+        delivery_surface: Option<SurfaceId>,
         route_point: Option<LogicalPoint>,
+        delivery_request: PointerReceiverDeliveryRequest,
     ) -> Self {
         Self {
             sequence,
-            probes: PointerReceiverProbeRequest::Delivery,
+            probes: if delivery_surface.is_some() {
+                PointerReceiverProbeRequest::Delivery
+            } else {
+                PointerReceiverProbeRequest::NotApplicable
+            },
+            delivery_surface,
             route_point,
+            hover_surface: None,
             hover_point: None,
+            delivery_request: if delivery_surface.is_some() {
+                delivery_request
+            } else {
+                PointerReceiverDeliveryRequest::None
+            },
             scroll_challenge: None,
         }
     }
 
     pub(crate) const fn scroll_delivery(
         sequence: PointerEdgeSequence,
+        delivery_surface: Option<SurfaceId>,
         route_point: Option<LogicalPoint>,
         challenge: ScrollReceiverChallenge,
     ) -> Self {
         Self {
             sequence,
-            probes: if challenge.requires_receiver_probe() {
+            probes: if challenge.requires_receiver_probe() && delivery_surface.is_some() {
                 PointerReceiverProbeRequest::Delivery
             } else {
                 PointerReceiverProbeRequest::NotApplicable
             },
+            delivery_surface,
             route_point,
+            hover_surface: None,
             hover_point: None,
+            delivery_request: if challenge.requires_receiver_probe() && delivery_surface.is_some() {
+                PointerReceiverDeliveryRequest::Scroll
+            } else {
+                PointerReceiverDeliveryRequest::None
+            },
             scroll_challenge: Some(challenge),
         }
     }
 
     pub(crate) const fn hover_hit(
         sequence: PointerEdgeSequence,
+        hover_surface: Option<SurfaceId>,
         hover_point: Option<LogicalPoint>,
     ) -> Self {
         Self {
             sequence,
             probes: PointerReceiverProbeRequest::HoverHit,
-            route_point: hover_point,
+            delivery_surface: None,
+            route_point: None,
+            hover_surface,
             hover_point,
-            scroll_challenge: None,
-        }
-    }
-
-    pub(crate) const fn delivery_and_hover_hit(
-        sequence: PointerEdgeSequence,
-        hover_point: Option<LogicalPoint>,
-    ) -> Self {
-        Self {
-            sequence,
-            probes: PointerReceiverProbeRequest::DeliveryAndHoverHit,
-            route_point: hover_point,
-            hover_point,
+            delivery_request: PointerReceiverDeliveryRequest::None,
             scroll_challenge: None,
         }
     }
@@ -524,8 +570,11 @@ impl PointerReceiverCandidateRoster {
             .map(|spec| PointerReceiverCandidate {
                 id: PointerReceiverCandidateId::new(attempt.id, attempt.lease, spec.sequence),
                 probes: spec.probes,
+                delivery_surface: spec.delivery_surface,
                 route_point: spec.route_point,
+                hover_surface: spec.hover_surface,
                 hover_point: spec.hover_point,
+                delivery_request: spec.delivery_request,
                 scroll_challenge: spec.scroll_challenge,
             })
             .collect();
@@ -684,8 +733,6 @@ impl PointerReceiverCandidateRoster {
                     }
                 }
 
-                let mut delivery_authority = None;
-                let mut hover_authority = None;
                 for receipt in presented.probes() {
                     match receipt {
                         PointerReceiverProbeReceipt::Delivery(delivery) => {
@@ -708,6 +755,12 @@ impl PointerReceiverCandidateRoster {
                                 );
                             }
                             if let Some((output, authority)) = delivery.known_authority() {
+                                self.validate_expected_surface(
+                                    candidate.id,
+                                    PointerReceiverProbe::Delivery,
+                                    candidate.delivery_surface,
+                                    output.surface(),
+                                )?;
                                 self.validate_known_authority(
                                     candidate.id,
                                     PointerReceiverProbe::Delivery,
@@ -715,7 +768,6 @@ impl PointerReceiverCandidateRoster {
                                     authority,
                                     presented_outputs,
                                 )?;
-                                delivery_authority = Some((output, authority));
                             }
                         }
                         PointerReceiverProbeReceipt::HoverHit(hover_hit) => {
@@ -736,6 +788,12 @@ impl PointerReceiverCandidateRoster {
                                         },
                                     );
                                 }
+                                self.validate_expected_surface(
+                                    candidate.id,
+                                    PointerReceiverProbe::HoverHit,
+                                    candidate.hover_surface,
+                                    output.surface(),
+                                )?;
                                 self.validate_known_authority(
                                     candidate.id,
                                     PointerReceiverProbe::HoverHit,
@@ -743,30 +801,33 @@ impl PointerReceiverCandidateRoster {
                                     authority,
                                     presented_outputs,
                                 )?;
-                                hover_authority = Some((output, authority));
                             }
                         }
-                    }
-                }
-
-                if let (Some((delivery_output, delivery)), Some((hover_output, hover))) =
-                    (delivery_authority, hover_authority)
-                {
-                    if delivery != hover {
-                        return Err(
-                            PointerReceiverReceiptValidationError::ProbeAuthoritiesConflict {
-                                candidate: candidate.id,
-                                delivery_output,
-                                delivery_authority: delivery,
-                                hover_output,
-                                hover_authority: hover,
-                            },
-                        );
                     }
                 }
                 Ok(())
             }
         }
+    }
+
+    fn validate_expected_surface(
+        &self,
+        candidate: PointerReceiverCandidateId,
+        probe: PointerReceiverProbe,
+        expected: Option<SurfaceId>,
+        submitted: SurfaceId,
+    ) -> Result<(), PointerReceiverReceiptValidationError> {
+        if expected.is_some_and(|expected| expected != submitted) {
+            return Err(
+                PointerReceiverReceiptValidationError::ProbeSurfaceMismatch {
+                    candidate,
+                    probe,
+                    expected: expected.expect("mismatch requires an expected surface"),
+                    submitted,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn validate_known_authority(
@@ -1527,19 +1588,19 @@ pub enum PointerReceiverReceiptValidationError {
         /// Point supplied with the known hover result.
         submitted: LogicalPoint,
     },
-    /// Known delivery and hover facts named different final-presentation authority.
-    #[error("pointer receiver candidate {candidate:?} mixes delivery and hover authorities")]
-    ProbeAuthoritiesConflict {
+    /// A known probe named a surface other than its exact event-time route.
+    #[error(
+        "pointer receiver candidate {candidate:?} answered {probe:?} for surface {submitted}, expected {expected}"
+    )]
+    ProbeSurfaceMismatch {
         /// Candidate being answered.
         candidate: PointerReceiverCandidateId,
-        /// Delivery output identity.
-        delivery_output: SurfacePresentationOutputTicket,
-        /// Delivery final-presentation authority.
-        delivery_authority: PresentedSurfaceAuthority,
-        /// Hover output identity.
-        hover_output: SurfacePresentationOutputTicket,
-        /// Hover final-presentation authority.
-        hover_authority: PresentedSurfaceAuthority,
+        /// Independent probe carrying the wrong surface.
+        probe: PointerReceiverProbe,
+        /// Event-time surface frozen for this probe.
+        expected: SurfaceId,
+        /// Surface carried by the submitted output authority.
+        submitted: SurfaceId,
     },
     /// A smooth-scroll continuation claimed a receiver other than its frozen owner.
     #[error("pointer receiver candidate {candidate:?} changed its locked scroll receiver")]
@@ -1664,20 +1725,21 @@ mod tests {
     }
 
     #[test]
-    fn known_delivery_and_hover_cannot_mix_current_authorities() {
+    fn known_delivery_must_match_its_event_time_surface() {
         let authority_domain = domain(7);
         let provider = lease(authority_domain, 1);
         let first_output = output(authority_domain, SurfaceId::new(1), 1);
         let second_output = output(authority_domain, SurfaceId::new(2), 2);
-        let first_authority = authority(first_output, 1);
         let second_authority = authority(second_output, 1);
         let issuer = PointerReceiverAttemptIssuer::new(authority_domain);
         let point = LogicalPoint::new(10.0, 20.0).expect("finite test point");
         let roster = PointerReceiverCandidateRoster::freeze(
             issuer.issue(provider).expect("attempt"),
-            vec![PointerReceiverCandidateSpec::delivery_and_hover_hit(
+            vec![PointerReceiverCandidateSpec::delivery(
                 PointerEdgeSequence::new(1),
+                Some(SurfaceId::new(1)),
                 Some(point),
+                PointerReceiverDeliveryRequest::Click,
             )],
             vec![
                 presented_output(first_output, 1),
@@ -1686,22 +1748,17 @@ mod tests {
         )
         .expect("roster");
         let candidate = &roster.candidates()[0];
-        let observation = PresentedPointerReceiverObservation::new([
-            PointerReceiverProbeReceipt::Delivery(PointerReceiverDelivery {
-                output: Some(first_output),
-                authority: Some(first_authority),
-                click: PointerReceiverDeliveryDisposition::Blocked,
-                drag: PointerReceiverDeliveryDisposition::Blocked,
-                scroll: PointerReceiverDeliveryDisposition::Blocked,
-            }),
-            PointerReceiverProbeReceipt::HoverHit(PointerReceiverHoverHit {
-                output: Some(second_output),
-                authority: Some(second_authority),
-                point: Some(point),
-                disposition: PointerReceiverHoverHitDisposition::Blocked,
-            }),
-        ])
-        .expect("one answer for each probe");
+        let observation =
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                PointerReceiverDelivery {
+                    output: Some(second_output),
+                    authority: Some(second_authority),
+                    click: PointerReceiverDeliveryDisposition::Blocked,
+                    drag: PointerReceiverDeliveryDisposition::Blocked,
+                    scroll: PointerReceiverDeliveryDisposition::Blocked,
+                },
+            )])
+            .expect("one delivery answer");
 
         assert!(matches!(
             roster.validate(
@@ -1710,14 +1767,14 @@ mod tests {
                 ])
                 .expect("batch")
             ),
-            Err(PointerReceiverReceiptValidationError::ProbeAuthoritiesConflict {
+            Err(PointerReceiverReceiptValidationError::ProbeSurfaceMismatch {
                 candidate: submitted,
-                delivery_output,
-                hover_output,
-                ..
+                probe: PointerReceiverProbe::Delivery,
+                expected,
+                submitted: actual,
             }) if submitted == candidate.id()
-                && delivery_output == first_output
-                && hover_output == second_output
+                && expected == SurfaceId::new(1)
+                && actual == SurfaceId::new(2)
         ));
     }
 
@@ -1731,6 +1788,7 @@ mod tests {
             issuer.issue(provider).expect("attempt"),
             vec![PointerReceiverCandidateSpec::hover_hit(
                 PointerEdgeSequence::new(1),
+                Some(SurfaceId::new(1)),
                 None,
             )],
             vec![presented_output(ticket, 1)],
@@ -1787,7 +1845,9 @@ mod tests {
             issuer.issue(provider).expect("attempt"),
             vec![PointerReceiverCandidateSpec::delivery(
                 PointerEdgeSequence::new(1),
+                Some(SurfaceId::new(1)),
                 Some(route_point),
+                PointerReceiverDeliveryRequest::Click,
             )],
             vec![PointerReceiverPresentedOutput {
                 ticket,
@@ -1852,8 +1912,13 @@ mod tests {
             issuer.issue(provider).expect("attempt"),
             vec![
                 PointerReceiverCandidateSpec::not_applicable(PointerEdgeSequence::new(1)),
-                PointerReceiverCandidateSpec::delivery(PointerEdgeSequence::new(2), None),
-                PointerReceiverCandidateSpec::hover_hit(PointerEdgeSequence::new(3), None),
+                PointerReceiverCandidateSpec::delivery(
+                    PointerEdgeSequence::new(2),
+                    Some(SurfaceId::new(1)),
+                    None,
+                    PointerReceiverDeliveryRequest::Click,
+                ),
+                PointerReceiverCandidateSpec::hover_hit(PointerEdgeSequence::new(3), None, None),
             ],
             Vec::new(),
         )

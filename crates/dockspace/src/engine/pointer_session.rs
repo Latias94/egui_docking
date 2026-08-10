@@ -268,32 +268,19 @@ impl DockEngine {
 
     pub(super) fn journal_press_delivery_rejection(
         &self,
-        owner: GestureOwner,
         observed: Authority<PointerEventDeliveryOwner>,
-        presentation: &JournalSurfacePresentation,
+        expected: PointerEventDeliveryOwner,
     ) -> Result<Option<InteractionRejection>, EngineError> {
-        let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
-            detail: "journal primary press was reduced for a legacy owner",
-        })?;
         let Authority::Known(actual) = observed else {
             return Ok(Some(InteractionRejection::DeliveryAuthorityUnavailable));
         };
-
-        let (expected, compatible) = match stream.lease().scope() {
-            PointerProviderScope::SurfaceLocal(_) => (
-                PointerEventDeliveryOwner::ProviderEndpoint,
-                actual == PointerEventDeliveryOwner::ProviderEndpoint,
-            ),
-            PointerProviderScope::DesktopGlobal => {
-                let Some(binding) = presentation.authority().binding() else {
-                    return Ok(Some(InteractionRejection::TargetAuthorityInvalid));
-                };
-                let expected = PointerEventDeliveryOwner::Native(binding);
-                (
-                    expected,
-                    actual == expected && self.native_capture_binding_is_current(binding),
-                )
+        let compatible = match expected {
+            PointerEventDeliveryOwner::Native(binding) => {
+                actual == expected && self.native_capture_binding_is_current(binding)
             }
+            PointerEventDeliveryOwner::ProviderEndpoint
+            | PointerEventDeliveryOwner::Foreign
+            | PointerEventDeliveryOwner::None => actual == expected,
         };
         Ok((!compatible)
             .then_some(InteractionRejection::DeliveryOwnerMismatch { expected, actual }))

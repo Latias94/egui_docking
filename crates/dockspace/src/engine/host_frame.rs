@@ -2141,7 +2141,7 @@ impl CoreHostFrame {
     fn ensure_input_prefix_complete(&mut self) -> Result<(), CoreHostFrameError> {
         self.ensure_backend_ingress_complete()?;
         if let Some(provider) = self.pointer_provider {
-            if !self.pointer_segment_submitted {
+            if self.backend_ingress.is_none() && !self.pointer_segment_submitted {
                 return self.reject_value(
                     CoreHostFrameError::PointerJournalMissingBeforePresentation { provider },
                 );

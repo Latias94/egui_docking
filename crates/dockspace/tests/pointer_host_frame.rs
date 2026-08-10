@@ -855,14 +855,6 @@ fn exact_candidate_observation(
         PointerReceiverProbeRequest::HoverHit => vec![PointerReceiverProbeReceipt::HoverHit(
             hover.expect("candidate requires one hover fact"),
         )],
-        PointerReceiverProbeRequest::DeliveryAndHoverHit => vec![
-            PointerReceiverProbeReceipt::Delivery(
-                delivery.expect("candidate requires one delivery fact"),
-            ),
-            PointerReceiverProbeReceipt::HoverHit(
-                hover.expect("candidate requires one hover fact"),
-            ),
-        ],
     };
     PointerReceiverObservation::Presented(
         PresentedPointerReceiverObservation::new(probes)
@@ -6267,7 +6259,7 @@ fn incomplete_later_pointer_segment_keeps_every_segment_uncommitted() {
 }
 
 #[test]
-fn same_segment_drag_release_requires_delivery_and_hover_probe_set() {
+fn same_segment_drag_release_requires_the_hover_probe() {
     let mut engine = DockEngine::new(workspace(), DockPolicy::default()).expect("valid engine");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());

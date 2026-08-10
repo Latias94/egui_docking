@@ -757,26 +757,17 @@ fn pressed_desktop_close() -> PressedDesktopCloseFixture {
 }
 
 #[test]
-fn desktop_close_release_without_a_dock_receiver_terminates_with_typed_causes() {
+fn desktop_close_release_uses_delivery_receiver_independently_from_hover_route() {
     let desktop_position = Authority::Known(
         PhysicalPoint::new(10_000.0, 10_000.0).expect("desktop release point is finite"),
     );
-    for (route, expected_reason) in [
-        (
-            DesktopRouteFact::no_window(
-                desktop_position,
-                Authority::Unknown(AuthorityUnavailableReason::NotReported),
-            ),
-            InteractionCancelReason::ClickReceiverMismatch,
+    for route in [
+        DesktopRouteFact::no_window(
+            desktop_position,
+            Authority::Unknown(AuthorityUnavailableReason::NotReported),
         ),
-        (
-            DesktopRouteFact::foreign(desktop_position),
-            InteractionCancelReason::OpaquePointerBlocker,
-        ),
-        (
-            DesktopRouteFact::unknown(desktop_position, AuthorityUnavailableReason::NotReported),
-            InteractionCancelReason::UnknownTargetAuthority,
-        ),
+        DesktopRouteFact::foreign(desktop_position),
+        DesktopRouteFact::unknown(desktop_position, AuthorityUnavailableReason::NotReported),
     ] {
         let PressedDesktopCloseFixture {
             mut engine,
@@ -806,11 +797,22 @@ fn desktop_close_release_without_a_dock_receiver_terminates_with_typed_causes() 
             .expect("desktop close release has a candidate roster")
             .candidates()[0]
             .clone();
+        let source_projection = interaction(&engine, SOURCE_SURFACE);
+        let delivery = PointerReceiverDelivery::new(
+            source_projection,
+            PointerReceiverDeliveryDisposition::NoReceiver,
+        )
+        .expect("captured release proves no dock receiver on its delivery surface");
         frame
             .submit_pointer_receiver_receipts(
-                PointerReceiverReceiptBatch::new([
-                    candidate.receipt(PointerReceiverObservation::NotApplicable)
-                ])
+                PointerReceiverReceiptBatch::new([candidate.receipt(
+                    PointerReceiverObservation::Presented(
+                        PresentedPointerReceiverObservation::new([
+                            PointerReceiverProbeReceipt::Delivery(delivery),
+                        ])
+                        .expect("captured release answers delivery independently from hover"),
+                    ),
+                )])
                 .expect("non-dock desktop release receipt set is exact"),
             )
             .expect("non-dock desktop release receipt stages");
@@ -822,7 +824,7 @@ fn desktop_close_release_without_a_dock_receiver_terminates_with_typed_causes() 
             [InteractionOutcome::Cancelled {
                 status: InteractionStatus::Pressed { .. },
                 reason,
-            }] if *reason == expected_reason
+            }] if *reason == InteractionCancelReason::ClickReceiverMismatch
         ));
         assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
         assert_eq!(engine.active_close_plans().count(), 0);
@@ -1266,22 +1268,27 @@ fn submit_native_tab_press_with_delivery(
         .expect("native tab press freezes one receiver candidate")
         .candidates()[0]
         .clone();
-    let delivery = PointerReceiverDelivery::new(
-        projection,
-        PointerReceiverDeliveryDisposition::Dock(source_tab),
-    )
-    .expect("native tab receives the press");
+    let observation = if candidate.probes().is_not_applicable() {
+        PointerReceiverObservation::NotApplicable
+    } else if candidate.delivery_surface() == Some(SOURCE_SURFACE) {
+        let delivery = PointerReceiverDelivery::new(
+            projection,
+            PointerReceiverDeliveryDisposition::Dock(source_tab),
+        )
+        .expect("native tab receives the press");
+        PointerReceiverObservation::Presented(
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                delivery,
+            )])
+            .expect("native tab press answers delivery"),
+        )
+    } else {
+        PointerReceiverObservation::Unknown(PointerReceiverUnknownReason::NotReported)
+    };
     frame
         .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([candidate.receipt(
-                PointerReceiverObservation::Presented(
-                    PresentedPointerReceiverObservation::new([
-                        PointerReceiverProbeReceipt::Delivery(delivery),
-                    ])
-                    .expect("native tab press answers delivery"),
-                ),
-            )])
-            .expect("native tab press receipt set is exact"),
+            PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                .expect("native tab press receipt set is exact"),
         )
         .expect("native tab press receipt stages");
     complete(engine, &mut frame);
@@ -2102,53 +2109,6 @@ fn unknown_capture_with_exact_source_delivery_arms_and_drags_from_press() {
 }
 
 #[test]
-fn native_press_requires_exact_current_delivery_binding() {
-    for unknown in [false, true] {
-        let DesktopNativeFixture {
-            mut engine,
-            mut host,
-            provider,
-            source_binding,
-            target_binding,
-            ..
-        } = desktop_native_fixture();
-        let delivery = if unknown {
-            Authority::Unknown(AuthorityUnavailableReason::NotReported)
-        } else {
-            Authority::Known(PointerEventDeliveryOwner::Native(target_binding))
-        };
-
-        let transition = submit_native_tab_press_with_delivery(
-            &mut engine,
-            &mut host,
-            provider,
-            source_binding,
-            ItemId::new(1),
-            delivery,
-            Authority::Unknown(AuthorityUnavailableReason::NotReported),
-        );
-
-        if unknown {
-            assert!(matches!(
-                transition.reduced_pointer_edges()[0].interaction_outcomes(),
-                [InteractionOutcome::Rejected(
-                    InteractionRejection::DeliveryAuthorityUnavailable
-                )]
-            ));
-        } else {
-            assert!(matches!(
-                transition.reduced_pointer_edges()[0].interaction_outcomes(),
-                [InteractionOutcome::Rejected(
-                    InteractionRejection::DeliveryOwnerMismatch { expected, actual }
-                )] if *expected == PointerEventDeliveryOwner::Native(source_binding)
-                    && *actual == PointerEventDeliveryOwner::Native(target_binding)
-            ));
-        }
-        assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
-    }
-}
-
-#[test]
 fn non_source_delivery_cancels_an_active_native_drag_fail_closed() {
     for case in 0..4 {
         let ActiveNativeDragFixture {
@@ -2894,6 +2854,13 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
         .expect("release freezes one receiver candidate")
         .candidates()[0]
         .clone();
+    assert_eq!(candidate.probes(), PointerReceiverProbeRequest::HoverHit);
+    assert_eq!(candidate.hover_surface(), Some(TARGET_SURFACE));
+    assert_ne!(
+        candidate.hover_point(),
+        Some(target_point),
+        "the release point is reprojected with reducer-ordinal coordinate facts"
+    );
     frame
         .submit_pointer_receiver_receipts(
             PointerReceiverReceiptBatch::new([candidate.receipt(
@@ -3108,6 +3075,138 @@ fn desktop_scroll_delivery_route_is_independent_from_hover_route() {
         [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
             if application.receiver() == source_region_id
                 && application.applied_delta() > 0.0
+    ));
+}
+
+/// A captured edge may be delivered by one native window while another is
+/// topmost under the pointer. Click semantics must stay bound to delivery.
+#[test]
+fn desktop_press_delivery_route_is_independent_from_hover_route() {
+    const TARGET_OVERLAP_ORIGIN_X: f64 = -40.0;
+
+    let (workspace, _, _) = workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("valid engine");
+    let mut host = TestPresentationHost::new(&mut engine);
+    let platform_provider = host.platform_provider();
+    let expected = engine.version();
+    let registration = submit_inputs(
+        &mut engine,
+        &mut host,
+        INPUT_SOURCE,
+        [
+            EngineInput::RegisterViewport {
+                provider: platform_provider,
+                expected,
+                surface: SOURCE_SURFACE,
+                token: SOURCE_WINDOW,
+                role: ViewportRole::Root,
+                recovery_target: None,
+            },
+            EngineInput::RegisterViewport {
+                provider: platform_provider,
+                expected,
+                surface: TARGET_SURFACE,
+                token: TARGET_WINDOW,
+                role: ViewportRole::Root,
+                recovery_target: None,
+            },
+        ],
+    )
+    .expect("overlapping native bindings register");
+    let bindings = registration
+        .reduced_inputs()
+        .iter()
+        .map(|reduced| match reduced.outcome() {
+            InputOutcome::ViewportRegistered { binding } => *binding,
+            outcome => panic!("unexpected registration outcome: {outcome:?}"),
+        })
+        .collect::<Vec<_>>();
+    let [source_binding, target_binding] = bindings.as_slice() else {
+        panic!("two registrations must mint two bindings: {bindings:?}");
+    };
+
+    publish_native_snapshot_with_geometry(
+        &mut engine,
+        &mut host,
+        *source_binding,
+        *target_binding,
+        (SOURCE_ORIGIN_X, 0.0),
+        (TARGET_OVERLAP_ORIGIN_X, 0.0),
+    );
+    publish_surfaces(
+        &mut engine,
+        &mut host,
+        [
+            (SOURCE_SURFACE, logical_rect(0.0, 0.0, 180.0, 180.0)),
+            (TARGET_SURFACE, logical_rect(0.0, 0.0, 180.0, 180.0)),
+        ],
+    );
+    let provider = engine
+        .create_pointer_provider(
+            PointerProviderScope::DesktopGlobal,
+            PointerEdgeSequence::new(0),
+        )
+        .expect("desktop-global provider is admitted");
+
+    let source_projection = interaction(&engine, SOURCE_SURFACE);
+    let (close, source_point) = tab_close_point(source_projection, ItemId::new(1));
+    let desktop_position = PhysicalPoint::new(
+        SOURCE_ORIGIN_X + source_point.x() * SOURCE_SCALE,
+        source_point.y() * SOURCE_SCALE,
+    )
+    .expect("desktop press point is finite");
+    let journal = pointer_edge_journal_with_delivery(
+        0,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        PointerEdgeLocation::Desktop {
+            route: DesktopRouteFact::dock_from_desktop_position(
+                *target_binding,
+                Authority::Known(desktop_position),
+            ),
+        },
+        Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
+        Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+    );
+    let mut frame = host.begin(&engine);
+    frame
+        .submit_pointer_journal(provider, journal)
+        .expect("captured press stages");
+    let candidate = frame
+        .pointer_receiver_candidates()
+        .expect("captured press freezes a receiver candidate")
+        .candidates()[0]
+        .clone();
+    assert_eq!(candidate.delivery_surface(), Some(SOURCE_SURFACE));
+    assert_eq!(candidate.route_point(), Some(source_point));
+    let delivery = PointerReceiverDelivery::new(
+        source_projection,
+        PointerReceiverDeliveryDisposition::Dock(close),
+    )
+    .expect("source delivery is output-bound");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Presented(
+                    PresentedPointerReceiverObservation::new([
+                        PointerReceiverProbeReceipt::Delivery(delivery),
+                    ])
+                    .expect("captured press answers delivery"),
+                ),
+            )])
+            .expect("captured press receipt set is exact"),
+        )
+        .expect("captured press receipt stages");
+    complete(&engine, &mut frame);
+    let transition = host.finish(frame, &mut engine);
+
+    assert!(
+        transition.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty()
+    );
+    assert!(matches!(
+        engine.interaction().status(),
+        InteractionStatus::Pressed { .. }
     ));
 }
 
@@ -3490,9 +3589,11 @@ fn platform_destruction_before_release_prevents_stale_cross_window_drop() {
         .clone();
     frame
         .submit_pointer_receiver_receipts(
-            PointerReceiverReceiptBatch::new([
-                candidate.receipt(PointerReceiverObservation::NotApplicable)
-            ])
+            PointerReceiverReceiptBatch::new([candidate.receipt(
+                PointerReceiverObservation::Unknown(
+                    PointerReceiverUnknownReason::PresentationAuthorityUnavailable,
+                ),
+            )])
             .expect("unknown receiver observation answers the exact candidate"),
         )
         .expect("release receiver authority stages");

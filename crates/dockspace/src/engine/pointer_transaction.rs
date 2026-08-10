@@ -12,7 +12,8 @@ impl DockEngine {
         edge: &PointerEdge,
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
-        desktop_route: Option<DesktopRouteValidation>,
+        desktop_delivery_route: Option<DesktopRouteValidation>,
+        desktop_hover_route: Option<DesktopRouteValidation>,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -33,7 +34,7 @@ impl DockEngine {
                     edge,
                     receipt,
                     snapshot,
-                    desktop_route,
+                    desktop_delivery_route,
                     policy,
                     events,
                 )?;
@@ -55,7 +56,7 @@ impl DockEngine {
                 edge,
                 receipt,
                 snapshot,
-                desktop_route,
+                desktop_hover_route,
                 policy,
                 interaction_events,
             ),
@@ -68,7 +69,8 @@ impl DockEngine {
                     edge,
                     receipt,
                     snapshot,
-                    desktop_route,
+                    desktop_delivery_route,
+                    desktop_hover_route,
                     policy,
                     events,
                     interaction_events,
@@ -149,7 +151,7 @@ impl DockEngine {
         edge: &PointerEdge,
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
-        desktop_route: Option<DesktopRouteValidation>,
+        desktop_delivery_route: Option<DesktopRouteValidation>,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
     ) -> Result<Option<InteractionOutcome>, EngineError> {
@@ -160,19 +162,34 @@ impl DockEngine {
                 },
             )));
         }
-        let Some(point) = Self::journal_logical_point(edge, desktop_route) else {
+        let Some(point) = Self::journal_logical_point(edge, desktop_delivery_route) else {
             return Ok(None);
         };
+        let stream = owner.stream().ok_or(EngineError::ReductionCauseInvariant {
+            detail: "journal primary press was reduced for a legacy owner",
+        })?;
+        let expected_delivery = match stream.lease().scope() {
+            PointerProviderScope::SurfaceLocal(_) => PointerEventDeliveryOwner::ProviderEndpoint,
+            PointerProviderScope::DesktopGlobal => {
+                let binding = desktop_delivery_route
+                    .and_then(DesktopRouteValidation::dock_route)
+                    .map(|route| route.binding())
+                    .ok_or(EngineError::ReductionCauseInvariant {
+                        detail: "desktop primary press has no exact hovered source binding",
+                    })?;
+                PointerEventDeliveryOwner::Native(binding)
+            }
+        };
+        if let Some(rejection) =
+            self.journal_press_delivery_rejection(edge.delivery_owner(), expected_delivery)?
+        {
+            return Ok(Some(InteractionOutcome::Rejected(rejection)));
+        }
         let Some((region, presentation)) =
             Self::journal_semantic_press_delivery(cause, receipt, snapshot)?
         else {
             return Ok(None);
         };
-        if let Some(rejection) =
-            self.journal_press_delivery_rejection(owner, edge.delivery_owner(), presentation)?
-        {
-            return Ok(Some(InteractionOutcome::Rejected(rejection)));
-        }
         if let Some(rejection) =
             self.journal_press_capture_rejection(owner, capture_authority, presentation)?
         {
@@ -199,7 +216,8 @@ impl DockEngine {
         }
         match region.kind() {
             PresentationHitRegionKind::TabBody(tab) => {
-                let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_route)?;
+                let threshold_origin =
+                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let source = TabGestureSource::Item(tab);
                 let prepared = match self.prepare_journal_tab_gesture(presentation, source, point) {
                     Ok(prepared) => prepared,
@@ -218,7 +236,8 @@ impl DockEngine {
                 .map(Some)
             }
             PresentationHitRegionKind::TabGroupGrip(group) => {
-                let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_route)?;
+                let threshold_origin =
+                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let source = TabGestureSource::Group(group);
                 let prepared = match self.prepare_journal_tab_gesture(presentation, source, point) {
                     Ok(prepared) => prepared,
@@ -264,7 +283,8 @@ impl DockEngine {
                 Ok(Some(InteractionOutcome::ResizeBegan { session, replaced }))
             }
             PresentationHitRegionKind::ContainedTitle(floating) => {
-                let threshold_origin = self.journal_drag_threshold_origin(edge, desktop_route)?;
+                let threshold_origin =
+                    self.journal_drag_threshold_origin(edge, desktop_delivery_route)?;
                 let prepared = match self.prepare_journal_contained_gesture(
                     presentation,
                     floating,
@@ -401,7 +421,7 @@ impl DockEngine {
         edge: &PointerEdge,
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
-        desktop_route: Option<DesktopRouteValidation>,
+        desktop_hover_route: Option<DesktopRouteValidation>,
         policy: &DockPolicySnapshot,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<Vec<InteractionOutcome>, EngineError> {
@@ -529,7 +549,7 @@ impl DockEngine {
             edge,
             receipt,
             snapshot,
-            desktop_route,
+            desktop_hover_route,
             policy,
         )?;
         if let Some(outcome) =
@@ -637,7 +657,8 @@ impl DockEngine {
         edge: &PointerEdge,
         receipt: &ValidatedPointerReceiverReceipt,
         snapshot: &JournalPresentationSnapshot,
-        desktop_route: Option<DesktopRouteValidation>,
+        desktop_delivery_route: Option<DesktopRouteValidation>,
+        desktop_hover_route: Option<DesktopRouteValidation>,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
@@ -696,7 +717,7 @@ impl DockEngine {
                     edge,
                     receipt,
                     snapshot,
-                    desktop_route,
+                    desktop_delivery_route,
                     policy,
                     events,
                     interaction_events,
@@ -740,7 +761,7 @@ impl DockEngine {
                     edge,
                     receipt,
                     snapshot,
-                    desktop_route,
+                    desktop_hover_route,
                     policy,
                 )?;
                 let release_decision = evaluation.decision.clone();
@@ -2696,7 +2717,7 @@ impl DockEngine {
             .pointer_journal
             .prepare_candidate(provider, journal)
             .map_err(|source| EngineError::PointerJournal { source })?;
-        let desktop_routes = prepared
+        let desktop_hover_routes = prepared
             .journal()
             .edges()
             .iter()
@@ -2736,7 +2757,7 @@ impl DockEngine {
             prepared.journal(),
             &validated_receipts,
             &snapshot,
-            &desktop_routes,
+            &desktop_hover_routes,
             &desktop_delivery_routes,
         )?;
         let commit = self
@@ -2794,7 +2815,8 @@ impl DockEngine {
                 edge,
                 receipt,
                 &snapshot,
-                desktop_routes.get(&edge.sequence()).copied(),
+                desktop_delivery_routes.get(&edge.sequence()).copied(),
+                desktop_hover_routes.get(&edge.sequence()).copied(),
                 policy,
                 events,
                 interaction_events,

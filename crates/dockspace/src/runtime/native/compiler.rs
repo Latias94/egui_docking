@@ -4,16 +4,17 @@ use std::collections::BTreeMap;
 
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
-    NativeInputFact, NativePlatformError, NativePresentationFact, NativeWindowFacts,
-    NativeWindowLifecycleFact,
+    NativeHostProfile, NativeInputFact, NativePlatformError, NativePresentationFact,
+    NativeWindowFacts, NativeWindowLifecycleFact, NativeWorkAreaRoster,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
     CapabilityRosterObservation, CloseEffectAcknowledgement, InputEffectAcknowledgement,
-    ObservedWindow, PlatformCapabilities, PlatformCapability, PlatformCapabilityReason,
-    PlatformRequirement, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCloseObservation, WindowCloseState, WindowCoordinateObservation, WindowInputObservation,
-    WindowInventoryObservation, WindowPresentationObservation, WorkAreaRosterObservation,
+    ObservedWindow, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
+    PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
+    PresentationEffectAcknowledgement, WindowCloseObservation, WindowCloseState,
+    WindowCoordinateObservation, WindowInputObservation, WindowInventoryObservation,
+    WindowPresentationObservation, WorkAreaRosterObservation,
 };
 use crate::platform_provider::PlatformObservationLease;
 use crate::viewport::{
@@ -24,6 +25,7 @@ use crate::viewport::{
 use crate::viewport_focus::{FocusObservationEnvelope, FocusObservationGeneration};
 
 pub(super) fn compile_unknown_inventory_snapshot(
+    profile: NativeHostProfile,
     generation: u64,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
@@ -31,7 +33,7 @@ pub(super) fn compile_unknown_inventory_snapshot(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(observed_root_capabilities()),
+            Authority::Known(capabilities(profile)),
         ),
         FocusObservationEnvelope::new(
             FocusObservationGeneration::new(generation),
@@ -50,9 +52,11 @@ pub(super) fn compile_unknown_inventory_snapshot(
 }
 
 pub(super) fn compile_platform_snapshot(
+    profile: NativeHostProfile,
     provider: PlatformObservationLease,
     generation: u64,
     supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
+    work_areas: &NativeWorkAreaRoster,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
     let mut live_bindings = Vec::new();
@@ -69,11 +73,44 @@ pub(super) fn compile_platform_snapshot(
         close_observations.push(compiled.close);
     }
 
+    let work_areas = match profile {
+        NativeHostProfile::ObservedRoots => WorkAreaRosterObservation::unknown(
+            WorkAreaObservationGeneration::new(generation),
+            reason,
+        ),
+        NativeHostProfile::ManagedDesktop => match work_areas {
+            NativeWorkAreaRoster::Exact(work_areas) if work_areas.is_empty() => {
+                return Err(NativePlatformError::InvalidWorkAreaRoster);
+            }
+            NativeWorkAreaRoster::Exact(work_areas) => WorkAreaRosterObservation::new(
+                WorkAreaObservationGeneration::new(generation),
+                Authority::Known(
+                    work_areas
+                        .iter()
+                        .copied()
+                        .map(|facts| {
+                            ObservedWorkArea::new(
+                                facts.token(),
+                                facts.bounds(),
+                                facts.scale_factor(),
+                            )
+                        })
+                        .collect(),
+                ),
+            )
+            .map_err(|_| NativePlatformError::InvalidWorkAreaRoster)?,
+            NativeWorkAreaRoster::Unknown => WorkAreaRosterObservation::unknown(
+                WorkAreaObservationGeneration::new(generation),
+                reason,
+            ),
+        },
+    };
+
     PlatformSnapshot::new(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(observed_root_capabilities()),
+            Authority::Known(capabilities(profile)),
         ),
         FocusObservationEnvelope::new(
             FocusObservationGeneration::new(generation),
@@ -87,37 +124,36 @@ pub(super) fn compile_platform_snapshot(
         .map_err(|_| NativePlatformError::ProtocolInvariant)?,
         windows,
         close_observations,
-        WorkAreaRosterObservation::unknown(WorkAreaObservationGeneration::new(generation), reason),
+        work_areas,
     )
     .map_err(|_| NativePlatformError::ProtocolInvariant)
 }
 
-fn observed_root_capabilities() -> PlatformCapabilities {
+fn capabilities(profile: NativeHostProfile) -> PlatformCapabilities {
     let unsupported = |requirement| {
         PlatformCapability::unsupported(requirement, PlatformCapabilityReason::BackendUnsupported)
     };
+    let managed = |requirement| match profile {
+        NativeHostProfile::ObservedRoots => unsupported(requirement),
+        NativeHostProfile::ManagedDesktop => PlatformCapability::Supported,
+    };
     let mut capabilities = PlatformCapabilities::default();
-    capabilities
-        .set_native_window_lifecycle(unsupported(PlatformRequirement::NativeWindowLifecycle));
+    capabilities.set_native_window_lifecycle(managed(PlatformRequirement::NativeWindowLifecycle));
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-    capabilities.set_hovered_window(unsupported(PlatformRequirement::HoveredWindow));
+    capabilities.set_hovered_window(managed(PlatformRequirement::HoveredWindow));
+    capabilities.set_desktop_pointer_position(managed(PlatformRequirement::DesktopPointerPosition));
     capabilities
-        .set_desktop_pointer_position(unsupported(PlatformRequirement::DesktopPointerPosition));
+        .set_authoritative_button_state(managed(PlatformRequirement::AuthoritativeButtonState));
+    capabilities.set_global_window_placement(managed(PlatformRequirement::GlobalWindowPlacement));
+    capabilities.set_work_area(managed(PlatformRequirement::WorkArea));
     capabilities
-        .set_authoritative_button_state(unsupported(PlatformRequirement::AuthoritativeButtonState));
-    capabilities
-        .set_global_window_placement(unsupported(PlatformRequirement::GlobalWindowPlacement));
-    capabilities.set_work_area(unsupported(PlatformRequirement::WorkArea));
-    capabilities.set_pointer_hit_test_observation(unsupported(
-        PlatformRequirement::PointerHitTestObservation,
-    ));
-    capabilities
-        .set_pointer_hit_test_control(unsupported(PlatformRequirement::PointerHitTestControl));
+        .set_pointer_hit_test_observation(managed(PlatformRequirement::PointerHitTestObservation));
+    capabilities.set_pointer_hit_test_control(managed(PlatformRequirement::PointerHitTestControl));
     capabilities
         .set_global_focus_observation(unsupported(PlatformRequirement::GlobalFocusObservation));
     capabilities
         .set_window_activation_control(unsupported(PlatformRequirement::WindowActivationControl));
-    capabilities.set_close_cancellation(unsupported(PlatformRequirement::CloseCancellation));
+    capabilities.set_close_cancellation(managed(PlatformRequirement::CloseCancellation));
     capabilities
 }
 

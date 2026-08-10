@@ -481,14 +481,6 @@ fn exact_candidate_observation(
         PointerReceiverProbeRequest::HoverHit => vec![PointerReceiverProbeReceipt::HoverHit(
             hover.expect("the candidate requires a hover fact"),
         )],
-        PointerReceiverProbeRequest::DeliveryAndHoverHit => vec![
-            PointerReceiverProbeReceipt::Delivery(
-                delivery.expect("the candidate requires a delivery fact"),
-            ),
-            PointerReceiverProbeReceipt::HoverHit(
-                hover.expect("the candidate requires a hover fact"),
-            ),
-        ],
     };
     PointerReceiverObservation::Presented(
         PresentedPointerReceiverObservation::new(probes)

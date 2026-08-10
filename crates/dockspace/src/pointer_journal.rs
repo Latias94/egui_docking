@@ -58,6 +58,7 @@ impl SurfaceLocalPointerEndpoint {
 pub struct SurfaceLocalPointerScope {
     host: PresentationHostLease,
     endpoint: SurfaceLocalPointerEndpoint,
+    coordinate_generation: Option<CoordinateGeneration>,
 }
 
 impl SurfaceLocalPointerScope {
@@ -68,7 +69,26 @@ impl SurfaceLocalPointerScope {
     /// authority domains before minting a provider lease.
     #[must_use]
     pub const fn new(host: PresentationHostLease, endpoint: SurfaceLocalPointerEndpoint) -> Self {
-        Self { host, endpoint }
+        Self {
+            host,
+            endpoint,
+            coordinate_generation: None,
+        }
+    }
+
+    /// Describes a native surface-local provider frozen to one coordinate
+    /// authority generation.
+    #[must_use]
+    pub const fn new_native(
+        host: PresentationHostLease,
+        binding: ViewportBinding,
+        coordinate_generation: CoordinateGeneration,
+    ) -> Self {
+        Self {
+            host,
+            endpoint: SurfaceLocalPointerEndpoint::Native(binding),
+            coordinate_generation: Some(coordinate_generation),
+        }
     }
 
     /// Returns the presentation host which owns this local input lane.
@@ -87,6 +107,12 @@ impl SurfaceLocalPointerScope {
     #[must_use]
     pub const fn endpoint(self) -> SurfaceLocalPointerEndpoint {
         self.endpoint
+    }
+
+    /// Returns the frozen native coordinate generation, when present.
+    #[must_use]
+    pub const fn coordinate_generation(self) -> Option<CoordinateGeneration> {
+        self.coordinate_generation
     }
 }
 
