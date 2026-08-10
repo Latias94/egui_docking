@@ -22,7 +22,7 @@ impl NativePointerRouteSnapshot {
             PointerWindowRoute::None => Self::None,
             PointerWindowRoute::Window(window) => viewports
                 .binding_for_window(window)
-                .map_or(Self::Foreign, Self::Dock),
+                .map_or(Self::Unknown, Self::Dock),
             PointerWindowRoute::Foreign => Self::Foreign,
         }
     }
@@ -164,11 +164,15 @@ impl NativeWindowEventRecord {
         viewports: &NativeViewportMap,
     ) -> Self {
         let binding = viewports.binding_for_event(window_id, viewport_id);
-        let delivery = match binding {
-            Some(binding) => NativePointerRouteSnapshot::Dock(binding),
-            None if viewport_id.is_some() => NativePointerRouteSnapshot::Unknown,
-            None => NativePointerRouteSnapshot::Foreign,
-        };
+        // A callback window which is not in our current map is not evidence of
+        // a foreign receiver. It may be a newly-created viewport waiting for
+        // enrollment, a retired window whose callback arrived late, or a
+        // window owned by another host. Keep that distinction authoritative at
+        // the platform route layer instead of guessing from `viewport_id`.
+        let delivery = binding.map_or(
+            NativePointerRouteSnapshot::Unknown,
+            NativePointerRouteSnapshot::Dock,
+        );
         let pointer_routes = match &event {
             WindowEvent::CursorMoved { facts, .. }
             | WindowEvent::MouseWheel { facts, .. }
@@ -197,5 +201,61 @@ impl NativeWindowEventRecord {
             pointer_routes,
             event,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, MouseButton, PointerEventFacts};
+
+    #[test]
+    fn unmapped_callback_window_is_not_promoted_to_foreign_delivery() {
+        let window = WindowId::from(41);
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                surface_position: Some(PhysicalPosition::new(4.0, 5.0)),
+                ..PointerEventFacts::default()
+            },
+        };
+        let viewports = NativeViewportMap::default();
+
+        let record = NativeWindowEventRecord::from_parts(1, window, None, event, &viewports);
+
+        assert_eq!(
+            record
+                .pointer_routes()
+                .expect("pointer event keeps route facts")
+                .delivery(),
+            NativePointerRouteSnapshot::Unknown
+        );
+    }
+
+    #[test]
+    fn unmapped_winit_route_is_not_promoted_to_foreign_hover_or_capture() {
+        let window = WindowId::from(42);
+        let event = WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                hover: PointerWindowRoute::Window(window),
+                capture: PointerWindowRoute::Window(window),
+                ..PointerEventFacts::default()
+            },
+        };
+        let viewports = NativeViewportMap::default();
+
+        let record = NativeWindowEventRecord::from_parts(2, window, None, event, &viewports);
+        let routes = record
+            .pointer_routes()
+            .expect("pointer event keeps route facts");
+
+        assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
+        assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
     }
 }
