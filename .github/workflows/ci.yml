@@ -66,6 +66,12 @@ jobs:
           cargo test --manifest-path integration/egui-official-harness/Cargo.toml
           --locked
 
+      - name: Run default-feature product harness
+        run: >-
+          cargo nextest run
+          --manifest-path integration/egui-product-harness/Cargo.toml
+          --all-targets --locked -j1
+
   fork-native:
     name: Fork-backed native coordinator
     runs-on: ubuntu-latest

@@ -23,6 +23,7 @@ pub(crate) use measurement::measure_surface;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PointerActionAuthority {
     LocalResponses,
+    #[cfg(feature = "native-render-support")]
     ExternalJournal,
 }
 
