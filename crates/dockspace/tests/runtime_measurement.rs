@@ -5,8 +5,8 @@ use crate::ids::{ItemId, RootId, SurfaceId};
 use crate::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
 use crate::policy::{DockPolicy, TabBarVisibility};
 use crate::runtime::{
-    DockspaceInteractionError, DockspaceSession, DockspaceVisualKind, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, TabStripMetrics, UniformSurfaceMetrics,
+    DockPresentationConfig, DockspaceInteractionError, DockspaceSession, DockspaceVisualKind,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -15,13 +15,16 @@ const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 
 fn session() -> DockspaceSession {
-    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+    DockspaceSession::from_layout(layout(), DockPolicy::default())
+        .expect("measurement test session initializes")
+}
+
+fn layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
     )])
-    .expect("measurement test layout validates");
-    DockspaceSession::from_layout(layout, DockPolicy::default())
-        .expect("measurement test session initializes")
+    .expect("measurement test layout validates")
 }
 
 fn bounds() -> LogicalRect {
@@ -59,8 +62,9 @@ fn product_measurement_seam_hides_manifest_keys_and_builds_a_ready_plan() {
                 pane_items.insert(item);
                 SurfaceMeasurementAnswer::PaneMinimum(minimum())
             }
-            SurfaceMeasurementRequest::TabIntrinsic { visual, item } => {
+            SurfaceMeasurementRequest::TabIntrinsic { visual, bar, item } => {
                 assert_eq!(visual.kind(), DockspaceVisualKind::Tab);
+                assert_eq!(bar.kind(), DockspaceVisualKind::TabBar);
                 tab_items.insert(item);
                 SurfaceMeasurementAnswer::TabIntrinsic(96.0)
             }
@@ -82,12 +86,55 @@ fn product_measurement_seam_hides_manifest_keys_and_builds_a_ready_plan() {
     assert_eq!(tab_strips, 1);
 
     let mut paint = session.begin_host_frame().expect("paint frame begins");
-    assert!(
-        paint
-            .paint_plan(SURFACE)
-            .expect("ready plan lookup succeeds")
-            .is_some()
-    );
+    let plan = paint
+        .paint_plan(SURFACE)
+        .expect("ready plan lookup succeeds")
+        .expect("ready plan is paintable");
+    let bar = plan
+        .tab_bars()
+        .next()
+        .expect("the central tabs leaf has one tab bar")
+        .visual_id();
+    assert!(plan.panes().all(|pane| pane.tab_bar_visual_id() == bar));
+    assert!(plan.tabs().all(|tab| tab.tab_bar_visual_id() == bar));
+}
+
+#[test]
+fn explicit_presentation_config_controls_compiled_geometry() {
+    let config = DockPresentationConfig::builder()
+        .tab_bar_height(44.0)
+        .build()
+        .expect("custom presentation geometry validates");
+    let mut session = DockspaceSession::from_layout_with_presentation_config(
+        layout(),
+        DockPolicy::default(),
+        config,
+    )
+    .expect("custom presentation session initializes");
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("custom measurement frame begins");
+    frame
+        .measure_surface(
+            SURFACE,
+            UniformSurfaceMetrics::new(bounds(), minimum(), 96.0)
+                .expect("custom uniform metrics validate"),
+        )
+        .expect("custom surface measurement succeeds");
+    frame.commit().expect("custom measurement frame commits");
+
+    let mut paint = session
+        .begin_host_frame()
+        .expect("custom paint frame begins");
+    let bar = paint
+        .paint_plan(SURFACE)
+        .expect("custom paint plan lookup succeeds")
+        .expect("custom ready plan is paintable")
+        .tab_bars()
+        .next()
+        .expect("custom plan has one tab bar");
+    assert_eq!(bar.bounds().height(), 44.0);
 }
 
 #[test]

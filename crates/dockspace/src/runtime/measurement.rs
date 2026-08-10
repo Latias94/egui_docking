@@ -80,6 +80,8 @@ pub enum SurfaceMeasurementRequest {
     TabIntrinsic {
         /// Stable renderer identity of the tab.
         visual: DockspaceVisualId,
+        /// Stable renderer identity of the tab strip owning this tab.
+        bar: DockspaceVisualId,
         /// Product pane item represented by the tab.
         item: ItemId,
     },
@@ -222,6 +224,10 @@ impl DockspaceHostFrame<'_> {
                     key,
                     resolve(SurfaceMeasurementRequest::TabIntrinsic {
                         visual: DockspaceVisualId::from_tab_scene(tab),
+                        bar: DockspaceVisualId::from_tab_bar_scene(crate::scene::TabBarSceneId {
+                            root: tab.root,
+                            tabs: tab.tabs,
+                        }),
                         item: tab.item,
                     })
                     .into_tab_intrinsic()?,

@@ -7,14 +7,26 @@ use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::interaction::{InteractionPreview, PreviewVisual};
 use crate::model::DockspaceAxis;
-use crate::policy::TabBarInteraction;
 use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
-    ContainedRecord, ContainedResizeDirection, ContainedResizeRecord, PaneRecord, PresentationPlan,
-    SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterSceneId, TabBarRecord,
-    TabBarSceneId, TabRecord, TabSceneId, TabStripMemberVisibility,
+    ContainedRecord, ContainedResizeDirection, ContainedResizeRecord, PresentationPlan,
+    SplitterGapPresentation, SplitterGapRecord, SplitterJunctionId, SplitterJunctionRecord,
+    SplitterRecord, SplitterSceneId, TabBarSceneId, TabSceneId,
 };
+use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
+
+mod tab_chrome;
+mod tabs;
+pub use tab_chrome::{
+    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
+    TabStripControlKind, TabStripControlPaintRecord,
+};
+pub use tabs::{
+    PanePaintRecord, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
+    TabStripMemberVisibility,
+};
+
 /// Stable renderer identity whose structural storage remains core-private.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DockspaceVisualId(VisualIdentity);
@@ -24,7 +36,19 @@ enum VisualIdentity {
     Pane(crate::scene::PaneSceneId),
     Tab(TabSceneId),
     TabBar(TabBarSceneId),
+    TabStripControl(TabStripControlId),
+    TabListMenu(TabListMenuSessionId),
+    TabListMenuRow {
+        session: TabListMenuSessionId,
+        tab: TabSceneId,
+    },
+    TabListMenuBackdrop {
+        surface: SurfaceId,
+        session: TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+    },
     Splitter(SplitterSceneId),
+    SplitterGap(SplitterSceneId),
     SplitterJunction(SplitterJunctionId),
     Contained(FloatingPresentationId),
     DropGuide(DropGuideClusterId),
@@ -41,8 +65,18 @@ pub enum DockspaceVisualKind {
     Tab,
     /// One tab strip.
     TabBar,
+    /// One core-owned tab-strip scroll or menu control.
+    TabStripControl,
+    /// One open tab-list popup frame.
+    TabListMenu,
+    /// One item row within an open tab-list popup.
+    TabListMenuRow,
+    /// One full-surface popup backdrop.
+    TabListMenuBackdrop,
     /// One ordinary splitter.
     Splitter,
+    /// One structural splitter gap, including collapsed gaps.
+    SplitterGap,
     /// One atomic multi-splitter junction.
     SplitterJunction,
     /// One contained-floating presentation.
@@ -75,7 +109,12 @@ impl DockspaceVisualId {
             VisualIdentity::Pane(_) => DockspaceVisualKind::Pane,
             VisualIdentity::Tab(_) => DockspaceVisualKind::Tab,
             VisualIdentity::TabBar(_) => DockspaceVisualKind::TabBar,
+            VisualIdentity::TabStripControl(_) => DockspaceVisualKind::TabStripControl,
+            VisualIdentity::TabListMenu(_) => DockspaceVisualKind::TabListMenu,
+            VisualIdentity::TabListMenuRow { .. } => DockspaceVisualKind::TabListMenuRow,
+            VisualIdentity::TabListMenuBackdrop { .. } => DockspaceVisualKind::TabListMenuBackdrop,
             VisualIdentity::Splitter(_) => DockspaceVisualKind::Splitter,
+            VisualIdentity::SplitterGap(_) => DockspaceVisualKind::SplitterGap,
             VisualIdentity::SplitterJunction(_) => DockspaceVisualKind::SplitterJunction,
             VisualIdentity::Contained(_) => DockspaceVisualKind::Contained,
             VisualIdentity::DropGuide(_) => DockspaceVisualKind::DropGuide,
@@ -238,203 +277,33 @@ impl DockspaceDragPreview<'_> {
     }
 }
 
-/// Read-only tabs-leaf and pane-content geometry.
-#[derive(Debug, Clone, Copy)]
-pub struct PanePaintRecord<'plan> {
-    record: &'plan PaneRecord,
+/// Product-level visibility of one structural splitter gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SplitterGapVisibility {
+    /// The gap has a positive-area splitter presentation.
+    Rendered,
+    /// Compression removed the positive-area splitter presentation.
+    Collapsed,
 }
 
-impl PanePaintRecord<'_> {
+/// Read-only structural splitter-gap status.
+#[derive(Debug, Clone, Copy)]
+pub struct StructuralSplitterGapStatus {
+    record: SplitterGapRecord,
+}
+
+impl StructuralSplitterGapStatus {
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::Pane(self.record.id()))
+        DockspaceVisualId(VisualIdentity::SplitterGap(self.record.id()))
     }
 
     #[must_use]
-    pub const fn root(self) -> RootId {
-        self.record.id().root
-    }
-
-    #[must_use]
-    pub const fn bounds(self) -> LogicalRect {
-        self.record.bounds()
-    }
-
-    #[must_use]
-    pub const fn content_bounds(self) -> LogicalRect {
-        self.record.content_bounds()
-    }
-
-    #[must_use]
-    pub const fn selected(self) -> Option<ItemId> {
-        self.record.selected()
-    }
-
-    #[must_use]
-    pub const fn layer(self) -> DockspacePaintLayer {
-        DockspacePaintLayer::from_core(self.record.layer())
-    }
-}
-
-/// Read-only visible-tab geometry and state.
-#[derive(Debug, Clone, Copy)]
-pub struct TabPaintRecord<'plan> {
-    record: &'plan TabRecord,
-}
-
-impl TabPaintRecord<'_> {
-    #[must_use]
-    pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::Tab(*self.record.id()))
-    }
-
-    #[must_use]
-    pub const fn root(self) -> RootId {
-        self.record.id().root
-    }
-
-    #[must_use]
-    pub const fn item(self) -> ItemId {
-        self.record.id().item
-    }
-
-    #[must_use]
-    pub const fn full_bounds(self) -> LogicalRect {
-        self.record.full_bounds()
-    }
-
-    #[must_use]
-    pub const fn visible_bounds(self) -> LogicalRect {
-        self.record.visible_bounds()
-    }
-
-    #[must_use]
-    pub const fn text_bounds(self) -> LogicalRect {
-        self.record.text_bounds()
-    }
-
-    #[must_use]
-    pub const fn drag_bounds(self) -> LogicalRect {
-        self.record.drag_hit().rect()
-    }
-
-    #[must_use]
-    pub const fn close_visual_bounds(self) -> Option<LogicalRect> {
-        self.record.close_visual_bounds()
-    }
-
-    #[must_use]
-    pub const fn close_bounds(self) -> Option<LogicalRect> {
-        self.record.close_bounds()
-    }
-
-    #[must_use]
-    pub const fn selected(self) -> bool {
-        self.record.selected()
-    }
-
-    #[must_use]
-    pub const fn ordinal(self) -> usize {
-        self.record.ordinal()
-    }
-
-    #[must_use]
-    pub const fn layer(self) -> DockspacePaintLayer {
-        DockspacePaintLayer::from_core(self.record.layer())
-    }
-}
-
-/// Read-only member of one tab strip, including clipped visibility.
-#[derive(Debug, Clone, Copy)]
-pub struct TabStripMemberPaintRecord {
-    record: crate::scene::TabStripMemberRecord,
-}
-
-impl TabStripMemberPaintRecord {
-    #[must_use]
-    pub const fn item(self) -> ItemId {
-        self.record.tab().item
-    }
-
-    #[must_use]
-    pub const fn ordinal(self) -> usize {
-        self.record.ordinal()
-    }
-
-    #[must_use]
-    pub const fn full_bounds(self) -> LogicalRect {
-        self.record.full_bounds()
-    }
-
-    #[must_use]
-    pub const fn visibility(self) -> TabStripMemberVisibility {
-        self.record.visibility()
-    }
-}
-
-/// Read-only tab-bar geometry and overflow state.
-#[derive(Debug, Clone, Copy)]
-pub struct TabBarPaintRecord<'plan> {
-    record: &'plan TabBarRecord,
-}
-
-impl<'plan> TabBarPaintRecord<'plan> {
-    #[must_use]
-    pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::TabBar(*self.record.id()))
-    }
-
-    #[must_use]
-    pub const fn root(self) -> RootId {
-        self.record.id().root
-    }
-
-    #[must_use]
-    pub const fn bounds(self) -> LogicalRect {
-        self.record.bounds()
-    }
-
-    #[must_use]
-    pub const fn viewport(self) -> LogicalRect {
-        self.record.viewport()
-    }
-
-    #[must_use]
-    pub const fn scroll_offset(self) -> f64 {
-        self.record.scroll_offset()
-    }
-
-    #[must_use]
-    pub const fn maximum_scroll_offset(self) -> f64 {
-        self.record.maximum_scroll_offset()
-    }
-
-    #[must_use]
-    pub fn hidden_items(self) -> &'plan [ItemId] {
-        self.record.hidden_items()
-    }
-
-    pub fn members(self) -> impl ExactSizeIterator<Item = TabStripMemberPaintRecord> + 'plan {
-        self.record
-            .members()
-            .iter()
-            .copied()
-            .map(|record| TabStripMemberPaintRecord { record })
-    }
-
-    #[must_use]
-    pub const fn group_grip_bounds(self) -> Option<LogicalRect> {
-        self.record.group_grip_bounds()
-    }
-
-    #[must_use]
-    pub const fn interaction(self) -> TabBarInteraction {
-        self.record.interaction()
-    }
-
-    #[must_use]
-    pub const fn layer(self) -> DockspacePaintLayer {
-        DockspacePaintLayer::from_core(self.record.layer())
+    pub const fn visibility(self) -> SplitterGapVisibility {
+        match self.record.presentation() {
+            SplitterGapPresentation::Rendered => SplitterGapVisibility::Rendered,
+            SplitterGapPresentation::Collapsed => SplitterGapVisibility::Collapsed,
+        }
     }
 }
 
@@ -820,6 +689,44 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .tab_bar_records()
             .iter()
             .map(|record| TabBarPaintRecord { record })
+    }
+
+    pub fn tab_strip_controls(
+        self,
+    ) -> impl ExactSizeIterator<Item = TabStripControlPaintRecord> + 'frame {
+        self.plan
+            .tab_strip_control_records()
+            .iter()
+            .copied()
+            .map(|record| TabStripControlPaintRecord { record })
+    }
+
+    pub fn tab_list_menus(self) -> impl ExactSizeIterator<Item = TabListMenuPaintRecord<'frame>> {
+        self.plan
+            .tab_list_menu_records()
+            .iter()
+            .map(|record| TabListMenuPaintRecord { record })
+    }
+
+    pub fn tab_list_menu_backdrops(
+        self,
+    ) -> impl ExactSizeIterator<Item = TabListMenuBackdropPaintRecord> + 'frame {
+        let surface = self.surface;
+        self.plan
+            .tab_list_menu_backdrop_records()
+            .iter()
+            .copied()
+            .map(move |record| TabListMenuBackdropPaintRecord { surface, record })
+    }
+
+    pub fn splitter_gap_statuses(
+        self,
+    ) -> impl ExactSizeIterator<Item = StructuralSplitterGapStatus> + 'frame {
+        self.plan
+            .splitter_gap_records()
+            .iter()
+            .copied()
+            .map(|record| StructuralSplitterGapStatus { record })
     }
 
     pub fn splitters(self) -> impl ExactSizeIterator<Item = SplitterPaintRecord<'frame>> {

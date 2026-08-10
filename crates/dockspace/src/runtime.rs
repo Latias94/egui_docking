@@ -17,6 +17,7 @@ mod presentation;
 use native::NativePlatformError;
 
 pub use crate::model::{PreparedDockAction, WorkspaceVersion};
+pub use crate::presentation_config::DockPresentationConfig;
 pub use crate::transition::{ContentCloseRequestRejection, SurfaceCloseRequestRejection};
 pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
@@ -56,8 +57,11 @@ pub use paint::{
     ContainedPaintRecord, ContainedResizePaintRecord, DockspaceDragPreview, DockspaceGuideScope,
     DockspacePaintLayer, DockspacePreviewVisual, DockspaceReceiverDescriptor,
     DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind, DropGuidePaintRecord,
-    DropGuideTargetPaintRecord, PanePaintRecord, SplitterJunctionPaintRecord, SplitterPaintRecord,
-    SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
+    DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
+    SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
+    SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
+    TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
+    TabStripMemberPaintRecord, TabStripMemberVisibility,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
@@ -150,7 +154,33 @@ impl DockspaceSession {
         layout: DockspaceLayout,
         policy: crate::policy::DockPolicy,
     ) -> Result<Self, DockspaceRuntimeError> {
-        Self::from_workspace(layout.into_workspace(), policy)
+        Self::from_workspace_with_presentation_config(
+            layout.into_workspace(),
+            policy,
+            DockPresentationConfig::default(),
+        )
+    }
+
+    /// Creates one product session with explicit renderer-neutral geometry.
+    ///
+    /// Visual-only styling remains adapter-owned. This configuration controls
+    /// core layout and interaction geometry such as tab bars, splitters, guides,
+    /// contained chrome, and drag thresholds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the layout is invalid or the core cannot mint its
+    /// private presentation-host identity.
+    pub fn from_layout_with_presentation_config(
+        layout: DockspaceLayout,
+        policy: crate::policy::DockPolicy,
+        presentation_config: DockPresentationConfig,
+    ) -> Result<Self, DockspaceRuntimeError> {
+        Self::from_workspace_with_presentation_config(
+            layout.into_workspace(),
+            policy,
+            presentation_config,
+        )
     }
 
     /// Creates one backend session from a strictly validated runtime workspace and policy.
@@ -165,14 +195,20 @@ impl DockspaceSession {
         workspace: Workspace,
         policy: crate::policy::DockPolicy,
     ) -> Result<Self, DockspaceRuntimeError> {
-        Self::from_workspace(workspace, policy)
+        Self::from_workspace_with_presentation_config(
+            workspace,
+            policy,
+            DockPresentationConfig::default(),
+        )
     }
 
-    fn from_workspace(
+    fn from_workspace_with_presentation_config(
         workspace: crate::graph::Workspace,
         policy: crate::policy::DockPolicy,
+        presentation_config: DockPresentationConfig,
     ) -> Result<Self, DockspaceRuntimeError> {
-        let mut engine = DockEngine::new(workspace, policy)?;
+        let mut engine =
+            DockEngine::new_with_presentation_config(workspace, policy, presentation_config)?;
         let presentation_host = engine.create_presentation_host()?;
         Ok(Self {
             engine,
