@@ -158,7 +158,7 @@ impl NativeHostBridge {
         if records.event_boundary_pending {
             return Vec::new();
         }
-        let mut outputs: Vec<_> = records
+        let outputs: Vec<_> = records
             .journal
             .iter()
             .map_while(|record| match record {
@@ -167,11 +167,10 @@ impl NativeHostBridge {
             })
             .collect();
 
-        // Terminal callbacks are delivered independently of the viewport
-        // callback which created their output. The fork assigns a
-        // context-local completion ordinal precisely so a host cannot use
-        // callback arrival order as the renderer's causal order.
-        outputs.sort_by_key(|(result, _)| result.ordinal().get());
+        // Preserve the single callback journal order. Output ordinals are
+        // context-local generation identities, not a cross-viewport clock;
+        // comparing them here would let one viewport's result overtake an
+        // older event or another context's output.
         outputs
     }
 
