@@ -731,6 +731,9 @@ impl<'plan> DropGuidePaintRecord<'plan> {
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
     pub(super) surface: SurfaceId,
+    pub(super) authority_domain: crate::ids::EngineAuthorityDomainId,
+    pub(super) version: crate::model::WorkspaceVersion,
+    pub(super) scene: crate::scene::SurfaceSceneStamp,
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
@@ -741,6 +744,56 @@ impl<'frame> SurfacePaintPlan<'frame> {
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
         self.surface
+    }
+
+    /// Prepares a current-candidate tab selection without exposing scene identity.
+    #[must_use]
+    pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
+        let tab = self
+            .plan
+            .tab_records()
+            .iter()
+            .find(|record| record.id().item == item)?;
+        Some(super::PreparedSurfaceAction::select_tab(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            *tab.id(),
+        ))
+    }
+
+    /// Prepares a close request for one visible tab close control.
+    #[must_use]
+    pub fn prepare_tab_close(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
+        let tab = self
+            .plan
+            .tab_records()
+            .iter()
+            .find(|record| record.id().item == item && record.close_bounds().is_some())?;
+        Some(super::PreparedSurfaceAction::close(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::intent::CloseSceneTarget::Tab(*tab.id()),
+        ))
+    }
+
+    /// Prepares a close request for one visible contained-floating close control.
+    #[must_use]
+    pub fn prepare_contained_close(
+        self,
+        floating: FloatingPresentationId,
+    ) -> Option<super::PreparedSurfaceAction> {
+        self.plan
+            .contained_records()
+            .iter()
+            .find(|record| record.floating() == floating && record.close_bounds().is_some())?;
+        Some(super::PreparedSurfaceAction::close(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::intent::CloseSceneTarget::Contained(floating),
+        ))
     }
 
     #[must_use]

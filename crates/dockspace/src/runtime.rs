@@ -7,6 +7,7 @@
 //! authority.
 
 mod interaction;
+mod local_action;
 mod measurement;
 mod native;
 mod native_effect;
@@ -25,6 +26,8 @@ pub use interaction::{
     SurfaceScrollEvent, SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase,
     SurfaceScrollSequenceId,
 };
+pub use local_action::PreparedSurfaceAction;
+use local_action::PreparedSurfaceActionAuthorityMismatch;
 pub use measurement::{
     MeasurementValueError, SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabListMenuMetrics,
     TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
@@ -493,6 +496,27 @@ impl DockspaceHostFrame<'_> {
             .engine
             .accept_prepared_action(prepared)
             .map_err(DockspaceRuntimeError::prepared_action_authority_mismatch)?;
+        self.append(input)
+    }
+
+    /// Submits one action prepared from an exact paintable surface candidate.
+    ///
+    /// The action must be submitted before this frame publishes measurements or
+    /// other presentation contributions. Core revalidates the frozen scene,
+    /// workspace revision, policy, and topology when reducing the action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without poisoning the frame when the action belongs to
+    /// another dockspace session. Stale actions from this session are accepted
+    /// structurally and reported as [`HostInputOutcome::StaleRejected`].
+    pub fn submit_surface_action(
+        &mut self,
+        prepared: PreparedSurfaceAction,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let input = prepared
+            .into_engine_input(self.session.engine.authority_domain())
+            .map_err(DockspaceRuntimeError::prepared_surface_action_authority_mismatch)?;
         self.append(input)
     }
 
@@ -1141,6 +1165,9 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::ActionAuthority
             }
+            DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(_) => {
+                DockspaceRuntimeErrorKind::ActionAuthority
+            }
             DockspaceRuntimeErrorSource::SourceSequenceExhausted => {
                 DockspaceRuntimeErrorKind::SourceSequenceExhausted
             }
@@ -1207,6 +1234,14 @@ impl DockspaceRuntimeError {
             source: DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(error),
         }
     }
+
+    const fn prepared_surface_action_authority_mismatch(
+        error: PreparedSurfaceActionAuthorityMismatch,
+    ) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(error),
+        }
+    }
 }
 
 impl std::fmt::Display for DockspaceRuntimeError {
@@ -1229,6 +1264,8 @@ enum DockspaceRuntimeErrorSource {
     HostFrame(Box<CoreHostFrameError>),
     #[error(transparent)]
     PreparedActionAuthorityMismatch(PreparedDockActionAuthorityMismatch),
+    #[error(transparent)]
+    PreparedSurfaceActionAuthorityMismatch(PreparedSurfaceActionAuthorityMismatch),
     #[error("application input source sequence is exhausted")]
     SourceSequenceExhausted,
     #[error("surface {surface} has no paintable presentation obligation in this frame")]

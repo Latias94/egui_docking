@@ -779,6 +779,9 @@ impl DockspaceHostFrame<'_> {
         let candidate = scene.candidate();
         Ok(Some(SurfacePaintPlan {
             surface,
+            authority_domain: self.session.engine.authority_domain(),
+            version: view.version(),
+            scene: candidate.stamp(),
             output: candidate.output_ticket(),
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),

@@ -81,6 +81,8 @@ mod reducer_ticks;
 mod rootless_structural;
 #[path = "../tests/runtime_measurement.rs"]
 mod runtime_measurement;
+#[path = "../tests/runtime_surface_actions.rs"]
+mod runtime_surface_actions;
 #[path = "../tests/splitter_resize_regressions.rs"]
 mod splitter_resize_regressions;
 #[path = "../tests/surface_scene_exchange.rs"]

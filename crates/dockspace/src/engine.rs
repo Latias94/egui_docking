@@ -2048,7 +2048,6 @@ impl DockEngine {
         DockspaceView::new(&self.workspace)
     }
 
-    #[cfg(feature = "serde")]
     pub(crate) const fn authority_domain(&self) -> EngineAuthorityDomainId {
         self.authority_domain
     }
