@@ -4,8 +4,8 @@ use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceRuntimeError, PaintedSurfaceOutput, SurfacePresentationReportError,
 };
-use egui_dockspace::DockspaceError;
 use eframe::{NativeOutputToken, egui::ViewportId};
+use egui_dockspace::DockspaceError;
 use thiserror::Error;
 use winit::window::WindowId;
 

@@ -297,7 +297,14 @@ impl Dockspace {
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
         {
-            let paint = product_render::paint_surface(ui, self.id, plan, panes, &self.style);
+            let paint = product_render::paint_surface(
+                ui,
+                self.id,
+                plan,
+                panes,
+                &self.style,
+                product_render::PointerActionAuthority::LocalResponses,
+            );
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
             for action in paint.actions {

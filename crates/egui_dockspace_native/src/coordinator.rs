@@ -20,10 +20,10 @@ use winit::window::WindowId;
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
-use crate::viewport_map::NativeViewportMap;
+use crate::mailbox::NativeHostBridge;
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
-use crate::mailbox::NativeHostBridge;
+use crate::viewport_map::NativeViewportMap;
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
 /// Sole native coordinator for one renderer-neutral docking session.
@@ -491,22 +491,18 @@ impl NativeHostFrame<'_> {
         panes: &dyn PaneView,
         style: &DockStyle,
     ) -> Result<(), NativeRuntimeError> {
-        egui_dockspace::native_support::measure_surface(
-            &mut self.frame,
-            surface,
-            ui,
-            panes,
-            style,
-        )
-        .map(|_| ())
-        .map_err(Into::into)
+        egui_dockspace::native_support::measure_surface(&mut self.frame, surface, ui, panes, style)
+            .map(|_| ())
+            .map_err(Into::into)
     }
 
     pub(crate) fn confirm_surface_painted(
         &mut self,
         surface: SurfaceId,
     ) -> Result<(), NativeRuntimeError> {
-        self.frame.confirm_surface_painted(surface).map_err(Into::into)
+        self.frame
+            .confirm_surface_painted(surface)
+            .map_err(Into::into)
     }
 
     /// Commits the core frame and releases all presentation records included in

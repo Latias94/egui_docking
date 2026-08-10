@@ -20,6 +20,18 @@ use crate::style::DockStyle;
 use measurement::PaintResources;
 pub(crate) use measurement::measure_surface;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerActionAuthority {
+    LocalResponses,
+    ExternalJournal,
+}
+
+impl PointerActionAuthority {
+    const fn accepts_local_pointer_actions(self) -> bool {
+        matches!(self, Self::LocalResponses)
+    }
+}
+
 struct RenderContext<'ui, 'plan> {
     ui: &'ui mut Ui,
     instance_id: Id,
@@ -29,6 +41,7 @@ struct RenderContext<'ui, 'plan> {
     resources: &'ui PaintResources,
     actions: &'ui mut Vec<PreparedSurfaceAction>,
     defer_measurement: &'ui mut bool,
+    pointer_authority: PointerActionAuthority,
 }
 
 impl RenderContext<'_, '_> {
@@ -50,6 +63,7 @@ pub(crate) fn paint_surface(
     plan: SurfacePaintPlan<'_>,
     panes: &mut dyn PaneView,
     style: &DockStyle,
+    pointer_authority: PointerActionAuthority,
 ) -> ProductPaintOutput {
     let resources = PaintResources::from_plan(plan, ui, panes, style);
     let mut actions = Vec::new();
@@ -81,6 +95,7 @@ pub(crate) fn paint_surface(
             resources: &resources,
             actions: &mut actions,
             defer_measurement: &mut defer_measurement,
+            pointer_authority,
         };
         for root in main_roots {
             tabs::paint_root(&mut context, root);

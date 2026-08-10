@@ -86,7 +86,8 @@ pub(crate) fn paint_controls(
                 CursorIcon::Grab
             });
         }
-        if let Some(phase) = gesture_phase(&response)
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && let Some(phase) = gesture_phase(&response)
             && let Some(action) = context
                 .plan
                 .prepare_contained_title_gesture(contained.floating(), phase)
@@ -123,7 +124,8 @@ pub(crate) fn paint_controls(
             ],
             stroke,
         );
-        if response.clicked()
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && response.clicked()
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
             context.actions.push(action);
@@ -147,7 +149,8 @@ pub(crate) fn paint_controls(
                 .ctx()
                 .set_cursor_icon(resize_cursor(resize.direction()));
         }
-        if let Some(phase) = gesture_phase(&response)
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && let Some(phase) = gesture_phase(&response)
             && let Some(action) = context.plan.prepare_contained_resize_gesture(
                 contained.floating(),
                 resize.direction(),

@@ -72,7 +72,14 @@ pub fn paint_surface(
         });
     };
 
-    let painted = product_render::paint_surface(ui, instance_id, plan, panes, style);
+    let painted = product_render::paint_surface(
+        ui,
+        instance_id,
+        plan,
+        panes,
+        style,
+        product_render::PointerActionAuthority::ExternalJournal,
+    );
     for action in painted.actions {
         frame
             .submit_surface_action(action)

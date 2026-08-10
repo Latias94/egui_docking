@@ -140,7 +140,9 @@ fn capture_tab_actions(
         input.has_accesskit_action_request(id, Action::Click)
             || input.has_accesskit_action_request(id, Action::Focus)
     });
-    if response.clicked_by(PointerButton::Primary) || keyboard_activation || accesskit_activation {
+    let pointer_activation = context.pointer_authority.accepts_local_pointer_actions()
+        && response.clicked_by(PointerButton::Primary);
+    if pointer_activation || keyboard_activation || accesskit_activation {
         response.request_focus();
         if !tab.selected()
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
@@ -148,7 +150,8 @@ fn capture_tab_actions(
             context.actions.push(action);
         }
     }
-    if let Some(phase) = gesture_phase(response)
+    if context.pointer_authority.accepts_local_pointer_actions()
+        && let Some(phase) = gesture_phase(response)
         && let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
     {
         context.push_preview_gesture_action(action);
@@ -194,7 +197,9 @@ fn paint_close(context: &mut RenderContext<'_, '_>, item: ItemId, rect: egui::Re
     let accesskit = context
         .ui
         .input(|input| input.has_accesskit_action_request(id, Action::Click));
-    if (response.clicked_by(PointerButton::Primary) || accesskit)
+    let pointer_activation = context.pointer_authority.accepts_local_pointer_actions()
+        && response.clicked_by(PointerButton::Primary);
+    if (pointer_activation || accesskit)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
         context.actions.push(action);

@@ -48,7 +48,8 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: RootId) {
                 DockspaceAxis::Vertical => CursorIcon::ResizeVertical,
             });
         }
-        if let Some(phase) = gesture_phase(&response)
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && let Some(phase) = gesture_phase(&response)
             && let Some(action) = context
                 .plan
                 .prepare_splitter_gesture(splitter.visual_id(), phase)
