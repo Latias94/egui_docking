@@ -496,13 +496,13 @@ impl NativeCoordinator {
         token: NativeOutputToken,
         output: PaintedSurfaceOutput,
     ) -> Result<(), NativeOutputBindingError> {
-        if !self.bridge.has_output_reservation(token) {
+        let Some(reservation) = self.bridge.output_reservation(token) else {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::TokenNotReserved,
                 token,
                 output,
             ));
-        }
+        };
         if self.pending_outputs.contains_key(&token) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::OutputAlreadyBound,
@@ -510,11 +510,12 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        let binding = self
+        let current_binding = self
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .binding_for_event(token.window_id(), Some(token.viewport_id()));
+        let binding = reservation.binding().or(current_binding);
         let Some(binding) = binding else {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::RouteUnavailable,
@@ -522,6 +523,13 @@ impl NativeCoordinator {
                 output,
             ));
         };
+        if reservation.binding().is_some() && current_binding != Some(binding) {
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::BindingMismatch,
+                token,
+                output,
+            ));
+        }
         if !output.matches_native_binding(binding) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::BindingMismatch,

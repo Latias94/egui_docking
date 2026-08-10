@@ -59,6 +59,13 @@ impl OutputReservation {
         }
     }
 
+    pub(crate) const fn bound(binding: NativeSurfaceBinding) -> Self {
+        Self {
+            binding: Some(binding),
+            terminal_recorded: false,
+        }
+    }
+
     pub(crate) fn attach(&mut self, binding: NativeSurfaceBinding) -> bool {
         if let Some(existing) = self.binding {
             return existing == binding;
@@ -67,9 +74,83 @@ impl OutputReservation {
         true
     }
 
-    #[cfg(test)]
     pub(crate) const fn binding(self) -> Option<NativeSurfaceBinding> {
         self.binding
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
+    };
+    use dockspace::policy::DockPolicy;
+    use dockspace::runtime::DockspaceSession;
+
+    use super::*;
+
+    fn bindings() -> (NativeSurfaceBinding, NativeSurfaceBinding) {
+        let layout = DockspaceLayout::new([
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(1),
+                DockspaceRootLayout::new(
+                    RootId::new(1),
+                    DockspaceNode::central_tabs([ItemId::new(1)]),
+                ),
+            ),
+            DockspaceSurfaceLayout::new(
+                SurfaceId::new(2),
+                DockspaceRootLayout::new(
+                    RootId::new(2),
+                    DockspaceNode::central_tabs([ItemId::new(2)]),
+                ),
+            ),
+        ])
+        .expect("test layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("test session initializes");
+        session
+            .enable_managed_native_host(dockspace::runtime::NativePointerRoster::Exact(Vec::new()))
+            .expect("native host enrolls");
+        session
+            .register_native_root(
+                SurfaceId::new(1),
+                dockspace::runtime::HostWindowToken::new(1),
+            )
+            .expect("first root registers");
+        session
+            .register_native_root(
+                SurfaceId::new(2),
+                dockspace::runtime::HostWindowToken::new(2),
+            )
+            .expect("second root registers");
+        let mut frame = session
+            .begin_host_frame()
+            .expect("registration frame begins");
+        frame
+            .complete_unpainted_surfaces(dockspace::runtime::SurfaceUnavailableReason::Deferred)
+            .expect("registration surfaces settle");
+        let report = frame.commit().expect("registration frame commits");
+        let mut found = report.inputs().iter().filter_map(|input| match input {
+            dockspace::runtime::HostInputOutcome::NativeSurfaceRegistered { binding } => {
+                Some(*binding)
+            }
+            _ => None,
+        });
+        (
+            found.next().expect("first binding exists"),
+            found.next().expect("second binding exists"),
+        )
+    }
+
+    #[test]
+    fn output_reservation_keeps_the_binding_seen_at_begin() {
+        let (first, second) = bindings();
+        let mut reservation = OutputReservation::bound(first);
+
+        assert!(!reservation.attach(second));
+        assert_eq!(reservation.binding(), Some(first));
     }
 }
 
@@ -91,12 +172,18 @@ impl HostRecords {
         }
     }
 
-    fn reserve_output(&mut self, token: NativeOutputToken) -> bool {
+    fn reserve_output(
+        &mut self,
+        token: NativeOutputToken,
+        binding: Option<NativeSurfaceBinding>,
+    ) -> bool {
         if !self.active || self.output_reservations.contains_key(&token) {
             return false;
         }
-        self.output_reservations
-            .insert(token, OutputReservation::unbound());
+        self.output_reservations.insert(
+            token,
+            binding.map_or_else(OutputReservation::unbound, OutputReservation::bound),
+        );
         true
     }
 
@@ -249,11 +336,14 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn reserve_output(&self, token: NativeOutputToken) -> bool {
-        self.lock().reserve_output(token)
+        let binding = self
+            .lock_viewports()
+            .binding_for_event(token.window_id(), Some(token.viewport_id()));
+        self.lock().reserve_output(token, binding)
     }
 
-    pub(crate) fn has_output_reservation(&self, token: NativeOutputToken) -> bool {
-        self.lock().output_reservations.contains_key(&token)
+    pub(crate) fn output_reservation(&self, token: NativeOutputToken) -> Option<OutputReservation> {
+        self.lock().output_reservations.get(&token).copied()
     }
 
     pub(crate) fn attach_output_binding(
