@@ -11,6 +11,7 @@
 mod coordinator;
 mod error;
 mod event;
+mod mailbox;
 mod viewport_map;
 
 pub use error::{

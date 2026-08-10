@@ -1,7 +1,7 @@
 //! Thin coordinator between eframe callbacks and the renderer-neutral session.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
@@ -12,8 +12,7 @@ use dockspace::runtime::{
     NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
 };
 use eframe::{
-    NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputStatus, NativeOutputToken,
-    NativeWindowEvent, egui::ViewportId,
+    NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, egui::ViewportId,
 };
 use egui_dockspace::{DockStyle, PaneView};
 use winit::window::WindowId;
@@ -22,261 +21,10 @@ use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
 use crate::viewport_map::NativeViewportMap;
+#[cfg(test)]
+use crate::mailbox::{HostRecord, OutputReservation};
+use crate::mailbox::NativeHostBridge;
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
-
-#[derive(Debug, Clone)]
-enum HostRecord {
-    WindowEvent(NativeWindowEventRecord),
-    Output {
-        result: NativeOutputResult,
-        submitted: bool,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct OutputReservation {
-    binding: Option<NativeSurfaceBinding>,
-    terminal_recorded: bool,
-}
-
-impl OutputReservation {
-    const fn unbound() -> Self {
-        Self {
-            binding: None,
-            terminal_recorded: false,
-        }
-    }
-
-    fn attach(&mut self, binding: NativeSurfaceBinding) -> bool {
-        if let Some(existing) = self.binding {
-            return existing == binding;
-        }
-        self.binding = Some(binding);
-        true
-    }
-}
-
-#[derive(Debug)]
-struct HostRecords {
-    active: bool,
-    journal: VecDeque<HostRecord>,
-    output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
-    event_boundary_pending: bool,
-}
-
-impl HostRecords {
-    fn active() -> Self {
-        Self {
-            active: true,
-            journal: VecDeque::new(),
-            output_reservations: BTreeMap::new(),
-            event_boundary_pending: false,
-        }
-    }
-
-    fn reserve_output(&mut self, token: NativeOutputToken) -> bool {
-        if !self.active || self.output_reservations.contains_key(&token) {
-            return false;
-        }
-        self.output_reservations
-            .insert(token, OutputReservation::unbound());
-        true
-    }
-
-    fn attach_output_binding(
-        &mut self,
-        token: NativeOutputToken,
-        binding: NativeSurfaceBinding,
-    ) -> bool {
-        let Some(reservation) = self.output_reservations.get_mut(&token) else {
-            return false;
-        };
-        reservation.attach(binding)
-    }
-
-    fn record_output(&mut self, result: NativeOutputResult) -> bool {
-        let Some(reservation) = self.output_reservations.get_mut(&result.token()) else {
-            return false;
-        };
-        if !self.active || reservation.terminal_recorded {
-            return false;
-        }
-        reservation.terminal_recorded = true;
-        self.journal.push_back(HostRecord::Output {
-            result,
-            submitted: false,
-        });
-        true
-    }
-
-    fn deactivate(&mut self) {
-        self.active = false;
-        self.journal.clear();
-        self.output_reservations.clear();
-        self.event_boundary_pending = false;
-    }
-}
-
-#[derive(Debug)]
-struct NativeHostBridge {
-    records: Mutex<HostRecords>,
-    viewports: Arc<Mutex<NativeViewportMap>>,
-}
-
-impl NativeHostBridge {
-    fn new(viewports: Arc<Mutex<NativeViewportMap>>) -> Self {
-        Self {
-            records: Mutex::new(HostRecords::active()),
-            viewports,
-        }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, HostRecords> {
-        self.records.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn lock_viewports(&self) -> MutexGuard<'_, NativeViewportMap> {
-        self.viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn front_event(&self) -> Option<NativeWindowEventRecord> {
-        match self.lock().journal.front() {
-            Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
-            Some(HostRecord::Output { .. }) | None => None,
-        }
-    }
-
-    fn acknowledge_event(&self, ordinal: u64) -> bool {
-        let mut records = self.lock();
-        let matches = matches!(
-            records.journal.front(),
-            Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
-        );
-        if matches {
-            records.journal.pop_front();
-            records.event_boundary_pending = true;
-        }
-        matches
-    }
-
-    fn output_prefix(&self) -> Vec<(NativeOutputResult, bool)> {
-        let records = self.lock();
-        if records.event_boundary_pending {
-            return Vec::new();
-        }
-        records
-            .journal
-            .iter()
-            .map_while(|record| match record {
-                HostRecord::Output { result, submitted } => Some((*result, *submitted)),
-                HostRecord::WindowEvent(_) => None,
-            })
-            .collect()
-    }
-
-    fn reserve_output(&self, token: NativeOutputToken) -> bool {
-        self.lock().reserve_output(token)
-    }
-
-    fn has_output_reservation(&self, token: NativeOutputToken) -> bool {
-        self.lock().output_reservations.contains_key(&token)
-    }
-
-    fn attach_output_binding(
-        &self,
-        token: NativeOutputToken,
-        binding: NativeSurfaceBinding,
-    ) -> bool {
-        self.lock().attach_output_binding(token, binding)
-    }
-
-    fn mark_output_submitted(&self, token: NativeOutputToken) -> bool {
-        let mut records = self.lock();
-        let Some(HostRecord::Output { result, submitted }) = records.journal.iter_mut().find(
-            |record| matches!(record, HostRecord::Output { result, .. } if result.token() == token),
-        ) else {
-            return false;
-        };
-        if result.token() != token {
-            return false;
-        }
-        *submitted = true;
-        true
-    }
-
-    fn abandon_output(&self, token: NativeOutputToken) -> bool {
-        let mut records = self.lock();
-        if records.journal.iter().any(|record| {
-            matches!(
-                record,
-                HostRecord::Output {
-                    result,
-                    submitted: true,
-                } if result.token() == token
-            )
-        }) {
-            return false;
-        }
-        let previous_len = records.journal.len();
-        records.journal.retain(|record| {
-            !matches!(record, HostRecord::Output { result, .. } if result.token() == token)
-        });
-        let removed_reservation = records.output_reservations.remove(&token).is_some();
-        removed_reservation || records.journal.len() != previous_len
-    }
-
-    fn commit_frame_boundary(&self) {
-        let mut records = self.lock();
-        records.event_boundary_pending = false;
-        while matches!(
-            records.journal.front(),
-            Some(HostRecord::Output {
-                submitted: true,
-                ..
-            })
-        ) {
-            let Some(HostRecord::Output { result, .. }) = records.journal.pop_front() else {
-                unreachable!("matched output record must still be at the journal head");
-            };
-            records.output_reservations.remove(&result.token());
-        }
-    }
-
-    fn deactivate(&self) {
-        self.lock().deactivate();
-    }
-
-    #[cfg(test)]
-    fn event_boundary_pending(&self) -> bool {
-        self.lock().event_boundary_pending
-    }
-}
-
-impl NativeHostHandler for NativeHostBridge {
-    fn on_window_event(&self, event: NativeWindowEvent<'_>) {
-        let binding = self
-            .lock_viewports()
-            .binding_for_event(event.window_id(), event.viewport_id());
-        let record = NativeWindowEventRecord::from_eframe(event, binding);
-        let mut records = self.lock();
-        if records.active {
-            records.journal.push_back(HostRecord::WindowEvent(record));
-        }
-    }
-
-    fn on_output_begin(&self, token: NativeOutputToken) {
-        self.reserve_output(token);
-    }
-
-    fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
-        if !self.lock().record_output(result) {
-            return NativeHostWake::Wait;
-        }
-        NativeHostWake::RepaintRoot
-    }
-}
 
 /// Sole native coordinator for one renderer-neutral docking session.
 ///
@@ -950,9 +698,9 @@ mod tests {
         let (first, second) = register_roots(&mut coordinator);
         let mut reservation = OutputReservation::unbound();
 
-        assert_eq!(reservation.binding, None);
+        assert_eq!(reservation.binding(), None);
         assert!(reservation.attach(second));
-        assert_eq!(reservation.binding, Some(second));
+        assert_eq!(reservation.binding(), Some(second));
         assert!(reservation.attach(second));
         assert!(!reservation.attach(first));
     }
@@ -974,9 +722,7 @@ mod tests {
         );
         coordinator
             .bridge
-            .lock()
-            .journal
-            .push_back(HostRecord::WindowEvent(event));
+            .push_record(HostRecord::WindowEvent(event));
 
         let pending = coordinator
             .next_window_event()
