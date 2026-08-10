@@ -118,7 +118,6 @@ impl DockEngine {
                     cause,
                     owner,
                     session,
-                    scene,
                     current,
                     policy,
                     events,
@@ -140,7 +139,6 @@ impl DockEngine {
                 )
             }
         };
-
         Ok(InputOutcome::InteractionProcessed {
             outcome,
             version: self.version,
@@ -188,16 +186,19 @@ impl DockEngine {
         cause: ReductionCause,
         owner: GestureOwner,
         session: ContainedTransformSessionId,
-        scene: SurfaceSceneStamp,
         current: LogicalPoint,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let placement = match self
-            .resolve_local_contained_transform_placement(owner, session, scene, current)
-        {
-            Ok(placement) => placement,
+        let (placement, preview) = match self.publish_contained_transform_preview_at_point(
+            cause,
+            owner,
+            session,
+            current,
+            interaction_events,
+        )? {
+            Ok(publication) => publication,
             Err(rejection) => {
                 let _ = self.interaction.take_contained_transform_for_release(
                     session,
@@ -219,15 +220,14 @@ impl DockEngine {
                 InteractionRejection::PreviewMissing,
             ));
         };
-        if painted.placement() != placement {
+        if painted.placement() != placement || painted.public() != &preview {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::ContainedTransformChanged,
             ));
         }
         if !painted.painted() {
-            return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::PreviewNotPainted,
-            ));
+            return self
+                .defer_contained_transform_release(cause, session, transform, placement, policy);
         }
         self.deliver_contained_transform_release(
             cause,
@@ -305,39 +305,5 @@ impl DockEngine {
             return Err(InteractionRejection::StaleScene);
         }
         Ok(())
-    }
-
-    fn resolve_local_contained_transform_placement(
-        &self,
-        owner: GestureOwner,
-        session: ContainedTransformSessionId,
-        scene: SurfaceSceneStamp,
-        current: LogicalPoint,
-    ) -> Result<ContainedTransformPlacement, InteractionRejection> {
-        let transform = self
-            .interaction
-            .active_contained_transform(session)
-            .map_err(|_| InteractionRejection::NoActiveGesture)?
-            .clone();
-        if transform.owner != owner {
-            return Err(InteractionRejection::SessionMismatch);
-        }
-        self.validate_local_contained_scene(scene, session)?;
-        let requested =
-            contained_transform_requested_rect(&transform, current, transform.surface_bounds)
-                .map_err(|()| InteractionRejection::ContainedTransformGeometryUnavailable)?;
-        let rect = match transform.kind {
-            ContainedTransformKind::Move => {
-                clamp_moved_contained_rect(transform.surface_bounds, requested)
-                    .map_err(|()| InteractionRejection::ContainedTransformGeometryUnavailable)?
-            }
-            ContainedTransformKind::Resize(_) => requested,
-        };
-        Ok(ContainedTransformPlacement::new(
-            scene,
-            transform.surface,
-            transform.surface_bounds,
-            rect,
-        ))
     }
 }

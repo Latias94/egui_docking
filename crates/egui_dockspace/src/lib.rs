@@ -21,6 +21,7 @@ mod error_detail;
 #[cfg(not(any(feature = "backend", test)))]
 #[path = "product_error_detail.rs"]
 mod error_detail;
+mod guide_paint;
 // The legacy reducer-backed adapter is intentionally isolated from the default
 // product facade. This prevents two docking authorities from coexisting in a
 // normal crates.io build while preserving the migration/test backend.

@@ -591,9 +591,11 @@ impl DockEngine {
             return Ok(outcomes);
         }
         if !painted.painted() {
-            outcomes.push(self.defer_journal_contained_transform_release(
-                cause, session, transform, placement, policy,
-            )?);
+            outcomes.push(
+                self.defer_contained_transform_release(
+                    cause, session, transform, placement, policy,
+                )?,
+            );
             return Ok(outcomes);
         }
         outcomes.push(self.deliver_contained_transform_release(
@@ -608,7 +610,7 @@ impl DockEngine {
         Ok(outcomes)
     }
 
-    fn defer_journal_contained_transform_release(
+    pub(super) fn defer_contained_transform_release(
         &mut self,
         cause: ReductionCause,
         session: ContainedTransformSessionId,

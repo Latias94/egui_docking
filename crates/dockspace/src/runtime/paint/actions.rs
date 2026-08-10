@@ -58,6 +58,34 @@ impl ContainedResizeDirection {
 }
 
 impl SurfacePaintPlan<'_> {
+    /// Prepares an exact acknowledgement after the renderer painted this plan's
+    /// current docking preview.
+    #[must_use]
+    pub fn prepare_drag_preview_painted(self) -> Option<PreparedSurfaceAction> {
+        let preview = self.drag_preview?;
+        Some(PreparedSurfaceAction::acknowledge_preview(
+            self.authority_domain,
+            self.version,
+            self.surface,
+            preview.acknowledgement(),
+        ))
+    }
+
+    /// Prepares an exact acknowledgement after the renderer painted this plan's
+    /// current contained-floating transform preview.
+    #[must_use]
+    pub fn prepare_contained_transform_preview_painted(self) -> Option<PreparedSurfaceAction> {
+        let preview = self.contained_transform_preview?;
+        Some(
+            PreparedSurfaceAction::acknowledge_contained_transform_preview(
+                self.authority_domain,
+                self.version,
+                self.surface,
+                preview.acknowledgement(),
+            ),
+        )
+    }
+
     /// Prepares one tab drag phase from this exact candidate.
     #[must_use]
     pub fn prepare_tab_gesture(

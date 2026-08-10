@@ -151,7 +151,7 @@ fn capture_tab_actions(
     if let Some(phase) = gesture_phase(response)
         && let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
     {
-        context.actions.push(action);
+        context.push_preview_gesture_action(action);
     }
 
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {

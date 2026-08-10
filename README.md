@@ -37,11 +37,13 @@ renderer-neutral `DockspaceSession` and treats the current egui `Response` as
 local receiver evidence. A Ready single-surface frame can perform
 revision-bound tab selection/close and emit current-pass tab, splitter, and
 contained gesture actions without inventing a post-`FullOutput` renderer fact.
-The product renderer still does not expose active four-way guide affordances,
-overflow-menu actions, retained pointer receivers, or native multi-viewport
-ownership. Output publication remains paint-only in the renderer-settlement
-sense; those missing capabilities are deliberate release blockers rather than
-heuristic fallbacks.
+Tab dragging now paints the complete core-owned center/four-way guide cluster,
+including exact active and rejected states, and commits the same target that
+was previewed. The product renderer still does not expose overflow-menu
+actions, retained pointer receivers, or native multi-viewport ownership.
+Output publication remains paint-only in the renderer-settlement sense; those
+missing capabilities are deliberate release blockers rather than heuristic
+fallbacks.
 
 The base adapter keeps the application-facing API at the crate root. Custom
 hosts opt into the low-level `backend` feature and use the
@@ -134,8 +136,8 @@ effect, and viewport lifecycle path.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example uses the default
 single-surface product facade and is suitable for checking local tab and
-contained/splitter feedback. It is not a native multi-viewport demo and does
-not yet represent the final four-way docking UX.
+contained/splitter feedback, including core-owned center and four-way docking
+guides. It is not a native multi-viewport demo.
 
 ## License
 

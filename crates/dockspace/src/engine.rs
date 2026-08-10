@@ -3489,10 +3489,43 @@ impl DockEngine {
 
     fn reduce_preview_acknowledgement(
         &mut self,
+        cause: ReductionCause,
         expected: WorkspaceVersion,
         acknowledgement: &PaintAcknowledgement,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.reduce_versioned_interaction(expected, |engine| {
+            if engine.pending_drag_release.as_ref().is_some_and(|pending| {
+                matches!(pending.drag.owner, GestureOwner::LocalResponse { .. })
+            }) {
+                let acknowledged = engine
+                    .pending_drag_release
+                    .as_mut()
+                    .and_then(|pending| pending.drag.preview.as_mut())
+                    .ok_or(EngineError::ReductionCauseInvariant {
+                        detail: "a local pending drag release lost its preview",
+                    })?
+                    .acknowledge(acknowledgement);
+                if let Err(error) = acknowledged {
+                    return Ok(InteractionOutcome::Rejected(error));
+                }
+                let pending = engine
+                    .pending_drag_release
+                    .take()
+                    .expect("validated local pending drag release remains present");
+                return engine.deliver_drag_release(
+                    cause,
+                    pending.focus_causal,
+                    pending.session,
+                    pending.drag,
+                    pending.release_decision,
+                    policy,
+                    events,
+                    interaction_events,
+                );
+            }
             Ok(
                 match engine.interaction.acknowledge_preview(acknowledgement) {
                     Ok((session, changed)) => {
@@ -3506,10 +3539,46 @@ impl DockEngine {
 
     fn reduce_contained_transform_preview_acknowledgement(
         &mut self,
+        cause: ReductionCause,
         expected: WorkspaceVersion,
         acknowledgement: ContainedTransformPaintAcknowledgement,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.reduce_versioned_interaction(expected, |engine| {
+            if engine
+                .pending_contained_transform_release
+                .as_ref()
+                .is_some_and(|pending| {
+                    matches!(pending.transform.owner, GestureOwner::LocalResponse { .. })
+                })
+            {
+                let acknowledged = engine
+                    .pending_contained_transform_release
+                    .as_mut()
+                    .and_then(|pending| pending.transform.preview.as_mut())
+                    .ok_or(EngineError::ReductionCauseInvariant {
+                        detail: "a local pending contained release lost its preview",
+                    })?
+                    .acknowledge(acknowledgement);
+                if let Err(error) = acknowledged {
+                    return Ok(InteractionOutcome::Rejected(error));
+                }
+                let pending = engine
+                    .pending_contained_transform_release
+                    .take()
+                    .expect("validated local pending contained release remains present");
+                return engine.deliver_contained_transform_release(
+                    cause,
+                    pending.session,
+                    pending.transform,
+                    pending.placement,
+                    policy,
+                    events,
+                    interaction_events,
+                );
+            }
             Ok(
                 match engine
                     .interaction

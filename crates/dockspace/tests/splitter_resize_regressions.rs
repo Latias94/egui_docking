@@ -31,9 +31,11 @@ use dockspace::pointer_receiver::{
 use dockspace::policy::{DockPolicy, PolicyRejection, PolicyRevision};
 use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use dockspace::scene::{SplitterRecord, SplitterResizeTarget, SurfaceSceneStamp};
+use dockspace::scene_manifest::{MeasurementAuthorityError, MeasurementUnavailableReason};
 use dockspace::transaction::WorkspaceTransaction;
 use dockspace::transition::{
     EngineTransition, InputOutcome, SurfaceContributionOutcome, SurfaceContributionRejection,
+    SurfaceContributionUnavailableReason,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -771,18 +773,97 @@ fn resize_update_invalidates_an_older_surface_contribution_in_the_same_tick() {
         transition.surface_contributions(),
         [SurfaceContributionOutcome::Rejected {
             surface: SURFACE,
-            reason: SurfaceContributionRejection::StaleBase {
-                submitted,
-                current,
-            },
-        }] if *submitted == token.base() && *current != Some(token.base())
+            reason: SurfaceContributionRejection::ResizeProjectionChanged { surface: SURFACE },
+        }]
     ));
+    assert_ne!(
+        engine
+            .scene()
+            .surface(SURFACE)
+            .expect("surface remains rostered")
+            .stamp(),
+        token.base(),
+        "rejecting the old contribution must still invalidate the old resize projection",
+    );
     assert_eq!(
         engine
             .interaction()
             .active_resize_view()
             .map(|resize| resize.session()),
         Some(session)
+    );
+}
+
+#[test]
+fn resize_update_accepts_one_explicit_unavailable_contribution_in_the_same_tick() {
+    let (workspace, split) = simple_workspace();
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = support::TestPresentationHost::new(&mut engine);
+    publish(
+        &mut engine,
+        &mut host,
+        support::MeasurementProfile::default(),
+    );
+    let mut pointer = create_pointer_stream(&mut engine, &host);
+    let (session, press) = begin_handle_resize(&mut engine, &mut host, &mut pointer, split);
+
+    let token = engine
+        .begin_surface_contribution(SURFACE)
+        .expect("unavailable contribution begins");
+    let contribution = engine
+        .prepare_surface_unavailable_contribution(token, MeasurementUnavailableReason::Deferred)
+        .expect("explicit unavailability prepares successfully");
+    let mut frame = host.begin(&engine);
+    stage_pointer_edge(
+        &mut frame,
+        &mut pointer,
+        PointerEdgeKind::Moved,
+        LogicalPoint::new(press.x() + 48.0, press.y()).expect("updated pointer is valid"),
+        None,
+    );
+    frame
+        .push_surface_contribution(contribution)
+        .expect("one unavailable contribution fits in the reducer tick");
+
+    let transition = host.finish(frame, &mut engine);
+
+    assert!(matches!(
+        pointer_interaction_outcome(&transition),
+        InteractionOutcome::ResizeUpdated { session: actual, .. } if *actual == session
+    ));
+    let [
+        SurfaceContributionOutcome::Unavailable {
+            surface: SURFACE,
+            stamp,
+            reason:
+                SurfaceContributionUnavailableReason::MeasurementsUnavailable(
+                    MeasurementAuthorityError::SurfaceBounds {
+                        reason: MeasurementUnavailableReason::Deferred,
+                    },
+                ),
+        },
+    ] = transition.surface_contributions()
+    else {
+        panic!(
+            "resize unavailability must publish once, got {:?}",
+            transition.surface_contributions()
+        );
+    };
+    assert_eq!(
+        engine
+            .scene()
+            .surface(SURFACE)
+            .expect("surface remains rostered")
+            .stamp(),
+        *stamp,
+        "the unavailable outcome must name the final published scene",
+    );
+    assert_eq!(
+        engine
+            .interaction()
+            .active_resize_view()
+            .map(|resize| resize.session()),
+        Some(session),
     );
 }
 

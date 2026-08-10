@@ -300,6 +300,9 @@ impl DockEngine {
         if !matches!(evaluation.decision, PreviewDecision::Publish { .. }) {
             return self.cancel_local_tab_release(cause, session, interaction_events);
         }
+        let release_decision = evaluation.decision.clone();
+        let _ =
+            self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?;
         let drag = self
             .interaction
             .take_drag_for_release(session, owner, PointerButton::Primary)
@@ -307,12 +310,25 @@ impl DockEngine {
                 cause,
                 detail: format!("local tab release could not consume drag: {source:?}"),
             })?;
+        if drag.preview.as_ref().is_some_and(|published| {
+            !published.painted()
+                && Self::release_decision_matches_preview(published, &release_decision)
+        }) {
+            return self.defer_drag_release(
+                cause,
+                focus_causal,
+                session,
+                drag,
+                release_decision,
+                policy,
+            );
+        }
         self.finish_drag_release(
             cause,
             focus_causal,
             session,
             drag,
-            evaluation.decision,
+            release_decision,
             policy,
             events,
             interaction_events,

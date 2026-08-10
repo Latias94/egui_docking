@@ -9,6 +9,7 @@ use crate::engine::{LocalContainedGesturePhase, LocalSplitterGesturePhase, Local
 use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, SurfaceId};
 use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
+use crate::interaction::{ContainedTransformPaintAcknowledgement, PaintAcknowledgement};
 use crate::model::WorkspaceVersion;
 use crate::scene::{SplitterResizeTarget, SurfaceSceneStamp, TabSceneId};
 
@@ -132,6 +133,34 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn acknowledge_preview(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        acknowledgement: PaintAcknowledgement,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::AcknowledgePreview { acknowledgement },
+        }
+    }
+
+    pub(super) const fn acknowledge_contained_transform_preview(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+        acknowledgement: ContainedTransformPaintAcknowledgement,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::AcknowledgeContainedTransformPreview { acknowledgement },
+        }
+    }
+
     /// Returns the published workspace version from which the action was prepared.
     #[must_use]
     pub const fn expected_version(&self) -> WorkspaceVersion {
@@ -187,6 +216,18 @@ impl PreparedSurfaceAction {
                 kind,
                 phase,
             },
+            SurfaceAction::AcknowledgePreview { acknowledgement } => {
+                EngineInput::AcknowledgePreview {
+                    expected: self.expected,
+                    acknowledgement,
+                }
+            }
+            SurfaceAction::AcknowledgeContainedTransformPreview { acknowledgement } => {
+                EngineInput::AcknowledgeContainedTransformPreview {
+                    expected: self.expected,
+                    acknowledgement,
+                }
+            }
         })
     }
 }
@@ -225,6 +266,12 @@ enum SurfaceAction {
         kind: ContainedGestureKind,
         phase: LocalContainedGesturePhase,
     },
+    AcknowledgePreview {
+        acknowledgement: PaintAcknowledgement,
+    },
+    AcknowledgeContainedTransformPreview {
+        acknowledgement: ContainedTransformPaintAcknowledgement,
+    },
 }
 
 impl SurfaceAction {
@@ -235,6 +282,10 @@ impl SurfaceAction {
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",
             Self::LocalContainedGesture { .. } => "contained-gesture",
+            Self::AcknowledgePreview { .. } => "acknowledge-preview",
+            Self::AcknowledgeContainedTransformPreview { .. } => {
+                "acknowledge-contained-transform-preview"
+            }
         }
     }
 }

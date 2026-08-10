@@ -91,7 +91,7 @@ pub(crate) fn paint_controls(
                 .plan
                 .prepare_contained_title_gesture(contained.floating(), phase)
         {
-            context.actions.push(action);
+            context.push_preview_gesture_action(action);
         }
     }
 

@@ -8,23 +8,23 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceCloseOutcome, DockspaceHostFrame, DockspaceInteractionError,
-    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
-    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
-    NativeScrollSequenceId, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceUnavailableReason,
-    TabStripMetrics, UniformSurfaceMetrics,
+    DockspaceCloseOutcome, DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
+    DockspaceInteractionError, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+    DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCloseState,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaFacts, NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
 };
 use dockspace::{CloseDecision, CloseResolutionOutcome};
 
@@ -1181,6 +1181,23 @@ impl InteractionFixture {
                 guides.iter().any(|guide| guide.targets().count() >= 5),
                 "one guide cluster exposes center and four directional targets"
             );
+            let affordance = plan
+                .drop_affordance()
+                .expect("the exact target publishes core-owned guide state");
+            let targets = affordance
+                .clusters()
+                .flat_map(|cluster| cluster.targets())
+                .collect::<Vec<_>>();
+            assert!(
+                targets.len() >= 5,
+                "the dynamic affordance retains the complete guide cluster"
+            );
+            let active = targets
+                .into_iter()
+                .find(|target| target.is_active())
+                .expect("the exact center receiver activates one guide target");
+            assert_eq!(active.direction(), DockspaceDropDirection::Center);
+            assert_eq!(active.eligibility(), DockspaceDropEligibility::Eligible);
             frame
                 .confirm_surface_painted(SURFACE)
                 .expect("the preview-bearing output was painted");

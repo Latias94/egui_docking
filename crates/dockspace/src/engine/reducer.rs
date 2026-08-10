@@ -630,15 +630,8 @@ impl DockEngine {
             let _ = candidate.cancel_revoked_presentation_caused(cause, &mut interaction_events)?;
             candidate.reconcile_scroll_lifecycle(cause, &mut interaction_events);
         }
-        candidate.invalidate_changed_resize_presentation(
-            &before_interaction,
-            last_reduced_input.unwrap_or(candidate.last_input),
-        )?;
-        if let Some(cause) = last_causal_cause {
-            let _ = candidate.cancel_revoked_presentation_caused(cause, &mut interaction_events)?;
-        }
-
-        let before_contribution_interaction = candidate.interaction.clone();
+        let changed_resize_surfaces =
+            candidate.changed_resize_presentation_surfaces(&before_interaction);
         let before_contribution_authorities = candidate
             .presentation_authority
             .scene
@@ -646,8 +639,20 @@ impl DockEngine {
         let mut changed_contribution_surfaces = BTreeSet::new();
         let mut contribution_outcomes = Vec::with_capacity(surface_contributions.len());
         for contribution in surface_contributions {
-            let outcome =
-                candidate.reduce_surface_contribution(tick, contribution, tick_start.policy)?;
+            let surface = contribution.surface();
+            let outcome = if changed_resize_surfaces.contains(&surface)
+                && !candidate.prepared_surface_matches_resize_projection(
+                    &before_interaction,
+                    surface,
+                    &contribution,
+                ) {
+                SurfaceContributionOutcome::Rejected {
+                    surface,
+                    reason: SurfaceContributionRejection::ResizeProjectionChanged { surface },
+                }
+            } else {
+                candidate.reduce_surface_contribution(tick, contribution, tick_start.policy)?
+            };
             if outcome.changes_surface_authority() {
                 changed_contribution_surfaces.insert(outcome.surface());
             }
@@ -674,14 +679,26 @@ impl DockEngine {
             &contribution_outcomes,
             &mut changed_contribution_surfaces,
         )?;
+        let ready_resize_surfaces = contribution_outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                SurfaceContributionOutcome::Ready { surface, .. } => Some(*surface),
+                SurfaceContributionOutcome::Retained { .. }
+                | SurfaceContributionOutcome::Unavailable { .. }
+                | SurfaceContributionOutcome::Rejected { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        changed_contribution_surfaces.extend(
+            candidate.invalidate_uncovered_changed_resize_presentation(
+                &changed_resize_surfaces,
+                last_reduced_input.unwrap_or(candidate.last_input),
+                &ready_resize_surfaces,
+            )?,
+        );
         candidate.reconcile_interaction_after_surface_contributions(
             tick,
             &changed_contribution_surfaces,
             &mut interaction_events,
-        )?;
-        candidate.invalidate_changed_resize_presentation(
-            &before_contribution_interaction,
-            candidate.last_input,
         )?;
         let _ = candidate.cancel_revoked_presentation_caused(
             ReductionCause::SurfaceContributionBatch { tick },
@@ -706,9 +723,12 @@ impl DockEngine {
             vacancy_ledger.observe_bindings(&candidate);
             reduced.push(outcome);
         }
-        candidate.invalidate_changed_resize_presentation(
-            &before_configuration_interaction,
+        let changed_configuration_resize_surfaces =
+            candidate.changed_resize_presentation_surfaces(&before_configuration_interaction);
+        candidate.invalidate_uncovered_changed_resize_presentation(
+            &changed_configuration_resize_surfaces,
             candidate.last_input,
+            &BTreeSet::new(),
         )?;
         if let Some(cause) = last_configuration_cause {
             let _ = candidate.cancel_revoked_presentation_caused(cause, &mut interaction_events)?;
@@ -1513,13 +1533,25 @@ impl DockEngine {
             EngineInput::AcknowledgePreview {
                 expected,
                 acknowledgement,
-            } => self.reduce_preview_acknowledgement(*expected, acknowledgement),
+            } => self.reduce_preview_acknowledgement(
+                cause,
+                *expected,
+                acknowledgement,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::AcknowledgeContainedTransformPreview {
                 expected,
                 acknowledgement,
-            } => {
-                self.reduce_contained_transform_preview_acknowledgement(*expected, *acknowledgement)
-            }
+            } => self.reduce_contained_transform_preview_acknowledgement(
+                cause,
+                *expected,
+                *acknowledgement,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::RequestSurfaceClose {
                 expected,
                 edge,

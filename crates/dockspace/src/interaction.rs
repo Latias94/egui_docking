@@ -1840,6 +1840,20 @@ impl PublishedPreview {
     pub(crate) const fn painted(&self) -> bool {
         self.painted
     }
+
+    pub(crate) fn acknowledge(
+        &mut self,
+        acknowledgement: &PaintAcknowledgement,
+    ) -> Result<bool, InteractionRejection> {
+        if self.public.token != acknowledgement.token
+            || self.public.visual != acknowledgement.visual
+        {
+            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
+        }
+        let changed = !self.painted;
+        self.painted = true;
+        Ok(changed)
+    }
 }
 
 /// Exact journal stream owner of one transient gesture.
@@ -2139,6 +2153,18 @@ impl PublishedContainedTransformPreview {
 
     pub(crate) const fn painted(&self) -> bool {
         self.painted
+    }
+
+    pub(crate) fn acknowledge(
+        &mut self,
+        acknowledgement: ContainedTransformPaintAcknowledgement,
+    ) -> Result<bool, InteractionRejection> {
+        if self.public.acknowledgement() != acknowledgement {
+            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
+        }
+        let changed = !self.painted;
+        self.painted = true;
+        Ok(changed)
     }
 }
 
@@ -2830,13 +2856,7 @@ impl InteractionState {
         let Some(preview) = drag.preview.as_mut() else {
             return Err(InteractionRejection::PreviewAcknowledgementMismatch);
         };
-        if preview.public.token != acknowledgement.token
-            || preview.public.visual != acknowledgement.visual
-        {
-            return Err(InteractionRejection::PreviewAcknowledgementMismatch);
-        }
-        let changed = !preview.painted;
-        preview.painted = true;
+        let changed = preview.acknowledge(acknowledgement)?;
         Ok((session, changed))
     }
 
@@ -3094,11 +3114,7 @@ impl InteractionState {
         let Some(preview) = transform.preview.as_mut() else {
             return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
         };
-        if preview.public.acknowledgement() != acknowledgement {
-            return Err(InteractionRejection::ContainedTransformPreviewAcknowledgementMismatch);
-        }
-        let changed = !preview.painted;
-        preview.painted = true;
+        let changed = preview.acknowledge(acknowledgement)?;
         Ok((session, changed))
     }
 

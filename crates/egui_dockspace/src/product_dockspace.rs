@@ -292,12 +292,14 @@ impl Dockspace {
         }
 
         let mut missing = BTreeSet::new();
+        let mut defer_measurement = false;
         let had_plan = if let Some(plan) = frame
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
         {
             let paint = product_render::paint_surface(ui, self.id, plan, panes, &self.style);
             missing.extend(paint.missing_items);
+            defer_measurement = paint.defer_measurement;
             for action in paint.actions {
                 frame
                     .submit_surface_action(action)
@@ -311,15 +313,21 @@ impl Dockspace {
             false
         };
 
-        missing.extend(product_render::measure_surface(
-            &mut frame,
-            surface,
-            ui,
-            dock_rect,
-            popup_rect,
-            panes,
-            &self.style,
-        )?);
+        if defer_measurement {
+            frame
+                .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                .map_err(DockspaceError::from_detail)?;
+        } else {
+            missing.extend(product_render::measure_surface(
+                &mut frame,
+                surface,
+                ui,
+                dock_rect,
+                popup_rect,
+                panes,
+                &self.style,
+            )?);
+        }
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
         if !had_plan || report.repaint_surfaces().contains(&surface) {
             ui.ctx().request_repaint();

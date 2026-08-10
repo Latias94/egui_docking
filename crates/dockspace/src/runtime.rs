@@ -55,8 +55,10 @@ pub use native_effect::{
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
-    DockspaceDragPreview, DockspaceGuideScope, DockspacePaintLayer, DockspacePreviewVisual,
+    DockspaceContainedTransformPreview, DockspaceDragPreview, DockspaceDropDirection,
+    DockspaceDropEligibility, DockspaceGuideScope, DockspacePaintLayer, DockspacePreviewVisual,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind,
+    DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
     DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
     SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
     SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,

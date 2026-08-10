@@ -812,7 +812,7 @@ impl DockEngine {
                         !published.painted()
                             && Self::release_decision_matches_preview(published, &release_decision)
                     }) {
-                        outcomes.push(self.defer_journal_drag_release(
+                        outcomes.push(self.defer_drag_release(
                             cause,
                             focus_causal,
                             session,
@@ -1403,7 +1403,7 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn defer_journal_drag_release(
+    pub(super) fn defer_drag_release(
         &mut self,
         cause: ReductionCause,
         focus_causal: FocusCausalStamp,
@@ -1441,7 +1441,7 @@ impl DockEngine {
         Ok(InteractionOutcome::ReleasePending { session, preview })
     }
 
-    fn release_decision_matches_preview(
+    pub(super) fn release_decision_matches_preview(
         preview: &crate::interaction::PublishedPreview,
         release_decision: &PreviewDecision,
     ) -> bool {

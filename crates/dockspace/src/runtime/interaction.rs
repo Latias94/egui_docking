@@ -777,6 +777,9 @@ impl DockspaceHostFrame<'_> {
             return Ok(None);
         };
         let candidate = scene.candidate();
+        let drop_affordance = view.interaction().drop_affordance().filter(|affordance| {
+            affordance.surface() == surface && affordance.scene() == candidate.stamp()
+        });
         Ok(Some(SurfacePaintPlan {
             surface,
             authority_domain: self.session.engine.authority_domain(),
@@ -785,7 +788,9 @@ impl DockspaceHostFrame<'_> {
             output: candidate.output_ticket(),
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
+            drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
+            contained_transform_preview: view.presentation_contained_transform_preview(surface),
         }))
     }
 

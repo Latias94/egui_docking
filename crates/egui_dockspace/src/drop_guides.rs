@@ -4,17 +4,17 @@ use dockspace::backend::command::Edge;
 use dockspace::backend::drop_resolver::{DropAffordance, DropGuideEligibility};
 use dockspace::backend::ids::SurfaceId;
 use dockspace::drop_guide::DropGuideSlot;
-use egui::{Color32, Painter, Rect, Stroke, StrokeKind, vec2};
+#[cfg(test)]
+use egui::{Color32, vec2};
+use egui::{Painter, Rect};
 
+#[cfg(test)]
+use crate::guide_paint::{DISABLED_FILL_OPACITY, GuideCuePaint, describe_guide_cue};
+use crate::guide_paint::{
+    GuideButtonPaint, GuideCueDirection, describe_guide_button, paint_guide_button,
+};
 use crate::renderer::from_logical_rect;
 use crate::style::DockStyle;
-
-const BUTTON_CORNER_RADIUS: f32 = 3.0;
-const CUE_INSET: f32 = 4.0;
-const CUE_CENTER_EXTENT: f32 = 4.0;
-const CUE_EDGE_EXTENT: f32 = 3.0;
-const DISABLED_FILL_OPACITY: f32 = 0.35;
-const DISABLED_CUE_OPACITY: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GuideVisualState {
@@ -50,21 +50,6 @@ struct GuideButtonFact {
     state: GuideVisualState,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct GuideButtonPaint {
-    draw: Rect,
-    fill: Color32,
-    outline: Stroke,
-    cue: GuideCuePaint,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct GuideCuePaint {
-    pane: Rect,
-    emphasis: Rect,
-    color: Color32,
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 struct GuidePaintPlan {
     buttons: Vec<GuideButtonPaint>,
@@ -79,20 +64,7 @@ pub(crate) fn paint(
 ) {
     let plan = paint_plan(surface, affordance, style);
     for button in plan.buttons {
-        painter.rect(
-            button.draw,
-            BUTTON_CORNER_RADIUS,
-            button.fill,
-            button.outline,
-            StrokeKind::Inside,
-        );
-        painter.rect_stroke(
-            button.cue.pane,
-            0.0,
-            Stroke::new(1.0, button.cue.color),
-            StrokeKind::Inside,
-        );
-        painter.rect_filled(button.cue.emphasis, 0.0, button.cue.color);
+        paint_guide_button(painter, button);
     }
 }
 
@@ -140,84 +112,27 @@ fn describe_for_surface(
 }
 
 fn describe_button(fact: GuideButtonFact, style: &DockStyle) -> GuideButtonPaint {
-    let active = fact.state.active();
-    let disabled = fact.state.disabled();
-    let base_fill = if active {
-        style.drop_guide_active_fill
-    } else {
-        style.drop_guide_fill
-    };
-    let base_outline = if active {
-        style.drop_guide_active_border_color
-    } else {
-        style.drop_guide_border_color
-    };
-    let fill = if disabled {
-        base_fill.gamma_multiply(DISABLED_FILL_OPACITY)
-    } else {
-        base_fill
-    };
-    // An exact disabled hit keeps the active outline so rejection stays legible.
-    let outline_color = if disabled && !active {
-        base_outline.gamma_multiply(DISABLED_CUE_OPACITY)
-    } else {
-        base_outline
-    };
-    let cue_color = if disabled {
-        base_outline.gamma_multiply(DISABLED_CUE_OPACITY)
-    } else {
-        base_outline
-    };
-    GuideButtonPaint {
-        draw: fact.draw,
-        fill,
-        outline: Stroke::new(1.0, outline_color),
-        cue: describe_cue(fact.slot, fact.draw, cue_color),
-    }
+    describe_guide_button(
+        fact.draw,
+        guide_direction(fact.slot),
+        fact.state.active(),
+        !fact.state.disabled(),
+        style,
+    )
 }
 
+#[cfg(test)]
 fn describe_cue(slot: DropGuideSlot, button: Rect, color: Color32) -> GuideCuePaint {
-    let inset = CUE_INSET
-        .min(0.5 * button.width())
-        .min(0.5 * button.height());
-    let pane = button.shrink(inset);
-    let emphasis = match slot {
-        DropGuideSlot::Center => Rect::from_center_size(
-            pane.center(),
-            vec2(
-                CUE_CENTER_EXTENT.min(pane.width()),
-                CUE_CENTER_EXTENT.min(pane.height()),
-            ),
-        ),
-        DropGuideSlot::Edge(edge) => edge_emphasis(pane, edge),
-    };
-    GuideCuePaint {
-        pane,
-        emphasis,
-        color,
-    }
+    describe_guide_cue(guide_direction(slot), button, color)
 }
 
-fn edge_emphasis(pane: Rect, edge: Edge) -> Rect {
-    let horizontal_extent = CUE_EDGE_EXTENT.min(pane.width());
-    let vertical_extent = CUE_EDGE_EXTENT.min(pane.height());
-    match edge {
-        Edge::Left => Rect::from_min_max(
-            pane.min,
-            egui::pos2(pane.min.x + horizontal_extent, pane.max.y),
-        ),
-        Edge::Right => Rect::from_min_max(
-            egui::pos2(pane.max.x - horizontal_extent, pane.min.y),
-            pane.max,
-        ),
-        Edge::Top => Rect::from_min_max(
-            pane.min,
-            egui::pos2(pane.max.x, pane.min.y + vertical_extent),
-        ),
-        Edge::Bottom => Rect::from_min_max(
-            egui::pos2(pane.min.x, pane.max.y - vertical_extent),
-            pane.max,
-        ),
+const fn guide_direction(slot: DropGuideSlot) -> GuideCueDirection {
+    match slot {
+        DropGuideSlot::Center => GuideCueDirection::Center,
+        DropGuideSlot::Edge(Edge::Left) => GuideCueDirection::Left,
+        DropGuideSlot::Edge(Edge::Right) => GuideCueDirection::Right,
+        DropGuideSlot::Edge(Edge::Top) => GuideCueDirection::Top,
+        DropGuideSlot::Edge(Edge::Bottom) => GuideCueDirection::Bottom,
     }
 }
 

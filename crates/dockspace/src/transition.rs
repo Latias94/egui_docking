@@ -417,6 +417,11 @@ pub enum SurfaceContributionRejection {
         /// Policy authority current at reduction.
         current: PolicyRevision,
     },
+    /// The prepared plan no longer represents the current transient resize projection.
+    ResizeProjectionChanged {
+        /// Surface whose transient splitter geometry advanced.
+        surface: SurfaceId,
+    },
 }
 
 /// Result of one independently compiled surface contribution in a reducer tick.

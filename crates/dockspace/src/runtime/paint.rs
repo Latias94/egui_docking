@@ -1,11 +1,14 @@
 //! Renderer-neutral measurement and primary read-only docking paint capabilities.
 
-use crate::drop_guide::{DropGuideClusterId, DropGuideScope, DropGuideSlot};
-use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetKind, SceneLayerKey};
+use std::fmt;
+
+use crate::drop_guide::DropGuideClusterId;
+use crate::drop_resolver::DropAffordance;
+use crate::drop_target::{DropTargetId, SceneLayerKey};
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize, PhysicalRect};
 use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use crate::interaction::{InteractionPreview, PreviewVisual};
+use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
 use crate::model::DockspaceAxis;
 use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
@@ -17,9 +20,15 @@ use crate::scene::{
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
 mod actions;
+mod guides;
 mod tab_chrome;
 mod tabs;
 pub use actions::ContainedResizeDirection;
+pub use guides::{
+    DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
+    DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
+    DropGuidePaintRecord, DropGuideTargetPaintRecord,
+};
 pub use tab_chrome::{
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabStripControlKind, TabStripControlPaintRecord,
@@ -30,7 +39,7 @@ pub use tabs::{
 };
 
 /// Stable renderer identity whose structural storage remains core-private.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DockspaceVisualId(VisualIdentity);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,6 +132,15 @@ impl DockspaceVisualId {
             VisualIdentity::DropTarget(_) => DockspaceVisualKind::DropTarget,
             VisualIdentity::Receiver(_) => DockspaceVisualKind::Receiver,
         }
+    }
+}
+
+impl fmt::Debug for DockspaceVisualId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("DockspaceVisualId")
+            .field(&self.kind())
+            .finish()
     }
 }
 
@@ -276,6 +294,43 @@ impl DockspaceDragPreview<'_> {
                 placement,
             },
         }
+    }
+}
+
+/// Borrowed contained-floating transform preview owned by one exact paint plan.
+#[derive(Clone, Copy)]
+pub struct DockspaceContainedTransformPreview<'plan> {
+    preview: &'plan ContainedTransformPreview,
+}
+
+impl fmt::Debug for DockspaceContainedTransformPreview<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DockspaceContainedTransformPreview")
+            .field("surface", &self.surface())
+            .field("floating", &self.floating())
+            .field("rect", &self.rect())
+            .finish()
+    }
+}
+
+impl DockspaceContainedTransformPreview<'_> {
+    /// Returns the logical surface which must paint the preview.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.preview.surface()
+    }
+
+    /// Returns the contained presentation being resized.
+    #[must_use]
+    pub const fn floating(self) -> FloatingPresentationId {
+        self.preview.floating()
+    }
+
+    /// Returns the exact rectangle which must be painted.
+    #[must_use]
+    pub const fn rect(self) -> LogicalRect {
+        self.preview.rect()
     }
 }
 
@@ -503,101 +558,6 @@ impl<'plan> ContainedPaintRecord<'plan> {
     }
 }
 
-/// Public guide-cluster class without the internal target-node identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DockspaceGuideScope {
-    Inner,
-    Outer,
-}
-
-/// Read-only guide target geometry and availability.
-#[derive(Debug, Clone, Copy)]
-pub struct DropGuideTargetPaintRecord<'plan> {
-    slot: DropGuideSlot,
-    record: &'plan crate::drop_guide::DropGuideTargetRecord,
-}
-
-impl DropGuideTargetPaintRecord<'_> {
-    #[must_use]
-    pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::DropTarget(self.record.id()))
-    }
-
-    #[must_use]
-    pub const fn slot(self) -> DropGuideSlot {
-        self.slot
-    }
-
-    #[must_use]
-    pub const fn kind(self) -> DropTargetKind {
-        self.record.id().kind()
-    }
-
-    #[must_use]
-    pub const fn draw_bounds(self) -> LogicalRect {
-        self.record.draw()
-    }
-
-    #[must_use]
-    pub const fn hit_bounds(self) -> LogicalRect {
-        self.record.target().region().rect()
-    }
-
-    #[must_use]
-    pub const fn preview_bounds(self) -> LogicalRect {
-        self.record.target().visual().rect()
-    }
-
-    #[must_use]
-    pub const fn availability(self) -> DropTargetAvailability {
-        self.record.target().availability()
-    }
-}
-
-/// Read-only complete docking-guide cluster.
-#[derive(Debug, Clone, Copy)]
-pub struct DropGuidePaintRecord<'plan> {
-    record: &'plan crate::drop_guide::DropGuideClusterRecord,
-}
-
-impl<'plan> DropGuidePaintRecord<'plan> {
-    #[must_use]
-    pub const fn visual_id(self) -> DockspaceVisualId {
-        DockspaceVisualId(VisualIdentity::DropGuide(self.record.id()))
-    }
-
-    #[must_use]
-    pub const fn root(self) -> RootId {
-        self.record.id().root
-    }
-
-    #[must_use]
-    pub const fn scope(self) -> DockspaceGuideScope {
-        match self.record.id().scope {
-            DropGuideScope::Inner(_) => DockspaceGuideScope::Inner,
-            DropGuideScope::Outer => DockspaceGuideScope::Outer,
-        }
-    }
-
-    #[must_use]
-    pub const fn activation_bounds(self) -> LogicalRect {
-        self.record.activation().rect()
-    }
-
-    #[must_use]
-    pub const fn layer(self) -> DockspacePaintLayer {
-        DockspacePaintLayer::from_core(self.record.layer())
-    }
-
-    pub fn targets(
-        self,
-    ) -> impl DoubleEndedIterator<Item = DropGuideTargetPaintRecord<'plan>> + 'plan {
-        self.record
-            .targets()
-            .map(|(slot, record)| DropGuideTargetPaintRecord { slot, record })
-    }
-}
-
 /// Read-only plan supplied before one exact renderer paint.
 #[derive(Debug, Clone, Copy)]
 pub struct SurfacePaintPlan<'frame> {
@@ -608,7 +568,9 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
+    pub(super) drop_affordance: Option<&'frame DropAffordance>,
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
+    pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,
 }
 
 impl<'frame> SurfacePaintPlan<'frame> {
@@ -761,6 +723,17 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .map(|record| DropGuidePaintRecord { record })
     }
 
+    /// Returns the payload-specific guide set visible at the current drag point.
+    ///
+    /// This value is independent from [`Self::drag_preview`]: a complete cluster
+    /// remains visible while the pointer is between buttons or over a rejected
+    /// target. The renderer must not infer active or disabled state from geometry.
+    #[must_use]
+    pub fn drop_affordance(self) -> Option<DropAffordancePaintRecord<'frame>> {
+        self.drop_affordance
+            .map(|affordance| DropAffordancePaintRecord { affordance })
+    }
+
     /// Returns every active semantic receiver in deterministic hit-stack order.
     pub fn receivers(self) -> impl Iterator<Item = DockspaceReceiverDescriptor> + 'frame {
         self.hit_manifest
@@ -805,6 +778,13 @@ impl<'frame> SurfacePaintPlan<'frame> {
     pub fn drag_preview(self) -> Option<DockspaceDragPreview<'frame>> {
         self.drag_preview
             .map(|preview| DockspaceDragPreview { preview })
+    }
+
+    /// Returns the exact contained resize preview which this surface must paint.
+    #[must_use]
+    pub fn contained_transform_preview(self) -> Option<DockspaceContainedTransformPreview<'frame>> {
+        self.contained_transform_preview
+            .map(|preview| DockspaceContainedTransformPreview { preview })
     }
 
     fn receiver(

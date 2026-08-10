@@ -413,40 +413,109 @@ impl DockEngine {
         }
     }
 
-    pub(super) fn invalidate_changed_resize_presentation(
+    pub(super) fn invalidate_uncovered_changed_resize_presentation(
         &mut self,
-        before: &InteractionState,
+        changed_surfaces: &BTreeSet<crate::ids::SurfaceId>,
         input: InputSequence,
-    ) -> Result<(), EngineError> {
-        fn projection(
-            interaction: &InteractionState,
-        ) -> Option<(crate::ids::SurfaceId, Vec<SplitResize>)> {
-            interaction.active_resize_view().and_then(|resize| {
-                (!resize.updates().is_empty())
-                    .then(|| (resize.surface(), resize.updates().to_vec()))
-            })
-        }
-
-        let before = projection(before);
-        let after = projection(&self.interaction);
-        if before == after {
-            return Ok(());
-        }
-        let surfaces = before
+        covered_surfaces: &BTreeSet<crate::ids::SurfaceId>,
+    ) -> Result<BTreeSet<crate::ids::SurfaceId>, EngineError> {
+        let surfaces = changed_surfaces
             .iter()
-            .map(|(surface, _)| *surface)
-            .chain(after.iter().map(|(surface, _)| *surface))
+            .copied()
+            .filter(|surface| !covered_surfaces.contains(surface))
             .collect::<BTreeSet<_>>();
-        for surface in surfaces {
-            if self.presentation_authority.scene.surface(surface).is_none() {
+        let mut invalidated = BTreeSet::new();
+        for surface in &surfaces {
+            if !matches!(
+                self.presentation_authority.scene.surface(*surface),
+                Some(SurfaceScene::Ready(_))
+            ) {
                 continue;
             }
             self.presentation_authority
                 .scene
-                .invalidate_presentation_input(surface)
+                .invalidate_presentation_input(*surface)
                 .map_err(|source| Self::scene_revision_error(input, source))?;
+            invalidated.insert(*surface);
         }
-        Ok(())
+        Ok(invalidated)
+    }
+
+    pub(super) fn changed_resize_presentation_surfaces(
+        &self,
+        before: &InteractionState,
+    ) -> BTreeSet<SurfaceId> {
+        let before_resize = before
+            .active_resize_view()
+            .filter(|resize| !resize.updates().is_empty());
+        let current_resize = self
+            .interaction
+            .active_resize_view()
+            .filter(|resize| !resize.updates().is_empty());
+        let unchanged = match (before_resize, current_resize) {
+            (None, None) => true,
+            (Some(before), Some(current)) => {
+                before.surface() == current.surface() && before.updates() == current.updates()
+            }
+            _ => false,
+        };
+        if unchanged {
+            return BTreeSet::new();
+        }
+
+        before_resize
+            .iter()
+            .map(|resize| resize.surface())
+            .chain(current_resize.iter().map(|resize| resize.surface()))
+            .collect()
+    }
+
+    pub(super) fn prepared_surface_matches_resize_projection(
+        &self,
+        before: &InteractionState,
+        surface: SurfaceId,
+        contribution: &PreparedSurfaceContribution,
+    ) -> bool {
+        match &contribution.state {
+            PreparedSurfaceContributionState::Ready { plan } => {
+                let before_updates = before
+                    .active_resize_view()
+                    .filter(|resize| resize.surface() == surface)
+                    .map(|resize| resize.updates())
+                    .unwrap_or_default();
+                let current_updates = self
+                    .interaction
+                    .active_resize_view()
+                    .filter(|resize| resize.surface() == surface)
+                    .map(|resize| resize.updates())
+                    .unwrap_or_default();
+                let affected = before_updates
+                    .iter()
+                    .chain(current_updates)
+                    .map(|update| (update.split().root(), update.split().node()))
+                    .collect::<BTreeSet<_>>();
+                affected.into_iter().all(|(root, split)| {
+                    let expected = current_updates
+                        .iter()
+                        .find(|update| {
+                            update.split().root() == root && update.split().node() == split
+                        })
+                        .map(SplitResize::weights)
+                        .or_else(|| match self.workspace.node(split) {
+                            Some(Node::Split { weights, .. }) => Some(weights.as_slice()),
+                            Some(Node::Tabs { .. }) | None => None,
+                        });
+                    expected.is_some_and(|expected| {
+                        plan.splitter_records().iter().any(|record| {
+                            let id = record.id();
+                            id.root == root && id.split == split && record.weights() == expected
+                        })
+                    })
+                })
+            }
+            PreparedSurfaceContributionState::Unavailable(_) => true,
+            PreparedSurfaceContributionState::Retained { .. } => false,
+        }
     }
 
     pub(super) fn invalidate_transient(
@@ -1672,8 +1741,41 @@ impl DockEngine {
                     .interaction
                     .active_contained_transform(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?;
-                let affected =
-                    changed_surfaces.contains(&transform.surface) && transform.preview.is_some();
+                let local_owner = matches!(
+                    transform.owner,
+                    GestureOwner::LocalResponse { surface } if surface == transform.surface
+                );
+                let local_coordinates = transform.presentation.local_coordinates()
+                    == Some(transform.coordinate_capture);
+                let owner_current = self.workspace.presentation_for_root(transform.root)
+                    == Some(crate::RootPresentationOwner::Contained {
+                        surface: transform.surface,
+                        floating: transform.floating,
+                    });
+                let current = self
+                    .presentation_authority
+                    .scene
+                    .ready_candidate(transform.surface);
+                let scene_coordinates = current.is_some_and(|current| {
+                    current.coordinate_capture() == transform.coordinate_capture
+                });
+                let scene_bounds = current
+                    .is_some_and(|current| current.plan().bounds() == transform.surface_bounds);
+                let scene_record = current.is_some_and(|current| {
+                    current
+                        .plan()
+                        .contained_record(transform.floating)
+                        .is_some_and(|record| {
+                            record.root() == transform.root
+                                && record.minimum_size() == transform.minimum_size
+                        })
+                });
+                let scene_current = scene_coordinates && scene_bounds && scene_record;
+                let local_response_remains_valid =
+                    local_owner && local_coordinates && owner_current && scene_current;
+                let affected = changed_surfaces.contains(&transform.surface)
+                    && transform.preview.is_some()
+                    && !local_response_remains_valid;
                 if affected {
                     let status = self
                         .interaction
