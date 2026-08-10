@@ -9,6 +9,7 @@ exclude = [
     "crates/egui_dockspace_native",
     "integration/egui-fork-workspace",
     "integration/egui-official-harness",
+    "integration/egui-product-harness",
     "repo-ref/egui",
     "repo-ref/egui-release",
 ]

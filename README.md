@@ -32,14 +32,16 @@ close facts, and native effect results. A complete eframe application driver,
 platform effect executor, and the single real two-window smoke are still U7
 work, so native multiview is not yet a runnable product path.
 
-The ordinary crates.io `show_single_surface` convenience path now treats the
-current egui `Response` as local receiver evidence. A Ready single-surface frame
-can perform revision-bound local tab actions without inventing a
-post-`FullOutput` renderer fact. Output publication remains paint-only in the
-renderer-settlement sense; retained/native receiver lookup still requires a
-separately accepted snapshot. Pointer-driven tab docking, splitter drag, and
-contained move/resize are being migrated to the same local-action boundary and
-remain release blockers until their downstream interaction cases pass.
+The ordinary crates.io `show_single_surface` convenience path now owns one
+renderer-neutral `DockspaceSession` and treats the current egui `Response` as
+local receiver evidence. A Ready single-surface frame can perform
+revision-bound tab selection/close and emit current-pass tab, splitter, and
+contained gesture actions without inventing a post-`FullOutput` renderer fact.
+The product renderer still does not expose active four-way guide affordances,
+overflow-menu actions, retained pointer receivers, or native multi-viewport
+ownership. Output publication remains paint-only in the renderer-settlement
+sense; those missing capabilities are deliberate release blockers rather than
+heuristic fallbacks.
 
 The base adapter keeps the application-facing API at the crate root. Custom
 hosts opt into the low-level `backend` feature and use the
@@ -86,27 +88,14 @@ presentation obligations stay in `dockspace`.
 
 ## Persistence
 
-The egui facade persists only an atomic `DockspaceDocument`: one versioned blob
-containing the workspace snapshot, stable external-pane key map, viewport
-placement preferences, document lineage id, generation, and a BLAKE3 binding
-hash. First mint every pane `ItemId` from a one-time
-`DockspaceDocumentBootstrap`, build the workspace from those identities, and
-consume that bootstrap with `Dockspace::bind_document_persistence`. Then use the parameterless
-`Dockspace::save_document_json` and session-owned `load_document_json` while no
-joined backend is active. A native/backend host uses `queue_document_json`
-instead: the session retains the validated intent across cycle rollback and
-provider replacement, records a fresh terminal backend attempt, and publishes
-core state plus sidecars in the enclosing outer-frame commit. The resolver
-proves every exact `(document id, item id, external key)` association,
-including closed-pane history. Restore does not publish the workspace, key map,
-placement, document lineage, or generation until every component and the
-application identity registry validate. Core state and durable sidecars are then
-published through one non-copyable capability bound to the exact session,
-restore token, engine authority domain, document generation, and reconciled item
-identity scope; an unbound session can adopt one complete validated document at
-that same boundary.
-Workspace-only and placement-only snapshots are internal interchange components,
-not egui restoration APIs.
+Document persistence is not part of the new default product facade yet. The
+legacy document/session implementation remains available only through the
+opt-in backend migration path (`serde` currently enables that backend) and is
+not a stable crates.io contract. The next
+product slice will add one session-owned document facade that atomically binds
+workspace topology, external pane identities, and viewport placement; until
+that lands, applications should treat `DockspaceLayout` as construction input
+and keep their own durable document boundary.
 
 ## Development
 
@@ -117,6 +106,7 @@ cargo nextest run --workspace --all-features --all-targets
 cargo clippy --workspace --all-features --all-targets -- \
   -A warnings -D clippy::correctness -D clippy::suspicious
 cargo fmt --all --check
+cargo test --manifest-path integration/egui-product-harness/Cargo.toml -j1
 ```
 
 The crate manifests pin the official egui and eframe registry coordinates to
@@ -142,8 +132,10 @@ The former 0.35 harness and E2E scenario runner were removed. U7 will add one
 ordinary real-window smoke only after the 0.36 coordinator has a complete app,
 effect, and viewport lifecycle path.
 
-The ordinary `crates/egui_dockspace/examples/basic.rs` example deliberately
-uses the registry-only paint path and is not an interaction or multiview demo.
+The ordinary `crates/egui_dockspace/examples/basic.rs` example uses the default
+single-surface product facade and is suitable for checking local tab and
+contained/splitter feedback. It is not a native multi-viewport demo and does
+not yet represent the final four-way docking UX.
 
 ## License
 

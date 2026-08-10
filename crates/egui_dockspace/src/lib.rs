@@ -12,32 +12,55 @@ pub mod style;
 pub mod backend;
 
 mod builder;
+#[cfg(any(feature = "backend", test))]
 mod drop_guides;
 mod error;
+#[cfg(any(feature = "backend", test))]
+#[path = "error_detail.rs"]
 mod error_detail;
-// These modules share implementation with the opt-in host backend. Their
-// backend-only branches are intentionally dormant in the default product build.
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code, unused_imports))]
+#[cfg(not(any(feature = "backend", test)))]
+#[path = "product_error_detail.rs"]
+mod error_detail;
+// The legacy reducer-backed adapter is intentionally isolated from the default
+// product facade. This prevents two docking authorities from coexisting in a
+// normal crates.io build while preserving the migration/test backend.
+#[cfg(any(feature = "backend", test))]
 #[path = "dockspace.rs"]
 mod facade;
+#[cfg(not(any(feature = "backend", test)))]
+#[path = "product_dockspace.rs"]
+mod facade;
+#[cfg(any(feature = "backend", test))]
 mod floating;
+#[cfg(any(feature = "backend", test))]
 mod hit;
+#[cfg(any(feature = "backend", test))]
 mod output_ownership;
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "backend"))]
 mod persistence;
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+#[cfg(any(feature = "backend", test))]
 mod pointer_input;
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+#[cfg(any(feature = "backend", test))]
 mod presentation_settlement;
+#[cfg(not(any(feature = "backend", test)))]
+mod product_render;
+#[cfg(any(feature = "backend", test))]
 mod projection;
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+#[cfg(any(feature = "backend", test))]
 mod receiver;
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+#[cfg(any(feature = "backend", test))]
 mod render;
+#[cfg(any(feature = "backend", test))]
 mod renderer;
-#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+#[cfg(any(feature = "backend", test))]
+#[path = "response.rs"]
 mod response;
+#[cfg(not(any(feature = "backend", test)))]
+#[path = "product_response.rs"]
+mod response;
+#[cfg(any(feature = "backend", test))]
 mod splits;
+#[cfg(any(feature = "backend", test))]
 mod tabs;
 
 #[cfg(test)]
@@ -55,10 +78,13 @@ pub use dockspace::model::{
     DockspaceTabsView, DockspaceView, FloatingPresentationId, InvalidDockFraction, ItemId,
     PreparedDockAction, RootId, SurfaceId, WorkspaceVersion,
 };
+pub use dockspace::{
+    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "backend"))]
 pub use persistence::{DockspaceDocumentLoad, DockspaceDocumentPersistenceError};
 pub use response::{
     DockspaceActionResult, DockspaceActionStatus, DockspaceCapability, DockspaceCloseItem,

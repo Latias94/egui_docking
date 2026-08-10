@@ -91,7 +91,7 @@ use crate::model::{
 };
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
-use crate::transition::InputOutcome;
+use crate::transition::{InputOutcome, SurfaceContributionOutcome};
 use crate::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
@@ -239,6 +239,12 @@ impl DockspaceSession {
     #[must_use]
     pub const fn version(&self) -> WorkspaceVersion {
         self.engine.version()
+    }
+
+    /// Returns the current declarative docking policy.
+    #[must_use]
+    pub const fn policy(&self) -> &crate::policy::DockPolicy {
+        self.engine.policy()
     }
 
     /// Prepares one revision-bound selection action from the published workspace.
@@ -877,11 +883,62 @@ pub enum HostCloseRequestOrigin {
     Interaction,
 }
 
+/// Product-level result of one surface contribution in a host frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSurfaceCommitStatus {
+    /// A complete next presentation candidate was installed.
+    Ready,
+    /// The current ready candidate was retained unchanged.
+    Retained,
+    /// The host explicitly left the surface non-interactive.
+    Unavailable,
+    /// A superseded prepared contribution was consumed inertly.
+    Rejected,
+}
+
+/// Stable surface identity plus its exact contribution result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostSurfaceCommit {
+    surface: SurfaceId,
+    status: HostSurfaceCommitStatus,
+}
+
+impl HostSurfaceCommit {
+    fn from_outcome(outcome: &SurfaceContributionOutcome) -> Self {
+        let status = match outcome {
+            SurfaceContributionOutcome::Ready { .. } => HostSurfaceCommitStatus::Ready,
+            SurfaceContributionOutcome::Retained { .. } => HostSurfaceCommitStatus::Retained,
+            SurfaceContributionOutcome::Unavailable { .. } => HostSurfaceCommitStatus::Unavailable,
+            SurfaceContributionOutcome::Rejected { .. } => HostSurfaceCommitStatus::Rejected,
+        };
+        Self {
+            surface: outcome.surface(),
+            status,
+        }
+    }
+
+    /// Returns the logical surface addressed by this contribution.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    /// Returns the exact terminal contribution status.
+    #[must_use]
+    pub const fn status(self) -> HostSurfaceCommitStatus {
+        self.status
+    }
+}
+
 /// High-level report from one atomically published facade frame.
 #[derive(Debug, PartialEq)]
 pub struct HostFrameReport {
     before: WorkspaceVersion,
     after: WorkspaceVersion,
+    workspace_changed: bool,
+    published_state_changed: bool,
+    affected_surfaces: Vec<SurfaceId>,
+    surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     native_effects: Vec<NativeEffectRequest>,
@@ -1030,7 +1087,12 @@ impl HostFrameReport {
             }
         }
         let inputs = finish_ordered_inputs(ordered_inputs);
-        let repaint_surfaces = transition
+        let surface_commits = transition
+            .surface_contributions()
+            .iter()
+            .map(HostSurfaceCommit::from_outcome)
+            .collect();
+        let repaint_surfaces: Vec<SurfaceId> = transition
             .affected_surfaces()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -1045,6 +1107,10 @@ impl HostFrameReport {
         Self {
             before: transition.before(),
             after: transition.after(),
+            workspace_changed: transition.changed(),
+            published_state_changed: transition.published_state_changed(),
+            affected_surfaces: repaint_surfaces.clone(),
+            surface_commits,
             inputs,
             painted_outputs,
             native_effects,
@@ -1062,6 +1128,30 @@ impl HostFrameReport {
     #[must_use]
     pub const fn after(&self) -> WorkspaceVersion {
         self.after
+    }
+
+    /// Returns whether the durable workspace topology changed.
+    #[must_use]
+    pub const fn workspace_changed(&self) -> bool {
+        self.workspace_changed
+    }
+
+    /// Returns whether any published scene or interaction state changed.
+    #[must_use]
+    pub const fn published_state_changed(&self) -> bool {
+        self.published_state_changed
+    }
+
+    /// Returns the surfaces whose published state changed in this frame.
+    #[must_use]
+    pub fn affected_surfaces(&self) -> &[SurfaceId] {
+        &self.affected_surfaces
+    }
+
+    /// Returns surface contribution results in reducer order.
+    #[must_use]
+    pub fn surface_commits(&self) -> &[HostSurfaceCommit] {
+        &self.surface_commits
     }
 
     /// Returns facade-owned outcomes in exact reducer causal order.

@@ -11,18 +11,19 @@ repository.workspace = true
 
 [features]
 default = []
-backend = []
+backend = ["dockspace/backend"]
 example-app = ["dep:eframe"]
-serde = ["dockspace/serde", "dep:serde_json"]
+serde = ["backend", "dockspace/serde", "dep:serde_json"]
 
 [dependencies]
-dockspace = { workspace = true, features = ["backend"] }
+dockspace = { workspace = true, default-features = false }
 eframe = { workspace = true, optional = true, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui.workspace = true
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
+dockspace = { workspace = true, features = ["backend"] }
 egui = { workspace = true, features = ["default_fonts"] }
 
 [[example]]
