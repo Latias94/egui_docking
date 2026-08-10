@@ -430,12 +430,12 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/Latias94/winit?rev=4176f8aa1663ac804bf63030afbb6c2d0afe4ad7#4176f8aa1663ac804bf63030afbb6c2d0afe4ad7"
+source = "git+https://github.com/Latias94/winit?rev=180bfc09743586137fec014ef5543cdde56ce5d0#180bfc09743586137fec014ef5543cdde56ce5d0"
 
 [[package]]
 name = "ecolor"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "bytemuck",
  "emath",
@@ -444,7 +444,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -477,7 +477,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "accesskit",
  "ahash",
@@ -496,7 +496,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -515,7 +515,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -554,7 +554,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "bytemuck",
  "egui",
@@ -573,7 +573,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "emath"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "bytemuck",
 ]
@@ -581,7 +581,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89#c9d63ddc22f4756cbf59a7fda0c1347cc2fd8c89"
+source = "git+https://github.com/Latias94/egui?rev=e97d64620e3b0055ac4345f5aac5a9fbd14ebe36#e97d64620e3b0055ac4345f5aac5a9fbd14ebe36"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2795,7 +2795,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/Latias94/winit?rev=4176f8aa1663ac804bf63030afbb6c2d0afe4ad7#4176f8aa1663ac804bf63030afbb6c2d0afe4ad7"
+source = "git+https://github.com/Latias94/winit?rev=180bfc09743586137fec014ef5543cdde56ce5d0#180bfc09743586137fec014ef5543cdde56ce5d0"
 dependencies = [
  "ahash",
  "android-activity",
