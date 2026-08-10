@@ -12,11 +12,13 @@ use crate::ids::SurfaceId;
 use crate::intent::Authority;
 use crate::presentation_observation::{
     HostFrameKey, HostPresentationCaptureGeneration, HostPresentationEmission,
-    HostPresentationObservation, HostPresentationObservationEntry,
+    HostPresentationEndpoint, HostPresentationObservation, HostPresentationObservationEntry,
     HostPresentationObservationOutcome, HostPresentationOutput, HostPresentationProgress,
     HostPresentationStreamId, HostPresentationStreamObservation,
 };
 use crate::transition::EngineTransition;
+
+use super::native::NativeSurfaceBinding;
 
 /// Affine record for one output which the host actually painted.
 ///
@@ -35,6 +37,21 @@ impl PaintedSurfaceOutput {
     #[must_use]
     pub const fn surface(&self) -> SurfaceId {
         self.output.surface()
+    }
+
+    /// Returns whether this output was emitted for the exact native binding.
+    ///
+    /// The comparison includes the engine authority domain, workspace epoch,
+    /// logical surface, platform window token, and window incarnation. A
+    /// surface match alone is never sufficient after native window recreation.
+    #[must_use]
+    pub fn matches_native_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        match self.output.endpoint() {
+            HostPresentationEndpoint::Headless => false,
+            HostPresentationEndpoint::Native(endpoint) => {
+                binding.matches_viewport_binding(endpoint)
+            }
+        }
     }
 
     fn disarm(&mut self) {

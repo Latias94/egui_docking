@@ -11,6 +11,17 @@ impl DockspaceSession {
             .ok_or(NativePlatformError::ProviderUnavailable)
     }
 
+    /// Returns whether the managed host currently owns this exact binding.
+    ///
+    /// This is an identity check only; it does not prove visibility, geometry,
+    /// input authority, or final presentation.
+    #[must_use]
+    pub fn is_current_native_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| native.contains_binding(binding))
+    }
+
     /// Enrolls exact observation of externally owned native root windows.
     ///
     /// The method enrolls exactly once and never reissues existing surface

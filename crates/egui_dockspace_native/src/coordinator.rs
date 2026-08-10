@@ -20,7 +20,6 @@ use winit::window::WindowId;
 
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
-    NativeOutputReservationError, NativeOutputReservationErrorKind,
 };
 use crate::viewport_map::NativeViewportMap;
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -45,6 +44,7 @@ struct HostRecords {
     active: bool,
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
+    event_boundary_pending: bool,
 }
 
 impl HostRecords {
@@ -53,6 +53,7 @@ impl HostRecords {
             active: true,
             journal: VecDeque::new(),
             output_reservations: BTreeMap::new(),
+            event_boundary_pending: false,
         }
     }
 
@@ -89,6 +90,7 @@ impl HostRecords {
         self.active = false;
         self.journal.clear();
         self.output_reservations.clear();
+        self.event_boundary_pending = false;
     }
 }
 
@@ -131,12 +133,17 @@ impl NativeHostBridge {
         );
         if matches {
             records.journal.pop_front();
+            records.event_boundary_pending = true;
         }
         matches
     }
 
     fn output_prefix(&self) -> Vec<(NativeOutputResult, bool)> {
-        self.lock()
+        let records = self.lock();
+        if records.event_boundary_pending {
+            return Vec::new();
+        }
+        records
             .journal
             .iter()
             .map_while(|record| match record {
@@ -148,6 +155,13 @@ impl NativeHostBridge {
 
     fn reserve_output(&self, token: NativeOutputToken, binding: NativeSurfaceBinding) -> bool {
         self.lock().reserve_output(token, binding)
+    }
+
+    fn reserve_output_for_current_viewport(&self, token: NativeOutputToken) {
+        let binding = self.lock_viewports().binding(token.viewport_id());
+        if let Some(binding) = binding {
+            self.reserve_output(token, binding);
+        }
     }
 
     fn output_binding(&self, token: NativeOutputToken) -> Option<NativeSurfaceBinding> {
@@ -171,16 +185,30 @@ impl NativeHostBridge {
         true
     }
 
-    fn discard_output(&self, token: NativeOutputToken) {
+    fn abandon_output(&self, token: NativeOutputToken) -> bool {
         let mut records = self.lock();
+        if records.journal.iter().any(|record| {
+            matches!(
+                record,
+                HostRecord::Output {
+                    result,
+                    submitted: true,
+                } if result.token() == token
+            )
+        }) {
+            return false;
+        }
+        let previous_len = records.journal.len();
         records.journal.retain(|record| {
             !matches!(record, HostRecord::Output { result, .. } if result.token() == token)
         });
-        records.output_reservations.remove(&token);
+        let removed_reservation = records.output_reservations.remove(&token).is_some();
+        removed_reservation || records.journal.len() != previous_len
     }
 
-    fn commit_submitted_output_prefix(&self) {
+    fn commit_frame_boundary(&self) {
         let mut records = self.lock();
+        records.event_boundary_pending = false;
         while matches!(
             records.journal.front(),
             Some(HostRecord::Output {
@@ -198,6 +226,11 @@ impl NativeHostBridge {
     fn deactivate(&self) {
         self.lock().deactivate();
     }
+
+    #[cfg(test)]
+    fn event_boundary_pending(&self) -> bool {
+        self.lock().event_boundary_pending
+    }
 }
 
 impl NativeHostHandler for NativeHostBridge {
@@ -210,6 +243,10 @@ impl NativeHostHandler for NativeHostBridge {
         if records.active {
             records.journal.push_back(HostRecord::WindowEvent(record));
         }
+    }
+
+    fn on_output_begin(&self, token: NativeOutputToken) {
+        self.reserve_output_for_current_viewport(token);
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
@@ -295,6 +332,12 @@ impl NativeCoordinator {
         window: WindowId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
+        if !self.session.is_current_native_binding(binding) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: binding.surface(),
+            });
+        }
         self.viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -317,6 +360,12 @@ impl NativeCoordinator {
         successor_window: WindowId,
         successor: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
+        if !self.session.is_current_native_binding(successor) {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: successor.surface(),
+            });
+        }
         self.viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -360,8 +409,10 @@ impl NativeCoordinator {
     /// Returns the next event which is safe to translate.
     ///
     /// A presentation result at the journal head is submitted first and forms
-    /// a frame barrier. The event behind that result is not exposed until the
-    /// host commits the returned frame.
+    /// a frame barrier. Conversely, an acknowledged event prefix must commit
+    /// before a later presentation result can enter the core prelude. This
+    /// prevents the runtime's presentation phase from overtaking older native
+    /// input recorded in the backend ingress lane.
     ///
     /// # Errors
     ///
@@ -518,43 +569,12 @@ impl NativeCoordinator {
         })
     }
 
-    /// Reserves an eframe output token before its renderer callback can report
-    /// a terminal result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the viewport has no exact binding or the token
-    /// was already reserved.
-    pub fn reserve_painted_output(
-        &self,
-        token: NativeOutputToken,
-    ) -> Result<NativeSurfaceBinding, NativeOutputReservationError> {
-        let Some(binding) = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .binding(token.viewport_id())
-        else {
-            return Err(NativeOutputReservationError::new(
-                NativeOutputReservationErrorKind::ViewportUnbound,
-                token,
-            ));
-        };
-        if !self.bridge.reserve_output(token, binding) {
-            return Err(NativeOutputReservationError::new(
-                NativeOutputReservationErrorKind::TokenAlreadyReserved,
-                token,
-            ));
-        }
-        Ok(binding)
-    }
-
     /// Binds one affine painted output to the token active while its viewport UI ran.
     ///
     /// # Errors
     ///
-    /// Returns an error carrying the output when the viewport is unknown, the
-    /// logical surface differs, or the token is already pending.
+    /// Returns an error carrying the output when the token was not announced,
+    /// the exact native binding differs, or the token is already pending.
     pub fn bind_painted_output(
         &mut self,
         token: NativeOutputToken,
@@ -567,13 +587,6 @@ impl NativeCoordinator {
                 output,
             ));
         };
-        if binding.surface() != output.surface() {
-            return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::SurfaceMismatch,
-                token,
-                output,
-            ));
-        }
         if self.pending_outputs.contains_key(&token) {
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::OutputAlreadyBound,
@@ -581,8 +594,34 @@ impl NativeCoordinator {
                 output,
             ));
         }
+        if !output.matches_native_binding(binding) {
+            let abandoned = self.bridge.abandon_output(token);
+            debug_assert!(abandoned, "unsubmitted reservation must remain abandonable");
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::BindingMismatch,
+                token,
+                output,
+            ));
+        }
         self.pending_outputs.insert(token, output);
         Ok(())
+    }
+
+    /// Abandons one announced eframe output which produced no dockspace paint.
+    ///
+    /// Any attached affine output is dropped into the core's explicit
+    /// not-presented queue. A later renderer callback for the token is ignored.
+    /// This method must be used for mapped viewport callbacks which finish
+    /// without a matching [`PaintedSurfaceOutput`].
+    ///
+    /// Returns `false` when the token is unknown or its presentation result has
+    /// already entered a core host-frame boundary.
+    pub fn abandon_output_token(&mut self, token: NativeOutputToken) -> bool {
+        if !self.bridge.abandon_output(token) {
+            return false;
+        }
+        self.pending_outputs.remove(&token);
+        true
     }
 
     fn prepare_output_prefix(&mut self) -> Result<(), NativeRuntimeError> {
@@ -601,7 +640,8 @@ impl NativeCoordinator {
                 .session
                 .report_surface_presentation(output, presentation)
             {
-                self.bridge.discard_output(result.token());
+                let abandoned = self.bridge.abandon_output(result.token());
+                debug_assert!(abandoned, "failed presentation was not submitted");
                 return Err(error.into());
             }
             debug_assert!(self.bridge.mark_output_submitted(result.token()));
@@ -656,7 +696,7 @@ impl NativeHostFrame<'_> {
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
         let Self { frame, bridge } = self;
         let report = frame.commit()?;
-        bridge.commit_submitted_output_prefix();
+        bridge.commit_frame_boundary();
         Ok(report)
     }
 }
@@ -790,6 +830,29 @@ mod tests {
     }
 
     #[test]
+    fn viewport_mapping_rejects_a_foreign_same_surface_binding() {
+        let mut current_coordinator = coordinator();
+        let (current, _) = register_roots(&mut current_coordinator);
+        let mut foreign = coordinator();
+        let (foreign_same_surface, _) = register_roots(&mut foreign);
+
+        assert_eq!(current.surface(), foreign_same_surface.surface());
+        assert_ne!(current, foreign_same_surface);
+        assert!(matches!(
+            current_coordinator.bind_viewport(
+                ViewportId::ROOT,
+                WindowId::from(11),
+                foreign_same_surface,
+            ),
+            Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport: ViewportId::ROOT,
+                surface: FIRST_SURFACE,
+            })
+        ));
+        assert_eq!(current_coordinator.viewport_binding(ViewportId::ROOT), None);
+    }
+
+    #[test]
     fn stale_unbind_cannot_remove_the_current_viewport_binding() {
         let mut coordinator = coordinator();
         let (first, second) = register_roots(&mut coordinator);
@@ -857,6 +920,7 @@ mod tests {
         coordinator
             .acknowledge_window_event(7)
             .expect("exact event acknowledgement advances the journal");
+        assert!(coordinator.bridge.event_boundary_pending());
 
         let mut frame = coordinator
             .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -865,5 +929,6 @@ mod tests {
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("test host settles every surface");
         frame.commit().expect("frame commits");
+        assert!(!coordinator.bridge.event_boundary_pending());
     }
 }

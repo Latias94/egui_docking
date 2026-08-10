@@ -53,6 +53,19 @@ impl NativeRuntimeError {
             NativeRuntimeErrorSource::HostProtocol(_) => NativeRuntimeErrorKind::HostProtocol,
         }
     }
+
+    /// Recovers the affine painted output from a presentation failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged error when it did not originate from renderer
+    /// presentation settlement.
+    pub fn into_painted_output(self) -> Result<PaintedSurfaceOutput, Self> {
+        match self.source {
+            NativeRuntimeErrorSource::Presentation(source) => Ok(source.into_output()),
+            source => Err(Self { source }),
+        }
+    }
 }
 
 impl std::fmt::Display for NativeRuntimeError {
@@ -109,6 +122,14 @@ impl From<NativeHostProtocolError> for NativeRuntimeError {
 /// Why a viewport could not be associated with one logical native surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum NativeViewportBindingError {
+    /// The binding is foreign, retired, or no longer current in this session.
+    #[error("native viewport {viewport:?} names a non-current binding for surface {surface}")]
+    BindingNotCurrent {
+        /// Eframe viewport being associated.
+        viewport: ViewportId,
+        /// Logical surface named by the rejected binding.
+        surface: SurfaceId,
+    },
     /// The viewport has no current exact binding.
     #[error("native viewport {viewport:?} is not bound")]
     ViewportUnbound {
@@ -163,62 +184,13 @@ pub enum NativeViewportBindingError {
     },
 }
 
-/// Stable reason why an eframe output token could not be reserved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeOutputReservationErrorKind {
-    /// The token's viewport has no callback-time exact native binding.
-    ViewportUnbound,
-    /// The same output token was already reserved.
-    TokenAlreadyReserved,
-}
-
-/// Failure to reserve a renderer output token before its terminal callback.
-#[derive(Debug)]
-pub struct NativeOutputReservationError {
-    kind: NativeOutputReservationErrorKind,
-    token: NativeOutputToken,
-}
-
-impl NativeOutputReservationError {
-    pub(crate) const fn new(
-        kind: NativeOutputReservationErrorKind,
-        token: NativeOutputToken,
-    ) -> Self {
-        Self { kind, token }
-    }
-
-    /// Returns the stable failure category.
-    #[must_use]
-    pub const fn kind(&self) -> NativeOutputReservationErrorKind {
-        self.kind
-    }
-
-    /// Returns the rejected eframe output token.
-    #[must_use]
-    pub const fn token(&self) -> NativeOutputToken {
-        self.token
-    }
-}
-
-impl std::fmt::Display for NativeOutputReservationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "cannot reserve native output token {:?}: {:?}",
-            self.token, self.kind
-        )
-    }
-}
-
-impl std::error::Error for NativeOutputReservationError {}
-
 /// Stable reason why an affine painted output could not be bound to an eframe token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOutputBindingErrorKind {
     /// The token was not reserved during its viewport callback.
     TokenNotReserved,
-    /// The token's viewport belongs to a different logical surface.
-    SurfaceMismatch,
+    /// The output was emitted for another exact native binding.
+    BindingMismatch,
     /// The token already owns another pending painted output.
     OutputAlreadyBound,
 }

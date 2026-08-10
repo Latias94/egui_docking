@@ -195,6 +195,10 @@ impl NativeSurfaceBinding {
     pub const fn window_token(self) -> HostWindowToken {
         HostWindowToken(self.binding.token().get())
     }
+
+    pub(super) fn matches_viewport_binding(self, binding: ViewportBinding) -> bool {
+        self.binding == binding
+    }
 }
 
 /// Opaque exact native close edge returned by a committed platform observation.
@@ -615,6 +619,11 @@ impl RuntimeNativeState {
 
     pub(super) const fn provider(&self) -> PlatformObservationLease {
         self.recorder.lease().platform_provider()
+    }
+
+    pub(super) fn contains_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        binding.provider == self.provider()
+            && self.bindings.get(&binding.surface()) == Some(&binding)
     }
 
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {

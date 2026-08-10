@@ -1,12 +1,12 @@
 use super::compiler::compile_window_fact;
 use super::*;
 use crate::effect::EffectId;
-use crate::geometry::{PhysicalRect, ScaleFactor};
+use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::policy::DockPolicy;
-use crate::runtime::SurfaceUnavailableReason;
+use crate::runtime::{PaintedSurfaceOutput, SurfaceUnavailableReason, UniformSurfaceMetrics};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -54,6 +54,71 @@ fn native_root_session_with_profile(
         outcomes => panic!("expected one native registration, got {outcomes:?}"),
     };
     (session, binding)
+}
+
+fn paint_native_output(session: &mut DockspaceSession) -> PaintedSurfaceOutput {
+    let metrics = UniformSurfaceMetrics::new(
+        LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+        LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+        80.0,
+    )
+    .expect("test metrics validate");
+    let mut measured = session
+        .begin_host_frame()
+        .expect("native measurement frame begins");
+    measured
+        .measure_surface(SURFACE, metrics)
+        .expect("native surface measurements stage");
+    measured
+        .commit()
+        .expect("native surface measurements commit");
+
+    let mut painted = session
+        .begin_host_frame()
+        .expect("native paint frame begins");
+    painted
+        .confirm_surface_painted(SURFACE)
+        .expect("native surface paint stages");
+    let mut report = painted.commit().expect("native surface paint emits");
+    report
+        .take_painted_outputs()
+        .pop()
+        .expect("native paint emits one exact output")
+}
+
+#[test]
+fn painted_output_matches_the_exact_native_binding() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let (_foreign_session, foreign_binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let bounds = PhysicalRect::new(0.0, 0.0, 640.0, 480.0).expect("native bounds validate");
+    let scale = ScaleFactor::new(1.0).expect("native scale validates");
+    let facts = NativeWindowFacts::live()
+        .with_content_bounds(bounds)
+        .with_outer_bounds(bounds)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_close(NativeCloseState::Clear, None);
+    session
+        .report_managed_native_snapshot(
+            [(binding, facts)],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("native inventory records");
+    let mut observed = session
+        .begin_host_frame()
+        .expect("native inventory frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("native inventory frame settles the surface");
+    observed.commit().expect("native inventory commits");
+    let output = paint_native_output(&mut session);
+
+    assert!(output.matches_native_binding(binding));
+    assert!(!output.matches_native_binding(foreign_binding));
 }
 
 #[test]

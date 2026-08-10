@@ -14,8 +14,7 @@ mod viewport_map;
 
 pub use coordinator::{NativeCoordinator, NativeHostFrame};
 pub use error::{
-    NativeOutputBindingError, NativeOutputBindingErrorKind, NativeOutputReservationError,
-    NativeOutputReservationErrorKind, NativeRuntimeError, NativeRuntimeErrorKind,
-    NativeViewportBindingError,
+    NativeOutputBindingError, NativeOutputBindingErrorKind, NativeRuntimeError,
+    NativeRuntimeErrorKind, NativeViewportBindingError,
 };
 pub use event::NativeWindowEventRecord;
