@@ -394,9 +394,14 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        let Some(binding) = self.viewport_binding(token.viewport_id()) else {
+        let binding = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .binding_for_event(token.window_id(), Some(token.viewport_id()));
+        let Some(binding) = binding else {
             return Err(NativeOutputBindingError::new(
-                NativeOutputBindingErrorKind::ViewportUnbound,
+                NativeOutputBindingErrorKind::RouteUnavailable,
                 token,
                 output,
             ));
