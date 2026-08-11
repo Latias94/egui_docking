@@ -46,7 +46,12 @@ pub(crate) fn paint_background(
             contained.visual_id(),
             lane,
         ));
-        context.ui.interact(outer, id, sense);
+        let _ = context.interact_receiver(
+            outer,
+            id,
+            sense,
+            context.plan.receiver_for_contained_frame(contained),
+        );
     }
 
     let label = context
@@ -78,7 +83,12 @@ pub(crate) fn paint_controls(
             "contained-title",
             contained.visual_id(),
         ));
-        let response = context.ui.interact(title, id, Sense::drag());
+        let response = context.interact_receiver(
+            title,
+            id,
+            Sense::drag(),
+            context.plan.receiver_for_contained_title(contained),
+        );
         if response.hovered() || response.dragged() {
             context.ui.ctx().set_cursor_icon(if response.dragged() {
                 CursorIcon::Grabbing
@@ -102,7 +112,12 @@ pub(crate) fn paint_controls(
             "contained-close",
             contained.floating(),
         ));
-        let response = context.ui.interact(close, id, Sense::click());
+        let response = context.interact_receiver(
+            close,
+            id,
+            Sense::click(),
+            context.plan.receiver_for_contained_close(contained),
+        );
         let color = if response.hovered() {
             context.style.tab_active_text_color
         } else {
@@ -142,7 +157,14 @@ pub(crate) fn paint_controls(
             contained.floating(),
             resize.direction(),
         ));
-        let response = context.ui.interact(bounds, id, Sense::drag());
+        let response = context.interact_receiver(
+            bounds,
+            id,
+            Sense::drag(),
+            context
+                .plan
+                .receiver_for_contained_resize(contained, resize),
+        );
         if response.hovered() || response.dragged() {
             context
                 .ui

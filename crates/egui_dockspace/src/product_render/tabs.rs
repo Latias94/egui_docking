@@ -31,6 +31,16 @@ fn paint_panes(context: &mut RenderContext<'_, '_>, root: RootId) {
         let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
             continue;
         };
+        let pane_id =
+            context
+                .ui
+                .make_persistent_id((context.instance_id, "pane-body", pane.visual_id()));
+        let _ = context.interact_receiver(
+            pane_rect,
+            pane_id,
+            Sense::click_and_drag(),
+            context.plan.receiver_for_pane(pane),
+        );
         let mut child = context.ui.new_child(
             UiBuilder::new()
                 .id_salt((context.instance_id, "pane", pane.visual_id()))
@@ -91,7 +101,12 @@ fn paint_tab(
     let id = context
         .ui
         .make_persistent_id((context.instance_id, "tab", tab.visual_id()));
-    let response = context.ui.interact(drag, id, Sense::click_and_drag());
+    let response = context.interact_receiver(
+        drag,
+        id,
+        Sense::click_and_drag(),
+        context.plan.receiver_for_tab_body(tab),
+    );
     let selected = tab.selected();
     let fill = if selected {
         context.style.tab_active_fill
@@ -158,15 +173,27 @@ fn capture_tab_actions(
     }
 
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {
-        paint_close(context, tab.item(), close_bounds, resource.title.as_str());
+        paint_close(
+            context,
+            tab.item(),
+            close_bounds,
+            resource.title.as_str(),
+            context.plan.receiver_for_tab_close(tab),
+        );
     }
 }
 
-fn paint_close(context: &mut RenderContext<'_, '_>, item: ItemId, rect: egui::Rect, title: &str) {
+fn paint_close(
+    context: &mut RenderContext<'_, '_>,
+    item: ItemId,
+    rect: egui::Rect,
+    title: &str,
+    receiver: Option<dockspace::runtime::DockspaceReceiverDescriptor>,
+) {
     let id = context
         .ui
         .make_persistent_id((context.instance_id, "tab-close", item));
-    let response = context.ui.interact(rect, id, Sense::click());
+    let response = context.interact_receiver(rect, id, Sense::click(), receiver);
     let color = if response.hovered() {
         context.style.tab_active_text_color
     } else {

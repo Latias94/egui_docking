@@ -8,7 +8,9 @@
 use std::collections::BTreeSet;
 
 use dockspace::model::{ItemId, SurfaceId};
-use dockspace::runtime::{DockspaceHostFrame, SurfaceUnavailableReason};
+use dockspace::runtime::{
+    DockspaceHostFrame, DockspaceReceiverDescriptor, SurfaceUnavailableReason,
+};
 use egui::emath::GuiRounding;
 use egui::{Id, Ui};
 
@@ -20,12 +22,55 @@ use crate::style::DockStyle;
 /// Result of painting one surface against a core-owned host frame.
 #[derive(Debug)]
 pub struct NativeSurfacePaint {
+    viewport_id: egui::ViewportId,
+    cumulative_pass_nr: u64,
     had_ready_plan: bool,
     deferred_measurement: bool,
     missing_items: BTreeSet<ItemId>,
+    receivers: Vec<NativePaintReceiver>,
+}
+
+/// One egui widget identity bound to an exact core receiver in the same pass.
+#[derive(Debug, Clone, Copy)]
+pub struct NativePaintReceiver {
+    widget_id: egui::Id,
+    layer_id: egui::LayerId,
+    receiver: DockspaceReceiverDescriptor,
+}
+
+impl NativePaintReceiver {
+    /// Returns the egui widget identity registered during painting.
+    #[must_use]
+    pub const fn widget_id(self) -> egui::Id {
+        self.widget_id
+    }
+
+    /// Returns the exact egui layer containing the widget.
+    #[must_use]
+    pub const fn layer_id(self) -> egui::LayerId {
+        self.layer_id
+    }
+
+    /// Returns the output-bound core receiver descriptor.
+    #[must_use]
+    pub const fn receiver(self) -> DockspaceReceiverDescriptor {
+        self.receiver
+    }
 }
 
 impl NativeSurfacePaint {
+    /// Returns the viewport whose current pass produced these bindings.
+    #[must_use]
+    pub const fn viewport_id(&self) -> egui::ViewportId {
+        self.viewport_id
+    }
+
+    /// Returns the completed-pass generation expected after this pass ends.
+    #[must_use]
+    pub const fn cumulative_pass_nr(&self) -> u64 {
+        self.cumulative_pass_nr
+    }
+
     /// Returns whether a ready core plan was painted.
     #[must_use]
     pub const fn had_ready_plan(&self) -> bool {
@@ -44,6 +89,11 @@ impl NativeSurfacePaint {
     pub fn missing_items(&self) -> impl Iterator<Item = ItemId> + '_ {
         self.missing_items.iter().copied()
     }
+
+    /// Returns every egui widget bound to one exact core receiver in paint order.
+    pub fn receivers(&self) -> impl ExactSizeIterator<Item = NativePaintReceiver> + '_ {
+        self.receivers.iter().copied()
+    }
 }
 
 /// Paints one ready surface using the same renderer as the ordinary product
@@ -57,6 +107,11 @@ pub fn paint_surface(
     panes: &mut dyn PaneView,
     style: &DockStyle,
 ) -> Result<NativeSurfacePaint, DockspaceError> {
+    let viewport_id = ui.ctx().viewport_id();
+    let cumulative_pass_nr = ui
+        .ctx()
+        .cumulative_pass_nr_for(viewport_id)
+        .saturating_add(1);
     let dock_rect = ui.available_rect_before_wrap();
     let Some(plan) = frame
         .paint_plan(surface)
@@ -66,9 +121,12 @@ pub fn paint_surface(
         ui.painter()
             .rect_filled(dock_rect, 0.0, style.workspace_fill);
         return Ok(NativeSurfacePaint {
+            viewport_id,
+            cumulative_pass_nr,
             had_ready_plan: false,
             deferred_measurement: false,
             missing_items: BTreeSet::new(),
+            receivers: Vec::new(),
         });
     };
 
@@ -86,9 +144,20 @@ pub fn paint_surface(
             .map_err(DockspaceError::from_detail)?;
     }
     Ok(NativeSurfacePaint {
+        viewport_id,
+        cumulative_pass_nr,
         had_ready_plan: true,
         deferred_measurement: painted.defer_measurement,
         missing_items: painted.missing_items,
+        receivers: painted
+            .receivers
+            .into_iter()
+            .map(|binding| NativePaintReceiver {
+                widget_id: binding.widget_id,
+                layer_id: binding.layer_id,
+                receiver: binding.receiver,
+            })
+            .collect(),
     })
 }
 

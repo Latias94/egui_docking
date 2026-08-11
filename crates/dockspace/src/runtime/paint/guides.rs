@@ -7,7 +7,7 @@ use crate::drop_resolver::{
     DropAffordance, DropAffordanceCluster, DropAffordanceTarget,
     DropGuideEligibility as CoreDropGuideEligibility, DropGuideTargetKey,
 };
-use crate::drop_target::{DropTargetAvailability, DropTargetKind};
+use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetKind};
 use crate::geometry::LogicalRect;
 use crate::ids::{RootId, SurfaceId};
 
@@ -145,6 +145,10 @@ impl fmt::Debug for DropAffordanceTargetPaintRecord<'_> {
 }
 
 impl DropAffordanceTargetPaintRecord<'_> {
+    pub(super) const fn target_id(self) -> DropTargetId {
+        self.target.target_id()
+    }
+
     /// Returns an opaque visual identity suitable for renderer widget keys.
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {

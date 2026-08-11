@@ -28,7 +28,8 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: RootId) {
         } else {
             Sense::hover()
         };
-        let response = context.ui.interact(hit, id, sense);
+        let response =
+            context.interact_receiver(hit, id, sense, context.plan.receiver_for_splitter(splitter));
         let emphasized = response.hovered() || response.dragged() || response.has_focus();
         context.ui.painter().rect_filled(
             draw,

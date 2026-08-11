@@ -3,13 +3,14 @@
 use dockspace::runtime::{
     DockspaceDropDirection, DockspaceDropEligibility, DropAffordanceTargetPaintRecord,
 };
+use egui::Sense;
 
 use crate::guide_paint::{GuideCueDirection, describe_guide_button, paint_guide_button};
 
 use super::RenderContext;
 use super::geometry::egui_rect;
 
-pub(crate) fn paint(context: &RenderContext<'_, '_>) {
+pub(crate) fn paint(context: &mut RenderContext<'_, '_>) {
     let Some(affordance) = context.plan.drop_affordance() else {
         return;
     };
@@ -20,7 +21,7 @@ pub(crate) fn paint(context: &RenderContext<'_, '_>) {
     }
 }
 
-fn paint_target(context: &RenderContext<'_, '_>, target: DropAffordanceTargetPaintRecord<'_>) {
+fn paint_target(context: &mut RenderContext<'_, '_>, target: DropAffordanceTargetPaintRecord<'_>) {
     let Some(button) = egui_rect(target.draw_bounds()) else {
         return;
     };
@@ -32,6 +33,15 @@ fn paint_target(context: &RenderContext<'_, '_>, target: DropAffordanceTargetPai
         context.style,
     );
     paint_guide_button(context.ui.painter(), paint);
+    if let Some(receiver) = context.plan.receiver_for_drop_target(target)
+        && let Some(hit) = egui_rect(receiver.bounds())
+    {
+        let id =
+            context
+                .ui
+                .make_persistent_id((context.instance_id, "drop-target", target.visual_id()));
+        let _ = context.interact_receiver(hit, id, Sense::hover(), Some(receiver));
+    }
 }
 
 const fn guide_direction(direction: DockspaceDropDirection) -> GuideCueDirection {

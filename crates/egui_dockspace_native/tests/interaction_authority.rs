@@ -4,7 +4,7 @@ use dockspace::model::{
     SurfaceId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::runtime::{DockspaceSession, UniformSurfaceMetrics};
+use dockspace::runtime::{DockspaceReceiverRole, DockspaceSession, UniformSurfaceMetrics};
 use eframe::egui::{
     Context, Event, Id, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
 };
@@ -71,8 +71,15 @@ fn run_surface_frame(
     session: &mut DockspaceSession,
     panes: &mut Panes,
     events: Vec<Event>,
-) -> (eframe::egui::FullOutput, Option<Pos2>) {
+) -> (
+    eframe::egui::FullOutput,
+    Option<Pos2>,
+    Vec<native_support::NativePaintReceiver>,
+    Option<(eframe::egui::ViewportId, u64)>,
+) {
     let mut second_tab_center = None;
+    let mut receivers = Vec::new();
+    let mut receiver_generation = None;
     let mut output = context.run_ui(input(events), |ui| {
         let mut frame = session.begin_host_frame().expect("host frame begins");
         second_tab_center = frame
@@ -92,6 +99,8 @@ fn run_surface_frame(
             &DockStyle::default(),
         )
         .expect("native surface paints");
+        receivers.extend(painted.receivers());
+        receiver_generation = Some((painted.viewport_id(), painted.cumulative_pass_nr()));
         if painted.deferred_measurement() {
             native_support::defer_unpainted_surfaces(&mut frame)
                 .expect("deferred surface settlement succeeds");
@@ -102,7 +111,7 @@ fn run_surface_frame(
         frame.commit().expect("host frame commits");
     });
     output.textures_delta.clear();
-    (output, second_tab_center)
+    (output, second_tab_center, receivers, receiver_generation)
 }
 
 #[allow(
@@ -123,7 +132,7 @@ fn external_pointer_journal_suppresses_local_response_actions() {
     let mut panes = Panes;
     install_ready_candidate(&mut session);
 
-    let (_, pointer) = run_surface_frame(&context, &mut session, &mut panes, Vec::new());
+    let (_, pointer, _, _) = run_surface_frame(&context, &mut session, &mut panes, Vec::new());
     let pointer = pointer.expect("stable paint plan contains the second tab");
 
     let _ = run_surface_frame(
@@ -163,4 +172,31 @@ fn external_pointer_journal_suppresses_local_response_actions() {
             .is_selected(),
         "native rendering must not submit a second local pointer action"
     );
+}
+
+#[test]
+fn completed_pass_hit_maps_to_the_exact_tab_receiver() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = Panes;
+    install_ready_candidate(&mut session);
+
+    let (_, pointer, receivers, generation) =
+        run_surface_frame(&context, &mut session, &mut panes, Vec::new());
+    let pointer = pointer.expect("stable paint plan contains the second tab");
+    let (viewport, expected_pass) = generation.expect("ready paint reports its pass identity");
+    let hits = context
+        .hit_test_last_pass(viewport, pointer)
+        .expect("the viewport completed the painted pass");
+    assert_eq!(hits.cumulative_pass_nr(), expected_pass);
+
+    let drag = hits.drag().expect("the tab owns the drag lane");
+    let receiver = receivers
+        .iter()
+        .copied()
+        .find(|receiver| {
+            receiver.widget_id() == drag.id() && receiver.layer_id() == drag.layer_id()
+        })
+        .expect("the completed-pass identity has an exact dockspace binding");
+    assert_eq!(receiver.receiver().role(), DockspaceReceiverRole::TabBody);
 }

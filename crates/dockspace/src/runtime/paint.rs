@@ -186,13 +186,24 @@ pub enum DockspaceReceiverRole {
 ///
 /// A descriptor is not input authority. It must be rebound after a concrete
 /// output is finally presented before an event may name it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct DockspaceReceiverDescriptor {
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) region: PresentationHitRegionId,
     role: DockspaceReceiverRole,
     bounds: LogicalRect,
     center: LogicalPoint,
+}
+
+impl fmt::Debug for DockspaceReceiverDescriptor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DockspaceReceiverDescriptor")
+            .field("role", &self.role)
+            .field("bounds", &self.bounds)
+            .field("center", &self.center)
+            .finish()
+    }
 }
 
 impl DockspaceReceiverDescriptor {
@@ -748,6 +759,120 @@ impl<'frame> SurfacePaintPlan<'frame> {
     pub fn tab_receiver(self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
         self.receiver(
             |kind| matches!(kind, PresentationHitRegionKind::TabBody(tab) if tab.item == item),
+        )
+    }
+
+    /// Returns the exact receiver for one painted pane body.
+    #[must_use]
+    pub fn receiver_for_pane(
+        self,
+        pane: PanePaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let pane_id = pane.record.id();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::PaneBody(id) if id == pane_id),
+        )
+    }
+
+    /// Returns the exact receiver for one painted tab body.
+    #[must_use]
+    pub fn receiver_for_tab_body(
+        self,
+        tab: TabPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let tab_id = *tab.record.id();
+        self.receiver(|kind| matches!(kind, PresentationHitRegionKind::TabBody(id) if id == tab_id))
+    }
+
+    /// Returns the exact receiver for one painted tab close control.
+    #[must_use]
+    pub fn receiver_for_tab_close(
+        self,
+        tab: TabPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let tab_id = *tab.record.id();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::TabClose(id) if id == tab_id),
+        )
+    }
+
+    /// Returns the exact receiver for one painted splitter handle.
+    #[must_use]
+    pub fn receiver_for_splitter(
+        self,
+        splitter: SplitterPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let splitter_id = *splitter.record.id();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::SplitterHandle(id) if id == splitter_id),
+        )
+    }
+
+    /// Returns the exact blocker receiver for one contained floating surface.
+    #[must_use]
+    pub fn receiver_for_contained_frame(
+        self,
+        contained: ContainedPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let floating = contained.record.floating();
+        self.receiver(|kind| {
+            matches!(kind, PresentationHitRegionKind::ContainedFrameBlocker(id) if id == floating)
+        })
+    }
+
+    /// Returns the exact title-drag receiver for one contained floating surface.
+    #[must_use]
+    pub fn receiver_for_contained_title(
+        self,
+        contained: ContainedPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let floating = contained.record.floating();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::ContainedTitle(id) if id == floating),
+        )
+    }
+
+    /// Returns the exact close receiver for one contained floating surface.
+    #[must_use]
+    pub fn receiver_for_contained_close(
+        self,
+        contained: ContainedPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let floating = contained.record.floating();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::ContainedClose(id) if id == floating),
+        )
+    }
+
+    /// Returns the exact resize receiver for one contained floating edge.
+    #[must_use]
+    pub fn receiver_for_contained_resize(
+        self,
+        contained: ContainedPaintRecord<'frame>,
+        resize: ContainedResizePaintRecord,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let floating = contained.record.floating();
+        let direction = resize.record.direction();
+        self.receiver(|kind| {
+            matches!(
+                kind,
+                PresentationHitRegionKind::ContainedResize {
+                    floating: id,
+                    direction: candidate,
+                } if id == floating && candidate == direction
+            )
+        })
+    }
+
+    /// Returns the exact receiver for one core-selected drop-guide target.
+    #[must_use]
+    pub fn receiver_for_drop_target(
+        self,
+        target: DropAffordanceTargetPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let target_id = target.target_id();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::DropTarget(id) if id == target_id),
         )
     }
 

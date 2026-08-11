@@ -11,7 +11,9 @@ mod tabs;
 use std::collections::BTreeSet;
 
 use dockspace::model::ItemId;
-use dockspace::runtime::{DockspacePreviewVisual, PreparedSurfaceAction, SurfacePaintPlan};
+use dockspace::runtime::{
+    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedSurfaceAction, SurfacePaintPlan,
+};
 use egui::{Id, Sense, Stroke, StrokeKind, Ui};
 
 use crate::pane::PaneView;
@@ -41,6 +43,8 @@ struct RenderContext<'ui, 'plan> {
     style: &'ui DockStyle,
     resources: &'ui PaintResources,
     actions: &'ui mut Vec<PreparedSurfaceAction>,
+    #[cfg(feature = "native-render-support")]
+    receivers: &'ui mut Vec<ProductReceiverBinding>,
     defer_measurement: &'ui mut bool,
     pointer_authority: PointerActionAuthority,
 }
@@ -50,11 +54,40 @@ impl RenderContext<'_, '_> {
         *self.defer_measurement = true;
         self.actions.push(action);
     }
+
+    fn interact_receiver(
+        &mut self,
+        rect: egui::Rect,
+        id: Id,
+        sense: Sense,
+        _receiver: Option<DockspaceReceiverDescriptor>,
+    ) -> egui::Response {
+        let response = self.ui.interact(rect, id, sense);
+        #[cfg(feature = "native-render-support")]
+        if let Some(receiver) = _receiver {
+            self.receivers.push(ProductReceiverBinding {
+                widget_id: response.id,
+                layer_id: response.layer_id,
+                receiver,
+            });
+        }
+        response
+    }
+}
+
+#[cfg(feature = "native-render-support")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProductReceiverBinding {
+    pub(crate) widget_id: Id,
+    pub(crate) layer_id: egui::LayerId,
+    pub(crate) receiver: DockspaceReceiverDescriptor,
 }
 
 pub(crate) struct ProductPaintOutput {
     pub(crate) actions: Vec<PreparedSurfaceAction>,
     pub(crate) missing_items: BTreeSet<ItemId>,
+    #[cfg(feature = "native-render-support")]
+    pub(crate) receivers: Vec<ProductReceiverBinding>,
     pub(crate) defer_measurement: bool,
 }
 
@@ -68,6 +101,8 @@ pub(crate) fn paint_surface(
 ) -> ProductPaintOutput {
     let resources = PaintResources::from_plan(plan, ui, panes, style);
     let mut actions = Vec::new();
+    #[cfg(feature = "native-render-support")]
+    let mut receivers = Vec::new();
     let mut defer_measurement = false;
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
@@ -95,6 +130,8 @@ pub(crate) fn paint_surface(
             style,
             resources: &resources,
             actions: &mut actions,
+            #[cfg(feature = "native-render-support")]
+            receivers: &mut receivers,
             defer_measurement: &mut defer_measurement,
             pointer_authority,
         };
@@ -116,7 +153,7 @@ pub(crate) fn paint_surface(
             context.actions.insert(0, action);
             *context.defer_measurement = true;
         }
-        guides::paint(&context);
+        guides::paint(&mut context);
         if paint_contained_transform_preview(context.ui, context.plan, context.style)
             && let Some(action) = context.plan.prepare_contained_transform_preview_painted()
         {
@@ -126,6 +163,8 @@ pub(crate) fn paint_surface(
     ProductPaintOutput {
         actions,
         missing_items: resources.missing_items().collect(),
+        #[cfg(feature = "native-render-support")]
+        receivers,
         defer_measurement,
     }
 }
