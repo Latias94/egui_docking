@@ -47,6 +47,8 @@ pub(crate) enum NativeHostProtocolError {
     ViewportCreateFailureAcknowledgementMismatch,
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
+    #[error("native output settlements did not preserve one contiguous context-local sequence")]
+    OutputOrderViolation,
 }
 
 impl NativeRuntimeError {

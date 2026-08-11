@@ -568,6 +568,9 @@ impl NativeCoordinator {
     }
 
     fn prepare_output_prefix(&mut self) -> Result<(), NativeRuntimeError> {
+        if !self.bridge.output_order_is_valid() {
+            return Err(NativeHostProtocolError::OutputOrderViolation.into());
+        }
         for (result, submitted) in self.bridge.output_prefix() {
             if submitted {
                 continue;

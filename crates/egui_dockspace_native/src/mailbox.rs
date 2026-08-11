@@ -49,6 +49,7 @@ impl NativeViewportCreateFailureRecord {
 pub(crate) struct OutputReservation {
     binding: Option<NativeSurfaceBinding>,
     terminal_recorded: bool,
+    abandoned: bool,
 }
 
 impl OutputReservation {
@@ -56,6 +57,7 @@ impl OutputReservation {
         Self {
             binding: None,
             terminal_recorded: false,
+            abandoned: false,
         }
     }
 
@@ -63,6 +65,7 @@ impl OutputReservation {
         Self {
             binding: Some(binding),
             terminal_recorded: false,
+            abandoned: false,
         }
     }
 
@@ -76,6 +79,10 @@ impl OutputReservation {
 
     pub(crate) const fn binding(self) -> Option<NativeSurfaceBinding> {
         self.binding
+    }
+
+    fn abandon(&mut self) {
+        self.abandoned = true;
     }
 }
 
@@ -152,6 +159,23 @@ mod tests {
         assert!(!reservation.attach(second));
         assert_eq!(reservation.binding(), Some(first));
     }
+
+    #[test]
+    fn output_ordinals_must_form_one_contiguous_sequence() {
+        assert!(is_next_output_ordinal(0, 1));
+        assert!(is_next_output_ordinal(1, 2));
+        assert!(!is_next_output_ordinal(1, 1));
+        assert!(!is_next_output_ordinal(1, 3));
+        assert!(!is_next_output_ordinal(u64::MAX, 1));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputRecordDisposition {
+    Recorded,
+    Ignored,
+    ProtocolViolation,
+    Inactive,
 }
 
 #[derive(Debug)]
@@ -159,6 +183,9 @@ struct HostRecords {
     active: bool,
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
+    output_context: Option<NativeOutputToken>,
+    last_output_ordinal: u64,
+    output_order_invalid: bool,
     event_boundary_pending: bool,
 }
 
@@ -168,6 +195,9 @@ impl HostRecords {
             active: true,
             journal: VecDeque::new(),
             output_reservations: BTreeMap::new(),
+            output_context: None,
+            last_output_ordinal: 0,
+            output_order_invalid: false,
             event_boundary_pending: false,
         }
     }
@@ -198,18 +228,45 @@ impl HostRecords {
         reservation.attach(binding)
     }
 
-    fn record_output(&mut self, result: NativeOutputResult) -> bool {
-        let Some(reservation) = self.output_reservations.get_mut(&result.token()) else {
-            return false;
-        };
-        if !self.active || reservation.terminal_recorded {
-            return false;
+    fn record_output(&mut self, result: NativeOutputResult) -> OutputRecordDisposition {
+        if !self.active {
+            return OutputRecordDisposition::Inactive;
         }
+        let Some(reservation) = self.output_reservations.get(&result.token()) else {
+            self.output_order_invalid = true;
+            return OutputRecordDisposition::ProtocolViolation;
+        };
+        if reservation.terminal_recorded || !self.accept_output_order(result) {
+            self.output_order_invalid = true;
+            return OutputRecordDisposition::ProtocolViolation;
+        }
+        let reservation = self
+            .output_reservations
+            .get_mut(&result.token())
+            .expect("validated output reservation remains present");
         reservation.terminal_recorded = true;
+        if reservation.abandoned {
+            self.output_reservations.remove(&result.token());
+            return OutputRecordDisposition::Ignored;
+        }
         self.journal.push_back(HostRecord::Output {
             result,
             submitted: false,
         });
+        OutputRecordDisposition::Recorded
+    }
+
+    fn accept_output_order(&mut self, result: NativeOutputResult) -> bool {
+        match self.output_context {
+            Some(context) if !context.same_context(result.token()) => return false,
+            Some(_) => {}
+            None => self.output_context = Some(result.token()),
+        }
+        let ordinal = result.ordinal().get();
+        if !is_next_output_ordinal(self.last_output_ordinal, ordinal) {
+            return false;
+        }
+        self.last_output_ordinal = ordinal;
         true
     }
 
@@ -234,8 +291,15 @@ impl HostRecords {
         self.active = false;
         self.journal.clear();
         self.output_reservations.clear();
+        self.output_context = None;
+        self.last_output_ordinal = 0;
+        self.output_order_invalid = false;
         self.event_boundary_pending = false;
     }
+}
+
+const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
+    matches!(previous.checked_add(1), Some(expected) if expected == current)
 }
 
 #[derive(Debug)]
@@ -335,6 +399,10 @@ impl NativeHostBridge {
         outputs
     }
 
+    pub(crate) fn output_order_is_valid(&self) -> bool {
+        !self.lock().output_order_invalid
+    }
+
     pub(crate) fn reserve_output(&self, token: NativeOutputToken) -> bool {
         let binding = self
             .lock_viewports()
@@ -385,8 +453,15 @@ impl NativeHostBridge {
         records.journal.retain(|record| {
             !matches!(record, HostRecord::Output { result, .. } if result.token() == token)
         });
-        let removed_reservation = records.output_reservations.remove(&token).is_some();
-        removed_reservation || records.journal.len() != previous_len
+        if records.journal.len() != previous_len {
+            records.output_reservations.remove(&token);
+            return true;
+        }
+        let Some(reservation) = records.output_reservations.get_mut(&token) else {
+            return false;
+        };
+        reservation.abandon();
+        true
     }
 
     pub(crate) fn commit_frame_boundary(&self) {
@@ -458,10 +533,14 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
-        if !self.lock().record_output(result) {
-            return NativeHostWake::Wait;
+        match self.lock().record_output(result) {
+            OutputRecordDisposition::Recorded | OutputRecordDisposition::ProtocolViolation => {
+                NativeHostWake::RepaintRoot
+            }
+            OutputRecordDisposition::Ignored | OutputRecordDisposition::Inactive => {
+                NativeHostWake::Wait
+            }
         }
-        NativeHostWake::RepaintRoot
     }
 
     fn on_viewport_create_failed(&self, failure: NativeViewportCreateFailure) -> NativeHostWake {
