@@ -46,6 +46,7 @@ pub(crate) struct NativeCoordinator {
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PaintedSurfaceOutput>,
+    pending_destroyed: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     effects: NativeEffectCoordinator,
     pointer_translator: NativePointerTranslator,
 }
@@ -63,6 +64,7 @@ impl std::fmt::Debug for NativeCoordinator {
                     .unwrap_or_else(PoisonError::into_inner),
             )
             .field("pending_outputs", &self.pending_outputs.len())
+            .field("pending_destroyed", &self.pending_destroyed)
             .field("effects", &self.effects)
             .field("pointer_translator", &self.pointer_translator)
             .finish_non_exhaustive()
@@ -87,6 +89,7 @@ impl NativeCoordinator {
             bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
             viewports,
             pending_outputs: BTreeMap::new(),
+            pending_destroyed: BTreeMap::new(),
             effects: NativeEffectCoordinator::default(),
             pointer_translator: NativePointerTranslator::default(),
         })
@@ -475,6 +478,58 @@ impl NativeCoordinator {
         }
     }
 
+    /// Reduces the next callback record into one pending host-frame boundary.
+    ///
+    /// The mailbox remains the only callback-order authority. Pointer facts,
+    /// close requests, exact destruction events, viewport rosters, and create
+    /// failures are acknowledged only after their corresponding core input is
+    /// retained. A later callback cannot join that boundary: the driver must
+    /// commit or retry the exact core frame before reducing another record.
+    pub(crate) fn reduce_callback_head(&mut self) -> Result<bool, NativeRuntimeError> {
+        if self.bridge.callback_boundary_pending() {
+            return Ok(false);
+        }
+        if self.reduce_next_viewport_roster()? {
+            return Ok(true);
+        }
+        if self.reduce_next_viewport_create_failure()? {
+            return Ok(true);
+        }
+        let Some(record) = self.next_window_event()? else {
+            return Ok(false);
+        };
+        let mut candidate = self.pointer_translator;
+        match candidate.translate(&record) {
+            NativePointerTranslation::NotPointer => self.reduce_non_pointer_event(&record)?,
+            NativePointerTranslation::Ignored => {}
+            NativePointerTranslation::Input(input) => self.record_pointer(input)?,
+        }
+        self.acknowledge_window_event(record.ordinal())?;
+        self.pointer_translator = candidate;
+        Ok(true)
+    }
+
+    fn reduce_non_pointer_event(
+        &mut self,
+        record: &NativeWindowEventRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        let Some(binding) = record.binding() else {
+            return Ok(());
+        };
+        match record.event() {
+            winit::event::WindowEvent::CloseRequested => {
+                self.publish_close(binding, NativeCloseState::Requested, None)?;
+            }
+            winit::event::WindowEvent::Destroyed => {
+                if self.session.is_current_native_binding(binding) {
+                    self.pending_destroyed.insert(binding.surface(), binding);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Reduces one same-callback root viewport roster into a complete platform fact.
     ///
     /// Eframe may expose live windows that are not dockspace surfaces, so
@@ -498,17 +553,22 @@ impl NativeCoordinator {
         &mut self,
         roster: &NativeViewportRosterRecord,
     ) -> Result<(), NativeRuntimeError> {
-        if let Ok(observations) = Self::compile_viewport_roster(roster) {
-            match self
-                .session
-                .report_managed_native_snapshot(
-                    observations
-                        .iter()
-                        .map(|observation| (observation.binding(), observation.facts())),
-                    NativeWorkAreaRoster::Unknown,
-                )
-            {
-                Ok(()) => return Ok(()),
+        self.pending_destroyed
+            .retain(|_, binding| self.session.is_current_native_binding(*binding));
+        if let Ok(mut observations) = Self::compile_viewport_roster(roster) {
+            observations.extend(self.pending_destroyed.values().copied().map(|binding| {
+                CompiledWindowObservation::new(binding, NativeWindowFacts::destroyed())
+            }));
+            match self.session.report_managed_native_snapshot(
+                observations
+                    .iter()
+                    .map(|observation| (observation.binding(), observation.facts())),
+                NativeWorkAreaRoster::Unknown,
+            ) {
+                Ok(()) => {
+                    self.pending_destroyed.clear();
+                    return Ok(());
+                }
                 Err(error)
                     if matches!(
                         error.native_kind(),
@@ -662,7 +722,7 @@ impl NativeCoordinator {
         resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<NativeHostFrame<'_>, NativeRuntimeError> {
         self.prepare_output_prefix()?;
-        if self.bridge.has_pending_input() {
+        if self.bridge.has_pending_input() && !self.bridge.callback_boundary_pending() {
             return Err(NativeHostProtocolError::CallbackRecordPending.into());
         }
         Ok(NativeHostFrame::new(

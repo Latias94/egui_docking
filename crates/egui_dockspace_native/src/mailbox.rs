@@ -10,9 +10,9 @@ use eframe::{
     egui::ViewportId,
 };
 
-use crate::event::NativeWindowEventRecord;
 #[cfg(test)]
 use crate::error::NativeHostProtocolError;
+use crate::event::NativeWindowEventRecord;
 use crate::viewport_map::NativeViewportMap;
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
@@ -752,8 +752,7 @@ impl NativeHostBridge {
         self.lock().journal.push_back(record);
     }
 
-    #[cfg(test)]
-    pub(crate) fn event_boundary_pending(&self) -> bool {
+    pub(crate) fn callback_boundary_pending(&self) -> bool {
         self.lock().event_boundary_pending
     }
 }

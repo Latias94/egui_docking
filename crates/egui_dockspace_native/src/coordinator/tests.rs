@@ -483,7 +483,7 @@ fn window_event_remains_pending_until_exact_acknowledgement() {
     coordinator
         .acknowledge_window_event(7)
         .expect("exact event acknowledgement advances the journal");
-    assert!(coordinator.bridge.event_boundary_pending());
+    assert!(coordinator.bridge.callback_boundary_pending());
 
     let mut frame = coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -492,7 +492,177 @@ fn window_event_remains_pending_until_exact_acknowledgement() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("test host settles every surface");
     frame.commit().expect("frame commits");
-    assert!(!coordinator.bridge.event_boundary_pending());
+    assert!(!coordinator.bridge.callback_boundary_pending());
+}
+
+#[test]
+fn callback_head_requires_one_committed_frame_before_the_next_event() {
+    let mut native = coordinator();
+    let (first, _) = register_roots(&mut native);
+    let window = WindowId::from(11);
+    native
+        .bind_viewport(ViewportId::ROOT, window, first)
+        .expect("root viewport binds");
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            10,
+            window,
+            Some(ViewportId::ROOT),
+            Some(first),
+            WindowEvent::Focused(true),
+        )));
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            11,
+            window,
+            Some(ViewportId::ROOT),
+            Some(first),
+            WindowEvent::Focused(false),
+        )));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the first inert event is acknowledged")
+    );
+    assert!(native.bridge.callback_boundary_pending());
+    assert!(
+        !native
+            .reduce_callback_head()
+            .expect("a second callback cannot join the pending boundary")
+    );
+    assert_eq!(
+        native
+            .next_window_event()
+            .expect("the next callback remains readable")
+            .map(|event| event.ordinal()),
+        Some(11)
+    );
+
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the acknowledged boundary can commit before the later event");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    frame.commit().expect("first callback boundary commits");
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the later event becomes the next boundary")
+    );
+    assert!(
+        native
+            .next_window_event()
+            .expect("the second event was acknowledged")
+            .is_none()
+    );
+}
+
+#[test]
+fn destroyed_event_is_published_only_with_the_next_complete_roster() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let first_window = WindowId::from(11);
+    let second_window = WindowId::from(22);
+    let child = ViewportId::from_hash_of("second-native-surface");
+    native
+        .bind_viewport(ViewportId::ROOT, first_window, first)
+        .expect("root viewport binds");
+    native
+        .bind_viewport(child, second_window, second)
+        .expect("child viewport binds");
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            12,
+            first_window,
+            Some(ViewportId::ROOT),
+            Some(first),
+            WindowEvent::Destroyed,
+        )));
+    native
+        .bridge
+        .push_record(HostRecord::ViewportRoster(live_roster([second])));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the exact destruction callback is retained")
+    );
+    assert!(native.session.is_current_native_binding(first));
+    let mut event_frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the destruction callback boundary begins");
+    event_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    event_frame
+        .commit()
+        .expect("the destruction callback boundary commits");
+    assert!(native.session.is_current_native_binding(first));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the next complete roster publishes the tombstone")
+    );
+    let mut roster_frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the exact roster boundary begins");
+    roster_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    let report = roster_frame
+        .commit()
+        .expect("the exact roster with destruction commits");
+
+    assert!(report.inputs().iter().any(|outcome| matches!(
+        outcome,
+        HostInputOutcome::NativePlatformSnapshotApplied { .. }
+    )));
+    assert!(native.session.is_current_native_binding(second));
+}
+
+#[test]
+fn close_requested_event_publishes_one_exact_close_edge() {
+    let mut native = coordinator();
+    let (first, _) = register_roots(&mut native);
+    let window = WindowId::from(11);
+    native
+        .bind_viewport(ViewportId::ROOT, window, first)
+        .expect("root viewport binds");
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            13,
+            window,
+            Some(ViewportId::ROOT),
+            Some(first),
+            WindowEvent::CloseRequested,
+        )));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the exact close request is retained")
+    );
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the close-request boundary begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    let report = frame.commit().expect("the close-request boundary commits");
+
+    assert!(report.inputs().iter().any(|outcome| matches!(
+        outcome,
+        HostInputOutcome::NativeCloseObservationApplied { close_requests }
+            if close_requests.len() == 1
+    )));
 }
 
 #[test]
@@ -508,7 +678,7 @@ fn complete_root_roster_publishes_one_exact_platform_snapshot() {
             .reduce_next_viewport_roster()
             .expect("complete roster is accepted")
     );
-    assert!(native.bridge.event_boundary_pending());
+    assert!(native.bridge.callback_boundary_pending());
 
     let mut frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
