@@ -242,6 +242,7 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     native
         .reserve_viewport(child, failed_binding)
         .expect("failed viewport was reserved before scheduling");
+    assert!(native.bridge.reserve_create_for_test(child, failed_binding));
     assert_eq!(
         native.bridge.record_viewport_create_failure_for_test(child),
         NativeHostWake::RepaintRoot
@@ -279,6 +280,11 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     native
         .acknowledge_viewport_create_failure(failure)
         .expect("exact frozen failure is acknowledged");
+    assert_eq!(
+        native.bridge.create_binding(child),
+        None,
+        "acknowledgement clears the exact failed create reservation"
+    );
     assert_eq!(native.viewport_binding(child), Some(successor));
     assert!(
         native
@@ -294,6 +300,43 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("test host settles every surface");
     frame.commit().expect("host frame commits");
+}
+
+#[test]
+fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
+    let mut native = coordinator();
+    let (_, failed_binding) = register_roots(&mut native);
+    let child = ViewportId::from_hash_of("failed-native-surface-aba");
+    native
+        .reserve_viewport(child, failed_binding)
+        .expect("failed viewport was reserved before scheduling");
+    assert!(native.bridge.reserve_create(child, failed_binding));
+    assert_eq!(
+        native.bridge.record_viewport_create_failure_for_test(child),
+        NativeHostWake::RepaintRoot
+    );
+    let failure = native
+        .next_viewport_create_failure()
+        .expect("failure prefix is readable")
+        .expect("failed create is retained");
+
+    let mut successor_source = coordinator();
+    let (_, successor) = register_roots(&mut successor_source);
+    native
+        .viewports
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .reserve_replacement(child, failed_binding, successor)
+        .expect("successor replaces the failed route");
+    assert!(native.bridge.clear_create(child, failed_binding));
+    assert!(native.bridge.reserve_create(child, successor));
+
+    native
+        .acknowledge_viewport_create_failure(failure)
+        .expect("stale failure is acknowledged without touching the successor");
+
+    assert_eq!(native.bridge.create_binding(child), Some(successor));
+    assert_eq!(native.viewport_binding(child), Some(successor));
 }
 
 #[test]

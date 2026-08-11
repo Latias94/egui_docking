@@ -15,6 +15,9 @@ use eframe::{
 };
 use winit::window::WindowId;
 
+use crate::effect_coordinator::{
+    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
+};
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
@@ -37,6 +40,7 @@ pub(crate) struct NativeCoordinator {
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PaintedSurfaceOutput>,
+    effects: NativeEffectCoordinator,
     pointer_translator: NativePointerTranslator,
 }
 
@@ -53,6 +57,7 @@ impl std::fmt::Debug for NativeCoordinator {
                     .unwrap_or_else(PoisonError::into_inner),
             )
             .field("pending_outputs", &self.pending_outputs.len())
+            .field("effects", &self.effects)
             .field("pointer_translator", &self.pointer_translator)
             .finish_non_exhaustive()
     }
@@ -76,6 +81,7 @@ impl NativeCoordinator {
             bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
             viewports,
             pending_outputs: BTreeMap::new(),
+            effects: NativeEffectCoordinator::default(),
             pointer_translator: NativePointerTranslator::default(),
         })
     }
@@ -250,6 +256,105 @@ impl NativeCoordinator {
             .viewport(surface)
     }
 
+    /// Retains one core-emitted deferred viewport effect until eframe reports
+    /// an exact success or failure callback.
+    ///
+    /// The caller must invoke this only after the core host frame which emitted
+    /// `request` committed. A rejected request is returned unchanged so the
+    /// driver can convert it into an explicit typed dispatch result.
+    pub(crate) fn retain_viewport_effect(
+        &mut self,
+        viewport: ViewportId,
+        request: dockspace::runtime::NativeEffectRequest,
+    ) -> Result<NativeViewportEffectPlan, dockspace::runtime::NativeEffectRequest> {
+        let Some(plan) = self.effects.plan(viewport, &request) else {
+            return Err(request);
+        };
+        if !self.session.is_current_native_binding(plan.binding()) {
+            return Err(request);
+        }
+        let predecessor = {
+            let viewports = self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            viewports.binding(viewport)
+        };
+        if matches!(plan.kind(), NativeViewportEffectKind::Replacement) && predecessor.is_none() {
+            return Err(request);
+        }
+        if !self.bridge.reserve_create(viewport, plan.binding()) {
+            return Err(request);
+        }
+        if let Err(request) = self.effects.insert(plan, request) {
+            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
+            return Err(request);
+        }
+
+        let reserve_result = {
+            let mut viewports = self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match (plan.kind(), predecessor) {
+                (NativeViewportEffectKind::Create, None) => {
+                    viewports.reserve(viewport, plan.binding())
+                }
+                (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
+                    viewports.reserve_replacement(viewport, predecessor, plan.binding())
+                }
+                (NativeViewportEffectKind::Create, Some(_)) => {
+                    Err(NativeViewportBindingError::ViewportAlreadyBound {
+                        viewport,
+                        existing: viewports
+                            .binding(viewport)
+                            .expect("matched viewport binding remains present")
+                            .surface(),
+                    })
+                }
+                (NativeViewportEffectKind::Replacement, None) => {
+                    unreachable!("replacement predecessor was checked before retention")
+                }
+            }
+        };
+        if reserve_result.is_err() {
+            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
+            return Err(self
+                .effects
+                .remove_unstarted(plan)
+                .expect("failed viewport reservation retains its affine request"));
+        }
+        Ok(plan)
+    }
+
+    /// Reduces one exact deferred-viewport failure without losing the affine
+    /// effect result across a retryable core rejection.
+    pub(crate) fn reduce_next_viewport_create_failure(
+        &mut self,
+    ) -> Result<bool, NativeRuntimeError> {
+        let Some(failure) = self.next_viewport_create_failure()? else {
+            return Ok(false);
+        };
+        if !self.effects.prepare_failure(failure) {
+            return Err(NativeHostProtocolError::ViewportCreateFailureWithoutEffect.into());
+        }
+        if let Some(result) = self.effects.take_failure_result(failure)
+            && let Err(error) = self.session.report_native_effect_result(result)
+        {
+            let (kind, result) = error.into_parts();
+            self.effects
+                .restore_failure_result(failure, result)
+                .unwrap_or_else(|_| {
+                    panic!("retryable native effect result lost its exact failure owner")
+                });
+            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+        }
+        debug_assert!(self.effects.failure_reported(failure));
+        self.acknowledge_viewport_create_failure(failure)?;
+        debug_assert!(self.effects.finish_failure(failure));
+        Ok(true)
+    }
+
     /// Returns the next event which is safe to translate.
     ///
     /// A presentation result at the journal head is submitted first and forms
@@ -315,6 +420,8 @@ impl NativeCoordinator {
                 NativeHostProtocolError::ViewportCreateFailureAcknowledgementMismatch.into(),
             );
         }
+        self.bridge
+            .clear_create(failure.viewport(), failure.binding());
         let mut viewports = self
             .viewports
             .lock()
@@ -542,6 +649,30 @@ impl NativeCoordinator {
                 token,
                 output,
             ));
+        }
+        if self.effects.pending_binding(token.viewport_id()) == Some(binding) {
+            let attach = self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .attach(token.viewport_id(), binding, token.window_id());
+            if attach.is_err() {
+                return Err(NativeOutputBindingError::new(
+                    NativeOutputBindingErrorKind::BindingMismatch,
+                    token,
+                    output,
+                ));
+            }
+            let request = self
+                .effects
+                .take_for_output(token.viewport_id(), binding)
+                .expect("matching pending viewport effect remains present");
+            let acknowledgement = request.accepted();
+            debug_assert!(
+                acknowledgement.is_none(),
+                "native create effects settle through ordinary lifecycle facts"
+            );
+            debug_assert!(self.bridge.clear_create(token.viewport_id(), binding));
         }
         self.pending_outputs.insert(token, output);
         Ok(())

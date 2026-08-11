@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken,
-    NativeViewportCreateFailure, NativeWindowEvent,
+    NativeViewportCreateFailure, NativeWindowEvent, egui::ViewportId,
 };
 
 use crate::event::NativeWindowEventRecord;
@@ -183,6 +183,7 @@ struct HostRecords {
     active: bool,
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
+    create_reservations: BTreeMap<ViewportId, NativeSurfaceBinding>,
     output_context: Option<NativeOutputToken>,
     last_output_ordinal: u64,
     output_order_invalid: bool,
@@ -195,6 +196,7 @@ impl HostRecords {
             active: true,
             journal: VecDeque::new(),
             output_reservations: BTreeMap::new(),
+            create_reservations: BTreeMap::new(),
             output_context: None,
             last_output_ordinal: 0,
             output_order_invalid: false,
@@ -291,6 +293,7 @@ impl HostRecords {
         self.active = false;
         self.journal.clear();
         self.output_reservations.clear();
+        self.create_reservations.clear();
         self.output_context = None;
         self.last_output_ordinal = 0;
         self.output_order_invalid = false;
@@ -403,6 +406,40 @@ impl NativeHostBridge {
         !self.lock().output_order_invalid
     }
 
+    /// Reserves the exact binding which owns one deferred create callback.
+    ///
+    /// The fork callback reports only a viewport id on creation failure. The
+    /// binding therefore has to be frozen before eframe starts the deferred
+    /// create operation; looking it up after a replacement would be a
+    /// time-of-check/time-of-use guess.
+    pub(crate) fn reserve_create(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let mut records = self.lock();
+        match records.create_reservations.get(&viewport) {
+            Some(current) => *current == binding,
+            None => {
+                records.create_reservations.insert(viewport, binding);
+                true
+            }
+        }
+    }
+
+    pub(crate) fn clear_create(&self, viewport: ViewportId, binding: NativeSurfaceBinding) -> bool {
+        let mut records = self.lock();
+        if records.create_reservations.get(&viewport) != Some(&binding) {
+            return false;
+        }
+        records.create_reservations.remove(&viewport);
+        true
+    }
+
+    pub(crate) fn create_binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
+        self.lock().create_reservations.get(&viewport).copied()
+    }
+
     pub(crate) fn reserve_output(&self, token: NativeOutputToken) -> bool {
         let binding = self
             .lock_viewports()
@@ -486,15 +523,13 @@ impl NativeHostBridge {
     }
 
     fn record_viewport_create_failure(&self, viewport: eframe::egui::ViewportId) -> NativeHostWake {
-        let Some(binding) = self.lock_viewports().binding(viewport) else {
+        let mut records = self.lock();
+        let Some(binding) = records.create_reservations.get(&viewport).copied() else {
             return NativeHostWake::Wait;
         };
-        if !self
-            .lock()
-            .record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
-                viewport, binding,
-            ))
-        {
+        if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
+            viewport, binding,
+        )) {
             return NativeHostWake::Wait;
         }
         NativeHostWake::RepaintRoot
@@ -506,6 +541,15 @@ impl NativeHostBridge {
         viewport: eframe::egui::ViewportId,
     ) -> NativeHostWake {
         self.record_viewport_create_failure(viewport)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_create_for_test(
+        &self,
+        viewport: eframe::egui::ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.reserve_create(viewport, binding)
     }
 
     #[cfg(test)]

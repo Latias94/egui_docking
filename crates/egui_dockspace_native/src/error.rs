@@ -2,7 +2,8 @@
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceRuntimeError, PaintedSurfaceOutput, SurfacePresentationReportError,
+    DockspaceRuntimeError, NativeHostErrorKind, PaintedSurfaceOutput,
+    SurfacePresentationReportError,
 };
 use eframe::{NativeOutputToken, egui::ViewportId};
 use egui_dockspace::DockspaceError;
@@ -45,6 +46,10 @@ pub(crate) enum NativeHostProtocolError {
     WindowEventAcknowledgementMismatch,
     #[error("the viewport creation failure acknowledgement does not match the journal head")]
     ViewportCreateFailureAcknowledgementMismatch,
+    #[error("a viewport creation failure has no matching retained native effect")]
+    ViewportCreateFailureWithoutEffect,
+    #[error("dockspace rejected a retryable native effect result: {0:?}")]
+    NativeEffectResultRejected(NativeHostErrorKind),
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
     #[error("native output settlements did not preserve one contiguous context-local sequence")]

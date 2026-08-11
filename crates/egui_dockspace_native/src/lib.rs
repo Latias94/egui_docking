@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod coordinator;
+mod effect_coordinator;
 mod error;
 mod event;
 mod host_frame;
