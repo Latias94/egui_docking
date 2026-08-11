@@ -171,6 +171,20 @@ impl NativeViewportMap {
         self.binding(mapped_viewport)
     }
 
+    /// Returns the exact binding of a window already attached to a roster entry.
+    ///
+    /// Unlike [`Self::binding_for_output`], this never accepts a staged route
+    /// whose successor window has not completed its first output callback. A
+    /// root roster can still contain the predecessor window during that gap;
+    /// treating it as the successor would create an incarnation ABA.
+    pub(crate) fn binding_for_roster(
+        &self,
+        viewport: ViewportId,
+        window: WindowId,
+    ) -> Option<NativeSurfaceBinding> {
+        self.binding_for_event(window, Some(viewport))
+    }
+
     /// Returns the exact binding which may own an output callback.
     ///
     /// A deferred viewport can receive its first output after the native

@@ -7,9 +7,10 @@ use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceSession, HostWindowToken, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeEffectResult, NativeEffectSubmissionError, NativePointerInput, NativePointerRoster,
-    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeWindowFacts,
-    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
+    NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput,
+    NativePointerRoster, NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput,
+    SurfacePresentationResult,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
@@ -26,9 +27,12 @@ use crate::error::{
 use crate::host_frame::NativeHostFrame;
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
-use crate::mailbox::{NativeHostBridge, NativeViewportCreateFailureRecord};
+use crate::mailbox::{
+    NativeHostBridge, NativeViewportCreateFailureRecord, NativeViewportRosterRecord,
+};
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::viewport_map::NativeViewportMap;
+use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
 /// Sole native coordinator for one renderer-neutral docking session.
@@ -469,6 +473,74 @@ impl NativeCoordinator {
                 Ok(true)
             }
         }
+    }
+
+    /// Reduces one same-callback root viewport roster into a complete platform fact.
+    ///
+    /// Eframe may expose live windows that are not dockspace surfaces, so
+    /// unmapped records are ignored. Core still performs the exact-set check
+    /// against every current dockspace binding. Any incomplete, stale, or
+    /// malformed candidate revokes inventory authority as `Unknown`; it never
+    /// infers destruction from absence.
+    pub(crate) fn reduce_next_viewport_roster(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(roster) = self.bridge.front_viewport_roster() else {
+            return Ok(false);
+        };
+        self.record_viewport_roster(&roster)?;
+        if !self.bridge.acknowledge_viewport_roster() {
+            return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
+        }
+        Ok(true)
+    }
+
+    fn record_viewport_roster(
+        &mut self,
+        roster: &NativeViewportRosterRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        if let Ok(observations) = Self::compile_viewport_roster(roster) {
+            match self
+                .session
+                .report_managed_native_snapshot(
+                    observations
+                        .iter()
+                        .map(|observation| (observation.binding(), observation.facts())),
+                    NativeWorkAreaRoster::Unknown,
+                )
+            {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if matches!(
+                        error.native_kind(),
+                        Some(
+                            NativeHostErrorKind::StaleBinding
+                                | NativeHostErrorKind::InvalidFacts
+                                | NativeHostErrorKind::OperationConflict
+                        )
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.session.report_native_inventory_unknown()?;
+        Ok(())
+    }
+
+    fn compile_viewport_roster(
+        roster: &NativeViewportRosterRecord,
+    ) -> Result<Vec<CompiledWindowObservation>, NativeHostProtocolError> {
+        #[cfg(test)]
+        if let Some(compiled) = roster.compiled_override() {
+            return compiled;
+        }
+
+        roster
+            .observations()
+            .iter()
+            .copied()
+            .map(|observation| {
+                compile_window_observation(observation.binding(), observation.snapshot())
+            })
+            .collect()
     }
 
     /// Registers one application root window with the core-owned native roster.

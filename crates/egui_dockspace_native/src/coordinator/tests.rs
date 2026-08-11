@@ -94,6 +94,20 @@ fn register_roots(
     (first, second)
 }
 
+fn live_roster(
+    bindings: impl IntoIterator<Item = NativeSurfaceBinding>,
+) -> NativeViewportRosterRecord {
+    NativeViewportRosterRecord::for_test(
+        bindings.into_iter().map(|binding| {
+            crate::window_snapshot::CompiledWindowObservation::new(
+                binding,
+                NativeWindowFacts::live(),
+            )
+        }),
+        true,
+    )
+}
+
 #[test]
 fn coordinator_owns_registration_and_viewport_identity() {
     let mut native = coordinator();
@@ -413,6 +427,11 @@ fn staged_viewport_output_uses_reserved_binding_before_window_attachment() {
         Some(binding),
         "the staged viewport route remains authoritative for its first output"
     );
+    assert_eq!(
+        viewports.binding_for_roster(viewport, window),
+        None,
+        "a root roster cannot retarget an unattached predecessor window"
+    );
 }
 
 #[test]
@@ -474,6 +493,92 @@ fn window_event_remains_pending_until_exact_acknowledgement() {
         .expect("test host settles every surface");
     frame.commit().expect("frame commits");
     assert!(!coordinator.bridge.event_boundary_pending());
+}
+
+#[test]
+fn complete_root_roster_publishes_one_exact_platform_snapshot() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .bridge
+        .push_record(HostRecord::ViewportRoster(live_roster([first, second])));
+
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("complete roster is accepted")
+    );
+    assert!(native.bridge.event_boundary_pending());
+
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("accepted roster enters the next core boundary");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    let report = frame.commit().expect("roster frame commits");
+
+    assert!(report.inputs().iter().any(|outcome| matches!(
+        outcome,
+        HostInputOutcome::NativePlatformSnapshotApplied { .. }
+    )));
+}
+
+#[test]
+fn incomplete_root_roster_revokes_inventory_without_destroying_bindings() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    native
+        .bridge
+        .push_record(HostRecord::ViewportRoster(live_roster([first])));
+
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("incomplete roster fails closed to unknown")
+    );
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("unknown inventory still forms a valid boundary");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    frame.commit().expect("unknown inventory frame commits");
+
+    assert!(native.session.is_current_native_binding(first));
+    assert!(native.session.is_current_native_binding(second));
+}
+
+#[test]
+fn invalid_root_window_facts_fail_closed_to_unknown() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let invalid = NativeViewportRosterRecord::for_test(
+        [crate::window_snapshot::CompiledWindowObservation::new(
+            first,
+            NativeWindowFacts::live(),
+        )],
+        false,
+    );
+    native
+        .bridge
+        .push_record(HostRecord::ViewportRoster(invalid));
+
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("invalid facts revoke authority instead of poisoning the mailbox")
+    );
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("unknown inventory enters a normal boundary");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("test host settles every surface");
+    frame.commit().expect("unknown inventory frame commits");
+
+    assert!(native.session.is_current_native_binding(first));
+    assert!(native.session.is_current_native_binding(second));
 }
 
 #[test]

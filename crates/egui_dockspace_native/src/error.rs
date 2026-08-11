@@ -46,6 +46,8 @@ pub(crate) enum NativeHostProtocolError {
     WindowEventAcknowledgementMismatch,
     #[error("the viewport creation failure acknowledgement does not match the journal head")]
     ViewportCreateFailureAcknowledgementMismatch,
+    #[error("the root viewport roster acknowledgement does not match the journal head")]
+    ViewportRosterAcknowledgementMismatch,
     #[error("a viewport creation failure has no matching retained native effect")]
     ViewportCreateFailureWithoutEffect,
     #[error("dockspace rejected a retryable native effect result: {0:?}")]
@@ -54,6 +56,8 @@ pub(crate) enum NativeHostProtocolError {
     OutputAwaitingAttachment,
     #[error("native output settlements did not preserve one contiguous context-local sequence")]
     OutputOrderViolation,
+    #[error("a native window snapshot contains invalid physical geometry or scale")]
+    InvalidWindowSnapshot,
 }
 
 impl NativeRuntimeError {

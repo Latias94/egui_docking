@@ -16,6 +16,7 @@ mod host_frame;
 mod mailbox;
 mod pointer_event;
 mod viewport_map;
+mod window_snapshot;
 
 pub use error::{
     NativeOutputBindingError, NativeOutputBindingErrorKind, NativeRuntimeError,

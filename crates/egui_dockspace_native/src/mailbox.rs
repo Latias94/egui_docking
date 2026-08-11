@@ -6,20 +6,100 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailure, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
+    NativeViewportCreateFailure, NativeViewportRoster, NativeWindowEvent, NativeWindowSnapshot,
+    egui::ViewportId,
 };
 
 use crate::event::NativeWindowEventRecord;
+#[cfg(test)]
+use crate::error::NativeHostProtocolError;
 use crate::viewport_map::NativeViewportMap;
+#[cfg(test)]
+use crate::window_snapshot::CompiledWindowObservation;
 
 #[derive(Debug, Clone)]
 pub(crate) enum HostRecord {
     WindowEvent(NativeWindowEventRecord),
+    ViewportRoster(NativeViewportRosterRecord),
     ViewportCreateFailed(NativeViewportCreateFailureRecord),
     Output {
         result: NativeOutputResult,
         submitted: bool,
     },
+}
+
+/// Frozen dockspace observations captured from one complete root-window roster.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeViewportRosterRecord {
+    observations: Vec<FrozenWindowObservation>,
+    #[cfg(test)]
+    compiled_override: Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>>,
+}
+
+/// One callback-time window snapshot paired with its exact dockspace binding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct FrozenWindowObservation {
+    binding: NativeSurfaceBinding,
+    snapshot: NativeWindowSnapshot,
+}
+
+impl FrozenWindowObservation {
+    const fn new(binding: NativeSurfaceBinding, snapshot: NativeWindowSnapshot) -> Self {
+        Self { binding, snapshot }
+    }
+
+    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+        self.binding
+    }
+
+    pub(crate) const fn snapshot(self) -> NativeWindowSnapshot {
+        self.snapshot
+    }
+}
+
+impl NativeViewportRosterRecord {
+    fn capture(roster: NativeViewportRoster<'_>, viewports: &NativeViewportMap) -> Self {
+        let mut observations = Vec::new();
+        for record in roster.records() {
+            let Some(binding) =
+                viewports.binding_for_roster(record.viewport_id(), record.window_id())
+            else {
+                continue;
+            };
+            observations.push(FrozenWindowObservation::new(binding, record.window()));
+        }
+        Self {
+            observations,
+            #[cfg(test)]
+            compiled_override: None,
+        }
+    }
+
+    pub(crate) fn observations(&self) -> &[FrozenWindowObservation] {
+        &self.observations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compiled_override(
+        &self,
+    ) -> Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>> {
+        self.compiled_override.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        observations: impl IntoIterator<Item = CompiledWindowObservation>,
+        facts_valid: bool,
+    ) -> Self {
+        Self {
+            observations: Vec::new(),
+            compiled_override: Some(if facts_valid {
+                Ok(observations.into_iter().collect())
+            } else {
+                Err(NativeHostProtocolError::InvalidWindowSnapshot)
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,7 +450,24 @@ impl NativeHostBridge {
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
         match self.lock().journal.front() {
             Some(HostRecord::WindowEvent(event)) => Some(event.clone()),
-            Some(HostRecord::ViewportCreateFailed(_) | HostRecord::Output { .. }) | None => None,
+            Some(
+                HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
+        }
+    }
+
+    pub(crate) fn front_viewport_roster(&self) -> Option<NativeViewportRosterRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::ViewportRoster(roster)) => Some(roster.clone()),
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
         }
     }
 
@@ -379,14 +476,23 @@ impl NativeHostBridge {
     ) -> Option<NativeViewportCreateFailureRecord> {
         match self.lock().journal.front() {
             Some(HostRecord::ViewportCreateFailed(failure)) => Some(*failure),
-            Some(HostRecord::WindowEvent(_) | HostRecord::Output { .. }) | None => None,
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
         }
     }
 
     pub(crate) fn has_pending_input(&self) -> bool {
         matches!(
             self.lock().journal.front(),
-            Some(HostRecord::WindowEvent(_) | HostRecord::ViewportCreateFailed(_))
+            Some(
+                HostRecord::WindowEvent(_)
+                    | HostRecord::ViewportRoster(_)
+                    | HostRecord::ViewportCreateFailed(_)
+            )
         )
     }
 
@@ -419,6 +525,16 @@ impl NativeHostBridge {
         matches
     }
 
+    pub(crate) fn acknowledge_viewport_roster(&self) -> bool {
+        let mut records = self.lock();
+        if !matches!(records.journal.front(), Some(HostRecord::ViewportRoster(_))) {
+            return false;
+        }
+        records.journal.pop_front();
+        records.event_boundary_pending = true;
+        true
+    }
+
     pub(crate) fn output_prefix(&self) -> Vec<(NativeOutputResult, bool)> {
         let records = self.lock();
         if records.event_boundary_pending {
@@ -429,7 +545,9 @@ impl NativeHostBridge {
             .iter()
             .map_while(|record| match record {
                 HostRecord::Output { result, submitted } => Some((*result, *submitted)),
-                HostRecord::WindowEvent(_) | HostRecord::ViewportCreateFailed(_) => None,
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_) => None,
             })
             .collect();
 
@@ -501,11 +619,25 @@ impl NativeHostBridge {
         &self,
         token: NativeOutputToken,
         window: NativeWindowSnapshot,
+        root_roster: Option<NativeViewportRoster<'_>>,
     ) -> bool {
-        let binding = self
-            .lock_viewports()
-            .binding_for_output(token.viewport_id(), token.window_id());
-        self.lock().reserve_output(token, binding, window)
+        let (binding, roster) = {
+            let viewports = self.lock_viewports();
+            (
+                viewports.binding_for_output(token.viewport_id(), token.window_id()),
+                root_roster.map(|roster| NativeViewportRosterRecord::capture(roster, &viewports)),
+            )
+        };
+        let mut records = self.lock();
+        if !records.reserve_output(token, binding, window) {
+            return false;
+        }
+        if let Some(roster) = roster {
+            records
+                .journal
+                .push_back(HostRecord::ViewportRoster(roster));
+        }
+        true
     }
 
     pub(crate) fn output_reservation(&self, token: NativeOutputToken) -> Option<OutputReservation> {
@@ -642,8 +774,13 @@ impl NativeHostHandler for NativeHostBridge {
         }
     }
 
-    fn on_output_begin(&self, token: NativeOutputToken, window: NativeWindowSnapshot) {
-        self.reserve_output(token, window);
+    fn on_output_begin(
+        &self,
+        token: NativeOutputToken,
+        window: NativeWindowSnapshot,
+        root_roster: Option<NativeViewportRoster<'_>>,
+    ) {
+        self.reserve_output(token, window, root_roster);
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
