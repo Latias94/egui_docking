@@ -3,7 +3,11 @@
 use dockspace::model::{ItemId, RootId};
 use dockspace::runtime::TabPaintRecord;
 use egui::accesskit::{Action, Role};
-use egui::{Align, Id, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2};
+use egui::{
+    Align, CursorIcon, Id, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2,
+};
+
+use crate::style::DockStyle;
 
 use super::RenderContext;
 use super::actions::gesture_phase;
@@ -69,6 +73,64 @@ fn paint_tab_bars(context: &mut RenderContext<'_, '_>, root: RootId) {
                 .ui
                 .painter()
                 .rect_filled(bounds, 0.0, context.style.tab_bar_fill);
+        }
+        paint_group_grip(context, bar);
+    }
+}
+
+fn paint_group_grip(
+    context: &mut RenderContext<'_, '_>,
+    bar: dockspace::runtime::TabBarPaintRecord<'_>,
+) {
+    let Some(grip) = bar.group_grip_bounds().and_then(egui_rect) else {
+        return;
+    };
+    let id =
+        context
+            .ui
+            .make_persistent_id((context.instance_id, "tab-group-grip", bar.visual_id()));
+    let response = context
+        .interact_receiver(
+            grip,
+            id,
+            Sense::drag(),
+            context.plan.receiver_for_tab_group_grip(bar),
+        )
+        .on_hover_text("Drag tab group");
+    let active = response.hovered() || response.dragged();
+    if active {
+        context.ui.ctx().set_cursor_icon(if response.dragged() {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::Grab
+        });
+    }
+    paint_group_grip_icon(context.ui, grip, context.style, active);
+    if context.pointer_authority.accepts_local_pointer_actions()
+        && let Some(phase) = gesture_phase(&response)
+        && let Some(action) = context
+            .plan
+            .prepare_tab_group_gesture(bar.visual_id(), phase)
+    {
+        context.push_preview_gesture_action(action);
+    }
+}
+
+fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, style: &DockStyle, active: bool) {
+    let color = if active {
+        style.tab_active_text_color
+    } else {
+        style.tab_text_color
+    };
+    let spacing = 3.5_f32.min(rect.width() * 0.18).min(rect.height() * 0.18);
+    let radius = 1.0_f32.min(spacing * 0.32);
+    for x in [-0.5, 0.5] {
+        for y in [-1.0, 0.0, 1.0] {
+            ui.painter().circle_filled(
+                rect.center() + egui::vec2(x * spacing, y * spacing),
+                radius,
+                color,
+            );
         }
     }
 }

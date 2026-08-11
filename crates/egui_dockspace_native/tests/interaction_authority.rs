@@ -32,6 +32,13 @@ impl PaneView for Panes {
     }
 }
 
+struct SurfaceFrameResult {
+    second_tab_center: Option<Pos2>,
+    group_grip_center: Option<Pos2>,
+    receivers: Vec<native_support::NativePaintReceiver>,
+    receiver_generation: Option<(eframe::egui::ViewportId, u64)>,
+}
+
 fn session() -> DockspaceSession {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
@@ -71,25 +78,25 @@ fn run_surface_frame(
     session: &mut DockspaceSession,
     panes: &mut Panes,
     events: Vec<Event>,
-) -> (
-    eframe::egui::FullOutput,
-    Option<Pos2>,
-    Vec<native_support::NativePaintReceiver>,
-    Option<(eframe::egui::ViewportId, u64)>,
-) {
+) -> SurfaceFrameResult {
     let mut second_tab_center = None;
+    let mut group_grip_center = None;
     let mut receivers = Vec::new();
     let mut receiver_generation = None;
     let mut output = context.run_ui(input(events), |ui| {
         let mut frame = session.begin_host_frame().expect("host frame begins");
-        second_tab_center = frame
+        if let Some(plan) = frame
             .paint_plan(SURFACE)
             .expect("paint plan lookup succeeds")
-            .and_then(|plan| {
-                plan.tabs()
-                    .find(|tab| tab.item() == SECOND)
-                    .map(|tab| logical_center(tab.drag_bounds()))
-            });
+        {
+            second_tab_center = plan
+                .tabs()
+                .find(|tab| tab.item() == SECOND)
+                .map(|tab| logical_center(tab.drag_bounds()));
+            group_grip_center = plan
+                .tab_bars()
+                .find_map(|bar| bar.group_grip_bounds().map(logical_center));
+        }
         let painted = native_support::paint_surface(
             &mut frame,
             Id::new("native-interaction-authority"),
@@ -99,8 +106,10 @@ fn run_surface_frame(
             &DockStyle::default(),
         )
         .expect("native surface paints");
-        receivers.extend(painted.receivers());
-        receiver_generation = Some((painted.viewport_id(), painted.cumulative_pass_nr()));
+        receivers = painted.receivers().collect();
+        receiver_generation = painted
+            .had_ready_plan()
+            .then_some((painted.viewport_id(), painted.cumulative_pass_nr()));
         if painted.deferred_measurement() {
             native_support::defer_unpainted_surfaces(&mut frame)
                 .expect("deferred surface settlement succeeds");
@@ -111,7 +120,26 @@ fn run_surface_frame(
         frame.commit().expect("host frame commits");
     });
     output.textures_delta.clear();
-    (output, second_tab_center, receivers, receiver_generation)
+    SurfaceFrameResult {
+        second_tab_center,
+        group_grip_center,
+        receivers,
+        receiver_generation,
+    }
+}
+
+fn run_ready_surface_frame(
+    context: &Context,
+    session: &mut DockspaceSession,
+    panes: &mut Panes,
+) -> SurfaceFrameResult {
+    for _ in 0..3 {
+        let painted = run_surface_frame(context, session, panes, Vec::new());
+        if painted.receiver_generation.is_some() {
+            return painted;
+        }
+    }
+    panic!("surface did not return to a ready paint plan");
 }
 
 #[allow(
@@ -132,8 +160,10 @@ fn external_pointer_journal_suppresses_local_response_actions() {
     let mut panes = Panes;
     install_ready_candidate(&mut session);
 
-    let (_, pointer, _, _) = run_surface_frame(&context, &mut session, &mut panes, Vec::new());
-    let pointer = pointer.expect("stable paint plan contains the second tab");
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let pointer = painted
+        .second_tab_center
+        .expect("stable paint plan contains the second tab");
 
     let _ = run_surface_frame(
         &context,
@@ -181,22 +211,90 @@ fn completed_pass_hit_maps_to_the_exact_tab_receiver() {
     let mut panes = Panes;
     install_ready_candidate(&mut session);
 
-    let (_, pointer, receivers, generation) =
-        run_surface_frame(&context, &mut session, &mut panes, Vec::new());
-    let pointer = pointer.expect("stable paint plan contains the second tab");
-    let (viewport, expected_pass) = generation.expect("ready paint reports its pass identity");
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let pointer = painted
+        .second_tab_center
+        .expect("stable paint plan contains the second tab");
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("ready paint reports its pass identity");
     let hits = context
         .hit_test_last_pass(viewport, pointer)
         .expect("the viewport completed the painted pass");
     assert_eq!(hits.cumulative_pass_nr(), expected_pass);
 
     let drag = hits.drag().expect("the tab owns the drag lane");
-    let receiver = receivers
+    let receiver = painted
+        .receivers
         .iter()
         .copied()
         .find(|receiver| {
-            receiver.widget_id() == drag.id() && receiver.layer_id() == drag.layer_id()
+            receiver.viewport_id() == viewport
+                && receiver.cumulative_pass_nr() == expected_pass
+                && receiver.widget_id() == drag.id()
+                && receiver.layer_id() == drag.layer_id()
         })
         .expect("the completed-pass identity has an exact dockspace binding");
-    assert_eq!(receiver.receiver().role(), DockspaceReceiverRole::TabBody);
+    assert_eq!(receiver.role(), DockspaceReceiverRole::TabBody);
+}
+
+#[test]
+fn detached_receiver_bindings_remain_generation_qualified() {
+    let context = Context::default();
+    let mut panes = Panes;
+    let mut first_session = session();
+    install_ready_candidate(&mut first_session);
+    let first = run_ready_surface_frame(&context, &mut first_session, &mut panes);
+
+    let mut second_session = session();
+    install_ready_candidate(&mut second_session);
+    let second = run_ready_surface_frame(&context, &mut second_session, &mut panes);
+    let (viewport, first_pass) = first
+        .receiver_generation
+        .expect("the first pass reports its identity");
+    let (second_viewport, second_pass) = second
+        .receiver_generation
+        .expect("the second pass reports its identity");
+    assert_eq!(second_viewport, viewport);
+    assert!(second_pass > first_pass);
+    assert!(first.receivers.iter().all(|receiver| {
+        receiver.viewport_id() == viewport && receiver.cumulative_pass_nr() == first_pass
+    }));
+    assert!(second.receivers.iter().all(|receiver| {
+        receiver.viewport_id() == viewport && receiver.cumulative_pass_nr() == second_pass
+    }));
+}
+
+#[test]
+fn completed_pass_hit_maps_to_the_exact_tab_group_receiver() {
+    let context = Context::default();
+    let mut session = session();
+    let mut panes = Panes;
+    install_ready_candidate(&mut session);
+
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let pointer = painted
+        .group_grip_center
+        .expect("the tab bar exposes a group drag grip");
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("ready paint reports its pass identity");
+    let hits = context
+        .hit_test_last_pass(viewport, pointer)
+        .expect("the viewport completed the painted pass");
+    assert_eq!(hits.cumulative_pass_nr(), expected_pass);
+
+    let drag = hits.drag().expect("the group grip owns the drag lane");
+    let receiver = painted
+        .receivers
+        .iter()
+        .copied()
+        .find(|receiver| {
+            receiver.viewport_id() == viewport
+                && receiver.cumulative_pass_nr() == expected_pass
+                && receiver.widget_id() == drag.id()
+                && receiver.layer_id() == drag.layer_id()
+        })
+        .expect("the completed-pass identity has an exact group binding");
+    assert_eq!(receiver.role(), DockspaceReceiverRole::TabGroupGrip);
 }

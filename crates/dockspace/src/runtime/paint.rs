@@ -796,6 +796,18 @@ impl<'frame> SurfacePaintPlan<'frame> {
         )
     }
 
+    /// Returns the exact receiver for one whole-tab-group drag grip.
+    #[must_use]
+    pub fn receiver_for_tab_group_grip(
+        self,
+        bar: TabBarPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let bar_id = *bar.record.id();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::TabGroupGrip(id) if id == bar_id),
+        )
+    }
+
     /// Returns the exact receiver for one painted splitter handle.
     #[must_use]
     pub fn receiver_for_splitter(

@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
-    DockspaceHostFrame, DockspaceReceiverDescriptor, SurfaceUnavailableReason,
+    DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession,
+    PresentedDockReceiver, SurfaceUnavailableReason,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Ui};
@@ -33,12 +34,26 @@ pub struct NativeSurfacePaint {
 /// One egui widget identity bound to an exact core receiver in the same pass.
 #[derive(Debug, Clone, Copy)]
 pub struct NativePaintReceiver {
+    viewport_id: egui::ViewportId,
+    cumulative_pass_nr: u64,
     widget_id: egui::Id,
     layer_id: egui::LayerId,
     receiver: DockspaceReceiverDescriptor,
 }
 
 impl NativePaintReceiver {
+    /// Returns the viewport whose completed pass owns this binding.
+    #[must_use]
+    pub const fn viewport_id(self) -> egui::ViewportId {
+        self.viewport_id
+    }
+
+    /// Returns the exact completed-pass generation owning this binding.
+    #[must_use]
+    pub const fn cumulative_pass_nr(self) -> u64 {
+        self.cumulative_pass_nr
+    }
+
     /// Returns the egui widget identity registered during painting.
     #[must_use]
     pub const fn widget_id(self) -> egui::Id {
@@ -51,10 +66,16 @@ impl NativePaintReceiver {
         self.layer_id
     }
 
-    /// Returns the output-bound core receiver descriptor.
+    /// Returns the stable semantic receiver role.
     #[must_use]
-    pub const fn receiver(self) -> DockspaceReceiverDescriptor {
-        self.receiver
+    pub const fn role(self) -> DockspaceReceiverRole {
+        self.receiver.role()
+    }
+
+    /// Rebinds this paint-time identity to the exact currently presented output.
+    #[must_use]
+    pub fn bind_presented(self, session: &DockspaceSession) -> Option<PresentedDockReceiver> {
+        session.bind_presented_receiver(&self.receiver)
     }
 }
 
@@ -153,6 +174,8 @@ pub fn paint_surface(
             .receivers
             .into_iter()
             .map(|binding| NativePaintReceiver {
+                viewport_id,
+                cumulative_pass_nr,
                 widget_id: binding.widget_id,
                 layer_id: binding.layer_id,
                 receiver: binding.receiver,
