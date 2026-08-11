@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{
-    NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken,
-    NativeViewportCreateFailure, NativeWindowEvent, egui::ViewportId,
+    NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
+    NativeViewportCreateFailure, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
 };
 
 use crate::event::NativeWindowEventRecord;
@@ -48,22 +48,25 @@ impl NativeViewportCreateFailureRecord {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OutputReservation {
     binding: Option<NativeSurfaceBinding>,
+    window: Option<NativeWindowSnapshot>,
     terminal_recorded: bool,
     abandoned: bool,
 }
 
 impl OutputReservation {
-    pub(crate) const fn unbound() -> Self {
+    pub(crate) const fn unbound(window: NativeWindowSnapshot) -> Self {
         Self {
             binding: None,
+            window: Some(window),
             terminal_recorded: false,
             abandoned: false,
         }
     }
 
-    pub(crate) const fn bound(binding: NativeSurfaceBinding) -> Self {
+    pub(crate) const fn bound(binding: NativeSurfaceBinding, window: NativeWindowSnapshot) -> Self {
         Self {
             binding: Some(binding),
+            window: Some(window),
             terminal_recorded: false,
             abandoned: false,
         }
@@ -81,9 +84,39 @@ impl OutputReservation {
         self.binding
     }
 
+    pub(crate) const fn window(self) -> Option<NativeWindowSnapshot> {
+        self.window
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn unbound_for_test() -> Self {
+        Self {
+            binding: None,
+            window: None,
+            terminal_recorded: false,
+            abandoned: false,
+        }
+    }
+
+    #[cfg(test)]
+    const fn bound_for_test(binding: NativeSurfaceBinding) -> Self {
+        Self {
+            binding: Some(binding),
+            window: None,
+            terminal_recorded: false,
+            abandoned: false,
+        }
+    }
+
     fn abandon(&mut self) {
         self.abandoned = true;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NativeCreateReservation {
+    binding: NativeSurfaceBinding,
+    rect: NativePhysicalRect,
 }
 
 #[cfg(test)]
@@ -154,10 +187,11 @@ mod tests {
     #[test]
     fn output_reservation_keeps_the_binding_seen_at_begin() {
         let (first, second) = bindings();
-        let mut reservation = OutputReservation::bound(first);
+        let mut reservation = OutputReservation::bound_for_test(first);
 
         assert!(!reservation.attach(second));
         assert_eq!(reservation.binding(), Some(first));
+        assert!(reservation.window().is_none());
     }
 
     #[test]
@@ -183,7 +217,7 @@ struct HostRecords {
     active: bool,
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
-    create_reservations: BTreeMap<ViewportId, NativeSurfaceBinding>,
+    create_reservations: BTreeMap<ViewportId, NativeCreateReservation>,
     output_context: Option<NativeOutputToken>,
     last_output_ordinal: u64,
     output_order_invalid: bool,
@@ -208,13 +242,17 @@ impl HostRecords {
         &mut self,
         token: NativeOutputToken,
         binding: Option<NativeSurfaceBinding>,
+        window: NativeWindowSnapshot,
     ) -> bool {
         if !self.active || self.output_reservations.contains_key(&token) {
             return false;
         }
         self.output_reservations.insert(
             token,
-            binding.map_or_else(OutputReservation::unbound, OutputReservation::bound),
+            binding.map_or_else(
+                || OutputReservation::unbound(window),
+                |binding| OutputReservation::bound(binding, window),
+            ),
         );
         true
     }
@@ -416,12 +454,15 @@ impl NativeHostBridge {
         &self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
+        rect: NativePhysicalRect,
     ) -> bool {
         let mut records = self.lock();
         match records.create_reservations.get(&viewport) {
-            Some(current) => *current == binding,
+            Some(current) => current.binding == binding && current.rect == rect,
             None => {
-                records.create_reservations.insert(viewport, binding);
+                records
+                    .create_reservations
+                    .insert(viewport, NativeCreateReservation { binding, rect });
                 true
             }
         }
@@ -429,7 +470,12 @@ impl NativeHostBridge {
 
     pub(crate) fn clear_create(&self, viewport: ViewportId, binding: NativeSurfaceBinding) -> bool {
         let mut records = self.lock();
-        if records.create_reservations.get(&viewport) != Some(&binding) {
+        if records
+            .create_reservations
+            .get(&viewport)
+            .map(|reservation| reservation.binding)
+            != Some(binding)
+        {
             return false;
         }
         records.create_reservations.remove(&viewport);
@@ -437,14 +483,29 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn create_binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
-        self.lock().create_reservations.get(&viewport).copied()
+        self.lock()
+            .create_reservations
+            .get(&viewport)
+            .copied()
+            .map(|reservation| reservation.binding)
     }
 
-    pub(crate) fn reserve_output(&self, token: NativeOutputToken) -> bool {
+    pub(crate) fn create_rect(&self, viewport: ViewportId) -> Option<NativePhysicalRect> {
+        self.lock()
+            .create_reservations
+            .get(&viewport)
+            .map(|reservation| reservation.rect)
+    }
+
+    pub(crate) fn reserve_output(
+        &self,
+        token: NativeOutputToken,
+        window: NativeWindowSnapshot,
+    ) -> bool {
         let binding = self
             .lock_viewports()
             .binding_for_output(token.viewport_id(), token.window_id());
-        self.lock().reserve_output(token, binding)
+        self.lock().reserve_output(token, binding, window)
     }
 
     pub(crate) fn output_reservation(&self, token: NativeOutputToken) -> Option<OutputReservation> {
@@ -524,11 +585,12 @@ impl NativeHostBridge {
 
     fn record_viewport_create_failure(&self, viewport: eframe::egui::ViewportId) -> NativeHostWake {
         let mut records = self.lock();
-        let Some(binding) = records.create_reservations.get(&viewport).copied() else {
+        let Some(reservation) = records.create_reservations.get(&viewport).copied() else {
             return NativeHostWake::Wait;
         };
         if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
-            viewport, binding,
+            viewport,
+            reservation.binding,
         )) {
             return NativeHostWake::Wait;
         }
@@ -548,8 +610,9 @@ impl NativeHostBridge {
         &self,
         viewport: eframe::egui::ViewportId,
         binding: NativeSurfaceBinding,
+        rect: NativePhysicalRect,
     ) -> bool {
-        self.reserve_create(viewport, binding)
+        self.reserve_create(viewport, binding, rect)
     }
 
     #[cfg(test)]
@@ -564,6 +627,13 @@ impl NativeHostBridge {
 }
 
 impl NativeHostHandler for NativeHostBridge {
+    fn deferred_undecorated_outer_rect(
+        &self,
+        viewport_id: ViewportId,
+    ) -> Option<NativePhysicalRect> {
+        self.create_rect(viewport_id)
+    }
+
     fn on_window_event(&self, event: NativeWindowEvent<'_>) {
         let record = NativeWindowEventRecord::from_eframe(event, &self.lock_viewports());
         let mut records = self.lock();
@@ -572,8 +642,8 @@ impl NativeHostHandler for NativeHostBridge {
         }
     }
 
-    fn on_output_begin(&self, token: NativeOutputToken) {
-        self.reserve_output(token);
+    fn on_output_begin(&self, token: NativeOutputToken, window: NativeWindowSnapshot) {
+        self.reserve_output(token, window);
     }
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {

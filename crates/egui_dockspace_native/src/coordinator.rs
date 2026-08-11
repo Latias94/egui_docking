@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceSession, HostWindowToken, NativeCloseEffectAcknowledgement, NativeCloseState,
@@ -11,7 +12,8 @@ use dockspace::runtime::{
     NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput, SurfacePresentationResult,
 };
 use eframe::{
-    NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, egui::ViewportId,
+    NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
+    egui::ViewportId,
 };
 use winit::window::WindowId;
 
@@ -283,7 +285,13 @@ impl NativeCoordinator {
         if matches!(plan.kind(), NativeViewportEffectKind::Replacement) && predecessor.is_none() {
             return Err(request);
         }
-        if !self.bridge.reserve_create(viewport, plan.binding()) {
+        let Some(requested_rect) = exact_native_rect(plan.placement()) else {
+            return Err(request);
+        };
+        if !self
+            .bridge
+            .reserve_create(viewport, plan.binding(), requested_rect)
+        {
             return Err(request);
         }
         if let Err(request) = self.effects.insert(plan, request) {
@@ -725,6 +733,24 @@ impl NativeCoordinator {
         }
         Ok(())
     }
+}
+
+fn exact_native_rect(rect: PhysicalRect) -> Option<NativePhysicalRect> {
+    Some(NativePhysicalRect::new(
+        exact_i32(rect.x())?,
+        exact_i32(rect.y())?,
+        exact_non_zero_u32(rect.width())?,
+        exact_non_zero_u32(rect.height())?,
+    ))
+}
+
+fn exact_i32(value: f64) -> Option<i32> {
+    (value.fract() == 0.0 && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX))
+        .then_some(value as i32)
+}
+
+fn exact_non_zero_u32(value: f64) -> Option<u32> {
+    (value.fract() == 0.0 && value >= 1.0 && value <= f64::from(u32::MAX)).then_some(value as u32)
 }
 
 impl Drop for NativeCoordinator {

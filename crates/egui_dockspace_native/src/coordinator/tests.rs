@@ -11,6 +11,30 @@ use super::*;
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
 
+fn native_rect() -> NativePhysicalRect {
+    NativePhysicalRect::new(100, 200, 800, 600)
+}
+
+#[test]
+fn deferred_viewport_rect_requires_exact_physical_pixels() {
+    let exact = PhysicalRect::new(-120.0, 48.0, 800.0, 600.0).expect("test rect is valid");
+    let rect = exact_native_rect(exact).expect("integral physical rect is accepted");
+
+    assert_eq!(rect.x(), -120);
+    assert_eq!(rect.y(), 48);
+    assert_eq!(rect.width(), 800);
+    assert_eq!(rect.height(), 600);
+}
+
+#[test]
+fn deferred_viewport_rect_never_rounds_or_accepts_empty_extents() {
+    let fractional = PhysicalRect::new(10.5, 20.0, 800.0, 600.0).expect("fractional rect is valid");
+    let empty = PhysicalRect::new(10.0, 20.0, 0.0, 600.0).expect("empty rect is representable");
+
+    assert!(exact_native_rect(fractional).is_none());
+    assert!(exact_native_rect(empty).is_none());
+}
+
 fn coordinator() -> NativeCoordinator {
     let layout = DockspaceLayout::new([
         DockspaceSurfaceLayout::new(
@@ -242,7 +266,11 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
     native
         .reserve_viewport(child, failed_binding)
         .expect("failed viewport was reserved before scheduling");
-    assert!(native.bridge.reserve_create_for_test(child, failed_binding));
+    assert!(
+        native
+            .bridge
+            .reserve_create_for_test(child, failed_binding, native_rect())
+    );
     assert_eq!(
         native.bridge.record_viewport_create_failure_for_test(child),
         NativeHostWake::RepaintRoot
@@ -310,7 +338,11 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
     native
         .reserve_viewport(child, failed_binding)
         .expect("failed viewport was reserved before scheduling");
-    assert!(native.bridge.reserve_create(child, failed_binding));
+    assert!(
+        native
+            .bridge
+            .reserve_create(child, failed_binding, native_rect())
+    );
     assert_eq!(
         native.bridge.record_viewport_create_failure_for_test(child),
         NativeHostWake::RepaintRoot
@@ -329,7 +361,11 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
         .reserve_replacement(child, failed_binding, successor)
         .expect("successor replaces the failed route");
     assert!(native.bridge.clear_create(child, failed_binding));
-    assert!(native.bridge.reserve_create(child, successor));
+    assert!(
+        native
+            .bridge
+            .reserve_create(child, successor, native_rect())
+    );
 
     native
         .acknowledge_viewport_create_failure(failure)
@@ -343,7 +379,7 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
 fn output_reservation_binds_only_after_the_ui_callback_updates_the_viewport() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
-    let mut reservation = OutputReservation::unbound();
+    let mut reservation = OutputReservation::unbound_for_test();
 
     assert_eq!(reservation.binding(), None);
     assert!(reservation.attach(second));
