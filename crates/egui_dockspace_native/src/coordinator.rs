@@ -413,7 +413,7 @@ impl NativeCoordinator {
     /// # Errors
     ///
     /// Returns an error when an earlier renderer settlement cannot be applied.
-    pub fn next_viewport_create_failure(
+    fn next_viewport_create_failure(
         &mut self,
     ) -> Result<Option<NativeViewportCreateFailureRecord>, NativeRuntimeError> {
         self.prepare_output_prefix()?;
@@ -426,7 +426,7 @@ impl NativeCoordinator {
     /// # Errors
     ///
     /// Returns an error unless `failure` is the callback journal head.
-    pub fn acknowledge_viewport_create_failure(
+    fn acknowledge_viewport_create_failure(
         &self,
         failure: NativeViewportCreateFailureRecord,
     ) -> Result<(), NativeRuntimeError> {
