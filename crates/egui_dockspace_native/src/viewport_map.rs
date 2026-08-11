@@ -171,6 +171,33 @@ impl NativeViewportMap {
         self.binding(mapped_viewport)
     }
 
+    /// Returns the exact binding which may own an output callback.
+    ///
+    /// A deferred viewport can receive its first output after the native
+    /// window exists but before the adapter has attached the callback window
+    /// to the reserved route. In that interval the viewport route is still
+    /// authoritative, while the reverse window index is intentionally empty.
+    /// This query accepts that one staged state without inferring ownership
+    /// from a window rectangle or callback order.
+    pub(crate) fn binding_for_output(
+        &self,
+        viewport: ViewportId,
+        window: WindowId,
+    ) -> Option<NativeSurfaceBinding> {
+        let route = self.viewports.get(&viewport).copied()?;
+        if route.window.is_some_and(|current| current != window) {
+            return None;
+        }
+        if self
+            .windows
+            .get(&window)
+            .is_some_and(|current| *current != viewport)
+        {
+            return None;
+        }
+        Some(route.binding)
+    }
+
     pub(crate) fn viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
         self.surfaces.get(&surface).copied()
     }

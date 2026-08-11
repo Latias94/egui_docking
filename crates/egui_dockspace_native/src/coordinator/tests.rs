@@ -310,6 +310,33 @@ fn output_reservation_binds_only_after_the_ui_callback_updates_the_viewport() {
 }
 
 #[test]
+fn staged_viewport_output_uses_reserved_binding_before_window_attachment() {
+    let mut native = coordinator();
+    let (_, binding) = register_roots(&mut native);
+    let viewport = ViewportId::from_hash_of("staged-output");
+    let window = WindowId::from(99);
+
+    native
+        .reserve_viewport(viewport, binding)
+        .expect("the deferred viewport reserves its exact binding");
+
+    let viewports = native
+        .viewports
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(
+        viewports.binding_for_event(window, Some(viewport)),
+        None,
+        "the reverse window route is intentionally absent before attachment"
+    );
+    assert_eq!(
+        viewports.binding_for_output(viewport, window),
+        Some(binding),
+        "the staged viewport route remains authoritative for its first output"
+    );
+}
+
+#[test]
 fn window_event_remains_pending_until_exact_acknowledgement() {
     let mut coordinator = coordinator();
     let (first, _) = register_roots(&mut coordinator);

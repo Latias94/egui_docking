@@ -406,7 +406,7 @@ impl NativeHostBridge {
     pub(crate) fn reserve_output(&self, token: NativeOutputToken) -> bool {
         let binding = self
             .lock_viewports()
-            .binding_for_event(token.window_id(), Some(token.viewport_id()));
+            .binding_for_output(token.viewport_id(), token.window_id());
         self.lock().reserve_output(token, binding)
     }
 

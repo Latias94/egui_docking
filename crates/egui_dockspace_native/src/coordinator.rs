@@ -513,7 +513,7 @@ impl NativeCoordinator {
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_event(token.window_id(), Some(token.viewport_id()));
+            .binding_for_output(token.viewport_id(), token.window_id());
         let binding = reservation.binding().or(current_binding);
         let Some(binding) = binding else {
             return Err(NativeOutputBindingError::new(
