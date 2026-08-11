@@ -4,7 +4,9 @@ use dockspace::model::{
     SurfaceId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::runtime::{DockspaceReceiverRole, DockspaceSession, UniformSurfaceMetrics};
+use dockspace::runtime::{
+    DockspaceReceiverRole, DockspaceSession, DockspaceVisualId, UniformSurfaceMetrics,
+};
 use eframe::egui::{
     Context, Event, Id, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
 };
@@ -33,7 +35,9 @@ impl PaneView for Panes {
 }
 
 struct SurfaceFrameResult {
+    pane_center: Option<Pos2>,
     second_tab_center: Option<Pos2>,
+    second_tab_receiver: Option<DockspaceVisualId>,
     group_grip_center: Option<Pos2>,
     receivers: Vec<native_support::NativePaintReceiver>,
     receiver_generation: Option<(eframe::egui::ViewportId, u64)>,
@@ -47,6 +51,16 @@ fn session() -> DockspaceSession {
     .expect("native interaction layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("native interaction session initializes")
+}
+
+fn empty_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([])),
+    )])
+    .expect("empty native interaction layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("empty native interaction session initializes")
 }
 
 fn install_ready_candidate(session: &mut DockspaceSession) {
@@ -79,7 +93,9 @@ fn run_surface_frame(
     panes: &mut Panes,
     events: Vec<Event>,
 ) -> SurfaceFrameResult {
+    let mut pane_center = None;
     let mut second_tab_center = None;
+    let mut second_tab_receiver = None;
     let mut group_grip_center = None;
     let mut receivers = Vec::new();
     let mut receiver_generation = None;
@@ -89,10 +105,16 @@ fn run_surface_frame(
             .paint_plan(SURFACE)
             .expect("paint plan lookup succeeds")
         {
-            second_tab_center = plan
-                .tabs()
-                .find(|tab| tab.item() == SECOND)
-                .map(|tab| logical_center(tab.drag_bounds()));
+            pane_center = plan
+                .panes()
+                .next()
+                .map(|pane| logical_center(pane.content_bounds()));
+            if let Some(tab) = plan.tabs().find(|tab| tab.item() == SECOND) {
+                second_tab_center = Some(logical_center(tab.drag_bounds()));
+                second_tab_receiver = plan
+                    .receiver_for_tab_body(tab)
+                    .map(|receiver| receiver.visual_id());
+            }
             group_grip_center = plan
                 .tab_bars()
                 .find_map(|bar| bar.group_grip_bounds().map(logical_center));
@@ -121,7 +143,9 @@ fn run_surface_frame(
     });
     output.textures_delta.clear();
     SurfaceFrameResult {
+        pane_center,
         second_tab_center,
+        second_tab_receiver,
         group_grip_center,
         receivers,
         receiver_generation,
@@ -236,6 +260,11 @@ fn completed_pass_hit_maps_to_the_exact_tab_receiver() {
         })
         .expect("the completed-pass identity has an exact dockspace binding");
     assert_eq!(receiver.role(), DockspaceReceiverRole::TabBody);
+    assert_eq!(
+        Some(receiver.visual_id()),
+        painted.second_tab_receiver,
+        "the hit must bind the exact second tab, not merely another tab role"
+    );
 }
 
 #[test]
@@ -297,4 +326,36 @@ fn completed_pass_hit_maps_to_the_exact_tab_group_receiver() {
         })
         .expect("the completed-pass identity has an exact group binding");
     assert_eq!(receiver.role(), DockspaceReceiverRole::TabGroupGrip);
+}
+
+#[test]
+fn empty_central_leaf_registers_its_pane_receiver() {
+    let context = Context::default();
+    let mut session = empty_session();
+    let mut panes = Panes;
+    install_ready_candidate(&mut session);
+
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let pointer = painted
+        .pane_center
+        .expect("the empty central leaf still has pane geometry");
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("ready paint reports its pass identity");
+    let hits = context
+        .hit_test_last_pass(viewport, pointer)
+        .expect("the viewport completed the painted pass");
+    let drag = hits.drag().expect("the empty pane owns the drag lane");
+    let receiver = painted
+        .receivers
+        .iter()
+        .copied()
+        .find(|receiver| {
+            receiver.viewport_id() == viewport
+                && receiver.cumulative_pass_nr() == expected_pass
+                && receiver.widget_id() == drag.id()
+                && receiver.layer_id() == drag.layer_id()
+        })
+        .expect("the empty pane hit has an exact dockspace binding");
+    assert_eq!(receiver.role(), DockspaceReceiverRole::PaneBody);
 }

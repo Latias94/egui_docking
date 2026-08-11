@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use dockspace::model::{ItemId, SurfaceId};
 use dockspace::runtime::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession,
-    PresentedDockReceiver, SurfaceUnavailableReason,
+    DockspaceVisualId, PresentedDockReceiver, SurfaceUnavailableReason,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Ui};
@@ -70,6 +70,12 @@ impl NativePaintReceiver {
     #[must_use]
     pub const fn role(self) -> DockspaceReceiverRole {
         self.receiver.role()
+    }
+
+    /// Returns the opaque visual identity of this exact receiver.
+    #[must_use]
+    pub const fn visual_id(self) -> DockspaceVisualId {
+        self.receiver.visual_id()
     }
 
     /// Rebinds this paint-time identity to the exact currently presented output.

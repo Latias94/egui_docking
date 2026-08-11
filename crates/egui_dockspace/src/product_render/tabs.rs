@@ -29,9 +29,6 @@ fn paint_panes(context: &mut RenderContext<'_, '_>, root: RootId) {
             .ui
             .painter()
             .rect_filled(bounds, 0.0, context.style.workspace_fill);
-        let Some(item) = pane.selected() else {
-            continue;
-        };
         let Some(pane_rect) = egui_rect(pane.content_bounds()) else {
             continue;
         };
@@ -45,6 +42,9 @@ fn paint_panes(context: &mut RenderContext<'_, '_>, root: RootId) {
             Sense::click_and_drag(),
             context.plan.receiver_for_pane(pane),
         );
+        let Some(item) = pane.selected() else {
+            continue;
+        };
         let mut child = context.ui.new_child(
             UiBuilder::new()
                 .id_salt((context.instance_id, "pane", pane.visual_id()))
