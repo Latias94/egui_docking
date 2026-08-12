@@ -68,7 +68,9 @@ pub use paint::{
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
-    PaintedSurfaceOutput, SurfacePresentationReportError, SurfacePresentationResult,
+    NativeStagingPaintRequest, NativeStagingPresentationPhase,
+    NativeStagingPresentationReportError, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationReportError, SurfacePresentationResult,
 };
 
 use std::collections::BTreeSet;
@@ -224,6 +226,22 @@ impl DockspaceSession {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_engine_for_test(
+        engine: DockEngine,
+        presentation_host: PresentationHostLease,
+    ) -> Self {
+        Self {
+            engine,
+            presentation_host,
+            presentation: presentation::RuntimePresentationState::default(),
+            pointer: None,
+            native: None,
+            abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
+            committed_source_sequence: 0,
+        }
+    }
+
     /// Returns the currently published, strictly validated workspace.
     #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
@@ -354,6 +372,7 @@ impl DockspaceSession {
             pointer_input_submitted: false,
             submitted_presentation,
             painted_surfaces: BTreeSet::new(),
+            painted_native_staging: BTreeSet::new(),
         };
         if let Some(native) = host_frame.session.native.as_mut() {
             let batch = native.prepare_batch(&host_frame.session.engine)?;
@@ -407,6 +426,7 @@ pub struct DockspaceHostFrame<'session> {
     pointer_input_submitted: bool,
     submitted_presentation: presentation::SubmittedPresentationObservation,
     painted_surfaces: BTreeSet<SurfaceId>,
+    painted_native_staging: BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -649,6 +669,59 @@ impl DockspaceHostFrame<'_> {
         Ok(())
     }
 
+    /// Returns the non-interactive native staging paints required by this frame.
+    ///
+    /// These requests are lifecycle placeholders, not dock scenes. Hosts must
+    /// paint only adapter-owned background or loading chrome and must not invoke
+    /// pane UI, publish receivers, or infer focus authority from the callback.
+    #[must_use]
+    pub fn native_staging_paints(&self) -> Vec<NativeStagingPaintRequest> {
+        self.frame
+            .view()
+            .native_staging_presentations()
+            .map(|presentation| {
+                NativeStagingPaintRequest::from_core(
+                    NativeSurfaceBinding::from_binding(
+                        presentation.basis().platform_provider(),
+                        presentation.binding(),
+                    ),
+                    presentation,
+                )
+            })
+            .collect()
+    }
+
+    /// Records that the renderer painted one exact native staging placeholder.
+    ///
+    /// The request must belong to the current frame and may be answered once.
+    /// Final renderer presentation is reported later through
+    /// [`DockspaceSession::report_native_staging_presentation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request is stale, foreign, or duplicated.
+    pub fn confirm_native_staging_painted(
+        &mut self,
+        request: NativeStagingPaintRequest,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.complete_pointer_input()?;
+        if !self
+            .frame
+            .view()
+            .native_staging_presentations()
+            .any(|presentation| presentation == request.core())
+        {
+            return Err(NativePlatformError::StaleSurface {
+                surface: request.surface(),
+            }
+            .into());
+        }
+        if !self.painted_native_staging.insert(request.core()) {
+            return Err(NativePlatformError::ProtocolInvariant.into());
+        }
+        Ok(())
+    }
+
     /// Atomically publishes the frame after every surface received an explicit
     /// contribution disposition.
     ///
@@ -667,6 +740,7 @@ impl DockspaceHostFrame<'_> {
             pointer_input_submitted: _,
             submitted_presentation,
             painted_surfaces,
+            painted_native_staging,
         } = self;
         let mut frame = frame.into_presentation()?;
         let mut obligations = frame.take_presentation_obligations()?;
@@ -684,6 +758,26 @@ impl DockspaceHostFrame<'_> {
                 .presentation_interaction(surface)
                 .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
             frame.record_painted_surface_contribution(obligation, token, interaction)?;
+        }
+        for presentation in painted_native_staging {
+            let index = obligations
+                .iter()
+                .position(|obligation| {
+                    obligation.slot()
+                        == (crate::engine::HostPresentationSlot::NativeStaging { presentation })
+                })
+                .ok_or_else(|| {
+                    DockspaceRuntimeError::paint_obligation_unavailable(
+                        presentation.binding().surface(),
+                    )
+                })?;
+            let obligation = obligations.swap_remove(index);
+            frame.resolve_presentation_obligation(
+                obligation,
+                crate::engine::HostPresentationDisposition::Painted(
+                    crate::presentation_observation::HostInteractionPresentation::default(),
+                ),
+            )?;
         }
         for obligation in obligations {
             frame.resolve_presentation_obligation(
@@ -708,16 +802,17 @@ impl DockspaceHostFrame<'_> {
         session
             .presentation
             .commit_observation(&transition, &submitted_presentation);
-        let painted_outputs = session
-            .presentation
-            .retain_emissions(transition.presentation_emissions());
         let native_provider = session
             .native
             .as_ref()
             .map(native::RuntimeNativeState::provider);
+        let (painted_outputs, painted_native_staging_outputs) = session
+            .presentation
+            .retain_emissions(transition.presentation_emissions());
         Ok(HostFrameReport::from_transition(
             &transition,
             painted_outputs,
+            painted_native_staging_outputs,
             native_provider,
             session.abandoned_native_effects.clone(),
         ))
@@ -944,6 +1039,7 @@ pub struct HostFrameReport {
     surface_commits: Vec<HostSurfaceCommit>,
     inputs: Vec<HostInputOutcome>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
+    painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
 }
@@ -952,6 +1048,7 @@ impl HostFrameReport {
     fn from_transition(
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
+        painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
         native_provider: Option<crate::platform_provider::PlatformObservationLease>,
         abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
@@ -1116,6 +1213,7 @@ impl HostFrameReport {
             surface_commits,
             inputs,
             painted_outputs,
+            painted_native_staging_outputs,
             native_effects,
             repaint_surfaces,
         }
@@ -1174,6 +1272,14 @@ impl HostFrameReport {
     /// reports whether that exact output was presented or dropped.
     pub fn take_painted_outputs(&mut self) -> Vec<PaintedSurfaceOutput> {
         std::mem::take(&mut self.painted_outputs)
+    }
+
+    /// Takes affine capabilities for native lifecycle staging outputs painted by this frame.
+    ///
+    /// The host must attach each output to the exact native callback and later
+    /// consume it through [`DockspaceSession::report_native_staging_presentation`].
+    pub fn take_painted_native_staging_outputs(&mut self) -> Vec<PaintedNativeStagingOutput> {
+        std::mem::take(&mut self.painted_native_staging_outputs)
     }
 
     /// Takes the exact provider-bound native effects emitted by this frame.

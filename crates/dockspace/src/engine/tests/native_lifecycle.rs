@@ -3,6 +3,7 @@
 use super::*;
 
 use crate::model::{DockPlacement, DockspaceActionOutcome};
+use crate::runtime::{DockspaceSession, SurfaceUnavailableReason};
 
 mod staging_resource;
 
@@ -1222,6 +1223,90 @@ fn emit_background_native_staging(
         "native staging advances only after successful presentation",
     );
     *output
+}
+
+#[test]
+fn product_runtime_exposes_and_settles_exact_native_staging_outputs() {
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let request = install_pending_native_root_reservation(&mut fixture, RootId::new(194));
+    let create_effects = fixture.engine.viewport.take_new_effects();
+    assert!(create_effects.iter().any(|effect| {
+        effect.id() == request.effect()
+            && matches!(
+                effect.effect(),
+                crate::effect::PlatformEffect::CreateWindow { binding, .. }
+                    if *binding == request.binding()
+            )
+    }));
+    publish_background_native_window(&mut fixture, request, WindowPresentationState::Hidden, 2);
+    let expected = current_native_staging_presentation(
+        &fixture,
+        request,
+        crate::presentation_observation::NativeStagingPresentationPhase::PreShow,
+    );
+
+    let mut session =
+        DockspaceSession::from_engine_for_test(fixture.engine, fixture.presentation_host);
+    let mut frame = session
+        .begin_host_frame()
+        .expect("runtime staging frame begins");
+    let paints = frame.native_staging_paints();
+    assert_eq!(paints.len(), 1, "expected {expected:?}");
+    let paint = paints[0];
+    assert_eq!(paint.surface(), request.binding().surface());
+    assert_eq!(paint.binding().surface(), request.binding().surface());
+    assert_eq!(
+        paint.phase(),
+        crate::runtime::NativeStagingPresentationPhase::PreShow
+    );
+    frame
+        .confirm_native_staging_painted(paint)
+        .expect("the exact staging request is painted once");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("semantic surfaces are explicitly deferred");
+    let mut report = frame.commit().expect("runtime staging frame commits");
+    assert!(report.take_painted_outputs().is_empty());
+    let mut staging = report.take_painted_native_staging_outputs();
+    assert_eq!(staging.len(), 1);
+    let output = staging.pop().expect("one staging output was emitted");
+    assert_eq!(output.surface(), paint.surface());
+    assert_eq!(output.binding(), paint.binding());
+    assert_eq!(output.phase(), paint.phase());
+    session
+        .report_native_staging_presentation(
+            output,
+            crate::runtime::SurfacePresentationResult::Presented,
+        )
+        .expect("the exact staging output is retained for observation");
+
+    let mut observed = session
+        .begin_host_frame()
+        .expect("staging presentation observation frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the observation frame settles semantic surfaces");
+    let mut observed_report = observed
+        .commit()
+        .expect("presented staging output advances native bring-up");
+    let effects = observed_report.take_native_effects();
+    assert_eq!(effects.len(), 1);
+    let effect = effects
+        .into_iter()
+        .next()
+        .expect("pre-show presentation emits one show request");
+    assert_eq!(
+        effect.operation(),
+        &crate::runtime::NativeEffectOperation::ShowWindow {
+            binding: paint.binding(),
+        }
+    );
+    assert!(matches!(
+        effect.accepted(),
+        Some(crate::runtime::NativeEffectAcknowledgement::Presentation(_))
+    ));
 }
 
 fn observe_background_presentation_output(

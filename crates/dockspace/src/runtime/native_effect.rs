@@ -196,7 +196,9 @@ impl NativeEffectRequest {
                     placement: *placement,
                     role: (*role).into(),
                 },
-                NativeEffectCorrelationKind::ExternalFact,
+                // A created window must acknowledge the exact hidden
+                // incarnation before the core may advance its bring-up saga.
+                NativeEffectCorrelationKind::Presentation,
             ),
             PlatformEffect::ShowWindow { .. } => (
                 NativeEffectOperation::ShowWindow {
@@ -261,7 +263,9 @@ impl NativeEffectRequest {
                     placement: *placement,
                     role: (*role).into(),
                 },
-                NativeEffectCorrelationKind::ExternalFact,
+                // Replacement has the same first-hidden presentation barrier
+                // as an initial create.
+                NativeEffectCorrelationKind::Presentation,
             ),
             PlatformEffect::ResolveNativeClose {
                 edge, resolution, ..
@@ -733,6 +737,53 @@ mod tests {
         assert_eq!(results[0].result.effect(), effect);
         assert_eq!(results[0].binding, binding);
         assert!(abandoned.take_for(provider).is_empty());
+    }
+
+    #[test]
+    fn create_and_replacement_return_exact_presentation_acknowledgements() {
+        let domain = EngineAuthorityDomainId::new_for_test(94);
+        let mut providers = PlatformObservationAuthority::new(domain);
+        let provider = providers.create().expect("the test provider mints");
+        let binding = ViewportBinding::new(
+            domain,
+            WorkspaceEpoch::new(0),
+            SurfaceId::new(1),
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        );
+        let placement =
+            PhysicalRect::new(1.0, 2.0, 320.0, 240.0).expect("native placement validates");
+
+        for effect in [
+            PlatformEffect::CreateWindow {
+                binding,
+                placement,
+                role: ViewportRole::Child,
+            },
+            PlatformEffect::RequestReplacement {
+                binding,
+                placement,
+                role: ViewportRole::Child,
+            },
+        ] {
+            let mut ledger = EffectLedger::default();
+            let id = ledger.request(effect).expect("the effect allocates");
+            let emission = ledger
+                .take_new_requests(provider, InventoryGeneration::new(1), |_| false)
+                .expect("the effect emits")
+                .pop()
+                .expect("one emission exists");
+            let request =
+                NativeEffectRequest::from_emission(&emission, NativeEffectDropQueue::default());
+            let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
+                request.accepted()
+            else {
+                panic!("native create and replacement return a presentation acknowledgement");
+            };
+            assert_eq!(acknowledgement.provider, provider);
+            assert_eq!(acknowledgement.binding, binding);
+            assert_eq!(acknowledgement.effect, id);
+        }
     }
 
     #[test]
