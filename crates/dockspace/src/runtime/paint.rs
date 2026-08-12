@@ -10,7 +10,10 @@ use crate::graph::Axis;
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::interaction::{ContainedTransformPreview, InteractionPreview, PreviewVisual};
 use crate::model::DockspaceAxis;
-use crate::presentation_hit::{PresentationHitRegionId, PresentationHitRegionKind};
+use crate::presentation_hit::{
+    PresentationHitRegionId, PresentationHitRegionKind, PresentationPointerLane,
+    PresentationPointerLanes,
+};
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 use crate::scene::{
     ContainedRecord, ContainedResizeRecord, PresentationPlan, SplitterGapPresentation,
@@ -37,6 +40,32 @@ pub use tabs::{
     PanePaintRecord, TabBarPaintRecord, TabPaintRecord, TabStripMemberPaintRecord,
     TabStripMemberVisibility,
 };
+
+/// Opaque identity for one exact semantic output supplied to a renderer.
+///
+/// The value proves only which core output a paint plan describes. It does not
+/// prove that the renderer accepted or presented that output.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DockspaceSemanticOutput {
+    pub(super) ticket: SurfacePresentationOutputTicket,
+}
+
+impl DockspaceSemanticOutput {
+    /// Returns the sole logical surface named by this output.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.ticket.surface()
+    }
+}
+
+impl fmt::Debug for DockspaceSemanticOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DockspaceSemanticOutput")
+            .field("surface", &self.surface())
+            .finish_non_exhaustive()
+    }
+}
 
 /// Stable renderer identity whose structural storage remains core-private.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -190,6 +219,7 @@ pub enum DockspaceReceiverRole {
 pub struct DockspaceReceiverDescriptor {
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) region: PresentationHitRegionId,
+    lanes: PresentationPointerLanes,
     role: DockspaceReceiverRole,
     bounds: LogicalRect,
     center: LogicalPoint,
@@ -210,11 +240,13 @@ impl DockspaceReceiverDescriptor {
     pub(super) fn from_projection_region(
         output: SurfacePresentationOutputTicket,
         region: PresentationHitRegionId,
+        lanes: PresentationPointerLanes,
         bounds: LogicalRect,
     ) -> Option<Self> {
         Some(Self {
             output,
             region,
+            lanes,
             role: receiver_role(region.kind())?,
             bounds,
             center: LogicalPoint::new(
@@ -247,6 +279,10 @@ impl DockspaceReceiverDescriptor {
     #[must_use]
     pub const fn center(self) -> LogicalPoint {
         self.center
+    }
+
+    pub(super) const fn supports_lane(self, lane: PresentationPointerLane) -> bool {
+        self.lanes.contains(lane)
     }
 }
 
@@ -590,6 +626,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.surface
     }
 
+    /// Returns the exact semantic output represented by this paint plan.
+    #[must_use]
+    pub const fn semantic_output(self) -> DockspaceSemanticOutput {
+        DockspaceSemanticOutput {
+            ticket: self.output,
+        }
+    }
+
     /// Prepares a current-candidate tab selection without exposing scene identity.
     #[must_use]
     pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
@@ -752,7 +796,14 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .iter()
             .copied()
             .filter(|region| !region.is_passive())
-            .filter_map(move |region| self.descriptor(region.id(), region.hit().rect()))
+            .filter_map(move |region| {
+                DockspaceReceiverDescriptor::from_projection_region(
+                    self.output,
+                    region.id(),
+                    region.lanes(),
+                    region.hit().rect(),
+                )
+            })
     }
 
     #[must_use]
@@ -942,7 +993,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
         region: PresentationHitRegionId,
         bounds: LogicalRect,
     ) -> Option<DockspaceReceiverDescriptor> {
-        DockspaceReceiverDescriptor::from_projection_region(self.output, region, bounds)
+        let lanes = self.hit_manifest.region(region)?.lanes();
+        DockspaceReceiverDescriptor::from_projection_region(self.output, region, lanes, bounds)
     }
 }
 

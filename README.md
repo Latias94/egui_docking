@@ -22,15 +22,19 @@ The new architecture is under active implementation. The renderer-neutral
 behavior contract is executable, but the crates.io adapter intentionally does
 not expose native multi-viewport support. The former 0.35 hosted-cycle runtime
 and its scenario harness were deleted instead of being mechanically ported.
-The new 0.36.1 fork exposes only graph-neutral event-time pointer facts and an
-opaque renderer `Presented`/`NotPresented` callback. The unpublished native
-crate keeps its callback coordinator private and owns one `DockspaceSession`; it
-does not own a second docking engine, effect ledger, presentation ledger, or
-input state machine. Its sessionless egui render seam reuses the same
-core-derived product paint code as the ordinary facade. A complete eframe
-application driver, platform effect executor, and the single real two-window
-smoke are still U7 work, so native multiview is not yet a runnable product
-path.
+The new 0.36.1 fork exposes only graph-neutral event-time pointer facts, a
+completed-pass widget hit snapshot, and an opaque renderer
+`Presented`/`NotPresented` callback. The unpublished native crate keeps its
+callback coordinator private and owns one `DockspaceSession`; it does not own a
+second docking engine, effect ledger, presentation ledger, or input state
+machine. Its `NativeDockspaceApp` now provides a runnable root-window vertical
+slice using the same core-derived product renderer as the ordinary facade. It
+preserves local egui actions across discarded passes and qualifies native
+receiver authority only with the final presented pass. The slice still rejects
+every core-emitted platform effect, including root focus, close, pointer
+pass-through, and deferred child-window lifecycle operations. Cross-window
+scroll authority and the real two-window smoke are also still U7 work, so this
+root-window example is not native multiview product support.
 
 The ordinary crates.io `show_single_surface` convenience path now owns one
 renderer-neutral `DockspaceSession` and treats the current egui `Response` as
@@ -83,7 +87,7 @@ paths.
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The excluded native workspace pins the
 public egui/eframe fork commit
-`13e5fb55b` and the event-fact Winit commit
+`5cda39afaac2dea0e70974af74b942f7f14b5501` and the event-fact Winit commit
 `180bfc09743586137fec014ef5543cdde56ce5d0`. The fork remains graph-neutral;
 all docking topology, receiver challenges, native lifecycle meaning, and
 presentation obligations stay in `dockspace`.
@@ -132,9 +136,16 @@ separate target directory:
 python3 scripts/run_egui_fork_harness.py
 ```
 
-The former 0.35 harness and E2E scenario runner were removed. U7 will add one
-ordinary real-window smoke only after the 0.36 coordinator has a complete app,
-effect, and viewport lifecycle path.
+The former 0.35 harness and E2E scenario runner were removed. The unpublished
+native crate now has one ordinary root-window example:
+
+```text
+cargo run --manifest-path crates/egui_dockspace_native/Cargo.toml --example basic
+```
+
+It proves the fork-backed app/coordinator/output path without adding a runner,
+digest gate, or scenario framework. U7 will add one real two-window smoke only
+after deferred child effects and viewport lifecycle are complete.
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example uses the default
 single-surface product facade and is suitable for checking local tab and

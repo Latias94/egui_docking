@@ -6,7 +6,11 @@ use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::policy::DockPolicy;
-use crate::runtime::{PaintedSurfaceOutput, SurfaceUnavailableReason, UniformSurfaceMetrics};
+use crate::runtime::{
+    DockspaceSemanticOutput, NativeReceiverPurpose, NativeReceiverQuery, PaintedSurfaceOutput,
+    PresentedDockspaceSurface, SurfacePresentationResult, SurfaceUnavailableReason,
+    UniformSurfaceMetrics,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -56,7 +60,9 @@ fn native_root_session_with_profile(
     (session, binding)
 }
 
-fn paint_native_output(session: &mut DockspaceSession) -> PaintedSurfaceOutput {
+fn paint_native_output(
+    session: &mut DockspaceSession,
+) -> (PaintedSurfaceOutput, DockspaceSemanticOutput) {
     let metrics = UniformSurfaceMetrics::new(
         LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
         LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
@@ -76,14 +82,35 @@ fn paint_native_output(session: &mut DockspaceSession) -> PaintedSurfaceOutput {
     let mut painted = session
         .begin_host_frame()
         .expect("native paint frame begins");
+    let semantic_output = painted
+        .paint_plan(SURFACE)
+        .expect("native paint plan lookup succeeds")
+        .expect("native paint plan is ready")
+        .semantic_output();
     painted
         .confirm_surface_painted(SURFACE)
         .expect("native surface paint stages");
     let mut report = painted.commit().expect("native surface paint emits");
-    report
+    let output = report
         .take_painted_outputs()
         .pop()
-        .expect("native paint emits one exact output")
+        .expect("native paint emits one exact output");
+    (output, semantic_output)
+}
+
+fn foreign_semantic_output() -> DockspaceSemanticOutput {
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ITEM]));
+    builder.set_root(ROOT, RootRecord::new(tabs));
+    builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    let mut session = DockspaceSession::from_backend_workspace(
+        builder
+            .build()
+            .expect("the foreign semantic workspace validates"),
+        DockPolicy::default(),
+    )
+    .expect("the foreign semantic session initializes");
+    paint_native_output(&mut session).1
 }
 
 #[test]
@@ -115,10 +142,78 @@ fn painted_output_matches_the_exact_native_binding() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("native inventory frame settles the surface");
     observed.commit().expect("native inventory commits");
-    let output = paint_native_output(&mut session);
+    let (output, semantic_output) = paint_native_output(&mut session);
 
     assert!(output.matches_native_binding(binding));
     assert!(!output.matches_native_binding(foreign_binding));
+    assert!(output.matches_semantic_output(semantic_output));
+    assert!(!output.matches_semantic_output(foreign_semantic_output()));
+}
+
+#[test]
+fn native_receiver_query_binds_only_the_exact_presented_output_and_binding() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let (_foreign_session, foreign_binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let bounds = PhysicalRect::new(0.0, 0.0, 640.0, 480.0).expect("native bounds validate");
+    let scale = ScaleFactor::new(1.0).expect("native scale validates");
+    let facts = NativeWindowFacts::live()
+        .with_content_bounds(bounds)
+        .with_outer_bounds(bounds)
+        .with_native_scale_factor(scale)
+        .with_presentation_scale_factor(scale)
+        .with_input(NativeWindowInputState::ReceivesInput, None)
+        .with_presentation(NativeWindowPresentationState::Visible, None)
+        .with_close(NativeCloseState::Clear, None);
+    session
+        .report_managed_native_snapshot(
+            [(binding, facts)],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("native inventory records");
+    commit_managed_frame(&mut session);
+    let (output, semantic_output) = paint_native_output(&mut session);
+    session
+        .report_surface_presentation(output, SurfacePresentationResult::Presented)
+        .expect("the exact native output is retained for presentation");
+    commit_managed_frame(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("the presented paint plan can be inspected");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("the native surface remains ready");
+    let tab = plan.tabs().next().expect("the root contains one tab");
+    let descriptor = plan
+        .receiver_for_tab_body(tab)
+        .expect("the tab has an exact pointer receiver");
+    drop(frame);
+
+    let projection = session
+        .engine
+        .interaction_projection(SURFACE)
+        .expect("the presented output grants interaction authority");
+    let query = NativeReceiverQuery {
+        purpose: NativeReceiverPurpose::DragDelivery,
+        presented_surface: PresentedDockspaceSurface::from_projection(projection),
+        point: Some(descriptor.center()),
+    };
+
+    assert_eq!(query.surface(), SURFACE);
+    assert!(query.matches_native_binding(binding));
+    assert!(!query.matches_native_binding(foreign_binding));
+    assert!(query.matches_semantic_output(semantic_output));
+    assert!(!query.matches_semantic_output(foreign_semantic_output()));
+    assert!(query.bind_receiver(&descriptor).is_some());
+
+    let hover_query = NativeReceiverQuery {
+        purpose: NativeReceiverPurpose::HoverHit,
+        ..query
+    };
+    assert!(hover_query.bind_receiver(&descriptor).is_none());
 }
 
 #[test]

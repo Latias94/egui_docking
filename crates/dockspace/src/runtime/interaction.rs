@@ -34,6 +34,52 @@ pub struct PresentedDockspaceSurface {
     authority: PresentedSurfaceAuthority,
 }
 
+impl PresentedDockspaceSurface {
+    pub(super) const fn from_projection(
+        projection: crate::scene::SurfaceInteractionProjection<'_>,
+    ) -> Self {
+        Self {
+            surface: projection.output_ticket().surface(),
+            output: projection.output_ticket(),
+            authority: projection.authority(),
+        }
+    }
+
+    /// Returns the logical surface authorized by this presentation proof.
+    #[must_use]
+    pub const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    pub(super) fn bind_receiver(
+        self,
+        descriptor: &DockspaceReceiverDescriptor,
+    ) -> Option<PresentedDockReceiver> {
+        (descriptor.output == self.output && descriptor.output.surface() == self.surface).then_some(
+            PresentedDockReceiver {
+                descriptor: *descriptor,
+                authority: self.authority,
+            },
+        )
+    }
+
+    pub(super) fn matches_native_binding(
+        self,
+        binding: super::native::NativeSurfaceBinding,
+    ) -> bool {
+        match self.authority.endpoint() {
+            crate::presentation_observation::HostPresentationEndpoint::Headless => false,
+            crate::presentation_observation::HostPresentationEndpoint::Native(endpoint) => {
+                binding.matches_viewport_binding(endpoint)
+            }
+        }
+    }
+
+    pub(super) fn matches_semantic_output(self, output: super::DockspaceSemanticOutput) -> bool {
+        self.output == output.ticket
+    }
+}
+
 /// Exact framework receiver bound to one concrete final-presentation output.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PresentedDockReceiver {
@@ -50,6 +96,7 @@ impl PresentedDockReceiver {
         let descriptor = DockspaceReceiverDescriptor::from_projection_region(
             projection.output_ticket(),
             region,
+            record.lanes(),
             record.hit().rect(),
         )?;
         Some(Self {
@@ -704,11 +751,7 @@ impl DockspaceSession {
     #[must_use]
     pub fn presented_surface(&self, surface: SurfaceId) -> Option<PresentedDockspaceSurface> {
         let projection = self.engine.interaction_projection(surface)?;
-        Some(PresentedDockspaceSurface {
-            surface,
-            output: projection.output_ticket(),
-            authority: projection.authority(),
-        })
+        Some(PresentedDockspaceSurface::from_projection(projection))
     }
 
     /// Binds a paint-time descriptor to the exact currently presented output.
@@ -720,15 +763,9 @@ impl DockspaceSession {
         let projection = self
             .engine
             .interaction_projection(descriptor.region.surface())?;
-        (projection.output_ticket() == descriptor.output
-            && projection
-                .hit_manifest()
-                .region(descriptor.region)
-                .is_some())
-        .then_some(PresentedDockReceiver {
-            descriptor: *descriptor,
-            authority: projection.authority(),
-        })
+        let surface = PresentedDockspaceSurface::from_projection(projection);
+        projection.hit_manifest().region(descriptor.region)?;
+        surface.bind_receiver(descriptor)
     }
 }
 

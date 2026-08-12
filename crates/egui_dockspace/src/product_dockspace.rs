@@ -307,7 +307,11 @@ impl Dockspace {
             );
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
-            for action in paint.actions {
+            for action in paint
+                .presentation_actions
+                .into_iter()
+                .chain(paint.local_actions)
+            {
                 frame
                     .submit_surface_action(action)
                     .map_err(DockspaceError::from_detail)?;

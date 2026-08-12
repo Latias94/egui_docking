@@ -55,7 +55,7 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: RootId) {
                 .plan
                 .prepare_splitter_gesture(splitter.visual_id(), phase)
         {
-            context.actions.push(action);
+            context.push_local_action(action);
         }
     }
 }

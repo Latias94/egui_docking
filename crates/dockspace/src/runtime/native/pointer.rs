@@ -14,6 +14,7 @@ use crate::pointer_journal::{
     PointerStreamCancelReason, ScrollCancelReason, ScrollDeliveryEndpoint, ScrollDelta,
     ScrollDeviceId, ScrollEdge, ScrollModifiers, ScrollMomentum, ScrollPhase, ScrollSequenceToken,
 };
+use crate::presentation_hit::PresentationPointerLane;
 
 /// Stable pointer identity supplied by a native host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -492,7 +493,7 @@ pub enum NativeReceiverPurpose {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeReceiverQuery {
     pub(in crate::runtime) purpose: NativeReceiverPurpose,
-    pub(in crate::runtime) surface: SurfaceId,
+    pub(in crate::runtime) presented_surface: super::super::PresentedDockspaceSurface,
     pub(in crate::runtime) point: Option<LogicalPoint>,
 }
 
@@ -506,7 +507,39 @@ impl NativeReceiverQuery {
     /// Returns the exact logical surface which must answer the question.
     #[must_use]
     pub const fn surface(self) -> SurfaceId {
-        self.surface
+        self.presented_surface.surface()
+    }
+
+    /// Returns the exact presented surface capability for known-empty or blocked answers.
+    #[must_use]
+    pub const fn presented_surface(self) -> super::super::PresentedDockspaceSurface {
+        self.presented_surface
+    }
+
+    /// Binds one opaque paint-time descriptor to this exact presented output.
+    ///
+    /// A descriptor from another engine, surface, or semantic output is rejected.
+    #[must_use]
+    pub fn bind_receiver(
+        self,
+        descriptor: &super::super::DockspaceReceiverDescriptor,
+    ) -> Option<super::super::PresentedDockReceiver> {
+        if !descriptor.supports_lane(self.required_lane()) {
+            return None;
+        }
+        self.presented_surface.bind_receiver(descriptor)
+    }
+
+    /// Returns whether this query belongs to the exact native window incarnation.
+    #[must_use]
+    pub fn matches_native_binding(self, binding: super::NativeSurfaceBinding) -> bool {
+        self.presented_surface.matches_native_binding(binding)
+    }
+
+    /// Returns whether this query names the exact semantic output painted by the host.
+    #[must_use]
+    pub fn matches_semantic_output(self, output: super::super::DockspaceSemanticOutput) -> bool {
+        self.presented_surface.matches_semantic_output(output)
     }
 
     /// Returns the exact point required for a known answer.
@@ -516,6 +549,15 @@ impl NativeReceiverQuery {
     #[must_use]
     pub const fn point(self) -> Option<LogicalPoint> {
         self.point
+    }
+
+    const fn required_lane(self) -> PresentationPointerLane {
+        match self.purpose {
+            NativeReceiverPurpose::ClickDelivery => PresentationPointerLane::Click,
+            NativeReceiverPurpose::DragDelivery => PresentationPointerLane::Drag,
+            NativeReceiverPurpose::ScrollDelivery(_) => PresentationPointerLane::Scroll,
+            NativeReceiverPurpose::HoverHit => PresentationPointerLane::HoverDrop,
+        }
     }
 }
 

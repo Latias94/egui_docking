@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use dockspace::model::SurfaceId;
-use dockspace::runtime::{DockspaceHostFrame, HostFrameReport, SurfaceUnavailableReason};
+use dockspace::runtime::{
+    DockspaceHostFrame, HostFrameReport, PreparedSurfaceAction, SurfaceUnavailableReason,
+};
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
 
@@ -68,6 +70,13 @@ impl<'session> NativeHostFrame<'session> {
         egui_dockspace::native_support::measure_surface(&mut self.frame, surface, ui, panes, style)
             .map(|_| ())
             .map_err(Into::into)
+    }
+
+    pub(crate) fn submit_surface_action(
+        &mut self,
+        action: PreparedSurfaceAction,
+    ) -> Result<(), NativeRuntimeError> {
+        self.frame.submit_surface_action(action).map_err(Into::into)
     }
 
     pub(crate) fn confirm_surface_painted(

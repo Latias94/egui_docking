@@ -40,6 +40,14 @@ enum NativeRuntimeErrorSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum NativeHostProtocolError {
+    #[error("the native app update is not running inside an eframe output callback")]
+    OutputTokenUnavailable,
+    #[error("native root surface {0} is absent from the product session")]
+    RootSurfaceUnavailable(SurfaceId),
+    #[error("core rejected native registration of root surface {0}")]
+    RootRegistrationRejected(SurfaceId),
+    #[error("the root eframe viewport could not bind the registered native surface")]
+    RootViewportBindingFailed,
     #[error("a native callback record must be acknowledged before beginning the next host frame")]
     CallbackRecordPending,
     #[error("the native window event acknowledgement does not match the journal head")]
@@ -54,6 +62,16 @@ pub(crate) enum NativeHostProtocolError {
     NativeEffectResultRejected(NativeHostErrorKind),
     #[error("a terminal native output is waiting for its affine painted output")]
     OutputAwaitingAttachment,
+    #[error("the final egui pass changed its native output or logical surface")]
+    MultipassOutputChanged,
+    #[error("discarded egui passes produced conflicting local dockspace actions")]
+    MultipassLocalActionConflict,
+    #[error("a native surface frame emitted {actual} painted outputs; expected {expected}")]
+    PaintedOutputCountMismatch { expected: usize, actual: usize },
+    #[error("the final egui pass could not bind its affine painted output: {0:?}")]
+    OutputBindingFailed(NativeOutputBindingErrorKind),
+    #[error("native surface {0} did not paint every transient visual required by its core plan")]
+    IncompleteTransientPaint(SurfaceId),
     #[error("native output settlements did not preserve one contiguous context-local sequence")]
     OutputOrderViolation,
     #[error("a native window snapshot contains invalid physical geometry or scale")]
@@ -231,6 +249,8 @@ pub enum NativeOutputBindingErrorKind {
     RouteUnavailable,
     /// The output was emitted for another exact native binding.
     BindingMismatch,
+    /// Paint-time receiver bindings did not belong to this exact output pass.
+    ReceiverMismatch,
     /// The token already owns another pending painted output.
     OutputAlreadyBound,
 }

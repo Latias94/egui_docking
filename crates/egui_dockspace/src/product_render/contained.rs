@@ -143,7 +143,7 @@ pub(crate) fn paint_controls(
             && response.clicked()
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
-            context.actions.push(action);
+            context.push_local_action(action);
         }
     }
 
@@ -179,7 +179,7 @@ pub(crate) fn paint_controls(
                 phase,
             )
         {
-            context.actions.push(action);
+            context.push_local_action(action);
         }
     }
 }

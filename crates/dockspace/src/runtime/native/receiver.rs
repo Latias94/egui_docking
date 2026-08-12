@@ -11,7 +11,9 @@ use crate::pointer_receiver::{
     PointerReceiverObservation, PointerReceiverProbeReceipt, PointerReceiverProbeRequest,
     PointerReceiverUnknownReason, PresentedPointerReceiverObservation, ScrollReceiverChallenge,
 };
-use crate::runtime::{DockspaceRuntimeError, PresentedDockReceiver, interaction};
+use crate::runtime::{
+    DockspaceRuntimeError, PresentedDockReceiver, PresentedDockspaceSurface, interaction,
+};
 
 pub(in crate::runtime) fn resolve_receiver_observation(
     frame: &CoreHostFrame,
@@ -40,6 +42,7 @@ fn resolve_delivery_observation(
     let Some(projection) = frame.view().interaction_projection(surface) else {
         return Ok(unknown_observation());
     };
+    let presented_surface = PresentedDockspaceSurface::from_projection(projection);
     let unknown =
         PointerReceiverDeliveryDisposition::Unknown(PointerReceiverUnknownReason::NotReported);
     let (click, drag, scroll) = match candidate.delivery_request() {
@@ -49,7 +52,7 @@ fn resolve_delivery_observation(
         PointerReceiverDeliveryRequest::Click => {
             let query = NativeReceiverQuery {
                 purpose: NativeReceiverPurpose::ClickDelivery,
-                surface,
+                presented_surface,
                 point: candidate.route_point(),
             };
             (
@@ -61,12 +64,12 @@ fn resolve_delivery_observation(
         PointerReceiverDeliveryRequest::ClickAndDrag => {
             let click = NativeReceiverQuery {
                 purpose: NativeReceiverPurpose::ClickDelivery,
-                surface,
+                presented_surface,
                 point: candidate.route_point(),
             };
             let drag = NativeReceiverQuery {
                 purpose: NativeReceiverPurpose::DragDelivery,
-                surface,
+                presented_surface,
                 point: candidate.route_point(),
             };
             (
@@ -81,7 +84,7 @@ fn resolve_delivery_observation(
             };
             let query = NativeReceiverQuery {
                 purpose: NativeReceiverPurpose::ScrollDelivery(challenge),
-                surface,
+                presented_surface,
                 point: candidate.route_point(),
             };
             (
@@ -109,7 +112,7 @@ fn resolve_hover_observation(
     };
     let query = NativeReceiverQuery {
         purpose: NativeReceiverPurpose::HoverHit,
-        surface,
+        presented_surface: PresentedDockspaceSurface::from_projection(projection),
         point: Some(point),
     };
     let disposition = match resolver(query) {

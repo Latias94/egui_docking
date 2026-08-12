@@ -224,7 +224,7 @@ fn capture_tab_actions(
         if !tab.selected()
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
         {
-            context.actions.push(action);
+            context.push_local_action(action);
         }
     }
     if context.pointer_authority.accepts_local_pointer_actions()
@@ -291,7 +291,7 @@ fn paint_close(
     if (pointer_activation || accesskit)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
-        context.actions.push(action);
+        context.push_local_action(action);
     }
 }
 

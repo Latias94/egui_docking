@@ -57,13 +57,14 @@ pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,
     DockspaceContainedTransformPreview, DockspaceDragPreview, DockspaceDropDirection,
     DockspaceDropEligibility, DockspaceGuideScope, DockspacePaintLayer, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceVisualId, DockspaceVisualKind,
-    DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
-    DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord, SplitterGapVisibility,
-    SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
-    SurfacePaintPlan, TabBarPaintRecord, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
-    TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord,
-    TabStripMemberPaintRecord, TabStripMemberVisibility,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId,
+    DockspaceVisualKind, DropAffordanceClusterPaintRecord, DropAffordancePaintRecord,
+    DropAffordanceTargetPaintRecord, DropGuidePaintRecord, DropGuideTargetPaintRecord,
+    PanePaintRecord, SplitterGapVisibility, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    StructuralSplitterGapStatus, SurfacePaintPlan, TabBarPaintRecord,
+    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
+    TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
+    TabStripMemberVisibility,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{

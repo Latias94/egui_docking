@@ -31,6 +31,7 @@ use crate::mailbox::{
     NativeHostBridge, NativeViewportCreateFailureRecord, NativeViewportRosterRecord,
 };
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
+use crate::receiver::NativeReceiverStore;
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -47,6 +48,7 @@ pub(crate) struct NativeCoordinator {
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PaintedSurfaceOutput>,
     pending_destroyed: BTreeMap<SurfaceId, NativeSurfaceBinding>,
+    receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
     pointer_translator: NativePointerTranslator,
 }
@@ -65,6 +67,7 @@ impl std::fmt::Debug for NativeCoordinator {
             )
             .field("pending_outputs", &self.pending_outputs.len())
             .field("pending_destroyed", &self.pending_destroyed)
+            .field("receivers", &self.receivers)
             .field("effects", &self.effects)
             .field("pointer_translator", &self.pointer_translator)
             .finish_non_exhaustive()
@@ -90,6 +93,7 @@ impl NativeCoordinator {
             viewports,
             pending_outputs: BTreeMap::new(),
             pending_destroyed: BTreeMap::new(),
+            receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
             pointer_translator: NativePointerTranslator::default(),
         })
@@ -202,7 +206,9 @@ impl NativeCoordinator {
         self.viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .replace(viewport, expected, successor_window, successor)
+            .replace(viewport, expected, successor_window, successor)?;
+        self.receivers.retire_binding(expected);
+        Ok(())
     }
 
     /// Replaces one exact viewport reservation before the successor window exists.
@@ -228,7 +234,9 @@ impl NativeCoordinator {
         self.viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .reserve_replacement(viewport, expected, successor)
+            .reserve_replacement(viewport, expected, successor)?;
+        self.receivers.retire_binding(expected);
+        Ok(())
     }
 
     /// Removes one viewport association after proving its exact incarnation.
@@ -241,10 +249,13 @@ impl NativeCoordinator {
         viewport: ViewportId,
         expected: NativeSurfaceBinding,
     ) -> Result<NativeSurfaceBinding, NativeViewportBindingError> {
-        self.viewports
+        let removed = self
+            .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove_viewport(viewport, expected)
+            .remove_viewport(viewport, expected)?;
+        self.receivers.retire_binding(removed);
+        Ok(removed)
     }
 
     /// Returns the current exact binding for one eframe viewport.
@@ -427,7 +438,7 @@ impl NativeCoordinator {
     ///
     /// Returns an error unless `failure` is the callback journal head.
     fn acknowledge_viewport_create_failure(
-        &self,
+        &mut self,
         failure: NativeViewportCreateFailureRecord,
     ) -> Result<(), NativeRuntimeError> {
         if !self.bridge.acknowledge_viewport_create_failure(failure) {
@@ -448,6 +459,8 @@ impl NativeCoordinator {
                 "exact failed reservation must be removable"
             );
         }
+        drop(viewports);
+        self.receivers.retire_binding(failure.binding());
         Ok(())
     }
 
@@ -523,6 +536,7 @@ impl NativeCoordinator {
             winit::event::WindowEvent::Destroyed => {
                 if self.session.is_current_native_binding(binding) {
                     self.pending_destroyed.insert(binding.surface(), binding);
+                    self.receivers.retire_binding(binding);
                 }
             }
             _ => {}
@@ -731,16 +745,35 @@ impl NativeCoordinator {
         ))
     }
 
-    /// Binds one affine painted output to the token active while its viewport UI ran.
+    /// Begins one native frame using only final-pass egui receiver authority.
+    pub(crate) fn begin_resolved_host_frame(
+        &mut self,
+        context: &eframe::egui::Context,
+    ) -> Result<NativeHostFrame<'_>, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        if self.bridge.has_pending_input() && !self.bridge.callback_boundary_pending() {
+            return Err(NativeHostProtocolError::CallbackRecordPending.into());
+        }
+        let bridge = self.bridge.clone();
+        let receivers = &self.receivers;
+        let frame = self
+            .session
+            .begin_native_host_frame(|query| receivers.resolve(context, query))?;
+        Ok(NativeHostFrame::new(frame, bridge))
+    }
+
+    /// Binds one affine painted output and its final-pass receiver roster to the
+    /// token active while that viewport UI ran.
     ///
     /// # Errors
     ///
     /// Returns an error carrying the output when the token was not announced,
     /// the exact native binding differs, or the token is already pending.
-    pub fn bind_painted_output(
+    pub fn bind_painted_surface(
         &mut self,
         token: NativeOutputToken,
         output: PaintedSurfaceOutput,
+        paint: &egui_dockspace::native_support::NativeSurfacePaint,
     ) -> Result<(), NativeOutputBindingError> {
         let Some(reservation) = self.bridge.output_reservation(token) else {
             return Err(NativeOutputBindingError::new(
@@ -783,7 +816,19 @@ impl NativeCoordinator {
                 output,
             ));
         }
+        if self
+            .receivers
+            .stage(token, binding, &output, paint)
+            .is_err()
+        {
+            return Err(NativeOutputBindingError::new(
+                NativeOutputBindingErrorKind::ReceiverMismatch,
+                token,
+                output,
+            ));
+        }
         if !self.bridge.attach_output_binding(token, binding) {
+            self.receivers.abandon(token);
             return Err(NativeOutputBindingError::new(
                 NativeOutputBindingErrorKind::BindingMismatch,
                 token,
@@ -797,6 +842,7 @@ impl NativeCoordinator {
                 .unwrap_or_else(PoisonError::into_inner)
                 .attach(token.viewport_id(), binding, token.window_id());
             if attach.is_err() {
+                self.receivers.abandon(token);
                 return Err(NativeOutputBindingError::new(
                     NativeOutputBindingErrorKind::BindingMismatch,
                     token,
@@ -834,6 +880,7 @@ impl NativeCoordinator {
         if !self.bridge.abandon_output(token) {
             return NativeHostWake::Wait;
         }
+        self.receivers.abandon(token);
         self.pending_outputs.remove(&token);
         NativeHostWake::RepaintRoot
     }
@@ -849,6 +896,10 @@ impl NativeCoordinator {
             let Some(output) = self.pending_outputs.remove(&result.token()) else {
                 return Err(NativeHostProtocolError::OutputAwaitingAttachment.into());
             };
+            let binding = self
+                .bridge
+                .output_reservation(result.token())
+                .and_then(|reservation| reservation.binding());
             let presentation = match result.status() {
                 NativeOutputStatus::Presented => SurfacePresentationResult::Presented,
                 NativeOutputStatus::NotPresented => SurfacePresentationResult::Dropped,
@@ -859,7 +910,16 @@ impl NativeCoordinator {
             {
                 let abandoned = self.bridge.abandon_output(result.token());
                 debug_assert!(abandoned, "failed presentation was not submitted");
+                self.receivers.abandon(result.token());
                 return Err(error.into());
+            }
+            match (result.status(), binding) {
+                (NativeOutputStatus::Presented, Some(binding)) => {
+                    self.receivers.presented(result.token(), binding);
+                }
+                (NativeOutputStatus::Presented, None) | (NativeOutputStatus::NotPresented, _) => {
+                    self.receivers.dropped(result.token());
+                }
             }
             debug_assert!(self.bridge.mark_output_submitted(result.token()));
         }

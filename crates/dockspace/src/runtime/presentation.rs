@@ -54,6 +54,12 @@ impl PaintedSurfaceOutput {
         }
     }
 
+    /// Returns whether this emission painted the exact semantic output.
+    #[must_use]
+    pub fn matches_semantic_output(&self, output: super::DockspaceSemanticOutput) -> bool {
+        self.output.payload().scene() == Some(output.ticket)
+    }
+
     fn disarm(&mut self) {
         self.armed = false;
     }

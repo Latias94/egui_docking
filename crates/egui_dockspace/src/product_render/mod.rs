@@ -33,6 +33,10 @@ impl PointerActionAuthority {
     const fn accepts_local_pointer_actions(self) -> bool {
         matches!(self, Self::LocalResponses)
     }
+
+    const fn acknowledges_previews_locally(self) -> bool {
+        matches!(self, Self::LocalResponses)
+    }
 }
 
 struct RenderContext<'ui, 'plan> {
@@ -42,7 +46,8 @@ struct RenderContext<'ui, 'plan> {
     panes: &'ui mut dyn PaneView,
     style: &'ui DockStyle,
     resources: &'ui PaintResources,
-    actions: &'ui mut Vec<PreparedSurfaceAction>,
+    local_actions: &'ui mut Vec<PreparedSurfaceAction>,
+    presentation_actions: &'ui mut Vec<PreparedSurfaceAction>,
     #[cfg(feature = "native-render-support")]
     receivers: &'ui mut Vec<ProductReceiverBinding>,
     defer_measurement: &'ui mut bool,
@@ -52,7 +57,15 @@ struct RenderContext<'ui, 'plan> {
 impl RenderContext<'_, '_> {
     fn push_preview_gesture_action(&mut self, action: PreparedSurfaceAction) {
         *self.defer_measurement = true;
-        self.actions.push(action);
+        self.local_actions.push(action);
+    }
+
+    fn push_local_action(&mut self, action: PreparedSurfaceAction) {
+        self.local_actions.push(action);
+    }
+
+    fn push_presentation_action(&mut self, action: PreparedSurfaceAction) {
+        self.presentation_actions.push(action);
     }
 
     fn interact_receiver(
@@ -84,11 +97,14 @@ pub(crate) struct ProductReceiverBinding {
 }
 
 pub(crate) struct ProductPaintOutput {
-    pub(crate) actions: Vec<PreparedSurfaceAction>,
+    pub(crate) local_actions: Vec<PreparedSurfaceAction>,
+    pub(crate) presentation_actions: Vec<PreparedSurfaceAction>,
     pub(crate) missing_items: BTreeSet<ItemId>,
     #[cfg(feature = "native-render-support")]
     pub(crate) receivers: Vec<ProductReceiverBinding>,
     pub(crate) defer_measurement: bool,
+    #[cfg(feature = "native-render-support")]
+    pub(crate) transient_visuals_complete: bool,
 }
 
 pub(crate) fn paint_surface(
@@ -100,10 +116,12 @@ pub(crate) fn paint_surface(
     pointer_authority: PointerActionAuthority,
 ) -> ProductPaintOutput {
     let resources = PaintResources::from_plan(plan, ui, panes, style);
-    let mut actions = Vec::new();
+    let mut local_actions = Vec::new();
+    let mut presentation_actions = Vec::new();
     #[cfg(feature = "native-render-support")]
     let mut receivers = Vec::new();
     let mut defer_measurement = false;
+    let mut transient_visuals_complete = true;
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
         ui.painter().rect_filled(bounds, 0.0, style.workspace_fill);
@@ -129,7 +147,8 @@ pub(crate) fn paint_surface(
             panes,
             style,
             resources: &resources,
-            actions: &mut actions,
+            local_actions: &mut local_actions,
+            presentation_actions: &mut presentation_actions,
             #[cfg(feature = "native-render-support")]
             receivers: &mut receivers,
             defer_measurement: &mut defer_measurement,
@@ -147,25 +166,39 @@ pub(crate) fn paint_surface(
             contained::paint_controls(&mut context, record);
         }
 
-        if paint_preview(context.ui, context.plan, context.style)
+        let drag_preview_required = context.plan.drag_preview().is_some();
+        let drag_preview_painted = paint_preview(context.ui, context.plan, context.style);
+        transient_visuals_complete &= !drag_preview_required || drag_preview_painted;
+        if context.pointer_authority.acknowledges_previews_locally()
+            && drag_preview_painted
             && let Some(action) = context.plan.prepare_drag_preview_painted()
         {
-            context.actions.insert(0, action);
+            context.push_presentation_action(action);
             *context.defer_measurement = true;
         }
         guides::paint(&mut context);
-        if paint_contained_transform_preview(context.ui, context.plan, context.style)
+        let contained_preview_required = context.plan.contained_transform_preview().is_some();
+        let contained_preview_painted =
+            paint_contained_transform_preview(context.ui, context.plan, context.style);
+        transient_visuals_complete &= !contained_preview_required || contained_preview_painted;
+        if context.pointer_authority.acknowledges_previews_locally()
+            && contained_preview_painted
             && let Some(action) = context.plan.prepare_contained_transform_preview_painted()
         {
-            context.actions.insert(0, action);
+            context.push_presentation_action(action);
         }
     }
+    #[cfg(not(feature = "native-render-support"))]
+    let _ = transient_visuals_complete;
     ProductPaintOutput {
-        actions,
+        local_actions,
+        presentation_actions,
         missing_items: resources.missing_items().collect(),
         #[cfg(feature = "native-render-support")]
         receivers,
         defer_measurement,
+        #[cfg(feature = "native-render-support")]
+        transient_visuals_complete,
     }
 }
 
@@ -173,22 +206,43 @@ fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, style: &DockStyle) -> bool
     let Some(preview) = plan.drag_preview() else {
         return false;
     };
-    let rect = match preview.visual() {
-        DockspacePreviewVisual::Dock { rect, .. }
-        | DockspacePreviewVisual::Contained { rect, .. } => rect,
-        DockspacePreviewVisual::Native { .. } => return false,
-    };
-    let Some(rect) = geometry::egui_rect(rect) else {
+    let Some(bounds) = geometry::egui_rect(plan.bounds()) else {
         return false;
     };
-    ui.painter().rect_filled(rect, 2.0, style.drop_fill);
-    ui.painter().rect_stroke(
+    let Some(rect) = preview_rect(plan.surface(), bounds, preview.visual()) else {
+        return false;
+    };
+    let painter = ui.painter_at(bounds);
+    painter.rect_filled(rect, 2.0, style.drop_fill);
+    painter.rect_stroke(
         rect,
         2.0,
         Stroke::new(1.0, style.drop_border_color),
         StrokeKind::Inside,
     );
     true
+}
+
+fn preview_rect(
+    host_surface: dockspace::model::SurfaceId,
+    host_bounds: egui::Rect,
+    visual: DockspacePreviewVisual,
+) -> Option<egui::Rect> {
+    match visual {
+        DockspacePreviewVisual::Dock { surface, rect }
+        | DockspacePreviewVisual::Contained { surface, rect, .. }
+            if surface == host_surface =>
+        {
+            geometry::egui_rect(rect)
+        }
+        DockspacePreviewVisual::Native {
+            host_surface: surface,
+            ..
+        } if surface == host_surface => Some(host_bounds.shrink(4.0)),
+        DockspacePreviewVisual::Dock { .. }
+        | DockspacePreviewVisual::Contained { .. }
+        | DockspacePreviewVisual::Native { .. } => None,
+    }
 }
 
 fn paint_contained_transform_preview(
@@ -199,6 +253,9 @@ fn paint_contained_transform_preview(
     let Some(preview) = plan.contained_transform_preview() else {
         return false;
     };
+    if preview.surface() != plan.surface() {
+        return false;
+    }
     let Some(rect) = geometry::egui_rect(preview.rect()) else {
         return false;
     };
@@ -210,4 +267,58 @@ fn paint_contained_transform_preview(
         StrokeKind::Inside,
     );
     true
+}
+
+#[cfg(all(test, feature = "native-render-support"))]
+mod tests {
+    use dockspace::geometry::{LogicalRect, PhysicalRect};
+    use dockspace::model::SurfaceId;
+    use egui::{Rect, pos2, vec2};
+
+    use super::{DockspacePreviewVisual, PointerActionAuthority, preview_rect};
+
+    #[test]
+    fn external_journal_uses_renderer_settlement_for_preview_authority() {
+        assert!(
+            PointerActionAuthority::LocalResponses.acknowledges_previews_locally(),
+            "the official-egui product path has no renderer settlement callback"
+        );
+        assert!(
+            !PointerActionAuthority::ExternalJournal.acknowledges_previews_locally(),
+            "native preview authority must come from its Presented output"
+        );
+    }
+
+    #[test]
+    fn native_preview_paints_a_source_hosted_cue() {
+        let source = SurfaceId::new(1);
+        let target = SurfaceId::new(2);
+        let bounds = Rect::from_min_size(pos2(10.0, 20.0), vec2(300.0, 200.0));
+        let placement =
+            PhysicalRect::new(400.0, 100.0, 300.0, 200.0).expect("native placement is valid");
+        assert_eq!(
+            preview_rect(
+                source,
+                bounds,
+                DockspacePreviewVisual::Native {
+                    host_surface: source,
+                    target_surface: target,
+                    placement,
+                },
+            ),
+            Some(bounds.shrink(4.0))
+        );
+        assert_eq!(
+            preview_rect(
+                target,
+                bounds,
+                DockspacePreviewVisual::Dock {
+                    surface: source,
+                    rect: LogicalRect::new(10.0, 20.0, 30.0, 40.0)
+                        .expect("logical preview is valid"),
+                },
+            ),
+            None
+        );
+    }
 }

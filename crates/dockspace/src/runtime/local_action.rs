@@ -47,6 +47,7 @@ pub enum SurfaceGesturePhase {
 /// reducer input. Submit it through [`super::DockspaceHostFrame::submit_surface_action`]
 /// before measuring the next framework pass.
 #[must_use = "a prepared surface action must be submitted or deliberately discarded"]
+#[derive(PartialEq)]
 pub struct PreparedSurfaceAction {
     authority_domain: EngineAuthorityDomainId,
     expected: WorkspaceVersion,
@@ -243,7 +244,7 @@ impl fmt::Debug for PreparedSurfaceAction {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum SurfaceAction {
     SelectTab {
         scene: SurfaceSceneStamp,

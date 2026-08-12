@@ -8,16 +8,20 @@
 
 #![forbid(unsafe_code)]
 
+mod app;
 mod coordinator;
 mod effect_coordinator;
 mod error;
 mod event;
 mod host_frame;
 mod mailbox;
+mod pass_actions;
 mod pointer_event;
+mod receiver;
 mod viewport_map;
 mod window_snapshot;
 
+pub use app::NativeDockspaceApp;
 pub use error::{
     NativeOutputBindingError, NativeOutputBindingErrorKind, NativeRuntimeError,
     NativeRuntimeErrorKind, NativeViewportBindingError,
