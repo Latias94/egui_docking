@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use dockspace::runtime::{
-    NativeCloseEffectAcknowledgement, NativeSurfaceBinding, NativeWindowFacts,
+    NativeCleanupObservation, NativeCloseEffectAcknowledgement, NativeEffectResult,
+    NativeSurfaceBinding, NativeWindowFacts,
 };
 use eframe::egui::ViewportId;
 
@@ -20,11 +21,85 @@ enum RetirementPhase {
     RouteRetired,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default)]
+struct CleanupRelay {
+    observation: Option<NativeCleanupObservation>,
+    result: Option<NativeEffectResult>,
+}
+
+#[derive(Debug)]
+pub(crate) enum CleanupResultRetentionError {
+    Occupied(NativeEffectResult),
+    CorrelationMismatch,
+}
+
+impl CleanupRelay {
+    fn can_accept_observation(&self) -> bool {
+        self.observation.is_none()
+    }
+
+    fn accept_observation(
+        &mut self,
+        observation: NativeCleanupObservation,
+    ) -> Result<Option<NativeEffectResult>, ()> {
+        debug_assert!(self.observation.is_none());
+        let Some(result) = self.result.take() else {
+            self.observation = Some(observation);
+            return Ok(None);
+        };
+        match observation.correlate(result) {
+            Ok(result) => Ok(Some(result)),
+            Err(error) => {
+                let (observation, result) = error.into_parts();
+                self.observation = Some(observation);
+                self.result = Some(result);
+                Err(())
+            }
+        }
+    }
+
+    fn retain_result(
+        &mut self,
+        result: NativeEffectResult,
+    ) -> Result<Option<NativeEffectResult>, CleanupResultRetentionError> {
+        if self.result.is_some() {
+            return Err(CleanupResultRetentionError::Occupied(result));
+        }
+        let Some(observation) = self.observation.take() else {
+            self.result = Some(result);
+            return Ok(None);
+        };
+        match observation.correlate(result) {
+            Ok(result) => Ok(Some(result)),
+            Err(error) => {
+                let (observation, result) = error.into_parts();
+                self.observation = Some(observation);
+                self.result = Some(result);
+                Err(CleanupResultRetentionError::CorrelationMismatch)
+            }
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.observation.is_some() || self.result.is_some()
+    }
+
+    /// Drops cleanup capabilities once the exact Destroyed tombstone committed.
+    ///
+    /// Destroyed is the terminal core fact for the predecessor operation; no
+    /// later adapter result may resurrect or re-correlate that cleanup lane.
+    fn finish_destroyed_snapshot(&mut self) {
+        self.observation = None;
+        self.result = None;
+    }
+}
+
+#[derive(Debug)]
 struct PendingRetirement {
     viewport: ViewportId,
     acknowledgement: Option<NativeCloseEffectAcknowledgement>,
     phase: RetirementPhase,
+    cleanup: CleanupRelay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +129,7 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
-        !self.pending.contains_key(&binding)
+        self.pending_for_lifetime(binding).is_none()
             && !self
                 .pending
                 .values()
@@ -76,6 +151,7 @@ impl NativeRetirementState {
                 viewport,
                 acknowledgement: Some(acknowledgement),
                 phase: RetirementPhase::AwaitingDestroyed,
+                cleanup: CleanupRelay::default(),
             },
         );
         true
@@ -86,6 +162,16 @@ impl NativeRetirementState {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> bool {
+        if let Some(existing) = self.pending_lifetime_key(binding) {
+            if existing != binding && self.pending.contains_key(&binding) {
+                return false;
+            }
+            if existing != binding {
+                if !self.adopt_successor_binding(existing, binding) {
+                    return false;
+                }
+            }
+        }
         if let Some(pending) = self.pending.get_mut(&binding) {
             if pending.viewport != viewport {
                 return false;
@@ -108,9 +194,136 @@ impl NativeRetirementState {
                 viewport,
                 acknowledgement: None,
                 phase: RetirementPhase::DestroyedObserved,
+                cleanup: CleanupRelay::default(),
             },
         );
         true
+    }
+
+    fn pending_for_lifetime(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&PendingRetirement> {
+        self.pending_lifetime_key(binding)
+            .and_then(|key| self.pending.get(&key))
+    }
+
+    fn pending_for_lifetime_mut(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<&mut PendingRetirement> {
+        let key = self.pending_lifetime_key(binding)?;
+        self.pending.get_mut(&key)
+    }
+
+    fn pending_lifetime_key(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeSurfaceBinding> {
+        self.pending
+            .keys()
+            .copied()
+            .find(|candidate| candidate.same_window_lifetime(binding))
+    }
+
+    fn adopt_successor_binding(
+        &mut self,
+        predecessor: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> bool {
+        if predecessor == successor {
+            return true;
+        }
+        if self.pending.contains_key(&successor) {
+            return false;
+        }
+        let Some(mut pending) = self.pending.remove(&predecessor) else {
+            return false;
+        };
+        // A provider handoff invalidates the old close acknowledgement. The
+        // successor may only publish a plain Destroyed tombstone until it
+        // obtains a new exact acknowledgement from core.
+        pending.acknowledgement = None;
+        self.pending.insert(successor, pending);
+        true
+    }
+
+    fn adopt_successor_for_lifetime(&mut self, binding: NativeSurfaceBinding) -> bool {
+        let Some(predecessor) = self.pending_lifetime_key(binding) else {
+            return false;
+        };
+        self.adopt_successor_binding(predecessor, binding)
+    }
+
+    pub(crate) fn can_accept_cleanup_observation(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.pending_for_lifetime(binding).is_some_and(|pending| {
+            matches!(
+                pending.phase,
+                RetirementPhase::AwaitingDestroyed
+                    | RetirementPhase::DestroyedObserved
+                    | RetirementPhase::SnapshotQueued
+            ) && pending.cleanup.can_accept_observation()
+        })
+    }
+
+    pub(crate) fn accept_cleanup_observation(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        observation: NativeCleanupObservation,
+    ) -> Result<Option<NativeEffectResult>, ()> {
+        if !self.adopt_successor_for_lifetime(binding) {
+            return Err(());
+        }
+        let Some(pending) = self.pending_for_lifetime_mut(binding) else {
+            return Err(());
+        };
+        pending.cleanup.accept_observation(observation)
+    }
+
+    pub(crate) fn can_accept_cleanup_result(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_for_lifetime(binding).is_some_and(|pending| {
+            !matches!(
+                pending.phase,
+                RetirementPhase::TombstoneCommitted | RetirementPhase::RouteRetired
+            ) && pending.cleanup.result.is_none()
+        })
+    }
+
+    pub(crate) fn cleanup_is_terminal(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_for_lifetime(binding).is_some_and(|pending| {
+            matches!(
+                pending.phase,
+                RetirementPhase::TombstoneCommitted | RetirementPhase::RouteRetired
+            )
+        })
+    }
+
+    pub(crate) fn retain_cleanup_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        result: NativeEffectResult,
+    ) -> Result<Option<NativeEffectResult>, CleanupResultRetentionError> {
+        if !self.adopt_successor_for_lifetime(binding) {
+            return Err(CleanupResultRetentionError::Occupied(result));
+        }
+        let Some(pending) = self.pending_for_lifetime_mut(binding) else {
+            return Err(CleanupResultRetentionError::Occupied(result));
+        };
+        if matches!(
+            pending.phase,
+            RetirementPhase::TombstoneCommitted | RetirementPhase::RouteRetired
+        ) {
+            return Err(CleanupResultRetentionError::Occupied(result));
+        }
+        pending.cleanup.retain_result(result)
+    }
+
+    pub(crate) fn references_cleanup(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_for_lifetime(binding)
+            .is_some_and(|pending| pending.cleanup.is_pending())
     }
 
     pub(crate) fn destroyed_observations(
@@ -139,6 +352,7 @@ impl NativeRetirementState {
         for pending in self.pending.values_mut() {
             if pending.phase == RetirementPhase::SnapshotQueued {
                 pending.phase = if applied {
+                    pending.cleanup.finish_destroyed_snapshot();
                     RetirementPhase::TombstoneCommitted
                 } else {
                     RetirementPhase::DestroyedObserved

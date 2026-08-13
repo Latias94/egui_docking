@@ -1,16 +1,18 @@
 use super::compiler::compile_window_fact;
 use super::*;
-use crate::effect::EffectId;
+use crate::effect::{EffectId, EffectLedger, PlatformEffect};
 use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::policy::DockPolicy;
+use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
-    DockspaceSemanticOutput, NativeReceiverPurpose, NativeReceiverQuery, PaintedSurfaceOutput,
-    PresentedDockspaceSurface, SurfacePresentationResult, SurfaceUnavailableReason,
-    UniformSurfaceMetrics,
+    DockspaceSemanticOutput, NativeDispatchFailure, NativeReceiverPurpose, NativeReceiverQuery,
+    PaintedSurfaceOutput, PresentedDockspaceSurface, SurfacePresentationResult,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
+use crate::viewport::InventoryGeneration;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -413,6 +415,112 @@ fn retired_binding_accepts_only_an_exact_destroyed_tombstone() {
         .report_native_snapshot([(live_binding, NativeWindowFacts::live())])
         .expect_err("a retired binding cannot regain live authority");
     assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+}
+
+#[test]
+fn retired_binding_accepts_same_provider_effect_results() {
+    let (mut session, binding) = native_root_session();
+    let native = session
+        .native
+        .as_mut()
+        .expect("the native provider remains enrolled");
+    assert_eq!(native.bindings.remove(&binding.surface()), Some(binding));
+    native.retired_bindings.insert(binding.binding);
+
+    let mut ledger = EffectLedger::default();
+    ledger
+        .request(PlatformEffect::ReleaseChild {
+            binding: binding.binding,
+        })
+        .expect("the destructive effect allocates");
+    let predecessor_emission = ledger
+        .take_new_requests(binding.provider, InventoryGeneration::new(1), |_| false)
+        .expect("the destructive effect emits")
+        .pop()
+        .expect("one destructive emission exists");
+    let delayed =
+        NativeEffectRequest::from_emission(&predecessor_emission, NativeEffectDropQueue::default())
+            .dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+    session
+        .report_native_effect_result(delayed)
+        .expect("the active provider may settle an emitted retired-binding effect");
+}
+
+#[test]
+fn retired_binding_requires_cleanup_correlation_after_workspace_replacement() {
+    let (mut session, binding) = native_root_session();
+    let before = session.version();
+    let mut ledger = EffectLedger::default();
+    let predecessor = ledger
+        .request(PlatformEffect::ReleaseChild {
+            binding: binding.binding,
+        })
+        .expect("the destructive effect allocates");
+    let predecessor_emission = ledger
+        .take_new_requests(binding.provider, InventoryGeneration::new(1), |_| false)
+        .expect("the destructive effect emits")
+        .pop()
+        .expect("one destructive emission exists");
+    let delayed =
+        NativeEffectRequest::from_emission(&predecessor_emission, NativeEffectDropQueue::default())
+            .dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+
+    let replacement = session.workspace().clone();
+    let mut frame = session
+        .begin_host_frame()
+        .expect("the workspace replacement frame begins");
+    frame
+        .append(crate::engine::EngineInput::ReplaceWorkspace(replacement))
+        .expect("the replacement input appends");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the replacement frame settles every surface");
+    frame
+        .commit()
+        .expect("the workspace replacement frame commits");
+
+    let after = session.version();
+    assert_ne!(after.epoch(), before.epoch());
+    assert!(session.recognizes_native_binding(binding));
+    assert!(!session.is_current_native_binding(binding));
+
+    let error = session
+        .report_native_effect_result(delayed)
+        .expect_err("an old-epoch result cannot directly settle a retired binding");
+    assert_eq!(error.kind(), NativeHostErrorKind::StaleBinding);
+    let (_, delayed) = error.into_parts();
+    assert_eq!(delayed.receipt_epoch(), before.epoch());
+    assert!(delayed.can_be_correlated_by_cleanup());
+
+    ledger
+        .request_in(
+            after.epoch(),
+            PlatformEffect::ContinueCleanup {
+                binding: binding.binding,
+                predecessor,
+                after: None,
+            },
+        )
+        .expect("the successor cleanup observation allocates");
+    let cleanup_emission = ledger
+        .take_new_requests(binding.provider, InventoryGeneration::new(2), |_| false)
+        .expect("the cleanup observation emits")
+        .pop()
+        .expect("one cleanup observation exists");
+    let cleanup =
+        NativeEffectRequest::from_emission(&cleanup_emission, NativeEffectDropQueue::default());
+    let Some(crate::runtime::NativeEffectAcknowledgement::Cleanup(observation)) =
+        cleanup.accepted()
+    else {
+        panic!("cleanup continuation yields one observation capability");
+    };
+    let correlated = observation
+        .correlate(delayed)
+        .expect("the cleanup observation correlates the delayed result");
+    assert_eq!(correlated.receipt_epoch(), after.epoch());
+    session
+        .report_native_effect_result(correlated)
+        .expect("the current-epoch cleanup result may settle the retired binding");
 }
 
 fn commit_managed_frame(session: &mut DockspaceSession) {

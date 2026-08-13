@@ -7,12 +7,12 @@ use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseEffectAcknowledgement,
-    NativeCloseState, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
-    NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput,
-    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
-    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationResult, SurfaceUnavailableReason,
+    NativeCloseState, NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation,
+    NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind,
+    NativePointerInput, NativePointerRoster, NativePresentationEffectAcknowledgement,
+    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason,
+    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput,
+    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
@@ -38,7 +38,9 @@ use crate::mailbox::{
 };
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
-use crate::retirement::{CommittedRetirement, NativeRetirementState};
+use crate::retirement::{
+    CleanupResultRetentionError, CommittedRetirement, NativeRetirementState,
+};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -431,6 +433,7 @@ impl NativeCoordinator {
                 || self.receivers.references_binding(binding)
                 || self.deferred_viewports.viewport_for(binding).is_some()
                 || self.effects.references_binding(binding)
+                || self.retirements.references_cleanup(binding)
                 || self
                     .pending_presentation_acknowledgements
                     .contains_key(&binding)
@@ -616,6 +619,35 @@ impl NativeCoordinator {
                             .begin_release(viewport, binding, acknowledgement);
                     assert!(inserted, "preflighted native retirement must insert");
                 }
+                NativeEffectOperation::AwaitCleanup { binding } => {
+                    let binding = *binding;
+                    if !self.session.recognizes_native_binding(binding)
+                        || !self
+                            .retirements
+                            .can_accept_cleanup_observation(binding)
+                    {
+                        self.submit_failed_effect(
+                            request,
+                            NativeDispatchFailure::AdapterRejected,
+                        )?;
+                        continue;
+                    }
+                    let Some(NativeEffectAcknowledgement::Cleanup(observation)) =
+                        request.accepted()
+                    else {
+                        return Err(
+                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                .into(),
+                        );
+                    };
+                    let correlated = self
+                        .retirements
+                        .accept_cleanup_observation(binding, observation)
+                        .map_err(|()| NativeHostProtocolError::CleanupRelayConflict)?;
+                    if let Some(result) = correlated {
+                        self.report_cleanup_result(binding, result)?;
+                    }
+                }
                 _ => {
                     self.submit_unsupported_effect(request)?;
                 }
@@ -628,13 +660,78 @@ impl NativeCoordinator {
         &mut self,
         request: NativeEffectRequest,
     ) -> Result<(), NativeRuntimeError> {
+        let binding = request.operation().binding();
         let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
         if let Err(error) = self.session.report_native_effect_result(result) {
-            let (kind, result) = error.into_parts();
-            drop(result);
-            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+            return self.retain_or_return_effect_result(binding, error);
         }
         Ok(())
+    }
+
+    fn submit_failed_effect(
+        &mut self,
+        request: NativeEffectRequest,
+        reason: NativeDispatchFailure,
+    ) -> Result<(), NativeRuntimeError> {
+        let binding = request.operation().binding();
+        let result = request.dispatch_failed(reason);
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            return self.retain_or_return_effect_result(binding, error);
+        }
+        Ok(())
+    }
+
+    fn report_cleanup_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        result: NativeEffectResult,
+    ) -> Result<(), NativeRuntimeError> {
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            return self.retain_or_return_effect_result(binding, error);
+        }
+        Ok(())
+    }
+
+    fn retain_or_return_effect_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        error: NativeEffectSubmissionError,
+    ) -> Result<(), NativeRuntimeError> {
+        let (kind, result) = error.into_parts();
+        if !result.binding().same_window_lifetime(binding)
+            || !result.can_be_correlated_by_cleanup()
+            || !matches!(kind, NativeHostErrorKind::StaleBinding)
+        {
+            return Err(Self::fatal_effect_submission(kind, result));
+        }
+        if self.retirements.cleanup_is_terminal(binding) {
+            drop(result);
+            return Ok(());
+        }
+        if !self.retirements.can_accept_cleanup_result(binding) {
+            return Err(Self::fatal_effect_submission(kind, result));
+        }
+        match self.retirements.retain_cleanup_result(binding, result) {
+            Ok(Some(correlated)) => self.report_cleanup_result(binding, correlated),
+            Ok(None) => Ok(()),
+            Err(CleanupResultRetentionError::CorrelationMismatch) => {
+                Err(NativeHostProtocolError::CleanupRelayConflict.into())
+            }
+            Err(CleanupResultRetentionError::Occupied(result)) => {
+                Err(Self::fatal_effect_submission(kind, result))
+            }
+        }
+    }
+
+    fn fatal_effect_submission(
+        kind: NativeHostErrorKind,
+        result: NativeEffectResult,
+    ) -> NativeRuntimeError {
+        // The application treats host-protocol errors as terminal and drops
+        // the whole coordinator/session. Do not expose a misleading recovery
+        // capability whose owning session can no longer make progress.
+        drop(result);
+        NativeHostProtocolError::NativeEffectResultRejected(kind).into()
     }
 
     /// Retains one core-emitted deferred viewport effect until eframe reports
@@ -1182,10 +1279,12 @@ impl NativeCoordinator {
     pub fn report_effect_result(
         &mut self,
         result: NativeEffectResult,
-    ) -> Result<(), Box<NativeEffectSubmissionError>> {
-        self.session
-            .report_native_effect_result(result)
-            .map_err(Box::new)
+    ) -> Result<(), NativeRuntimeError> {
+        let binding = result.binding();
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            return self.retain_or_return_effect_result(binding, error);
+        }
+        Ok(())
     }
 
     /// Records permanent host quiescence for one retired binding.

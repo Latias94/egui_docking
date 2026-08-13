@@ -196,6 +196,17 @@ impl NativeSurfaceBinding {
         HostWindowToken(self.binding.token().get())
     }
 
+    /// Reports whether two provider-bound handles name the same native lifetime.
+    ///
+    /// A provider handoff may mint a new observation lease while retaining the
+    /// exact workspace, surface, window token, and incarnation. This comparison
+    /// keeps those opaque lifetime details private while allowing a native host
+    /// to rendezvous delayed cleanup results with the successor provider.
+    #[must_use]
+    pub fn same_window_lifetime(self, other: Self) -> bool {
+        self.binding == other.binding
+    }
+
     pub(super) fn matches_viewport_binding(self, binding: ViewportBinding) -> bool {
         self.binding == binding
     }
@@ -639,6 +650,10 @@ impl RuntimeNativeState {
                 || self.retired_bindings.contains(&binding.binding))
     }
 
+    pub(super) fn binding_is_live(&self, binding: NativeSurfaceBinding) -> bool {
+        self.bindings.get(&binding.surface()) == Some(&binding)
+    }
+
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {
         &mut self.recorder
     }
@@ -732,8 +747,15 @@ impl RuntimeNativeState {
         &mut self,
         abandoned: &super::native_effect::NativeEffectDropQueue,
     ) -> Result<(), NativePlatformError> {
-        for result in abandoned.take_for(self.provider()) {
-            self.record_effect_result(result.result)?;
+        let mut pending = abandoned
+            .take_for(self.provider())
+            .map_err(|()| NativePlatformError::ProtocolInvariant)?
+            .into_iter();
+        while let Some(result) = pending.next() {
+            if let Err(error) = self.record_effect_result(result.result) {
+                abandoned.restore_front(std::iter::once(result).chain(pending));
+                return Err(error);
+            }
         }
         Ok(())
     }

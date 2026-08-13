@@ -270,6 +270,7 @@ impl DockspaceSession {
         &mut self,
         result: NativeEffectResult,
     ) -> Result<(), NativeEffectSubmissionError> {
+        let current_epoch = self.version().epoch();
         let Some(native) = self.native.as_mut() else {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::ProviderUnavailable,
@@ -283,11 +284,13 @@ impl DockspaceSession {
             ));
         }
         let surface = result.binding.surface();
-        if native
-            .bindings
-            .get(&surface)
-            .is_none_or(|current| current.binding != result.binding)
-        {
+        if !native.recognizes_binding(result.binding()) {
+            return Err(NativeEffectSubmissionError::new(
+                NativePlatformError::StaleSurface { surface },
+                result,
+            ));
+        }
+        if !native.binding_is_live(result.binding()) && result.receipt_epoch() != current_epoch {
             return Err(NativeEffectSubmissionError::new(
                 NativePlatformError::StaleSurface { surface },
                 result,

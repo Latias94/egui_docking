@@ -177,6 +177,7 @@ pub struct NativeEffectRequest {
     epoch: WorkspaceEpoch,
     correlation: NativeEffectCorrelationKind,
     cleanup: Option<CleanupObservationToken>,
+    destructive_cleanup: bool,
     abandoned: Option<NativeEffectDropQueue>,
 }
 
@@ -295,6 +296,7 @@ impl NativeEffectRequest {
             epoch: emission.epoch(),
             correlation,
             cleanup: emission.cleanup_observation_token(),
+            destructive_cleanup: emission.effect().is_destructive_cleanup(),
             abandoned: Some(abandoned),
         }
     }
@@ -373,6 +375,7 @@ impl NativeEffectRequest {
             provider: self.provider,
             binding: self.binding,
             result: EffectResult::new(self.effect, self.epoch, result),
+            cleanup_relay_eligible: self.destructive_cleanup,
         }
     }
 }
@@ -386,6 +389,7 @@ impl PartialEq for NativeEffectRequest {
             && self.epoch == other.epoch
             && self.correlation == other.correlation
             && self.cleanup == other.cleanup
+            && self.destructive_cleanup == other.destructive_cleanup
     }
 }
 
@@ -402,6 +406,7 @@ impl Drop for NativeEffectRequest {
                 self.epoch,
                 EffectDispatchResult::DispatchFailed(DispatchFailureReason::ProviderStopped),
             ),
+            cleanup_relay_eligible: self.destructive_cleanup,
         });
     }
 }
@@ -423,12 +428,22 @@ impl NativeEffectDropQueue {
         self.lock().push(result);
     }
 
-    pub(super) fn take_for(&self, provider: PlatformObservationLease) -> Vec<NativeEffectResult> {
-        let pending = std::mem::take(&mut *self.lock());
-        pending
-            .into_iter()
-            .filter(|result| result.provider == provider)
-            .collect()
+    pub(super) fn take_for(
+        &self,
+        provider: PlatformObservationLease,
+    ) -> Result<Vec<NativeEffectResult>, ()> {
+        let mut queue = self.lock();
+        if queue.iter().any(|result| result.provider != provider) {
+            return Err(());
+        }
+        Ok(std::mem::take(&mut *queue))
+    }
+
+    pub(super) fn restore_front(&self, results: impl IntoIterator<Item = NativeEffectResult>) {
+        let mut queue = self.lock();
+        let mut restored = results.into_iter().collect::<Vec<_>>();
+        restored.append(&mut queue);
+        *queue = restored;
     }
 }
 
@@ -508,6 +523,7 @@ impl NativeCleanupObservation {
                 predecessor.result.epoch(),
                 predecessor.result.result(),
             ),
+            cleanup_relay_eligible: true,
         })
     }
 }
@@ -535,6 +551,26 @@ pub struct NativeEffectResult {
     pub(super) provider: PlatformObservationLease,
     pub(super) binding: ViewportBinding,
     pub(super) result: EffectResult,
+    cleanup_relay_eligible: bool,
+}
+
+impl NativeEffectResult {
+    /// Returns the exact provider-bound native lifetime named by this result.
+    #[must_use]
+    pub const fn binding(&self) -> NativeSurfaceBinding {
+        NativeSurfaceBinding::from_binding(self.provider, self.binding)
+    }
+
+    /// Reports whether a successor cleanup observation may correlate this
+    /// delayed result without executing the destructive operation again.
+    #[must_use]
+    pub const fn can_be_correlated_by_cleanup(&self) -> bool {
+        self.cleanup_relay_eligible
+    }
+
+    pub(super) const fn receipt_epoch(&self) -> WorkspaceEpoch {
+        self.result.receipt_epoch()
+    }
 }
 
 /// Recoverable failure while recording one exact effect result in backend order.
@@ -732,11 +768,132 @@ mod tests {
             abandoned.clone(),
         ));
 
-        let results = abandoned.take_for(provider);
+        let results = abandoned
+            .take_for(provider)
+            .expect("the active provider owns every abandoned result");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].result.effect(), effect);
         assert_eq!(results[0].binding, binding);
-        assert!(abandoned.take_for(provider).is_empty());
+        assert!(
+            abandoned
+                .take_for(provider)
+                .expect("the empty queue remains provider-compatible")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn abandoned_results_remain_owned_when_the_active_provider_does_not_match() {
+        let domain = EngineAuthorityDomainId::new_for_test(97);
+        let mut providers = PlatformObservationAuthority::new(domain);
+        let predecessor = providers.create().expect("the first provider mints");
+        let binding = ViewportBinding::new(
+            domain,
+            WorkspaceEpoch::new(0),
+            SurfaceId::new(1),
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        );
+        let mut ledger = EffectLedger::default();
+        ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("the destructive effect allocates");
+        let emission = ledger
+            .take_new_requests(predecessor, InventoryGeneration::new(1), |_| false)
+            .expect("the destructive effect emits")
+            .pop()
+            .expect("one destructive emission exists");
+        let abandoned = NativeEffectDropQueue::default();
+        drop(NativeEffectRequest::from_emission(
+            &emission,
+            abandoned.clone(),
+        ));
+
+        let replacement = providers
+            .begin_replacement(predecessor)
+            .expect("provider replacement begins");
+        let successor = providers
+            .finish_replacement(replacement)
+            .expect("the successor provider activates");
+
+        assert!(
+            abandoned.take_for(successor).is_err(),
+            "a successor cannot consume an uncorrelated predecessor result"
+        );
+        let retained = abandoned
+            .take_for(predecessor)
+            .expect("the failed take leaves the original queue intact");
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].provider, predecessor);
+        assert!(retained[0].can_be_correlated_by_cleanup());
+    }
+
+    #[test]
+    fn cleanup_observation_correlates_a_delayed_destructive_result() {
+        let domain = EngineAuthorityDomainId::new_for_test(96);
+        let mut providers = PlatformObservationAuthority::new(domain);
+        let first_provider = providers.create().expect("the first provider mints");
+        let binding = ViewportBinding::new(
+            domain,
+            WorkspaceEpoch::new(0),
+            SurfaceId::new(1),
+            WindowToken::new(1),
+            WindowIncarnation::new(1),
+        );
+        let mut ledger = EffectLedger::default();
+        let predecessor = ledger
+            .request(PlatformEffect::ReleaseChild { binding })
+            .expect("the destructive effect allocates");
+        let predecessor_emission = ledger
+            .take_new_requests(first_provider, InventoryGeneration::new(1), |_| false)
+            .expect("the destructive effect emits")
+            .pop()
+            .expect("one destructive emission exists");
+        let delayed = NativeEffectRequest::from_emission(
+            &predecessor_emission,
+            NativeEffectDropQueue::default(),
+        )
+        .dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+        assert!(delayed.can_be_correlated_by_cleanup());
+
+        let replacement = providers
+            .begin_replacement(first_provider)
+            .expect("provider replacement begins");
+        let successor = providers
+            .finish_replacement(replacement)
+            .expect("the successor provider activates");
+        ledger.revoke_provider_authority(first_provider);
+        ledger
+            .request(PlatformEffect::ContinueCleanup {
+                binding,
+                predecessor,
+                after: None,
+            })
+            .expect("the cleanup observation allocates");
+        let observation_emission = ledger
+            .take_new_requests(successor, InventoryGeneration::new(2), |_| false)
+            .expect("the cleanup observation emits")
+            .pop()
+            .expect("one cleanup observation exists");
+        let request = NativeEffectRequest::from_emission(
+            &observation_emission,
+            NativeEffectDropQueue::default(),
+        );
+        let observation_binding = request.operation().binding();
+        let Some(NativeEffectAcknowledgement::Cleanup(observation)) = request.accepted() else {
+            panic!("cleanup continuation yields one observation capability");
+        };
+        let correlated = observation
+            .correlate(delayed)
+            .expect("the delayed result matches the exact cleanup continuation");
+
+        assert!(
+            correlated
+                .binding()
+                .same_window_lifetime(observation_binding)
+        );
+        assert_eq!(correlated.result.effect(), predecessor);
+        assert!(correlated.result.is_cleanup_observation());
     }
 
     #[test]
@@ -819,6 +976,11 @@ mod tests {
 
         assert_eq!(request.accepted(), None);
 
-        assert!(abandoned.take_for(provider).is_empty());
+        assert!(
+            abandoned
+                .take_for(provider)
+                .expect("the empty queue remains provider-compatible")
+                .is_empty()
+        );
     }
 }

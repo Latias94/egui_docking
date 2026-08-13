@@ -85,6 +85,8 @@ pub(crate) enum NativeHostProtocolError {
     PresentationAcknowledgementAlreadyPending,
     #[error("a deferred viewport effect returned the wrong acknowledgement category")]
     UnexpectedViewportEffectAcknowledgement,
+    #[error("a native cleanup observation conflicts with its retained destructive result")]
+    CleanupRelayConflict,
     #[error("the first native output callback could not attach its exact viewport route")]
     OutputRouteAttachmentFailed,
     #[error(
