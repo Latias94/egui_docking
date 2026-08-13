@@ -518,6 +518,12 @@ pub(super) enum NativePlatformError {
         /// Stable logical surface carrying contradictory facts.
         surface: SurfaceId,
     },
+    /// A retired binding was reported as a live window again.
+    #[error("retired native surface {surface} reported live-window facts")]
+    RetiredSurfaceHasLiveFacts {
+        /// Stable logical surface carrying contradictory facts.
+        surface: SurfaceId,
+    },
     /// An effect acknowledgement belongs to another binding incarnation.
     #[error("native effect acknowledgement for surface {surface} belongs to another binding")]
     EffectAcknowledgementBindingMismatch {
@@ -564,6 +570,7 @@ impl NativePlatformError {
             | Self::InvalidWorkAreaRoster
             | Self::InvalidPointerFacts
             | Self::DestroyedSurfaceHasLiveFacts { .. }
+            | Self::RetiredSurfaceHasLiveFacts { .. }
             | Self::EffectAcknowledgementBindingMismatch { .. }
             | Self::EffectAcknowledgementProviderMismatch { .. } => {
                 NativeHostErrorKind::InvalidFacts
@@ -624,6 +631,12 @@ impl RuntimeNativeState {
     pub(super) fn contains_binding(&self, binding: NativeSurfaceBinding) -> bool {
         binding.provider == self.provider()
             && self.bindings.get(&binding.surface()) == Some(&binding)
+    }
+
+    pub(super) fn recognizes_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        binding.provider == self.provider()
+            && (self.bindings.get(&binding.surface()) == Some(&binding)
+                || self.retired_bindings.contains(&binding.binding))
     }
 
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {
@@ -745,8 +758,18 @@ impl RuntimeNativeState {
         }
         let mut supplied = BTreeMap::new();
         for (binding, facts) in observations {
-            if self.bindings.get(&binding.surface()) != Some(&binding) {
+            if binding.provider != self.provider() {
+                return Err(NativePlatformError::ProviderSuperseded);
+            }
+            let current = self.bindings.get(&binding.surface()) == Some(&binding);
+            let retired = self.retired_bindings.contains(&binding.binding);
+            if !current && !retired {
                 return Err(NativePlatformError::StaleSurface {
+                    surface: binding.surface(),
+                });
+            }
+            if retired && !matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }) {
+                return Err(NativePlatformError::RetiredSurfaceHasLiveFacts {
                     surface: binding.surface(),
                 });
             }
@@ -756,7 +779,11 @@ impl RuntimeNativeState {
                 });
             }
         }
-        if supplied.len() != self.bindings.len() {
+        if self
+            .bindings
+            .values()
+            .any(|binding| !supplied.contains_key(&binding.binding))
+        {
             return Err(NativePlatformError::IncompleteRoster);
         }
         Ok(supplied)

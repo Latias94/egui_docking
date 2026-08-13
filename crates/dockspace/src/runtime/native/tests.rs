@@ -383,6 +383,38 @@ fn destroyed_fact_can_acknowledge_the_exact_destructive_effect() {
     assert!(compiled.close.acknowledges(effect));
 }
 
+#[test]
+fn retired_binding_accepts_only_an_exact_destroyed_tombstone() {
+    let (mut session, binding) = native_root_session();
+    let native = session
+        .native
+        .as_mut()
+        .expect("the native provider remains enrolled");
+    assert_eq!(native.bindings.remove(&binding.surface()), Some(binding));
+    native.retired_bindings.insert(binding.binding);
+
+    assert!(session.recognizes_native_binding(binding));
+    assert!(!session.is_current_native_binding(binding));
+    session
+        .report_native_snapshot([(binding, NativeWindowFacts::destroyed())])
+        .expect("the exact retired tombstone is recordable");
+
+    let (mut live_session, live_binding) = native_root_session();
+    let native = live_session
+        .native
+        .as_mut()
+        .expect("the native provider remains enrolled");
+    assert_eq!(
+        native.bindings.remove(&live_binding.surface()),
+        Some(live_binding)
+    );
+    native.retired_bindings.insert(live_binding.binding);
+    let error = live_session
+        .report_native_snapshot([(live_binding, NativeWindowFacts::live())])
+        .expect_err("a retired binding cannot regain live authority");
+    assert_eq!(error.native_kind(), Some(NativeHostErrorKind::InvalidFacts));
+}
+
 fn commit_managed_frame(session: &mut DockspaceSession) {
     let mut frame = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)

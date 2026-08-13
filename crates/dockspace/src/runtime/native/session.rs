@@ -22,6 +22,18 @@ impl DockspaceSession {
             .is_some_and(|native| native.contains_binding(binding))
     }
 
+    /// Returns whether the managed host still owns this exact live or retired binding.
+    ///
+    /// Retired bindings remain recognized until the host reports exact
+    /// destruction and then declares every callback, route, and sidecar for
+    /// that incarnation permanently quiescent.
+    #[must_use]
+    pub fn recognizes_native_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.native
+            .as_ref()
+            .is_some_and(|native| native.recognizes_binding(binding))
+    }
+
     /// Enrolls exact observation of externally owned native root windows.
     ///
     /// The method enrolls exactly once and never reissues existing surface
