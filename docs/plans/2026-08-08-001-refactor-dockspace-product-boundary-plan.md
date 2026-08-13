@@ -172,7 +172,7 @@ This is a continuation plan, not a greenfield U1-to-U9 replay. The commits below
 | U5 | Complete | The protocol trace crate is absent from the workspace and active build graph. | Do not recreate the protocol oracle; any remaining lifecycle case is added directly as an ordinary Rust black-box test. |
 | U6 | Partial | Renderer-neutral native runtime and exact child retirement | Close deterministic native effect, child retirement, terminal input, and quiescence cases through the renderer-neutral runtime only. |
 | U7 | Partial | Fork-backed native coordinator, staging, scale, and visibility dispatch | Prove ingress-to-create, record seam admission evidence, and add the one real-window smoke after the lifecycle is closed. |
-| U8 | Not started | Existing Open-GPUI adapter tests are reference evidence only. | Migrate one production semantic path to the shared core without replacing GPUI host, focus, render, accessibility, or motion runtime. |
+| U8 | Complete | Open-GPUI `d5cefd1c`: real tab click/AccessKit selection, close, and singleton contained-item dock-back now use one `DockspaceSession`; the legacy graph is a read-only projection and stale render actions reject by revision. | Keep the remaining GPUI host, focus, render, accessibility, motion, and native-window runtime adapter-owned; migrate additional semantic paths only when a product requirement demonstrates them. |
 | U9 | Partial | Raw workspace modules and much of the egui boundary are already sealed. | Seal the final core, egui, native, persistence, and downstream API only after both real adapters exercise it. |
 
 The next execution point is the remaining U6/U7 lifecycle work. Completed units are verification baselines, not tasks to redo.
