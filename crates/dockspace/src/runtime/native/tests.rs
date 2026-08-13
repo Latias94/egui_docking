@@ -12,12 +12,55 @@ use crate::runtime::{
     PaintedSurfaceOutput, PresentedDockspaceSurface, SurfacePresentationResult,
     SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
-use crate::viewport::InventoryGeneration;
+use crate::viewport::{InventoryGeneration, WindowIncarnation};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const ITEM: ItemId = ItemId::new(1);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
+
+#[test]
+fn admission_diff_reports_only_the_same_pending_binding() {
+    let domain = crate::ids::EngineAuthorityDomainId::new_for_test(1);
+    let pending = ViewportBinding::new(
+        domain,
+        crate::ids::WorkspaceEpoch::new(1),
+        SURFACE,
+        WindowToken::new(1),
+        WindowIncarnation::new(1),
+    );
+    let replacement = ViewportBinding::new(
+        domain,
+        crate::ids::WorkspaceEpoch::new(1),
+        SURFACE,
+        WindowToken::new(1),
+        WindowIncarnation::new(2),
+    );
+
+    assert_eq!(
+        newly_admitted_bindings(
+            &BTreeMap::from([(pending, ViewportAdmission::Pending)]),
+            &BTreeMap::from([(pending, ViewportAdmission::Admitted)]),
+        ),
+        vec![pending]
+    );
+    assert!(
+        newly_admitted_bindings(
+            &BTreeMap::from([(pending, ViewportAdmission::Pending)]),
+            &BTreeMap::from([(replacement, ViewportAdmission::Admitted)]),
+        )
+        .is_empty(),
+        "a recreated binding cannot inherit its predecessor's admission"
+    );
+    assert!(
+        newly_admitted_bindings(
+            &BTreeMap::new(),
+            &BTreeMap::from([(pending, ViewportAdmission::Admitted)]),
+        )
+        .is_empty(),
+        "an already-admitted external registration is not a first-live transition"
+    );
+}
 
 fn native_root_session() -> (DockspaceSession, NativeSurfaceBinding) {
     native_root_session_with_profile(NativeHostProfile::ObservedRoots)

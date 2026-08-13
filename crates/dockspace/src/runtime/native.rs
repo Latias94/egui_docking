@@ -31,6 +31,7 @@ use crate::viewport::{
     CloseObservationGeneration, ViewportBinding, ViewportRole, WindowToken, WorkAreaGeneration,
     WorkAreaToken,
 };
+use crate::viewport_registry::ViewportAdmission;
 use compiler::{compile_platform_snapshot, compile_unknown_inventory_snapshot};
 pub use pointer::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
@@ -608,6 +609,7 @@ pub(super) struct RuntimeNativeState {
     snapshot_generation: u64,
     binding_roster_unsettled: bool,
     bindings: BTreeMap<SurfaceId, NativeSurfaceBinding>,
+    binding_admissions: BTreeMap<ViewportBinding, ViewportAdmission>,
     retired_bindings: BTreeSet<ViewportBinding>,
     work_areas: BTreeMap<WorkAreaToken, NativeWorkAreaBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
@@ -629,6 +631,7 @@ impl RuntimeNativeState {
             snapshot_generation: 0,
             binding_roster_unsettled: false,
             bindings: BTreeMap::new(),
+            binding_admissions: BTreeMap::new(),
             retired_bindings: BTreeSet::new(),
             work_areas: BTreeMap::new(),
             close_generations: BTreeMap::new(),
@@ -887,7 +890,21 @@ impl RuntimeNativeState {
         Ok(())
     }
 
-    pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) {
+    pub(super) fn commit(
+        &mut self,
+        engine: &crate::engine::DockEngine,
+    ) -> Vec<NativeSurfaceBinding> {
+        let next_binding_admissions = engine
+            .viewport()
+            .registry()
+            .records()
+            .map(|(_, record)| (record.binding(), record.admission()))
+            .collect::<BTreeMap<_, _>>();
+        let native_admissions =
+            newly_admitted_bindings(&self.binding_admissions, &next_binding_admissions)
+                .into_iter()
+                .map(|binding| NativeSurfaceBinding::from_binding(self.provider(), binding))
+                .collect();
         let next_bindings: BTreeMap<SurfaceId, NativeSurfaceBinding> = engine
             .viewport()
             .registry()
@@ -905,6 +922,7 @@ impl RuntimeNativeState {
             }
         }
         self.bindings = next_bindings;
+        self.binding_admissions = next_binding_admissions;
         self.work_areas = engine
             .viewport()
             .work_areas()
@@ -925,5 +943,20 @@ impl RuntimeNativeState {
                 .is_some_and(|current| current.binding == *binding)
         });
         self.binding_roster_unsettled = false;
+        native_admissions
     }
+}
+
+fn newly_admitted_bindings(
+    previous: &BTreeMap<ViewportBinding, ViewportAdmission>,
+    current: &BTreeMap<ViewportBinding, ViewportAdmission>,
+) -> Vec<ViewportBinding> {
+    current
+        .iter()
+        .filter_map(|(binding, admission)| {
+            (previous.get(binding) == Some(&ViewportAdmission::Pending)
+                && *admission == ViewportAdmission::Admitted)
+                .then_some(*binding)
+        })
+        .collect()
 }

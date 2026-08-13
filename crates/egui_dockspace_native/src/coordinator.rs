@@ -420,6 +420,29 @@ impl NativeCoordinator {
         }
     }
 
+    pub(crate) fn settle_native_admissions(
+        &mut self,
+        admissions: &[NativeSurfaceBinding],
+    ) -> Result<bool, NativeRuntimeError> {
+        let mut changed = false;
+        for binding in admissions {
+            let viewport = self
+                .surface_viewport(binding.surface())
+                .ok_or(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    binding.surface(),
+                ))?;
+            if self.viewport_binding(viewport) != Some(*binding)
+                || !self.session.is_current_native_binding(*binding)
+            {
+                return Err(
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()).into(),
+                );
+            }
+            changed |= self.bridge.clear_hidden_render(viewport, *binding);
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn try_report_retirement_quiescence(
         &mut self,
     ) -> Result<bool, NativeRuntimeError> {

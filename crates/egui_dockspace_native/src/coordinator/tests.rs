@@ -253,6 +253,45 @@ fn viewport_reservation_requires_exact_window_attachment() {
 }
 
 #[test]
+fn native_admission_releases_the_exact_hidden_render_lease() {
+    let mut native = coordinator();
+    let (_, binding) = register_roots(&mut native);
+    let child = ViewportId::from_hash_of("first-live-hidden-render");
+
+    native
+        .reserve_viewport(child, binding)
+        .expect("the deferred viewport reserves its exact binding");
+    assert!(
+        native
+            .bridge
+            .reserve_create(child, binding, native_rect()),
+        "create retention installs the hidden-render lease"
+    );
+    assert!(
+        native
+            .native_host_handler()
+            .render_hidden_deferred_viewport(child)
+    );
+
+    assert!(
+        native
+            .settle_native_admissions(&[binding])
+            .expect("the exact admitted route settles")
+    );
+    assert!(
+        !native
+            .native_host_handler()
+            .render_hidden_deferred_viewport(child),
+        "first-live admission retires staging-only hidden rendering"
+    );
+    assert!(
+        !native
+            .settle_native_admissions(&[binding])
+            .expect("duplicate settlement is idempotent")
+    );
+}
+
+#[test]
 fn viewport_mapping_rejects_aliasing_without_mutation() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);

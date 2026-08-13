@@ -222,6 +222,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .as_mut()
             .expect("an error-free native runtime retains its coordinator");
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
+        let native_admission_settled =
+            coordinator.settle_native_admissions(report.native_admissions())?;
         if let Some(prepared_retirements) = prepared_retirements {
             coordinator.commit_retirements(prepared_retirements);
         }
@@ -298,6 +300,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if quiescence_recorded
             || reduced_callback
             || native_snapshot_applied
+            || native_admission_settled
             || post_action_repaint
             || native_effects_emitted
         {

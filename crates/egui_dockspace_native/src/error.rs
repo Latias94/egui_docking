@@ -89,6 +89,8 @@ pub(crate) enum NativeHostProtocolError {
     CleanupRelayConflict,
     #[error("the first native output callback could not attach its exact viewport route")]
     OutputRouteAttachmentFailed,
+    #[error("the admitted native surface {0} no longer owns its exact viewport route")]
+    NativeAdmissionRouteChanged(SurfaceId),
     #[error(
         "the retired native viewport route for surface {0} changed before its destruction frame committed"
     )]

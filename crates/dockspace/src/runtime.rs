@@ -796,9 +796,10 @@ impl DockspaceHostFrame<'_> {
                 "core commit must advance the exact runtime pointer producer watermark",
             );
         }
-        if let Some(native) = &mut session.native {
-            native.commit(&session.engine);
-        }
+        let native_admissions = session
+            .native
+            .as_mut()
+            .map_or_else(Vec::new, |native| native.commit(&session.engine));
         session
             .presentation
             .commit_observation(&transition, &submitted_presentation);
@@ -813,6 +814,7 @@ impl DockspaceHostFrame<'_> {
             &transition,
             painted_outputs,
             painted_native_staging_outputs,
+            native_admissions,
             native_provider,
             session.abandoned_native_effects.clone(),
         ))
@@ -1040,6 +1042,7 @@ pub struct HostFrameReport {
     inputs: Vec<HostInputOutcome>,
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
+    native_admissions: Vec<NativeSurfaceBinding>,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
 }
@@ -1049,6 +1052,7 @@ impl HostFrameReport {
         transition: &crate::transition::EngineTransition,
         painted_outputs: Vec<PaintedSurfaceOutput>,
         painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
+        native_admissions: Vec<NativeSurfaceBinding>,
         native_provider: Option<crate::platform_provider::PlatformObservationLease>,
         abandoned_native_effects: native_effect::NativeEffectDropQueue,
     ) -> Self {
@@ -1214,6 +1218,7 @@ impl HostFrameReport {
             inputs,
             painted_outputs,
             painted_native_staging_outputs,
+            native_admissions,
             native_effects,
             repaint_surfaces,
         }
@@ -1280,6 +1285,16 @@ impl HostFrameReport {
     /// consume it through [`DockspaceSession::report_native_staging_presentation`].
     pub fn take_painted_native_staging_outputs(&mut self) -> Vec<PaintedNativeStagingOutput> {
         std::mem::take(&mut self.painted_native_staging_outputs)
+    }
+
+    /// Returns native bindings which crossed the exact first-live admission barrier.
+    ///
+    /// The roster is emitted only for a `Pending` to `Admitted` transition of
+    /// the same native binding. Hosts may use it to retire staging-only
+    /// rendering state without inferring admission from workspace changes.
+    #[must_use]
+    pub fn native_admissions(&self) -> &[NativeSurfaceBinding] {
+        &self.native_admissions
     }
 
     /// Takes the exact provider-bound native effects emitted by this frame.

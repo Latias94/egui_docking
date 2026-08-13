@@ -89,7 +89,7 @@ impl DockspaceSession {
             .engine
             .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
         let mut native = RuntimeNativeState::new(recorder, profile);
-        native.commit(&self.engine);
+        let _ = native.commit(&self.engine);
         if let Some(checkpoint) = pointer_checkpoint {
             native.record_initial_pointer_authority(checkpoint);
         }
