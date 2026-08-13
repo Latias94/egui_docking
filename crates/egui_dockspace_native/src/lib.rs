@@ -19,6 +19,7 @@ mod mailbox;
 mod pass_actions;
 mod pointer_event;
 mod receiver;
+mod retirement;
 mod surface_driver;
 mod viewport_map;
 mod window_snapshot;

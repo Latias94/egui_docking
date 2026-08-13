@@ -21,10 +21,14 @@ impl NativePointerRouteSnapshot {
             PointerWindowRoute::Unknown => Self::Unknown,
             PointerWindowRoute::None => Self::None,
             PointerWindowRoute::Window(window) => viewports
-                .binding_for_window(window)
+                .pointer_binding_for_window(window)
                 .map_or(Self::Unknown, Self::Dock),
             PointerWindowRoute::Foreign => Self::Foreign,
         }
+    }
+
+    fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
+        matches!(self, Self::Dock(current) if current == binding)
     }
 }
 
@@ -59,6 +63,12 @@ impl NativePointerRoutes {
     pub(crate) const fn capture(self) -> NativePointerRouteSnapshot {
         self.capture
     }
+
+    pub(crate) fn references_binding(self, binding: NativeSurfaceBinding) -> bool {
+        self.delivery.references_binding(binding)
+            || self.hover.references_binding(binding)
+            || self.capture.references_binding(binding)
+    }
 }
 
 /// One immutable native event in the order observed by eframe.
@@ -79,9 +89,9 @@ pub struct NativeWindowEventRecord {
 impl NativeWindowEventRecord {
     pub(crate) fn from_eframe(
         event: eframe::NativeWindowEvent<'_>,
-        viewports: &NativeViewportMap,
+        viewports: &mut NativeViewportMap,
     ) -> Self {
-        Self::from_parts(
+        Self::from_ingress_parts(
             event.ordinal().get(),
             event.window_id(),
             event.viewport_id(),
@@ -121,6 +131,13 @@ impl NativeWindowEventRecord {
         self.pointer_routes
     }
 
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.binding == Some(binding)
+            || self
+                .pointer_routes
+                .is_some_and(|routes| routes.references_binding(binding))
+    }
+
     /// Returns the exact cloned winit event.
     #[must_use]
     pub const fn event(&self) -> &WindowEvent {
@@ -156,6 +173,33 @@ impl NativeWindowEventRecord {
         Self::from_parts(ordinal, window_id, viewport_id, event, viewports)
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test_ingress(
+        ordinal: u64,
+        window_id: WindowId,
+        viewport_id: Option<ViewportId>,
+        event: WindowEvent,
+        viewports: &mut NativeViewportMap,
+    ) -> Self {
+        Self::from_ingress_parts(ordinal, window_id, viewport_id, event, viewports)
+    }
+
+    fn from_ingress_parts(
+        ordinal: u64,
+        window_id: WindowId,
+        viewport_id: Option<ViewportId>,
+        event: WindowEvent,
+        viewports: &mut NativeViewportMap,
+    ) -> Self {
+        if matches!(event, WindowEvent::Destroyed)
+            && let Some((viewport, binding)) = viewports.route_for_event(window_id, viewport_id)
+        {
+            let suppressed = viewports.suppress_pointer_route(viewport, binding);
+            debug_assert!(suppressed, "destroyed callback retains one exact route");
+        }
+        Self::from_parts(ordinal, window_id, viewport_id, event, viewports)
+    }
+
     fn from_parts(
         ordinal: u64,
         window_id: WindowId,
@@ -163,13 +207,15 @@ impl NativeWindowEventRecord {
         event: WindowEvent,
         viewports: &NativeViewportMap,
     ) -> Self {
-        let binding = viewports.binding_for_event(window_id, viewport_id);
+        let (mapped_viewport, binding) = viewports.route_for_event(window_id, viewport_id).unzip();
+        let viewport_id = mapped_viewport.or(viewport_id);
         // A callback window which is not in our current map is not evidence of
         // a foreign receiver. It may be a newly-created viewport waiting for
         // enrollment, a retired window whose callback arrived late, or a
         // window owned by another host. Keep that distinction authoritative at
         // the platform route layer instead of guessing from `viewport_id`.
-        let delivery = binding.map_or(
+        let pointer_binding = viewports.pointer_binding_for_event(window_id, viewport_id);
+        let delivery = pointer_binding.map_or(
             NativePointerRouteSnapshot::Unknown,
             NativePointerRouteSnapshot::Dock,
         );

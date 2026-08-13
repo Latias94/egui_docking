@@ -5,6 +5,7 @@
 //! remembers which eframe viewport must be declared on the next root pass.
 
 use std::collections::BTreeMap;
+
 use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{NativeSurfaceBinding, NativeSurfaceRole};
 use eframe::egui::{self, ViewportBuilder, ViewportClass, ViewportId};

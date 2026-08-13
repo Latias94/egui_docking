@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceSession, HostWindowToken, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput, NativePointerRoster,
-    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster,
-    NativeUnsupportedReason, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseEffectAcknowledgement,
+    NativeCloseState, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
+    NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput,
+    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
+    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
     SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
@@ -34,10 +34,11 @@ use crate::host_frame::NativeHostFrame;
 use crate::mailbox::{HostRecord, OutputReservation};
 use crate::mailbox::{
     DeferredViewportPaint, NativeHostBridge, NativeViewportCreateFailureRecord,
-    NativeViewportRosterRecord,
+    NativeViewportRosterRecord, PreparedRouteRetirements,
 };
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
+use crate::retirement::{CommittedRetirement, NativeRetirementState};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -53,13 +54,19 @@ pub(crate) struct NativeCoordinator {
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
     pending_outputs: BTreeMap<NativeOutputToken, PendingNativeOutput>,
-    pending_destroyed: BTreeMap<SurfaceId, NativeSurfaceBinding>,
     pending_presentation_acknowledgements:
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
+    queued_snapshot_acknowledgements: Option<Vec<NativeSurfaceBinding>>,
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
+    retirements: NativeRetirementState,
     pointer_translator: NativePointerTranslator,
+}
+
+pub(crate) struct PreparedNativeRetirements {
+    committed: Vec<CommittedRetirement>,
+    routes: PreparedRouteRetirements,
 }
 
 enum PendingNativeOutput {
@@ -96,14 +103,21 @@ impl std::fmt::Debug for NativeCoordinator {
                     .unwrap_or_else(PoisonError::into_inner),
             )
             .field("pending_outputs", &self.pending_outputs.len())
-            .field("pending_destroyed", &self.pending_destroyed)
             .field(
                 "pending_presentation_acknowledgements",
                 &self.pending_presentation_acknowledgements.len(),
             )
+            .field(
+                "queued_snapshot_acknowledgements",
+                &self
+                    .queued_snapshot_acknowledgements
+                    .as_ref()
+                    .map_or(0, Vec::len),
+            )
             .field("deferred_viewports", &self.deferred_viewports)
             .field("receivers", &self.receivers)
             .field("effects", &self.effects)
+            .field("retirements", &self.retirements)
             .field("pointer_translator", &self.pointer_translator)
             .finish_non_exhaustive()
     }
@@ -127,11 +141,12 @@ impl NativeCoordinator {
             bridge: Arc::new(NativeHostBridge::new(viewports.clone())),
             viewports,
             pending_outputs: BTreeMap::new(),
-            pending_destroyed: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
+            queued_snapshot_acknowledgements: None,
             deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
+            retirements: NativeRetirementState::default(),
             pointer_translator: NativePointerTranslator::default(),
         })
     }
@@ -346,12 +361,155 @@ impl NativeCoordinator {
         self.surface_viewport(surface)
     }
 
+    pub(crate) fn prepare_committed_retirements(
+        &self,
+    ) -> Result<Option<PreparedNativeRetirements>, NativeRuntimeError> {
+        let committed = self.retirements.committed_routes();
+        if committed.is_empty() {
+            return Ok(None);
+        }
+        let routes = self
+            .bridge
+            .prepare_route_retirements(&committed)
+            .map_err(|binding| {
+                NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface())
+            })?;
+        Ok(Some(PreparedNativeRetirements { committed, routes }))
+    }
+
+    pub(crate) fn commit_retirements(&mut self, prepared: PreparedNativeRetirements) {
+        let PreparedNativeRetirements { committed, routes } = prepared;
+        let abandoned = routes.commit();
+        for retirement in &committed {
+            self.pending_presentation_acknowledgements
+                .remove(&retirement.binding());
+            self.receivers.retire_binding(retirement.binding());
+        }
+        for token in abandoned {
+            self.pending_outputs.remove(&token);
+            self.receivers.abandon(token);
+        }
+        self.retirements.commit_routes(&committed);
+    }
+
+    pub(crate) fn settle_host_frame_inputs(&mut self, inputs: &[HostInputOutcome]) -> bool {
+        let Some(acknowledgements) = self.queued_snapshot_acknowledgements.take() else {
+            return false;
+        };
+        let applied = inputs.iter().any(|input| {
+            matches!(input, HostInputOutcome::NativePlatformSnapshotApplied { .. })
+        });
+        let rejected = inputs.iter().any(|input| {
+            matches!(
+                input,
+                HostInputOutcome::NativePlatformSnapshotStale
+                    | HostInputOutcome::NativePlatformProviderRejected
+            )
+        });
+        debug_assert_ne!(applied, rejected, "one queued native snapshot has one outcome");
+        self.retirements.settle_snapshot(applied && !rejected);
+        if applied && !rejected {
+            for binding in acknowledgements {
+                self.pending_presentation_acknowledgements.remove(&binding);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn try_report_retirement_quiescence(
+        &mut self,
+    ) -> Result<bool, NativeRuntimeError> {
+        let candidates = self
+            .retirements
+            .quiescence_candidates()
+            .collect::<Vec<_>>();
+        let mut recorded = false;
+        for binding in candidates {
+            if self.bridge.references_binding(binding)
+                || self.receivers.references_binding(binding)
+                || self.deferred_viewports.viewport_for(binding).is_some()
+                || self.effects.references_binding(binding)
+                || self
+                    .pending_presentation_acknowledgements
+                    .contains_key(&binding)
+            {
+                continue;
+            }
+            self.session.report_native_binding_quiescence(binding)?;
+            let finished = self.retirements.finish_quiescence(binding);
+            debug_assert!(finished, "quiescence candidate remains pending");
+            recorded = true;
+        }
+        Ok(recorded)
+    }
+
+    fn exact_viewport_for_binding(
+        &self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<ViewportId> {
+        let viewports = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let viewport = viewports.viewport(binding.surface())?;
+        (viewports.binding(viewport) == Some(binding)).then_some(viewport)
+    }
+
+    fn fail_pending_viewport_effect(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeRuntimeError> {
+        let failure = NativeViewportCreateFailureRecord::new(viewport, binding);
+        if !self.effects.prepare_failure(failure) {
+            return Ok(());
+        }
+        if let Some(result) = self.effects.take_failure_result(failure)
+            && let Err(error) = self.session.report_native_effect_result(result)
+        {
+            let (kind, result) = error.into_parts();
+            self.effects
+                .restore_failure_result(failure, result)
+                .unwrap_or_else(|_| {
+                    panic!("destroyed native effect lost its retryable terminal result")
+                });
+            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+        }
+        if self.effects.failure_reported(failure) {
+            debug_assert!(self.effects.finish_failure(failure));
+        }
+        Ok(())
+    }
+
+    fn retire_deferred_sidecars(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) {
+        let suppressed = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .suppress_pointer_route(viewport, binding);
+        debug_assert!(suppressed, "retired sidecars retain one exact viewport route");
+        self.deferred_viewports.remove(binding);
+        self.receivers.retire_binding(binding);
+        for token in self.bridge.retire_deferred_binding(viewport, binding) {
+            self.pending_outputs.remove(&token);
+            self.receivers.abandon(token);
+        }
+    }
+
     /// Accepts the minimal platform effects implemented by this vertical slice.
     ///
     /// New child windows retain their affine create request until eframe reports
     /// the first exact callback or a typed create failure. `ShowWindow` is
-    /// accepted only for an existing exact retained viewport. Replacement and
-    /// all unrelated platform operations remain explicitly unsupported.
+    /// accepted only for an existing exact retained viewport. `ReleaseChild`
+    /// stops re-declaring the child but retains its route until an exact
+    /// destruction callback commits. Replacement and unrelated platform
+    /// operations remain explicitly unsupported.
     pub(crate) fn accept_native_effects(
         &mut self,
         requests: Vec<NativeEffectRequest>,
@@ -421,6 +579,42 @@ impl NativeCoordinator {
                     assert_eq!(shown, Some(viewport));
                     self.pending_presentation_acknowledgements
                         .insert(binding, acknowledgement);
+                }
+                NativeEffectOperation::ReleaseChild { binding }
+                | NativeEffectOperation::CompensatingClose { binding } => {
+                    let binding = *binding;
+                    let Some(viewport) = self.exact_viewport_for_binding(binding) else {
+                        if self.session.is_current_native_binding(binding) {
+                            self.submit_unsupported_effect(request)?;
+                            continue;
+                        }
+                        return Err(
+                            NativeHostProtocolError::RetiredViewportRouteChanged(
+                                binding.surface(),
+                            )
+                            .into(),
+                        );
+                    };
+                    if !self.session.recognizes_native_binding(binding)
+                        || !self.retirements.can_begin_release(viewport, binding)
+                    {
+                        self.submit_unsupported_effect(request)?;
+                        continue;
+                    }
+                    self.fail_pending_viewport_effect(viewport, binding)?;
+                    let Some(NativeEffectAcknowledgement::Close(acknowledgement)) =
+                        request.accepted()
+                    else {
+                        return Err(
+                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                .into(),
+                        );
+                    };
+                    self.retire_deferred_sidecars(viewport, binding);
+                    let inserted =
+                        self.retirements
+                            .begin_release(viewport, binding, acknowledgement);
+                    assert!(inserted, "preflighted native retirement must insert");
                 }
                 _ => {
                     self.submit_unsupported_effect(request)?;
@@ -796,9 +990,13 @@ impl NativeCoordinator {
                 self.publish_close(binding, NativeCloseState::Requested, None)?;
             }
             winit::event::WindowEvent::Destroyed => {
-                if self.session.is_current_native_binding(binding) {
-                    self.pending_destroyed.insert(binding.surface(), binding);
-                    self.receivers.retire_binding(binding);
+                if self.session.recognizes_native_binding(binding)
+                    && let Some(viewport) = record.viewport_id()
+                {
+                    self.fail_pending_viewport_effect(viewport, binding)?;
+                    if self.retirements.observe_destroyed(viewport, binding) {
+                        self.retire_deferred_sidecars(viewport, binding);
+                    }
                 }
             }
             _ => {}
@@ -829,12 +1027,13 @@ impl NativeCoordinator {
         &mut self,
         roster: &NativeViewportRosterRecord,
     ) -> Result<(), NativeRuntimeError> {
-        self.pending_destroyed
-            .retain(|_, binding| self.session.is_current_native_binding(*binding));
         if let Ok(mut observations) = self.compile_viewport_roster(roster) {
-            observations.extend(self.pending_destroyed.values().copied().map(|binding| {
-                CompiledWindowObservation::new(binding, NativeWindowFacts::destroyed())
-            }));
+            let destroyed = self
+                .retirements
+                .destroyed_observations()
+                .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts))
+                .collect::<Vec<_>>();
+            observations.extend(destroyed.iter().copied());
             let acknowledged_bindings = observations
                 .iter()
                 .filter(|observation| observation.presentation_acknowledged())
@@ -847,11 +1046,11 @@ impl NativeCoordinator {
                 NativeWorkAreaRoster::Unknown,
             ) {
                 Ok(()) => {
-                    for binding in acknowledged_bindings {
-                        self.pending_presentation_acknowledgements
-                            .remove(&binding);
+                    debug_assert!(self.queued_snapshot_acknowledgements.is_none());
+                    self.queued_snapshot_acknowledgements = Some(acknowledged_bindings);
+                    if !destroyed.is_empty() {
+                        self.retirements.mark_snapshot_queued();
                     }
-                    self.pending_destroyed.clear();
                     return Ok(());
                 }
                 Err(error)

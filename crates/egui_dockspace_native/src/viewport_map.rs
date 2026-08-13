@@ -1,12 +1,13 @@
 //! Minimal product mapping between native windows, eframe viewports, and core bindings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::NativeSurfaceBinding;
 use eframe::egui::ViewportId;
 use winit::window::WindowId;
 
+use crate::retirement::CommittedRetirement;
 use crate::NativeViewportBindingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,8 @@ pub(crate) struct NativeViewportMap {
     viewports: BTreeMap<ViewportId, NativeViewportRoute>,
     windows: BTreeMap<WindowId, ViewportId>,
     surfaces: BTreeMap<SurfaceId, ViewportId>,
+    pointer_suppressed: BTreeSet<NativeSurfaceBinding>,
+    prepared_retirements: BTreeSet<NativeSurfaceBinding>,
 }
 
 impl NativeViewportMap {
@@ -29,6 +32,7 @@ impl NativeViewportMap {
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         if let Some(existing) = self.viewports.get(&viewport).copied() {
+            self.validate_not_retiring(viewport, existing.binding)?;
             if existing.binding == binding {
                 return Ok(());
             }
@@ -51,6 +55,7 @@ impl NativeViewportMap {
         let Some(current) = self.viewports.get(&viewport).copied() else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
+        self.validate_not_retiring(viewport, current.binding)?;
         Self::validate_binding(viewport, expected, current)?;
         if let Some(existing) = current.window {
             if existing == window {
@@ -80,6 +85,7 @@ impl NativeViewportMap {
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeViewportBindingError> {
         if let Some(existing) = self.viewports.get(&viewport).copied() {
+            self.validate_not_retiring(viewport, existing.binding)?;
             if existing.window == Some(window) && existing.binding == binding {
                 return Ok(());
             }
@@ -134,6 +140,7 @@ impl NativeViewportMap {
         let Some(current) = self.viewports.get(&viewport).copied() else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
+        self.validate_not_retiring(viewport, current.binding)?;
         if current.binding != expected {
             return Err(NativeViewportBindingError::BindingMismatch {
                 viewport,
@@ -141,22 +148,90 @@ impl NativeViewportMap {
                 current: current.binding.surface(),
             });
         }
-        self.viewports.remove(&viewport);
-        if let Some(window) = current.window {
-            self.windows.remove(&window);
-        }
-        self.surfaces.remove(&current.binding.surface());
+        self.remove_route_unchecked(viewport, current);
         Ok(current.binding)
+    }
+
+    pub(crate) fn prepare_retirements(
+        &mut self,
+        retirements: &[CommittedRetirement],
+    ) -> Result<(), NativeSurfaceBinding> {
+        for retirement in retirements {
+            let viewport = retirement.viewport();
+            let binding = retirement.binding();
+            let Some(current) = self.viewports.get(&viewport).copied() else {
+                return Err(binding);
+            };
+            if Self::validate_binding(viewport, binding, current).is_err()
+                || self.prepared_retirements.contains(&binding)
+            {
+                return Err(binding);
+            }
+        }
+        self.prepared_retirements
+            .extend(retirements.iter().map(|retirement| retirement.binding()));
+        Ok(())
+    }
+
+    pub(crate) fn abort_retirements(&mut self, retirements: &[CommittedRetirement]) {
+        for retirement in retirements {
+            self.prepared_retirements.remove(&retirement.binding());
+        }
+    }
+
+    pub(crate) fn commit_retirements(&mut self, retirements: &[CommittedRetirement]) {
+        for retirement in retirements {
+            let viewport = retirement.viewport();
+            let binding = retirement.binding();
+            let current = self
+                .viewports
+                .get(&viewport)
+                .copied()
+                .expect("prepared retirement retains its exact viewport route");
+            debug_assert_eq!(current.binding, binding);
+            self.remove_route_unchecked(viewport, current);
+            self.pointer_suppressed.remove(&binding);
+            self.prepared_retirements.remove(&binding);
+        }
+    }
+
+    pub(crate) fn suppress_pointer_route(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(current) = self.viewports.get(&viewport).copied() else {
+            return false;
+        };
+        if current.binding != binding {
+            return false;
+        }
+        self.pointer_suppressed.insert(binding);
+        true
     }
 
     pub(crate) fn binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
         self.viewports.get(&viewport).map(|route| route.binding)
     }
 
-    pub(crate) fn binding_for_window(&self, window: WindowId) -> Option<NativeSurfaceBinding> {
-        self.windows
+    pub(crate) fn pointer_binding_for_window(
+        &self,
+        window: WindowId,
+    ) -> Option<NativeSurfaceBinding> {
+        let binding = self
+            .windows
             .get(&window)
-            .and_then(|viewport| self.binding(*viewport))
+            .and_then(|viewport| self.binding(*viewport))?;
+        (!self.pointer_suppressed.contains(&binding)).then_some(binding)
+    }
+
+    pub(crate) fn pointer_binding_for_event(
+        &self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+    ) -> Option<NativeSurfaceBinding> {
+        let (_, binding) = self.route_for_event(window, viewport)?;
+        (!self.pointer_suppressed.contains(&binding)).then_some(binding)
     }
 
     pub(crate) fn binding_for_event(
@@ -164,11 +239,21 @@ impl NativeViewportMap {
         window: WindowId,
         viewport: Option<ViewportId>,
     ) -> Option<NativeSurfaceBinding> {
+        self.route_for_event(window, viewport)
+            .map(|(_, binding)| binding)
+    }
+
+    pub(crate) fn route_for_event(
+        &self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+    ) -> Option<(ViewportId, NativeSurfaceBinding)> {
         let mapped_viewport = self.windows.get(&window).copied()?;
         if viewport.is_some_and(|viewport| viewport != mapped_viewport) {
             return None;
         }
         self.binding(mapped_viewport)
+            .map(|binding| (mapped_viewport, binding))
     }
 
     /// Returns the exact binding of a window already attached to a roster entry.
@@ -279,6 +364,7 @@ impl NativeViewportMap {
         let Some(current) = self.viewports.get(&viewport).copied() else {
             return Err(NativeViewportBindingError::ViewportUnbound { viewport });
         };
+        self.validate_not_retiring(viewport, current.binding)?;
         Self::validate_binding(viewport, expected, current)?;
         if successor.surface() != expected.surface() {
             return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
@@ -295,6 +381,22 @@ impl NativeViewportMap {
         Ok(current)
     }
 
+    fn validate_not_retiring(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        if self.pointer_suppressed.contains(&binding)
+            || self.prepared_retirements.contains(&binding)
+        {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: binding.surface(),
+            });
+        }
+        Ok(())
+    }
+
     fn insert(
         &mut self,
         viewport: ViewportId,
@@ -307,5 +409,14 @@ impl NativeViewportMap {
             self.windows.insert(window, viewport);
         }
         self.surfaces.insert(binding.surface(), viewport);
+    }
+
+    fn remove_route_unchecked(&mut self, viewport: ViewportId, route: NativeViewportRoute) {
+        let removed = self.viewports.remove(&viewport);
+        debug_assert_eq!(removed, Some(route));
+        if let Some(window) = route.window {
+            self.windows.remove(&window);
+        }
+        self.surfaces.remove(&route.binding.surface());
     }
 }

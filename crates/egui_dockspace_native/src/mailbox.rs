@@ -13,6 +13,7 @@ use eframe::{
 #[cfg(test)]
 use crate::error::NativeHostProtocolError;
 use crate::event::NativeWindowEventRecord;
+use crate::retirement::CommittedRetirement;
 use crate::viewport_map::NativeViewportMap;
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
@@ -238,8 +239,12 @@ impl OutputReservation {
         }
     }
 
-    fn abandon(&mut self) {
+    fn abandon(&mut self) -> bool {
+        if self.abandoned {
+            return false;
+        }
         self.abandoned = true;
+        true
     }
 }
 
@@ -507,6 +512,69 @@ impl HostRecords {
         self.output_order_invalid = false;
         self.event_boundary_pending = false;
     }
+
+    fn retire_deferred_binding(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Vec<NativeOutputToken> {
+        if self
+            .create_reservations
+            .get(&viewport)
+            .is_some_and(|reservation| reservation.binding == binding)
+        {
+            self.create_reservations.remove(&viewport);
+        }
+        if self.hidden_render_bindings.get(&viewport) == Some(&binding) {
+            self.hidden_render_bindings.remove(&viewport);
+        }
+        if self
+            .staging_requests
+            .get(&viewport)
+            .is_some_and(|request| request.binding() == binding)
+        {
+            self.staging_requests.remove(&viewport);
+        }
+        let mut abandoned = Vec::new();
+        for (token, reservation) in &mut self.output_reservations {
+            if reservation.binding() == Some(binding)
+                && !reservation.terminal_recorded
+                && reservation.abandon()
+            {
+                abandoned.push(*token);
+            }
+        }
+        abandoned
+    }
+
+    fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.journal.iter().any(|record| match record {
+            HostRecord::WindowEvent(event) => event.references_binding(binding),
+            HostRecord::ViewportRoster(roster) => roster
+                .observations()
+                .iter()
+                .any(|observation| observation.binding() == binding),
+            HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
+            HostRecord::ViewportCreated(created) => created.binding() == binding,
+            HostRecord::StagingPainted(staging) => staging.request().binding() == binding,
+            HostRecord::Output { .. } => false,
+        }) || self
+            .output_reservations
+            .values()
+            .any(|reservation| reservation.binding() == Some(binding))
+            || self
+                .create_reservations
+                .values()
+                .any(|reservation| reservation.binding == binding)
+            || self
+                .hidden_render_bindings
+                .values()
+                .any(|current| *current == binding)
+            || self
+                .staging_requests
+                .values()
+                .any(|request| request.binding() == binding)
+    }
 }
 
 const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
@@ -517,6 +585,41 @@ const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
 pub(crate) struct NativeHostBridge {
     records: Mutex<HostRecords>,
     viewports: Arc<Mutex<NativeViewportMap>>,
+}
+
+#[must_use = "prepared route retirements must be committed or dropped"]
+pub(crate) struct PreparedRouteRetirements {
+    bridge: Arc<NativeHostBridge>,
+    routes: Vec<CommittedRetirement>,
+    active: bool,
+}
+
+impl PreparedRouteRetirements {
+    pub(crate) fn commit(mut self) -> Vec<NativeOutputToken> {
+        let mut viewports = self.bridge.lock_viewports();
+        let mut records = self.bridge.lock();
+        let mut abandoned = Vec::new();
+        for retirement in &self.routes {
+            abandoned.extend(records.retire_deferred_binding(
+                retirement.viewport(),
+                retirement.binding(),
+            ));
+        }
+        viewports.commit_retirements(&self.routes);
+        self.active = false;
+        abandoned
+    }
+}
+
+impl Drop for PreparedRouteRetirements {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.bridge
+            .lock_viewports()
+            .abort_retirements(&self.routes);
+    }
 }
 
 impl NativeHostBridge {
@@ -785,6 +888,30 @@ impl NativeHostBridge {
         true
     }
 
+    pub(crate) fn retire_deferred_binding(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> Vec<NativeOutputToken> {
+        self.lock().retire_deferred_binding(viewport, binding)
+    }
+
+    pub(crate) fn prepare_route_retirements(
+        self: &Arc<Self>,
+        retirements: &[CommittedRetirement],
+    ) -> Result<PreparedRouteRetirements, NativeSurfaceBinding> {
+        self.lock_viewports().prepare_retirements(retirements)?;
+        Ok(PreparedRouteRetirements {
+            bridge: self.clone(),
+            routes: retirements.to_vec(),
+            active: true,
+        })
+    }
+
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.lock().references_binding(binding)
+    }
+
     fn hidden_render_enabled(&self, viewport: ViewportId) -> bool {
         self.lock().hidden_render_bindings.contains_key(&viewport)
     }
@@ -877,13 +1004,14 @@ impl NativeHostBridge {
         window: NativeWindowSnapshot,
         root_roster: Option<NativeViewportRoster<'_>>,
     ) -> bool {
-        let (binding, roster) = {
-            let viewports = self.lock_viewports();
-            (
-                viewports.binding_for_output(token.viewport_id(), token.window_id()),
-                root_roster.map(|roster| NativeViewportRosterRecord::capture(roster, &viewports)),
-            )
-        };
+        // Keep the route lock until the reservation is recorded. Retirement
+        // takes the same route-then-records lock order, so it cannot report
+        // quiescence between observing this callback and publishing its
+        // exact binding reference.
+        let viewports = self.lock_viewports();
+        let binding = viewports.binding_for_output(token.viewport_id(), token.window_id());
+        let roster =
+            root_roster.map(|roster| NativeViewportRosterRecord::capture(roster, &viewports));
         let mut records = self.lock();
         if !records.reserve_output(token, binding, window) {
             return false;
@@ -1026,7 +1154,11 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_window_event(&self, event: NativeWindowEvent<'_>) {
-        let record = NativeWindowEventRecord::from_eframe(event, &self.lock_viewports());
+        // Freeze the route and publish the event atomically with respect to
+        // route retirement. Otherwise retirement could report quiescence
+        // after route lookup but before this event became visible.
+        let mut viewports = self.lock_viewports();
+        let record = NativeWindowEventRecord::from_eframe(event, &mut viewports);
         let mut records = self.lock();
         if records.active {
             records.journal.push_back(HostRecord::WindowEvent(record));
@@ -1044,12 +1176,12 @@ impl NativeHostHandler for NativeHostBridge {
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
         match self.lock().record_output(result) {
-            OutputRecordDisposition::Recorded | OutputRecordDisposition::ProtocolViolation => {
+            OutputRecordDisposition::Recorded
+            | OutputRecordDisposition::Ignored
+            | OutputRecordDisposition::ProtocolViolation => {
                 NativeHostWake::RepaintRoot
             }
-            OutputRecordDisposition::Ignored | OutputRecordDisposition::Inactive => {
-                NativeHostWake::Wait
-            }
+            OutputRecordDisposition::Inactive => NativeHostWake::Wait,
         }
     }
 

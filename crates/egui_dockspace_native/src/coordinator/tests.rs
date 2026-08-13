@@ -8,6 +8,8 @@ use winit::event::WindowEvent;
 
 use super::*;
 
+mod retirement;
+
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
 

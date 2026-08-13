@@ -144,7 +144,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .as_mut()
             .expect("an error-free native runtime retains its coordinator");
+        let quiescence_recorded = surface == self.root_surface
+            && coordinator.try_report_retirement_quiescence()?;
         let reduced_callback = coordinator.reduce_callback_head()?;
+        let prepared_retirements = if surface == self.root_surface {
+            coordinator.prepare_committed_retirements()?
+        } else {
+            None
+        };
 
         let instance_id = self.instance_id.with(surface.get());
         let style = &self.style;
@@ -210,6 +217,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
 
         let mut report = host_frame.commit()?;
+        let coordinator = self
+            .coordinator
+            .as_mut()
+            .expect("an error-free native runtime retains its coordinator");
+        let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
+        if let Some(prepared_retirements) = prepared_retirements {
+            coordinator.commit_retirements(prepared_retirements);
+        }
         if surface == self.root_surface {
             self.bind_root_registration(token, report.inputs())?;
         }
@@ -280,7 +295,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 None => {}
             }
         }
-        if reduced_callback || post_action_repaint || native_effects_emitted {
+        if quiescence_recorded
+            || reduced_callback
+            || native_snapshot_applied
+            || post_action_repaint
+            || native_effects_emitted
+        {
             context.request_repaint_of(egui::ViewportId::ROOT);
         }
         Ok(())

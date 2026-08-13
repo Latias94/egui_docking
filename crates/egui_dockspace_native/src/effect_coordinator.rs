@@ -68,6 +68,12 @@ pub(crate) struct NativeEffectCoordinator {
 }
 
 impl NativeEffectCoordinator {
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_viewports
+            .values()
+            .any(|pending| pending.plan.binding == binding)
+    }
+
     pub(crate) fn plan(
         &self,
         viewport: ViewportId,

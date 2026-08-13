@@ -87,6 +87,10 @@ pub(crate) enum NativeHostProtocolError {
     UnexpectedViewportEffectAcknowledgement,
     #[error("the first native output callback could not attach its exact viewport route")]
     OutputRouteAttachmentFailed,
+    #[error(
+        "the retired native viewport route for surface {0} changed before its destruction frame committed"
+    )]
+    RetiredViewportRouteChanged(SurfaceId),
 }
 
 impl NativeRuntimeError {

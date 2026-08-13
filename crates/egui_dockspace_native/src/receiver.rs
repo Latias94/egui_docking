@@ -172,6 +172,16 @@ impl NativeReceiverStore {
         }
     }
 
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending
+            .values()
+            .any(|pending| pending.binding == binding)
+            || self
+                .presented
+                .get(&binding.surface())
+                .is_some_and(|presented| presented.binding == binding)
+    }
+
     pub(crate) fn resolve(
         &self,
         context: &egui::Context,
