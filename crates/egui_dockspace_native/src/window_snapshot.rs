@@ -41,6 +41,7 @@ struct SnapshotParts {
     inner_rect: Option<NativePhysicalRect>,
     outer_rect: Option<NativePhysicalRect>,
     native_scale_factor: f64,
+    presentation_scale_factor: f64,
     visible: Option<bool>,
     minimized: Option<bool>,
 }
@@ -50,7 +51,8 @@ impl From<NativeWindowSnapshot> for SnapshotParts {
         Self {
             inner_rect: snapshot.inner_rect(),
             outer_rect: snapshot.outer_rect(),
-            native_scale_factor: snapshot.scale_factor(),
+            native_scale_factor: snapshot.native_scale_factor(),
+            presentation_scale_factor: snapshot.presentation_scale_factor(),
             visible: snapshot.visible(),
             minimized: snapshot.minimized(),
         }
@@ -73,9 +75,13 @@ fn compile_window_facts(
     snapshot: SnapshotParts,
     acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<NativeWindowFacts, NativeHostProtocolError> {
-    let scale_factor = ScaleFactor::new(snapshot.native_scale_factor)
+    let native_scale_factor = ScaleFactor::new(snapshot.native_scale_factor)
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
-    let mut facts = NativeWindowFacts::live().with_native_scale_factor(scale_factor);
+    let presentation_scale_factor = ScaleFactor::new(snapshot.presentation_scale_factor)
+        .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
+    let mut facts = NativeWindowFacts::live()
+        .with_native_scale_factor(native_scale_factor)
+        .with_presentation_scale_factor(presentation_scale_factor);
     if let Some(rect) = snapshot.inner_rect {
         facts = facts.with_content_bounds(physical_rect(rect)?);
     }
@@ -169,6 +175,7 @@ mod tests {
             inner_rect: Some(NativePhysicalRect::new(10, 20, 800, 600)),
             outer_rect: Some(NativePhysicalRect::new(2, -10, 816, 638)),
             native_scale_factor: 2.0,
+            presentation_scale_factor: 2.5,
             visible: Some(true),
             minimized: Some(false),
         }
@@ -185,6 +192,7 @@ mod tests {
                 PhysicalRect::new(2.0, -10.0, 816.0, 638.0).expect("outer rect validates"),
             )
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
+            .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
             .with_presentation(NativeWindowPresentationState::Visible, None);
         let observation = CompiledWindowObservation::new(
             binding,
@@ -201,6 +209,7 @@ mod tests {
             inner_rect: None,
             outer_rect: None,
             native_scale_factor: 1.5,
+            presentation_scale_factor: 1.25,
             visible: None,
             minimized: None,
         }, None)
@@ -210,6 +219,9 @@ mod tests {
             facts,
             NativeWindowFacts::live()
                 .with_native_scale_factor(ScaleFactor::new(1.5).expect("scale validates"))
+                .with_presentation_scale_factor(
+                    ScaleFactor::new(1.25).expect("scale validates"),
+                )
         );
     }
 
@@ -226,6 +238,7 @@ mod tests {
                 PhysicalRect::new(2.0, -10.0, 816.0, 638.0).expect("outer rect validates"),
             )
             .with_native_scale_factor(ScaleFactor::new(2.0).expect("scale validates"))
+            .with_presentation_scale_factor(ScaleFactor::new(2.5).expect("scale validates"))
             .with_presentation(NativeWindowPresentationState::Minimized, None);
 
         assert_eq!(facts, expected);
@@ -236,6 +249,13 @@ mod tests {
         for scale in [0.0, f64::NAN, f64::INFINITY] {
             let mut snapshot = parts();
             snapshot.native_scale_factor = scale;
+            assert_eq!(
+                compile_window_facts(snapshot, None),
+                Err(NativeHostProtocolError::InvalidWindowSnapshot)
+            );
+
+            let mut snapshot = parts();
+            snapshot.presentation_scale_factor = scale;
             assert_eq!(
                 compile_window_facts(snapshot, None),
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
