@@ -60,6 +60,7 @@ pub(crate) struct NativeStagingPaintRecord {
 pub(crate) enum DeferredViewportPaint {
     Created,
     Staging(NativeStagingPaintRequest),
+    Semantic(NativeSurfaceBinding),
     Waiting,
 }
 
@@ -835,6 +836,21 @@ impl NativeHostBridge {
             };
         }
         let Some(request) = records.staging_requests.get(&token.viewport_id()).copied() else {
+            let input_pending = matches!(
+                records.journal.front(),
+                Some(
+                    HostRecord::WindowEvent(_)
+                        | HostRecord::ViewportRoster(_)
+                        | HostRecord::ViewportCreateFailed(_)
+                        | HostRecord::ViewportCreated(_)
+                        | HostRecord::StagingPainted(_)
+                )
+            );
+            if !input_pending
+                && let Some(binding) = reservation.binding()
+            {
+                return DeferredViewportPaint::Semantic(binding);
+            }
             records
                 .output_reservations
                 .get_mut(&token)

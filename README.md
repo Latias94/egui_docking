@@ -34,10 +34,13 @@ receiver authority only with the final presented pass. The slice still rejects
 replacement, close, focus, and pointer pass-through effects. It now retains an
 exact deferred child create request, renders the pre-show and post-show staging
 outputs while the native window is hidden, and applies the correlated show
-acknowledgement before core may transfer ownership. Rendering the admitted
-semantic child surface, cross-window scroll authority, and the real two-window
-smoke are still U7 work, so this lifecycle slice is not yet native multiview
-product support.
+acknowledgement before core may transfer ownership. Root and admitted child
+callbacks now render through one shared `DockspaceSession` and pane registry;
+the first semantic child output therefore uses the ordinary affine
+presentation result before core can complete first-live admission.
+Cross-window scroll authority, destructive child retirement, and the real
+two-window smoke are still U7 work, so this lifecycle slice is not yet native
+multiview product support.
 
 The ordinary crates.io `show_single_surface` convenience path now owns one
 renderer-neutral `DockspaceSession` and treats the current egui `Response` as

@@ -5,13 +5,11 @@
 //! remembers which eframe viewport must be declared on the next root pass.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{NativeSurfaceBinding, NativeSurfaceRole};
 use eframe::egui::{self, ViewportBuilder, ViewportClass, ViewportId};
 
-use crate::mailbox::{DeferredViewportPaint, NativeHostBridge};
+use crate::mailbox::DeferredViewportPaint;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DeferredViewportSpec {
@@ -133,13 +131,8 @@ impl DeferredViewportDriver {
         self.entries.values().copied()
     }
 
-    pub(crate) fn declare(&self, context: &egui::Context, bridge: &Arc<NativeHostBridge>) {
-        for spec in self.specs() {
-            let bridge = Arc::clone(bridge);
-            context.show_viewport_deferred(spec.viewport(), spec.builder(), move |ui, class| {
-                paint_placeholder(ui, class, &bridge);
-            });
-        }
+    pub(crate) fn retained_specs(&self) -> Vec<DeferredViewportSpec> {
+        self.specs().collect()
     }
 }
 
@@ -147,29 +140,39 @@ pub(crate) fn viewport_id_for(binding: NativeSurfaceBinding) -> ViewportId {
     ViewportId::from_hash_of(("dockspace-deferred-surface", binding))
 }
 
-fn paint_placeholder(ui: &mut egui::Ui, class: ViewportClass, bridge: &NativeHostBridge) {
+pub(crate) fn declare_deferred_viewports(
+    context: &egui::Context,
+    specs: impl IntoIterator<Item = DeferredViewportSpec>,
+    callback: impl Fn(DeferredViewportSpec, &mut egui::Ui, ViewportClass)
+    + Clone
+    + Send
+    + Sync
+    + 'static,
+) {
+    for spec in specs {
+        let callback = callback.clone();
+        context.show_viewport_deferred(spec.viewport(), spec.builder(), move |ui, class| {
+            callback(spec, ui, class);
+        });
+    }
+}
+
+pub(crate) fn paint_placeholder(
+    ui: &mut egui::Ui,
+    class: ViewportClass,
+    disposition: Option<DeferredViewportPaint>,
+) {
     ui.painter()
         .rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(24));
-    let token = eframe::current_native_output_token();
     if class != ViewportClass::Deferred {
-        if let Some(token) = token {
-            bridge.abandon_output(token);
-        }
         ui.centered_and_justified(|ui| {
             ui.label("Native dockspace viewports require an eframe multi-window backend");
         });
         return;
     }
-    let Some(token) = token else {
-        ui.centered_and_justified(|ui| {
-            ui.label("Waiting for native output authority…");
-        });
-        return;
-    };
-    let disposition = bridge.record_deferred_viewport_paint(token);
     let label = match disposition {
-        DeferredViewportPaint::Created => "Creating dockspace window…",
-        DeferredViewportPaint::Staging(request) => match request.phase() {
+        Some(DeferredViewportPaint::Created) => "Creating dockspace window…",
+        Some(DeferredViewportPaint::Staging(request)) => match request.phase() {
             dockspace::runtime::NativeStagingPresentationPhase::PreShow => {
                 "Preparing dockspace window…"
             }
@@ -177,12 +180,18 @@ fn paint_placeholder(ui: &mut egui::Ui, class: ViewportClass, bridge: &NativeHos
                 "Activating dockspace window…"
             }
         },
-        DeferredViewportPaint::Waiting => "Waiting for dockspace authority…",
+        Some(DeferredViewportPaint::Semantic(_)) => {
+            "Waiting for semantic dockspace rendering…"
+        }
+        Some(DeferredViewportPaint::Waiting) | None => "Waiting for dockspace authority…",
     };
     ui.centered_and_justified(|ui| {
         ui.label(label);
     });
-    if !matches!(disposition, DeferredViewportPaint::Waiting) {
+    if matches!(
+        disposition,
+        Some(DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_))
+    ) {
         ui.ctx().request_repaint_of(ViewportId::ROOT);
     }
 }

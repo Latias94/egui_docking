@@ -1,5 +1,7 @@
 //! Minimal egui multipass retention for affine product actions.
 
+use std::collections::BTreeMap;
+
 use dockspace::model::SurfaceId;
 use dockspace::runtime::PreparedSurfaceAction;
 use eframe::NativeOutputToken;
@@ -13,14 +15,13 @@ pub(crate) enum NativePassActionError {
 
 #[derive(Debug)]
 struct RetainedPassActions {
-    token: NativeOutputToken,
     surface: SurfaceId,
     local: Vec<PreparedSurfaceAction>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct NativePassActions {
-    retained: Option<RetainedPassActions>,
+    retained: BTreeMap<NativeOutputToken, RetainedPassActions>,
 }
 
 impl NativePassActions {
@@ -31,12 +32,11 @@ impl NativePassActions {
     ) -> Result<(), NativePassActionError> {
         let surface = paint.surface();
         let current = paint.take_local_actions();
-        let retained = self.retained.get_or_insert_with(|| RetainedPassActions {
-            token,
+        let retained = self.retained.entry(token).or_insert_with(|| RetainedPassActions {
             surface,
             local: Vec::new(),
         });
-        if retained.token != token || retained.surface != surface {
+        if retained.surface != surface {
             return Err(NativePassActionError::OutputChanged);
         }
         merge_local_actions(&mut retained.local, current)
@@ -49,8 +49,8 @@ impl NativePassActions {
     ) -> Result<NativeFinalPassActions, NativePassActionError> {
         let surface = paint.surface();
         let current = paint.take_local_actions();
-        let mut local = if let Some(retained) = self.retained.take() {
-            if retained.token != token || retained.surface != surface {
+        let mut local = if let Some(retained) = self.retained.remove(&token) {
+            if retained.surface != surface {
                 return Err(NativePassActionError::OutputChanged);
             }
             retained.local
@@ -65,13 +65,7 @@ impl NativePassActions {
     }
 
     pub(crate) fn abandon(&mut self, token: NativeOutputToken) {
-        if self
-            .retained
-            .as_ref()
-            .is_some_and(|retained| retained.token == token)
-        {
-            self.retained = None;
-        }
+        self.retained.remove(&token);
     }
 }
 
@@ -123,4 +117,5 @@ mod tests {
             Err(NativePassActionError::LocalActionConflict)
         );
     }
+
 }

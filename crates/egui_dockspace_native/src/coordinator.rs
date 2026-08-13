@@ -23,7 +23,9 @@ use winit::window::WindowId;
 use crate::effect_coordinator::{
     NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
 };
-use crate::deferred_viewport::{DeferredViewportDriver, viewport_id_for};
+use crate::deferred_viewport::{
+    DeferredViewportDriver, DeferredViewportSpec, viewport_id_for,
+};
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
@@ -31,7 +33,8 @@ use crate::host_frame::NativeHostFrame;
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
 use crate::mailbox::{
-    NativeHostBridge, NativeViewportCreateFailureRecord, NativeViewportRosterRecord,
+    DeferredViewportPaint, NativeHostBridge, NativeViewportCreateFailureRecord,
+    NativeViewportRosterRecord,
 };
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
@@ -310,9 +313,31 @@ impl NativeCoordinator {
             .viewport(surface)
     }
 
-    /// Re-declares every retained child viewport in the current egui root pass.
-    pub(crate) fn declare_deferred_viewports(&self, context: &eframe::egui::Context) {
-        self.deferred_viewports.declare(context, &self.bridge);
+    /// Returns every child viewport which the next root pass must re-declare.
+    pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
+        self.deferred_viewports.retained_specs()
+    }
+
+    /// Classifies one exact deferred callback without reducing core state.
+    pub(crate) fn deferred_viewport_paint(
+        &self,
+        token: NativeOutputToken,
+    ) -> DeferredViewportPaint {
+        let disposition = self.bridge.record_deferred_viewport_paint(token);
+        let DeferredViewportPaint::Semantic(binding) = disposition else {
+            return disposition;
+        };
+        let current = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .binding_for_output(token.viewport_id(), token.window_id());
+        if current == Some(binding) && self.session.is_current_native_binding(binding) {
+            disposition
+        } else {
+            self.bridge.abandon_output(token);
+            DeferredViewportPaint::Waiting
+        }
     }
 
     /// Returns the viewport which currently owns one logical surface.
