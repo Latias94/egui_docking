@@ -7,11 +7,55 @@ use thiserror::Error;
 use crate::engine::EngineInput;
 use crate::engine::{LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase};
 use crate::geometry::LogicalPoint;
-use crate::ids::{EngineAuthorityDomainId, SurfaceId};
+use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId};
 use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
-use crate::interaction::{ContainedTransformPaintAcknowledgement, PaintAcknowledgement};
+use crate::interaction::{
+    ContainedTransformPaintAcknowledgement, EscapeDelivery, PaintAcknowledgement,
+};
 use crate::model::WorkspaceVersion;
-use crate::scene::{SplitterResizeTarget, SurfaceSceneStamp, TabSceneId};
+use crate::scene::{SplitterResizeTarget, SplitterSceneId, SurfaceSceneStamp, TabSceneId};
+
+/// Product-facing navigation within one exact tab strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceTabNavigation {
+    /// Select the previous tab, wrapping to the last tab.
+    Previous,
+    /// Select the next tab, wrapping to the first tab.
+    Next,
+    /// Select the first tab.
+    First,
+    /// Select the last tab.
+    Last,
+}
+
+impl SurfaceTabNavigation {
+    pub(super) const fn into_core(self) -> crate::tab_strip::TabNavigation {
+        match self {
+            Self::Previous => crate::tab_strip::TabNavigation::Previous,
+            Self::Next => crate::tab_strip::TabNavigation::Next,
+            Self::First => crate::tab_strip::TabNavigation::First,
+            Self::Last => crate::tab_strip::TabNavigation::Last,
+        }
+    }
+}
+
+/// Product-facing signed adjustment of one exact splitter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceSplitterAdjustment {
+    /// Move the splitter toward the beginning of its axis.
+    Decrement,
+    /// Move the splitter toward the end of its axis.
+    Increment,
+}
+
+impl SurfaceSplitterAdjustment {
+    pub(super) const fn direction(self) -> f64 {
+        match self {
+            Self::Decrement => -1.0,
+            Self::Increment => 1.0,
+        }
+    }
+}
 
 /// One current-frame framework gesture expressed in surface-logical coordinates.
 ///
@@ -134,6 +178,38 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn adjust_splitter(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::AdjustSplitter {
+                scene,
+                splitter,
+                delta,
+            },
+        }
+    }
+
+    pub(super) const fn cancel_with_escape(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        surface: SurfaceId,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface,
+            action: SurfaceAction::CancelWithEscape,
+        }
+    }
+
     pub(super) const fn acknowledge_preview(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -172,6 +248,22 @@ impl PreparedSurfaceAction {
     #[must_use]
     pub const fn surface(&self) -> SurfaceId {
         self.surface
+    }
+
+    /// Returns the tab which should receive framework focus after this action.
+    #[must_use]
+    pub const fn tab_focus_target(&self) -> Option<ItemId> {
+        match self.action {
+            SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
+            SurfaceAction::Close { .. }
+            | SurfaceAction::AdjustSplitter { .. }
+            | SurfaceAction::CancelWithEscape
+            | SurfaceAction::LocalTabGesture { .. }
+            | SurfaceAction::LocalSplitterGesture { .. }
+            | SurfaceAction::LocalContainedGesture { .. }
+            | SurfaceAction::AcknowledgePreview { .. }
+            | SurfaceAction::AcknowledgeContainedTransformPreview { .. } => None,
+        }
     }
 
     pub(super) fn into_engine_input(
@@ -216,6 +308,20 @@ impl PreparedSurfaceAction {
                 floating,
                 kind,
                 phase,
+            },
+            SurfaceAction::AdjustSplitter {
+                scene,
+                splitter,
+                delta,
+            } => EngineInput::AdjustLocalSplitterResize {
+                expected: self.expected,
+                scene,
+                splitter,
+                delta,
+            },
+            SurfaceAction::CancelWithEscape => EngineInput::CancelActiveInteractionWithEscape {
+                expected: self.expected,
+                delivery: EscapeDelivery::Surface(self.surface),
             },
             SurfaceAction::AcknowledgePreview { acknowledgement } => {
                 EngineInput::AcknowledgePreview {
@@ -267,6 +373,12 @@ enum SurfaceAction {
         kind: ContainedGestureKind,
         phase: LocalContainedGesturePhase,
     },
+    AdjustSplitter {
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+    },
+    CancelWithEscape,
     AcknowledgePreview {
         acknowledgement: PaintAcknowledgement,
     },
@@ -283,6 +395,8 @@ impl SurfaceAction {
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",
             Self::LocalContainedGesture { .. } => "contained-gesture",
+            Self::AdjustSplitter { .. } => "adjust-splitter",
+            Self::CancelWithEscape => "cancel-with-escape",
             Self::AcknowledgePreview { .. } => "acknowledge-preview",
             Self::AcknowledgeContainedTransformPreview { .. } => {
                 "acknowledge-contained-transform-preview"

@@ -14,7 +14,7 @@ use dockspace::model::ItemId;
 use dockspace::runtime::{
     DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedSurfaceAction, SurfacePaintPlan,
 };
-use egui::{Id, Sense, Stroke, StrokeKind, Ui};
+use egui::{Id, Key, Modifiers, Sense, Stroke, StrokeKind, Ui};
 
 use crate::pane::PaneView;
 use crate::style::DockStyle;
@@ -186,6 +186,14 @@ pub(crate) fn paint_surface(
             && let Some(action) = context.plan.prepare_contained_transform_preview_painted()
         {
             context.push_presentation_action(action);
+        }
+        if context.pointer_authority.accepts_local_pointer_actions()
+            && let Some(action) = context.plan.prepare_escape_cancel()
+            && context
+                .ui
+                .input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            context.push_local_action(action);
         }
     }
     #[cfg(not(feature = "native-render-support"))]

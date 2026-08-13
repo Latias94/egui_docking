@@ -107,6 +107,41 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_splitter_adjustment_input(
+        &mut self,
+        input: InputSequence,
+        expected: WorkspaceVersion,
+        application_base: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        splitter: SplitterSceneId,
+        delta: f64,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+        let outcome = self.adjust_splitter_resize(
+            input,
+            scene,
+            splitter,
+            delta,
+            SplitterAdjustmentAuthority::LocalReady,
+            policy,
+            events,
+            interaction_events,
+        )?;
+        Ok(InputOutcome::InteractionProcessed {
+            outcome,
+            version: self.version,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_tab_gesture(
         &mut self,
         input: InputSequence,

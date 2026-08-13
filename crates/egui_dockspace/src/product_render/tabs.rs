@@ -1,10 +1,11 @@
 //! Pane and tab rendering over opaque product paint records.
 
 use dockspace::model::{ItemId, RootId};
-use dockspace::runtime::TabPaintRecord;
+use dockspace::runtime::{SurfaceTabNavigation, TabPaintRecord};
 use egui::accesskit::{Action, Role};
 use egui::{
-    Align, CursorIcon, Id, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2,
+    Align, CursorIcon, EventFilter, Id, Key, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui,
+    UiBuilder, pos2,
 };
 
 use crate::style::DockStyle;
@@ -160,9 +161,7 @@ fn paint_tab(
     let Some(drag) = egui_rect(tab.drag_bounds()) else {
         return;
     };
-    let id = context
-        .ui
-        .make_persistent_id((context.instance_id, "tab", tab.visual_id()));
+    let id = tab_id(context.ui, context.instance_id, tab);
     let response = context.interact_receiver(
         drag,
         id,
@@ -170,6 +169,7 @@ fn paint_tab(
         context.plan.receiver_for_tab_body(tab),
     );
     let selected = tab.selected();
+    let focused = response.has_focus();
     let fill = if selected {
         context.style.tab_active_fill
     } else if response.hovered() {
@@ -178,7 +178,7 @@ fn paint_tab(
         context.style.tab_fill
     };
     context.ui.painter().rect_filled(visible, 0.0, fill);
-    if response.has_focus() {
+    if focused {
         context.ui.painter().rect_stroke(
             visible.shrink(1.0),
             0.0,
@@ -199,7 +199,11 @@ fn paint_tab(
         );
     }
     configure_tab_accessibility(context.ui, id, visible, resource.title.as_str(), selected);
-    capture_tab_actions(context, tab, resource, &response);
+    capture_tab_actions(context, tab, resource, &response, focused);
+}
+
+fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
+    ui.make_persistent_id((instance_id, "tab", tab.visual_id()))
 }
 
 fn capture_tab_actions(
@@ -207,9 +211,10 @@ fn capture_tab_actions(
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
     response: &egui::Response,
+    focused: bool,
 ) {
     let id = response.id;
-    let keyboard_activation = response.has_focus()
+    let keyboard_activation = focused
         && context.ui.input(|input| {
             input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
         });
@@ -224,6 +229,45 @@ fn capture_tab_actions(
         if !tab.selected()
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
         {
+            context.push_local_action(action);
+        }
+    }
+    if focused {
+        context.ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                id,
+                EventFilter {
+                    horizontal_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+        let navigation = context.ui.input_mut(|input| {
+            if input.consume_key(egui::Modifiers::NONE, Key::ArrowLeft) {
+                Some(SurfaceTabNavigation::Previous)
+            } else if input.consume_key(egui::Modifiers::NONE, Key::ArrowRight) {
+                Some(SurfaceTabNavigation::Next)
+            } else if input.consume_key(egui::Modifiers::NONE, Key::Home) {
+                Some(SurfaceTabNavigation::First)
+            } else if input.consume_key(egui::Modifiers::NONE, Key::End) {
+                Some(SurfaceTabNavigation::Last)
+            } else {
+                None
+            }
+        });
+        if let Some(action) = navigation
+            .and_then(|navigation| context.plan.prepare_tab_navigation(tab.item(), navigation))
+        {
+            context
+                .ui
+                .memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+            if let Some(target) = action.tab_focus_target()
+                && let Some(target_tab) = context.plan.tabs().find(|tab| tab.item() == target)
+            {
+                context.ui.memory_mut(|memory| {
+                    memory.request_focus(tab_id(context.ui, context.instance_id, target_tab))
+                });
+            }
             context.push_local_action(action);
         }
     }
@@ -283,12 +327,17 @@ fn paint_close(
         node.set_label(format!("Close {title}"));
         node.add_action(Action::Click);
     });
-    let accesskit = context
+    let accesskit_click = context
         .ui
         .input(|input| input.has_accesskit_action_request(id, Action::Click));
+    let keyboard_activation = response.has_focus()
+        && context.ui.input_mut(|input| {
+            input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                || input.consume_key(egui::Modifiers::NONE, Key::Space)
+        });
     let pointer_activation = context.pointer_authority.accepts_local_pointer_actions()
         && response.clicked_by(PointerButton::Primary);
-    if (pointer_activation || accesskit)
+    if (pointer_activation || accesskit_click || keyboard_activation)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
         context.push_local_action(action);

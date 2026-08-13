@@ -825,6 +825,8 @@ impl DockspaceHostFrame<'_> {
             output: candidate.output_ticket(),
             plan: candidate.plan(),
             hit_manifest: candidate.hit_manifest(),
+            splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
+            escape_available: view.interaction().local_response_gesture_surface() == Some(surface),
             drop_affordance,
             drag_preview: view.presentation_drag_preview(surface),
             contained_transform_preview: view.presentation_contained_transform_preview(surface),

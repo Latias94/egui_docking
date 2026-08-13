@@ -521,6 +521,17 @@ pub enum EngineInput {
         /// Signed displacement along the split axis in logical surface units.
         delta: f64,
     },
+    /// Apply one splitter adjustment captured from an exact current-frame framework response.
+    AdjustLocalSplitterResize {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable structural splitter identity exposed by that candidate.
+        splitter: SplitterSceneId,
+        /// Signed displacement along the split axis in logical surface units.
+        delta: f64,
+    },
     /// Drive one local-response splitter or junction gesture through the core resize FSM.
     LocalSplitterGesture {
         /// Workspace version current when the framework response was captured.
@@ -709,6 +720,7 @@ impl EngineInput {
             | Self::SelectLocalSceneTab { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
+            | Self::AdjustLocalSplitterResize { .. }
             | Self::LocalSplitterGesture { .. }
             | Self::LocalTabGesture { .. }
             | Self::LocalContainedGesture { .. }

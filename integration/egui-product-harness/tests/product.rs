@@ -3,8 +3,8 @@ use dockspace::model::{
     DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
     DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
 };
-use egui::accesskit::Role;
-use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
+use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{CloseDecision, DockspaceCloseRequest};
 use egui_dockspace::{Dockspace, PaneView};
 
@@ -135,21 +135,30 @@ fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
 }
 
 fn node_rect(output: &egui::FullOutput, role: Role, label: &str) -> Rect {
+    let (_, node) = accesskit_node(output, role, label);
+    let bounds = node.bounds().expect("the control exposes bounds");
+    Rect::from_min_max(
+        Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
+        Pos2::new(bounds.x1 as f32, bounds.y1 as f32),
+    )
+}
+
+fn accesskit_node<'a>(
+    output: &'a egui::FullOutput,
+    role: Role,
+    label: &str,
+) -> (egui::accesskit::NodeId, &'a egui::accesskit::Node) {
     let tree = output
         .platform_output
         .accesskit_update
         .as_ref()
         .expect("AccessKit is enabled");
-    let node = tree
-        .nodes
+    tree.nodes
         .iter()
-        .find_map(|(_, node)| (node.role() == role && node.label() == Some(label)).then_some(node))
-        .expect("the requested tab is present");
-    let bounds = node.bounds().expect("the tab exposes bounds");
-    Rect::from_min_max(
-        Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
-        Pos2::new(bounds.x1 as f32, bounds.y1 as f32),
-    )
+        .find_map(|(id, node)| {
+            (node.role() == role && node.label() == Some(label)).then_some((*id, node))
+        })
+        .expect("the requested accessibility node is present")
 }
 
 fn tab_center(output: &egui::FullOutput, label: &str) -> Pos2 {
@@ -239,6 +248,28 @@ fn pointer_button(pos: Pos2, pressed: bool) -> Event {
         pressed,
         modifiers: Modifiers::NONE,
     }
+}
+
+fn key_press(key: Key) -> Vec<Event> {
+    [true, false]
+        .into_iter()
+        .map(|pressed| Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        })
+        .collect()
+}
+
+fn accesskit_action(target_node: egui::accesskit::NodeId, action: Action) -> Event {
+    Event::AccessKitActionRequest(ActionRequest {
+        action,
+        target_tree: TreeId::ROOT,
+        target_node,
+        data: None,
+    })
 }
 
 fn guide_button_count(
@@ -356,6 +387,46 @@ fn default_features_click_selects_a_tab() {
         ],
     );
 
+    assert_eq!(selected(&dockspace), Some(SECOND));
+}
+
+#[test]
+fn default_features_keyboard_navigation_keeps_tab_focus_with_selection() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-keyboard-navigation", layout())
+        .build()
+        .expect("the product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let first = tab_center(&stable.output, "First");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(first),
+            pointer_button(first, true),
+            pointer_button(first, false),
+        ],
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::ArrowRight),
+    );
+    assert_eq!(selected(&dockspace), Some(SECOND));
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Home));
+    assert_eq!(selected(&dockspace), Some(FIRST));
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::End));
     assert_eq!(selected(&dockspace), Some(SECOND));
 }
 
@@ -658,6 +729,107 @@ fn default_features_splitter_tracks_pointer_before_release() {
         root_weights(&dockspace),
         Some(initial_weights),
         "release commits the transient splitter proposal",
+    );
+}
+
+#[test]
+fn default_features_splitter_supports_accesskit_and_keyboard_adjustment() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-splitter-semantics", split_layout())
+        .build()
+        .expect("the product splitter facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (splitter, node) = accesskit_node(&stable.output, Role::Splitter, "Resize panes");
+    assert!(node.supports_action(Action::Focus));
+    assert!(node.supports_action(Action::Increment));
+    assert!(node.supports_action(Action::Decrement));
+    let initial = root_weights(&dockspace).expect("the fixture root remains split");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(splitter, Action::Increment)],
+    );
+    let increased = root_weights(&dockspace).expect("the fixture root remains split");
+    assert!(increased[0] > initial[0]);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(splitter, Action::Focus)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::ArrowLeft),
+    );
+    let decreased = root_weights(&dockspace).expect("the fixture root remains split");
+    assert!(decreased[0] < increased[0]);
+}
+
+#[test]
+fn default_features_escape_cancels_one_active_drag_and_clears_preview() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-escape", split_layout())
+        .build()
+        .expect("the product drag facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let target = Pos2::new(400.0, 40.0);
+    let passive = dockspace.style().drop_guide_fill;
+    let active = dockspace.style().drop_guide_active_fill;
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    for _ in 0..3 {
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+    }
+    let preview = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target)],
+    );
+    assert!(guide_button_count(&preview.output, passive, active) >= 4);
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Escape));
+    let cancelled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(guide_button_count(&cancelled.output, passive, active), 0);
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Horizontal, vec![vec![FIRST], vec![SECOND]],)),
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Horizontal, vec![vec![FIRST], vec![SECOND]],)),
     );
 }
 

@@ -5,7 +5,45 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::ids::{ItemId, SurfaceId};
-use crate::scene::TabBarSceneId;
+use crate::scene::{PresentationPlan, TabBarSceneId, TabSceneId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TabNavigation {
+    Previous,
+    Next,
+    First,
+    Last,
+}
+
+pub(crate) fn tab_navigation_destination(
+    plan: &PresentationPlan,
+    current: TabSceneId,
+    selected: Option<ItemId>,
+    navigation: TabNavigation,
+) -> Option<TabSceneId> {
+    let bar = plan
+        .tab_bar_records()
+        .iter()
+        .find(|bar| bar.id().root == current.root && bar.id().tabs == current.tabs)?;
+    let members = bar.members();
+    if members.is_empty() {
+        return None;
+    }
+    let current_index = selected
+        .and_then(|selected| {
+            members
+                .iter()
+                .position(|member| member.tab().item == selected)
+        })
+        .or_else(|| members.iter().position(|member| member.tab() == current))?;
+    let destination = match navigation {
+        TabNavigation::Previous => current_index.checked_sub(1).unwrap_or(members.len() - 1),
+        TabNavigation::Next => (current_index + 1) % members.len(),
+        TabNavigation::First => 0,
+        TabNavigation::Last => members.len() - 1,
+    };
+    Some(members[destination].tab())
+}
 
 /// Stable identity of one transient tab-strip state slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1570,6 +1570,12 @@ enum WorkspacePublicationAuthority {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SplitterAdjustmentAuthority {
+    PresentedCoordinates,
+    LocalReady,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedCloseOperation {
     Content(PreparedContentClose),
@@ -3466,6 +3472,7 @@ impl DockEngine {
                 scene,
                 splitter,
                 delta,
+                SplitterAdjustmentAuthority::PresentedCoordinates,
                 policy,
                 events,
                 interaction_events,
@@ -4159,29 +4166,35 @@ impl DockEngine {
         scene: SurfaceSceneStamp,
         splitter: SplitterSceneId,
         delta: f64,
+        authority: SplitterAdjustmentAuthority,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
         let surface = scene.surface();
-        let painted = self
-            .presentation_authority
-            .scene
-            .ready_surface(surface)
-            .filter(|painted| {
-                painted.stamp() == scene
-                    && scene.requirement().workspace_epoch() == self.version.epoch()
-            })
-            .ok_or(InteractionRejection::StaleScene);
+        let painted = match authority {
+            SplitterAdjustmentAuthority::PresentedCoordinates => self
+                .presentation_authority
+                .scene
+                .ready_surface(surface)
+                .filter(|painted| {
+                    painted.stamp() == scene
+                        && scene.requirement().workspace_epoch() == self.version.epoch()
+                })
+                .ok_or(InteractionRejection::StaleScene),
+            SplitterAdjustmentAuthority::LocalReady => self.local_response_candidate(scene),
+        };
         let painted = match painted {
             Ok(painted) => painted,
             Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
-        if !Self::coordinate_capture_matches_current(
-            painted.coordinate_capture(),
-            self.viewport.viewport(surface),
-            self.viewport.surface_coordinate_authority(surface),
-        ) {
+        if authority == SplitterAdjustmentAuthority::PresentedCoordinates
+            && !Self::coordinate_capture_matches_current(
+                painted.coordinate_capture(),
+                self.viewport.viewport(surface),
+                self.viewport.surface_coordinate_authority(surface),
+            )
+        {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::SplitterGestureCoordinateAuthorityUnavailable { surface },
             ));

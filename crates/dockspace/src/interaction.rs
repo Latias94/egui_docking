@@ -747,10 +747,7 @@ impl<'state> ActiveResizeView<'state> {
     /// Returns the local-response owner surface when no pointer provider owns the gesture.
     #[must_use]
     pub const fn local_response_surface(self) -> Option<SurfaceId> {
-        match self.owner {
-            GestureOwner::Stream(_) => None,
-            GestureOwner::LocalResponse { surface } => Some(surface),
-        }
+        self.owner.local_response_surface()
     }
 
     /// Returns the latest validated atomic transient updates.
@@ -790,10 +787,7 @@ impl<'state> ActiveDragView<'state> {
     /// provider owns this drag.
     #[must_use]
     pub const fn local_response_surface(self) -> Option<SurfaceId> {
-        match self.owner {
-            GestureOwner::Stream(_) => None,
-            GestureOwner::LocalResponse { surface } => Some(surface),
-        }
+        self.owner.local_response_surface()
     }
 
     /// Returns the pointer button which armed the drag.
@@ -1864,6 +1858,13 @@ pub(crate) enum GestureOwner {
 }
 
 impl GestureOwner {
+    pub(crate) const fn local_response_surface(self) -> Option<SurfaceId> {
+        match self {
+            Self::Stream(_) => None,
+            Self::LocalResponse { surface } => Some(surface),
+        }
+    }
+
     pub(crate) const fn pointer(self) -> PointerId {
         match self {
             Self::Stream(stream) => stream.pointer(),
@@ -2270,6 +2271,13 @@ pub struct InteractionState {
 }
 
 impl InteractionState {
+    pub(crate) const fn local_response_gesture_surface(&self) -> Option<SurfaceId> {
+        match self.active_owner() {
+            Some(owner) => owner.local_response_surface(),
+            None => None,
+        }
+    }
+
     /// Returns the current public gesture state.
     #[must_use]
     pub const fn status(&self) -> InteractionStatus {

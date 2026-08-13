@@ -615,6 +615,8 @@ pub struct SurfacePaintPlan<'frame> {
     pub(super) output: SurfacePresentationOutputTicket,
     pub(super) plan: &'frame PresentationPlan,
     pub(super) hit_manifest: &'frame crate::presentation_hit::PresentationHitManifest,
+    pub(super) splitter_keyboard_step: f64,
+    pub(super) escape_available: bool,
     pub(super) drop_affordance: Option<&'frame DropAffordance>,
     pub(super) drag_preview: Option<&'frame InteractionPreview>,
     pub(super) contained_transform_preview: Option<&'frame ContainedTransformPreview>,

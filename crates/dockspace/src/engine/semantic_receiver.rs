@@ -58,17 +58,27 @@ impl DockEngine {
         let action = event.action();
 
         match (target, action) {
-            (
-                PresentationHitRegionKind::TabBody(tab),
-                SemanticReceiverAction::Key(
-                    SemanticKey::ArrowLeft
-                    | SemanticKey::ArrowRight
-                    | SemanticKey::Home
-                    | SemanticKey::End,
-                ),
-            ) => {
-                let destination =
-                    match self.semantic_tab_destination(projection.plan(), tab, action) {
+            (PresentationHitRegionKind::TabBody(tab), SemanticReceiverAction::Key(key)) => {
+                let navigation = match key {
+                    SemanticKey::ArrowLeft => Some(crate::tab_strip::TabNavigation::Previous),
+                    SemanticKey::ArrowRight => Some(crate::tab_strip::TabNavigation::Next),
+                    SemanticKey::Home => Some(crate::tab_strip::TabNavigation::First),
+                    SemanticKey::End => Some(crate::tab_strip::TabNavigation::Last),
+                    SemanticKey::ArrowUp
+                    | SemanticKey::ArrowDown
+                    | SemanticKey::Enter
+                    | SemanticKey::Space => None,
+                };
+                if let Some(navigation) = navigation {
+                    let destination = match crate::tab_strip::tab_navigation_destination(
+                        projection.plan(),
+                        tab,
+                        match self.workspace.node(tab.tabs) {
+                            Some(crate::graph::Node::Tabs { selected, .. }) => *selected,
+                            _ => None,
+                        },
+                        navigation,
+                    ) {
                         Some(destination) => destination,
                         None => {
                             return Ok(self.semantic_rejection(
@@ -76,20 +86,37 @@ impl DockEngine {
                             ));
                         }
                     };
-                self.reduce_semantic_tab_selection(
-                    input,
-                    expected,
-                    application_base,
-                    destination,
-                    policy,
-                    events,
-                    interaction_events,
-                )
+                    self.reduce_semantic_tab_selection(
+                        input,
+                        expected,
+                        application_base,
+                        destination,
+                        policy,
+                        events,
+                        interaction_events,
+                    )
+                } else if matches!(key, SemanticKey::Enter | SemanticKey::Space) {
+                    self.reduce_semantic_tab_selection(
+                        input,
+                        expected,
+                        application_base,
+                        tab,
+                        policy,
+                        events,
+                        interaction_events,
+                    )
+                } else {
+                    Ok(
+                        self.semantic_rejection(InteractionRejection::SemanticActionUnsupported {
+                            target,
+                            action,
+                        }),
+                    )
+                }
             }
             (
                 PresentationHitRegionKind::TabBody(tab),
-                SemanticReceiverAction::Key(SemanticKey::Enter | SemanticKey::Space)
-                | SemanticReceiverAction::Accessibility(
+                SemanticReceiverAction::Accessibility(
                     SemanticAccessibilityAction::Click | SemanticAccessibilityAction::Focus,
                 ),
             ) => self.reduce_semantic_tab_selection(
@@ -383,42 +410,6 @@ impl DockEngine {
             });
         }
         Ok(projection)
-    }
-
-    fn semantic_tab_destination(
-        &self,
-        plan: &crate::scene::PresentationPlan,
-        current: crate::scene::TabSceneId,
-        action: SemanticReceiverAction,
-    ) -> Option<crate::scene::TabSceneId> {
-        let bar = plan
-            .tab_bar_records()
-            .iter()
-            .find(|bar| bar.id().root == current.root && bar.id().tabs == current.tabs)?;
-        let members = bar.members();
-        let selected = match self.workspace.node(current.tabs) {
-            Some(crate::graph::Node::Tabs { selected, .. }) => *selected,
-            _ => None,
-        };
-        let current_index = selected
-            .and_then(|selected| {
-                members
-                    .iter()
-                    .position(|member| member.tab().item == selected)
-            })
-            .or_else(|| members.iter().position(|member| member.tab() == current))?;
-        let destination = match action {
-            SemanticReceiverAction::Key(SemanticKey::ArrowLeft) => {
-                current_index.checked_sub(1).unwrap_or(members.len() - 1)
-            }
-            SemanticReceiverAction::Key(SemanticKey::ArrowRight) => {
-                (current_index + 1) % members.len()
-            }
-            SemanticReceiverAction::Key(SemanticKey::Home) => 0,
-            SemanticReceiverAction::Key(SemanticKey::End) => members.len() - 1,
-            _ => return None,
-        };
-        Some(members[destination].tab())
     }
 
     pub(super) fn prepare_semantic_tab_strip_control(

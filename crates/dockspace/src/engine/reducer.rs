@@ -1432,6 +1432,22 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::AdjustLocalSplitterResize {
+                expected,
+                scene,
+                splitter,
+                delta,
+            } => self.reduce_local_splitter_adjustment_input(
+                input.sequence,
+                *expected,
+                *application_base,
+                *scene,
+                *splitter,
+                *delta,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::LocalSplitterGesture {
                 expected,
                 surface,

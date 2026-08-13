@@ -5,7 +5,9 @@ use crate::scene::{
     ContainedResizeDirection as CoreContainedResizeDirection, SplitterResizeTarget,
 };
 
-use super::super::{PreparedSurfaceAction, SurfaceGesturePhase};
+use super::super::{
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment, SurfaceTabNavigation,
+};
 use super::{DockspaceVisualId, SurfacePaintPlan, VisualIdentity};
 
 /// Product-facing direction of one contained-floating resize handle.
@@ -58,6 +60,80 @@ impl ContainedResizeDirection {
 }
 
 impl SurfacePaintPlan<'_> {
+    /// Prepares navigation within the exact tab strip which owns `item`.
+    #[must_use]
+    pub fn prepare_tab_navigation(
+        self,
+        item: ItemId,
+        navigation: SurfaceTabNavigation,
+    ) -> Option<PreparedSurfaceAction> {
+        let current = self
+            .plan
+            .tab_records()
+            .iter()
+            .find(|record| record.id().item == item)?;
+        let selected = self
+            .plan
+            .tab_records()
+            .iter()
+            .find(|record| {
+                record.selected()
+                    && record.id().root == current.id().root
+                    && record.id().tabs == current.id().tabs
+            })
+            .map(|record| record.id().item);
+        let destination = crate::tab_strip::tab_navigation_destination(
+            self.plan,
+            *current.id(),
+            selected,
+            navigation.into_core(),
+        )?;
+        (destination != *current.id()).then(|| {
+            PreparedSurfaceAction::select_tab(
+                self.authority_domain,
+                self.version,
+                self.scene,
+                destination,
+            )
+        })
+    }
+
+    /// Prepares one keyboard or accessibility adjustment for an exact splitter.
+    #[must_use]
+    pub fn prepare_splitter_adjustment(
+        self,
+        splitter: DockspaceVisualId,
+        adjustment: SurfaceSplitterAdjustment,
+    ) -> Option<PreparedSurfaceAction> {
+        let VisualIdentity::Splitter(id) = splitter.0 else {
+            return None;
+        };
+        self.plan
+            .splitter_record(id)
+            .is_some_and(crate::scene::SplitterRecord::operable)
+            .then(|| {
+                PreparedSurfaceAction::adjust_splitter(
+                    self.authority_domain,
+                    self.version,
+                    self.scene,
+                    id,
+                    self.splitter_keyboard_step * adjustment.direction(),
+                )
+            })
+    }
+
+    /// Prepares Escape cancellation only for this surface's active local gesture.
+    #[must_use]
+    pub fn prepare_escape_cancel(self) -> Option<PreparedSurfaceAction> {
+        self.escape_available.then(|| {
+            PreparedSurfaceAction::cancel_with_escape(
+                self.authority_domain,
+                self.version,
+                self.surface,
+            )
+        })
+    }
+
     /// Prepares an exact acknowledgement after the renderer painted this plan's
     /// current docking preview.
     #[must_use]

@@ -6,7 +6,8 @@ use crate::model::{
 use crate::policy::DockPolicy;
 use crate::runtime::{
     DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostInputOutcome,
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceUnavailableReason, UniformSurfaceMetrics,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment,
+    SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -285,4 +286,33 @@ fn opaque_splitter_actions_drive_the_core_resize_session() {
     release_frame.commit().expect("splitter release commits");
 
     assert_ne!(split_weights(&session), before);
+}
+
+#[test]
+fn exact_surface_splitter_adjustment_uses_the_local_ready_candidate() {
+    let mut session = split_session();
+    install_ready_candidate(&mut session);
+    let before = split_weights(&session);
+
+    let mut frame = session.begin_host_frame().expect("adjustment frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("split candidate is paintable");
+    let splitter = plan
+        .splitters()
+        .next()
+        .expect("the equal split has one splitter");
+    let action = plan
+        .prepare_splitter_adjustment(splitter.visual_id(), SurfaceSplitterAdjustment::Increment)
+        .expect("the operable splitter prepares an adjustment");
+    frame
+        .submit_surface_action(action)
+        .expect("the same-frame local response is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("the adjusted surface measures");
+    frame.commit().expect("the adjustment frame commits");
+
+    assert!(split_weights(&session)[0] > before[0]);
 }

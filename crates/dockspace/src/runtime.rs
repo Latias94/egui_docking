@@ -28,7 +28,9 @@ pub use interaction::{
     SurfaceScrollSequenceId,
 };
 use local_action::PreparedSurfaceActionAuthorityMismatch;
-pub use local_action::{PreparedSurfaceAction, SurfaceGesturePhase};
+pub use local_action::{
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment, SurfaceTabNavigation,
+};
 pub use measurement::{
     MeasurementValueError, SurfaceMeasurementAnswer, SurfaceMeasurementRequest, TabListMenuMetrics,
     TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
