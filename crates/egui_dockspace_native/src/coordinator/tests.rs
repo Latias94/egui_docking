@@ -374,17 +374,23 @@ fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
         .unwrap_or_else(PoisonError::into_inner)
         .reserve_replacement(child, failed_binding, successor)
         .expect("successor replaces the failed route");
-    assert!(native.bridge.clear_create(child, failed_binding));
     assert!(
-        native
+        !native
             .bridge
-            .reserve_create(child, successor, native_rect())
+            .reserve_create(child, successor, native_rect()),
+        "the predecessor hidden-render lease prevents an overlapping incarnation"
     );
 
     native
         .acknowledge_viewport_create_failure(failure)
         .expect("stale failure is acknowledged without touching the successor");
 
+    assert!(
+        native
+            .bridge
+            .reserve_create(child, successor, native_rect()),
+        "the successor may start only after the predecessor callback is retired"
+    );
     assert_eq!(native.bridge.create_binding(child), Some(successor));
     assert_eq!(native.viewport_binding(child), Some(successor));
 }

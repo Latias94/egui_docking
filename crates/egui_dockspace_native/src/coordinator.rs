@@ -7,10 +7,12 @@ use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
     DockspaceSession, HostWindowToken, NativeCloseEffectAcknowledgement, NativeCloseState,
-    NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput,
-    NativePointerRoster, NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding,
-    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedSurfaceOutput,
-    SurfacePresentationResult,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
+    NativeEffectSubmissionError, NativeHostErrorKind, NativePointerInput, NativePointerRoster,
+    NativePresentationEffectAcknowledgement, NativeReceiverAnswer, NativeReceiverQuery,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster,
+    NativeUnsupportedReason, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
@@ -21,6 +23,7 @@ use winit::window::WindowId;
 use crate::effect_coordinator::{
     NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
 };
+use crate::deferred_viewport::{DeferredViewportDriver, viewport_id_for};
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
@@ -46,11 +49,35 @@ pub(crate) struct NativeCoordinator {
     session: DockspaceSession,
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
-    pending_outputs: BTreeMap<NativeOutputToken, PaintedSurfaceOutput>,
+    pending_outputs: BTreeMap<NativeOutputToken, PendingNativeOutput>,
     pending_destroyed: BTreeMap<SurfaceId, NativeSurfaceBinding>,
+    pending_presentation_acknowledgements:
+        BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
+    deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
     pointer_translator: NativePointerTranslator,
+}
+
+enum PendingNativeOutput {
+    Surface(PaintedSurfaceOutput),
+    Staging(PaintedNativeStagingOutput),
+}
+
+impl std::fmt::Debug for PendingNativeOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Surface(output) => formatter
+                .debug_tuple("Surface")
+                .field(&output.surface())
+                .finish(),
+            Self::Staging(output) => formatter
+                .debug_tuple("Staging")
+                .field(&output.surface())
+                .field(&output.phase())
+                .finish(),
+        }
+    }
 }
 
 impl std::fmt::Debug for NativeCoordinator {
@@ -67,6 +94,11 @@ impl std::fmt::Debug for NativeCoordinator {
             )
             .field("pending_outputs", &self.pending_outputs.len())
             .field("pending_destroyed", &self.pending_destroyed)
+            .field(
+                "pending_presentation_acknowledgements",
+                &self.pending_presentation_acknowledgements.len(),
+            )
+            .field("deferred_viewports", &self.deferred_viewports)
             .field("receivers", &self.receivers)
             .field("effects", &self.effects)
             .field("pointer_translator", &self.pointer_translator)
@@ -93,6 +125,8 @@ impl NativeCoordinator {
             viewports,
             pending_outputs: BTreeMap::new(),
             pending_destroyed: BTreeMap::new(),
+            pending_presentation_acknowledgements: BTreeMap::new(),
+            deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
             pointer_translator: NativePointerTranslator::default(),
@@ -276,6 +310,114 @@ impl NativeCoordinator {
             .viewport(surface)
     }
 
+    /// Re-declares every retained child viewport in the current egui root pass.
+    pub(crate) fn declare_deferred_viewports(&self, context: &eframe::egui::Context) {
+        self.deferred_viewports.declare(context, &self.bridge);
+    }
+
+    /// Returns the viewport which currently owns one logical surface.
+    #[must_use]
+    pub(crate) fn repaint_viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
+        self.surface_viewport(surface)
+    }
+
+    /// Accepts the minimal platform effects implemented by this vertical slice.
+    ///
+    /// New child windows retain their affine create request until eframe reports
+    /// the first exact callback or a typed create failure. `ShowWindow` is
+    /// accepted only for an existing exact retained viewport. Replacement and
+    /// all unrelated platform operations remain explicitly unsupported.
+    pub(crate) fn accept_native_effects(
+        &mut self,
+        requests: Vec<NativeEffectRequest>,
+    ) -> Result<(), NativeRuntimeError> {
+        for request in requests {
+            match request.operation() {
+                NativeEffectOperation::CreateWindow {
+                    binding,
+                    placement,
+                    role,
+                } => {
+                    let binding = *binding;
+                    let placement = *placement;
+                    let role = *role;
+                    let viewport = viewport_id_for(binding);
+                    if !self
+                        .deferred_viewports
+                        .can_insert(viewport, binding, placement, role)
+                    {
+                        self.submit_unsupported_effect(request)?;
+                        continue;
+                    }
+                    let plan = match self.retain_viewport_effect(viewport, request) {
+                        Ok(plan) => plan,
+                        Err(request) => {
+                            self.submit_unsupported_effect(request)?;
+                            continue;
+                        }
+                    };
+                    debug_assert_eq!(plan.binding(), binding);
+                    debug_assert_eq!(plan.placement(), placement);
+                    debug_assert_eq!(plan.role(), role);
+                    debug_assert_eq!(plan.kind(), NativeViewportEffectKind::Create);
+                    let inserted = self
+                        .deferred_viewports
+                        .insert(viewport, binding, placement, role);
+                    assert!(inserted, "preflighted deferred viewport must insert");
+                }
+                NativeEffectOperation::ShowWindow { binding } => {
+                    let binding = *binding;
+                    let Some(viewport) = self.deferred_viewports.viewport_for(binding) else {
+                        self.submit_unsupported_effect(request)?;
+                        continue;
+                    };
+                    let current = self
+                        .viewports
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .binding(viewport);
+                    if current != Some(binding)
+                        || self
+                            .pending_presentation_acknowledgements
+                            .contains_key(&binding)
+                    {
+                        self.submit_unsupported_effect(request)?;
+                        continue;
+                    }
+                    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
+                        request.accepted()
+                    else {
+                        return Err(
+                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                .into(),
+                        );
+                    };
+                    let shown = self.deferred_viewports.set_visible(binding);
+                    assert_eq!(shown, Some(viewport));
+                    self.pending_presentation_acknowledgements
+                        .insert(binding, acknowledgement);
+                }
+                _ => {
+                    self.submit_unsupported_effect(request)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn submit_unsupported_effect(
+        &mut self,
+        request: NativeEffectRequest,
+    ) -> Result<(), NativeRuntimeError> {
+        let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            let (kind, result) = error.into_parts();
+            drop(result);
+            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+        }
+        Ok(())
+    }
+
     /// Retains one core-emitted deferred viewport effect until eframe reports
     /// an exact success or failure callback.
     ///
@@ -448,6 +590,9 @@ impl NativeCoordinator {
         }
         self.bridge
             .clear_create(failure.viewport(), failure.binding());
+        self.bridge
+            .clear_hidden_render(failure.viewport(), failure.binding());
+        self.deferred_viewports.remove(failure.binding());
         let mut viewports = self
             .viewports
             .lock()
@@ -508,6 +653,12 @@ impl NativeCoordinator {
         if self.reduce_next_viewport_create_failure()? {
             return Ok(true);
         }
+        if self.reduce_next_viewport_created()? {
+            return Ok(true);
+        }
+        if self.reduce_next_staging_painted()? {
+            return Ok(true);
+        }
         let Some(record) = self.next_window_event()? else {
             return Ok(false);
         };
@@ -519,6 +670,92 @@ impl NativeCoordinator {
         }
         self.acknowledge_window_event(record.ordinal())?;
         self.pointer_translator = candidate;
+        Ok(true)
+    }
+
+    fn reduce_next_viewport_created(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(created) = self.bridge.front_viewport_created() else {
+            return Ok(false);
+        };
+        if self
+            .pending_presentation_acknowledgements
+            .contains_key(&created.binding())
+        {
+            return Err(
+                NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into(),
+            );
+        }
+        let attach = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .attach(
+                created.token().viewport_id(),
+                created.binding(),
+                created.token().window_id(),
+            );
+        if attach.is_err() {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        let request = self
+            .effects
+            .take_for_output(created.token().viewport_id(), created.binding())
+            .ok_or(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement)?;
+        let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) = request.accepted()
+        else {
+            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
+        };
+        self.pending_presentation_acknowledgements
+            .insert(created.binding(), acknowledgement);
+        if !self.bridge.acknowledge_viewport_created(created) {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        assert!(
+            self.bridge
+                .clear_create(created.token().viewport_id(), created.binding())
+        );
+        Ok(true)
+    }
+
+    fn reduce_next_staging_painted(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(staging) = self.bridge.front_staging_painted() else {
+            return Ok(false);
+        };
+        if self.pending_outputs.contains_key(&staging.token()) {
+            return Err(NativeHostProtocolError::OutputAwaitingAttachment.into());
+        }
+        let mut frame = self.session.begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?;
+        frame.confirm_native_staging_painted(staging.request())?;
+        frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+        let mut report = frame.commit()?;
+        let mut outputs = report.take_painted_native_staging_outputs();
+        if outputs.len() != 1 {
+            let actual = outputs.len();
+            drop(outputs);
+            return Err(NativeHostProtocolError::PaintedStagingOutputCountMismatch {
+                expected: 1,
+                actual,
+            }
+            .into());
+        }
+        let output = outputs.pop().expect("one staging output was checked");
+        if output.binding() != staging.request().binding()
+            || !self
+                .bridge
+                .attach_output_binding(staging.token(), output.binding())
+        {
+            drop(output);
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        self.pending_outputs
+            .insert(staging.token(), PendingNativeOutput::Staging(output));
+        if !self.bridge.acknowledge_staging_painted(staging) {
+            return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+        }
+        self.accept_native_effects(report.take_native_effects())?;
+        self.bridge.commit_frame_boundary();
         Ok(true)
     }
 
@@ -569,10 +806,15 @@ impl NativeCoordinator {
     ) -> Result<(), NativeRuntimeError> {
         self.pending_destroyed
             .retain(|_, binding| self.session.is_current_native_binding(*binding));
-        if let Ok(mut observations) = Self::compile_viewport_roster(roster) {
+        if let Ok(mut observations) = self.compile_viewport_roster(roster) {
             observations.extend(self.pending_destroyed.values().copied().map(|binding| {
                 CompiledWindowObservation::new(binding, NativeWindowFacts::destroyed())
             }));
+            let acknowledged_bindings = observations
+                .iter()
+                .filter(|observation| observation.presentation_acknowledged())
+                .map(|observation| observation.binding())
+                .collect::<Vec<_>>();
             match self.session.report_managed_native_snapshot(
                 observations
                     .iter()
@@ -580,6 +822,10 @@ impl NativeCoordinator {
                 NativeWorkAreaRoster::Unknown,
             ) {
                 Ok(()) => {
+                    for binding in acknowledged_bindings {
+                        self.pending_presentation_acknowledgements
+                            .remove(&binding);
+                    }
                     self.pending_destroyed.clear();
                     return Ok(());
                 }
@@ -600,6 +846,7 @@ impl NativeCoordinator {
     }
 
     fn compile_viewport_roster(
+        &self,
         roster: &NativeViewportRosterRecord,
     ) -> Result<Vec<CompiledWindowObservation>, NativeHostProtocolError> {
         #[cfg(test)]
@@ -612,7 +859,13 @@ impl NativeCoordinator {
             .iter()
             .copied()
             .map(|observation| {
-                compile_window_observation(observation.binding(), observation.snapshot())
+                compile_window_observation(
+                    observation.binding(),
+                    observation.snapshot(),
+                    self.pending_presentation_acknowledgements
+                        .get(&observation.binding())
+                        .copied(),
+                )
             })
             .collect()
     }
@@ -742,6 +995,7 @@ impl NativeCoordinator {
         Ok(NativeHostFrame::new(
             self.session.begin_native_host_frame(resolve)?,
             self.bridge.clone(),
+            self.viewports.clone(),
         ))
     }
 
@@ -759,7 +1013,7 @@ impl NativeCoordinator {
         let frame = self
             .session
             .begin_native_host_frame(|query| receivers.resolve(context, query))?;
-        Ok(NativeHostFrame::new(frame, bridge))
+        Ok(NativeHostFrame::new(frame, bridge, self.viewports.clone()))
     }
 
     /// Binds one affine painted output and its final-pass receiver roster to the
@@ -835,32 +1089,8 @@ impl NativeCoordinator {
                 output,
             ));
         }
-        if self.effects.pending_binding(token.viewport_id()) == Some(binding) {
-            let attach = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .attach(token.viewport_id(), binding, token.window_id());
-            if attach.is_err() {
-                self.receivers.abandon(token);
-                return Err(NativeOutputBindingError::new(
-                    NativeOutputBindingErrorKind::BindingMismatch,
-                    token,
-                    output,
-                ));
-            }
-            let request = self
-                .effects
-                .take_for_output(token.viewport_id(), binding)
-                .expect("matching pending viewport effect remains present");
-            let acknowledgement = request.accepted();
-            debug_assert!(
-                acknowledgement.is_none(),
-                "native create effects settle through ordinary lifecycle facts"
-            );
-            debug_assert!(self.bridge.clear_create(token.viewport_id(), binding));
-        }
-        self.pending_outputs.insert(token, output);
+        self.pending_outputs
+            .insert(token, PendingNativeOutput::Surface(output));
         Ok(())
     }
 
@@ -904,21 +1134,36 @@ impl NativeCoordinator {
                 NativeOutputStatus::Presented => SurfacePresentationResult::Presented,
                 NativeOutputStatus::NotPresented => SurfacePresentationResult::Dropped,
             };
-            if let Err(error) = self
-                .session
-                .report_surface_presentation(output, presentation)
-            {
-                let abandoned = self.bridge.abandon_output(result.token());
-                debug_assert!(abandoned, "failed presentation was not submitted");
-                self.receivers.abandon(result.token());
-                return Err(error.into());
-            }
-            match (result.status(), binding) {
-                (NativeOutputStatus::Presented, Some(binding)) => {
-                    self.receivers.presented(result.token(), binding);
+            match output {
+                PendingNativeOutput::Surface(output) => {
+                    if let Err(error) = self
+                        .session
+                        .report_surface_presentation(output, presentation)
+                    {
+                        let abandoned = self.bridge.abandon_output(result.token());
+                        debug_assert!(abandoned, "failed presentation was not submitted");
+                        self.receivers.abandon(result.token());
+                        return Err(error.into());
+                    }
+                    match (result.status(), binding) {
+                        (NativeOutputStatus::Presented, Some(binding)) => {
+                            self.receivers.presented(result.token(), binding);
+                        }
+                        (NativeOutputStatus::Presented, None)
+                        | (NativeOutputStatus::NotPresented, _) => {
+                            self.receivers.dropped(result.token());
+                        }
+                    }
                 }
-                (NativeOutputStatus::Presented, None) | (NativeOutputStatus::NotPresented, _) => {
-                    self.receivers.dropped(result.token());
+                PendingNativeOutput::Staging(output) => {
+                    if let Err(error) = self
+                        .session
+                        .report_native_staging_presentation(output, presentation)
+                    {
+                        let abandoned = self.bridge.abandon_output(result.token());
+                        debug_assert!(abandoned, "failed staging presentation was not submitted");
+                        return Err(error.into());
+                    }
                 }
             }
             debug_assert!(self.bridge.mark_output_submitted(result.token()));

@@ -2,8 +2,8 @@
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceRuntimeError, NativeHostErrorKind, PaintedSurfaceOutput,
-    SurfacePresentationReportError,
+    DockspaceRuntimeError, NativeHostErrorKind, NativeStagingPresentationReportError,
+    PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePresentationReportError,
 };
 use eframe::{NativeOutputToken, egui::ViewportId};
 use egui_dockspace::DockspaceError;
@@ -34,6 +34,7 @@ pub struct NativeRuntimeError {
 enum NativeRuntimeErrorSource {
     Dockspace(Box<DockspaceRuntimeError>),
     Presentation(Box<SurfacePresentationReportError>),
+    StagingPresentation(Box<NativeStagingPresentationReportError>),
     HostProtocol(NativeHostProtocolError),
     Adapter(Box<DockspaceError>),
 }
@@ -68,6 +69,8 @@ pub(crate) enum NativeHostProtocolError {
     MultipassLocalActionConflict,
     #[error("a native surface frame emitted {actual} painted outputs; expected {expected}")]
     PaintedOutputCountMismatch { expected: usize, actual: usize },
+    #[error("a native staging frame emitted {actual} painted outputs; expected {expected}")]
+    PaintedStagingOutputCountMismatch { expected: usize, actual: usize },
     #[error("the final egui pass could not bind its affine painted output: {0:?}")]
     OutputBindingFailed(NativeOutputBindingErrorKind),
     #[error("native surface {0} did not paint every transient visual required by its core plan")]
@@ -76,6 +79,14 @@ pub(crate) enum NativeHostProtocolError {
     OutputOrderViolation,
     #[error("a native window snapshot contains invalid physical geometry or scale")]
     InvalidWindowSnapshot,
+    #[error("a native presentation acknowledgement has no exact presentation state")]
+    PresentationAcknowledgementWithoutState,
+    #[error("a native viewport effect already has an unobserved presentation acknowledgement")]
+    PresentationAcknowledgementAlreadyPending,
+    #[error("a deferred viewport effect returned the wrong acknowledgement category")]
+    UnexpectedViewportEffectAcknowledgement,
+    #[error("the first native output callback could not attach its exact viewport route")]
+    OutputRouteAttachmentFailed,
 }
 
 impl NativeRuntimeError {
@@ -84,7 +95,10 @@ impl NativeRuntimeError {
     pub const fn kind(&self) -> NativeRuntimeErrorKind {
         match self.source {
             NativeRuntimeErrorSource::Dockspace(_) => NativeRuntimeErrorKind::Dockspace,
-            NativeRuntimeErrorSource::Presentation(_) => NativeRuntimeErrorKind::Presentation,
+            NativeRuntimeErrorSource::Presentation(_)
+            | NativeRuntimeErrorSource::StagingPresentation(_) => {
+                NativeRuntimeErrorKind::Presentation
+            }
             NativeRuntimeErrorSource::HostProtocol(_) => NativeRuntimeErrorKind::HostProtocol,
             NativeRuntimeErrorSource::Adapter(_) => NativeRuntimeErrorKind::Adapter,
         }
@@ -99,6 +113,19 @@ impl NativeRuntimeError {
     pub fn into_painted_output(self) -> Result<PaintedSurfaceOutput, Self> {
         match self.source {
             NativeRuntimeErrorSource::Presentation(source) => Ok(source.into_output()),
+            source => Err(Self { source }),
+        }
+    }
+
+    /// Recovers the affine staging output from a presentation failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged error when it did not originate from native
+    /// staging presentation settlement.
+    pub fn into_painted_staging_output(self) -> Result<PaintedNativeStagingOutput, Self> {
+        match self.source {
+            NativeRuntimeErrorSource::StagingPresentation(source) => Ok(source.into_output()),
             source => Err(Self { source }),
         }
     }
@@ -129,6 +156,7 @@ impl std::error::Error for NativeRuntimeError {
         Some(match &self.source {
             NativeRuntimeErrorSource::Dockspace(source) => source.as_ref(),
             NativeRuntimeErrorSource::Presentation(source) => source.as_ref(),
+            NativeRuntimeErrorSource::StagingPresentation(source) => source.as_ref(),
             NativeRuntimeErrorSource::HostProtocol(source) => source,
             NativeRuntimeErrorSource::Adapter(source) => source.as_ref(),
         })
@@ -147,6 +175,14 @@ impl From<SurfacePresentationReportError> for NativeRuntimeError {
     fn from(source: SurfacePresentationReportError) -> Self {
         Self {
             source: NativeRuntimeErrorSource::Presentation(Box::new(source)),
+        }
+    }
+}
+
+impl From<NativeStagingPresentationReportError> for NativeRuntimeError {
+    fn from(source: NativeStagingPresentationReportError) -> Self {
+        Self {
+            source: NativeRuntimeErrorSource::StagingPresentation(Box::new(source)),
         }
     }
 }

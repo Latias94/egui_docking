@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use dockspace::runtime::NativeSurfaceBinding;
+use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
     NativeViewportCreateFailure, NativeViewportRoster, NativeWindowEvent, NativeWindowSnapshot,
@@ -22,10 +22,59 @@ pub(crate) enum HostRecord {
     WindowEvent(NativeWindowEventRecord),
     ViewportRoster(NativeViewportRosterRecord),
     ViewportCreateFailed(NativeViewportCreateFailureRecord),
+    ViewportCreated(NativeViewportCreatedRecord),
+    StagingPainted(NativeStagingPaintRecord),
     Output {
         result: NativeOutputResult,
         submitted: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeViewportCreatedRecord {
+    token: NativeOutputToken,
+    binding: NativeSurfaceBinding,
+}
+
+impl NativeViewportCreatedRecord {
+    const fn new(token: NativeOutputToken, binding: NativeSurfaceBinding) -> Self {
+        Self { token, binding }
+    }
+
+    pub(crate) const fn token(self) -> NativeOutputToken {
+        self.token
+    }
+
+    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
+        self.binding
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeStagingPaintRecord {
+    token: NativeOutputToken,
+    request: NativeStagingPaintRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeferredViewportPaint {
+    Created,
+    Staging(NativeStagingPaintRequest),
+    Waiting,
+}
+
+impl NativeStagingPaintRecord {
+    const fn new(token: NativeOutputToken, request: NativeStagingPaintRequest) -> Self {
+        Self { token, request }
+    }
+
+    pub(crate) const fn token(self) -> NativeOutputToken {
+        self.token
+    }
+
+    pub(crate) const fn request(self) -> NativeStagingPaintRequest {
+        self.request
+    }
 }
 
 /// Frozen dockspace observations captured from one complete root-window roster.
@@ -298,6 +347,8 @@ struct HostRecords {
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
     create_reservations: BTreeMap<ViewportId, NativeCreateReservation>,
+    hidden_render_bindings: BTreeMap<ViewportId, NativeSurfaceBinding>,
+    staging_requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
     output_context: Option<NativeOutputToken>,
     last_output_ordinal: u64,
     output_order_invalid: bool,
@@ -311,6 +362,8 @@ impl HostRecords {
             journal: VecDeque::new(),
             output_reservations: BTreeMap::new(),
             create_reservations: BTreeMap::new(),
+            hidden_render_bindings: BTreeMap::new(),
+            staging_requests: BTreeMap::new(),
             output_context: None,
             last_output_ordinal: 0,
             output_order_invalid: false,
@@ -407,11 +460,47 @@ impl HostRecords {
         true
     }
 
+    fn record_viewport_created(&mut self, record: NativeViewportCreatedRecord) -> bool {
+        if !self.active {
+            return false;
+        }
+        if self.journal.iter().any(|queued| {
+            matches!(
+                queued,
+                HostRecord::ViewportCreated(existing)
+                    if existing.binding == record.binding
+            )
+        }) {
+            return false;
+        }
+        self.journal.push_back(HostRecord::ViewportCreated(record));
+        true
+    }
+
+    fn record_staging_painted(&mut self, record: NativeStagingPaintRecord) -> bool {
+        if !self.active
+            || self.staging_requests.get(&record.token.viewport_id()) != Some(&record.request)
+        {
+            return false;
+        }
+        let Some(reservation) = self.output_reservations.get(&record.token) else {
+            return false;
+        };
+        if reservation.binding() != Some(record.request.binding()) {
+            return false;
+        }
+        self.staging_requests.remove(&record.token.viewport_id());
+        self.journal.push_back(HostRecord::StagingPainted(record));
+        true
+    }
+
     fn deactivate(&mut self) {
         self.active = false;
         self.journal.clear();
         self.output_reservations.clear();
         self.create_reservations.clear();
+        self.hidden_render_bindings.clear();
+        self.staging_requests.clear();
         self.output_context = None;
         self.last_output_ordinal = 0;
         self.output_order_invalid = false;
@@ -453,6 +542,8 @@ impl NativeHostBridge {
             Some(
                 HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -464,7 +555,37 @@ impl NativeHostBridge {
             Some(HostRecord::ViewportRoster(roster)) => Some(roster.clone()),
             Some(
                 HostRecord::WindowEvent(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
+        }
+    }
+
+    pub(crate) fn front_viewport_created(&self) -> Option<NativeViewportCreatedRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::ViewportCreated(created)) => Some(*created),
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::StagingPainted(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
+        }
+    }
+
+    pub(crate) fn front_staging_painted(&self) -> Option<NativeStagingPaintRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::StagingPainted(record)) => Some(*record),
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportCreated(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -479,6 +600,8 @@ impl NativeHostBridge {
             Some(
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -492,6 +615,8 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                     | HostRecord::ViewportRoster(_)
                     | HostRecord::ViewportCreateFailed(_)
+                    | HostRecord::ViewportCreated(_)
+                    | HostRecord::StagingPainted(_)
             )
         )
     }
@@ -535,6 +660,38 @@ impl NativeHostBridge {
         true
     }
 
+    pub(crate) fn acknowledge_viewport_created(
+        &self,
+        expected: NativeViewportCreatedRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let matches = matches!(
+            records.journal.front(),
+            Some(HostRecord::ViewportCreated(created)) if *created == expected
+        );
+        if matches {
+            records.journal.pop_front();
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
+    pub(crate) fn acknowledge_staging_painted(
+        &self,
+        expected: NativeStagingPaintRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let matches = matches!(
+            records.journal.front(),
+            Some(HostRecord::StagingPainted(record)) if *record == expected
+        );
+        if matches {
+            records.journal.pop_front();
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
     pub(crate) fn output_prefix(&self) -> Vec<(NativeOutputResult, bool)> {
         let records = self.lock();
         if records.event_boundary_pending {
@@ -547,7 +704,9 @@ impl NativeHostBridge {
                 HostRecord::Output { result, submitted } => Some((*result, *submitted)),
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
-                | HostRecord::ViewportCreateFailed(_) => None,
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_) => None,
             })
             .collect();
 
@@ -576,11 +735,23 @@ impl NativeHostBridge {
     ) -> bool {
         let mut records = self.lock();
         match records.create_reservations.get(&viewport) {
-            Some(current) => current.binding == binding && current.rect == rect,
+            Some(current) => {
+                current.binding == binding
+                    && current.rect == rect
+                    && records.hidden_render_bindings.get(&viewport) == Some(&binding)
+            }
             None => {
+                if records
+                    .hidden_render_bindings
+                    .get(&viewport)
+                    .is_some_and(|current| *current != binding)
+                {
+                    return false;
+                }
                 records
                     .create_reservations
                     .insert(viewport, NativeCreateReservation { binding, rect });
+                records.hidden_render_bindings.insert(viewport, binding);
                 true
             }
         }
@@ -600,6 +771,23 @@ impl NativeHostBridge {
         true
     }
 
+    pub(crate) fn clear_hidden_render(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let mut records = self.lock();
+        if records.hidden_render_bindings.get(&viewport) != Some(&binding) {
+            return false;
+        }
+        records.hidden_render_bindings.remove(&viewport);
+        true
+    }
+
+    fn hidden_render_enabled(&self, viewport: ViewportId) -> bool {
+        self.lock().hidden_render_bindings.contains_key(&viewport)
+    }
+
     pub(crate) fn create_binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
         self.lock()
             .create_reservations
@@ -613,6 +801,58 @@ impl NativeHostBridge {
             .create_reservations
             .get(&viewport)
             .map(|reservation| reservation.rect)
+    }
+
+    pub(crate) fn replace_staging_requests(
+        &self,
+        requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
+    ) {
+        self.lock().staging_requests = requests;
+    }
+
+    pub(crate) fn record_deferred_viewport_paint(
+        &self,
+        token: NativeOutputToken,
+    ) -> DeferredViewportPaint {
+        let mut records = self.lock();
+        let Some(reservation) = records.output_reservations.get(&token).copied() else {
+            return DeferredViewportPaint::Waiting;
+        };
+        if let Some(create) = records.create_reservations.get(&token.viewport_id()).copied()
+            && reservation.binding() == Some(create.binding)
+        {
+            let created = NativeViewportCreatedRecord::new(token, create.binding);
+            let recorded = records.record_viewport_created(created);
+            records
+                .output_reservations
+                .get_mut(&token)
+                .expect("the deferred output reservation remains present")
+                .abandon();
+            return if recorded {
+                DeferredViewportPaint::Created
+            } else {
+                DeferredViewportPaint::Waiting
+            };
+        }
+        let Some(request) = records.staging_requests.get(&token.viewport_id()).copied() else {
+            records
+                .output_reservations
+                .get_mut(&token)
+                .expect("the deferred output reservation remains present")
+                .abandon();
+            return DeferredViewportPaint::Waiting;
+        };
+        let record = NativeStagingPaintRecord::new(token, request);
+        if records.record_staging_painted(record) {
+            DeferredViewportPaint::Staging(request)
+        } else {
+            records
+                .output_reservations
+                .get_mut(&token)
+                .expect("the deferred output reservation remains present")
+                .abandon();
+            DeferredViewportPaint::Waiting
+        }
     }
 
     pub(crate) fn reserve_output(
@@ -763,6 +1003,10 @@ impl NativeHostHandler for NativeHostBridge {
         viewport_id: ViewportId,
     ) -> Option<NativePhysicalRect> {
         self.create_rect(viewport_id)
+    }
+
+    fn render_hidden_deferred_viewport(&self, viewport_id: ViewportId) -> bool {
+        self.hidden_render_enabled(viewport_id)
     }
 
     fn on_window_event(&self, event: NativeWindowEvent<'_>) {

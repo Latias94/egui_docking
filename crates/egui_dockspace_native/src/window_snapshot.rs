@@ -2,6 +2,7 @@
 
 use dockspace::geometry::{PhysicalRect, ScaleFactor};
 use dockspace::runtime::{NativeSurfaceBinding, NativeWindowFacts, NativeWindowPresentationState};
+use dockspace::runtime::NativePresentationEffectAcknowledgement;
 use eframe::{NativePhysicalRect, NativeWindowSnapshot};
 
 use crate::error::NativeHostProtocolError;
@@ -10,11 +11,16 @@ use crate::error::NativeHostProtocolError;
 pub(crate) struct CompiledWindowObservation {
     binding: NativeSurfaceBinding,
     facts: NativeWindowFacts,
+    presentation_acknowledged: bool,
 }
 
 impl CompiledWindowObservation {
     pub(crate) const fn new(binding: NativeSurfaceBinding, facts: NativeWindowFacts) -> Self {
-        Self { binding, facts }
+        Self {
+            binding,
+            facts,
+            presentation_acknowledged: false,
+        }
     }
 
     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
@@ -23,6 +29,10 @@ impl CompiledWindowObservation {
 
     pub(crate) const fn facts(self) -> NativeWindowFacts {
         self.facts
+    }
+
+    pub(crate) const fn presentation_acknowledged(self) -> bool {
+        self.presentation_acknowledged
     }
 }
 
@@ -50,13 +60,18 @@ impl From<NativeWindowSnapshot> for SnapshotParts {
 pub(crate) fn compile_window_observation(
     binding: NativeSurfaceBinding,
     snapshot: NativeWindowSnapshot,
+    acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<CompiledWindowObservation, NativeHostProtocolError> {
-    compile_window_facts(snapshot.into())
-        .map(|facts| CompiledWindowObservation::new(binding, facts))
+    compile_window_facts(snapshot.into(), acknowledgement).map(|facts| CompiledWindowObservation {
+        binding,
+        facts,
+        presentation_acknowledged: acknowledgement.is_some(),
+    })
 }
 
 fn compile_window_facts(
     snapshot: SnapshotParts,
+    acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<NativeWindowFacts, NativeHostProtocolError> {
     let scale_factor = ScaleFactor::new(snapshot.native_scale_factor)
         .map_err(|_| NativeHostProtocolError::InvalidWindowSnapshot)?;
@@ -68,7 +83,9 @@ fn compile_window_facts(
         facts = facts.with_outer_bounds(physical_rect(rect)?);
     }
     if let Some(presentation) = presentation_state(snapshot.visible, snapshot.minimized) {
-        facts = facts.with_presentation(presentation, None);
+        facts = facts.with_presentation(presentation, acknowledgement);
+    } else if acknowledgement.is_some() {
+        return Err(NativeHostProtocolError::PresentationAcknowledgementWithoutState);
     }
     Ok(facts)
 }
@@ -171,7 +188,7 @@ mod tests {
             .with_presentation(NativeWindowPresentationState::Visible, None);
         let observation = CompiledWindowObservation::new(
             binding,
-            compile_window_facts(parts()).expect("snapshot compiles"),
+            compile_window_facts(parts(), None).expect("snapshot compiles"),
         );
 
         assert_eq!(observation.binding(), binding);
@@ -186,7 +203,7 @@ mod tests {
             native_scale_factor: 1.5,
             visible: None,
             minimized: None,
-        })
+        }, None)
         .expect("partial snapshot compiles");
 
         assert_eq!(
@@ -200,7 +217,7 @@ mod tests {
     fn minimized_state_precedes_visibility() {
         let mut snapshot = parts();
         snapshot.minimized = Some(true);
-        let facts = compile_window_facts(snapshot).expect("minimized snapshot compiles");
+        let facts = compile_window_facts(snapshot, None).expect("minimized snapshot compiles");
         let expected = NativeWindowFacts::live()
             .with_content_bounds(
                 PhysicalRect::new(10.0, 20.0, 800.0, 600.0).expect("content rect validates"),
@@ -220,7 +237,7 @@ mod tests {
             let mut snapshot = parts();
             snapshot.native_scale_factor = scale;
             assert_eq!(
-                compile_window_facts(snapshot),
+                compile_window_facts(snapshot, None),
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
             );
         }

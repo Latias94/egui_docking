@@ -32,10 +32,6 @@ pub(crate) struct NativeViewportEffectPlan {
 }
 
 impl NativeViewportEffectPlan {
-    pub(crate) const fn viewport(self) -> ViewportId {
-        self.viewport
-    }
-
     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
         self.binding
     }
@@ -128,12 +124,6 @@ impl NativeEffectCoordinator {
             },
         );
         Ok(())
-    }
-
-    pub(crate) fn pending_binding(&self, viewport: ViewportId) -> Option<NativeSurfaceBinding> {
-        self.pending_viewports
-            .get(&viewport)
-            .map(|pending| pending.plan.binding)
     }
 
     pub(crate) fn take_for_output(

@@ -1,22 +1,27 @@
 //! Native host-frame adapter over the renderer-neutral session frame.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceHostFrame, HostFrameReport, PreparedSurfaceAction, SurfaceUnavailableReason,
+    DockspaceHostFrame, HostFrameReport, NativeStagingPaintRequest, PreparedSurfaceAction,
+    SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
 
 use crate::error::NativeRuntimeError;
+use crate::error::NativeHostProtocolError;
 use crate::mailbox::NativeHostBridge;
+use crate::viewport_map::NativeViewportMap;
 
 /// Affine native host frame which commits the output barrier and only then
 /// releases later callback records.
 pub(crate) struct NativeHostFrame<'session> {
     pub(crate) frame: DockspaceHostFrame<'session>,
     bridge: Arc<NativeHostBridge>,
+    viewports: Arc<Mutex<NativeViewportMap>>,
 }
 
 impl std::fmt::Debug for NativeHostFrame<'_> {
@@ -28,8 +33,16 @@ impl std::fmt::Debug for NativeHostFrame<'_> {
 }
 
 impl<'session> NativeHostFrame<'session> {
-    pub(crate) fn new(frame: DockspaceHostFrame<'session>, bridge: Arc<NativeHostBridge>) -> Self {
-        NativeHostFrame { frame, bridge }
+    pub(crate) fn new(
+        frame: DockspaceHostFrame<'session>,
+        bridge: Arc<NativeHostBridge>,
+        viewports: Arc<Mutex<NativeViewportMap>>,
+    ) -> Self {
+        NativeHostFrame {
+            frame,
+            bridge,
+            viewports,
+        }
     }
 
     pub(crate) fn complete_unpainted_surfaces(
@@ -96,9 +109,36 @@ impl<'session> NativeHostFrame<'session> {
     /// Returns an error without releasing the callback-order barrier when the
     /// core rejects the candidate frame.
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
-        let Self { frame, bridge } = self;
+        let staging_requests = self.compile_staging_requests()?;
+        let Self {
+            frame,
+            bridge,
+            viewports: _,
+        } = self;
         let report = frame.commit()?;
+        bridge.replace_staging_requests(staging_requests);
         bridge.commit_frame_boundary();
         Ok(report)
+    }
+
+    fn compile_staging_requests(
+        &self,
+    ) -> Result<BTreeMap<egui::ViewportId, NativeStagingPaintRequest>, NativeRuntimeError> {
+        let viewports = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut requests = BTreeMap::new();
+        for request in self.frame.native_staging_paints() {
+            let Some(viewport) = viewports.viewport(request.surface()) else {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+            };
+            if viewports.binding(viewport) != Some(request.binding())
+                || requests.insert(viewport, request).is_some()
+            {
+                return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
+            }
+        }
+        Ok(requests)
     }
 }

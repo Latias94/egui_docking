@@ -10,6 +10,7 @@
 
 mod app;
 mod coordinator;
+mod deferred_viewport;
 mod effect_coordinator;
 mod error;
 mod event;

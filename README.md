@@ -31,10 +31,13 @@ machine. Its `NativeDockspaceApp` now provides a runnable root-window vertical
 slice using the same core-derived product renderer as the ordinary facade. It
 preserves local egui actions across discarded passes and qualifies native
 receiver authority only with the final presented pass. The slice still rejects
-every core-emitted platform effect, including root focus, close, pointer
-pass-through, and deferred child-window lifecycle operations. Cross-window
-scroll authority and the real two-window smoke are also still U7 work, so this
-root-window example is not native multiview product support.
+replacement, close, focus, and pointer pass-through effects. It now retains an
+exact deferred child create request, renders the pre-show and post-show staging
+outputs while the native window is hidden, and applies the correlated show
+acknowledgement before core may transfer ownership. Rendering the admitted
+semantic child surface, cross-window scroll authority, and the real two-window
+smoke are still U7 work, so this lifecycle slice is not yet native multiview
+product support.
 
 The ordinary crates.io `show_single_surface` convenience path now owns one
 renderer-neutral `DockspaceSession` and treats the current egui `Response` as
@@ -87,7 +90,7 @@ paths.
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The excluded native workspace pins the
 public egui/eframe fork commit
-`5cda39afaac2dea0e70974af74b942f7f14b5501` and the event-fact Winit commit
+`37c2c4394f70d03735ef362531700160f9327c36` and the event-fact Winit commit
 `180bfc09743586137fec014ef5543cdde56ce5d0`. The fork remains graph-neutral;
 all docking topology, receiver challenges, native lifecycle meaning, and
 presentation obligations stay in `dockspace`.

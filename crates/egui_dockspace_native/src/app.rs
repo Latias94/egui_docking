@@ -5,7 +5,7 @@ use std::sync::Arc;
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::{
     DockspaceSession, HostInputOutcome, HostWindowToken, NativePointerRoster,
-    NativeUnsupportedReason, SurfaceUnavailableReason,
+    SurfaceUnavailableReason,
 };
 use eframe::egui::{self, Id};
 use eframe::{NativeHostHandler, NativeHostWake, NativeOutputToken};
@@ -46,9 +46,9 @@ const fn surface_frame_disposition(
 ///
 /// The app owns the complete egui update callback so it can discard a core candidate when egui
 /// requests another pass, retain only exact local response actions, and commit receiver authority
-/// only for the final pass. This root slice rejects every core-emitted platform effect, including
-/// focus, close, pointer pass-through, and child-window lifecycle operations, until the deferred
-/// effect driver is connected.
+/// only for the final pass. The current vertical slice drives hidden child creation, native
+/// staging, and showing. Replacement, close, focus, and pointer pass-through remain explicitly
+/// unsupported until their exact platform lanes are connected.
 pub struct NativeDockspaceApp<P> {
     coordinator: Option<NativeCoordinator>,
     native_host: Arc<dyn NativeHostHandler>,
@@ -135,7 +135,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             .coordinator
             .as_mut()
             .expect("an error-free native app retains its coordinator");
-        coordinator.reduce_callback_head()?;
+        let reduced_callback = coordinator.reduce_callback_head()?;
 
         let root_surface = self.root_surface;
         let instance_id = self.instance_id;
@@ -204,7 +204,7 @@ impl<P: PaneView> NativeDockspaceApp<P> {
 
         let mut report = host_frame.commit()?;
         self.bind_root_registration(token, report.inputs())?;
-        self.reject_unimplemented_effects(report.take_native_effects())?;
+        let native_effects = report.take_native_effects();
 
         let mut outputs = report.take_painted_outputs();
         if painted_output_expected {
@@ -257,7 +257,23 @@ impl<P: PaneView> NativeDockspaceApp<P> {
             }
         }
 
-        if report.repaint_surfaces().contains(&root_surface) {
+        let coordinator = self
+            .coordinator
+            .as_mut()
+            .expect("an error-free native app retains its coordinator");
+        coordinator.accept_native_effects(native_effects)?;
+        coordinator.declare_deferred_viewports(&context);
+
+        for surface in report.repaint_surfaces() {
+            match coordinator.repaint_viewport(*surface) {
+                Some(egui::ViewportId::ROOT) | None if *surface == root_surface => {
+                    context.request_repaint();
+                }
+                Some(viewport) => context.request_repaint_of(viewport),
+                None => {}
+            }
+        }
+        if reduced_callback {
             context.request_repaint();
         }
         if post_action_repaint {
@@ -288,26 +304,6 @@ impl<P: PaneView> NativeDockspaceApp<P> {
                     return Err(NativeHostProtocolError::RootRegistrationRejected(*surface).into());
                 }
                 _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn reject_unimplemented_effects(
-        &mut self,
-        requests: Vec<dockspace::runtime::NativeEffectRequest>,
-    ) -> Result<(), NativeRuntimeError> {
-        for request in requests {
-            let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
-            if let Err(error) = self
-                .coordinator
-                .as_mut()
-                .expect("an error-free native app retains its coordinator")
-                .report_effect_result(result)
-            {
-                let (kind, result) = error.into_parts();
-                drop(result);
-                return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
             }
         }
         Ok(())
