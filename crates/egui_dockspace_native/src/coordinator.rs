@@ -16,31 +16,27 @@ use dockspace::runtime::{
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
-    egui::ViewportId,
+    NativeViewportCreateFailureKind, NativeViewportVisibilityStatus, egui::ViewportId,
 };
 use winit::window::WindowId;
 
+use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
-    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
-};
-use crate::deferred_viewport::{
-    DeferredViewportDriver, DeferredViewportSpec, viewport_id_for,
+    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan, PendingShowEffect,
 };
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
 use crate::host_frame::NativeHostFrame;
+use crate::mailbox::{
+    DeferredViewportPaint, NativeHostBridge, NativeViewportRosterRecord, PreparedRouteRetirements,
+};
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
-use crate::mailbox::{
-    DeferredViewportPaint, NativeHostBridge, NativeViewportCreateFailureRecord,
-    NativeViewportRosterRecord, PreparedRouteRetirements,
-};
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
-use crate::retirement::{
-    CleanupResultRetentionError, CommittedRetirement, NativeRetirementState,
-};
+use crate::retirement::{CleanupResultRetentionError, CommittedRetirement, NativeRetirementState};
+use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
@@ -385,6 +381,7 @@ impl NativeCoordinator {
         for retirement in &committed {
             self.pending_presentation_acknowledgements
                 .remove(&retirement.binding());
+            self.effects.remove_show(retirement.binding());
             self.receivers.retire_binding(retirement.binding());
         }
         for token in abandoned {
@@ -399,7 +396,10 @@ impl NativeCoordinator {
             return false;
         };
         let applied = inputs.iter().any(|input| {
-            matches!(input, HostInputOutcome::NativePlatformSnapshotApplied { .. })
+            matches!(
+                input,
+                HostInputOutcome::NativePlatformSnapshotApplied { .. }
+            )
         });
         let rejected = inputs.iter().any(|input| {
             matches!(
@@ -408,7 +408,10 @@ impl NativeCoordinator {
                     | HostInputOutcome::NativePlatformProviderRejected
             )
         });
-        debug_assert_ne!(applied, rejected, "one queued native snapshot has one outcome");
+        debug_assert_ne!(
+            applied, rejected,
+            "one queued native snapshot has one outcome"
+        );
         self.retirements.settle_snapshot(applied && !rejected);
         if applied && !rejected {
             for binding in acknowledgements {
@@ -426,30 +429,24 @@ impl NativeCoordinator {
     ) -> Result<bool, NativeRuntimeError> {
         let mut changed = false;
         for binding in admissions {
-            let viewport = self
-                .surface_viewport(binding.surface())
-                .ok_or(NativeHostProtocolError::NativeAdmissionRouteChanged(
-                    binding.surface(),
-                ))?;
+            let viewport = self.surface_viewport(binding.surface()).ok_or(
+                NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()),
+            )?;
             if self.viewport_binding(viewport) != Some(*binding)
                 || !self.session.is_current_native_binding(*binding)
             {
-                return Err(
-                    NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()).into(),
-                );
+                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
+                    binding.surface(),
+                )
+                .into());
             }
             changed |= self.bridge.clear_hidden_render(viewport, *binding);
         }
         Ok(changed)
     }
 
-    pub(crate) fn try_report_retirement_quiescence(
-        &mut self,
-    ) -> Result<bool, NativeRuntimeError> {
-        let candidates = self
-            .retirements
-            .quiescence_candidates()
-            .collect::<Vec<_>>();
+    pub(crate) fn try_report_retirement_quiescence(&mut self) -> Result<bool, NativeRuntimeError> {
+        let candidates = self.retirements.quiescence_candidates().collect::<Vec<_>>();
         let mut recorded = false;
         for binding in candidates {
             if self.bridge.references_binding(binding)
@@ -471,10 +468,7 @@ impl NativeCoordinator {
         Ok(recorded)
     }
 
-    fn exact_viewport_for_binding(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<ViewportId> {
+    fn exact_viewport_for_binding(&self, binding: NativeSurfaceBinding) -> Option<ViewportId> {
         let viewports = self
             .viewports
             .lock()
@@ -488,7 +482,11 @@ impl NativeCoordinator {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> Result<(), NativeRuntimeError> {
-        let failure = NativeViewportCreateFailureRecord::new(viewport, binding);
+        let failure = NativeViewportCreateFailureRecord::new(
+            viewport,
+            binding,
+            NativeViewportCreateFailureKind::WindowUnavailable,
+        );
         if !self.effects.prepare_failure(failure) {
             return Ok(());
         }
@@ -509,18 +507,18 @@ impl NativeCoordinator {
         Ok(())
     }
 
-    fn retire_deferred_sidecars(
-        &mut self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) {
+    fn retire_deferred_sidecars(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
         let suppressed = self
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .suppress_pointer_route(viewport, binding);
-        debug_assert!(suppressed, "retired sidecars retain one exact viewport route");
+        debug_assert!(
+            suppressed,
+            "retired sidecars retain one exact viewport route"
+        );
         self.deferred_viewports.remove(binding);
+        self.effects.remove_show(binding);
         self.receivers.retire_binding(binding);
         for token in self.bridge.retire_deferred_binding(viewport, binding) {
             self.pending_outputs.remove(&token);
@@ -585,26 +583,15 @@ impl NativeCoordinator {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .binding(viewport);
-                    if current != Some(binding)
-                        || self
-                            .pending_presentation_acknowledgements
-                            .contains_key(&binding)
-                    {
+                    if current != Some(binding) || self.has_pending_presentation_effect(binding) {
                         self.submit_unsupported_effect(request)?;
                         continue;
                     }
-                    let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
-                        request.accepted()
-                    else {
-                        return Err(
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                .into(),
-                        );
-                    };
                     let shown = self.deferred_viewports.set_visible(binding);
                     assert_eq!(shown, Some(viewport));
-                    self.pending_presentation_acknowledgements
-                        .insert(binding, acknowledgement);
+                    self.effects.retain_show(binding, request).map_err(|_| {
+                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                    })?;
                 }
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {
@@ -614,12 +601,10 @@ impl NativeCoordinator {
                             self.submit_unsupported_effect(request)?;
                             continue;
                         }
-                        return Err(
-                            NativeHostProtocolError::RetiredViewportRouteChanged(
-                                binding.surface(),
-                            )
-                            .into(),
-                        );
+                        return Err(NativeHostProtocolError::RetiredViewportRouteChanged(
+                            binding.surface(),
+                        )
+                        .into());
                     };
                     if !self.session.recognizes_native_binding(binding)
                         || !self.retirements.can_begin_release(viewport, binding)
@@ -632,8 +617,7 @@ impl NativeCoordinator {
                         request.accepted()
                     else {
                         return Err(
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                .into(),
+                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
                         );
                     };
                     self.retire_deferred_sidecars(viewport, binding);
@@ -645,22 +629,16 @@ impl NativeCoordinator {
                 NativeEffectOperation::AwaitCleanup { binding } => {
                     let binding = *binding;
                     if !self.session.recognizes_native_binding(binding)
-                        || !self
-                            .retirements
-                            .can_accept_cleanup_observation(binding)
+                        || !self.retirements.can_accept_cleanup_observation(binding)
                     {
-                        self.submit_failed_effect(
-                            request,
-                            NativeDispatchFailure::AdapterRejected,
-                        )?;
+                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
                         continue;
                     }
                     let Some(NativeEffectAcknowledgement::Cleanup(observation)) =
                         request.accepted()
                     else {
                         return Err(
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                .into(),
+                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
                         );
                     };
                     let correlated = self
@@ -912,6 +890,13 @@ impl NativeCoordinator {
         Ok(self.bridge.front_viewport_create_failure())
     }
 
+    fn next_viewport_visibility(
+        &mut self,
+    ) -> Result<Option<NativeViewportVisibilityRecord>, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        Ok(self.bridge.front_viewport_visibility())
+    }
+
     /// Acknowledges one exact viewport creation failure after the driver has converted it into the
     /// matching affine native-effect result.
     ///
@@ -946,6 +931,17 @@ impl NativeCoordinator {
         drop(viewports);
         self.receivers.retire_binding(failure.binding());
         Ok(())
+    }
+
+    fn acknowledge_viewport_visibility(
+        &self,
+        record: NativeViewportVisibilityRecord,
+    ) -> Result<(), NativeRuntimeError> {
+        if self.bridge.acknowledge_viewport_visibility(record) {
+            Ok(())
+        } else {
+            Err(NativeHostProtocolError::ViewportVisibilityAcknowledgementMismatch.into())
+        }
     }
 
     /// Reduces the journal head when it is a pointer event.
@@ -992,6 +988,9 @@ impl NativeCoordinator {
         if self.reduce_next_viewport_create_failure()? {
             return Ok(true);
         }
+        if self.reduce_next_viewport_visibility()? {
+            return Ok(true);
+        }
         if self.reduce_next_viewport_created()? {
             return Ok(true);
         }
@@ -1012,6 +1011,80 @@ impl NativeCoordinator {
         Ok(true)
     }
 
+    fn reduce_next_viewport_visibility(&mut self) -> Result<bool, NativeRuntimeError> {
+        let Some(record) = self.next_viewport_visibility()? else {
+            return Ok(false);
+        };
+        let current = self
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .binding_for_event(record.window(), Some(record.viewport()));
+        if current != Some(record.binding())
+            || !self.session.is_current_native_binding(record.binding())
+        {
+            self.acknowledge_viewport_visibility(record)?;
+            return Ok(true);
+        }
+        if !record.visible() {
+            self.acknowledge_viewport_visibility(record)?;
+            return Ok(true);
+        }
+        let Some(pending) = self.effects.take_show(record.binding()) else {
+            self.acknowledge_viewport_visibility(record)?;
+            return Ok(true);
+        };
+        match (record.status(), pending) {
+            (
+                NativeViewportVisibilityStatus::Dispatched,
+                PendingShowEffect::AwaitingDispatch(request),
+            ) => {
+                let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
+                    request.accepted()
+                else {
+                    return Err(
+                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
+                    );
+                };
+                self.pending_presentation_acknowledgements
+                    .insert(record.binding(), acknowledgement);
+            }
+            (
+                NativeViewportVisibilityStatus::Unsupported,
+                PendingShowEffect::AwaitingDispatch(request),
+            ) => {
+                let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
+                self.report_or_retain_show_result(record.binding(), result)?;
+            }
+            (_, PendingShowEffect::AwaitingUnsupportedReport(result)) => {
+                self.report_or_retain_show_result(record.binding(), result)?;
+            }
+        }
+        self.acknowledge_viewport_visibility(record)?;
+        Ok(true)
+    }
+
+    fn report_or_retain_show_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        result: NativeEffectResult,
+    ) -> Result<(), NativeRuntimeError> {
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            let (kind, result) = error.into_parts();
+            self.effects
+                .restore_show_result(binding, result)
+                .map_err(|_| NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement)?;
+            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+        }
+        Ok(())
+    }
+
+    fn has_pending_presentation_effect(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_presentation_acknowledgements
+            .contains_key(&binding)
+            || self.effects.has_pending_show(binding)
+    }
+
     fn reduce_next_viewport_created(&mut self) -> Result<bool, NativeRuntimeError> {
         self.prepare_output_prefix()?;
         let Some(created) = self.bridge.front_viewport_created() else {
@@ -1021,9 +1094,7 @@ impl NativeCoordinator {
             .pending_presentation_acknowledgements
             .contains_key(&created.binding())
         {
-            return Err(
-                NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into(),
-            );
+            return Err(NativeHostProtocolError::PresentationAcknowledgementAlreadyPending.into());
         }
         let attach = self
             .viewports
@@ -1065,7 +1136,9 @@ impl NativeCoordinator {
         if self.pending_outputs.contains_key(&staging.token()) {
             return Err(NativeHostProtocolError::OutputAwaitingAttachment.into());
         }
-        let mut frame = self.session.begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?;
+        let mut frame = self
+            .session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)?;
         frame.confirm_native_staging_painted(staging.request())?;
         frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
         let mut report = frame.commit()?;

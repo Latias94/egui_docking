@@ -55,6 +55,8 @@ pub(crate) enum NativeHostProtocolError {
     WindowEventAcknowledgementMismatch,
     #[error("the viewport creation failure acknowledgement does not match the journal head")]
     ViewportCreateFailureAcknowledgementMismatch,
+    #[error("the viewport visibility acknowledgement does not match the journal head")]
+    ViewportVisibilityAcknowledgementMismatch,
     #[error("the root viewport roster acknowledgement does not match the journal head")]
     ViewportRosterAcknowledgementMismatch,
     #[error("a viewport creation failure has no matching retained native effect")]

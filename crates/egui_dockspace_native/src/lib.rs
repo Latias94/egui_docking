@@ -21,6 +21,7 @@ mod pointer_event;
 mod receiver;
 mod retirement;
 mod surface_driver;
+mod viewport_callback;
 mod viewport_map;
 mod window_snapshot;
 

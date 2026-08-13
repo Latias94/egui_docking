@@ -1,20 +1,20 @@
 //! Minimal ownership for deferred native viewport effects.
 //!
 //! This module is deliberately not an effect ledger. Core remains the only
-//! authority for effect meaning and ordering. The adapter keeps only the
-//! affine create request which must survive until eframe reports either a
-//! matching output callback or a matching create failure.
+//! authority for effect meaning and ordering. The adapter keeps only affine
+//! viewport requests which must survive until eframe reports the matching
+//! create, failure, or visibility-dispatch callback.
 
 use std::collections::BTreeMap;
 
 use dockspace::geometry::PhysicalRect;
 use dockspace::runtime::{
     NativeDispatchFailure, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeSurfaceBinding, NativeSurfaceRole,
+    NativeSurfaceBinding, NativeSurfaceRole, NativeUnsupportedReason,
 };
-use eframe::egui::ViewportId;
+use eframe::{NativeViewportCreateFailureKind, egui::ViewportId};
 
-use crate::mailbox::NativeViewportCreateFailureRecord;
+use crate::viewport_callback::NativeViewportCreateFailureRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeViewportEffectKind {
@@ -62,9 +62,16 @@ enum PendingViewportEffectState {
     FailureReported,
 }
 
+#[derive(Debug)]
+pub(crate) enum PendingShowEffect {
+    AwaitingDispatch(NativeEffectRequest),
+    AwaitingUnsupportedReport(NativeEffectResult),
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct NativeEffectCoordinator {
     pending_viewports: BTreeMap<ViewportId, PendingViewportEffect>,
+    pending_shows: BTreeMap<NativeSurfaceBinding, PendingShowEffect>,
 }
 
 impl NativeEffectCoordinator {
@@ -72,6 +79,47 @@ impl NativeEffectCoordinator {
         self.pending_viewports
             .values()
             .any(|pending| pending.plan.binding == binding)
+            || self.pending_shows.contains_key(&binding)
+    }
+
+    pub(crate) fn has_pending_show(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_shows.contains_key(&binding)
+    }
+
+    pub(crate) fn retain_show(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        request: NativeEffectRequest,
+    ) -> Result<(), NativeEffectRequest> {
+        if self.pending_shows.contains_key(&binding) {
+            return Err(request);
+        }
+        self.pending_shows
+            .insert(binding, PendingShowEffect::AwaitingDispatch(request));
+        Ok(())
+    }
+
+    pub(crate) fn take_show(&mut self, binding: NativeSurfaceBinding) -> Option<PendingShowEffect> {
+        self.pending_shows.remove(&binding)
+    }
+
+    pub(crate) fn restore_show_result(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        result: NativeEffectResult,
+    ) -> Result<(), NativeEffectResult> {
+        if self.pending_shows.contains_key(&binding) {
+            return Err(result);
+        }
+        self.pending_shows.insert(
+            binding,
+            PendingShowEffect::AwaitingUnsupportedReport(result),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn remove_show(&mut self, binding: NativeSurfaceBinding) {
+        self.pending_shows.remove(&binding);
     }
 
     pub(crate) fn plan(
@@ -169,9 +217,14 @@ impl NativeEffectCoordinator {
         );
         pending.state = match state {
             PendingViewportEffectState::AwaitingCallback(request) => {
-                PendingViewportEffectState::FailureResult(
-                    request.dispatch_failed(NativeDispatchFailure::WindowUnavailable),
-                )
+                PendingViewportEffectState::FailureResult(match failure.kind() {
+                    NativeViewportCreateFailureKind::WindowUnavailable => {
+                        request.dispatch_failed(NativeDispatchFailure::WindowUnavailable)
+                    }
+                    NativeViewportCreateFailureKind::VisibilityUnsupported => {
+                        request.unsupported(NativeUnsupportedReason::BackendUnsupported)
+                    }
+                })
             }
             state @ (PendingViewportEffectState::FailureResult(_)
             | PendingViewportEffectState::FailureReported) => state,

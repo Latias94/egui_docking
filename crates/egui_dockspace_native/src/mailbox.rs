@@ -6,14 +6,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailure, NativeViewportRoster, NativeWindowEvent, NativeWindowSnapshot,
-    egui::ViewportId,
+    NativeViewportCreateFailure, NativeViewportCreateFailureKind, NativeViewportRoster,
+    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
 };
 
 #[cfg(test)]
 use crate::error::NativeHostProtocolError;
 use crate::event::NativeWindowEventRecord;
 use crate::retirement::CommittedRetirement;
+use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
@@ -23,6 +24,7 @@ pub(crate) enum HostRecord {
     WindowEvent(NativeWindowEventRecord),
     ViewportRoster(NativeViewportRosterRecord),
     ViewportCreateFailed(NativeViewportCreateFailureRecord),
+    ViewportVisibility(NativeViewportVisibilityRecord),
     ViewportCreated(NativeViewportCreatedRecord),
     StagingPainted(NativeStagingPaintRecord),
     Output {
@@ -150,29 +152,6 @@ impl NativeViewportRosterRecord {
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
             }),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NativeViewportCreateFailureRecord {
-    viewport: eframe::egui::ViewportId,
-    binding: NativeSurfaceBinding,
-}
-
-impl NativeViewportCreateFailureRecord {
-    pub(crate) const fn new(
-        viewport: eframe::egui::ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> Self {
-        Self { viewport, binding }
-    }
-
-    pub(crate) const fn viewport(self) -> eframe::egui::ViewportId {
-        self.viewport
-    }
-
-    pub(crate) const fn binding(self) -> NativeSurfaceBinding {
-        self.binding
     }
 }
 
@@ -466,6 +445,15 @@ impl HostRecords {
         true
     }
 
+    fn record_viewport_visibility(&mut self, record: NativeViewportVisibilityRecord) -> bool {
+        if !self.active {
+            return false;
+        }
+        self.journal
+            .push_back(HostRecord::ViewportVisibility(record));
+        true
+    }
+
     fn record_viewport_created(&mut self, record: NativeViewportCreatedRecord) -> bool {
         if !self.active {
             return false;
@@ -555,6 +543,7 @@ impl HostRecords {
                 .iter()
                 .any(|observation| observation.binding() == binding),
             HostRecord::ViewportCreateFailed(failure) => failure.binding() == binding,
+            HostRecord::ViewportVisibility(visibility) => visibility.binding() == binding,
             HostRecord::ViewportCreated(created) => created.binding() == binding,
             HostRecord::StagingPainted(staging) => staging.request().binding() == binding,
             HostRecord::Output { .. } => false,
@@ -600,10 +589,9 @@ impl PreparedRouteRetirements {
         let mut records = self.bridge.lock();
         let mut abandoned = Vec::new();
         for retirement in &self.routes {
-            abandoned.extend(records.retire_deferred_binding(
-                retirement.viewport(),
-                retirement.binding(),
-            ));
+            abandoned.extend(
+                records.retire_deferred_binding(retirement.viewport(), retirement.binding()),
+            );
         }
         viewports.commit_retirements(&self.routes);
         self.active = false;
@@ -616,9 +604,7 @@ impl Drop for PreparedRouteRetirements {
         if !self.active {
             return;
         }
-        self.bridge
-            .lock_viewports()
-            .abort_retirements(&self.routes);
+        self.bridge.lock_viewports().abort_retirements(&self.routes);
     }
 }
 
@@ -646,6 +632,7 @@ impl NativeHostBridge {
             Some(
                 HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
                 | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
@@ -662,6 +649,7 @@ impl NativeHostBridge {
                 | HostRecord::ViewportCreated(_)
                 | HostRecord::StagingPainted(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::Output { .. },
             )
             | None => None,
@@ -675,6 +663,7 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
@@ -689,6 +678,7 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
                 | HostRecord::Output { .. },
             )
@@ -705,6 +695,7 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreated(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::StagingPainted(_)
                 | HostRecord::Output { .. },
             )
@@ -719,6 +710,7 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                     | HostRecord::ViewportRoster(_)
                     | HostRecord::ViewportCreateFailed(_)
+                    | HostRecord::ViewportVisibility(_)
                     | HostRecord::ViewportCreated(_)
                     | HostRecord::StagingPainted(_)
             )
@@ -754,6 +746,37 @@ impl NativeHostBridge {
         matches
     }
 
+    pub(crate) fn front_viewport_visibility(&self) -> Option<NativeViewportVisibilityRecord> {
+        match self.lock().journal.front() {
+            Some(HostRecord::ViewportVisibility(record)) => Some(*record),
+            Some(
+                HostRecord::WindowEvent(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_)
+                | HostRecord::Output { .. },
+            )
+            | None => None,
+        }
+    }
+
+    pub(crate) fn acknowledge_viewport_visibility(
+        &self,
+        expected: NativeViewportVisibilityRecord,
+    ) -> bool {
+        let mut records = self.lock();
+        let matches = matches!(
+            records.journal.front(),
+            Some(HostRecord::ViewportVisibility(record)) if *record == expected
+        );
+        if matches {
+            records.journal.pop_front();
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
     pub(crate) fn acknowledge_viewport_roster(&self) -> bool {
         let mut records = self.lock();
         if !matches!(records.journal.front(), Some(HostRecord::ViewportRoster(_))) {
@@ -780,10 +803,7 @@ impl NativeHostBridge {
         matches
     }
 
-    pub(crate) fn acknowledge_staging_painted(
-        &self,
-        expected: NativeStagingPaintRecord,
-    ) -> bool {
+    pub(crate) fn acknowledge_staging_painted(&self, expected: NativeStagingPaintRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(
             records.journal.front(),
@@ -809,6 +829,7 @@ impl NativeHostBridge {
                 HostRecord::WindowEvent(_)
                 | HostRecord::ViewportRoster(_)
                 | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
                 | HostRecord::ViewportCreated(_)
                 | HostRecord::StagingPainted(_) => None,
             })
@@ -946,7 +967,10 @@ impl NativeHostBridge {
         let Some(reservation) = records.output_reservations.get(&token).copied() else {
             return DeferredViewportPaint::Waiting;
         };
-        if let Some(create) = records.create_reservations.get(&token.viewport_id()).copied()
+        if let Some(create) = records
+            .create_reservations
+            .get(&token.viewport_id())
+            .copied()
             && reservation.binding() == Some(create.binding)
         {
             let created = NativeViewportCreatedRecord::new(token, create.binding);
@@ -969,13 +993,12 @@ impl NativeHostBridge {
                     HostRecord::WindowEvent(_)
                         | HostRecord::ViewportRoster(_)
                         | HostRecord::ViewportCreateFailed(_)
+                        | HostRecord::ViewportVisibility(_)
                         | HostRecord::ViewportCreated(_)
                         | HostRecord::StagingPainted(_)
                 )
             );
-            if !input_pending
-                && let Some(binding) = reservation.binding()
-            {
+            if !input_pending && let Some(binding) = reservation.binding() {
                 return DeferredViewportPaint::Semantic(binding);
             }
             records
@@ -1099,7 +1122,11 @@ impl NativeHostBridge {
         self.lock().deactivate();
     }
 
-    fn record_viewport_create_failure(&self, viewport: eframe::egui::ViewportId) -> NativeHostWake {
+    fn record_viewport_create_failure(
+        &self,
+        viewport: eframe::egui::ViewportId,
+        kind: NativeViewportCreateFailureKind,
+    ) -> NativeHostWake {
         let mut records = self.lock();
         let Some(reservation) = records.create_reservations.get(&viewport).copied() else {
             return NativeHostWake::Wait;
@@ -1107,6 +1134,7 @@ impl NativeHostBridge {
         if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
             viewport,
             reservation.binding,
+            kind,
         )) {
             return NativeHostWake::Wait;
         }
@@ -1118,7 +1146,10 @@ impl NativeHostBridge {
         &self,
         viewport: eframe::egui::ViewportId,
     ) -> NativeHostWake {
-        self.record_viewport_create_failure(viewport)
+        self.record_viewport_create_failure(
+            viewport,
+            NativeViewportCreateFailureKind::WindowUnavailable,
+        )
     }
 
     #[cfg(test)]
@@ -1178,14 +1209,29 @@ impl NativeHostHandler for NativeHostBridge {
         match self.lock().record_output(result) {
             OutputRecordDisposition::Recorded
             | OutputRecordDisposition::Ignored
-            | OutputRecordDisposition::ProtocolViolation => {
-                NativeHostWake::RepaintRoot
-            }
+            | OutputRecordDisposition::ProtocolViolation => NativeHostWake::RepaintRoot,
             OutputRecordDisposition::Inactive => NativeHostWake::Wait,
         }
     }
 
     fn on_viewport_create_failed(&self, failure: NativeViewportCreateFailure) -> NativeHostWake {
-        self.record_viewport_create_failure(failure.viewport_id())
+        self.record_viewport_create_failure(failure.viewport_id(), failure.kind())
+    }
+
+    fn on_viewport_visibility(&self, result: NativeViewportVisibilityResult) -> NativeHostWake {
+        let viewports = self.lock_viewports();
+        let Some(binding) =
+            viewports.binding_for_event(result.window_id(), Some(result.viewport_id()))
+        else {
+            return NativeHostWake::Wait;
+        };
+        let mut records = self.lock();
+        if records.record_viewport_visibility(NativeViewportVisibilityRecord::from_eframe(
+            result, binding,
+        )) {
+            NativeHostWake::RepaintRoot
+        } else {
+            NativeHostWake::Wait
+        }
     }
 }

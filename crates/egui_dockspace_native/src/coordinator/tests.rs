@@ -4,9 +4,11 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{HostInputOutcome, SurfaceUnavailableReason};
+use eframe::NativeViewportVisibilityStatus;
 use winit::event::WindowEvent;
 
 use super::*;
+use crate::viewport_callback::NativeViewportVisibilityRecord;
 
 mod retirement;
 
@@ -126,11 +128,7 @@ fn register_root_and_child(
 
     coordinator
         .session
-        .register_owned_native_child(
-            SECOND_SURFACE,
-            HostWindowToken::new(22),
-            FIRST_SURFACE,
-        )
+        .register_owned_native_child(SECOND_SURFACE, HostWindowToken::new(22), FIRST_SURFACE)
         .expect("the existing child bootstrap queues");
     let mut child_frame = coordinator
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -138,9 +136,7 @@ fn register_root_and_child(
     child_frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the child bootstrap settles every surface");
-    let child_report = child_frame
-        .commit()
-        .expect("the child bootstrap commits");
+    let child_report = child_frame.commit().expect("the child bootstrap commits");
     let child = child_report
         .inputs()
         .iter()
@@ -168,9 +164,7 @@ fn register_root_and_child(
     observed
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the live child inventory settles every surface");
-    observed
-        .commit()
-        .expect("the live child inventory commits");
+    observed.commit().expect("the live child inventory commits");
     (root, child)
 }
 
@@ -262,9 +256,7 @@ fn native_admission_releases_the_exact_hidden_render_lease() {
         .reserve_viewport(child, binding)
         .expect("the deferred viewport reserves its exact binding");
     assert!(
-        native
-            .bridge
-            .reserve_create(child, binding, native_rect()),
+        native.bridge.reserve_create(child, binding, native_rect()),
         "create retention installs the hidden-render lease"
     );
     assert!(
@@ -461,6 +453,59 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("test host settles every surface");
     frame.commit().expect("host frame commits");
+}
+
+#[test]
+fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let child = ViewportId::from_hash_of("visibility-callback");
+    let window = WindowId::from(22);
+    native
+        .bind_viewport(child, window, second)
+        .expect("child viewport binds");
+
+    let shown = NativeViewportVisibilityRecord::for_test(
+        child,
+        window,
+        second,
+        true,
+        NativeViewportVisibilityStatus::Dispatched,
+    );
+    let hidden = NativeViewportVisibilityRecord::for_test(
+        child,
+        window,
+        second,
+        false,
+        NativeViewportVisibilityStatus::Dispatched,
+    );
+    for callback in [shown, hidden, shown] {
+        native
+            .bridge
+            .push_record(HostRecord::ViewportVisibility(callback));
+    }
+    assert!(native.bridge.references_binding(second));
+
+    for _ in 0..3 {
+        assert!(
+            native
+                .reduce_callback_head()
+                .expect("unowned visibility dispatch remains an inert exact callback")
+        );
+        let mut boundary = native
+            .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the visibility callback boundary begins");
+        boundary
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the visibility callback boundary settles every surface");
+        boundary
+            .commit()
+            .expect("the visibility callback boundary commits");
+    }
+
+    assert!(!native.bridge.references_binding(second));
+    assert!(native.session.is_current_native_binding(first));
+    assert!(native.session.is_current_native_binding(second));
 }
 
 #[test]
