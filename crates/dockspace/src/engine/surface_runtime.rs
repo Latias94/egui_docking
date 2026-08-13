@@ -64,6 +64,7 @@ impl DockEngine {
             token,
             ViewportRole::Child,
             Some(target),
+            ViewportOwnership::RuntimeOwned,
         )?;
         if !matches!(outcome, InputOutcome::ViewportRegistered { .. }) {
             self.presentation_identity = identity_before;
@@ -80,6 +81,7 @@ impl DockEngine {
         token: WindowToken,
         role: ViewportRole,
         recovery_target: Option<SurfaceRecoveryTarget>,
+        ownership: ViewportOwnership,
     ) -> Result<InputOutcome, EngineError> {
         if let Some(rejected) = self.platform_provider_rejection(provider) {
             return Ok(rejected);
@@ -210,13 +212,26 @@ impl DockEngine {
             }
             None
         };
-        let binding = match self.viewport.register_existing(
-            self.version.epoch(),
-            surface,
-            token,
-            role,
-            recovery_obligation,
-        ) {
+        let registration = match ownership {
+            ViewportOwnership::External => self.viewport.register_existing(
+                self.version.epoch(),
+                surface,
+                token,
+                role,
+                recovery_obligation,
+            ),
+            ViewportOwnership::RuntimeOwned => {
+                if recovery_obligation.is_none() {
+                    return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+                }
+                if role != ViewportRole::Child {
+                    return Ok(InputOutcome::ViewportRegistrationRejected { surface });
+                }
+                self.viewport
+                    .register_owned_child(self.version.epoch(), surface, token)
+            }
+        };
+        let binding = match registration {
             Ok(binding) => binding,
             Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { .. }) => {
                 return Ok(InputOutcome::ViewportRegistrationRejected { surface });

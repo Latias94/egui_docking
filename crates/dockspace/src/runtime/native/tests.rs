@@ -329,6 +329,110 @@ fn repeated_native_enable_never_reissues_live_bindings() {
 }
 
 #[test]
+fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
+    let child_surface = SurfaceId::new(2);
+    let child_root = RootId::new(2);
+    let layout = crate::model::DockspaceLayout::new([
+        crate::model::DockspaceSurfaceLayout::new(
+            SURFACE,
+            crate::model::DockspaceRootLayout::new(ROOT, crate::model::DockspaceNode::tabs([ITEM])),
+        ),
+        crate::model::DockspaceSurfaceLayout::new(
+            child_surface,
+            crate::model::DockspaceRootLayout::new(
+                child_root,
+                crate::model::DockspaceNode::tabs([ItemId::new(2)]),
+            ),
+        ),
+    ])
+    .expect("the child bootstrap layout validates");
+    let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("the child bootstrap session initializes");
+    session
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed native provider enrolls");
+    session
+        .register_native_root(SURFACE, WINDOW)
+        .expect("the recovery host registration records");
+    let mut host = session
+        .begin_host_frame()
+        .expect("the recovery host frame begins");
+    host.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the recovery host frame settles every surface");
+    let host_report = host
+        .commit()
+        .expect("the recovery host registration commits");
+    let root_binding = match host_report.inputs() {
+        [super::super::HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected one recovery root registration, got {outcomes:?}"),
+    };
+
+    session
+        .register_owned_native_child(child_surface, HostWindowToken::new(42), SURFACE)
+        .expect("the product child bootstrap records");
+    let mut child = session
+        .begin_host_frame()
+        .expect("the child bootstrap frame begins");
+    child
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child bootstrap frame settles every surface");
+    let report = child.commit().expect("the child bootstrap commits");
+
+    assert!(matches!(
+        report.inputs(),
+        [super::super::HostInputOutcome::NativeSurfaceRegistered { binding }]
+            if binding.surface() == child_surface
+    ));
+    let child_binding = match report.inputs() {
+        [super::super::HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
+        outcomes => panic!("expected one owned child registration, got {outcomes:?}"),
+    };
+    session
+        .report_managed_native_snapshot(
+            [
+                (root_binding, NativeWindowFacts::live()),
+                (child_binding, NativeWindowFacts::live()),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the exact live inventory records");
+    commit_managed_frame(&mut session);
+
+    let mut redock = session
+        .begin_host_frame()
+        .expect("the owned child redock frame begins");
+    redock
+        .dock_root_current(
+            child_root,
+            crate::model::DockPlacement::Center(crate::model::DockAnchor::Item(ITEM)),
+        )
+        .expect("the complete child root redocks");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the owned child redock settles every surface");
+    let mut report = redock.commit().expect("the owned child redock commits");
+    let effects = report.take_native_effects();
+    assert!(matches!(
+        effects.as_slice(),
+        [effect]
+            if matches!(
+                effect.operation(),
+                super::super::NativeEffectOperation::ReleaseChild { binding }
+                    if *binding == child_binding
+            )
+    ));
+    let acknowledgement = effects
+        .into_iter()
+        .next()
+        .expect("the release effect exists")
+        .accepted();
+    assert!(matches!(
+        acknowledgement,
+        Some(super::super::NativeEffectAcknowledgement::Close(_))
+    ));
+}
+
+#[test]
 fn native_frame_distinguishes_missing_provider_from_wrong_profile() {
     let mut builder = Workspace::builder();
     let tabs = builder.insert_node(Node::tabs([ITEM]));

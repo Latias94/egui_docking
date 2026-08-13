@@ -873,6 +873,20 @@ impl RuntimeNativeState {
         Ok(())
     }
 
+    fn record_child_bootstrap(
+        &mut self,
+        expected: crate::model::WorkspaceVersion,
+        surface: SurfaceId,
+        token: WindowToken,
+        recovery: crate::surface_recovery::SurfaceRecoveryBootstrap,
+    ) -> Result<(), NativePlatformError> {
+        self.recorder
+            .record_child_viewport_bootstrap(expected, surface, token, recovery)
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        self.binding_roster_unsettled = true;
+        Ok(())
+    }
+
     pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) {
         let next_bindings: BTreeMap<SurfaceId, NativeSurfaceBinding> = engine
             .viewport()

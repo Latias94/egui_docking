@@ -1,4 +1,3 @@
-use dockspace::runtime::NativeSurfaceRole;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute, WindowEvent,
@@ -10,7 +9,7 @@ use crate::event::NativePointerRouteSnapshot;
 #[test]
 fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     let mut native = coordinator();
-    let (first, second) = register_roots(&mut native);
+    let (first, second) = register_root_and_child(&mut native);
     let first_window = WindowId::from(11);
     let second_window = WindowId::from(22);
     let child = ViewportId::from_hash_of("retired-native-child");
@@ -20,12 +19,36 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     native
         .bind_viewport(child, second_window, second)
         .expect("child viewport binds");
-    assert!(native.deferred_viewports.insert(
-        child,
-        second,
-        PhysicalRect::new(100.0, 100.0, 400.0, 300.0).expect("test placement is valid"),
-        NativeSurfaceRole::Child,
+
+    let mut redock = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child redock frame begins");
+    redock
+        .frame
+        .dock_root_current(
+            RootId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .expect("the complete child root redocks through the product action");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child redock settles every surface");
+    let mut redocked = redock.commit().expect("the child redock commits");
+    let effects = redocked.take_native_effects();
+    assert_eq!(
+        effects.len(),
+        1,
+        "redocking one child emits one release; inputs={:#?}; view={:#?}",
+        redocked.inputs(),
+        native.session().view(),
+    );
+    assert!(matches!(
+        effects[0].operation(),
+        NativeEffectOperation::ReleaseChild { binding } if *binding == second
     ));
+    native
+        .accept_native_effects(effects)
+        .expect("the exact child release acknowledgement is retained");
 
     let destroyed = {
         let mut viewports = native
@@ -92,13 +115,24 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
         .commit()
         .expect("the destruction callback boundary commits");
     assert_eq!(native.viewport_binding(child), Some(second));
-    assert!(native.session.is_current_native_binding(second));
+    assert!(!native.session.is_current_native_binding(second));
+    assert!(native.session.recognizes_native_binding(second));
     assert!(
         native
             .deferred_viewport_specs()
             .iter()
             .all(|spec| spec.binding() != second),
         "the destruction callback stops re-declaring the retired child"
+    );
+    let (_, destroyed_facts) = native
+        .retirements
+        .destroyed_observations()
+        .next()
+        .expect("the exact destroyed child is awaiting snapshot publication");
+    assert_ne!(
+        destroyed_facts,
+        NativeWindowFacts::destroyed(),
+        "the destroyed tombstone retains the ReleaseChild acknowledgement"
     );
 
     assert!(
@@ -112,9 +146,13 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     roster_frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the roster boundary settles every surface");
-    let report = roster_frame
+    let mut report = roster_frame
         .commit()
         .expect("the destroyed tombstone commits");
+    assert!(
+        report.take_native_effects().is_empty(),
+        "the exact close acknowledgement settles ReleaseChild without cleanup fallback"
+    );
     assert!(native.settle_host_frame_inputs(report.inputs()));
 
     assert!(

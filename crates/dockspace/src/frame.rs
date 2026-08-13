@@ -703,6 +703,33 @@ impl ViewportCoordinator {
         Ok(binding)
     }
 
+    /// Registers an existing native child whose destruction is owned by dockspace.
+    pub(crate) fn register_owned_child(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        surface: SurfaceId,
+        token: WindowToken,
+    ) -> Result<ViewportBinding, ViewportCoordinatorError> {
+        if self.registry.records().next().is_some() && epoch != self.workspace_epoch {
+            return Err(ViewportCoordinatorError::WorkspaceEpochMismatch {
+                expected: self.workspace_epoch,
+                actual: epoch,
+            });
+        }
+        if self.binding_cleanup.token_is_reserved(token) {
+            return Err(ViewportCoordinatorError::RetiredTokenReserved { token });
+        }
+        if self.recovery_replacements.pending(surface).is_some() {
+            return Err(ViewportCoordinatorError::PendingRecoveryRegistrationMismatch { surface });
+        }
+        let binding = self
+            .registry
+            .register_owned_child(epoch, surface, token)
+            .map_err(ViewportCoordinatorError::Registry)?;
+        self.workspace_epoch = epoch;
+        Ok(binding)
+    }
+
     /// Atomically invalidates old-epoch platform state and reconciles safe current bindings.
     pub(crate) fn reconcile_workspace_epoch(
         &mut self,

@@ -243,7 +243,7 @@ use crate::viewport_focus::{
     PendingPlatformFocus, PlatformFocusEvidence, PlatformFocusRestoreGate,
     ViewportActivationRequest, ViewportFocusCoordinator, ViewportFocusError,
 };
-use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission};
+use crate::viewport_registry::{NativeCloseEdgeDisposition, ViewportAdmission, ViewportOwnership};
 
 pub(crate) const BACKEND_INGRESS_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(u64::MAX);

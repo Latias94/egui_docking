@@ -339,6 +339,33 @@ impl DockspaceSession {
         Ok(())
     }
 
+    /// Records the first registration of an existing dockspace-owned child window.
+    ///
+    /// The adapter names only stable product identities. Core resolves the
+    /// current recovery anchor and mints every recovery-side presentation
+    /// identity while reducing the registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when native authority is unavailable or the backend
+    /// producer rejects the bootstrap record. Semantic rejection is reported
+    /// by the next [`HostFrameReport`](crate::runtime::HostFrameReport).
+    pub fn register_owned_native_child(
+        &mut self,
+        surface: SurfaceId,
+        token: HostWindowToken,
+        recovery_host: SurfaceId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let expected = self.version();
+        self.native_state_mut()?.record_child_bootstrap(
+            expected,
+            surface,
+            token.into_core(),
+            crate::surface_recovery::SurfaceRecoveryBootstrap::new(recovery_host),
+        )?;
+        Ok(())
+    }
+
     /// Records one explicit core-owned close-plan request for an exact native edge.
     ///
     /// # Errors

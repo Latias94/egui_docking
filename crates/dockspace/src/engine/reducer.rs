@@ -1211,6 +1211,7 @@ impl DockEngine {
                 *token,
                 *role,
                 *recovery_target,
+                ViewportOwnership::External,
             ),
             EngineInput::BootstrapChildViewport {
                 provider,

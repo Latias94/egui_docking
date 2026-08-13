@@ -1,6 +1,6 @@
 use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-    SurfaceId,
+    DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{HostInputOutcome, SurfaceUnavailableReason};
@@ -94,6 +94,84 @@ fn register_roots(
         .find(|binding| binding.surface() == SECOND_SURFACE)
         .expect("second binding emitted");
     (first, second)
+}
+
+fn register_root_and_child(
+    coordinator: &mut NativeCoordinator,
+) -> (NativeSurfaceBinding, NativeSurfaceBinding) {
+    coordinator
+        .register_native_root(FIRST_SURFACE, HostWindowToken::new(11))
+        .expect("the recovery root registration queues");
+    let mut root_frame = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the recovery root registration frame begins");
+    root_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the recovery root registration settles every surface");
+    let root_report = root_frame
+        .commit()
+        .expect("the recovery root registration commits");
+    let root = root_report
+        .inputs()
+        .iter()
+        .find_map(|outcome| match outcome {
+            HostInputOutcome::NativeSurfaceRegistered { binding }
+                if binding.surface() == FIRST_SURFACE =>
+            {
+                Some(*binding)
+            }
+            _ => None,
+        })
+        .expect("the recovery root binding is published");
+
+    coordinator
+        .session
+        .register_owned_native_child(
+            SECOND_SURFACE,
+            HostWindowToken::new(22),
+            FIRST_SURFACE,
+        )
+        .expect("the existing child bootstrap queues");
+    let mut child_frame = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child bootstrap frame begins");
+    child_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child bootstrap settles every surface");
+    let child_report = child_frame
+        .commit()
+        .expect("the child bootstrap commits");
+    let child = child_report
+        .inputs()
+        .iter()
+        .find_map(|outcome| match outcome {
+            HostInputOutcome::NativeSurfaceRegistered { binding }
+                if binding.surface() == SECOND_SURFACE =>
+            {
+                Some(*binding)
+            }
+            _ => None,
+        })
+        .expect("the child binding is published");
+    coordinator
+        .report_snapshot(
+            [
+                (root, NativeWindowFacts::live()),
+                (child, NativeWindowFacts::live()),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the exact live root and child inventory records");
+    let mut observed = coordinator
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the live child inventory frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the live child inventory settles every surface");
+    observed
+        .commit()
+        .expect("the live child inventory commits");
+    (root, child)
 }
 
 fn live_roster(

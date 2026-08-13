@@ -481,6 +481,24 @@ impl ViewportRegistry {
             surface,
             token,
             role,
+            ViewportOwnership::External,
+            ViewportAdmission::Admitted,
+        )
+    }
+
+    /// Registers an existing child whose native lifetime is owned by dockspace.
+    pub(crate) fn register_owned_child(
+        &mut self,
+        epoch: WorkspaceEpoch,
+        surface: SurfaceId,
+        token: WindowToken,
+    ) -> Result<ViewportBinding, ViewportRegistryError> {
+        self.register_existing_with_admission(
+            epoch,
+            surface,
+            token,
+            ViewportRole::Child,
+            ViewportOwnership::RuntimeOwned,
             ViewportAdmission::Admitted,
         )
     }
@@ -493,6 +511,7 @@ impl ViewportRegistry {
         surface: SurfaceId,
         token: WindowToken,
         role: ViewportRole,
+        ownership: ViewportOwnership,
         admission: ViewportAdmission,
     ) -> Result<ViewportBinding, ViewportRegistryError> {
         if self.records.contains_key(&surface) {
@@ -506,7 +525,7 @@ impl ViewportRegistry {
         self.insert_binding(
             ViewportBinding::new(self.authority_domain, epoch, surface, token, incarnation),
             role,
-            ViewportOwnership::External,
+            ownership,
             admission,
         )
     }
