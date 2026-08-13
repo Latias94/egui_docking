@@ -116,6 +116,39 @@ impl NativeViewportMap {
         Ok(())
     }
 
+    pub(crate) fn reserve_retired_replacement(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        successor: NativeSurfaceBinding,
+    ) -> Result<(), NativeViewportBindingError> {
+        let Some(current) = self.viewports.get(&viewport).copied() else {
+            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
+        };
+        Self::validate_binding(viewport, expected, current)?;
+        if !self.pointer_suppressed.contains(&expected)
+            || self.prepared_retirements.contains(&expected)
+        {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: expected.surface(),
+            });
+        }
+        if successor.surface() != expected.surface() {
+            return Err(NativeViewportBindingError::ReplacementSurfaceMismatch {
+                viewport,
+                expected: expected.surface(),
+                successor: successor.surface(),
+            });
+        }
+        if let Some(window) = current.window {
+            self.windows.remove(&window);
+        }
+        self.pointer_suppressed.remove(&expected);
+        self.insert(viewport, None, successor);
+        Ok(())
+    }
+
     pub(crate) fn replace(
         &mut self,
         viewport: ViewportId,

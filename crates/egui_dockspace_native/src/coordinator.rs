@@ -528,12 +528,12 @@ impl NativeCoordinator {
 
     /// Accepts the minimal platform effects implemented by this vertical slice.
     ///
-    /// New child windows retain their affine create request until eframe reports
-    /// the first exact callback or a typed create failure. `ShowWindow` is
-    /// accepted only for an existing exact retained viewport. `ReleaseChild`
-    /// stops re-declaring the child but retains its route until an exact
-    /// destruction callback commits. Replacement and unrelated platform
-    /// operations remain explicitly unsupported.
+    /// New and replacement child windows retain their affine request until
+    /// eframe reports the first exact callback or a typed create failure.
+    /// `ShowWindow` is accepted only for an existing exact retained viewport.
+    /// `ReleaseChild` stops re-declaring the child but retains its route until
+    /// an exact destruction callback commits. Unrelated platform operations
+    /// remain explicitly unsupported.
     pub(crate) fn accept_native_effects(
         &mut self,
         requests: Vec<NativeEffectRequest>,
@@ -544,14 +544,46 @@ impl NativeCoordinator {
                     binding,
                     placement,
                     role,
+                }
+                | NativeEffectOperation::RequestReplacement {
+                    binding,
+                    placement,
+                    role,
                 } => {
                     let binding = *binding;
                     let placement = *placement;
                     let role = *role;
-                    let viewport = viewport_id_for(binding);
+                    let kind = match request.operation() {
+                        NativeEffectOperation::CreateWindow { .. } => {
+                            NativeViewportEffectKind::Create
+                        }
+                        NativeEffectOperation::RequestReplacement { .. } => {
+                            NativeViewportEffectKind::Replacement
+                        }
+                        _ => unreachable!("matched one deferred viewport operation"),
+                    };
+                    let viewport = match kind {
+                        NativeViewportEffectKind::Create => viewport_id_for(binding),
+                        NativeViewportEffectKind::Replacement => {
+                            let Some(viewport) = self.surface_viewport(binding.surface()) else {
+                                self.submit_unsupported_effect(request)?;
+                                continue;
+                            };
+                            viewport
+                        }
+                    };
+                    let predecessor = match kind {
+                        NativeViewportEffectKind::Create => None,
+                        NativeViewportEffectKind::Replacement => self.viewport_binding(viewport),
+                    };
                     if !self
                         .deferred_viewports
                         .can_insert(viewport, binding, placement, role)
+                        || predecessor.is_some_and(|predecessor| {
+                            !self
+                                .retirements
+                                .can_retire_committed_route_for_replacement(viewport, predecessor)
+                        })
                     {
                         self.submit_unsupported_effect(request)?;
                         continue;
@@ -566,11 +598,19 @@ impl NativeCoordinator {
                     debug_assert_eq!(plan.binding(), binding);
                     debug_assert_eq!(plan.placement(), placement);
                     debug_assert_eq!(plan.role(), role);
-                    debug_assert_eq!(plan.kind(), NativeViewportEffectKind::Create);
+                    debug_assert_eq!(plan.kind(), kind);
                     let inserted = self
                         .deferred_viewports
                         .insert(viewport, binding, placement, role);
                     assert!(inserted, "preflighted deferred viewport must insert");
+                    if let Some(predecessor) = predecessor {
+                        assert!(
+                            self.retirements
+                                .retire_committed_route_for_replacement(viewport, predecessor),
+                            "preflighted predecessor route must retire through replacement"
+                        );
+                        self.receivers.retire_binding(predecessor);
+                    }
                 }
                 NativeEffectOperation::ShowWindow { binding } => {
                     let binding = *binding;
@@ -785,9 +825,8 @@ impl NativeCoordinator {
                 (NativeViewportEffectKind::Create, None) => {
                     viewports.reserve(viewport, plan.binding())
                 }
-                (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
-                    viewports.reserve_replacement(viewport, predecessor, plan.binding())
-                }
+                (NativeViewportEffectKind::Replacement, Some(predecessor)) => viewports
+                    .reserve_retired_replacement(viewport, predecessor, plan.binding()),
                 (NativeViewportEffectKind::Create, Some(_)) => {
                     Err(NativeViewportBindingError::ViewportAlreadyBound {
                         viewport,

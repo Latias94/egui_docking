@@ -11,6 +11,7 @@ use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
 mod retirement;
+mod replacement;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);

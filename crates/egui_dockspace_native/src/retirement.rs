@@ -372,6 +372,31 @@ impl NativeRetirementState {
             .collect()
     }
 
+    pub(crate) fn can_retire_committed_route_for_replacement(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.pending.get(&binding).is_some_and(|pending| {
+            pending.viewport == viewport && pending.phase == RetirementPhase::TombstoneCommitted
+        })
+    }
+
+    pub(crate) fn retire_committed_route_for_replacement(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        let Some(pending) = self.pending.get_mut(&binding) else {
+            return false;
+        };
+        if pending.viewport != viewport || pending.phase != RetirementPhase::TombstoneCommitted {
+            return false;
+        }
+        pending.phase = RetirementPhase::RouteRetired;
+        true
+    }
+
     pub(crate) fn commit_routes(&mut self, committed: &[CommittedRetirement]) {
         for committed in committed {
             let pending = self
