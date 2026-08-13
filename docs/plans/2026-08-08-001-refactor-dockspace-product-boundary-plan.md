@@ -18,7 +18,7 @@ execution: code
 | Authority | `dockspace` owns topology, layout semantics, policy, drop resolution, action validation, persistence, close intent, and surface ownership outcomes. UI adapters provide measurements, rendering, input facts, and platform effects only. |
 | Compatibility | Breaking changes are intentional. Do not add deprecated aliases or preserve raw `WorkspaceCommand`/`NodeId` product entry points. |
 | Fork baseline | Start from upstream egui 0.36.1 and reapply only seams proven necessary by the native vertical slice. Keep the current 0.35 fork as an archived behavior reference until migration evidence is complete. |
-| Test posture | Prefer ordinary Rust unit/property/integration tests and one deterministic real-window smoke. Do not build a test engine, source parser, SHA/digest gate, screenshot matrix, or multi-scenario E2E framework. |
+| Test posture | Prefer ordinary Rust unit/property/integration tests and one bounded single-path real-window smoke. Do not build a test engine, source parser, SHA/digest gate, screenshot matrix, or multi-scenario E2E framework. |
 | Stop conditions | Report a capability as `Unknown`/unavailable when the platform cannot provide an authoritative fact. Stop before remote publication or upstream PR creation; those are separate authorized actions. |
 
 The July 18 plan is superseded by this document. Its historical evidence remains useful, but its presentation-settlement and broad backend-protocol sequencing is no longer authoritative.
@@ -45,7 +45,7 @@ The fork has also grown into a broad runtime patch rather than a small upstreama
 - R2. `dockspace` remains the sole semantic authority for topology, N-ary split canonicalization, central-area semantics, tab order/selection/MRU, policy enforcement, drop winner selection, preview/commit equivalence, and atomic graph mutation.
 - R3. Core layout compilation consumes renderer-neutral measurements and emits one `PresentationPlan`/hit manifest. egui must not maintain a competing complete docking projection.
 - R4. Local egui input uses current-frame `Response` and widget-layer facts. Every generated action carries the relevant workspace/plan revision and is revalidated by core at frame end.
-- R5. Native multi-viewport uses a global ordered input owner, exact surface/binding incarnation, typed platform effect/result outcomes, complete surface-roster recovery, and a first-live ownership barrier. Unknown platform facts fail closed.
+- R5. Native multi-viewport uses a global ordered input owner, exact surface/binding incarnation, typed platform effect/result outcomes, complete surface-roster recovery, and a post-transfer first-live admission barrier. Unknown platform facts fail closed.
 - R6. Core-native lifecycle semantics are shared across adapters, while OS window objects, event-loop scheduling, focus dispatch, and renderer callbacks remain native-adapter responsibilities.
 - R7. The public product facade is item/surface-centric and does not expose `NodeId`, raw `Workspace`, internal fingerprints, `WorkspaceCommand`, reducer ticks, leases, watermarks, or provider FSMs.
 - R8. Persistence keeps atomic workspace validation and external-item identity pairing. Document, key-map, and viewport-placement restoration must commit as one authority domain.
@@ -102,6 +102,8 @@ Explicit non-goals:
 - KTD6. **Black-box conformance, not a protocol interpreter.** Migrate high-value protocol traces into ordinary Rust behavior tests that compare public transition outcomes. Delete the custom trace oracle once no production path depends on it.
 - KTD7. **One desktop/native coordinator, local adapters remain thin.** Core owns lifecycle meaning and complete roster disposition; native runtime owns OS execution and scheduling. No second authority island in `DockspaceDocumentSession` or egui.
 - KTD8. **Modularize during migration.** New deep modules must own one concept and expose a narrow facade. Do not preserve 10K-line files as temporary “later cleanup” buckets.
+- KTD9. **Dispatch acknowledgement is not a platform fact.** Eframe may acknowledge that it dispatched `ShowWindow`, but ownership transfer still waits for a later exact visibility snapshot. The first live semantic output is a separate post-transfer admission barrier that releases retained source content and staging resources. Unsupported dispatch is a typed terminal result, never an infinite `AwaitingHidden` wait.
+- KTD10. **One thin real-window smoke, deterministic protocol coverage elsewhere.** The smoke proves only the irreducible OS boundary: event-loop window creation, hidden staging, visibility dispatch, first-live presentation, and exact child retirement. Tear-off geometry, redock winner selection, close/recovery races, ABA, and failure matrices remain ordinary Rust black-box tests.
 
 ### High-Level Technical Design
 
@@ -142,17 +144,38 @@ The precise method names and storage layout are implementation-time decisions. T
 - Never make a platform `Known` fact from callback absence, guessed geometry, or a stale viewport token.
 - Do not implement a second complete projection in an adapter.
 - Reuse the existing `target` directory and run Cargo serially (`-j1`) unless a test requires otherwise.
+- Preserve concurrent user or subagent worktree edits. Stage only owned files or hunks, and never use reset, restore, checkout, stash, or broad deletion to manufacture a clean tree.
 
 ### Assumptions
 
 - egui 0.36.1 and winit 0.30.13 APIs are available from the pinned upstream release baseline.
 - `repo-ref/open-gpui`, `repo-ref/imgui`, and `repo-ref/dockview` are owned reference code and may be copied selectively.
-- The current branch is the only active canonical checkout; no user edits are present at plan creation.
+- The active checkout may contain concurrent in-scope edits; current filesystem state is authoritative and must be reconciled before each unit commit.
 - Native support remains an optional unpublished crate until the real-window vertical slice passes.
+
+Product Contract preservation: unchanged. This planning refresh only narrows the fork seam, smoke responsibility, and worktree-safety rules using evidence gathered during U6/U7 implementation.
 
 ---
 
 ## Implementation Units
+
+### Current execution baseline
+
+This is a continuation plan, not a greenfield U1-to-U9 replay. The commits below are evidence anchors, not SHA-based test or release gates. Before starting a remaining unit, inspect the current filesystem and preserve compatible concurrent work.
+
+| Unit | Status | Landed evidence | Remaining acceptance |
+| --- | --- | --- | --- |
+| U1 | Complete | Official/fork Cargo baselines and clean pinned workspaces | Keep the official and fork workspaces pinned and clean-checkout reproducible. |
+| U2 | Partial | Product model plus revision-bound host actions | Finish only the revision-bound actions required by the default egui path and the Open-GPUI adapter; do not add speculative verbs. |
+| U3 | Partial | `integration/egui-product-harness` and core-owned local feedback | Move the remaining tab reorder/drag and contained-title flows into the default-feature product harness; retain exact cancellation and preview/commit tests. |
+| U4 | Partial | Narrow runtime host contract and hidden backend seam | Remove remaining adapter dependence on backend internals while keeping the private full candidate as the correctness baseline. |
+| U5 | Complete | The protocol trace crate is absent from the workspace and active build graph. | Do not recreate the protocol oracle; any remaining lifecycle case is added directly as an ordinary Rust black-box test. |
+| U6 | Partial | Renderer-neutral native runtime and exact child retirement | Close deterministic native effect, child retirement, terminal input, and quiescence cases through the renderer-neutral runtime only. |
+| U7 | Partial | Fork-backed native coordinator, staging, scale, and visibility dispatch | Prove ingress-to-create, record seam admission evidence, and add the one real-window smoke after the lifecycle is closed. |
+| U8 | Not started | Existing Open-GPUI adapter tests are reference evidence only. | Migrate one production semantic path to the shared core without replacing GPUI host, focus, render, accessibility, or motion runtime. |
+| U9 | Partial | Raw workspace modules and much of the egui boundary are already sealed. | Seal the final core, egui, native, persistence, and downstream API only after both real adapters exercise it. |
+
+The next execution point is the remaining U6/U7 lifecycle work. Completed units are verification baselines, not tasks to redo.
 
 ### U1. Establish the egui 0.36.1 baseline
 
@@ -185,18 +208,18 @@ The precise method names and storage layout are implementation-time decisions. T
 
 **Files:** `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/lib.rs`, new `crates/dockspace/src/model/` modules, `crates/dockspace/src/operation.rs`, `crates/dockspace/src/persistence.rs`, new `crates/dockspace/tests/product_model.rs`, new `crates/dockspace/tests/product_actions.rs`, `crates/egui_dockspace/src/builder.rs`, `crates/egui_dockspace/src/response.rs`.
 
-**Approach:** Add a core-owned `DockspaceLayout`/`DockspaceView` and typed actions such as select, close, dock, float, raise, and bring-into-view. Resolve stable anchors inside the reducer candidate, allocate dynamic identities inside the same rollback boundary, and map internal errors to opaque product rejections. Keep raw graph APIs backend-only during migration.
+**Approach:** Add a core-owned `DockspaceLayout`/`DockspaceView` and revision-bound actions for select, open, close, dock item/root, tab reorder, splitter adjustment, contained move/resize/placement, float, raise, and bring-into-view. Resolve stable anchors inside the reducer candidate, allocate dynamic identities inside the same rollback boundary, and map internal errors to opaque product rejections. Pointer-driven forms are prepared from the current `SurfacePaintPlan`; programmatic forms are exposed only when a real adapter uses them. Keep raw graph APIs backend-only during migration.
 
 **Test scenarios:**
 
 - Build a central root, N-ary split, contained floating root, and rootless surface from stable item/layout data.
-- Select, close, dock, and float by `ItemId`/`SurfaceId`; missing anchors reject without graph or ID-frontier mutation.
+- Select, close, dock, reorder, resize, move, and float by stable item/surface or opaque current-plan identity; missing or stale anchors reject without graph or ID-frontier mutation.
 - Persistence round-trip preserves item-key bijection and placement sidecar atomically.
 - A failed policy or validation action leaves topology, selection, MRU, and identity frontiers unchanged.
 
 **Verification:** Product facade tests pass without importing `NodeId`, `WorkspaceCommand`, or raw `Workspace` from the default API.
 
-**Execution note:** U2 establishes the revision-bound model and the select/open/dock/close foundation. Finalize the remaining programmatic action vocabulary against the second real adapter in U8, so the public API is driven by demonstrated egui and GPUI needs rather than speculative commands.
+**Execution note:** U2 must contain every action needed by U3 before U3 is considered complete. U8 may add only a missing verb demonstrated by the Open-GPUI adapter, followed by an equivalent egui/core conformance case; it must not become a second action-design phase.
 
 ### U3. Make official-egui single-surface interaction real
 
@@ -215,10 +238,12 @@ The precise method names and storage layout are implementation-time decisions. T
 **Test scenarios:**
 
 - A normal `basic` application selects a tab and commits the change on the next frame.
-- A tab close, center dock, each four-way edge dock, and contained move/resize use the actual Response receiver and commit exactly once.
+- A tab close, tab reorder/drag, center dock, each four-way edge dock, splitter resize, and contained move/resize use the actual Response receiver and commit exactly once.
+- Splitter and contained resize geometry follows pointer motion before release; durable topology or placement changes only on the terminal action.
 - A stale action after a topology change is rejected while pane content still paints.
 - A press/release in one `RawInput` batch remains a valid click and does not cancel correlation.
-- Keyboard and AccessKit actions use the same local receiver facts and are disabled only when the target is genuinely stale or unsupported.
+- Escape, exact capture loss, provider retirement, or a deleted/stale target terminates the owned gesture exactly once, clears its preview, and leaves pane content reachable; transient `Unknown` cannot authorize progress or commit.
+- Keyboard and AccessKit cover tab navigation/selection/close with focus recovery plus splitter increment/decrement. Unsupported controls omit or disable their actions rather than advertising a dead operation.
 
 **Verification:** Official-egui downstream interaction tests pass in a production build; the basic example is manually runnable and no longer silently paint-only.
 
@@ -232,7 +257,7 @@ The precise method names and storage layout are implementation-time decisions. T
 
 **Files:** `crates/dockspace/src/backend.rs`, `crates/dockspace/src/backend_ingress.rs`, `crates/dockspace/src/engine/host_frame.rs`, `crates/dockspace/src/presentation_observation.rs`, `crates/dockspace/src/transition.rs`, new `crates/dockspace/src/host/` modules, new `crates/dockspace_host_conformance/tests/host_contract.rs`.
 
-**Approach:** Define the small contract around frame requirements, surface facts, ordered input batches, presentation plan, and host results. Keep lifecycle invariants private behind a core coordinator. Remove ordinary-frame savepoints, presentation stream settlement, and full-engine candidate cloning from the adapter-facing path; use domain-local candidates or write sets where needed.
+**Approach:** Define the small contract around frame requirements, surface facts, ordered input batches, presentation plan, and host results. Keep lifecycle invariants private behind a core coordinator. Remove ordinary-frame savepoints and presentation stream settlement from the adapter-facing path, but retain the private whole-engine candidate as the correctness and rollback baseline. A later write-set/COW optimization is authorized only when the existing 16/128/1024 structural counters or a focused profile identify candidate cloning as the measured bottleneck; it is not part of the host-contract migration by default.
 
 **Test scenarios:**
 
@@ -261,19 +286,19 @@ The precise method names and storage layout are implementation-time decisions. T
 - Deleting the trace crate does not remove coverage for unique winner, preview/commit equivalence, close/recovery, or native effect failure.
 - Cargo metadata shows no production dependency on `egui_tiles` or the retired bridge.
 
-**Verification:** Workspace and downstream harnesses compile without the deleted crate or cfg; no test depends on internal reducer serialization.
+**Verification:** Workspace and downstream harnesses compile without the deleted crate or cfg; no test depends on internal reducer serialization. This unit is complete and must not be reintroduced as a prerequisite or replacement test framework for U6/U7.
 
 ### U6. Build the minimal renderer-neutral native coordinator
 
 **Goal:** Preserve exact multi-viewport lifecycle meaning without exposing the current provider/presentation algebra.
 
-**Requirements:** R5, R6, R8; KTD1, KTD7.
+**Requirements:** R5, R6, R8; KTD1, KTD7, KTD9, KTD10.
 
-**Dependencies:** U4, U5.
+**Dependencies:** U4. U5 is already complete; if a historical lifecycle case is rediscovered, port the assertion directly before deleting any remaining reference fixture.
 
-**Files:** `crates/dockspace/src/viewport/`, `crates/dockspace/src/effects/`, `crates/dockspace/src/close/`, new `crates/dockspace/tests/native_coordinator.rs`, `crates/egui_dockspace_native/src/`, `crates/egui_dockspace_native/tests/native_lifecycle.rs`, `integration/egui-native-e2e/src/main.rs`.
+**Files:** `crates/dockspace/src/runtime/native/`, `crates/dockspace/src/runtime/native_effect.rs`, `crates/dockspace/src/frame/`, `crates/dockspace/src/engine/native_admission.rs`, and native behavior tests under `crates/dockspace/src/behavior_tests/`.
 
-**Approach:** Keep binding incarnation, complete surface roster, ordered desktop pointer, typed effect result, close/recovery semantics, and the compact create sequence `CreateHidden → StagingAccepted → Visible → TransferOwnership → FirstLiveAccepted`. Add one concrete managed-native enrollment instead of a caller-selectable capability mode. The public pointer lane must distinguish surface-local exact coordinates, desktop-global hover, outside-all work-area placement, delivery endpoint, and capture owner; delivery and hover probes are independent. Native receiver resolution is a small synchronous host callback over product descriptors, while ordinals, receipts, provider lifetimes, and replay remain private. Do not synthesize empty pointer records for frames without input; complete pointer state is an explicit host fact. Move OS event-loop and renderer scheduling into native adapter code. Keep source content visible until first-live acceptance and process main plus contained roots atomically on surface destruction.
+**Approach:** Keep binding incarnation, complete surface roster, ordered desktop pointer, typed effect result, close/recovery semantics, and the compact create sequence `CreateHidden → StagingAccepted → VisibilityObserved → TransferOwnership → FirstLiveAccepted`. `TransferOwnership` is the atomic graph move after exact post-show staging; first-live is the separate admission barrier that releases retained source content and staging resources. Add one concrete managed-native enrollment instead of a caller-selectable capability mode. The public pointer lane must distinguish surface-local exact coordinates, desktop-global hover, outside-all work-area placement, delivery endpoint, and capture owner; delivery and hover probes are independent. Native receiver resolution is a small synchronous host callback over product descriptors, while ordinals, receipts, provider lifetimes, and replay remain private. Do not synthesize empty pointer records for frames without input; complete pointer state is an explicit host fact. Core owns no event-loop, eframe mailbox, viewport builder, or renderer scheduling code. Process main plus contained roots atomically on surface destruction.
 
 **Test scenarios:**
 
@@ -283,52 +308,78 @@ The precise method names and storage layout are implementation-time decisions. T
 - Create/show/focus/first-live failure leaves source ownership recoverable and does not strand a pending effect.
 - A stale binding incarnation or delayed pointer event is rejected without affecting the successor window.
 - A failed host-frame/drop replays the same native edge, while an explicit terminal pointer fact ends the old gesture exactly once.
+- Before an owned gesture exists, `Unknown` prevents acquisition. During an owned gesture, `Unknown` may preserve the last exact owner only while a future exact terminal source still exists; an exact release, cancellation, provider retirement, destroyed binding, or unrecoverable route gap terminates once and clears preview/capture. `Unknown` never commits or creates a new target.
+- `ShowWindow` remains affine until the exact eframe dispatch callback; `Dispatched` produces only a presentation acknowledgement, while `Unsupported` produces a typed effect result and neither outcome fabricates visibility.
+- `ReleaseChild` and compensating close retain their exact route until the correlated destroyed tombstone commits, then retire route, deferred spec, receiver state, pending output, and effect ownership before reporting quiescence.
 
-**Verification:** Native helper tests cover each lifecycle transition and the existing single real-window smoke passes through the new coordinator.
+**Verification:** Native helper tests cover each lifecycle transition and binding-generation edge. The real-window proof remains U7 work and is not simulated with public token constructors or a lifecycle DSL.
 
 ### U7. Rebuild the fork seam and native vertical slice
 
 **Goal:** Reapply only platform facts that official egui/eframe cannot express and prove one real two-window path.
 
-**Requirements:** R5, R9, R12; KTD5.
+**Requirements:** R5, R9, R12; KTD5, KTD9, KTD10.
 
 **Dependencies:** U1, U6.
 
 **Files:** `repo-ref/egui-release/`, `repo-ref/winit-release/`, `crates/egui_dockspace_native/`, `integration/egui-fork-workspace/`, `scripts/run_egui_fork_harness.py`, `.github/workflows/ci.yml`, and one future `integration/egui-native-smoke/` executable after the coordinator is complete.
 
-**Approach:** Base the new fork branch on upstream egui 0.36.1. Keep only event-time pointer position/modifier facts and a narrow presented/not-presented output hook. If a split host produces multiple outputs for one `egui::Context`, mint an opaque context-local output ordinal at production; host confirmation order must never stand in for generation order. Replace implicit custom cfg with an explicit fork feature and do not add dependency API probes. Delete the former 0.35 hosted-cycle runtime, duplicate effect/presentation ledgers, scenario harness, and E2E runner rather than porting them. Build the replacement around one `DockspaceSession`, one private callback mailbox/host port, typed core native facts/effects, and one eventual ordinary two-window smoke. The native crate may expose only a thin unpublished facade; its coordinator and host frame must not leak `DockspaceHostFrame` through `DerefMut`. The egui product renderer is reused through a sessionless, explicitly feature-gated support seam rather than copied into the native crate. The smoke is added only after the app, effect, and viewport lifecycle path is complete; until then the repository must describe native multiview as unavailable.
+**Approach:** Base the new fork branch on upstream egui 0.36.1. Keep only seams proven necessary by the vertical slice: ordered raw native events, context-local output token and terminal result, complete root viewport snapshots, exact native and presentation scale, hidden deferred rendering, physical outer-rect staging, typed create failure, and typed visibility dispatch. Each seam needs a checked-in upstream-baseline failure test or fixture description naming the missing fact, affected platform, minimal patch boundary, and deletion/upstream condition; a seam without that evidence is removed. If a split host produces multiple outputs for one `egui::Context`, mint an opaque context-local output ordinal at production; host confirmation order must never stand in for generation order. Replace implicit custom cfg with an explicit fork feature and do not add dependency API probes. Delete the former 0.35 hosted-cycle runtime, duplicate effect/presentation ledgers, scenario harness, and E2E runner rather than porting them. Build the replacement around one `DockspaceSession`, one private ordered callback mailbox, one viewport/effect coordinator, typed core native facts/effects, and one eventual ordinary two-window smoke. `ShowWindow` is accepted only after the exact eframe dispatch callback; a later exact visibility snapshot and first-live semantic output remain separate barriers. The native crate may expose only a thin unpublished facade; its coordinator and host frame must not leak `DockspaceHostFrame` through `DerefMut`. The egui product renderer is reused through a sessionless, explicitly feature-gated support seam rather than copied into the native crate. Add the smoke only after create, staging, show, first-live, release/destroy, and quiescence are complete; until then the repository must describe native multiview as unavailable.
 
 **Test scenarios:**
 
 - Pinned fork and native crate compile from a clean checkout without dirty local directories.
 - Event-time button/wheel position and modifiers survive into the native ordered input batch.
+- A normal Rust black-box ingress test submits one exact outside-all release through the production native input types, observes the corresponding `CreateWindow` request, and proves source ownership/content remain retained; this is not a synthetic output-token or lifecycle DSL.
 - Reversed split-host confirmation cannot reorder texture commands generated by one context, and an application-owned presentation token rejects before any core or output mutation.
-- Two real OS windows complete tear-off, first-live, redock, and child retirement.
+- Hidden child creation fails before window construction on a backend that cannot honor the visibility contract; supported backends report dispatch separately from later exact visibility.
+- Two real OS windows complete hidden creation, pre-show and post-show staging, first-live admission, and exact child retirement without content loss or an orphaned route.
+- Deterministic Rust black-box tests separately cover outside-all tear-off, cross-window redock, close/veto/recovery, ABA, and failure sequences without making the smoke a scenario framework.
 - A platform that cannot provide an exact desktop fact reports unsupported/unknown rather than guessing.
 
-**Verification:** Fork target tests, native helper tests, and the single real-window smoke pass; no additional E2E framework is introduced.
+**Verification:** Fork target tests, native helper tests, the ingress-to-create black-box test, and the single real-window smoke pass; no additional E2E framework is introduced. The sole automated smoke reference target is Ubuntu CI under Xvfb using winit X11 and the Glow renderer, run serially with one process-level timeout and state-based completion. It exercises only create-hidden, staging, visibility dispatch, first-live, release/destroy, and quiescence; Wayland remains typed unsupported for hidden creation until it can provide the required facts.
 
-### U8. Migrate Open-GPUI and seal the public API
+### U8. Migrate one Open-GPUI semantic path
 
-**Goal:** Make Open-GPUI consume the same semantic core and publish a narrow item/surface-centric facade.
+**Goal:** Make Open-GPUI consume the same semantic core for one production semantic path without replacing GPUI host, focus, render, accessibility, or motion runtime.
 
 **Requirements:** R2, R6, R7, R8, R11; KTD1, KTD4, KTD7, KTD8.
 
 **Dependencies:** U2, U4, U6.
 
-**Files:** `repo-ref/open-gpui/crates/gpui_docking/`, `repo-ref/open-gpui/crates/gpui_docking/src/dockspace_adapter_tests.rs`, `crates/dockspace/src/lib.rs`, `crates/egui_dockspace/src/lib.rs`, `crates/egui_dockspace_native/src/lib.rs`, `integration/egui-official-harness/tests/public_api.rs`, `docs/knowledge/dockspace-public-api-seal.md`, README and examples.
+**Files:** `repo-ref/open-gpui/Cargo.toml`, `repo-ref/open-gpui/crates/gpui_docking/`, `repo-ref/open-gpui/crates/gpui_docking/src/dockspace_adapter_tests.rs`, shared action modules under `crates/dockspace/src/model/` and `crates/dockspace/src/runtime.rs`, plus Open-GPUI adapter behavior tests.
 
-**Approach:** Keep GPUI panel factories, focus handles, native window runtime, motion, and accessibility rendering in GPUI. Before connecting the adapter, finish the revision-bound semantic vocabulary required by both products: float an item or complete root, raise a contained presentation, update contained placement, resize a splitter, and bring an item into view. Replace GPUI's graph/action/drop authority with the shared core through a small adapter; the adapter must not fall back to raw `WorkspaceCommand` for missing product operations. Hide raw graph/engine modules by default and expose stable item/surface snapshots, actions, outcomes, persistence, and capability status.
+**Approach:** Keep GPUI panel factories, focus handles, native window runtime, motion, and accessibility rendering in GPUI. Use an explicit repository-local path or `[patch]` for the unpublished `dockspace`; never resolve the placeholder crates.io version during migration. The Open-GPUI migration branch adopts Rust 1.95 for this adapter experiment rather than lowering the shared core MSRV during U8. Start with item selection plus one revision-bound dock/root relocation path and the corresponding close/focus behavior test. Replace only that path's graph/action/drop authority with the shared core; the adapter must not fall back to raw `WorkspaceCommand`. Add a missing product verb only when this path proves it necessary and add an equivalent core/egui conformance case in the same change.
 
 **Test scenarios:**
 
-- GPUI and egui apply the same select/dock/close/float actions to an equivalent layout and produce equivalent core outcomes.
-- Programmatic float, raise, contained placement, splitter resize, and bring-into-view reject stale prepared actions without partial mutation.
-- Product downstream fixtures compile without `NodeId`, raw `Workspace`, or `EngineTransition`.
-- A dedicated default-feature fixture proves the product API boundary without enabling or importing the backend feature; this remains a normal Rust compile/test target rather than a source-analysis script.
-- Persistence and close outcomes remain available through the unified session facade.
+- GPUI and egui apply the selected item action and one complete-root or item dock action to an equivalent layout and produce equivalent core outcomes.
+- The adapter consumes the repository-local core at Rust 1.95 from a clean checkout and never resolves a registry placeholder.
+- The migrated path cannot mutate a second graph or call a fallback resolver; dual engines remain allowed only in differential tests.
+- Close and focus behavior for the migrated path matches the Open-GPUI behavior fixture without moving GPUI runtime ownership into core.
 
-**Verification:** Public API compile fixtures, Open-GPUI docking behavior tests, rustdoc, and adapter conformance pass after raw exports are removed.
+**Verification:** Open-GPUI behavior tests and shared action conformance pass for the selected production path. This unit is complete when one real GPUI path has a single graph authority; it does not require wholesale replacement of `gpui_docking`.
+
+### U9. Seal the final public API and package boundary
+
+**Goal:** Publish one narrow item/surface-centric facade after official-egui, native, and Open-GPUI have exercised the real product vocabulary.
+
+**Requirements:** R7, R8, R11, R12; KTD1, KTD4, KTD8.
+
+**Dependencies:** U3, U4, U7, U8.
+
+**Files:** `crates/dockspace/src/lib.rs`, `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/document.rs`, `crates/dockspace/src/persistence.rs`, `crates/egui_dockspace/src/lib.rs`, `crates/egui_dockspace_native/src/lib.rs`, `integration/egui-product-harness/`, `integration/egui-official-harness/tests/public_api.rs`, `docs/knowledge/dockspace-public-api-seal.md`, README and examples.
+
+**Approach:** Hide raw graph, scene, engine, transition, authority, and persistence-candidate types from default public signatures. Expose stable item/surface views, revision-bound actions, close/persistence outcomes, capability status, and the minimal native host facade demonstrated by U7. Reuse `integration/egui-product-harness` as the no-backend product fixture; do not add a third API harness. Keep backend-only migration APIs explicitly feature-gated and undocumented for production adoption, then remove them once no in-tree adapter imports them.
+
+**Test scenarios:**
+
+- Default-feature downstream code compiles without `NodeId`, raw `Workspace`, `DockEngine`, `EngineTransition`, or backend features.
+- Serde capture/restore runs through the session/document facade and cannot construct or publish an unpaired workspace/key-map/placement candidate.
+- The official-egui backend harness covers only host/backend compatibility; the product harness proves the default public facade and production interactions.
+- Rustdoc and package dry-runs contain no links or signatures to private implementation types.
+
+**Verification:** Product and official downstream fixtures, rustdoc, package dry-runs, and Open-GPUI adapter conformance pass after raw exports are removed.
 
 ---
 
@@ -340,7 +391,7 @@ Run checks serially and reuse the normal repository `target` directory.
 - Locked workspace compilation: `cargo check --workspace --all-features --all-targets --locked -j1`.
 - Core and egui behavior: nextest for `dockspace` and `egui_dockspace` with all targets/features.
 - Black-box host conformance: `dockspace_host_conformance` and official-egui downstream harness.
-- Fork/native verification: the existing thin fork harness, native helper tests, and one real-window smoke.
+- Fork/native verification: direct Cargo tests against the pinned fork workspace, native helper tests, and one ordinary real-window smoke executable. The Python harness remains a thin Cargo launcher only where CI needs one cross-platform entry point.
 - API/publishing gate: downstream compile fixtures, rustdoc, and `cargo package --dry-run` for publishable crates.
 - Performance evidence: retain structural 16/128/1024 tests and targeted clone/scan counters; do not make wall-clock thresholds or digest files a CI gate.
 
@@ -350,13 +401,13 @@ The verification suite must prove the default production path, not only `cfg(tes
 
 ## Definition of Done
 
-- `show_single_surface` is interactive in a non-test official-egui consumer, including tab select/close, four-way and center docking, splitter resize, and contained floating interaction.
+- `show_single_surface` is interactive in a non-test official-egui consumer, including tab select/close, tab reorder/drag, four-way and center docking, splitter resize, and contained floating interaction.
 - Core is the only implementation of docking topology, policy, target selection, preview, commit, and surface ownership semantics.
 - The public default APIs do not expose raw graph storage or authority transport internals.
-- The old `egui_tiles` bridge, custom protocol oracle, test-only presentation provider, and obsolete fork protocol are deleted or isolated as non-production reference material.
+- The old `egui_tiles` bridge, custom protocol oracle, and test-only presentation provider are deleted from active source and build paths. The obsolete 0.35 fork may remain only as an archived non-production behavior reference until migration evidence is complete.
 - A clean checkout builds the official workspace and the pinned fork/native workspace without ignored local source directories.
-- One real two-window smoke demonstrates tear-off, first-live admission, cross-window redock, close/recovery, and no content loss.
-- Open-GPUI can run shared core actions without maintaining a second graph/drop resolver.
+- One real two-window smoke proves OS window creation, hidden staging, visibility dispatch, first-live admission, exact child retirement, and no content loss. Ordinary Rust black-box tests prove tear-off, redock, close/recovery, failure, and ABA matrices.
+- The migrated Open-GPUI path runs shared core actions with one graph/drop authority; unmigrated GPUI paths may retain their current runtime but cannot dual-write the same docking state.
 - Large engine/frame/protocol files are split into domain modules with no new monolithic replacement.
 - Required format, locked build, nextest, downstream, fork/native, rustdoc, API, and package gates pass.
 - Abandoned migration attempts, stale compatibility aliases, and dead test scaffolding are removed before completion.
