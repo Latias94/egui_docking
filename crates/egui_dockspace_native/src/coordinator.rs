@@ -39,6 +39,7 @@ use crate::retirement::{CleanupResultRetentionError, CommittedRetirement, Native
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
+use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAreaRoster};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
 /// Sole native coordinator for one renderer-neutral docking session.
@@ -54,12 +55,19 @@ pub(crate) struct NativeCoordinator {
     pending_outputs: BTreeMap<NativeOutputToken, PendingNativeOutput>,
     pending_presentation_acknowledgements:
         BTreeMap<NativeSurfaceBinding, NativePresentationEffectAcknowledgement>,
-    queued_snapshot_acknowledgements: Option<Vec<NativeSurfaceBinding>>,
+    queued_snapshot: Option<QueuedNativeSnapshot>,
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
     retirements: NativeRetirementState,
     pointer_translator: NativePointerTranslator,
+    work_areas: NativeWorkAreaState,
+}
+
+#[derive(Debug)]
+struct QueuedNativeSnapshot {
+    acknowledgements: Vec<NativeSurfaceBinding>,
+    work_areas: PreparedWorkAreaRoster,
 }
 
 pub(crate) struct PreparedNativeRetirements {
@@ -108,9 +116,9 @@ impl std::fmt::Debug for NativeCoordinator {
             .field(
                 "queued_snapshot_acknowledgements",
                 &self
-                    .queued_snapshot_acknowledgements
+                    .queued_snapshot
                     .as_ref()
-                    .map_or(0, Vec::len),
+                    .map_or(0, |queued| queued.acknowledgements.len()),
             )
             .field("deferred_viewports", &self.deferred_viewports)
             .field("receivers", &self.receivers)
@@ -140,12 +148,13 @@ impl NativeCoordinator {
             viewports,
             pending_outputs: BTreeMap::new(),
             pending_presentation_acknowledgements: BTreeMap::new(),
-            queued_snapshot_acknowledgements: None,
+            queued_snapshot: None,
             deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
             retirements: NativeRetirementState::default(),
             pointer_translator: NativePointerTranslator::default(),
+            work_areas: NativeWorkAreaState::default(),
         })
     }
 
@@ -392,7 +401,7 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn settle_host_frame_inputs(&mut self, inputs: &[HostInputOutcome]) -> bool {
-        let Some(acknowledgements) = self.queued_snapshot_acknowledgements.take() else {
+        let Some(queued) = self.queued_snapshot.take() else {
             return false;
         };
         let applied = inputs.iter().any(|input| {
@@ -414,7 +423,8 @@ impl NativeCoordinator {
         );
         self.retirements.settle_snapshot(applied && !rejected);
         if applied && !rejected {
-            for binding in acknowledgements {
+            self.work_areas.commit(queued.work_areas, &self.session);
+            for binding in queued.acknowledgements {
                 self.pending_presentation_acknowledgements.remove(&binding);
             }
             true
@@ -994,7 +1004,8 @@ impl NativeCoordinator {
             return Ok(false);
         };
         let mut candidate = self.pointer_translator;
-        match candidate.translate(&record) {
+        let work_areas = &self.work_areas;
+        match candidate.translate(&record, |point| work_areas.binding_at(point)) {
             NativePointerTranslation::NotPointer => Ok(false),
             NativePointerTranslation::Ignored => {
                 self.acknowledge_window_event(record.ordinal())?;
@@ -1040,7 +1051,8 @@ impl NativeCoordinator {
             return Ok(false);
         };
         let mut candidate = self.pointer_translator;
-        match candidate.translate(&record) {
+        let work_areas = &self.work_areas;
+        match candidate.translate(&record, |point| work_areas.binding_at(point)) {
             NativePointerTranslation::NotPointer => self.reduce_non_pointer_event(&record)?,
             NativePointerTranslation::Ignored => {}
             NativePointerTranslation::Input(input) => self.record_pointer(input)?,
@@ -1259,7 +1271,10 @@ impl NativeCoordinator {
         &mut self,
         roster: &NativeViewportRosterRecord,
     ) -> Result<(), NativeRuntimeError> {
-        if let Ok(mut observations) = self.compile_viewport_roster(roster) {
+        if let (Ok(mut observations), Ok(frozen_work_areas)) =
+            (self.compile_viewport_roster(roster), roster.work_areas())
+        {
+            let prepared_work_areas = self.work_areas.prepare(&frozen_work_areas)?;
             let destroyed = self
                 .retirements
                 .destroyed_observations()
@@ -1275,11 +1290,14 @@ impl NativeCoordinator {
                 observations
                     .iter()
                     .map(|observation| (observation.binding(), observation.facts())),
-                NativeWorkAreaRoster::Unknown,
+                prepared_work_areas.core(),
             ) {
                 Ok(()) => {
-                    debug_assert!(self.queued_snapshot_acknowledgements.is_none());
-                    self.queued_snapshot_acknowledgements = Some(acknowledged_bindings);
+                    debug_assert!(self.queued_snapshot.is_none());
+                    self.queued_snapshot = Some(QueuedNativeSnapshot {
+                        acknowledgements: acknowledged_bindings,
+                        work_areas: prepared_work_areas,
+                    });
                     if !destroyed.is_empty() {
                         self.retirements.mark_snapshot_queued();
                     }
@@ -1297,7 +1315,13 @@ impl NativeCoordinator {
                 Err(error) => return Err(error.into()),
             }
         }
+        let prepared_work_areas = self.work_areas.prepare(&FrozenWorkAreaRoster::Unknown)?;
         self.session.report_native_inventory_unknown()?;
+        debug_assert!(self.queued_snapshot.is_none());
+        self.queued_snapshot = Some(QueuedNativeSnapshot {
+            acknowledgements: Vec::new(),
+            work_areas: prepared_work_areas,
+        });
         Ok(())
     }
 
@@ -1374,6 +1398,14 @@ impl NativeCoordinator {
         token: dockspace::runtime::HostWorkAreaToken,
     ) -> Option<NativeWorkAreaBinding> {
         self.session.native_work_area(token)
+    }
+
+    #[cfg(test)]
+    fn work_area_for_point(
+        &self,
+        point: dockspace::geometry::PhysicalPoint,
+    ) -> Option<NativeWorkAreaBinding> {
+        self.work_areas.binding_at(point)
     }
 
     /// Records one complete event-time pointer fact.

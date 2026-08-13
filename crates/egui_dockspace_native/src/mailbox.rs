@@ -10,12 +10,12 @@ use eframe::{
     NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
 };
 
-#[cfg(test)]
 use crate::error::NativeHostProtocolError;
 use crate::event::NativeWindowEventRecord;
 use crate::retirement::CommittedRetirement;
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
+use crate::work_area::FrozenWorkAreaRoster;
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
 
@@ -85,6 +85,7 @@ impl NativeStagingPaintRecord {
 #[derive(Debug, Clone)]
 pub(crate) struct NativeViewportRosterRecord {
     observations: Vec<FrozenWindowObservation>,
+    work_areas: Result<FrozenWorkAreaRoster, NativeHostProtocolError>,
     #[cfg(test)]
     compiled_override: Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>>,
 }
@@ -123,6 +124,7 @@ impl NativeViewportRosterRecord {
         }
         Self {
             observations,
+            work_areas: FrozenWorkAreaRoster::capture(roster.work_areas()),
             #[cfg(test)]
             compiled_override: None,
         }
@@ -130,6 +132,12 @@ impl NativeViewportRosterRecord {
 
     pub(crate) fn observations(&self) -> &[FrozenWindowObservation] {
         &self.observations
+    }
+
+    pub(crate) fn work_areas(
+        &self,
+    ) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
+        self.work_areas.clone()
     }
 
     #[cfg(test)]
@@ -146,11 +154,24 @@ impl NativeViewportRosterRecord {
     ) -> Self {
         Self {
             observations: Vec::new(),
+            work_areas: Ok(FrozenWorkAreaRoster::Unknown),
             compiled_override: Some(if facts_valid {
                 Ok(observations.into_iter().collect())
             } else {
                 Err(NativeHostProtocolError::InvalidWindowSnapshot)
             }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_work_areas(
+        observations: impl IntoIterator<Item = CompiledWindowObservation>,
+        work_areas: FrozenWorkAreaRoster,
+    ) -> Self {
+        Self {
+            observations: Vec::new(),
+            work_areas: Ok(work_areas),
+            compiled_override: Some(Ok(observations.into_iter().collect())),
         }
     }
 }

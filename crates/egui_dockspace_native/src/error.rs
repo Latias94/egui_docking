@@ -81,6 +81,10 @@ pub(crate) enum NativeHostProtocolError {
     OutputOrderViolation,
     #[error("a native window snapshot contains invalid physical geometry or scale")]
     InvalidWindowSnapshot,
+    #[error("the native work-area roster contains invalid or duplicate facts")]
+    InvalidWorkAreaRoster,
+    #[error("the native work-area identity stream is exhausted")]
+    WorkAreaIdentityExhausted,
     #[error("a native presentation acknowledgement has no exact presentation state")]
     PresentationAcknowledgementWithoutState,
     #[error("a native viewport effect already has an unobserved presentation acknowledgement")]

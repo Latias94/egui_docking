@@ -6,6 +6,7 @@ use dockspace::runtime::{
     NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
     NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId,
+    NativeWorkAreaBinding,
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -32,6 +33,7 @@ impl NativePointerTranslator {
     pub(crate) fn translate(
         &mut self,
         record: &NativeWindowEventRecord,
+        mut resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
         let routes = record
             .pointer_routes()
@@ -39,7 +41,12 @@ impl NativePointerTranslator {
 
         match record.event() {
             WindowEvent::CursorMoved { facts, .. } => {
-                self.input(NativePointerEvent::Moved, facts.desktop_position, routes)
+                self.input(
+                    NativePointerEvent::Moved,
+                    facts.desktop_position,
+                    routes,
+                    &mut resolve_work_area,
+                )
             }
             WindowEvent::MouseInput {
                 state,
@@ -52,10 +59,15 @@ impl NativePointerTranslator {
                     ElementState::Pressed => NativePointerEvent::ButtonPressed(button),
                     ElementState::Released => NativePointerEvent::ButtonReleased(button),
                 };
-                self.input(event, facts.desktop_position, routes)
+                self.input(event, facts.desktop_position, routes, &mut resolve_work_area)
             }
             WindowEvent::PointerCaptureChanged { .. } => {
-                self.input(NativePointerEvent::CaptureChanged, None, routes)
+                self.input(
+                    NativePointerEvent::CaptureChanged,
+                    None,
+                    routes,
+                    &mut resolve_work_area,
+                )
             }
             WindowEvent::MouseWheel {
                 delta,
@@ -67,7 +79,7 @@ impl NativePointerTranslator {
                     Some(delta) => delta,
                     None => return NativePointerTranslation::Ignored,
                 };
-                self.scroll(delta, *phase, facts, routes)
+                self.scroll(delta, *phase, facts, routes, &mut resolve_work_area)
             }
             WindowEvent::PanGesture { delta, phase, .. } => {
                 let delta = NativeScrollDelta::PhysicalPixels {
@@ -82,7 +94,7 @@ impl NativePointerTranslator {
                     return NativePointerTranslation::Ignored;
                 }
                 let facts = winit::event::PointerEventFacts::default();
-                self.scroll(delta, *phase, &facts, routes)
+                self.scroll(delta, *phase, &facts, routes, &mut resolve_work_area)
             }
             _ => NativePointerTranslation::NotPointer,
         }
@@ -93,14 +105,17 @@ impl NativePointerTranslator {
         event: NativePointerEvent,
         desktop_position: Option<winit::dpi::PhysicalPosition<f64>>,
         routes: NativePointerRoutes,
+        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
+        let position = native_position(desktop_position);
+        let hover = native_hover(routes.hover());
         NativePointerTranslation::Input(NativePointerInput::new(
             POINTER_ID,
             event,
             NativeDesktopPointerLocation::new(
-                native_position(desktop_position),
-                native_hover(routes.hover()),
-                None,
+                position,
+                hover,
+                native_work_area(position, hover, resolve_work_area),
             ),
             native_owner(routes.delivery()),
             native_owner(routes.capture()),
@@ -113,6 +128,7 @@ impl NativePointerTranslator {
         phase: TouchPhase,
         facts: &winit::event::PointerEventFacts,
         routes: NativePointerRoutes,
+        resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
         let (phase, should_clear) = match phase {
             TouchPhase::Started => match self.active_scroll {
@@ -166,13 +182,15 @@ impl NativePointerTranslator {
         if should_clear {
             self.active_scroll = None;
         }
+        let position = native_position(facts.desktop_position);
+        let hover = native_hover(routes.hover());
         NativePointerTranslation::Input(NativePointerInput::new(
             POINTER_ID,
             NativePointerEvent::Scrolled(event),
             NativeDesktopPointerLocation::new(
-                native_position(facts.desktop_position),
-                native_hover(routes.hover()),
-                None,
+                position,
+                hover,
+                native_work_area(position, hover, resolve_work_area),
             ),
             native_owner(routes.delivery()),
             native_owner(routes.capture()),
@@ -185,6 +203,17 @@ impl NativePointerTranslator {
         let sequence = NativeScrollSequenceId::new(next);
         self.active_scroll = Some(sequence);
         Some(sequence)
+    }
+}
+
+fn native_work_area(
+    position: NativeDesktopPosition,
+    hover: NativePointerHover,
+    resolve: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
+) -> Option<NativeWorkAreaBinding> {
+    match (position, hover) {
+        (NativeDesktopPosition::Exact(point), NativePointerHover::OutsideAll) => resolve(point),
+        _ => None,
     }
 }
 

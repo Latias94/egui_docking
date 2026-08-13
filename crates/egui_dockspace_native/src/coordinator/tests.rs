@@ -10,8 +10,10 @@ use winit::event::WindowEvent;
 use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
+mod ingress_create;
 mod retirement;
 mod replacement;
+mod work_area;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -1041,7 +1043,7 @@ fn pointer_translation_preserves_delivery_hover_and_capture() {
     };
 
     let mut translator = NativePointerTranslator::default();
-    let actual = translator.translate(&record);
+    let actual = translator.translate(&record, |_| None);
     let expected = NativePointerInput::new(
         NativePointerId::new(1),
         NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
