@@ -1,8 +1,8 @@
-use dockspace::model::{
-    DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
-};
 use dockspace::geometry::LogicalRect;
+use dockspace::model::{
+    DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
+};
 use egui::accesskit::Role;
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{CloseDecision, DockspaceCloseRequest};
@@ -96,12 +96,45 @@ fn run_frame(
     }
 }
 
+fn run_frame_with_discard_after_dockspace(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut Panes,
+    events: Vec<Event>,
+) -> (FrameOutput, usize) {
+    let mut close_requests = Vec::new();
+    let mut passes = 0;
+    let mut output = context.run_ui(input(events), |ui| {
+        let response = dockspace
+            .show_single_surface(SURFACE, ui, panes)
+            .expect("the product multipass frame advances");
+        close_requests.extend(response.close_request_events().iter().cloned());
+        passes += 1;
+        if ui.ctx().current_pass_index() == 0 {
+            ui.ctx()
+                .request_discard("exercise product response action retention");
+        }
+    });
+    output.textures_delta.clear();
+    (
+        FrameOutput {
+            output,
+            close_requests,
+        },
+        passes,
+    )
+}
+
 struct FrameOutput {
     output: egui::FullOutput,
     close_requests: Vec<DockspaceCloseRequest>,
 }
 
 fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
+    node_rect(output, role, label).center()
+}
+
+fn node_rect(output: &egui::FullOutput, role: Role, label: &str) -> Rect {
     let tree = output
         .platform_output
         .accesskit_update
@@ -113,9 +146,9 @@ fn node_center(output: &egui::FullOutput, role: Role, label: &str) -> Pos2 {
         .find_map(|(_, node)| (node.role() == role && node.label() == Some(label)).then_some(node))
         .expect("the requested tab is present");
     let bounds = node.bounds().expect("the tab exposes bounds");
-    Pos2::new(
-        ((bounds.x0 + bounds.x1) * 0.5) as f32,
-        ((bounds.y0 + bounds.y1) * 0.5) as f32,
+    Rect::from_min_max(
+        Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
+        Pos2::new(bounds.x1 as f32, bounds.y1 as f32),
     )
 }
 
@@ -130,6 +163,27 @@ fn selected(dockspace: &Dockspace) -> Option<ItemId> {
             .item(*item)
             .is_some_and(|view| view.is_selected())
     })
+}
+
+fn tab_items(dockspace: &Dockspace) -> Vec<ItemId> {
+    dockspace
+        .view()
+        .root(ROOT)
+        .and_then(|root| root.content())
+        .and_then(|node| node.tabs())
+        .map_or_else(Vec::new, |tabs| tabs.items().to_vec())
+}
+
+fn root_tabs(dockspace: &Dockspace) -> Option<Vec<ItemId>> {
+    Some(
+        dockspace
+            .view()
+            .root(ROOT)?
+            .content()?
+            .tabs()?
+            .items()
+            .to_vec(),
+    )
 }
 
 fn root_split(dockspace: &Dockspace) -> Option<(DockspaceAxis, Vec<Vec<ItemId>>)> {
@@ -159,6 +213,25 @@ fn root_weights(dockspace: &Dockspace) -> Option<Vec<f32>> {
     )
 }
 
+fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
+    let rect = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained fixture is present")
+        .rect();
+    let style = dockspace.style();
+    let title_inset = style
+        .floating_resize_extent
+        .min(style.floating_title_height * 0.5);
+    Pos2::new(
+        rect.min().x() as f32
+            + style.floating_border_width
+            + title_inset
+            + style.tab_horizontal_padding,
+        rect.min().y() as f32 + style.floating_border_width + style.floating_title_height * 0.5,
+    )
+}
+
 fn pointer_button(pos: Pos2, pressed: bool) -> Event {
     Event::PointerButton {
         pos,
@@ -185,6 +258,28 @@ fn guide_button_count(
         .count()
 }
 
+fn nearest_guide_center(
+    output: &egui::FullOutput,
+    passive: egui::Color32,
+    active: egui::Color32,
+    expected: Pos2,
+) -> Pos2 {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == passive || rect.fill == active => {
+                Some(rect.rect.center())
+            }
+            _ => None,
+        })
+        .min_by(|left, right| {
+            left.distance_sq(expected)
+                .total_cmp(&right.distance_sq(expected))
+        })
+        .expect("an active drag paints the requested guide cluster")
+}
+
 fn rect_fill_count(output: &egui::FullOutput, fill: egui::Color32) -> usize {
     output
         .shapes
@@ -193,11 +288,7 @@ fn rect_fill_count(output: &egui::FullOutput, fill: egui::Color32) -> usize {
         .count()
 }
 
-fn splitter_rect(
-    output: &egui::FullOutput,
-    idle: egui::Color32,
-    active: egui::Color32,
-) -> Rect {
+fn splitter_rect(output: &egui::FullOutput, idle: egui::Color32, active: egui::Color32) -> Rect {
     output
         .shapes
         .iter()
@@ -269,6 +360,54 @@ fn default_features_click_selects_a_tab() {
 }
 
 #[test]
+fn default_features_tab_drag_reorders_across_multipass_discard() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-tab-reorder", layout())
+        .build()
+        .expect("the product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let first_rect = node_rect(&stable.output, Role::Tab, "First");
+    let first = Pos2::new(
+        first_rect.min.x + first_rect.width() * 0.25,
+        first_rect.center().y,
+    );
+    let second = tab_center(&stable.output, "Second");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(second), pointer_button(second, true)],
+    );
+    let (_, passes) = run_frame_with_discard_after_dockspace(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(first)],
+    );
+    assert!(
+        passes > 1,
+        "the fixture must execute an actual egui multipass"
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(first), pointer_button(first, false)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    assert_eq!(tab_items(&dockspace), vec![SECOND, FIRST]);
+}
+
+#[test]
 fn default_features_close_request_can_be_resolved() {
     let context = Context::default();
     context.enable_accesskit();
@@ -322,16 +461,30 @@ fn default_features_close_request_can_be_resolved() {
 }
 
 #[test]
-fn default_features_paint_four_way_guides_and_dock_top_or_bottom() {
-    for (name, target, expected_items) in [
+fn default_features_paint_outer_guides_and_dock_each_edge() {
+    for (name, target, expected_axis, expected_items) in [
+        (
+            "left",
+            Pos2::new(40.0, 300.0),
+            DockspaceAxis::Horizontal,
+            vec![vec![SECOND], vec![FIRST]],
+        ),
+        (
+            "right",
+            Pos2::new(760.0, 300.0),
+            DockspaceAxis::Horizontal,
+            vec![vec![FIRST], vec![SECOND]],
+        ),
         (
             "top",
             Pos2::new(400.0, 40.0),
+            DockspaceAxis::Vertical,
             vec![vec![SECOND], vec![FIRST]],
         ),
         (
             "bottom",
             Pos2::new(400.0, 560.0),
+            DockspaceAxis::Vertical,
             vec![vec![FIRST], vec![SECOND]],
         ),
     ] {
@@ -392,10 +545,65 @@ fn default_features_paint_four_way_guides_and_dock_top_or_bottom() {
         );
         assert_eq!(
             root_split(&dockspace),
-            Some((DockspaceAxis::Vertical, expected_items)),
-            "the {name} guide must commit the same vertical target shown in preview",
+            Some((expected_axis, expected_items)),
+            "the {name} guide must commit the same edge target shown in preview",
         );
     }
+}
+
+#[test]
+fn default_features_center_guide_merges_tabs() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-guide-center", split_layout())
+        .build()
+        .expect("the product guide facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let first = tab_center(&stable.output, "First");
+    let passive = dockspace.style().drop_guide_fill;
+    let active = dockspace.style().drop_guide_active_fill;
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    for _ in 0..2 {
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(first)],
+        );
+    }
+    let cluster = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(first)],
+    );
+    let target = nearest_guide_center(&cluster.output, passive, active, Pos2::new(200.0, 314.0));
+    for _ in 0..2 {
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+    }
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+
+    assert_eq!(root_tabs(&dockspace), Some(vec![FIRST, SECOND]));
 }
 
 #[test]
@@ -500,10 +708,7 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(
         root_split(&dockspace),
-        Some((
-            DockspaceAxis::Vertical,
-            vec![vec![FIRST], vec![SECOND]],
-        )),
+        Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
         "the pending release commits after the exact bottom preview is painted",
     );
 }
@@ -569,4 +774,111 @@ fn default_features_contained_resize_commits_a_painted_preview() {
         .rect();
     assert_eq!(committed.min(), initial.min());
     assert!(committed.max().x() > initial.max().x());
+}
+
+#[test]
+fn default_features_contained_title_moves_without_a_dock_target() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder("product-contained-move", contained_layout())
+        .build()
+        .expect("the product contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained fixture is present")
+        .rect();
+    let source = contained_title_point(&dockspace);
+    let destination = source + vec2(-120.0, 80.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(destination)],
+    );
+    assert_eq!(
+        dockspace
+            .view()
+            .contained(FLOATING)
+            .expect("the contained fixture remains present")
+            .rect(),
+        initial,
+        "contained motion remains transient until release",
+    );
+
+    let released = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(destination),
+            pointer_button(destination, false),
+        ],
+    );
+    assert!(
+        rect_fill_count(&released.output, dockspace.style().drop_fill) > 0,
+        "the contained move preview must be painted before release settles",
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let committed = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained fixture remains present")
+        .rect();
+    assert_eq!(committed.width(), initial.width());
+    assert_eq!(committed.height(), initial.height());
+    assert_eq!(committed.min().x(), initial.min().x() - 120.0);
+    assert_eq!(committed.min().y(), initial.min().y() + 80.0);
+}
+
+#[test]
+fn default_features_contained_title_redocks_through_the_canonical_guide() {
+    let context = Context::default();
+    let mut dockspace = Dockspace::builder("product-contained-redock", contained_layout())
+        .build()
+        .expect("the product contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = contained_title_point(&dockspace);
+    let target = Pos2::new(400.0, 40.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    for _ in 0..3 {
+        let _ = run_frame(
+            &context,
+            &mut dockspace,
+            &mut panes,
+            vec![Event::PointerMoved(target)],
+        );
+    }
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(target), pointer_button(target, false)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Vertical, vec![vec![SECOND], vec![FIRST]],)),
+    );
+    assert!(dockspace.view().contained(FLOATING).is_none());
 }

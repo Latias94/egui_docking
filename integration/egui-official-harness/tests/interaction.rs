@@ -1,8 +1,8 @@
-use dockspace::geometry::LogicalRect;
 use dockspace::backend::graph::{
     Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
 };
 use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::geometry::LogicalRect;
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, PaneView};
@@ -94,9 +94,7 @@ fn run_frame(
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the official-egui frame advances");
-        local_actions_current = response
-            .interaction_capabilities()
-            .local_actions_current();
+        local_actions_current = response.interaction_capabilities().local_actions_current();
         close_items.extend(
             response
                 .close_requests()
@@ -124,9 +122,7 @@ fn run_frame_with_discard_after_dockspace(
         let response = dockspace
             .show_single_surface(SURFACE, ui, panes)
             .expect("the official-egui multipass frame advances");
-        local_actions_current = response
-            .interaction_capabilities()
-            .local_actions_current();
+        local_actions_current = response.interaction_capabilities().local_actions_current();
         close_items.extend(
             response
                 .close_requests()
@@ -163,18 +159,6 @@ fn selected_item(dockspace: &Dockspace) -> Option<ItemId> {
     }
 }
 
-fn tab_items(dockspace: &Dockspace) -> Vec<ItemId> {
-    let root = dockspace.workspace().root(ROOT).expect("the root exists");
-    match dockspace
-        .workspace()
-        .node(root.node)
-        .expect("the root node exists")
-    {
-        Node::Tabs { items, .. } => items.clone(),
-        Node::Split { .. } => panic!("the fixture root must remain a tab group"),
-    }
-}
-
 fn split_weights(dockspace: &Dockspace) -> Vec<f32> {
     let root = dockspace
         .workspace()
@@ -187,14 +171,6 @@ fn split_weights(dockspace: &Dockspace) -> Vec<f32> {
     {
         Node::Split { weights, .. } => weights.iter().map(|weight| weight.get()).collect(),
         Node::Tabs { .. } => panic!("the fixture root must remain split"),
-    }
-}
-
-fn root_axis(dockspace: &Dockspace) -> Option<Axis> {
-    let root = dockspace.workspace().root(ROOT)?;
-    match dockspace.workspace().node(root.node)? {
-        Node::Split { axis, .. } => Some(*axis),
-        Node::Tabs { .. } => None,
     }
 }
 
@@ -212,8 +188,7 @@ fn accesskit_node<'a>(
         .accesskit_update
         .as_ref()
         .expect("AccessKit output is enabled");
-    tree
-        .nodes
+    tree.nodes
         .iter()
         .find_map(|(id, node)| {
             (node.role() == role && node.label() == Some(label)).then_some((*id, node))
@@ -313,246 +288,13 @@ fn production_single_surface_same_batch_click_selects_a_tab() {
 }
 
 #[test]
-fn production_single_surface_tab_drag_reorders_with_response_authority() {
-    let context = Context::default();
-    context.enable_accesskit();
-    context.options_mut(|options| {
-        options.max_passes = 4.try_into().expect("four is non-zero");
-    });
-    let mut dockspace = Dockspace::backend_builder("official-egui-tab-reorder", workspace())
-        .build()
-        .expect("the public facade accepts a valid workspace");
-    let mut panes = Panes;
-
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let first = node_center(accesskit_node(&stable.output, Role::Tab, "First").1);
-    let second = node_center(accesskit_node(&stable.output, Role::Tab, "Second").1);
-
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(second),
-            Event::PointerButton {
-                pos: second,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    let (_, passes) = run_frame_with_discard_after_dockspace(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(first)],
-    );
-    assert!(passes > 1);
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(first),
-            Event::PointerButton {
-                pos: first,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-
-    assert_eq!(tab_items(&dockspace), vec![SECOND, FIRST]);
-}
-
-#[test]
-fn production_single_surface_tab_drag_docks_to_the_top_guide() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let mut dockspace = Dockspace::backend_builder("official-egui-top-dock", split_workspace())
-        .build()
-        .expect("the public facade accepts a valid workspace");
-    let mut panes = Panes;
-
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let source = node_center(accesskit_node(&stable.output, Role::Tab, "Second").1);
-    let top_guide = Pos2::new(400.0, 40.0);
-
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(source),
-            Event::PointerButton {
-                pos: source,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(top_guide)],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(top_guide),
-            Event::PointerButton {
-                pos: top_guide,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-
-    assert_eq!(root_axis(&dockspace), Some(Axis::Vertical));
-}
-
-#[test]
-fn production_single_surface_contained_title_redocks_through_the_canonical_drop_path() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let mut dockspace = Dockspace::backend_builder("official-egui-contained-redock", contained_workspace())
-        .build()
-        .expect("the public facade accepts a contained workspace");
-    let mut panes = Panes;
-
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let source = node_center(accesskit_node(&stable.output, Role::TitleBar, "Second").1);
-    let top_guide = Pos2::new(400.0, 40.0);
-
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(source),
-            Event::PointerButton {
-                pos: source,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(top_guide)],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(top_guide),
-            Event::PointerButton {
-                pos: top_guide,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-
-    assert_eq!(root_axis(&dockspace), Some(Axis::Vertical));
-    assert!(dockspace.workspace().contained_floating(FLOATING).is_none());
-    assert!(
-        dockspace
-            .workspace()
-            .surface(SURFACE)
-            .expect("the surface remains present")
-            .contained
-            .is_empty()
-    );
-}
-
-#[test]
-fn production_single_surface_contained_title_moves_without_a_dock_target() {
-    let context = Context::default();
-    context.enable_accesskit();
-    let mut dockspace = Dockspace::backend_builder("official-egui-contained-move", contained_workspace())
-        .build()
-        .expect("the public facade accepts a contained workspace");
-    let mut panes = Panes;
-
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
-    let initial = dockspace
-        .workspace()
-        .contained_floating(FLOATING)
-        .expect("the contained floating exists")
-        .rect;
-    let source = node_center(accesskit_node(&stable.output, Role::TitleBar, "Second").1);
-    let destination = source + vec2(-120.0, 80.0);
-
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(source),
-            Event::PointerButton {
-                pos: source,
-                button: PointerButton::Primary,
-                pressed: true,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![Event::PointerMoved(destination)],
-    );
-    let _ = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        vec![
-            Event::PointerMoved(destination),
-            Event::PointerButton {
-                pos: destination,
-                button: PointerButton::Primary,
-                pressed: false,
-                modifiers: Modifiers::NONE,
-            },
-        ],
-    );
-
-    let committed = dockspace
-        .workspace()
-        .contained_floating(FLOATING)
-        .expect("the contained floating remains present")
-        .rect;
-    assert_eq!(committed.width(), initial.width());
-    assert_eq!(committed.height(), initial.height());
-    assert_eq!(committed.x(), initial.x() - 120.0);
-    assert_eq!(committed.y(), initial.y() + 80.0);
-}
-
-#[test]
 fn production_single_surface_contained_resize_commits_on_release() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::backend_builder("official-egui-contained-resize", contained_workspace())
-        .build()
-        .expect("the public facade accepts a contained workspace");
+    let mut dockspace =
+        Dockspace::backend_builder("official-egui-contained-resize", contained_workspace())
+            .build()
+            .expect("the public facade accepts a contained workspace");
     let mut panes = Panes;
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -562,7 +304,10 @@ fn production_single_surface_contained_resize_commits_on_release() {
         .contained_floating(FLOATING)
         .expect("the contained floating exists")
         .rect;
-    let source = Pos2::new(initial.max().x() as f32 - 1.0, initial.min().y() as f32 + 100.0);
+    let source = Pos2::new(
+        initial.max().x() as f32 - 1.0,
+        initial.min().y() as f32 + 100.0,
+    );
 
     let _ = run_frame(
         &context,
@@ -650,12 +395,8 @@ fn production_single_surface_preserves_a_click_across_discard_passes() {
             modifiers: Modifiers::NONE,
         },
     ];
-    let (_, passes) = run_frame_with_discard_after_dockspace(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        click,
-    );
+    let (_, passes) =
+        run_frame_with_discard_after_dockspace(&context, &mut dockspace, &mut panes, click);
 
     assert!(passes >= 2, "the fixture must execute a replacement pass");
     assert_eq!(selected_item(&dockspace), Some(SECOND));
@@ -707,23 +448,13 @@ fn production_single_surface_keyboard_navigation_uses_local_actions() {
     let stable_after_right = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(stable_after_right.local_actions_current);
 
-    let home = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        key_press(Key::Home),
-    );
+    let home = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Home));
     assert!(!home.local_actions_current);
     assert_eq!(selected_item(&dockspace), Some(FIRST));
     let stable_after_home = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert!(stable_after_home.local_actions_current);
 
-    let end = run_frame(
-        &context,
-        &mut dockspace,
-        &mut panes,
-        key_press(Key::End),
-    );
+    let end = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::End));
     assert!(!end.local_actions_current);
     assert_eq!(selected_item(&dockspace), Some(SECOND));
 }
