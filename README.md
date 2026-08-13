@@ -93,10 +93,12 @@ paths.
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The excluded native workspace pins the
 public egui/eframe fork commit
-`37c2c4394f70d03735ef362531700160f9327c36` and the event-fact Winit commit
+`4bd886d28b25ff4f44da7838638804faf7be146c` and the event-fact Winit commit
 `180bfc09743586137fec014ef5543cdde56ce5d0`. The fork remains graph-neutral;
 all docking topology, receiver challenges, native lifecycle meaning, and
-presentation obligations stay in `dockspace`.
+presentation obligations stay in `dockspace`. The admission reason and removal
+condition for every remaining fork seam are recorded in
+[`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
 ## Persistence
 
