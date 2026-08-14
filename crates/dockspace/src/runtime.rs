@@ -6,6 +6,7 @@
 //! lossless surface-local pointer batches backed by concrete final-presentation
 //! authority.
 
+mod close;
 mod interaction;
 mod local_action;
 mod measurement;
@@ -19,6 +20,9 @@ use native::NativePlatformError;
 pub use crate::model::{PreparedDockAction, WorkspaceVersion};
 pub use crate::presentation_config::DockPresentationConfig;
 pub use crate::transition::{ContentCloseRequestRejection, SurfaceCloseRequestRejection};
+pub use close::{
+    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePlan, DockspaceCloseResolution,
+};
 pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
     SurfacePointerButton, SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent,
@@ -79,6 +83,10 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
+use crate::close_plan::{
+    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+    SurfaceCloseRequest,
+};
 use crate::command::{CloseCommitOutcome, ContentCloseTarget};
 #[cfg(any(feature = "backend", test))]
 use crate::command::{CommandOutcome, WorkspaceCommand};
@@ -99,11 +107,6 @@ use crate::model::{
 use crate::presentation_observation::PresentationHostLease;
 use crate::scene_manifest::MeasurementUnavailableReason;
 use crate::transition::{InputOutcome, SurfaceContributionOutcome};
-use crate::{
-    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
-};
-use crate::{ClosePlan, CloseResolutionOutcome, SurfaceCloseRequest};
-
 const APPLICATION_INPUT_SOURCE: StableInputSourceId =
     StableInputSourceId::new(0x64_6f_63_6b_73_70_61_63);
 
@@ -895,7 +898,7 @@ pub enum HostInputOutcome {
     /// One content-close request opened or reused a plan.
     CloseRequested {
         /// Read-only core-owned close plan.
-        plan: ClosePlan,
+        plan: DockspaceClosePlan,
         /// Whether an unresolved plan was reused.
         reused: bool,
         /// Product-level source of the close request.
@@ -911,9 +914,9 @@ pub enum HostInputOutcome {
     /// One close decision was consumed.
     CloseDecisionProcessed {
         /// Exact token-resolution result, including typed inert outcomes.
-        resolution: CloseResolutionOutcome,
+        resolution: DockspaceCloseResolution,
         /// Latest retained close plan, when the request exists.
-        plan: Option<ClosePlan>,
+        plan: Option<DockspaceClosePlan>,
         /// Checked topology result after the final allow.
         application: Option<Result<DockspaceCloseOutcome, DockspaceCloseRejection>>,
         /// Whether this input changed durable topology.
@@ -944,7 +947,7 @@ pub enum HostInputOutcome {
         /// Exact surface disposition accepted by the core.
         request: SurfaceCloseRequest,
         /// Frozen close plan shared with the ordinary decision workflow.
-        plan: ClosePlan,
+        plan: DockspaceClosePlan,
     },
     /// One explicit native surface-close request was rejected without mutation.
     NativeSurfaceCloseRejected {
@@ -960,7 +963,7 @@ pub enum HostInputOutcome {
         /// Exact close edge which must be cancelled.
         close: NativeSurfaceCloseRequest,
         /// Plan retaining the cancellation obligation.
-        plan: ClosePlan,
+        plan: DockspaceClosePlan,
     },
     /// Native facts captured against an older workspace epoch were inert.
     NativePlatformSnapshotStale,
@@ -1080,7 +1083,7 @@ impl HostFrameReport {
                 }
                 InputOutcome::ContentCloseRequested { plan, reused, .. } => {
                     Some(HostInputOutcome::CloseRequested {
-                        plan: plan.clone(),
+                        plan: DockspaceClosePlan::from_core(plan),
                         reused: *reused,
                         origin: HostCloseRequestOrigin::Application,
                     })
@@ -1098,8 +1101,8 @@ impl HostFrameReport {
                     changed,
                     ..
                 } => Some(HostInputOutcome::CloseDecisionProcessed {
-                    resolution: *resolution,
-                    plan: plan.clone(),
+                    resolution: DockspaceCloseResolution::from_core(*resolution),
+                    plan: plan.as_ref().map(DockspaceClosePlan::from_core),
                     application: application.as_ref().map(map_close_application),
                     changed: *changed,
                 }),
@@ -1136,7 +1139,7 @@ impl HostFrameReport {
                 InputOutcome::SurfaceCloseRequested { request, plan, .. } => {
                     Some(HostInputOutcome::NativeSurfaceCloseRequested {
                         request: request.clone(),
-                        plan: plan.clone(),
+                        plan: DockspaceClosePlan::from_core(plan),
                     })
                 }
                 InputOutcome::SurfaceCloseRejected {
@@ -1153,7 +1156,7 @@ impl HostFrameReport {
                     native_provider.map(|provider| {
                         HostInputOutcome::NativeSurfaceCloseCancellationRequired {
                             close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
-                            plan: plan.clone(),
+                            plan: DockspaceClosePlan::from_core(plan),
                         }
                     })
                 }
@@ -1321,7 +1324,7 @@ fn interaction_close_request(outcome: &InteractionOutcome) -> Option<HostInputOu
     match outcome {
         InteractionOutcome::CloseRequested { plan, reused } => {
             Some(HostInputOutcome::CloseRequested {
-                plan: plan.clone(),
+                plan: DockspaceClosePlan::from_core(plan),
                 reused: *reused,
                 origin: HostCloseRequestOrigin::Interaction,
             })

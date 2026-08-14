@@ -9,6 +9,12 @@ pub mod canonical {
     pub use crate::canonical::*;
 }
 
+/// Core-owned close-plan, lifecycle, and native settlement protocol.
+pub mod close {
+    pub use crate::close_plan::*;
+    pub use crate::viewport::CloseObservationGeneration;
+}
+
 /// Checked graph mutation commands and captured sources.
 pub mod command {
     pub use crate::command::*;

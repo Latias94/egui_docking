@@ -2,6 +2,8 @@ use super::support;
 
 use std::collections::BTreeSet;
 
+use dockspace::close::{CloseDecision, ClosePlanPhase};
+use dockspace::close_plan::ClosePlanLookup;
 use dockspace::drop_target::DropTargetId;
 use dockspace::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
@@ -63,7 +65,6 @@ use dockspace::viewport::{
     ViewportRole, WindowToken,
 };
 use dockspace::viewport_focus::{FocusObservationGeneration, unknown_focus_observation};
-use dockspace::{CloseDecision, ClosePlanLookup, ClosePlanPhase};
 use support::{
     MeasurementProfile, TestPresentationHost, append_host_input,
     complete_host_frame_with_current_outputs, complete_host_frame_with_retained_or_unavailable,

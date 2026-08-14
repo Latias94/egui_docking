@@ -1,6 +1,6 @@
 //! Narrow read-only state required by an ordered native host backend.
 
-use dockspace::ClosePlan;
+use dockspace::backend::close::ClosePlan;
 use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::ingress::BackendIngressCommitWatermark;
 use dockspace::backend::interaction::InteractionPreview;

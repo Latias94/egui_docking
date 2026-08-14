@@ -9,12 +9,12 @@ use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
 use dockspace::backend::scene::{SplitterGapPresentation, SurfaceScene};
 use dockspace::backend::tab_strip::TabStripControlId;
 use dockspace::backend::transition::WorkspaceVersion;
+use dockspace::close::{CloseDecision, ClosePlanTarget};
 use dockspace::geometry::LogicalRect;
 use dockspace::policy::{
     CloseCapability, DockItemRule, DockPolicy, DockTargetRule, DockTargetRuleKey,
     TabBarInteraction, TabBarPolicy, TabBarVisibility,
 };
-use dockspace::{CloseDecision, ClosePlanTarget};
 use egui::accesskit::{
     Action, ActionRequest, NodeId as AccessKitNodeId, Orientation, Role, TreeUpdate,
 };

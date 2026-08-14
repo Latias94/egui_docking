@@ -20,6 +20,8 @@ use super::support;
 
 use support::TestPresentationHost;
 
+use dockspace::close::{CloseDecision, ClosePlanPhase, ClosePlanTarget, DeferredCloseDecision};
+use dockspace::close_plan::{CloseInertReason, ClosePlan, CloseResolutionOutcome};
 use dockspace::command::{CloseCommitOutcome, ContentCloseTarget};
 use dockspace::engine::{DockEngine, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
@@ -45,10 +47,6 @@ use dockspace::presentation_hit::{PresentationHitRegionId, PresentationHitRegion
 use dockspace::scene::SurfaceSceneStamp;
 use dockspace::transition::{EngineTransition, InputOutcome};
 use dockspace::viewport::{ViewportRole, WindowToken};
-use dockspace::{
-    CloseDecision, CloseInertReason, ClosePlan, ClosePlanPhase, ClosePlanTarget,
-    CloseResolutionOutcome, DeferredCloseDecision,
-};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const MAIN_ROOT: RootId = RootId::new(10);

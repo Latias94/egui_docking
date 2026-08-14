@@ -74,6 +74,11 @@ mod test_support;
 mod behavior_tests;
 
 pub use builder::DockspaceBuilder;
+pub use dockspace::close::{
+    CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget,
+    ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+    SurfaceCloseDisposition,
+};
 pub use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
     DockspaceActionRejection, DockspaceAxis, DockspaceContainedLayout, DockspaceContainedView,
@@ -82,8 +87,9 @@ pub use dockspace::model::{
     DockspaceTabsView, DockspaceView, FloatingPresentationId, InvalidDockFraction, ItemId,
     PreparedDockAction, RootId, SurfaceId, WorkspaceVersion,
 };
-pub use dockspace::{
-    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+pub use dockspace::runtime::{
+    DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose,
+    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseResolution,
 };
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;

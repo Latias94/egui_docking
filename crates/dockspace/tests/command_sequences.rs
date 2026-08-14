@@ -68,7 +68,7 @@ fn close(workspace: &mut Workspace, target: ContentCloseTarget) -> CloseCommitOu
             EngineInput::ResolveClose {
                 request: plan.request(),
                 token: requirement.token(),
-                decision: dockspace::CloseDecision::Allow,
+                decision: dockspace::close::CloseDecision::Allow,
             },
         )
         .expect("close decision must reduce");

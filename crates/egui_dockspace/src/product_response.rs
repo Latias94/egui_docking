@@ -3,14 +3,13 @@
 use dockspace::model::{
     DockspaceActionOutcome, DockspaceActionRejection, ItemId, SurfaceId, WorkspaceVersion,
 };
-use dockspace::policy::CloseCapability;
-use dockspace::runtime::{
-    DockspaceCloseOutcome as RuntimeCloseOutcome, DockspaceCloseRejection,
-    DockspaceInteractionError, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
+pub use dockspace::runtime::{
+    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose,
+    DockspaceClosePlan, DockspaceCloseRejection as DockspaceCloseApplicationRejection,
+    DockspaceCloseResolution,
 };
-use dockspace::{
-    CloseDecisionToken, CloseItemDecisionState, ClosePlan, ClosePlanPhase, ClosePlanTarget,
-    CloseRequestId, CloseResolutionOutcome, DeferredCloseToken,
+use dockspace::runtime::{
+    DockspaceInteractionError, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of one atomic docking publication.
@@ -124,106 +123,6 @@ impl DockspaceActionResult {
     }
 }
 
-/// One application-facing pane decision in a close plan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DockspaceCloseItem {
-    item: ItemId,
-    capability: CloseCapability,
-    token: CloseDecisionToken,
-    state: CloseItemDecisionState,
-}
-
-impl DockspaceCloseItem {
-    /// Returns the stable pane identity.
-    #[must_use]
-    pub const fn item(self) -> ItemId {
-        self.item
-    }
-
-    /// Returns the policy capability frozen into this request.
-    #[must_use]
-    pub const fn capability(self) -> CloseCapability {
-        self.capability
-    }
-
-    /// Returns the initial decision token.
-    #[must_use]
-    pub const fn token(self) -> CloseDecisionToken {
-        self.token
-    }
-
-    /// Returns the current decision state.
-    #[must_use]
-    pub const fn state(self) -> CloseItemDecisionState {
-        self.state
-    }
-
-    /// Returns the deferred continuation when one is pending.
-    #[must_use]
-    pub const fn deferred_token(self) -> Option<DeferredCloseToken> {
-        match self.state {
-            CloseItemDecisionState::Deferred { continuation } => Some(continuation),
-            CloseItemDecisionState::Pending
-            | CloseItemDecisionState::Allowed
-            | CloseItemDecisionState::Vetoed => None,
-        }
-    }
-}
-
-/// Stable application-facing view of one core close plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DockspaceClosePlan {
-    request: CloseRequestId,
-    target: ClosePlanTarget,
-    items: Box<[DockspaceCloseItem]>,
-    phase: ClosePlanPhase,
-}
-
-impl DockspaceClosePlan {
-    fn from_core(plan: &ClosePlan) -> Self {
-        Self {
-            request: plan.request(),
-            target: plan.target(),
-            items: plan
-                .items()
-                .iter()
-                .copied()
-                .map(|item| DockspaceCloseItem {
-                    item: item.item(),
-                    capability: item.capability(),
-                    token: item.token(),
-                    state: item.state(),
-                })
-                .collect(),
-            phase: plan.phase(),
-        }
-    }
-
-    /// Returns the unique close request identity.
-    #[must_use]
-    pub const fn request(&self) -> CloseRequestId {
-        self.request
-    }
-
-    /// Returns the stable item, root, or surface target.
-    #[must_use]
-    pub const fn target(&self) -> ClosePlanTarget {
-        self.target
-    }
-
-    /// Returns required pane decisions in core order.
-    #[must_use]
-    pub fn items(&self) -> &[DockspaceCloseItem] {
-        &self.items
-    }
-
-    /// Returns the current application-visible phase.
-    #[must_use]
-    pub const fn phase(&self) -> ClosePlanPhase {
-        self.phase
-    }
-}
-
 /// One close request emitted by a local egui action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockspaceCloseRequest {
@@ -232,9 +131,9 @@ pub struct DockspaceCloseRequest {
 }
 
 impl DockspaceCloseRequest {
-    fn new(plan: &ClosePlan, reused: bool) -> Self {
+    fn new(plan: &DockspaceClosePlan, reused: bool) -> Self {
         Self {
-            plan: DockspaceClosePlan::from_core(plan),
+            plan: plan.clone(),
             reused,
         }
     }
@@ -258,11 +157,11 @@ pub enum DockspaceCloseOutcome {
     /// The exact decision token was consumed by the close workflow.
     Processed {
         /// Token-resolution result, including typed inert outcomes.
-        resolution: CloseResolutionOutcome,
+        resolution: DockspaceCloseResolution,
         /// Latest retained close plan, when the request exists.
         plan: Option<DockspaceClosePlan>,
         /// Checked topology result after the final allow decision.
-        application: Option<Result<RuntimeCloseOutcome, DockspaceCloseRejection>>,
+        application: Option<Result<DockspaceAppliedClose, DockspaceCloseApplicationRejection>>,
     },
     /// The decision named an older workspace revision.
     Stale {
@@ -290,7 +189,7 @@ impl DockspaceCloseResult {
                 ..
             } => Some(DockspaceCloseOutcome::Processed {
                 resolution: *resolution,
-                plan: plan.as_ref().map(DockspaceClosePlan::from_core),
+                plan: plan.clone(),
                 application: application.clone(),
             }),
             HostInputOutcome::StaleRejected { expected, accepted } => {

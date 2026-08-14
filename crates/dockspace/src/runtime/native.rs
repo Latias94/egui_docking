@@ -221,13 +221,13 @@ impl NativeSurfaceBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeSurfaceCloseRequest {
     provider: PlatformObservationLease,
-    edge: crate::NativeCloseEdge,
+    edge: crate::close_plan::NativeCloseEdge,
 }
 
 impl NativeSurfaceCloseRequest {
     pub(super) const fn from_edge(
         provider: PlatformObservationLease,
-        edge: crate::NativeCloseEdge,
+        edge: crate::close_plan::NativeCloseEdge,
     ) -> Self {
         Self { provider, edge }
     }

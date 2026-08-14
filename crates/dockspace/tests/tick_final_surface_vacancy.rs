@@ -1,6 +1,6 @@
 use super::support;
 
-use dockspace::CloseDecision;
+use dockspace::close::CloseDecision;
 use dockspace::command::{
     ContainedPosition, RootContent, RootPresentationTarget, WorkspaceCommand,
 };

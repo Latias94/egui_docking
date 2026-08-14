@@ -1,6 +1,6 @@
 use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId};
-use dockspace::{CloseDecision, ClosePlanTarget};
+use dockspace::close::{CloseDecision, ClosePlanTarget};
 use egui::accesskit::{Action, ActionRequest};
 use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, DockspaceClosePlan, PaneView};

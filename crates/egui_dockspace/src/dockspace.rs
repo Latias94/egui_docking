@@ -31,6 +31,7 @@ pub use self::driver::{
 use std::collections::BTreeSet;
 use std::{fmt::Debug, hash::Hash};
 
+use dockspace::backend::close::NativeCloseEdge;
 #[cfg(any(feature = "backend", test))]
 use dockspace::backend::command::WorkspaceCommand;
 use dockspace::backend::engine::{
@@ -58,6 +59,10 @@ use dockspace::backend::scene_manifest::MeasurementUnavailableReason;
 use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::backend::viewport_focus::GlobalFocusedWindow;
+use dockspace::close::{
+    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+    SurfaceCloseRequest,
+};
 #[cfg(feature = "serde")]
 use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
@@ -65,10 +70,6 @@ use dockspace::document::{
 use dockspace::model::{DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction};
 use dockspace::policy::DockPolicy;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
-use dockspace::{
-    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
-    NativeCloseEdge, SurfaceCloseRequest,
-};
 use egui::{Context, Id, Ui, ViewportId};
 
 use self::host_frame::{HostFrameState, HostFrameStateSlot};

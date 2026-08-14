@@ -18,7 +18,17 @@ pub mod backend_ingress;
 mod backend_ingress;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod canonical;
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
 mod close_plan;
+/// Stable application close decisions, targets, and opaque decision identities.
+pub mod close {
+    pub use crate::close_plan::{
+        CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget,
+        ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+        SurfaceCloseDisposition, SurfaceCloseRequest, SurfaceContainedRehomeTarget,
+        SurfaceMainRehomeTarget, SurfaceRehomeTarget,
+    };
+}
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod command;
 #[cfg(test)]
@@ -181,15 +191,4 @@ mod workspace;
 #[cfg(test)]
 mod behavior_tests;
 
-pub use close_plan::{
-    CloseAdvanceOutcome, CloseAuthority, CloseCancellationProof, CloseCancellationState,
-    CloseDecision, CloseDecisionToken, CloseDestroyedProof, CloseDestructionState,
-    CloseInertReason, CloseItemDecisionState, CloseItemRequirement, CloseLifecycleAction,
-    CloseNativeSettlement, ClosePlan, ClosePlanItem, ClosePlanLookup, ClosePlanPhase,
-    ClosePlanTarget, ClosePlanTargetKind, CloseRequestId, CloseResolutionOutcome,
-    DeferredCloseDecision, DeferredCloseToken, NativeCloseEdge, SurfaceCloseDisposition,
-    SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
-    SurfaceRehomeTarget,
-};
-pub use viewport::CloseObservationGeneration;
 pub(crate) use workspace::RootPresentationOwner;

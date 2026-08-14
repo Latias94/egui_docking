@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::backend::close::{ClosePlan, CloseResolutionOutcome, NativeCloseEdge};
 use dockspace::backend::command::CloseCommitOutcome;
 #[cfg(any(feature = "backend", test))]
 use dockspace::backend::command::CommandOutcome;
@@ -11,16 +12,14 @@ use dockspace::backend::ingress::BackendIngressOrdinal;
 use dockspace::backend::interaction::InteractionOutcome;
 use dockspace::backend::presentation_observation::HostPresentationObservationOutcome;
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
+use dockspace::close::{
+    CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget, CloseRequestId,
+    DeferredCloseToken,
+};
 use dockspace::error::CommandError;
 use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use dockspace::policy::CloseCapability;
 use dockspace::runtime::WorkspaceVersion;
-use dockspace::{
-    CloseDecisionToken, CloseItemDecisionState, ClosePlan, ClosePlanPhase, ClosePlanTarget,
-    CloseRequestId, CloseResolutionOutcome, DeferredCloseToken,
-};
-
-use dockspace::NativeCloseEdge;
 
 /// Product-level summary of one atomic docking publication.
 #[derive(Clone, Debug, PartialEq, Eq)]

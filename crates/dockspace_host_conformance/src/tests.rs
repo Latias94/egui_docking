@@ -1,3 +1,4 @@
+use dockspace::close::CloseDecision;
 use dockspace::geometry::{
     LogicalPoint, LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor,
 };
@@ -8,25 +9,25 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
-    DockspaceCloseOutcome, DockspaceDropDirection, DockspaceDropEligibility, DockspaceHostFrame,
-    DockspaceInteractionError, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSession, DockspaceVisualKind, HostCloseRequestOrigin, HostFrameReport,
-    HostInputOutcome, HostWindowToken, HostWorkAreaToken, NativeCloseState,
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind, NativePointerButton,
-    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
-    NativePointerOwner, NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose,
-    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
-    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
-    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
-    NativeWorkAreaFacts, NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
-    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
-    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
-    SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
+    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseResolution, DockspaceDropDirection,
+    DockspaceDropEligibility, DockspaceHostFrame, DockspaceInteractionError,
+    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken,
+    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
+    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
+    NativeScrollSequenceId, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
+    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
+    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
+    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceUnavailableReason,
+    TabStripMetrics, UniformSurfaceMetrics,
 };
-use dockspace::{CloseDecision, CloseResolutionOutcome};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
@@ -287,7 +288,7 @@ fn submit_pointer_close_contact_end(
 fn request_pointer_close(
     host: &mut DeterministicHost,
     descriptor: &DockspaceReceiverDescriptor,
-) -> dockspace::ClosePlan {
+) -> DockspaceClosePlan {
     let (receiver, surface) = press_pointer_close(host, descriptor);
     let released = host.run(|frame| {
         submit_pointer_close_release(frame, receiver, surface);
@@ -307,7 +308,7 @@ fn request_pointer_close(
 fn request_pointer_close_with_contact_end(
     host: &mut DeterministicHost,
     descriptor: &DockspaceReceiverDescriptor,
-) -> dockspace::ClosePlan {
+) -> DockspaceClosePlan {
     let (receiver, surface) = press_pointer_close(host, descriptor);
     let released = host.run(|frame| {
         submit_pointer_close_contact_end(frame, receiver, surface);
@@ -343,7 +344,7 @@ fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
     assert!(matches!(
         veto.inputs(),
         [HostInputOutcome::CloseDecisionProcessed {
-            resolution: CloseResolutionOutcome::Vetoed { request, item: A },
+            resolution: DockspaceCloseResolution::Vetoed { request, item: A },
             changed: false,
             ..
         }] if *request == veto_plan.request()
@@ -368,7 +369,7 @@ fn pointer_close_report_exposes_one_plan_for_veto_and_allow() {
     assert!(matches!(
         allow.inputs(),
         [HostInputOutcome::CloseDecisionProcessed {
-            resolution: CloseResolutionOutcome::Approved { request },
+            resolution: DockspaceCloseResolution::Approved { request },
             application: Some(Ok(DockspaceCloseOutcome::ItemClosed { item: A, .. })),
             changed: true,
             ..
@@ -1023,7 +1024,7 @@ fn ogc_02_merge_and_close_restore_the_previous_target_selection_atomically() {
     assert!(matches!(
         close.inputs(),
         [HostInputOutcome::CloseDecisionProcessed {
-            resolution: CloseResolutionOutcome::Approved { request },
+            resolution: DockspaceCloseResolution::Approved { request },
             application: Some(Ok(DockspaceCloseOutcome::ItemClosed { item: X, .. })),
             changed: true,
             ..

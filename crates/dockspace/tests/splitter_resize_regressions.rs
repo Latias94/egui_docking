@@ -644,7 +644,7 @@ fn close_root(
             EngineInput::ResolveClose {
                 request: plan.request(),
                 token: requirement.token(),
-                decision: dockspace::CloseDecision::Allow,
+                decision: dockspace::close::CloseDecision::Allow,
             },
         ));
     }

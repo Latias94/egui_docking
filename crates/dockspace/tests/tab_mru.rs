@@ -54,7 +54,7 @@ fn close(workspace: &mut Workspace, item: ItemId) {
         EngineInput::ResolveClose {
             request: plan.request(),
             token: plan.items()[0].token(),
-            decision: dockspace::CloseDecision::Allow,
+            decision: dockspace::close::CloseDecision::Allow,
         },
     )
     .expect("MRU close decision must commit");

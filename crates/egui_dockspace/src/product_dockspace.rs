@@ -3,15 +3,15 @@
 use std::collections::BTreeSet;
 use std::{fmt::Debug, hash::Hash};
 
+use dockspace::close::{
+    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
+};
 use dockspace::model::{
     DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, SurfaceUnavailableReason, WorkspaceVersion,
-};
-use dockspace::{
-    CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};

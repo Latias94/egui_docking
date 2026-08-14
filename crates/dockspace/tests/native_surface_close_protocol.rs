@@ -9,6 +9,12 @@ use super::support;
 
 use support::TestPresentationHost;
 
+use dockspace::close::{
+    CloseDecision, CloseItemDecisionState, ClosePlanPhase, DeferredCloseDecision,
+    SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
+    SurfaceRehomeTarget,
+};
+use dockspace::close_plan::{CloseCancellationState, ClosePlan, ClosePlanLookup, NativeCloseEdge};
 use dockspace::command::ContainedPosition;
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectRecordLookup, EffectResult,
@@ -43,11 +49,6 @@ use dockspace::viewport::{
 use dockspace::viewport_focus::{
     FocusObservationGeneration, PaneFocusObservation, PaneFocusObservationGeneration,
     unknown_focus_observation,
-};
-use dockspace::{
-    CloseCancellationState, CloseDecision, CloseItemDecisionState, ClosePlanLookup, ClosePlanPhase,
-    DeferredCloseDecision, NativeCloseEdge, SurfaceCloseRequest, SurfaceContainedRehomeTarget,
-    SurfaceMainRehomeTarget, SurfaceRehomeTarget,
 };
 
 const SOURCE: SurfaceId = SurfaceId::new(1);
@@ -248,7 +249,7 @@ impl Harness {
         &mut self,
         edge: NativeCloseEdge,
         request: SurfaceCloseRequest,
-    ) -> (dockspace::ClosePlan, EffectId) {
+    ) -> (ClosePlan, EffectId) {
         let (plan, mut transition) = self.begin_surface_close(edge, request);
         for item in plan.items() {
             transition = self.submit(EngineInput::ResolveClose {
@@ -266,7 +267,7 @@ impl Harness {
         &mut self,
         edge: NativeCloseEdge,
         request: SurfaceCloseRequest,
-    ) -> (dockspace::ClosePlan, EngineTransition) {
+    ) -> (ClosePlan, EngineTransition) {
         let expected = self.engine.version();
         let transition = self.submit(EngineInput::RequestSurfaceClose {
             expected,
@@ -285,7 +286,7 @@ impl Harness {
         (plan, transition)
     }
 
-    fn cancel_surface_close(&mut self, edge: NativeCloseEdge) -> (dockspace::ClosePlan, EffectId) {
+    fn cancel_surface_close(&mut self, edge: NativeCloseEdge) -> (ClosePlan, EffectId) {
         let expected = self.engine.version();
         let transition = self.submit(EngineInput::CancelSurfaceClose { expected, edge });
         let plan = match only_outcome(&transition) {

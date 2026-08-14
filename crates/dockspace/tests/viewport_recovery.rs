@@ -7,8 +7,8 @@ use support::{
     complete_host_frame_with_retained_or_unavailable, complete_host_frame_with_unavailable,
 };
 
-use dockspace::NativeCloseEdge;
 use dockspace::RootPresentationOwner;
+use dockspace::close_plan::NativeCloseEdge;
 use dockspace::command::WorkspaceCommand;
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectInvalidation, EffectPhase,

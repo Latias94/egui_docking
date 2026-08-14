@@ -29,15 +29,13 @@ macro_rules! close_protocol_id {
         }
 
         impl $name {
-            /// Returns the engine authority domain which minted this identity.
-            #[must_use]
-            pub const fn domain(self) -> EngineAuthorityDomainId {
+            #[allow(dead_code)]
+            pub(crate) const fn domain(self) -> EngineAuthorityDomainId {
                 self.domain
             }
 
-            /// Returns the non-zero sequence within this engine authority domain.
-            #[must_use]
-            pub const fn sequence(self) -> u64 {
+            #[allow(dead_code)]
+            pub(crate) const fn sequence(self) -> u64 {
                 self.sequence.get()
             }
 

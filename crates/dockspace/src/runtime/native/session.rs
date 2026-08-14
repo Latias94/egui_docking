@@ -375,7 +375,7 @@ impl DockspaceSession {
     pub fn request_native_surface_close(
         &mut self,
         close: NativeSurfaceCloseRequest,
-        request: crate::SurfaceCloseRequest,
+        request: crate::close_plan::SurfaceCloseRequest,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected = self.version();
         let native = self.native_state_mut()?;

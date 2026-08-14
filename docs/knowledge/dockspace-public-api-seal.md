@@ -127,6 +127,16 @@ the runtime does not expose an unreachable combined challenge. Other
 interaction terminals remain private until the facade defines equally narrow,
 actionable product outcomes for them.
 
+Close publication now follows the same boundary. `HostInputOutcome` carries a
+`DockspaceClosePlan` projection and `DockspaceCloseResolution`, not the core
+`ClosePlan`, native settlement proofs, lifecycle actions, or the exhaustive
+`CloseInertReason` FSM. Applications still receive exact opaque request and
+decision tokens, stable target/item identities, policy capability, and the
+public phase required to make a decision. Detailed plan authority, native
+destruction/cancellation state, and effect correlation are available only to
+explicit adapter backends through `dockspace::backend::close`; stable close
+decisions and target values live under `dockspace::close`.
+
 The primary docking-geometry slice is now renderer-complete. A borrowed
 `SurfacePaintPlan` exposes panes, tabs, tab bars, splitters, splitter junctions,
 contained presentations, docking-guide clusters and targets, the active

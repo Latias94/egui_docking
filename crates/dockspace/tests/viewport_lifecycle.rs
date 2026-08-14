@@ -3,6 +3,8 @@ use super::support;
 use std::collections::BTreeMap;
 
 use dockspace::RootPresentationOwner;
+use dockspace::close::SurfaceCloseRequest;
+use dockspace::close_plan::NativeCloseEdge;
 use dockspace::command::{
     CloseCommitOutcome, ContainedPosition, ContentCloseTarget, MovePayload, RootContent,
     RootPresentationTarget, WorkspaceCommand,
@@ -64,7 +66,6 @@ use dockspace::viewport_focus::{
     unknown_focus_observation,
 };
 use dockspace::viewport_registry::{ViewportAdmission, ViewportLifecycle, ViewportOwnership};
-use dockspace::{NativeCloseEdge, SurfaceCloseRequest};
 
 const ROOT_SOURCE: RootId = RootId::new(1);
 const ROOT_HOST: RootId = RootId::new(2);
@@ -757,7 +758,7 @@ fn close_content_item(fixture: &mut Fixture, item: ItemId) -> EngineTransition {
         EngineInput::ResolveClose {
             request,
             token,
-            decision: dockspace::CloseDecision::Allow,
+            decision: dockspace::close::CloseDecision::Allow,
         },
     )
     .expect("content close decision must reduce");
@@ -4191,7 +4192,7 @@ fn retain_layout_native_close_waits_for_the_matching_destroyed_proof() {
             EngineInput::ResolveClose {
                 request: plan.request(),
                 token: item.token(),
-                decision: dockspace::CloseDecision::Allow,
+                decision: dockspace::close::CloseDecision::Allow,
             },
         )
         .expect("every retain-layout pane decision must reduce");
