@@ -91,6 +91,11 @@ pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseResolution,
 };
+#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+pub use dockspace::runtime::{
+    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
+    DockspacePersistenceErrorKind,
+};
 pub use error::{DockspaceError, DockspaceErrorKind};
 pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};

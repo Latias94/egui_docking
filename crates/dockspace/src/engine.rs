@@ -1908,11 +1908,23 @@ impl DockEngine {
         restore: ValidatedWorkspaceRestore,
         policy: DockPolicy,
     ) -> Result<Self, EngineError> {
+        Self::from_validated_restore_with_presentation_config(
+            restore,
+            policy,
+            DockPresentationConfig::default(),
+        )
+    }
+
+    pub(crate) fn from_validated_restore_with_presentation_config(
+        restore: ValidatedWorkspaceRestore,
+        policy: DockPolicy,
+        presentation_config: DockPresentationConfig,
+    ) -> Result<Self, EngineError> {
         let (workspace, presentation_identity_frontier) = restore.into_parts();
         Self::new_with_presentation_state(
             workspace,
             policy,
-            DockPresentationConfig::default(),
+            presentation_config,
             presentation_identity_frontier,
         )
     }

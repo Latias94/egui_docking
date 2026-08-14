@@ -102,7 +102,7 @@ pub struct DockspaceDocument {
 }
 
 impl DockspaceDocument {
-    fn capture_state(
+    pub(crate) fn capture_state(
         document_id: DockspaceDocumentId,
         generation: u64,
         engine: &DockEngine,
@@ -163,7 +163,7 @@ impl DockspaceDocument {
         self.binding_hash
     }
 
-    fn restore(
+    pub(crate) fn restore(
         self,
         prove_external_item_association: impl Fn(DockspaceDocumentId, ItemId, &str) -> bool,
     ) -> Result<RestoredDockspaceDocument, DockspaceDocumentRestoreError> {
@@ -391,12 +391,182 @@ struct DocumentAuthorityStamp {
     revision: DocumentStateRevision,
 }
 
-#[derive(Debug)]
-struct BoundDocumentState {
+pub(crate) struct BoundDocumentState {
     document_id: DockspaceDocumentId,
     next_generation: Option<u64>,
     external_item_keys: ExternalItemKeyMap,
     viewport_placements: ViewportPlacementPreferences,
+}
+
+impl fmt::Debug for BoundDocumentState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BoundDocumentState")
+            .field("document_id", &self.document_id)
+            .field("next_generation", &self.next_generation)
+            .field("external_item_count", &self.external_item_keys.len())
+            .field("viewport_placement_count", &self.viewport_placements.len())
+            .finish()
+    }
+}
+
+impl BoundDocumentState {
+    pub(crate) fn from_bootstrap(
+        engine: &DockEngine,
+        bootstrap: DockspaceDocumentBootstrap,
+    ) -> Result<Self, DockspaceDocumentCaptureError> {
+        Self::from_bootstrap_workspace(engine.workspace(), bootstrap)
+    }
+
+    pub(crate) fn from_bootstrap_workspace(
+        workspace: &Workspace,
+        bootstrap: DockspaceDocumentBootstrap,
+    ) -> Result<Self, DockspaceDocumentCaptureError> {
+        validate_workspace_item_bindings(workspace, &bootstrap.external_item_keys)
+            .map_err(DockspaceDocumentCaptureError::MissingExternalItemKey)?;
+        validate_workspace_placement_surfaces(workspace, &bootstrap.viewport_placements)
+            .map_err(DockspaceDocumentCaptureError::UnknownPlacementSurface)?;
+        Ok(Self {
+            document_id: bootstrap.document_id,
+            next_generation: Some(bootstrap.next_generation),
+            external_item_keys: bootstrap.external_item_keys,
+            viewport_placements: bootstrap.viewport_placements,
+        })
+    }
+
+    pub(crate) const fn document_id(&self) -> DockspaceDocumentId {
+        self.document_id
+    }
+
+    pub(crate) const fn next_generation(&self) -> Option<u64> {
+        self.next_generation
+    }
+
+    pub(crate) fn item_id(&self, external_key: &str) -> Option<ItemId> {
+        self.external_item_keys.item_id(external_key)
+    }
+
+    pub(crate) fn external_item_key(&self, item: ItemId) -> Option<&str> {
+        self.external_item_keys.external_key(item)
+    }
+
+    pub(crate) fn ensure_external_item_key(
+        &mut self,
+        external_key: impl Into<String>,
+    ) -> Result<ItemId, ExternalItemKeyMapError> {
+        self.external_item_keys.ensure(external_key)
+    }
+
+    pub(crate) fn ensure_external_item_keys<I, K>(
+        &mut self,
+        external_keys: I,
+    ) -> Result<(), ExternalItemKeyMapError>
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<String>,
+    {
+        self.external_item_keys.ensure_all(external_keys)
+    }
+
+    pub(crate) fn item_identity_scope(&self) -> BTreeSet<ItemId> {
+        self.external_item_keys
+            .iter()
+            .map(|(_, item)| item)
+            .collect()
+    }
+
+    pub(crate) fn prepare_capture(
+        &self,
+        engine: &DockEngine,
+    ) -> Result<PreparedDockspaceDocumentCapture, DockspaceDocumentCaptureError> {
+        let viewport_placements = self.reconciled_viewport_placements(engine);
+        let generation = self
+            .next_generation
+            .ok_or(DockspaceDocumentCaptureError::GenerationExhausted)?;
+        let document = DockspaceDocument::capture_state(
+            self.document_id,
+            generation,
+            engine,
+            &self.external_item_keys,
+            &viewport_placements,
+        )?;
+        Ok(PreparedDockspaceDocumentCapture {
+            document,
+            viewport_placements,
+            next_generation: generation.checked_add(1),
+        })
+    }
+
+    pub(crate) fn commit_capture(
+        &mut self,
+        prepared: PreparedDockspaceDocumentCapture,
+    ) -> DockspaceDocument {
+        let PreparedDockspaceDocumentCapture {
+            document,
+            viewport_placements,
+            next_generation,
+        } = prepared;
+        self.viewport_placements = viewport_placements;
+        self.next_generation = next_generation;
+        document
+    }
+
+    fn reconciled_viewport_placements(&self, engine: &DockEngine) -> ViewportPlacementPreferences {
+        let mut placements = self.viewport_placements.clone();
+        let mut child_surfaces = BTreeSet::new();
+        for (surface, _) in engine.workspace().surfaces() {
+            let record = engine.viewport().viewport(surface);
+            if record.is_some_and(|record| record.role() == ViewportRole::Root) {
+                continue;
+            }
+            child_surfaces.insert(surface);
+            let Some(record) = record else {
+                continue;
+            };
+            if record.role() != ViewportRole::Child
+                || record.admission() != ViewportAdmission::Admitted
+                || !record.has_coordinate_authority()
+            {
+                continue;
+            }
+            let Some(coordinates) = record.coordinates() else {
+                continue;
+            };
+            let Some(outer_rect) = coordinates.outer_bounds() else {
+                continue;
+            };
+            let presentation = placements
+                .get(surface)
+                .and_then(|preference| preference.presentation());
+            let Ok(preference) = ViewportPlacementPreference::new(surface, outer_rect) else {
+                continue;
+            };
+            let Ok(mut preference) =
+                preference.try_with_inner_size(coordinates.content_bounds().size())
+            else {
+                continue;
+            };
+            preference = preference.with_scale_factor(coordinates.native_scale_factor());
+            if let Some(presentation) = presentation {
+                preference = preference.with_presentation(presentation);
+            }
+            placements.set(preference);
+        }
+        placements.retain_surfaces(&child_surfaces);
+        placements
+    }
+}
+
+pub(crate) struct PreparedDockspaceDocumentCapture {
+    document: DockspaceDocument,
+    viewport_placements: ViewportPlacementPreferences,
+    next_generation: Option<u64>,
+}
+
+impl PreparedDockspaceDocumentCapture {
+    pub(crate) const fn document(&self) -> &DockspaceDocument {
+        &self.document
+    }
 }
 
 #[derive(Debug)]
@@ -554,17 +724,7 @@ impl DockspaceDocumentSession {
         if self.binding.is_some() {
             return Err(DockspaceDocumentSessionError::AlreadyBound);
         }
-        let workspace = WorkspaceSnapshot::capture(self.engine.workspace())?;
-        validate_snapshot_item_bindings(&workspace, &bootstrap.external_item_keys)
-            .map_err(DockspaceDocumentCaptureError::MissingExternalItemKey)?;
-        validate_viewport_placement_surfaces(&workspace, &bootstrap.viewport_placements)
-            .map_err(DockspaceDocumentCaptureError::UnknownPlacementSurface)?;
-        self.binding = Some(BoundDocumentState {
-            document_id: bootstrap.document_id,
-            next_generation: Some(bootstrap.next_generation),
-            external_item_keys: bootstrap.external_item_keys,
-            viewport_placements: bootstrap.viewport_placements,
-        });
+        self.binding = Some(BoundDocumentState::from_bootstrap(&self.engine, bootstrap)?);
         self.advance_document_state();
         Ok(())
     }
@@ -1264,65 +1424,9 @@ impl DockspaceDocumentSession {
     }
 
     fn reconciled_viewport_placements(&self) -> Option<ViewportPlacementPreferences> {
-        let binding = self.binding.as_ref()?;
-        let surfaces = self
-            .engine
-            .workspace()
-            .surfaces()
-            .map(|(surface, _)| surface)
-            .collect::<BTreeSet<_>>();
-        let root_surfaces = surfaces
-            .iter()
-            .filter_map(|surface| {
-                self.engine
-                    .viewport()
-                    .viewport(*surface)
-                    .filter(|record| record.role() == ViewportRole::Root)
-                    .map(|_| *surface)
-            })
-            .collect::<BTreeSet<_>>();
-        let authoritative = surfaces
-            .iter()
-            .filter_map(|surface| {
-                let record = self.engine.viewport().viewport(*surface)?;
-                if record.role() != ViewportRole::Child
-                    || record.admission() != ViewportAdmission::Admitted
-                    || !record.has_coordinate_authority()
-                {
-                    return None;
-                }
-                let coordinates = record.coordinates()?;
-                Some((
-                    *surface,
-                    coordinates.outer_bounds()?,
-                    coordinates.content_bounds().size(),
-                    coordinates.native_scale_factor(),
-                ))
-            })
-            .collect::<Vec<_>>();
-        let child_surfaces = surfaces
-            .difference(&root_surfaces)
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let mut placements = binding.viewport_placements.clone();
-        placements.retain_surfaces(&child_surfaces);
-        for (surface, outer_rect, inner_size, scale_factor) in authoritative {
-            let presentation = placements
-                .get(surface)
-                .and_then(|preference| preference.presentation());
-            let Ok(preference) = ViewportPlacementPreference::new(surface, outer_rect) else {
-                continue;
-            };
-            let Ok(mut preference) = preference.try_with_inner_size(inner_size) else {
-                continue;
-            };
-            preference = preference.with_scale_factor(scale_factor);
-            if let Some(presentation) = presentation {
-                preference = preference.with_presentation(presentation);
-            }
-            placements.set(preference);
-        }
-        Some(placements)
+        self.binding
+            .as_ref()
+            .map(|binding| binding.reconciled_viewport_placements(&self.engine))
     }
 
     /// Captures the next complete document generation from this sole owner.
@@ -1335,26 +1439,12 @@ impl DockspaceDocumentSession {
     /// Returns a typed session or capture failure without advancing the generation.
     pub fn capture(&mut self) -> Result<DockspaceDocument, DockspaceDocumentSessionError> {
         self.ensure_idle()?;
-        let viewport_placements = self
-            .reconciled_viewport_placements()
-            .ok_or(DockspaceDocumentSessionError::Unbound)?;
-        let binding = self
+        let prepared = self
             .binding
             .as_ref()
-            .ok_or(DockspaceDocumentSessionError::Unbound)?;
-        let generation = binding
-            .next_generation
-            .ok_or(DockspaceDocumentCaptureError::GenerationExhausted)?;
-        let document = DockspaceDocument::capture_state(
-            binding.document_id,
-            generation,
-            &self.engine,
-            &binding.external_item_keys,
-            &viewport_placements,
-        )?;
-        let binding = self.binding_mut()?;
-        binding.viewport_placements = viewport_placements;
-        binding.next_generation = generation.checked_add(1);
+            .ok_or(DockspaceDocumentSessionError::Unbound)?
+            .prepare_capture(&self.engine)?;
+        let document = self.binding_mut()?.commit_capture(prepared);
         self.advance_document_state();
         Ok(document)
     }
@@ -1768,7 +1858,11 @@ impl DockspaceDocumentRestore<'_> {
             .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
         let mut prelude = self.session.engine.begin_host_frame(presentation_host)?;
         prelude.restrict_item_identity_scope(
-            candidate.external_item_keys.iter().map(|(_, item)| item),
+            candidate
+                .external_item_keys
+                .iter()
+                .map(|(_, item)| item)
+                .collect(),
         );
         Ok(prelude)
     }
@@ -2175,12 +2269,24 @@ fn merge_next_generation(active: Option<u64>, incoming: Option<u64>) -> Option<u
 }
 
 #[derive(Clone, Debug)]
-struct RestoredDockspaceDocument {
+pub(crate) struct RestoredDockspaceDocument {
     document_id: DockspaceDocumentId,
     generation: u64,
     restore: ValidatedWorkspaceRestore,
     external_item_keys: ExternalItemKeyMap,
     viewport_placements: ViewportPlacementPreferences,
+}
+
+impl RestoredDockspaceDocument {
+    pub(crate) fn into_runtime_parts(self) -> (ValidatedWorkspaceRestore, BoundDocumentState) {
+        let binding = BoundDocumentState {
+            document_id: self.document_id,
+            next_generation: self.generation.checked_add(1),
+            external_item_keys: self.external_item_keys,
+            viewport_placements: self.viewport_placements,
+        };
+        (self.restore, binding)
+    }
 }
 
 fn rebase_restored_presentation_identities(
@@ -2760,6 +2866,17 @@ fn validate_snapshot_item_bindings(
         .map_or(Ok(()), Err)
 }
 
+fn validate_workspace_item_bindings(
+    workspace: &Workspace,
+    external_item_keys: &ExternalItemKeyMap,
+) -> Result<(), ItemId> {
+    workspace
+        .item_multiset()
+        .into_keys()
+        .find(|item| external_item_keys.external_key(*item).is_none())
+        .map_or(Ok(()), Err)
+}
+
 fn validate_viewport_placement_surfaces(
     snapshot: &WorkspaceSnapshot,
     viewport_placements: &ViewportPlacementPreferences,
@@ -2773,6 +2890,17 @@ fn validate_viewport_placement_surfaces(
         .iter()
         .map(|placement| placement.surface())
         .find(|surface| !surfaces.contains(surface))
+        .map_or(Ok(()), Err)
+}
+
+fn validate_workspace_placement_surfaces(
+    workspace: &Workspace,
+    viewport_placements: &ViewportPlacementPreferences,
+) -> Result<(), crate::ids::SurfaceId> {
+    viewport_placements
+        .iter()
+        .map(|placement| placement.surface())
+        .find(|surface| workspace.surface(*surface).is_none())
         .map_or(Ok(()), Err)
 }
 

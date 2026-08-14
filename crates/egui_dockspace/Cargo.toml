@@ -13,7 +13,7 @@ repository.workspace = true
 default = []
 backend = ["dockspace/backend"]
 example-app = ["dep:eframe"]
-serde = ["backend", "dockspace/serde", "dep:serde_json"]
+serde = ["dockspace/serde", "dep:serde_json"]
 # Internal seam consumed by the unpublished fork-backed native adapter. This
 # deliberately exposes only sessionless paint/measurement helpers; it does not
 # create or own a docking session.

@@ -13,6 +13,8 @@ mod measurement;
 mod native;
 mod native_effect;
 mod paint;
+#[cfg(feature = "serde")]
+mod persistence;
 mod presentation;
 
 use native::NativePlatformError;
@@ -71,6 +73,11 @@ pub use paint::{
     TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
     TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
     TabStripMemberVisibility,
+};
+#[cfg(feature = "serde")]
+pub use persistence::{
+    DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
+    DockspacePersistenceErrorKind,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
@@ -148,6 +155,8 @@ pub struct DockspaceSession {
     presentation: presentation::RuntimePresentationState,
     pointer: Option<interaction::RuntimePointerState>,
     native: Option<native::RuntimeNativeState>,
+    #[cfg(feature = "serde")]
+    document: Option<crate::document::BoundDocumentState>,
     abandoned_native_effects: native_effect::NativeEffectDropQueue,
     committed_source_sequence: u64,
 }
@@ -217,22 +226,20 @@ impl DockspaceSession {
         policy: crate::policy::DockPolicy,
         presentation_config: DockPresentationConfig,
     ) -> Result<Self, DockspaceRuntimeError> {
-        let mut engine =
+        let engine =
             DockEngine::new_with_presentation_config(workspace, policy, presentation_config)?;
-        let presentation_host = engine.create_presentation_host()?;
-        Ok(Self {
-            engine,
-            presentation_host,
-            presentation: presentation::RuntimePresentationState::default(),
-            pointer: None,
-            native: None,
-            abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
-            committed_source_sequence: 0,
-        })
+        Ok(Self::from_engine(engine)?)
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_engine_for_test(
+    fn from_engine(mut engine: DockEngine) -> Result<Self, EngineError> {
+        let presentation_host = engine.create_presentation_host()?;
+        Ok(Self::from_engine_with_presentation_host(
+            engine,
+            presentation_host,
+        ))
+    }
+
+    fn from_engine_with_presentation_host(
         engine: DockEngine,
         presentation_host: PresentationHostLease,
     ) -> Self {
@@ -242,9 +249,19 @@ impl DockspaceSession {
             presentation: presentation::RuntimePresentationState::default(),
             pointer: None,
             native: None,
+            #[cfg(feature = "serde")]
+            document: None,
             abandoned_native_effects: native_effect::NativeEffectDropQueue::default(),
             committed_source_sequence: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_engine_for_test(
+        engine: DockEngine,
+        presentation_host: PresentationHostLease,
+    ) -> Self {
+        Self::from_engine_with_presentation_host(engine, presentation_host)
     }
 
     /// Returns the currently published, strictly validated workspace.
@@ -352,6 +369,10 @@ impl DockspaceSession {
             native.reclaim_committed_prefix(&mut self.engine)?;
         }
         let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
+        #[cfg(feature = "serde")]
+        if let Some(document) = self.document.as_ref() {
+            prelude.restrict_item_identity_scope(document.item_identity_scope());
+        }
         let submitted_presentation = if let Some(native) = self.native.as_mut() {
             self.presentation.submit_backend_observation(
                 &mut prelude,

@@ -4,9 +4,8 @@ use dockspace::model::{
     DockspaceActionOutcome, DockspaceActionRejection, ItemId, SurfaceId, WorkspaceVersion,
 };
 pub use dockspace::runtime::{
-    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose,
-    DockspaceClosePlan, DockspaceCloseRejection as DockspaceCloseApplicationRejection,
-    DockspaceCloseResolution,
+    DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
+    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseResolution,
 };
 use dockspace::runtime::{
     DockspaceInteractionError, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,

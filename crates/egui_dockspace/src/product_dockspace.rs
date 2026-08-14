@@ -10,6 +10,8 @@ use dockspace::model::{
     DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
+#[cfg(feature = "serde")]
+use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, SurfaceUnavailableReason, WorkspaceVersion,
 };
@@ -54,6 +56,62 @@ impl Dockspace {
         Ok(Self { id, session, style })
     }
 
+    #[cfg(feature = "serde")]
+    pub(crate) fn from_persistent_layout_parts(
+        id: Id,
+        layout: DockspaceLayout,
+        policy: DockPolicy,
+        style: DockStyle,
+        bootstrap: DockspaceDocumentBootstrap,
+    ) -> Result<Self, DockspaceError> {
+        let presentation = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
+        let session = DockspaceSession::from_persistent_layout_with_presentation_config(
+            layout,
+            policy,
+            presentation,
+            bootstrap,
+        )
+        .map_err(DockspaceError::from_detail)?;
+        Ok(Self { id, session, style })
+    }
+
+    /// Strictly restores one complete product document into a new egui facade.
+    ///
+    /// `resolve_external_item` must return the application's expected item identity
+    /// for every persisted key, including closed historical panes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid style, malformed or unsupported JSON, rejected
+    /// pane identity associations, or a document that cannot initialize the core.
+    #[cfg(feature = "serde")]
+    pub fn from_document_json(
+        id_salt: impl Hash + Debug,
+        bytes: &[u8],
+        policy: DockPolicy,
+        style: DockStyle,
+        resolve_external_item: impl Fn(DockspaceDocumentId, &str) -> Option<ItemId>,
+    ) -> Result<Self, DockspaceError> {
+        style.validate().map_err(DockspaceError::from_detail)?;
+        let presentation = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
+        let session = DockspaceSession::from_document_json_with_presentation_config(
+            bytes,
+            policy,
+            presentation,
+            resolve_external_item,
+        )
+        .map_err(DockspaceError::from_detail)?;
+        Ok(Self {
+            id: Id::new(("egui_dockspace", id_salt)),
+            session,
+            style,
+        })
+    }
+
     /// Returns the stable egui identity used to scope adapter widgets.
     #[must_use]
     pub const fn id(&self) -> Id {
@@ -82,6 +140,63 @@ impl Dockspace {
     #[must_use]
     pub const fn style(&self) -> &DockStyle {
         &self.style
+    }
+
+    /// Returns the current durable document lineage, when configured.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn document_id(&self) -> Option<DockspaceDocumentId> {
+        self.session.document_id()
+    }
+
+    /// Returns the generation assigned to the next successful save.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn next_document_generation(&self) -> Option<u64> {
+        self.session.next_document_generation()
+    }
+
+    /// Resolves one session-owned application pane key.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn item_id_for_external_key(&self, external_key: &str) -> Option<ItemId> {
+        self.session.item_id_for_external_key(external_key)
+    }
+
+    /// Resolves one item to its exact session-owned application key.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn external_key_for_item(&self, item: ItemId) -> Option<&str> {
+        self.session.external_key_for_item(item)
+    }
+
+    /// Allocates one append-only application pane identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when the session is not document-bound, the
+    /// key is invalid, or the item identity space is exhausted.
+    #[cfg(feature = "serde")]
+    pub fn ensure_external_item(
+        &mut self,
+        external_key: impl Into<String>,
+    ) -> Result<ItemId, DockspaceError> {
+        self.session
+            .ensure_external_item(external_key)
+            .map_err(DockspaceError::from_detail)
+    }
+
+    /// Captures and encodes the complete session-owned document as JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error without advancing the document generation when
+    /// strict capture or JSON encoding fails.
+    #[cfg(feature = "serde")]
+    pub fn save_document_json(&mut self) -> Result<Vec<u8>, DockspaceError> {
+        self.session
+            .save_document_json()
+            .map_err(DockspaceError::from_detail)
     }
 
     /// Prepares a revision-bound selection action.

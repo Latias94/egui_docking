@@ -1,6 +1,8 @@
 //! Stable error details for the renderer-neutral product facade.
 
 use dockspace::presentation_config::DockPresentationConfigError;
+#[cfg(feature = "serde")]
+use dockspace::runtime::DockspacePersistenceError;
 use dockspace::runtime::DockspaceRuntimeError;
 use thiserror::Error;
 
@@ -19,6 +21,10 @@ pub(crate) enum DockspaceErrorSource {
     /// The renderer-neutral session rejected a host-frame operation.
     #[error("dockspace runtime failed: {0}")]
     Runtime(#[from] DockspaceRuntimeError),
+    /// The session-owned document boundary rejected persistence input or output.
+    #[cfg(feature = "serde")]
+    #[error("dockspace persistence failed: {0}")]
+    Persistence(#[from] DockspacePersistenceError),
     /// A product action did not yield its required terminal outcome.
     #[error("dockspace {operation} did not produce its required application outcome")]
     ApplicationOutcomeUnavailable { operation: &'static str },
@@ -43,6 +49,8 @@ impl DockspaceErrorSource {
             }
             Self::SingleSurfaceRequiresOne { .. } => DockspaceErrorKind::OperationConflict,
             Self::SurfaceOutsideRoster { .. } => DockspaceErrorKind::HostProtocol,
+            #[cfg(feature = "serde")]
+            Self::Persistence(_) => DockspaceErrorKind::Persistence,
             Self::Runtime(error) => match error.kind() {
                 dockspace::runtime::DockspaceRuntimeErrorKind::ActionAuthority => {
                     DockspaceErrorKind::OperationConflict

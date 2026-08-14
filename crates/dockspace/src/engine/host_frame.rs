@@ -44,8 +44,8 @@ impl CoreHostFramePrelude {
 
     /// Freezes the application identities admitted by a durable document session.
     #[cfg(feature = "serde")]
-    pub(crate) fn restrict_item_identity_scope(&mut self, items: impl IntoIterator<Item = ItemId>) {
-        self.item_identity_scope = Some(items.into_iter().collect());
+    pub(crate) fn restrict_item_identity_scope(&mut self, items: BTreeSet<ItemId>) {
+        self.item_identity_scope = Some(items);
     }
 
     /// Returns the exact pending presentation streams frozen for the rendering host.
