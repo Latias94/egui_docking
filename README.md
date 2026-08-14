@@ -93,7 +93,7 @@ paths.
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The excluded native workspace pins the
 public egui/eframe fork commit
-`e484cb2acd0bb37f415369b3d017f066adbcf4ba` and the event-fact Winit commit
+`bbb96417d63340c2ad92876049e7a3388c8e00a6` and the event-fact Winit commit
 `180bfc09743586137fec014ef5543cdde56ce5d0`. The fork remains graph-neutral;
 all docking topology, receiver challenges, native lifecycle meaning, and
 presentation obligations stay in `dockspace`. The admission reason and removal
@@ -102,16 +102,14 @@ condition for every remaining fork seam are recorded in
 
 ## Persistence
 
-Document persistence is not part of the new default product facade yet. The
-legacy document/session implementation remains available only through the
-opt-in backend migration path (`egui_dockspace`'s `serde` feature enables that
-backend); raw document, workspace-snapshot, and viewport-sidecar modules remain
-private when `dockspace` enables `serde` without `backend`. This is not a stable
-crates.io contract. The next
-product slice will add one session-owned document facade that atomically binds
-workspace topology, external pane identities, and viewport placement; until
-that lands, applications should treat `DockspaceLayout` as construction input
-and keep their own durable document boundary.
+The optional `serde` feature adds session-owned product persistence without
+enabling the backend protocol. Applications allocate stable pane identities
+through `DockspaceDocumentBootstrap`, construct a persistent `Dockspace`, and
+save or restore one versioned JSON document through the product facade. The
+document atomically binds workspace topology, append-only external pane keys,
+allocator frontiers, lineage/generation, and viewport placement. Raw workspace
+snapshots, mutable restore candidates, and independently replaceable key maps
+remain private implementation details.
 
 ## Development
 

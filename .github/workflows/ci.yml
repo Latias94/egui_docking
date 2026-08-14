@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: e484cb2acd0bb37f415369b3d017f066adbcf4ba
+          ref: bbb96417d63340c2ad92876049e7a3388c8e00a6
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
