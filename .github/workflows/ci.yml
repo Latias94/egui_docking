@@ -78,6 +78,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Check out pinned egui fork
+        uses: actions/checkout@v4
+        with:
+          repository: Latias94/egui
+          ref: e484cb2acd0bb37f415369b3d017f066adbcf4ba
+          path: .ci/egui-fork
+          persist-credentials: false
+      - name: Check out pinned winit fork
+        uses: actions/checkout@v4
+        with:
+          repository: Latias94/winit
+          ref: 180bfc09743586137fec014ef5543cdde56ce5d0
+          path: .ci/winit-fork
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
@@ -85,6 +99,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: fork-native
+
+      - name: Run pinned eframe host-seam tests
+        run: >-
+          cargo test --manifest-path .ci/egui-fork/Cargo.toml
+          -p eframe --lib --no-default-features
+          --features glow,native-host-seam,x11,wayland
+          native::host_seam::tests --locked -j1
+
+      - name: Run pinned winit event-model tests
+        run: >-
+          cargo test --manifest-path .ci/winit-fork/Cargo.toml
+          -p winit --lib --no-default-features
+          --features x11,wayland event::tests --locked -j1
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
