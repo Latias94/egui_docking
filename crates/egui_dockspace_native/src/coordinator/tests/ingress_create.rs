@@ -1,5 +1,7 @@
 use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout};
+use dockspace::model::{
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+};
 use dockspace::runtime::{
     NativeEffectOperation, NativePointerRoster, NativeWindowInputState,
     NativeWindowPresentationState, SurfacePresentationResult, UniformSurfaceMetrics,
@@ -23,16 +25,13 @@ fn source_window() -> WindowId {
 fn tear_off_coordinator() -> NativeCoordinator {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SOURCE_SURFACE,
-        DockspaceRootLayout::new(
-            SOURCE_ROOT,
-            DockspaceNode::central_tabs([SOURCE_ITEM]),
-        ),
+        DockspaceRootLayout::new(SOURCE_ROOT, DockspaceNode::central_tabs([SOURCE_ITEM])),
     )])
     .expect("tear-off layout validates");
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let session = DockspaceSession::from_layout(layout, policy)
-        .expect("tear-off session initializes");
+    let session =
+        DockspaceSession::from_layout(layout, policy).expect("tear-off session initializes");
     NativeCoordinator::new(session, NativePointerRoster::Exact(Vec::new()))
         .expect("managed native coordinator enrolls")
 }
@@ -75,12 +74,11 @@ fn register_source(native: &mut NativeCoordinator) -> NativeSurfaceBinding {
 
 fn publish_desktop_authority(native: &mut NativeCoordinator, binding: NativeSurfaceBinding) {
     let scale = ScaleFactor::new(1.0).expect("test scale validates");
-    let window_bounds = PhysicalRect::new(0.0, 0.0, 640.0, 360.0)
-        .expect("source window bounds validate");
-    let display_bounds = PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0)
-        .expect("display bounds validate");
-    let work_area = PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0)
-        .expect("work-area bounds validate");
+    let window_bounds =
+        PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("source window bounds validate");
+    let display_bounds =
+        PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("display bounds validate");
+    let work_area = PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).expect("work-area bounds validate");
     let roster = NativeViewportRosterRecord::for_test_with_work_areas(
         [crate::window_snapshot::CompiledWindowObservation::new(
             binding,
@@ -125,9 +123,7 @@ fn measure_and_present_source(
     measurement
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("measurement frame settles the surface");
-    measurement
-        .commit()
-        .expect("measurement frame commits");
+    measurement.commit().expect("measurement frame commits");
 
     let mut paint = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
@@ -147,9 +143,9 @@ fn measure_and_present_source(
     let mut report = paint.commit().expect("paint frame commits");
     assert!(report.take_native_effects().is_empty());
     let outputs = report.take_painted_outputs();
-    let [output] = outputs
-        .try_into()
-        .unwrap_or_else(|outputs: Vec<_>| panic!("expected one source output, got {}", outputs.len()));
+    let [output] = outputs.try_into().unwrap_or_else(|outputs: Vec<_>| {
+        panic!("expected one source output, got {}", outputs.len())
+    });
     native
         .session
         .report_surface_presentation(output, SurfacePresentationResult::Presented)
@@ -220,25 +216,15 @@ fn pointer_facts(
     }
 }
 
-#[test]
-fn window_event_outside_all_release_requests_create_without_transferring_source() {
-    let mut native = tear_off_coordinator();
-    let source_binding = register_source(&mut native);
-    publish_desktop_authority(&mut native, source_binding);
-    let receiver = measure_and_present_source(&mut native);
-    let source_before = native
-        .session
-        .view()
-        .item(SOURCE_ITEM)
-        .expect("source item remains open before the drag");
-    let source_surface = source_before.surface();
-    let source_root = source_before.root();
-
+fn request_native_child(
+    native: &mut NativeCoordinator,
+    receiver: dockspace::runtime::DockspaceReceiverDescriptor,
+) -> NativeSurfaceBinding {
     let press = receiver.center();
     let press_physical = PhysicalPoint::new(press.x(), press.y())
         .expect("receiver center converts to desktop pixels at scale one");
     push_window_event(
-        &mut native,
+        native,
         1,
         WindowEvent::MouseInput {
             device_id: DeviceId::dummy(),
@@ -251,14 +237,14 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
             ),
         },
     );
-    let mut press_report = pointer_frame(&mut native, receiver);
+    let mut press_report = pointer_frame(native, receiver);
     native
         .accept_native_effects(press_report.take_native_effects())
         .expect("press effects settle through the production coordinator");
 
     let outside = PhysicalPoint::new(1000.0, 700.0).expect("outside point validates");
     push_window_event(
-        &mut native,
+        native,
         2,
         WindowEvent::CursorMoved {
             device_id: DeviceId::dummy(),
@@ -270,7 +256,7 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
             ),
         },
     );
-    let mut move_report = pointer_frame(&mut native, receiver);
+    let mut move_report = pointer_frame(native, receiver);
     native
         .accept_native_effects(move_report.take_native_effects())
         .expect("move effects settle through the production coordinator");
@@ -283,7 +269,10 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         .paint_plan(SOURCE_SURFACE)
         .expect("preview paint plan lookup succeeds")
         .expect("source remains paintable while native creation is pending");
-    assert!(plan.drag_preview().is_some(), "outside move publishes a preview");
+    assert!(
+        plan.drag_preview().is_some(),
+        "outside move publishes a preview"
+    );
     preview
         .confirm_surface_painted(SOURCE_SURFACE)
         .expect("complete preview paint confirms");
@@ -314,7 +303,7 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         .expect("preview effects settle through the production coordinator");
 
     push_window_event(
-        &mut native,
+        native,
         3,
         WindowEvent::MouseInput {
             device_id: DeviceId::dummy(),
@@ -323,7 +312,7 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
             facts: pointer_facts(outside, PointerWindowRoute::None, PointerWindowRoute::None),
         },
     );
-    let mut release_report = pointer_frame(&mut native, receiver);
+    let mut release_report = pointer_frame(native, receiver);
     let effects = release_report.take_native_effects();
     let create_bindings = effects
         .iter()
@@ -333,7 +322,7 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         })
         .collect::<Vec<_>>();
     assert_eq!(create_bindings.len(), 1, "one native child is requested");
-    assert_ne!(create_bindings[0].surface(), source_surface);
+    assert_ne!(create_bindings[0].surface(), SOURCE_SURFACE);
     native
         .accept_native_effects(effects)
         .expect("create effect enters the production deferred-viewport driver");
@@ -343,6 +332,26 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         "the emitted create request is retained by the product coordinator"
     );
 
+    create_bindings[0]
+}
+
+#[test]
+fn window_event_outside_all_release_requests_create_without_transferring_source() {
+    let mut native = tear_off_coordinator();
+    let source_binding = register_source(&mut native);
+    publish_desktop_authority(&mut native, source_binding);
+    let receiver = measure_and_present_source(&mut native);
+    let source_before = native
+        .session
+        .view()
+        .item(SOURCE_ITEM)
+        .expect("source item remains open before the drag");
+    let source_surface = source_before.surface();
+    let source_root = source_before.root();
+
+    let child = request_native_child(&mut native, receiver);
+    assert_ne!(child.surface(), source_surface);
+
     let source_after = native
         .session
         .view()
@@ -350,5 +359,73 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         .expect("source item stays reachable until the native lifecycle barrier");
     assert_eq!(source_after.surface(), source_surface);
     assert_eq!(source_after.root(), source_root);
+}
 
+#[test]
+fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_output_token() {
+    let mut native = tear_off_coordinator();
+    let source_binding = register_source(&mut native);
+    publish_desktop_authority(&mut native, source_binding);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+
+    native
+        .report_snapshot(
+            [
+                (source_binding, NativeWindowFacts::live()),
+                (child, NativeWindowFacts::live()),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the pending child becomes an observed live native window");
+    let mut observed = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the observed child frame begins");
+    observed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the observed child frame settles every surface");
+    let mut observed_report = observed.commit().expect("the observed child frame commits");
+    assert!(observed_report.take_native_effects().is_empty());
+
+    native
+        .publish_close(child, NativeCloseState::Requested, None)
+        .expect("the pre-admission close edge records");
+    let mut close = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the pre-admission close frame begins");
+    close
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the pre-admission close frame settles every surface");
+    let mut close_report = close
+        .commit()
+        .expect("the pre-admission close frame commits");
+    let effects = close_report.take_native_effects();
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [request]
+                if matches!(
+                    request.operation(),
+                    NativeEffectOperation::CompensatingClose { binding } if *binding == child
+                )
+        ),
+        "one exact compensating close is emitted: {effects:#?}"
+    );
+
+    native
+        .accept_native_effects(effects)
+        .expect("the compensating close enters the exact retirement path");
+    let viewport = viewport_id_for(child);
+    assert_eq!(native.viewport_binding(viewport), Some(child));
+    assert!(
+        native
+            .deferred_viewport_specs()
+            .iter()
+            .all(|spec| spec.binding() != child),
+        "the compensating close stops re-declaring the unadmitted child"
+    );
+    assert!(
+        !native.retirements.can_begin_release(viewport, child),
+        "the close acknowledgement is retained until an exact Destroyed callback"
+    );
 }
