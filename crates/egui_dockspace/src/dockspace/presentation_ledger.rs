@@ -6,6 +6,7 @@ use std::sync::Arc;
 use dockspace::backend::engine::CoreHostFramePrelude;
 use dockspace::backend::ids::SurfaceId;
 use dockspace::backend::ingress::{BackendIngressLease, BackendIngressOrdinal};
+use dockspace::backend::intent::{Authority, AuthorityUnavailableReason};
 use dockspace::backend::presentation_observation::{
     HostFrameKey as CorePresentationEmissionKey, HostPresentationCaptureGeneration,
     HostPresentationObservation, HostPresentationObservationEntry,
@@ -14,7 +15,6 @@ use dockspace::backend::presentation_observation::{
 };
 use dockspace::backend::retention::PresentationRetentionManifest;
 use dockspace::backend::transition::EngineTransition;
-use dockspace::intent::{Authority, AuthorityUnavailableReason};
 use egui::{Context, ViewportId};
 
 use crate::error::DockspaceErrorSource;

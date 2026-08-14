@@ -6,15 +6,15 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::graph::{Node, Workspace};
 use dockspace::backend::ids::{ItemId, SurfaceId};
+use dockspace::backend::intent::{CloseSceneTarget, TabGestureSource};
 use dockspace::backend::interaction::{ActiveDragView, DragPhase};
 use dockspace::backend::presentation_hit::{PresentationHitManifest, PresentationHitRegionKind};
 use dockspace::backend::scene::{
     PaneRecord, PresentationPlan, SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord,
     TabSceneId, TabStripControlRecord, TabStripMemberVisibility,
 };
-use dockspace::intent::{CloseSceneTarget, TabGestureSource};
+use dockspace::backend::tab_strip::TabStripControlId;
 use dockspace::policy::TabBarInteraction;
-use dockspace::tab_strip::TabStripControlId;
 use egui::accesskit::{Action, HasPopup, Orientation, Role};
 use egui::{
     Area, CursorIcon, EventFilter, FocusDirection, Id, Key, Order, Rect, Response, Sense, Stroke,

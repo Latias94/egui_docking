@@ -10,15 +10,15 @@ use dockspace::backend::graph::{Node, Workspace};
 use dockspace::backend::ids::{ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
 use dockspace::backend::scene::RootPresentationOwner;
 use dockspace::backend::scene::{PaneSceneId, TabBarSceneId, TabSceneId};
-use dockspace::geometry::{GeometryError, LogicalRect, LogicalSize};
-use dockspace::policy::TabBarVisibility;
-use dockspace::runtime::WorkspaceVersion;
-use dockspace::scene_manifest::{
+use dockspace::backend::scene_manifest::{
     Measurement, MeasurementSubmissionError, MeasurementValueError,
     PaneMinimumKey as CorePaneMinimumKey, SurfaceMeasurements, SurfaceRequirements, TabIntrinsic,
     TabIntrinsicKey, TabListMenuMetrics, TabStripControlMetric, TabStripControlMetrics,
     TabStripControlPlacement, TabStripKey as CoreTabStripKey, TabStripMetrics,
 };
+use dockspace::geometry::{GeometryError, LogicalRect, LogicalSize};
+use dockspace::policy::TabBarVisibility;
+use dockspace::runtime::WorkspaceVersion;
 use egui::emath::GuiRounding as _;
 use egui::{FontSelection, Galley, Id, Rect, TextStyle, TextWrapMode, Ui, Vec2};
 use thiserror::Error;

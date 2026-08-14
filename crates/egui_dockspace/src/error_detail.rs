@@ -6,6 +6,7 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use dockspace::backend::ingress::BackendIngressError;
+use dockspace::backend::intent::ContainedPlacementUnavailable;
 use dockspace::backend::interaction::InteractionRejection;
 use dockspace::backend::pointer_journal::{
     PointerEdgeSequence, PointerJournalError, SurfaceLocalPointerProviderError,
@@ -17,7 +18,6 @@ use dockspace::backend::presentation_observation::HostPresentationEndpoint;
 use dockspace::backend::presentation_observation::HostPresentationStreamId;
 use dockspace::backend::presentation_observation::NativeStagingPresentation;
 use dockspace::backend::scene::SurfaceSceneStamp;
-use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::presentation_config::DockPresentationConfigError;
 use egui::ViewportId;
 use thiserror::Error;

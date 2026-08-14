@@ -17,10 +17,10 @@ use dockspace::backend::presentation_observation::{
     PresentedSurfaceAuthority, SurfacePresentationOutputTicket,
 };
 use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp, TabBarSceneId, TabSceneId};
+use dockspace::backend::scene_manifest::SurfaceMeasurements;
 use dockspace::backend::transition::{EngineTransition, InputOutcome, SurfaceContributionOutcome};
 use dockspace::backend::viewport_focus::PaneFocusObservation;
 use dockspace::runtime::WorkspaceVersion;
-use dockspace::scene_manifest::SurfaceMeasurements;
 use egui::{Context, Id, Rect, Ui, ViewportId};
 use thiserror::Error;
 

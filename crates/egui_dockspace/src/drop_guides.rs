@@ -1,9 +1,9 @@
 //! Pure docking-guide paint planning and egui shape emission.
 
 use dockspace::backend::command::Edge;
+use dockspace::backend::drop_guide::DropGuideSlot;
 use dockspace::backend::drop_resolver::{DropAffordance, DropGuideEligibility};
 use dockspace::backend::ids::SurfaceId;
-use dockspace::drop_guide::DropGuideSlot;
 #[cfg(test)]
 use egui::{Color32, vec2};
 use egui::{Painter, Rect};
@@ -139,6 +139,7 @@ const fn guide_direction(slot: DropGuideSlot) -> GuideCueDirection {
 #[cfg(test)]
 mod tests {
     use dockspace::backend::command::MovePayload;
+    use dockspace::backend::drop_guide::DropGuideScope;
     use dockspace::backend::drop_resolver::{
         DropAffordance, DropAffordanceTarget, DropResolution, resolve_drop,
     };
@@ -147,6 +148,7 @@ mod tests {
     };
     use dockspace::backend::graph::{Axis, Node, RootRecord, SurfacePresentation, Workspace};
     use dockspace::backend::ids::{ItemId, RootId};
+    use dockspace::backend::intent::Authority;
     use dockspace::backend::interaction::{DragGeneration, DragSessionId};
     use dockspace::backend::presentation_observation::{
         HostPresentationCaptureGeneration, HostPresentationObservation,
@@ -154,15 +156,13 @@ mod tests {
         HostPresentationStreamObservation,
     };
     use dockspace::backend::scene::{PresentationPlan, SurfaceScene};
-    use dockspace::backend::transition::SurfaceContributionOutcome;
-    use dockspace::drop_guide::DropGuideScope;
-    use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-    use dockspace::intent::Authority;
-    use dockspace::policy::DockPolicy;
-    use dockspace::scene_manifest::{
+    use dockspace::backend::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,
     };
+    use dockspace::backend::transition::SurfaceContributionOutcome;
+    use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
+    use dockspace::policy::DockPolicy;
     use egui::{Painter, Pos2, RawInput, Shape, pos2};
 
     use super::*;

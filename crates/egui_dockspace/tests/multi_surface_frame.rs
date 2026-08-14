@@ -1,6 +1,6 @@
 use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
-use dockspace::scene_manifest::MeasurementUnavailableReason;
+use dockspace::backend::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{
     EguiFrameScheduleKey, EguiOuterFrameCommit, EguiOuterOutputBatch, EguiOuterSurfaceOutput,

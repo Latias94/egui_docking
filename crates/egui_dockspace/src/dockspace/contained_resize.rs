@@ -1,8 +1,8 @@
 //! Pure geometry for semantic contained-floating resize requests.
 
 use dockspace::backend::ids::SurfaceId;
+use dockspace::backend::intent::ContainedPlacementUnavailable;
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-use dockspace::intent::ContainedPlacementUnavailable;
 
 use crate::renderer::ContainedResizeEdge;
 

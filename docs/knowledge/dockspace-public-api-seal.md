@@ -98,6 +98,12 @@ closed. The independent `dockspace_host_conformance` executor uses this boundary
 for `OGC-01` through `OGC-04` without importing engine internals, scene stamps,
 provider leases, or the core hit resolver.
 
+Adapter-only intent, scene-manifest, drop-guide, drop-target, and tab-strip
+types now live exclusively under `dockspace::backend`. Their former crate-root
+module paths are removed rather than preserved as compatibility aliases. This
+keeps the default product interface free of scene authority while giving the
+explicitly feature-gated migration adapter one coherent seam.
+
 `DockspaceRuntimeError` also belongs to the facade rather than mirroring the
 reducer. Callers inspect a stable `DockspaceRuntimeErrorKind`; typed interaction
 and native failures have narrow accessors, while engine, host-frame, and scene

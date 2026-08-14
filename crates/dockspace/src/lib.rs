@@ -31,20 +31,14 @@ pub mod document;
 #[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
 #[allow(dead_code)]
 mod document;
-#[cfg(any(feature = "backend", test))]
-pub mod drop_guide;
-#[cfg(not(any(feature = "backend", test)))]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod drop_guide;
 #[cfg(test)]
 pub mod drop_resolver;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod drop_resolver;
-#[cfg(any(feature = "backend", test))]
-pub mod drop_target;
-#[cfg(not(any(feature = "backend", test)))]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod drop_target;
 #[cfg(test)]
 pub mod effect;
@@ -77,10 +71,7 @@ pub mod hit_region;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod hit_region;
 mod ids;
-#[cfg(any(feature = "backend", test))]
-pub mod intent;
-#[cfg(not(any(feature = "backend", test)))]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod intent;
 #[cfg(test)]
 pub mod interaction;
@@ -140,10 +131,7 @@ pub mod scene;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod scene;
 mod scene_compiler;
-#[cfg(any(feature = "backend", test))]
-pub mod scene_manifest;
-#[cfg(not(any(feature = "backend", test)))]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod scene_manifest;
 #[cfg(test)]
 pub mod semantic_input;
@@ -161,10 +149,7 @@ pub mod surface_recovery;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod surface_recovery;
-#[cfg(any(feature = "backend", test))]
-pub mod tab_strip;
-#[cfg(not(any(feature = "backend", test)))]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod tab_strip;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod transaction;

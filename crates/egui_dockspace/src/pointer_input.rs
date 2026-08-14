@@ -2,6 +2,7 @@
 
 use dockspace::backend::engine::{CoreHostFrame, HostFrameView};
 use dockspace::backend::ids::{SurfaceId, WorkspaceEpoch};
+use dockspace::backend::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::backend::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, PointerInputLease, SurfaceLocalPointerDrainReceipt,
@@ -19,7 +20,6 @@ use dockspace::backend::presentation_hit::PresentationPointerLane;
 #[cfg(test)]
 use dockspace::backend::presentation_observation::PresentationHostLease;
 use dockspace::geometry::LogicalPoint;
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use egui::{Context, Event, PointerButton as EguiPointerButton, Pos2, ViewportId};
 
 use crate::error::DockspaceErrorSource;
@@ -965,11 +965,11 @@ mod tests {
         HostPresentationObservationEntry, HostPresentationProgress,
         HostPresentationStreamObservation,
     };
-    use dockspace::geometry::{LogicalRect, LogicalSize};
-    use dockspace::scene_manifest::{
+    use dockspace::backend::scene_manifest::{
         Measurement, MeasurementUnavailableReason, SurfaceMeasurements, TabIntrinsic,
         TabStripMetrics,
     };
+    use dockspace::geometry::{LogicalRect, LogicalSize};
     use egui::{Modifiers, RawInput, Rect, pos2, vec2};
 
     use super::*;

@@ -498,8 +498,8 @@ impl PaintReceiverStore {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::backend::drop_guide::DropGuideClusterId;
     use dockspace::backend::ids::{RootId, SurfaceId};
-    use dockspace::drop_guide::DropGuideClusterId;
     use egui::{Context, Order, Pos2, RawInput, Sense, vec2};
 
     use super::*;

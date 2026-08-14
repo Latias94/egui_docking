@@ -11,17 +11,17 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::frame::PanelFocus;
 use dockspace::backend::ids::{RootId, SurfaceId};
+use dockspace::backend::intent::ContainedPlacementUnavailable;
 use dockspace::backend::interaction::EscapeDelivery;
 use dockspace::backend::presentation_observation::{
     NativeStagingPresentation, SurfacePresentationOutputTicket,
 };
 use dockspace::backend::scene::{SurfaceScene, SurfaceSceneStamp};
+use dockspace::backend::scene_manifest::{MeasurementUnavailableReason, SurfaceMeasurements};
 use dockspace::backend::transition::InputOutcome;
 use dockspace::backend::viewport_focus::PaneFocusIntent;
 use dockspace::backend::viewport_focus::PaneFocusObservation;
 use dockspace::geometry::{LogicalRect, LogicalSize};
-use dockspace::intent::ContainedPlacementUnavailable;
-use dockspace::scene_manifest::{MeasurementUnavailableReason, SurfaceMeasurements};
 use egui::{Context, FullOutput, RawInput, Ui, ViewportId};
 
 use super::engine_owner::{EguiPreparedHostFrameCommit, prepared_host_transition};

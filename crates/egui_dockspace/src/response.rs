@@ -799,21 +799,21 @@ fn presentation_summary(transition: &EngineTransition) -> PresentationObservatio
                 summary.rejected += 1;
             }
             HostPresentationObservationOutcome::Retired {
-                presented: dockspace::intent::Authority::Known(Some(_)),
+                presented: dockspace::backend::intent::Authority::Known(Some(_)),
                 promotion_eligible: true,
                 ..
             } => {
                 summary.retired_presented_eligible += 1;
             }
             HostPresentationObservationOutcome::Retired {
-                presented: dockspace::intent::Authority::Known(Some(_)),
+                presented: dockspace::backend::intent::Authority::Known(Some(_)),
                 promotion_eligible: false,
                 ..
             } => {
                 summary.retired_presented_ineligible += 1;
             }
             HostPresentationObservationOutcome::Retired {
-                presented: dockspace::intent::Authority::Known(None),
+                presented: dockspace::backend::intent::Authority::Known(None),
                 ..
             } => {
                 summary.retired_dropped += 1;

@@ -44,6 +44,7 @@ use dockspace::backend::ingress::{
     BackendIngressError, BackendIngressOrdinal, BackendIngressProviderReplacementTicket,
     BackendIngressRecorder,
 };
+use dockspace::backend::intent::Authority;
 use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::pointer_journal::{
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerScope,
@@ -53,6 +54,7 @@ use dockspace::backend::presentation_observation::{
     HostPresentationOutput, HostPresentationStreamId, PresentationHostLease,
     SurfacePresentationOutputTicket,
 };
+use dockspace::backend::scene_manifest::MeasurementUnavailableReason;
 use dockspace::backend::surface_recovery::{SurfaceRecoveryBootstrap, SurfaceRecoveryTarget};
 use dockspace::backend::transition::{BackendIngressProviderReplacementStart, EngineTransition};
 use dockspace::backend::viewport_focus::GlobalFocusedWindow;
@@ -60,10 +62,8 @@ use dockspace::backend::viewport_focus::GlobalFocusedWindow;
 use dockspace::document::{
     DockspaceDocumentRestore, DockspaceDocumentSession, PreparedDockspaceDocumentPublication,
 };
-use dockspace::intent::Authority;
 use dockspace::model::{DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction};
 use dockspace::policy::DockPolicy;
-use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{ViewportBinding, ViewportRole, WindowToken};
 use dockspace::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,

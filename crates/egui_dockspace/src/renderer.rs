@@ -11,6 +11,7 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::graph::{Axis, Workspace};
 use dockspace::backend::ids::{FloatingPresentationId, RootId, SurfaceId};
+use dockspace::backend::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use dockspace::backend::interaction::{
     ActiveDragView, ActiveResizeView, ContainedTransformPaintAcknowledgement,
     ContainedTransformPreview, ContainedTransformPreviewToken, DragPhase, InteractionPreview,
@@ -24,10 +25,9 @@ use dockspace::backend::scene::{
     PaneRecord, PaneSceneId, PresentationPlan, SplitterResizeTarget, SplitterSceneId,
     SurfaceSceneStamp, TabBarRecord, TabBarSceneId, TabRecord, TabSceneId, TabStripControlRecord,
 };
+use dockspace::backend::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use dockspace::error::CommandError;
 use dockspace::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-use dockspace::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
-use dockspace::tab_strip::{TabListMenuSessionId, TabStripControlId};
 use egui::accesskit::Action;
 use egui::{
     Align2, Event, FontSelection, Id, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind, TextStyle,
@@ -904,22 +904,23 @@ fn register_manifest_overlay_receivers(
     let Some(manifest) = authoritative_manifest.or(local_manifest) else {
         return;
     };
-    let mut regions = manifest
-        .regions()
-        .iter()
-        .copied()
-        .filter(|region| {
-            !region.is_passive()
-                && matches!(
+    let mut regions =
+        manifest
+            .regions()
+            .iter()
+            .copied()
+            .filter(|region| {
+                !region.is_passive()
+                    && matches!(
                     region.id().kind(),
                     PresentationHitRegionKind::SplitterJunction(_)
                         | PresentationHitRegionKind::TabStripControl(
-                            dockspace::tab_strip::TabStripControlId::ScrollBackward(_)
-                                | dockspace::tab_strip::TabStripControlId::ScrollForward(_)
+                            dockspace::backend::tab_strip::TabStripControlId::ScrollBackward(_)
+                                | dockspace::backend::tab_strip::TabStripControlId::ScrollForward(_)
                         )
                 )
-        })
-        .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
     regions.sort_unstable_by_key(|region| (region.stack(), region.id()));
     for region in regions {
         let Some(rect) = from_logical_rect(region.hit().rect()) else {
@@ -1399,9 +1400,9 @@ mod tests {
     use dockspace::backend::graph::{ContainedFloating, Node, RootRecord, SurfacePresentation};
     use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
     use dockspace::backend::scene::TabBarSceneId;
+    use dockspace::backend::tab_strip::TabStripControlId;
     use dockspace::geometry::LogicalRect;
     use dockspace::policy::DockPolicy;
-    use dockspace::tab_strip::TabStripControlId;
     #[cfg(not(egui_backend_event_envelope))]
     use egui::accesskit::ActionRequest;
     use egui::{Context, Id, Modifiers, RawInput, Rect, Ui, pos2, vec2};

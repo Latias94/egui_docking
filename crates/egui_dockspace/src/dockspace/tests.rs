@@ -7,6 +7,7 @@ use dockspace::backend::engine::{
 };
 use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::backend::ids::{ItemId, RootId, SourceSequence, StableInputSourceId, SurfaceId};
+use dockspace::backend::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
 use dockspace::backend::interaction::{
     InteractionCancelReason, InteractionEventKind, InteractionStatus,
 };
@@ -25,9 +26,8 @@ use dockspace::backend::presentation_observation::{
     HostPresentationObservationOutcome, HostPresentationObservationRejection,
     PresentationHostRetirementReason,
 };
+use dockspace::backend::scene_manifest::MeasurementUnavailableReason;
 use dockspace::geometry::LogicalPoint;
-use dockspace::intent::{Authority, AuthorityUnavailableReason, PointerButton, PointerId};
-use dockspace::scene_manifest::MeasurementUnavailableReason;
 use egui::{Context, Event, Id, Key, Modifiers, Pos2, RawInput, Rect, Ui, vec2};
 
 use super::{

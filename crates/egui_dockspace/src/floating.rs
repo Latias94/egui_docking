@@ -3,6 +3,7 @@
 use dockspace::backend::engine::LocalContainedGesturePhase;
 use dockspace::backend::graph::Workspace;
 use dockspace::backend::ids::{FloatingPresentationId, RootId, SurfaceId};
+use dockspace::backend::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use dockspace::backend::interaction::{
     ActiveContainedTransformView, ActiveDragView, InteractionStatus,
 };
@@ -11,7 +12,6 @@ use dockspace::backend::scene::{
     ContainedRecord, ContainedResizeDirection, PresentationPlan, SurfaceSceneStamp,
 };
 use dockspace::geometry::{LogicalRect, LogicalSize};
-use dockspace::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{
     CursorIcon, EventFilter, FocusDirection, Id, Key, Rect, Sense, Stroke, StrokeKind, TextStyle,

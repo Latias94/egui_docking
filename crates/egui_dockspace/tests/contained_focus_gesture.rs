@@ -3,11 +3,11 @@ use dockspace::backend::graph::{
     ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace,
 };
 use dockspace::backend::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
-use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
-use dockspace::geometry::{LogicalPoint, LogicalRect};
-use dockspace::intent::{
+use dockspace::backend::intent::{
     ContainedHorizontalResizeEdge, ContainedResizeEdges, ContainedTransformKind,
 };
+use dockspace::backend::interaction::{InteractionStatus, PreviewVisual};
+use dockspace::geometry::{LogicalPoint, LogicalRect};
 use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::backend::{EguiFrameScheduleKey, EguiRendererOutputDisposition};
 use egui_dockspace::{Dockspace, PaneView};

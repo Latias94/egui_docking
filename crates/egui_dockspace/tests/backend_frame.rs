@@ -5,6 +5,7 @@ use dockspace::backend::engine::{BackendIngressProgress, EngineInput};
 use dockspace::backend::frame::PanelFocus;
 use dockspace::backend::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::backend::ids::{ItemId, RootId, SurfaceId};
+use dockspace::backend::intent::{Authority, PointerButton, PointerId};
 use dockspace::backend::interaction::InteractionStatus;
 use dockspace::backend::platform::{
     CapabilityRosterObservation, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
@@ -28,14 +29,13 @@ use dockspace::backend::presentation_observation::{
     HostPresentationOutputPayload, HostPresentationProgress, HostPresentationStreamId,
     HostPresentationStreamObservation,
 };
+use dockspace::backend::scene_manifest::MeasurementUnavailableReason;
 use dockspace::backend::viewport_focus::{
     FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow, PanelFocusRecord,
     ViewportActivationRequest,
 };
 use dockspace::geometry::{LogicalPoint, PhysicalPoint, PhysicalRect, ScaleFactor};
-use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::policy::DockPolicy;
-use dockspace::scene_manifest::MeasurementUnavailableReason;
 use dockspace::viewport::{
     CapabilityObservationGeneration, CoordinateObservationGeneration,
     InventoryObservationGeneration, PlatformSnapshotGeneration, PresentationObservationGeneration,

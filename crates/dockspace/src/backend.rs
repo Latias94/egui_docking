@@ -49,6 +49,16 @@ pub mod drop_resolver {
     pub use crate::drop_resolver::*;
 }
 
+/// Docking-guide identities and structural records used by adapter backends.
+pub mod drop_guide {
+    pub use crate::drop_guide::*;
+}
+
+/// Core-owned drop target identities and availability records.
+pub mod drop_target {
+    pub use crate::drop_target::*;
+}
+
 /// Native effect ledger and typed dispatch results.
 pub mod effect {
     pub use crate::effect::*;
@@ -77,6 +87,11 @@ pub mod hit_region {
 /// Core-owned interaction state machines and outcomes.
 pub mod interaction {
     pub use crate::interaction::*;
+}
+
+/// Typed renderer intents and internal authority facts.
+pub mod intent {
+    pub use crate::intent::*;
 }
 
 /// Internal layout solver records.
@@ -124,6 +139,11 @@ pub mod scene {
     pub use crate::workspace::RootPresentationOwner;
 }
 
+/// Exact scene measurement and contribution manifests.
+pub mod scene_manifest {
+    pub use crate::scene_manifest::*;
+}
+
 /// Ordered semantic input protocol.
 pub mod semantic_input {
     pub use crate::semantic_input::*;
@@ -137,6 +157,11 @@ pub mod semantic_manifest {
 /// Native surface recovery protocol.
 pub mod surface_recovery {
     pub use crate::surface_recovery::*;
+}
+
+/// Tab-strip overflow, popup, and control identities used by adapter backends.
+pub mod tab_strip {
+    pub use crate::tab_strip::*;
 }
 
 /// Complete reducer transition diagnostics.
