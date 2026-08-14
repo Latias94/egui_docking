@@ -13,6 +13,7 @@ use crate::viewport_callback::NativeViewportVisibilityRecord;
 mod ingress_create;
 mod retirement;
 mod replacement;
+mod wheel;
 mod work_area;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
