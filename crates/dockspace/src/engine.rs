@@ -616,7 +616,7 @@ pub struct CoreHostFramePrelude {
     platform_provider_frontier: PlatformProviderAuthorityFrontier,
     presentation_scopes: BTreeMap<PresentationHostLease, BTreeSet<HostPresentationStreamId>>,
     presentation_observations: BTreeMap<PresentationHostLease, HostPresentationObservation>,
-    item_identity_scope: Option<BTreeSet<ItemId>>,
+    item_identity_scope: Option<Arc<BTreeSet<ItemId>>>,
     poison: Option<CoreHostFrameError>,
 }
 
@@ -717,7 +717,7 @@ pub struct CoreHostFrame {
     presentation_scopes: BTreeMap<PresentationHostLease, BTreeSet<HostPresentationStreamId>>,
     /// Session-owned application identities admitted for the complete frame.
     /// `None` is reserved for engines not bound to durable external identities.
-    item_identity_scope: Option<BTreeSet<ItemId>>,
+    item_identity_scope: Option<Arc<BTreeSet<ItemId>>>,
     presentation_snapshot_changed: bool,
     presentation_projection_changed: bool,
     candidate: DockEngine,
@@ -775,7 +775,7 @@ pub struct PreparedHostFrameCommit<'a> {
 pub struct OwnedPreparedHostFrameCommit {
     fence: HostFrameCommitFence,
     #[cfg(feature = "serde")]
-    item_identity_scope: Option<BTreeSet<ItemId>>,
+    item_identity_scope: Option<Arc<BTreeSet<ItemId>>>,
     candidate: DockEngine,
     transition: EngineTransition,
     backend_ingress_commit_guard: Option<BackendIngressCommitGuard>,

@@ -44,7 +44,7 @@ impl CoreHostFramePrelude {
 
     /// Freezes the application identities admitted by a durable document session.
     #[cfg(feature = "serde")]
-    pub(crate) fn restrict_item_identity_scope(&mut self, items: BTreeSet<ItemId>) {
+    pub(crate) fn restrict_item_identity_scope(&mut self, items: Arc<BTreeSet<ItemId>>) {
         self.item_identity_scope = Some(items);
     }
 
@@ -2215,7 +2215,7 @@ impl CoreHostFrame {
 impl CoreHostPresentationFrame {
     #[cfg(feature = "serde")]
     pub(crate) fn item_identity_scope_matches(&self, expected: &BTreeSet<ItemId>) -> bool {
-        self.frame.item_identity_scope.as_ref() == Some(expected)
+        self.frame.item_identity_scope.as_deref() == Some(expected)
     }
 
     /// Returns the exact post-input presentation authority.
@@ -2401,7 +2401,7 @@ impl OwnedPreparedHostFrameCommit {
 
     #[cfg(feature = "serde")]
     pub(crate) fn item_identity_scope_matches(&self, expected: Option<&BTreeSet<ItemId>>) -> bool {
-        self.item_identity_scope.as_ref() == expected
+        self.item_identity_scope.as_deref() == expected
     }
 
     /// Publishes the candidate if its destination still has the frozen authority.

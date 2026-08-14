@@ -395,6 +395,7 @@ pub(crate) struct BoundDocumentState {
     document_id: DockspaceDocumentId,
     next_generation: Option<u64>,
     external_item_keys: ExternalItemKeyMap,
+    item_identity_scope: Arc<BTreeSet<ItemId>>,
     viewport_placements: ViewportPlacementPreferences,
 }
 
@@ -411,6 +412,22 @@ impl fmt::Debug for BoundDocumentState {
 }
 
 impl BoundDocumentState {
+    fn from_parts(
+        document_id: DockspaceDocumentId,
+        next_generation: Option<u64>,
+        external_item_keys: ExternalItemKeyMap,
+        viewport_placements: ViewportPlacementPreferences,
+    ) -> Self {
+        let item_identity_scope = collect_item_identity_scope(&external_item_keys);
+        Self {
+            document_id,
+            next_generation,
+            external_item_keys,
+            item_identity_scope,
+            viewport_placements,
+        }
+    }
+
     pub(crate) fn from_bootstrap(
         engine: &DockEngine,
         bootstrap: DockspaceDocumentBootstrap,
@@ -426,12 +443,12 @@ impl BoundDocumentState {
             .map_err(DockspaceDocumentCaptureError::MissingExternalItemKey)?;
         validate_workspace_placement_surfaces(workspace, &bootstrap.viewport_placements)
             .map_err(DockspaceDocumentCaptureError::UnknownPlacementSurface)?;
-        Ok(Self {
-            document_id: bootstrap.document_id,
-            next_generation: Some(bootstrap.next_generation),
-            external_item_keys: bootstrap.external_item_keys,
-            viewport_placements: bootstrap.viewport_placements,
-        })
+        Ok(Self::from_parts(
+            bootstrap.document_id,
+            Some(bootstrap.next_generation),
+            bootstrap.external_item_keys,
+            bootstrap.viewport_placements,
+        ))
     }
 
     pub(crate) const fn document_id(&self) -> DockspaceDocumentId {
@@ -454,7 +471,9 @@ impl BoundDocumentState {
         &mut self,
         external_key: impl Into<String>,
     ) -> Result<ItemId, ExternalItemKeyMapError> {
-        self.external_item_keys.ensure(external_key)
+        let item = self.external_item_keys.ensure(external_key)?;
+        Arc::make_mut(&mut self.item_identity_scope).insert(item);
+        Ok(item)
     }
 
     pub(crate) fn ensure_external_item_keys<I, K>(
@@ -465,14 +484,17 @@ impl BoundDocumentState {
         I: IntoIterator<Item = K>,
         K: Into<String>,
     {
-        self.external_item_keys.ensure_all(external_keys)
+        let previous_len = self.external_item_keys.len();
+        self.external_item_keys.ensure_all(external_keys)?;
+        if self.external_item_keys.len() != previous_len {
+            Arc::make_mut(&mut self.item_identity_scope)
+                .extend(self.external_item_keys.iter().map(|(_, item)| item));
+        }
+        Ok(())
     }
 
-    pub(crate) fn item_identity_scope(&self) -> BTreeSet<ItemId> {
-        self.external_item_keys
-            .iter()
-            .map(|(_, item)| item)
-            .collect()
+    pub(crate) fn item_identity_scope(&self) -> Arc<BTreeSet<ItemId>> {
+        Arc::clone(&self.item_identity_scope)
     }
 
     pub(crate) fn prepare_capture(
@@ -525,12 +547,12 @@ impl BoundDocumentState {
         expected_frontier.merge(restored.restore.presentation_identity_frontier());
         Ok(PreparedRuntimeDocumentRestore {
             restore: Some(restored.restore),
-            binding: BoundDocumentState {
-                document_id: restored.document_id,
+            binding: BoundDocumentState::from_parts(
+                restored.document_id,
                 next_generation,
                 external_item_keys,
-                viewport_placements: restored.viewport_placements,
-            },
+                restored.viewport_placements,
+            ),
             expected_workspace,
             expected_frontier,
             original_version: engine.version(),
@@ -615,7 +637,7 @@ pub(crate) struct PreparedRuntimeDocumentRestore {
 }
 
 impl PreparedRuntimeDocumentRestore {
-    pub(crate) fn item_identity_scope(&self) -> BTreeSet<ItemId> {
+    pub(crate) fn item_identity_scope(&self) -> Arc<BTreeSet<ItemId>> {
         self.binding.item_identity_scope()
     }
 
@@ -640,7 +662,7 @@ impl PreparedRuntimeDocumentRestore {
             return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
         }
         let expected_scope = self.binding.item_identity_scope();
-        if !frame.item_identity_scope_matches(&expected_scope) {
+        if !frame.item_identity_scope_matches(expected_scope.as_ref()) {
             return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
         }
         let core = frame.prepare_owned(engine)?;
@@ -883,12 +905,12 @@ impl DockspaceDocumentSession {
         }
         validate_viewport_placement_surfaces(&workspace, &viewport_placements)
             .map_err(DockspaceDocumentCaptureError::UnknownPlacementSurface)?;
-        self.binding = Some(BoundDocumentState {
+        self.binding = Some(BoundDocumentState::from_parts(
             document_id,
-            next_generation: Some(next_generation),
+            Some(next_generation),
             external_item_keys,
             viewport_placements,
-        });
+        ));
         self.advance_document_state();
         Ok(())
     }
@@ -1177,7 +1199,7 @@ impl DockspaceDocumentSession {
             });
         }
         if let Some(expected) = self.item_identity_scope() {
-            if !frame.item_identity_scope_matches(&expected) {
+            if !frame.item_identity_scope_matches(expected.as_ref()) {
                 return Err(EngineError::HostFramePoisoned {
                     source: crate::engine::CoreHostFrameError::ItemIdentityScopeMismatch,
                 });
@@ -1200,7 +1222,7 @@ impl DockspaceDocumentSession {
         frame: CoreHostPresentationFrame,
     ) -> Result<PreparedDockspaceSessionHostCommit, DockspaceDocumentSessionError> {
         let expected = self.item_identity_scope();
-        if let Some(expected) = expected.as_ref() {
+        if let Some(expected) = expected.as_deref() {
             if !frame.item_identity_scope_matches(expected) {
                 return Err(EngineError::HostFramePoisoned {
                     source: crate::engine::CoreHostFrameError::ItemIdentityScopeMismatch,
@@ -1265,7 +1287,7 @@ impl DockspaceDocumentSession {
             } => {
                 self.validate_authority_stamp(&authority_stamp)?;
                 let expected = self.item_identity_scope();
-                if !core.item_identity_scope_matches(expected.as_ref()) {
+                if !core.item_identity_scope_matches(expected.as_deref()) {
                     return Err(EngineError::HostFramePoisoned {
                         source: crate::engine::CoreHostFrameError::ItemIdentityScopeMismatch,
                     }
@@ -1407,8 +1429,7 @@ impl DockspaceDocumentSession {
         }
         let item = self
             .binding_mut()?
-            .external_item_keys
-            .ensure(external_key)
+            .ensure_external_item_key(external_key)
             .map_err(DockspaceDocumentSessionError::from)?;
         self.advance_document_state();
         Ok(item)
@@ -1443,8 +1464,7 @@ impl DockspaceDocumentSession {
                 .any(|external_key| binding.external_item_keys.item_id(external_key).is_none())
         };
         self.binding_mut()?
-            .external_item_keys
-            .ensure_all(external_keys)
+            .ensure_external_item_keys(external_keys)
             .map_err(DockspaceDocumentSessionError::from)?;
         if changes_state {
             self.advance_document_state();
@@ -1655,6 +1675,7 @@ impl DockspaceDocumentSession {
                 merge_next_generation(binding.next_generation, restored.generation.checked_add(1))
             },
         );
+        let item_identity_scope = collect_item_identity_scope(&external_item_keys);
         let token = self
             .next_restore_token
             .checked_add(1)
@@ -1666,6 +1687,7 @@ impl DockspaceDocumentSession {
             token,
             restored,
             external_item_keys,
+            item_identity_scope,
             next_generation,
             backend_attempt: None,
         })
@@ -1734,18 +1756,12 @@ impl DockspaceDocumentSession {
         viewport_placements: ViewportPlacementPreferences,
         next_generation: Option<u64>,
     ) -> DockspaceDocumentPublication {
-        if let Some(binding) = self.binding.as_mut() {
-            binding.external_item_keys = external_item_keys;
-            binding.viewport_placements = viewport_placements;
-            binding.next_generation = next_generation;
-        } else {
-            self.binding = Some(BoundDocumentState {
-                document_id,
-                next_generation,
-                external_item_keys,
-                viewport_placements,
-            });
-        }
+        self.binding = Some(BoundDocumentState::from_parts(
+            document_id,
+            next_generation,
+            external_item_keys,
+            viewport_placements,
+        ));
         self.pending_restore = None;
         self.advance_document_state();
         DockspaceDocumentPublication {
@@ -1766,11 +1782,7 @@ impl DockspaceDocumentSession {
             .backend_attempt
             .as_ref()
             .ok_or(DockspaceDocumentSessionError::BackendRestoreAttemptMissing)?;
-        let expected_scope = pending
-            .external_item_keys
-            .iter()
-            .map(|(_, item)| item)
-            .collect::<BTreeSet<_>>();
+        let expected_scope = Arc::clone(&pending.item_identity_scope);
         if prepared.authority_stamp != pending.authority_stamp
             || prepared.authority_stamp != self.authority_stamp()
             || prepared.token != pending.token
@@ -1849,24 +1861,15 @@ impl DockspaceDocumentSession {
         })
     }
 
-    fn item_identity_scope(&self) -> Option<BTreeSet<ItemId>> {
+    fn item_identity_scope(&self) -> Option<Arc<BTreeSet<ItemId>>> {
         match self.pending_restore.as_ref() {
-            Some(DocumentRestoreReservation::Queued(pending)) => Some(
-                pending
-                    .external_item_keys
-                    .iter()
-                    .map(|(_, item)| item)
-                    .collect(),
-            ),
-            Some(DocumentRestoreReservation::Borrowed(_)) | None => {
-                self.binding.as_ref().map(|binding| {
-                    binding
-                        .external_item_keys
-                        .iter()
-                        .map(|(_, item)| item)
-                        .collect()
-                })
+            Some(DocumentRestoreReservation::Queued(pending)) => {
+                Some(Arc::clone(&pending.item_identity_scope))
             }
+            Some(DocumentRestoreReservation::Borrowed(_)) | None => self
+                .binding
+                .as_ref()
+                .map(BoundDocumentState::item_identity_scope),
         }
     }
 
@@ -1957,13 +1960,7 @@ impl DockspaceDocumentRestore<'_> {
             .as_ref()
             .ok_or(DockspaceDocumentSessionError::RestoreTransactionCompleted)?;
         let mut prelude = self.session.engine.begin_host_frame(presentation_host)?;
-        prelude.restrict_item_identity_scope(
-            candidate
-                .external_item_keys
-                .iter()
-                .map(|(_, item)| item)
-                .collect(),
-        );
+        prelude.restrict_item_identity_scope(Arc::clone(&candidate.item_identity_scope));
         Ok(prelude)
     }
 
@@ -1984,12 +1981,8 @@ impl DockspaceDocumentRestore<'_> {
         if candidate.restore.is_some() {
             return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
         }
-        let expected_scope = candidate
-            .external_item_keys
-            .iter()
-            .map(|(_, item)| item)
-            .collect::<BTreeSet<_>>();
-        if !frame.item_identity_scope_matches(&expected_scope) {
+        let expected_scope = Arc::clone(&candidate.item_identity_scope);
+        if !frame.item_identity_scope_matches(expected_scope.as_ref()) {
             return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
         }
         let core = frame
@@ -2040,12 +2033,7 @@ impl DockspaceDocumentRestore<'_> {
             || prepared.document_id != candidate.document_id
             || prepared.generation != candidate.generation
             || prepared.backend_record.is_some()
-            || prepared.identity_scope
-                != candidate
-                    .external_item_keys
-                    .iter()
-                    .map(|(_, item)| item)
-                    .collect::<BTreeSet<_>>()
+            || prepared.identity_scope != candidate.item_identity_scope
         {
             return Err(DockspaceDocumentSessionError::PublicationReceiptMismatch);
         }
@@ -2138,7 +2126,7 @@ pub struct PreparedDockspaceDocumentPublication {
     token: u64,
     document_id: DockspaceDocumentId,
     generation: u64,
-    identity_scope: BTreeSet<ItemId>,
+    identity_scope: Arc<BTreeSet<ItemId>>,
     backend_record: Option<BackendIngressRecordReceipt>,
 }
 
@@ -2221,6 +2209,7 @@ struct PreparedDockspaceDocumentRestore {
     generation: u64,
     restore: Option<ValidatedWorkspaceRestore>,
     external_item_keys: ExternalItemKeyMap,
+    item_identity_scope: Arc<BTreeSet<ItemId>>,
     viewport_placements: ViewportPlacementPreferences,
     next_generation: Option<u64>,
     expected_workspace: WorkspaceSnapshot,
@@ -2252,6 +2241,7 @@ struct PendingDockspaceDocumentRestore {
     token: u64,
     restored: RestoredDockspaceDocument,
     external_item_keys: ExternalItemKeyMap,
+    item_identity_scope: Arc<BTreeSet<ItemId>>,
     next_generation: Option<u64>,
     backend_attempt: Option<BackendDockspaceDocumentRestoreAttempt>,
 }
@@ -2288,6 +2278,7 @@ impl PendingDockspaceDocumentRestore {
             generation: self.restored.generation,
             restore: Some(self.restored.restore),
             external_item_keys: self.external_item_keys,
+            item_identity_scope: self.item_identity_scope,
             viewport_placements: self.restored.viewport_placements,
             next_generation: self.next_generation,
             expected_workspace,
@@ -2368,6 +2359,10 @@ fn merge_next_generation(active: Option<u64>, incoming: Option<u64>) -> Option<u
     }
 }
 
+fn collect_item_identity_scope(external_item_keys: &ExternalItemKeyMap) -> Arc<BTreeSet<ItemId>> {
+    Arc::new(external_item_keys.iter().map(|(_, item)| item).collect())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RestoredDockspaceDocument {
     document_id: DockspaceDocumentId,
@@ -2379,12 +2374,12 @@ pub(crate) struct RestoredDockspaceDocument {
 
 impl RestoredDockspaceDocument {
     pub(crate) fn into_runtime_parts(self) -> (ValidatedWorkspaceRestore, BoundDocumentState) {
-        let binding = BoundDocumentState {
-            document_id: self.document_id,
-            next_generation: self.generation.checked_add(1),
-            external_item_keys: self.external_item_keys,
-            viewport_placements: self.viewport_placements,
-        };
+        let binding = BoundDocumentState::from_parts(
+            self.document_id,
+            self.generation.checked_add(1),
+            self.external_item_keys,
+            self.viewport_placements,
+        );
         (self.restore, binding)
     }
 }
