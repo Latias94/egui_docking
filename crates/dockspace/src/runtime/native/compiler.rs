@@ -148,12 +148,15 @@ fn capabilities(profile: NativeHostProfile) -> PlatformCapabilities {
     capabilities.set_work_area(managed(PlatformRequirement::WorkArea));
     capabilities
         .set_pointer_hit_test_observation(managed(PlatformRequirement::PointerHitTestObservation));
-    capabilities.set_pointer_hit_test_control(managed(PlatformRequirement::PointerHitTestControl));
+    // The current managed host can observe receiver facts but does not yet
+    // execute the pass-through property lane or a vetoable close handshake.
+    capabilities
+        .set_pointer_hit_test_control(unsupported(PlatformRequirement::PointerHitTestControl));
     capabilities
         .set_global_focus_observation(unsupported(PlatformRequirement::GlobalFocusObservation));
     capabilities
         .set_window_activation_control(unsupported(PlatformRequirement::WindowActivationControl));
-    capabilities.set_close_cancellation(managed(PlatformRequirement::CloseCancellation));
+    capabilities.set_close_cancellation(unsupported(PlatformRequirement::CloseCancellation));
     capabilities
 }
 

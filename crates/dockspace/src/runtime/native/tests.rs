@@ -723,10 +723,10 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(managed.global_window_placement().is_supported());
     assert!(managed.work_area().is_supported());
     assert!(managed.pointer_hit_test_observation().is_supported());
-    assert!(managed.pointer_hit_test_control().is_supported());
+    assert!(!managed.pointer_hit_test_control().is_supported());
     assert!(!managed.global_focus_observation().is_supported());
     assert!(!managed.window_activation_control().is_supported());
-    assert!(managed.close_cancellation().is_supported());
+    assert!(!managed.close_cancellation().is_supported());
 }
 
 #[test]
