@@ -97,6 +97,8 @@ use crate::close_plan::{
 use crate::command::{CloseCommitOutcome, ContentCloseTarget};
 #[cfg(any(feature = "backend", test))]
 use crate::command::{CommandOutcome, WorkspaceCommand};
+#[cfg(feature = "serde")]
+use crate::document::PreparedRuntimeDocumentRestore;
 use crate::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
     HostPresentationUnavailableReason, SurfaceContributionBeginError,
@@ -361,7 +363,32 @@ impl DockspaceSession {
 
     fn begin_host_frame_with_native_resolver(
         &mut self,
+        resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        self.begin_host_frame_with_options(resolver, None)
+    }
+
+    #[cfg(feature = "serde")]
+    fn begin_host_frame_with_document_restore(
+        &mut self,
+        restore: PreparedRuntimeDocumentRestore,
+    ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
+        self.begin_host_frame_with_options(None, Some(restore))
+    }
+
+    #[cfg(feature = "serde")]
+    fn ensure_standalone_document_restore_available(&self) -> Result<(), DockspaceRuntimeError> {
+        if self.native.is_some() {
+            return Err(NativePlatformError::DocumentRestoreRequiresNativeFrame.into());
+        }
+        Ok(())
+    }
+
+    fn begin_host_frame_with_options(
+        &mut self,
         mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+        #[cfg(feature = "serde")] mut document_restore: Option<PreparedRuntimeDocumentRestore>,
+        #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.reconcile_surface_pointer_provider()?;
         if let Some(native) = self.native.as_mut() {
@@ -370,7 +397,9 @@ impl DockspaceSession {
         }
         let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
         #[cfg(feature = "serde")]
-        if let Some(document) = self.document.as_ref() {
+        if let Some(restore) = document_restore.as_ref() {
+            prelude.restrict_item_identity_scope(restore.item_identity_scope());
+        } else if let Some(document) = self.document.as_ref() {
             prelude.restrict_item_identity_scope(document.item_identity_scope());
         }
         let submitted_presentation = if let Some(native) = self.native.as_mut() {
@@ -399,6 +428,8 @@ impl DockspaceSession {
             submitted_presentation,
             painted_surfaces: BTreeSet::new(),
             painted_native_staging: BTreeSet::new(),
+            #[cfg(feature = "serde")]
+            document_restore: None,
         };
         if let Some(native) = host_frame.session.native.as_mut() {
             let batch = native.prepare_batch(&host_frame.session.engine)?;
@@ -434,6 +465,14 @@ impl DockspaceSession {
                     .submit_backend_pointer_receiver_receipts(receipts)?;
             }
         }
+        #[cfg(feature = "serde")]
+        if let Some(mut restore) = document_restore.take() {
+            let input = restore
+                .take_engine_input()
+                .map_err(DockspacePersistenceError::session)?;
+            host_frame.append(input)?;
+            host_frame.document_restore = Some(restore);
+        }
         Ok(host_frame)
     }
 }
@@ -453,6 +492,8 @@ pub struct DockspaceHostFrame<'session> {
     submitted_presentation: presentation::SubmittedPresentationObservation,
     painted_surfaces: BTreeSet<SurfaceId>,
     painted_native_staging: BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
+    #[cfg(feature = "serde")]
+    document_restore: Option<PreparedRuntimeDocumentRestore>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -762,11 +803,13 @@ impl DockspaceHostFrame<'_> {
             frame,
             application_base: _,
             next_source_sequence,
-            next_pointer_sequence,
+            next_pointer_sequence: _,
             pointer_input_submitted: _,
             submitted_presentation,
             painted_surfaces,
             painted_native_staging,
+            #[cfg(feature = "serde")]
+            document_restore,
         } = self;
         let mut frame = frame.into_presentation()?;
         let mut obligations = frame.take_presentation_obligations()?;
@@ -813,15 +856,20 @@ impl DockspaceHostFrame<'_> {
                 ),
             )?;
         }
+        #[cfg(feature = "serde")]
+        let transition = if let Some(restore) = document_restore {
+            let prepared = restore
+                .prepare_publication(frame, &session.engine)
+                .map_err(DockspacePersistenceError::session)?;
+            let (transition, binding) = prepared.commit(&mut session.engine)?;
+            session.document = Some(binding);
+            transition
+        } else {
+            frame.finish(&mut session.engine)?
+        };
+        #[cfg(not(feature = "serde"))]
         let transition = frame.finish(&mut session.engine)?;
         session.committed_source_sequence = next_source_sequence;
-        if let (Some(pointer), Some(sequence)) = (&session.pointer, next_pointer_sequence) {
-            assert_eq!(
-                pointer.committed_sequence(),
-                sequence,
-                "core commit must advance the exact runtime pointer producer watermark",
-            );
-        }
         let native_admissions = session
             .native
             .as_mut()
@@ -1419,6 +1467,9 @@ pub enum DockspaceRuntimeErrorKind {
     PresentationObservation,
     /// Native lifecycle data was stale, incomplete, or invalid.
     Native,
+    /// Session-owned persistence validation or publication failed.
+    #[cfg(feature = "serde")]
+    Persistence,
 }
 
 /// Failure at the renderer-neutral facade boundary.
@@ -1461,6 +1512,8 @@ impl DockspaceRuntimeError {
                 DockspaceRuntimeErrorKind::PresentationObservation
             }
             DockspaceRuntimeErrorSource::Native(_) => DockspaceRuntimeErrorKind::Native,
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::Persistence(_) => DockspaceRuntimeErrorKind::Persistence,
         }
     }
 
@@ -1478,6 +1531,16 @@ impl DockspaceRuntimeError {
     pub const fn native_kind(&self) -> Option<NativeHostErrorKind> {
         match &self.source {
             DockspaceRuntimeErrorSource::Native(error) => Some(error.kind()),
+            _ => None,
+        }
+    }
+
+    /// Returns the stable persistence category when this failure belongs to that lane.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn persistence_kind(&self) -> Option<DockspacePersistenceErrorKind> {
+        match &self.source {
+            DockspaceRuntimeErrorSource::Persistence(error) => Some(error.kind()),
             _ => None,
         }
     }
@@ -1556,6 +1619,9 @@ enum DockspaceRuntimeErrorSource {
     PresentationObservation(PresentationObservationError),
     #[error(transparent)]
     Native(NativePlatformError),
+    #[cfg(feature = "serde")]
+    #[error(transparent)]
+    Persistence(DockspacePersistenceError),
 }
 
 impl From<EngineError> for DockspaceRuntimeError {
@@ -1610,6 +1676,15 @@ impl From<NativePlatformError> for DockspaceRuntimeError {
     fn from(error: NativePlatformError) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::Native(error),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<DockspacePersistenceError> for DockspaceRuntimeError {
+    fn from(error: DockspacePersistenceError) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::Persistence(error),
         }
     }
 }

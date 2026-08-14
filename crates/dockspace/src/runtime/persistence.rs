@@ -7,7 +7,7 @@ use thiserror::Error;
 use super::DockspaceSession;
 use crate::document::{
     BoundDocumentState, DockspaceDocumentCaptureError, DockspaceDocumentDecodeError,
-    DockspaceDocumentEnvelope, DockspaceDocumentRestoreError,
+    DockspaceDocumentEnvelope, DockspaceDocumentRestoreError, DockspaceDocumentSessionError,
 };
 use crate::external_item_key::{ExternalItemKeyMapError, ExternalItemKeyRestoreError};
 use crate::model::{DockspaceLayout, ItemId};
@@ -162,11 +162,7 @@ impl DockspaceSession {
         presentation_config: DockPresentationConfig,
         recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<Self, DockspacePersistenceError> {
-        let envelope: DockspaceDocumentEnvelope =
-            serde_json::from_slice(bytes).map_err(DockspacePersistenceError::decode_json)?;
-        let document = envelope
-            .into_document()
-            .map_err(DockspacePersistenceError::decode)?;
+        let document = decode_document(bytes)?;
         let restored = document
             .restore(|document_id, _item, external_key| {
                 recognize_external_item(document_id, external_key)
@@ -182,6 +178,44 @@ impl DockspaceSession {
         let mut session = Self::from_engine(engine).map_err(DockspacePersistenceError::engine)?;
         session.document = Some(binding);
         Ok(session)
+    }
+
+    /// Begins one rollbackable frame that replaces the live session from JSON.
+    ///
+    /// The incoming document must belong to the session's existing lineage.
+    /// `recognize_external_item` validates every persisted application key while
+    /// numeric [`ItemId`] values remain document-owned. The returned frame exposes
+    /// the restored candidate for measurement, but graph state, key history,
+    /// viewport placement, generation, and allocator frontiers publish only when
+    /// [`super::DockspaceHostFrame::commit`] succeeds.
+    /// When a native host is enrolled, restore must instead join that host's
+    /// ordered causal frame; this standalone entry point rejects before decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without changing published state when persistence is not
+    /// configured, the document is malformed or belongs to another lineage, an
+    /// external key is rejected, or the rollbackable host frame cannot begin.
+    pub fn begin_document_restore_frame(
+        &mut self,
+        bytes: &[u8],
+        recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
+    ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
+        self.ensure_standalone_document_restore_available()?;
+        let document = decode_document(bytes)?;
+        let prepared = self
+            .document
+            .as_ref()
+            .ok_or_else(DockspacePersistenceError::not_configured)?
+            .prepare_runtime_restore(
+                &self.engine,
+                document,
+                |document_id, _item, external_key| {
+                    recognize_external_item(document_id, external_key)
+                },
+            )
+            .map_err(DockspacePersistenceError::session)?;
+        self.begin_host_frame_with_document_restore(prepared)
     }
 
     /// Returns the current document lineage, when persistence is configured.
@@ -276,6 +310,16 @@ impl DockspaceSession {
     }
 }
 
+fn decode_document(
+    bytes: &[u8],
+) -> Result<crate::document::DockspaceDocument, DockspacePersistenceError> {
+    let envelope: DockspaceDocumentEnvelope =
+        serde_json::from_slice(bytes).map_err(DockspacePersistenceError::decode_json)?;
+    envelope
+        .into_document()
+        .map_err(DockspacePersistenceError::decode)
+}
+
 /// Stable category for one product persistence failure.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,7 +349,7 @@ pub struct DockspacePersistenceError {
 impl DockspacePersistenceError {
     /// Returns the stable product-level category.
     #[must_use]
-    pub const fn kind(&self) -> DockspacePersistenceErrorKind {
+    pub fn kind(&self) -> DockspacePersistenceErrorKind {
         match &self.source {
             DockspacePersistenceErrorSource::NotConfigured => {
                 DockspacePersistenceErrorKind::NotConfigured
@@ -349,6 +393,7 @@ impl DockspacePersistenceError {
             DockspacePersistenceErrorSource::Capture(_)
             | DockspacePersistenceErrorSource::EncodeJson(_)
             | DockspacePersistenceErrorSource::Engine(_) => DockspacePersistenceErrorKind::Internal,
+            DockspacePersistenceErrorSource::Session(error) => session_error_kind(error),
         }
     }
 
@@ -399,6 +444,12 @@ impl DockspacePersistenceError {
             source: DockspacePersistenceErrorSource::Engine(Box::new(error)),
         }
     }
+
+    pub(super) fn session(error: DockspaceDocumentSessionError) -> Self {
+        Self {
+            source: DockspacePersistenceErrorSource::Session(Box::new(error)),
+        }
+    }
 }
 
 impl fmt::Display for DockspacePersistenceError {
@@ -431,4 +482,33 @@ enum DockspacePersistenceErrorSource {
     Restore(DockspaceDocumentRestoreError),
     #[error("dockspace engine initialization failed: {0}")]
     Engine(#[source] Box<crate::engine::EngineError>),
+    #[error("live dockspace document restore failed: {0}")]
+    Session(#[source] Box<DockspaceDocumentSessionError>),
+}
+
+fn session_error_kind(error: &DockspaceDocumentSessionError) -> DockspacePersistenceErrorKind {
+    match error {
+        DockspaceDocumentSessionError::WrongLineage { .. }
+        | DockspaceDocumentSessionError::ExternalItemAssociationRejected { .. }
+        | DockspaceDocumentSessionError::Reconcile(_) => {
+            DockspacePersistenceErrorKind::IdentityConflict
+        }
+        DockspaceDocumentSessionError::Restore(
+            DockspaceDocumentRestoreError::UnsupportedVersion { .. },
+        ) => DockspacePersistenceErrorKind::UnsupportedVersion,
+        DockspaceDocumentSessionError::Restore(
+            DockspaceDocumentRestoreError::ExternalItemAssociationsRejected { .. },
+        ) => DockspacePersistenceErrorKind::IdentityConflict,
+        DockspaceDocumentSessionError::Restore(_) => DockspacePersistenceErrorKind::InvalidDocument,
+        DockspaceDocumentSessionError::ExternalItemKey(
+            ExternalItemKeyMapError::EmptyExternalKey,
+        ) => DockspacePersistenceErrorKind::InvalidInput,
+        DockspaceDocumentSessionError::ExternalItemKey(
+            ExternalItemKeyMapError::ItemIdSpaceExhausted { .. },
+        )
+        | DockspaceDocumentSessionError::RestoreTokenExhausted => {
+            DockspacePersistenceErrorKind::CapacityExhausted
+        }
+        _ => DockspacePersistenceErrorKind::Internal,
+    }
 }

@@ -554,6 +554,10 @@ pub(super) enum NativePlatformError {
     /// An operation was submitted through the wrong native host profile.
     #[error("native operation is unavailable for the enrolled host profile")]
     HostProfileMismatch,
+    /// Standalone restore cannot bypass an enrolled native causal stream.
+    #[cfg(feature = "serde")]
+    #[error("document restore requires the enrolled native host causal frame")]
+    DocumentRestoreRequiresNativeFrame,
     /// A managed snapshot supplied an empty, duplicate, or invalid work-area roster.
     #[error("managed native work-area roster is invalid")]
     InvalidWorkAreaRoster,
@@ -591,6 +595,8 @@ impl NativePlatformError {
             | Self::BindingRosterUnsettled
             | Self::BindingStillLive { .. }
             | Self::BindingNotRetired { .. } => NativeHostErrorKind::OperationConflict,
+            #[cfg(feature = "serde")]
+            Self::DocumentRestoreRequiresNativeFrame => NativeHostErrorKind::OperationConflict,
             Self::ReceiverResolverRequired | Self::HostProfileMismatch => {
                 NativeHostErrorKind::Unsupported
             }

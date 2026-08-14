@@ -68,6 +68,10 @@ impl DockspaceErrorSource {
                 | dockspace::runtime::DockspaceRuntimeErrorKind::Engine => {
                     DockspaceErrorKind::Internal
                 }
+                #[cfg(feature = "serde")]
+                dockspace::runtime::DockspaceRuntimeErrorKind::Persistence => {
+                    DockspaceErrorKind::Persistence
+                }
                 _ => DockspaceErrorKind::Internal,
             },
             Self::ApplicationOutcomeUnavailable { .. } => DockspaceErrorKind::Internal,

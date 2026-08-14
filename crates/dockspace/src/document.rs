@@ -497,6 +497,47 @@ impl BoundDocumentState {
         })
     }
 
+    pub(crate) fn prepare_runtime_restore(
+        &self,
+        engine: &DockEngine,
+        document: DockspaceDocument,
+        prove_external_item_association: impl Fn(DockspaceDocumentId, ItemId, &str) -> bool,
+    ) -> Result<PreparedRuntimeDocumentRestore, DockspaceDocumentSessionError> {
+        if document.document_id() != self.document_id {
+            return Err(DockspaceDocumentSessionError::WrongLineage {
+                expected: self.document_id,
+                found: document.document_id(),
+            });
+        }
+        let mut restored = document.restore(prove_external_item_association)?;
+        let external_item_keys = self
+            .external_item_keys
+            .reconciled_with(&restored.external_item_keys)?;
+        let next_generation =
+            merge_next_generation(self.next_generation, restored.generation.checked_add(1));
+        rebase_restored_presentation_identities(
+            &mut restored,
+            engine.workspace(),
+            engine.presentation_identity_frontier(),
+        )?;
+        let expected_workspace = WorkspaceSnapshot::capture(restored.restore.workspace())?;
+        let mut expected_frontier = engine.presentation_identity_frontier();
+        expected_frontier.merge(restored.restore.presentation_identity_frontier());
+        Ok(PreparedRuntimeDocumentRestore {
+            restore: Some(restored.restore),
+            binding: BoundDocumentState {
+                document_id: restored.document_id,
+                next_generation,
+                external_item_keys,
+                viewport_placements: restored.viewport_placements,
+            },
+            expected_workspace,
+            expected_frontier,
+            original_version: engine.version(),
+            source_authority_domain: engine.authority_domain(),
+        })
+    }
+
     pub(crate) fn commit_capture(
         &mut self,
         prepared: PreparedDockspaceDocumentCapture,
@@ -561,6 +602,80 @@ pub(crate) struct PreparedDockspaceDocumentCapture {
     document: DockspaceDocument,
     viewport_placements: ViewportPlacementPreferences,
     next_generation: Option<u64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedRuntimeDocumentRestore {
+    restore: Option<ValidatedWorkspaceRestore>,
+    binding: BoundDocumentState,
+    expected_workspace: WorkspaceSnapshot,
+    expected_frontier: PresentationIdentityFrontier,
+    original_version: crate::transition::WorkspaceVersion,
+    source_authority_domain: EngineAuthorityDomainId,
+}
+
+impl PreparedRuntimeDocumentRestore {
+    pub(crate) fn item_identity_scope(&self) -> BTreeSet<ItemId> {
+        self.binding.item_identity_scope()
+    }
+
+    pub(crate) fn take_engine_input(
+        &mut self,
+    ) -> Result<EngineInput, DockspaceDocumentSessionError> {
+        self.restore
+            .take()
+            .map(EngineInput::RestoreWorkspace)
+            .ok_or(DockspaceDocumentSessionError::RestoreInputAlreadyTaken)
+    }
+
+    pub(crate) fn prepare_publication(
+        self,
+        frame: CoreHostPresentationFrame,
+        engine: &DockEngine,
+    ) -> Result<PreparedRuntimeDocumentPublication, DockspaceDocumentSessionError> {
+        if self.restore.is_some() {
+            return Err(DockspaceDocumentSessionError::RestoreInputNotTaken);
+        }
+        if engine.authority_domain() != self.source_authority_domain {
+            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
+        }
+        let expected_scope = self.binding.item_identity_scope();
+        if !frame.item_identity_scope_matches(&expected_scope) {
+            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
+        }
+        let core = frame.prepare_owned(engine)?;
+        if WorkspaceSnapshot::capture(core.candidate_workspace())? != self.expected_workspace
+            || core.candidate_presentation_identity_frontier() != self.expected_frontier
+            || !transition_authorizes_document_restore(
+                core.transition(),
+                self.source_authority_domain,
+                self.original_version,
+                self.expected_frontier,
+            )
+        {
+            return Err(DockspaceDocumentSessionError::EnginePublicationMismatch);
+        }
+        Ok(PreparedRuntimeDocumentPublication {
+            core,
+            binding: self.binding,
+        })
+    }
+}
+
+#[must_use = "a prepared runtime document publication must be committed or dropped"]
+pub(crate) struct PreparedRuntimeDocumentPublication {
+    core: OwnedPreparedHostFrameCommit,
+    binding: BoundDocumentState,
+}
+
+impl PreparedRuntimeDocumentPublication {
+    pub(crate) fn commit(
+        self,
+        engine: &mut DockEngine,
+    ) -> Result<(EngineTransition, BoundDocumentState), EngineError> {
+        let transition = self.core.commit(engine)?;
+        Ok((transition, self.binding))
+    }
 }
 
 impl PreparedDockspaceDocumentCapture {
@@ -1561,27 +1676,12 @@ impl DockspaceDocumentSession {
         candidate: &PreparedDockspaceDocumentRestore,
         transition: &EngineTransition,
     ) -> bool {
-        let matching_restore = transition
-            .reduced_inputs()
-            .iter()
-            .filter(|reduced| {
-                matches!(
-                    reduced.outcome(),
-                    InputOutcome::WorkspaceReplaced {
-                        before,
-                        after,
-                        restored_identity_frontier: Some(frontier),
-                        ..
-                    } if *before == candidate.original_version
-                        && *after == transition.after()
-                        && *frontier == candidate.expected_frontier
-                )
-            })
-            .count();
-        transition.authority_domain() == self.engine.authority_domain()
-            && transition.before() == candidate.original_version
-            && transition_document_restore_count(transition) == 1
-            && matching_restore == 1
+        transition_authorizes_document_restore(
+            transition,
+            self.engine.authority_domain(),
+            candidate.original_version,
+            candidate.expected_frontier,
+        )
     }
 
     fn backend_restore_transition_authorizes(
@@ -2700,6 +2800,35 @@ impl From<EngineError> for DockspaceDocumentSessionError {
 
 fn transition_contains_document_restore(transition: &EngineTransition) -> bool {
     transition_document_restore_count(transition) != 0
+}
+
+fn transition_authorizes_document_restore(
+    transition: &EngineTransition,
+    authority_domain: EngineAuthorityDomainId,
+    original_version: crate::transition::WorkspaceVersion,
+    expected_frontier: PresentationIdentityFrontier,
+) -> bool {
+    let matching_restore = transition
+        .reduced_inputs()
+        .iter()
+        .filter(|reduced| {
+            matches!(
+                reduced.outcome(),
+                InputOutcome::WorkspaceReplaced {
+                    before,
+                    after,
+                    restored_identity_frontier: Some(frontier),
+                    ..
+                } if *before == original_version
+                    && *after == transition.after()
+                    && *frontier == expected_frontier
+            )
+        })
+        .count();
+    transition.authority_domain() == authority_domain
+        && transition.before() == original_version
+        && transition_document_restore_count(transition) == 1
+        && matching_restore == 1
 }
 
 fn transition_document_restore_count(transition: &EngineTransition) -> usize {
