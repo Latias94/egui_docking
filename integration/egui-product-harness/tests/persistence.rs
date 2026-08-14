@@ -48,13 +48,10 @@ fn document_round_trip_preserves_complete_append_only_item_history() {
         DockStyle::default(),
         |document, key| {
             assert_eq!(document, DOCUMENT);
-            match key {
-                "pane:first" => Some(first),
-                "pane:second" => Some(second),
-                "pane:closed" => Some(closed),
-                "pane:later" => Some(later),
-                _ => None,
-            }
+            matches!(
+                key,
+                "pane:first" | "pane:second" | "pane:closed" | "pane:later"
+            )
         },
     )
     .expect("the complete document restores");
@@ -91,7 +88,7 @@ fn bootstrap_rejects_layout_items_without_session_owned_keys() {
 }
 
 #[test]
-fn restore_rejects_a_mismatched_application_identity_registry() {
+fn restore_rejects_an_unrecognized_application_key() {
     let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let first = bootstrap.ensure_item("pane:first").expect("first item");
     let mut dockspace = Dockspace::builder("identity-source", layout([first]))
@@ -107,9 +104,9 @@ fn restore_rejects_a_mismatched_application_identity_registry() {
         &encoded,
         DockPolicy::default(),
         DockStyle::default(),
-        |_document, _key| Some(ItemId::new(first.get() + 1)),
+        |_document, _key| false,
     ) {
-        Ok(_) => panic!("the wrong application identity must reject the complete document"),
+        Ok(_) => panic!("an unrecognized application key must reject the complete document"),
         Err(error) => error,
     };
 

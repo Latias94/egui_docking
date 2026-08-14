@@ -79,8 +79,9 @@ impl Dockspace {
 
     /// Strictly restores one complete product document into a new egui facade.
     ///
-    /// `resolve_external_item` must return the application's expected item identity
-    /// for every persisted key, including closed historical panes.
+    /// `recognize_external_item` must recognize every persisted application key,
+    /// including closed historical panes. Numeric core identities are restored
+    /// from the validated document and cannot be remapped by the application.
     ///
     /// # Errors
     ///
@@ -92,7 +93,7 @@ impl Dockspace {
         bytes: &[u8],
         policy: DockPolicy,
         style: DockStyle,
-        resolve_external_item: impl Fn(DockspaceDocumentId, &str) -> Option<ItemId>,
+        recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<Self, DockspaceError> {
         style.validate().map_err(DockspaceError::from_detail)?;
         let presentation = style
@@ -102,7 +103,7 @@ impl Dockspace {
             bytes,
             policy,
             presentation,
-            resolve_external_item,
+            recognize_external_item,
         )
         .map_err(DockspaceError::from_detail)?;
         Ok(Self {

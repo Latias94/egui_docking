@@ -129,9 +129,9 @@ impl DockspaceSession {
 
     /// Strictly decodes one complete document into a new session authority.
     ///
-    /// `resolve_external_item` must return the application's expected numeric
-    /// identity for every exact persisted key, including closed historical panes.
-    /// A mismatched or missing association rejects the whole document.
+    /// `recognize_external_item` must recognize every exact persisted application
+    /// key, including closed historical panes. Numeric item identities remain
+    /// owned by the validated document and cannot be remapped by the caller.
     ///
     /// # Errors
     ///
@@ -140,13 +140,13 @@ impl DockspaceSession {
     pub fn from_document_json(
         bytes: &[u8],
         policy: DockPolicy,
-        resolve_external_item: impl Fn(DockspaceDocumentId, &str) -> Option<ItemId>,
+        recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<Self, DockspacePersistenceError> {
         Self::from_document_json_with_presentation_config(
             bytes,
             policy,
             DockPresentationConfig::default(),
-            resolve_external_item,
+            recognize_external_item,
         )
     }
 
@@ -160,7 +160,7 @@ impl DockspaceSession {
         bytes: &[u8],
         policy: DockPolicy,
         presentation_config: DockPresentationConfig,
-        resolve_external_item: impl Fn(DockspaceDocumentId, &str) -> Option<ItemId>,
+        recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<Self, DockspacePersistenceError> {
         let envelope: DockspaceDocumentEnvelope =
             serde_json::from_slice(bytes).map_err(DockspacePersistenceError::decode_json)?;
@@ -168,8 +168,8 @@ impl DockspaceSession {
             .into_document()
             .map_err(DockspacePersistenceError::decode)?;
         let restored = document
-            .restore(|document_id, item, external_key| {
-                resolve_external_item(document_id, external_key) == Some(item)
+            .restore(|document_id, _item, external_key| {
+                recognize_external_item(document_id, external_key)
             })
             .map_err(DockspacePersistenceError::restore)?;
         let (restore, binding) = restored.into_runtime_parts();
