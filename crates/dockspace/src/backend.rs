@@ -75,6 +75,16 @@ pub mod event {
     pub use crate::event::*;
 }
 
+/// Checked command and transaction diagnostics.
+pub mod error {
+    pub use crate::error::*;
+}
+
+/// Complete append-only external item identity map used by migration backends.
+pub mod external_item_key {
+    pub use crate::external_item_key::*;
+}
+
 /// Reducer and host-frame engine protocol.
 pub mod engine {
     pub use crate::engine::*;
@@ -183,4 +193,9 @@ pub mod viewport_focus {
 /// Exact native binding and viewport inventory protocol.
 pub mod viewport_registry {
     pub use crate::viewport_registry::*;
+}
+
+/// Low-level viewport identities and protocol generations.
+pub mod viewport {
+    pub use crate::viewport::*;
 }

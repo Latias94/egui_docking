@@ -60,13 +60,20 @@ pub mod engine;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod engine;
+#[cfg(test)]
 pub mod error;
+#[cfg(not(test))]
+mod error;
 #[cfg(test)]
 pub mod event;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod event;
+#[cfg(test)]
 pub mod external_item_key;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod external_item_key;
 #[cfg(test)]
 pub mod frame;
 #[cfg(not(test))]
@@ -170,7 +177,11 @@ pub mod transition;
 mod transition;
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod validation;
+#[cfg(test)]
 pub mod viewport;
+#[cfg(not(test))]
+#[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
+mod viewport;
 #[cfg(test)]
 pub mod viewport_focus;
 #[cfg(not(test))]

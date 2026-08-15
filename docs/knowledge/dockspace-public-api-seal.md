@@ -104,6 +104,14 @@ module paths are removed rather than preserved as compatibility aliases. This
 keeps the default product interface free of scene authority while giving the
 explicitly feature-gated migration adapter one coherent seam.
 
+The same rule now applies to raw command/transaction errors, the complete
+external-item-key map, and low-level viewport generations/bindings. Product
+callers use `DockspaceRuntimeError`, `DockspaceDocumentBootstrap`, and opaque
+native bindings from `dockspace::runtime`; migration backends that genuinely
+need the underlying types opt into `dockspace::backend::{error,
+external_item_key,viewport}`. The removed crate-root paths are not retained as
+compatibility aliases.
+
 `DockspaceRuntimeError` also belongs to the facade rather than mirroring the
 reducer. Callers inspect a stable `DockspaceRuntimeErrorKind`; typed interaction
 and native failures have narrow accessors, while engine, host-frame, and scene
