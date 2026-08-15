@@ -113,10 +113,11 @@ external_item_key,viewport}`. The removed crate-root paths are not retained as
 compatibility aliases.
 
 `DockspaceRuntimeError` also belongs to the facade rather than mirroring the
-reducer. Callers inspect a stable `DockspaceRuntimeErrorKind`; typed interaction
-and native failures have narrow accessors, while engine, host-frame, and scene
-compilation sources remain in the standard error chain and outside the default
-API.
+reducer. Callers inspect only the action-oriented `InvalidConfiguration`,
+`Persistence`, `Unsupported`, `OperationConflict`, `HostProtocol`, and
+`Internal` categories. Typed interaction and native failures have narrow
+accessors, while engine, host-frame, and scene-compilation sources remain in the
+standard error chain and outside the default API.
 
 The egui facade follows the same rule. `DockspaceError` is opaque and exposes
 only the action-oriented `DockspaceErrorKind` categories: invalid

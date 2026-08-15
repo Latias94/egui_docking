@@ -52,25 +52,23 @@ impl DockspaceErrorSource {
             #[cfg(feature = "serde")]
             Self::Persistence(_) => DockspaceErrorKind::Persistence,
             Self::Runtime(error) => match error.kind() {
-                dockspace::runtime::DockspaceRuntimeErrorKind::ActionAuthority => {
-                    DockspaceErrorKind::OperationConflict
+                dockspace::runtime::DockspaceRuntimeErrorKind::InvalidConfiguration => {
+                    DockspaceErrorKind::InvalidConfiguration
                 }
-                dockspace::runtime::DockspaceRuntimeErrorKind::Interaction
-                | dockspace::runtime::DockspaceRuntimeErrorKind::Native
-                | dockspace::runtime::DockspaceRuntimeErrorKind::HostFrame
-                | dockspace::runtime::DockspaceRuntimeErrorKind::PresentationObservation
-                | dockspace::runtime::DockspaceRuntimeErrorKind::SurfaceContributionBegin
-                | dockspace::runtime::DockspaceRuntimeErrorKind::SurfaceContributionPrepare => {
-                    DockspaceErrorKind::HostProtocol
-                }
-                dockspace::runtime::DockspaceRuntimeErrorKind::PaintObligationUnavailable
-                | dockspace::runtime::DockspaceRuntimeErrorKind::SourceSequenceExhausted
-                | dockspace::runtime::DockspaceRuntimeErrorKind::Engine => {
-                    DockspaceErrorKind::Internal
-                }
-                #[cfg(feature = "serde")]
                 dockspace::runtime::DockspaceRuntimeErrorKind::Persistence => {
                     DockspaceErrorKind::Persistence
+                }
+                dockspace::runtime::DockspaceRuntimeErrorKind::Unsupported => {
+                    DockspaceErrorKind::Unsupported
+                }
+                dockspace::runtime::DockspaceRuntimeErrorKind::OperationConflict => {
+                    DockspaceErrorKind::OperationConflict
+                }
+                dockspace::runtime::DockspaceRuntimeErrorKind::HostProtocol => {
+                    DockspaceErrorKind::HostProtocol
+                }
+                dockspace::runtime::DockspaceRuntimeErrorKind::Internal => {
+                    DockspaceErrorKind::Internal
                 }
                 _ => DockspaceErrorKind::Internal,
             },

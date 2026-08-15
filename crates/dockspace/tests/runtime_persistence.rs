@@ -220,7 +220,7 @@ fn standalone_restore_rejects_before_decode_when_native_host_is_active() {
         Err(error) => error,
     };
 
-    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::Native);
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
     assert_eq!(
         error.native_kind(),
         Some(NativeHostErrorKind::OperationConflict)

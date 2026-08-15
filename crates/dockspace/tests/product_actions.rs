@@ -366,7 +366,7 @@ fn prepared_product_actions_are_bound_to_the_preparing_session() {
     let error = frame
         .submit_prepared_action(prepared)
         .expect_err("foreign prepared action is rejected");
-    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::ActionAuthority);
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
 
     frame
         .select_item_current(SECOND)

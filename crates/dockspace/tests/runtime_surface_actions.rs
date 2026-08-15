@@ -208,7 +208,7 @@ fn cross_session_surface_action_is_rejected_without_poisoning_the_frame() {
     let error = frame
         .submit_surface_action(foreign)
         .expect_err("foreign surface action must be rejected");
-    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::ActionAuthority);
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
     frame
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the unaffected frame remains usable");
