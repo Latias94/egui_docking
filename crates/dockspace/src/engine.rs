@@ -775,8 +775,6 @@ pub struct PreparedHostFrameCommit<'a> {
 #[must_use = "dropping an owned prepared host frame rolls back the candidate"]
 pub struct OwnedPreparedHostFrameCommit {
     fence: HostFrameCommitFence,
-    #[cfg(feature = "serde")]
-    item_identity_scope: Option<Arc<BTreeSet<ItemId>>>,
     candidate: DockEngine,
     transition: EngineTransition,
     backend_ingress_commit_guard: Option<BackendIngressCommitGuard>,

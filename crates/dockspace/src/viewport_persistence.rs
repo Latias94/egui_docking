@@ -1,7 +1,7 @@
 //! Runtime native viewport placement preferences and document-internal wire data.
 //!
 //! Placement snapshots are not an independent durable boundary. They are encoded,
-//! hashed, restored, and published only as part of [`crate::document::DockspaceDocument`].
+//! hashed, restored, and published only through [`crate::runtime::DockspaceSession`].
 //! Public callers receive validated runtime preferences and register them through
 //! the session which owns the workspace, external item identities, and lineage.
 //!

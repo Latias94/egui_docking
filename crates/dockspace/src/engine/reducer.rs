@@ -144,8 +144,6 @@ impl DockEngine {
         let prepared = self.prepare_host_frame_owned(frame)?;
         let OwnedPreparedHostFrameCommit {
             fence: _,
-            #[cfg(feature = "serde")]
-                item_identity_scope: _,
             candidate,
             transition,
             backend_ingress_commit_guard,
@@ -469,8 +467,6 @@ impl DockEngine {
         )?;
         Ok(OwnedPreparedHostFrameCommit {
             fence,
-            #[cfg(feature = "serde")]
-            item_identity_scope,
             candidate,
             transition,
             backend_ingress_commit_guard,

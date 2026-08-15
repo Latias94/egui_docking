@@ -2392,18 +2392,6 @@ impl OwnedPreparedHostFrameCommit {
         self.candidate.presentation_identity_frontier()
     }
 
-    #[cfg(feature = "serde")]
-    pub(crate) fn candidate_backend_ingress_commit_watermark(
-        &self,
-    ) -> Option<BackendIngressCommitWatermark> {
-        self.candidate.backend_ingress_commit_watermark()
-    }
-
-    #[cfg(feature = "serde")]
-    pub(crate) fn item_identity_scope_matches(&self, expected: Option<&BTreeSet<ItemId>>) -> bool {
-        self.item_identity_scope.as_deref() == expected
-    }
-
     /// Publishes the candidate if its destination still has the frozen authority.
     ///
     /// # Errors
@@ -2414,8 +2402,6 @@ impl OwnedPreparedHostFrameCommit {
         engine.validate_host_frame_commit_fence(self.fence)?;
         let Self {
             fence: _,
-            #[cfg(feature = "serde")]
-                item_identity_scope: _,
             candidate,
             transition,
             backend_ingress_commit_guard,

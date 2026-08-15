@@ -17,8 +17,6 @@ mod contained_presentation_update;
 mod contained_transform;
 #[path = "../tests/desktop_global_pointer_journal.rs"]
 mod desktop_global_pointer_journal;
-#[path = "../tests/document.rs"]
-mod document;
 #[path = "../tests/drop_guide_interaction.rs"]
 mod drop_guide_interaction;
 #[path = "../tests/drop_guide_resolution.rs"]

@@ -101,7 +101,7 @@ use crate::command::ContentCloseTarget;
 #[cfg(any(feature = "backend", test))]
 use crate::command::{CommandOutcome, WorkspaceCommand};
 #[cfg(feature = "serde")]
-use crate::document::PreparedRuntimeDocumentRestore;
+use crate::document::{PendingRuntimeDocumentRestore, PreparedRuntimeDocumentRestore};
 use crate::engine::{
     CoreHostFrame, CoreHostFrameError, DockEngine, EngineError, EngineInput,
     HostPresentationUnavailableReason, SurfaceContributionBeginError,
@@ -531,12 +531,10 @@ impl DockspaceSession {
             }
         }
         #[cfg(feature = "serde")]
-        if let Some(mut restore) = document_restore.take() {
-            let input = restore
-                .take_engine_input()
-                .map_err(DockspacePersistenceError::session)?;
+        if let Some(restore) = document_restore.take() {
+            let (input, pending) = restore.into_engine_input();
             host_frame.append(input)?;
-            host_frame.document_restore = Some(restore);
+            host_frame.document_restore = Some(pending);
         }
         Ok(host_frame)
     }
@@ -559,7 +557,7 @@ pub struct DockspaceHostFrame<'session> {
     painted_surfaces: BTreeSet<SurfaceId>,
     painted_native_staging: BTreeSet<crate::presentation_observation::NativeStagingPresentation>,
     #[cfg(feature = "serde")]
-    document_restore: Option<PreparedRuntimeDocumentRestore>,
+    document_restore: Option<PendingRuntimeDocumentRestore>,
 }
 
 impl DockspaceHostFrame<'_> {
@@ -578,12 +576,16 @@ impl DockspaceHostFrame<'_> {
     /// Resolves one stable item identity to its session-owned external key.
     ///
     /// This is available while a candidate frame is open so an adapter can build
-    /// its immutable render resources before the candidate is committed. The
-    /// mapping remains owned by the document-bound session.
+    /// immutable render resources before commit. A restore frame resolves keys
+    /// from its pending document binding; an ordinary frame uses the published
+    /// session binding.
     #[cfg(feature = "serde")]
     #[must_use]
     pub fn external_key_for_item(&self, item: crate::ids::ItemId) -> Option<&str> {
-        self.session.external_key_for_item(item)
+        self.document_restore
+            .as_ref()
+            .and_then(|restore| restore.external_item_key(item))
+            .or_else(|| self.session.external_key_for_item(item))
     }
 
     /// Returns the post-input candidate workspace visible inside this frame.

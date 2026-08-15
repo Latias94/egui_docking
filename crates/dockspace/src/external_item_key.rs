@@ -1,7 +1,7 @@
 //! Stable application keys for runtime [`ItemId`] allocation.
 //!
 //! [`ExternalItemKeyMap`] is a one-time bootstrap/import value. A persistent
-//! dockspace consumes it into the serde-enabled `DockspaceDocumentSession`,
+//! dockspace consumes it into the serde-enabled runtime session,
 //! which becomes the sole mutable owner and prevents the complete map from being
 //! paired with another engine at capture time. Keys remain opaque and byte-exact:
 //! this module deliberately performs no trimming, case-folding, or Unicode

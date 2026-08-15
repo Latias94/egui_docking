@@ -36,10 +36,7 @@ pub mod coordinates;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod coordinates;
-#[cfg(all(feature = "serde", any(feature = "backend", test)))]
-pub mod document;
-#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
-#[allow(dead_code)]
+#[cfg(feature = "serde")]
 mod document;
 #[cfg_attr(not(feature = "backend"), allow(dead_code))]
 mod drop_guide;
@@ -103,10 +100,7 @@ pub mod layout;
 mod layout;
 pub mod model;
 mod operation;
-#[cfg(all(feature = "serde", any(feature = "backend", test)))]
-pub mod persistence;
-#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
-#[allow(dead_code)]
+#[cfg(feature = "serde")]
 mod persistence;
 #[cfg(test)]
 pub mod platform;

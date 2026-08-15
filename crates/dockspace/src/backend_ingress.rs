@@ -144,16 +144,6 @@ impl BackendIngressRecordLiveness {
         self.state() == BackendIngressRecordState::Live
     }
 
-    #[cfg(feature = "serde")]
-    fn is_retained(&self) -> bool {
-        self.state() != BackendIngressRecordState::Revoked
-    }
-
-    #[cfg(feature = "serde")]
-    fn is_revoked(&self) -> bool {
-        self.state() == BackendIngressRecordState::Revoked
-    }
-
     fn begin_publication(&self) {
         debug_assert_eq!(self.state(), BackendIngressRecordState::Live);
         self.0.store(
@@ -191,10 +181,8 @@ impl PartialEq for BackendIngressRecordLiveness {
 
 impl Eq for BackendIngressRecordLiveness {}
 
-/// Internal proof of one exact recorder append.
-///
-/// Public ordinals may be reused after rollback. Document restoration therefore
-/// retains this non-reused identity while one host-frame attempt is in flight.
+/// Test proof of one exact recorder append across savepoint rollback.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct BackendIngressRecordReceipt {
     lease: BackendIngressLease,
@@ -203,22 +191,18 @@ pub(crate) struct BackendIngressRecordReceipt {
     liveness: BackendIngressRecordLiveness,
 }
 
+#[cfg(test)]
 impl BackendIngressRecordReceipt {
     pub(crate) const fn ordinal(&self) -> BackendIngressOrdinal {
         self.ordinal
     }
 
-    #[cfg(any(feature = "serde", test))]
     pub(crate) fn is_live(&self) -> bool {
         self.liveness.is_live()
     }
-
-    #[cfg(feature = "serde")]
-    pub(crate) fn is_revoked(&self) -> bool {
-        self.liveness.is_revoked()
-    }
 }
 
+#[cfg(test)]
 impl PartialEq for BackendIngressRecordReceipt {
     fn eq(&self, other: &Self) -> bool {
         self.lease == other.lease
@@ -228,6 +212,7 @@ impl PartialEq for BackendIngressRecordReceipt {
     }
 }
 
+#[cfg(test)]
 impl Eq for BackendIngressRecordReceipt {}
 
 /// Exact backend lifetime joining platform and desktop-global pointer ingress.
@@ -528,14 +513,6 @@ impl BackendIngressCommitWatermark {
     #[must_use]
     pub const fn through(self) -> BackendIngressOrdinal {
         self.through
-    }
-
-    #[cfg(feature = "serde")]
-    pub(crate) fn authorizes(self, receipt: &BackendIngressRecordReceipt) -> bool {
-        self.lease == receipt.lease
-            && self.through == receipt.ordinal
-            && self.record_identity == receipt.identity
-            && receipt.liveness.is_retained()
     }
 }
 
@@ -1168,30 +1145,31 @@ impl BackendIngressRecorder {
         &mut self,
         input: EngineInput,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
-        self.record_semantic_input_receipt(input)
-            .map(|receipt| receipt.ordinal())
-    }
-
-    pub(crate) fn record_semantic_input_receipt(
-        &mut self,
-        input: EngineInput,
-    ) -> Result<BackendIngressRecordReceipt, BackendIngressError> {
         if input.is_backend_ingress_fact() {
             return Err(BackendIngressError::SemanticInputIsBackendFact);
         }
         if input.is_configuration_commit() {
             return Err(BackendIngressError::SemanticInputIsConfiguration);
         }
-        self.push_with_receipt(BackendIngressPayload::SemanticInput(input))
+        self.push(BackendIngressPayload::SemanticInput(input))
     }
 
-    #[cfg(feature = "serde")]
-    pub(crate) fn retains_record(&self, receipt: &BackendIngressRecordReceipt) -> bool {
-        receipt.liveness.is_retained()
-            && receipt.lease == self.lease
-            && self.records.iter().any(|record| {
-                record.ordinal == receipt.ordinal && record.identity == receipt.identity
-            })
+    #[cfg(test)]
+    pub(crate) fn record_semantic_input_receipt(
+        &mut self,
+        input: EngineInput,
+    ) -> Result<BackendIngressRecordReceipt, BackendIngressError> {
+        let ordinal = self.record_semantic_input(input)?;
+        let record = self
+            .records
+            .last()
+            .expect("a successful append retains its record");
+        Ok(BackendIngressRecordReceipt {
+            lease: record.lease,
+            ordinal,
+            identity: record.identity,
+            liveness: record.liveness.clone(),
+        })
     }
 
     pub(crate) fn record_presentation_observation(
@@ -1417,14 +1395,6 @@ impl BackendIngressRecorder {
         &mut self,
         payload: BackendIngressPayload,
     ) -> Result<BackendIngressOrdinal, BackendIngressError> {
-        self.push_with_receipt(payload)
-            .map(|receipt| receipt.ordinal())
-    }
-
-    fn push_with_receipt(
-        &mut self,
-        payload: BackendIngressPayload,
-    ) -> Result<BackendIngressRecordReceipt, BackendIngressError> {
         let ordinal = self
             .last_ordinal
             .checked_next()
@@ -1439,16 +1409,11 @@ impl BackendIngressRecorder {
             ordinal,
             identity,
             payload,
-            liveness: liveness.clone(),
+            liveness,
         });
         self.last_ordinal = ordinal;
         self.last_record_identity = identity;
-        Ok(BackendIngressRecordReceipt {
-            lease: self.lease,
-            ordinal,
-            identity,
-            liveness,
-        })
+        Ok(ordinal)
     }
 
     fn record_count_boundary(&self, record_count: usize) -> Option<&BackendIngressRecord> {

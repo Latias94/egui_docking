@@ -83,7 +83,8 @@ pub struct WorkspaceSnapshotEnvelope {
 impl WorkspaceSnapshotEnvelope {
     /// Returns the version declared by the serialized document.
     #[must_use]
-    pub const fn version(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) const fn version(&self) -> u32 {
         self.version
     }
 
@@ -384,7 +385,8 @@ pub enum SnapshotRestoreError {
 impl WorkspaceSnapshot {
     /// Returns the schema version emitted for this normalized snapshot.
     #[must_use]
-    pub const fn version(&self) -> u32 {
+    #[cfg(test)]
+    pub(crate) const fn version(&self) -> u32 {
         WORKSPACE_SNAPSHOT_VERSION
     }
 

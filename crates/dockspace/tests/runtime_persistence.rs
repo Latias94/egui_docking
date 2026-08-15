@@ -1,5 +1,7 @@
 #![cfg(feature = "serde")]
 
+use std::cell::Cell;
+
 use crate::geometry::{LogicalRect, LogicalSize};
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
@@ -141,6 +143,7 @@ fn live_restore_atomically_publishes_document_state_and_stales_prior_actions() {
         })
         .expect("the same-lineage restore frame begins");
     assert!(restore.view().item(second).is_some());
+    assert_eq!(restore.external_key_for_item(second), Some("pane:second"));
     restore
         .measure_surface(SURFACE, metrics())
         .expect("the restored surface measures");
@@ -238,5 +241,145 @@ fn standalone_restore_rejects_before_decode_when_native_host_is_active() {
         Some(NativeHostErrorKind::OperationConflict)
     );
     assert_eq!(target.version(), before);
+    assert!(target.view().item(first).is_some());
+}
+
+#[test]
+fn saving_does_not_stale_a_prepared_product_action() {
+    let (mut session, first) = persistent_session_with_first_item();
+    let second = session
+        .ensure_external_item("pane:second")
+        .expect("the second item identity allocates");
+
+    let mut open = session.begin_host_frame().expect("the open frame begins");
+    open.open_item_current(second, dockspace::model::DockPlacement::After(first))
+        .expect("the second item opens");
+    open.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the ready surface is retained");
+    open.commit().expect("the open frame commits");
+
+    let prepared = session.prepare_select_item(first);
+    let version = session.version();
+    session
+        .save_document_json()
+        .expect("saving the session succeeds");
+    assert_eq!(session.version(), version);
+
+    let mut frame = session.begin_host_frame().expect("the action frame begins");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("the pre-save action remains structurally valid");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the ready surface is retained");
+    let report = frame.commit().expect("the action frame commits");
+
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::ProductActionApplied(_)]
+    ));
+    assert!(
+        session
+            .view()
+            .item(first)
+            .is_some_and(|item| item.is_selected())
+    );
+}
+
+#[test]
+fn restoring_an_older_generation_preserves_append_only_identity_history() {
+    let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+    let first = bootstrap.ensure_item("pane:first").expect("first item");
+    let mut source =
+        DockspaceSession::from_persistent_layout(layout([first]), DockPolicy::default(), bootstrap)
+            .expect("the source session builds");
+    let older = source
+        .save_document_json()
+        .expect("the older generation encodes");
+    let later = source
+        .ensure_external_item("pane:later")
+        .expect("the later identity allocates");
+    let latest = source
+        .save_document_json()
+        .expect("the latest generation encodes");
+
+    let mut target =
+        DockspaceSession::from_document_json(&latest, DockPolicy::default(), |document, key| {
+            document == DOCUMENT && matches!(key, "pane:first" | "pane:later")
+        })
+        .expect("the latest generation restores");
+    assert_eq!(target.next_document_generation(), Some(2));
+
+    let mut restore = target
+        .begin_document_restore_frame(&older, |document, key| {
+            document == DOCUMENT && key == "pane:first"
+        })
+        .expect("the older same-lineage generation prepares");
+    restore
+        .measure_surface(SURFACE, metrics())
+        .expect("the restored surface measures");
+    restore.commit().expect("the older generation publishes");
+
+    assert_eq!(target.next_document_generation(), Some(2));
+    assert_eq!(target.item_id_for_external_key("pane:later"), Some(later));
+    let newest = target
+        .ensure_external_item("pane:newest")
+        .expect("a fresh identity allocates after the restore");
+    assert!(newest.get() > later.get());
+}
+
+#[test]
+fn malformed_unsupported_and_wrong_lineage_documents_reject_atomically() {
+    let (mut target, first) = persistent_session_with_first_item();
+    let before = target.version();
+    let generation = target.next_document_generation();
+
+    for (bytes, expected_kind) in [
+        (
+            b"{".as_slice(),
+            DockspacePersistenceErrorKind::InvalidDocument,
+        ),
+        (
+            br#"[999,{}]"#.as_slice(),
+            DockspacePersistenceErrorKind::UnsupportedVersion,
+        ),
+    ] {
+        let error = match target.begin_document_restore_frame(bytes, |_document, _key| true) {
+            Ok(_) => panic!("invalid document bytes must reject"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), DockspaceRuntimeErrorKind::Persistence);
+        assert_eq!(error.persistence_kind(), Some(expected_kind));
+    }
+
+    let foreign_document = DockspaceDocumentId::from_bytes([0x91; 16]);
+    let mut bootstrap = DockspaceDocumentBootstrap::new(foreign_document);
+    let foreign_item = bootstrap.ensure_item("pane:foreign").expect("foreign item");
+    let mut foreign = DockspaceSession::from_persistent_layout(
+        layout([foreign_item]),
+        DockPolicy::default(),
+        bootstrap,
+    )
+    .expect("the foreign session builds");
+    let bytes = foreign
+        .save_document_json()
+        .expect("the foreign document encodes");
+    let resolver_called = Cell::new(false);
+    let error = match target.begin_document_restore_frame(&bytes, |_document, _key| {
+        resolver_called.set(true);
+        true
+    }) {
+        Ok(_) => panic!("a foreign lineage must reject"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::Persistence);
+    assert_eq!(
+        error.persistence_kind(),
+        Some(DockspacePersistenceErrorKind::IdentityConflict)
+    );
+    assert!(!resolver_called.get());
+    assert_eq!(target.version(), before);
+    assert_eq!(target.next_document_generation(), generation);
     assert!(target.view().item(first).is_some());
 }
