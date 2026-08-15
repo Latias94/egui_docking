@@ -2,7 +2,7 @@
 title: Fearless dockspace product-boundary refactor
 type: refactor
 date: 2026-08-08
-updated_at: 2026-08-14
+updated_at: 2026-08-15
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -144,6 +144,7 @@ Explicit non-goals:
 ### Sources and Research
 
 - `repo-ref/imgui/imgui_internal.h` and `repo-ref/imgui/imgui.cpp`: queued frame phases, central-node semantics, preview/commit separation, and independent platform viewport lifecycle.
+- `repo-ref/dear-imgui-rs/`: recent winit multi-viewport integration, per-viewport renderer ownership, root-loop wake behavior, and teardown cases. It is a platform-boundary reference only; its TLS registries, pointer/context identity, timeout-based focus settlement, and geometry offsets are not authority models for this project.
 - `repo-ref/open-gpui/crates/gpui_docking/src`: panel catalog, stable string identities, placement intent, close/focus behavior, recovery cases, and the partial shared-core adapter.
 - `repo-ref/dockview/packages/dockview-core/src/__tests__/`: pointer leave/drop cancellation, long-press, splitter, hidden group, selection, and floating regressions.
 - `crates/dockspace/src/runtime/`, `crates/dockspace/src/frame/`, and `crates/dockspace/src/engine/`: current renderer-neutral product and lifecycle seams.
@@ -338,7 +339,7 @@ The repository already contains meaningful evidence for several units: official 
 - **Requirements:** R5, R6, R8.
 - **Dependencies:** U4.
 - **Files:** `crates/dockspace/src/runtime/native/`, `crates/dockspace/src/runtime/native_effect.rs`, `crates/dockspace/src/runtime/presentation.rs`, `crates/dockspace/src/frame/`, `crates/dockspace/src/engine/native_admission.rs`, `crates/dockspace/src/engine/pointer_*`, `crates/dockspace/src/behavior_tests.rs`, `crates/dockspace/tests/`.
-- **Approach:** Keep one managed desktop provider with complete capability and roster envelopes. Separate delivery, hover, capture, scroll owner, surface-local, and desktop-global facts. Bind work-area evidence to provider and generation. Expose typed affine effects and terminal results; keep request correlation private. Unify staging abort with cleanup obligations, retain exact routes until destroyed tombstones commit, and report quiescence only when every pointer, effect, output, deferred viewport, receiver, and tombstone reference is gone. Split native fact compilation, pointer reduction, effect settlement, staging/admission, recovery cleanup, and retention into modules that own their state and leave the session facade as an ordering boundary.
+- **Approach:** Keep one managed desktop provider with complete capability and roster envelopes. Separate delivery, hover, capture, scroll owner, surface-local, and desktop-global facts. Bind work-area evidence to provider and generation. Keep client and outer geometry, native and presentation scale, backend window identity, and core binding identity as distinct facts; mutable or reused adapter IDs never transfer authority. Expose typed affine effects and terminal results; keep request correlation private. Unify staging abort with cleanup obligations, retain exact routes until destroyed tombstones commit, and report quiescence only when every pointer, effect, output, deferred viewport, receiver, and tombstone reference is gone. Destroying a binding terminally retires its mouse-button, wheel, touch, focus, capture, and gesture ownership before compaction. Split native fact compilation, pointer reduction, effect settlement, staging/admission, recovery cleanup, and retention into modules that own their state and leave the session facade as an ordering boundary.
 - **Test scenarios:**
   - No-input frames create no button or pointer facts; an explicit all-released checkpoint terminates an old gesture once.
   - Unknown facts never acquire or commit a gesture. Exact release/cancel/retirement/destroyed binding terminates the owner once; recoverable replay preserves the same edge and permanent loss cancels before adapter state clear.
@@ -346,6 +347,9 @@ The repository already contains meaningful evidence for several units: official 
   - Outside-all tear-off requires current work-area binding; stale generation, missing display authority, or unknown route produces no target or commit.
   - Create/show/focus/cleanup failure leaves source ownership recoverable and every affine effect terminal.
   - Destroy/recreate rejects delayed A1 snapshot, pointer, output, and effect results against A2.
+  - Client and outer rectangles remain distinct; scale changes do not reinterpret historical desktop coordinates, presentation scale does not alter native hit-test coordinates, and missing geometry remains unknown.
+  - Reused adapter window/UI identities cannot transfer route, output, focus, or receiver authority to a successor binding.
+  - Destroying a binding while mouse-button, wheel, touch, capture, or focus ownership is active terminates each exact core owner once and leaves no replayable core sidecar state.
   - Surface destruction rehomes main and all contained roots atomically; release/compensating close keeps its route until exact destroyed settlement and then reaches quiescence.
   - Disabled, immediate, vetoable, and deferred close policies follow the minimum close contract for pane and whole-surface close, including duplicate/stale token outcomes and deterministic focus recovery.
   - Before first-live admission, staging output exposes no pane receiver, focus, or accessibility action; admission enables all semantic lanes together.
@@ -357,9 +361,13 @@ The repository already contains meaningful evidence for several units: official 
 - **Requirements:** R5, R6, R9, R12.
 - **Dependencies:** U1, U3, U6, U9.
 - **Files:** `repo-ref/egui-release/`, `repo-ref/winit-release/`, `crates/egui_dockspace_native/src/`, `integration/egui-fork-workspace/`, one `integration/egui-native-smoke/` binary, `scripts/run_egui_fork_harness.py`, `.github/workflows/ci.yml`.
-- **Approach:** Use one `NativeCoordinator` with one ordered callback mailbox, one exact viewport map, one effect owner, one presentation-token bridge, and one retirement owner. Mint native event ordinals before WGPU/Glow routing. Keep raw `WindowEvent` observation read-only and do not suppress lifecycle handling. Use deferred viewports only while a prepared host frame is active; reject immediate viewports. Bind output tokens to final exact binding and semantic output after app update, not to a stale pre-update map. Wake the root cycle whenever post-commit results become available. Separate mailbox ownership, viewport binding, effect dispatch, presentation settlement, surface-frame driving, and retirement/quiescence during this unit. The smoke is a small Rust binary with a bounded explicit phase enum and one process timeout, not a framework.
+- **Approach:** Use one `NativeCoordinator` with one ordered callback mailbox, one exact viewport map, one effect owner, one presentation-token bridge, and one retirement owner. Mint native event ordinals before WGPU/Glow routing. Keep raw `WindowEvent` observation read-only and do not suppress lifecycle handling. Use deferred viewports only while a prepared host frame is active; reject immediate viewports. Bind output tokens to final exact binding and semantic output after app update, not to a stale pre-update map. A private cycle supervisor distinguishes retryable pre-commit abort, binding-local permanent failure, and whole-session shutdown; every path terminally settles or preserves the exact raw event, output, effect, route, and retirement obligation it owns. Dispatch each supported `NativeEffectOperation` through one explicit operation-to-host-action-to-result-to-observed-fact matrix rather than property lanes or timeout inference. Wake the root cycle whenever any secondary-window event or post-commit result becomes available. Separate mailbox ownership, viewport binding, effect dispatch, presentation settlement, surface-frame driving, and retirement/quiescence during this unit. The smoke is a small Rust binary with a bounded explicit phase enum and one process timeout, not a framework.
 - **Test scenarios:**
   - Pinned fork compile/tests exercise ordered event observation, opaque output scope, visibility dispatch result, create failure, and output presented/not-presented callbacks.
+  - The native effect table covers create, show, focus, pointer pass-through, root-close request/cancel, child retain/release, close resolution, replacement, and cleanup; unsupported operations fail before mutation, and every consumed affine request reaches one terminal result.
+  - A secondary-window input, lifecycle, effect, or presentation callback wakes the root reducer exactly once without relying on an animation timer or polling interval.
+  - Destroying a secondary window while adapter-owned keyboard, IME, touch, or pointer state is active clears that exact viewport state without transferring it to another window.
+  - Retryable cycle abort preserves its ordered records; binding-local permanent failure retires only that binding; session shutdown settles all owned requests and sidecars before dropping the coordinator.
   - Late A1 output/retirement cannot overwrite or clear A2 viewport/receiver authority.
   - Aborted native frame preserves captured release for retry or explicitly cancels the provider-owned gesture.
   - One X11/Glow/Xvfb run completes root → hidden child → pre-show staging → show dispatch → visible observation → post-show staging → ownership transfer → first live → release/destroy → quiescence.
