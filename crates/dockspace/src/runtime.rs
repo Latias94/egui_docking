@@ -80,7 +80,7 @@ pub use paint::{
 #[cfg(feature = "serde")]
 pub use persistence::{
     DockspaceDocumentBootstrap, DockspaceDocumentId, DockspacePersistenceError,
-    DockspacePersistenceErrorKind,
+    DockspacePersistenceErrorKind, PreparedDockspaceDocumentRestore,
 };
 use presentation::PresentationObservationError;
 pub use presentation::{
@@ -410,13 +410,22 @@ impl DockspaceSession {
         &mut self,
         mut resolve: impl FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
-        let Some(native) = self.native.as_ref() else {
-            return Err(NativePlatformError::ProviderUnavailable.into());
-        };
+        self.ensure_managed_native_host_available()?;
+        self.begin_host_frame_with_native_resolver(Some(&mut resolve))
+    }
+
+    fn require_native_host(&self) -> Result<&native::RuntimeNativeState, DockspaceRuntimeError> {
+        self.native
+            .as_ref()
+            .ok_or_else(|| NativePlatformError::ProviderUnavailable.into())
+    }
+
+    fn ensure_managed_native_host_available(&self) -> Result<(), DockspaceRuntimeError> {
+        let native = self.require_native_host()?;
         if native.profile != native::NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch.into());
         }
-        self.begin_host_frame_with_native_resolver(Some(&mut resolve))
+        Ok(())
     }
 
     fn begin_host_frame_with_native_resolver(
@@ -436,7 +445,11 @@ impl DockspaceSession {
 
     #[cfg(feature = "serde")]
     fn ensure_standalone_document_restore_available(&self) -> Result<(), DockspaceRuntimeError> {
-        if self.native.is_some() {
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|native| native.profile == native::NativeHostProfile::ManagedDesktop)
+        {
             return Err(NativePlatformError::DocumentRestoreRequiresNativeFrame.into());
         }
         Ok(())
@@ -523,7 +536,9 @@ impl DockspaceSession {
         }
         #[cfg(feature = "serde")]
         if let Some(restore) = document_restore.take() {
-            let (input, pending) = restore.into_engine_input();
+            let (input, pending) = restore
+                .into_engine_input(host_frame.frame.view())
+                .map_err(DockspacePersistenceError::session)?;
             host_frame.append(input)?;
             host_frame.document_restore = Some(pending);
         }
@@ -1042,17 +1057,13 @@ impl DockspaceHostFrame<'_> {
         #[cfg(not(feature = "serde"))]
         let transition = frame.finish(&mut session.engine)?;
         session.committed_source_sequence = next_source_sequence;
-        let native_admissions = session
+        let native_commit = session
             .native
             .as_mut()
-            .map_or_else(Vec::new, |native| native.commit(&session.engine));
+            .map(|native| native.commit(&session.engine));
         session
             .presentation
             .commit_observation(&transition, &submitted_presentation);
-        let native_provider = session
-            .native
-            .as_ref()
-            .map(native::RuntimeNativeState::provider);
         let (painted_outputs, painted_native_staging_outputs) = session
             .presentation
             .retain_emissions(transition.presentation_emissions());
@@ -1060,13 +1071,13 @@ impl DockspaceHostFrame<'_> {
             &transition,
             painted_outputs,
             painted_native_staging_outputs,
-            native_admissions,
-            native_provider,
+            native_commit,
             session.abandoned_native_effects.clone(),
         ))
     }
 
     fn append(&mut self, input: EngineInput) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         self.next_source_sequence = self
             .next_source_sequence
             .checked_add(1)
@@ -1074,6 +1085,14 @@ impl DockspaceHostFrame<'_> {
         let sequence = SourceSequence::new(self.next_source_sequence);
         self.frame
             .append_input(APPLICATION_INPUT_SOURCE, sequence, input)?;
+        Ok(())
+    }
+
+    fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {
+        #[cfg(feature = "serde")]
+        if self.document_restore.is_some() {
+            return Err(DockspaceRuntimeError::document_restore_already_submitted());
+        }
         Ok(())
     }
 }
@@ -1121,6 +1140,16 @@ pub enum DockspaceCloseRejection {
 /// Public actionable result produced by one facade-owned input.
 #[derive(Debug, PartialEq)]
 pub enum HostInputOutcome {
+    /// One validated document atomically replaced the complete workspace.
+    ///
+    /// Earlier input outcomes from the same frame are intentionally omitted
+    /// because the replacement superseded their product-visible state.
+    DocumentRestored {
+        /// Workspace version immediately before replacement.
+        previous: WorkspaceVersion,
+        /// Workspace version published by the replacement.
+        current: WorkspaceVersion,
+    },
     /// One stable item- or root-centric product action committed or produced a valid no-op.
     ProductActionApplied(DockspaceActionOutcome),
     /// One stable item- or root-centric product action was rejected without mutation.
@@ -1273,6 +1302,7 @@ pub struct HostFrameReport {
     painted_outputs: Vec<PaintedSurfaceOutput>,
     painted_native_staging_outputs: Vec<PaintedNativeStagingOutput>,
     native_admissions: Vec<NativeSurfaceBinding>,
+    native_bindings: Vec<NativeSurfaceBinding>,
     native_effects: Vec<NativeEffectRequest>,
     repaint_surfaces: Vec<SurfaceId>,
 }
@@ -1351,6 +1381,16 @@ impl HostFrameReport {
         &self.native_admissions
     }
 
+    /// Returns the complete current native binding roster after this frame.
+    ///
+    /// The roster is sorted by logical surface and names exact binding
+    /// incarnations. Hosts should atomically replace their route map from this
+    /// value after commit instead of inferring rebinding from workspace changes.
+    #[must_use]
+    pub fn native_bindings(&self) -> &[NativeSurfaceBinding] {
+        &self.native_bindings
+    }
+
     /// Takes the exact provider-bound native effects emitted by this frame.
     ///
     /// The vector preserves core order. Each request is affine and must be
@@ -1416,6 +1456,14 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::SourceSequenceExhausted => {
                 DockspaceRuntimeErrorKind::Internal
             }
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::DocumentRestoreAlreadySubmitted => {
+                DockspaceRuntimeErrorKind::OperationConflict
+            }
+            #[cfg(feature = "serde")]
+            DockspaceRuntimeErrorSource::PreparedDocumentRestoreMismatch => {
+                DockspaceRuntimeErrorKind::OperationConflict
+            }
             DockspaceRuntimeErrorSource::PaintObligationUnavailable { .. } => {
                 DockspaceRuntimeErrorKind::HostProtocol
             }
@@ -1475,6 +1523,20 @@ impl DockspaceRuntimeError {
     const fn source_sequence_exhausted() -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::SourceSequenceExhausted,
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    const fn document_restore_already_submitted() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::DocumentRestoreAlreadySubmitted,
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    const fn prepared_document_restore_mismatch() -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedDocumentRestoreMismatch,
         }
     }
 
@@ -1586,6 +1648,12 @@ enum DockspaceRuntimeErrorSource {
     PreparedSurfaceActionAuthorityMismatch(PreparedSurfaceActionAuthorityMismatch),
     #[error("application input source sequence is exhausted")]
     SourceSequenceExhausted,
+    #[cfg(feature = "serde")]
+    #[error("document replacement is the final semantic mutation in its host frame")]
+    DocumentRestoreAlreadySubmitted,
+    #[cfg(feature = "serde")]
+    #[error("prepared document restore belongs to an older or different session state")]
+    PreparedDocumentRestoreMismatch,
     #[error("surface {surface} has no paintable presentation obligation in this frame")]
     PaintObligationUnavailable { surface: SurfaceId },
     #[error(transparent)]

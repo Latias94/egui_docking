@@ -896,10 +896,7 @@ impl RuntimeNativeState {
         Ok(())
     }
 
-    pub(super) fn commit(
-        &mut self,
-        engine: &crate::engine::DockEngine,
-    ) -> Vec<NativeSurfaceBinding> {
+    pub(super) fn commit(&mut self, engine: &crate::engine::DockEngine) -> NativeHostCommit {
         let next_binding_admissions = engine
             .viewport()
             .registry()
@@ -949,8 +946,18 @@ impl RuntimeNativeState {
                 .is_some_and(|current| current.binding == *binding)
         });
         self.binding_roster_unsettled = false;
-        native_admissions
+        NativeHostCommit {
+            provider: self.provider(),
+            admissions: native_admissions,
+            bindings: self.bindings.values().copied().collect(),
+        }
     }
+}
+
+pub(super) struct NativeHostCommit {
+    pub(super) provider: PlatformObservationLease,
+    pub(super) admissions: Vec<NativeSurfaceBinding>,
+    pub(super) bindings: Vec<NativeSurfaceBinding>,
 }
 
 fn newly_admitted_bindings(

@@ -7,10 +7,113 @@ use crate::runtime::{
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
 };
+#[cfg(feature = "serde")]
+use crate::{
+    engine::EngineInput,
+    model::{DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout},
+    runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId},
+};
 
 const SECOND_ITEM: ItemId = ItemId::new(2);
 const ROOT_ORIGIN_X: f64 = 100.0;
 const ROOT_ORIGIN_Y: f64 = 80.0;
+
+#[cfg(feature = "serde")]
+#[test]
+fn joined_document_restore_rebases_after_a_workspace_mutating_native_prefix() {
+    const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x5a; 16]);
+
+    fn persistent_session() -> (DockspaceSession, ItemId, ItemId) {
+        let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+        let first = bootstrap
+            .ensure_item("pane:first")
+            .expect("the first item allocates");
+        let second = bootstrap
+            .ensure_item("pane:second")
+            .expect("the second item allocates");
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([first, second])),
+        )])
+        .expect("the persistent native layout validates");
+        let session =
+            DockspaceSession::from_persistent_layout(layout, DockPolicy::default(), bootstrap)
+                .expect("the persistent document session initializes");
+        (session, first, second)
+    }
+
+    let (mut source, source_first, source_second) = persistent_session();
+    let bytes = source
+        .save_document_json()
+        .expect("the source document encodes");
+
+    let (mut target, first, second) = persistent_session();
+    assert_eq!((first, second), (source_first, source_second));
+    target
+        .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+        .expect("the managed native host enrolls");
+    let prepared = target
+        .prepare_document_restore_json(&bytes, |document, key| {
+            document == DOCUMENT && matches!(key, "pane:first" | "pane:second")
+        })
+        .expect("the native document restore prepares once");
+
+    let expected = target.version();
+    target
+        .native
+        .as_mut()
+        .expect("the managed native state exists")
+        .recorder_mut()
+        .record_semantic_input(EngineInput::SelectItem {
+            expected,
+            item: second,
+        })
+        .expect("the native semantic prefix records");
+
+    {
+        let restore = target
+            .begin_native_document_restore_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
+            .expect("the rollbackable joined restore frame begins");
+        assert!(restore.version() != expected);
+    }
+    assert_eq!(target.version(), expected);
+    assert!(
+        target
+            .view()
+            .item(first)
+            .is_some_and(|item| item.is_selected())
+    );
+
+    let mut restore = target
+        .begin_native_document_restore_frame(&prepared, |_| NativeReceiverAnswer::Unknown)
+        .expect("the joined restore frame begins after the native prefix");
+    assert!(restore.version() != expected);
+    restore
+        .measure_surface(
+            SURFACE,
+            UniformSurfaceMetrics::new(
+                LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+                LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+                80.0,
+            )
+            .expect("test metrics validate"),
+        )
+        .expect("the restored candidate measures");
+    let report = restore
+        .commit()
+        .expect("the restore publishes after the native prefix");
+
+    assert!(matches!(
+        report.inputs(),
+        [super::super::super::HostInputOutcome::DocumentRestored { .. }]
+    ));
+    assert!(
+        target
+            .view()
+            .item(first)
+            .is_some_and(|item| item.is_selected())
+    );
+}
 
 #[test]
 fn programmatic_native_root_tear_off_starts_the_shared_create_saga() {

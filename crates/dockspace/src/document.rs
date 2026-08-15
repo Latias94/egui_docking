@@ -15,7 +15,9 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-use crate::engine::{CoreHostPresentationFrame, EngineError, OwnedPreparedHostFrameCommit};
+use crate::engine::{
+    CoreHostPresentationFrame, EngineError, HostFrameView, OwnedPreparedHostFrameCommit,
+};
 use crate::engine::{DockEngine, EngineInput, ValidatedWorkspaceRestore};
 use crate::external_item_key::{
     ExternalItemKeyMap, ExternalItemKeyMapError, ExternalItemKeyReconcileError,
@@ -30,7 +32,7 @@ use crate::persistence::{
     SnapshotCaptureError, SnapshotEntityKind, SnapshotNode, SnapshotRestoreError,
     WorkspaceSnapshot, WorkspaceSnapshotEnvelope,
 };
-use crate::transition::{EngineTransition, InputOutcome};
+use crate::transition::{EngineTransition, InputOutcome, WorkspaceVersion};
 use crate::viewport::ViewportRole;
 use crate::viewport_persistence::{
     ViewportPlacementPreference, ViewportPlacementPreferences, ViewportPlacementRestoreError,
@@ -290,6 +292,7 @@ impl<'de> Visitor<'de> for DockspaceDocumentEnvelopeVisitor {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub(crate) struct BoundDocumentState {
     document_id: DockspaceDocumentId,
     next_generation: Option<u64>,
@@ -421,34 +424,21 @@ impl BoundDocumentState {
                 found: document.document_id(),
             });
         }
-        let mut restored = document.restore(recognize_external_item)?;
+        let restored = document.restore(recognize_external_item)?;
         let external_item_keys = self
             .external_item_keys
             .reconciled_with(&restored.external_item_keys)?;
         let next_generation =
             merge_next_generation(self.next_generation, restored.generation.checked_add(1));
-        rebase_restored_presentation_identities(
-            &mut restored,
-            engine.workspace(),
-            engine.presentation_identity_frontier(),
-        )?;
-        let expected_workspace = WorkspaceSnapshot::capture(restored.restore.workspace())?;
-        let mut expected_frontier = engine.presentation_identity_frontier();
-        expected_frontier.merge(restored.restore.presentation_identity_frontier());
+        let item_identity_scope = collect_item_identity_scope(&external_item_keys);
         Ok(PreparedRuntimeDocumentRestore {
-            restore: restored.restore,
-            pending: PendingRuntimeDocumentRestore {
-                binding: BoundDocumentState::from_parts(
-                    restored.document_id,
-                    next_generation,
-                    external_item_keys,
-                    restored.viewport_placements,
-                ),
-                expected_workspace,
-                expected_frontier,
-                original_version: engine.version(),
-                source_authority_domain: engine.authority_domain(),
-            },
+            restored,
+            external_item_keys,
+            next_generation,
+            item_identity_scope,
+            frame_start_version: engine.version(),
+            source_authority_domain: engine.authority_domain(),
+            source_document: self.clone(),
         })
     }
 
@@ -518,10 +508,15 @@ pub(crate) struct PreparedDockspaceDocumentCapture {
     next_generation: Option<u64>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PreparedRuntimeDocumentRestore {
-    restore: ValidatedWorkspaceRestore,
-    pending: PendingRuntimeDocumentRestore,
+    restored: RestoredDockspaceDocument,
+    external_item_keys: ExternalItemKeyMap,
+    next_generation: Option<u64>,
+    item_identity_scope: Arc<BTreeSet<ItemId>>,
+    frame_start_version: WorkspaceVersion,
+    source_authority_domain: EngineAuthorityDomainId,
+    source_document: BoundDocumentState,
 }
 
 #[derive(Debug)]
@@ -529,17 +524,64 @@ pub(crate) struct PendingRuntimeDocumentRestore {
     binding: BoundDocumentState,
     expected_workspace: WorkspaceSnapshot,
     expected_frontier: PresentationIdentityFrontier,
-    original_version: crate::transition::WorkspaceVersion,
+    frame_start_version: WorkspaceVersion,
+    replacement_base_version: WorkspaceVersion,
     source_authority_domain: EngineAuthorityDomainId,
 }
 
 impl PreparedRuntimeDocumentRestore {
     pub(crate) fn item_identity_scope(&self) -> Arc<BTreeSet<ItemId>> {
-        self.pending.binding.item_identity_scope()
+        Arc::clone(&self.item_identity_scope)
     }
 
-    pub(crate) fn into_engine_input(self) -> (EngineInput, PendingRuntimeDocumentRestore) {
-        (EngineInput::RestoreWorkspace(self.restore), self.pending)
+    pub(crate) fn is_current_for(
+        &self,
+        engine: &DockEngine,
+        document: &BoundDocumentState,
+    ) -> bool {
+        self.frame_start_version == engine.version()
+            && self.source_authority_domain == engine.authority_domain()
+            && self.source_document == *document
+    }
+
+    pub(crate) fn into_engine_input(
+        mut self,
+        frame: HostFrameView<'_>,
+    ) -> Result<(EngineInput, PendingRuntimeDocumentRestore), RuntimeDocumentRestoreError> {
+        if frame.authority_domain() != self.source_authority_domain {
+            return Err(RuntimeDocumentRestoreError::EnginePublicationMismatch);
+        }
+        rebase_restored_presentation_identities(
+            &mut self.restored,
+            frame.workspace(),
+            frame.presentation_identity_frontier(),
+        )?;
+        let expected_workspace = WorkspaceSnapshot::capture(self.restored.restore.workspace())?;
+        let mut expected_frontier = frame.presentation_identity_frontier();
+        expected_frontier.merge(self.restored.restore.presentation_identity_frontier());
+        let replacement_base_version = frame.version();
+        let RestoredDockspaceDocument {
+            document_id,
+            generation: _,
+            restore,
+            external_item_keys: _,
+            viewport_placements,
+        } = self.restored;
+        let pending = PendingRuntimeDocumentRestore {
+            binding: BoundDocumentState {
+                document_id,
+                next_generation: self.next_generation,
+                external_item_keys: self.external_item_keys,
+                item_identity_scope: self.item_identity_scope,
+                viewport_placements,
+            },
+            expected_workspace,
+            expected_frontier,
+            frame_start_version: self.frame_start_version,
+            replacement_base_version,
+            source_authority_domain: self.source_authority_domain,
+        };
+        Ok((EngineInput::RestoreWorkspace(restore), pending))
     }
 }
 
@@ -566,7 +608,8 @@ impl PendingRuntimeDocumentRestore {
             || !transition_authorizes_document_restore(
                 core.transition(),
                 self.source_authority_domain,
-                self.original_version,
+                self.frame_start_version,
+                self.replacement_base_version,
                 self.expected_frontier,
             )
         {
@@ -992,7 +1035,8 @@ pub(crate) enum RuntimeDocumentRestoreError {
 fn transition_authorizes_document_restore(
     transition: &EngineTransition,
     authority_domain: EngineAuthorityDomainId,
-    original_version: crate::transition::WorkspaceVersion,
+    frame_start_version: WorkspaceVersion,
+    replacement_base_version: WorkspaceVersion,
     expected_frontier: PresentationIdentityFrontier,
 ) -> bool {
     let matching_restore = transition
@@ -1006,14 +1050,14 @@ fn transition_authorizes_document_restore(
                     after,
                     restored_identity_frontier: Some(frontier),
                     ..
-                } if *before == original_version
+                } if *before == replacement_base_version
                     && *after == transition.after()
                     && *frontier == expected_frontier
             )
         })
         .count();
     transition.authority_domain() == authority_domain
-        && transition.before() == original_version
+        && transition.before() == frame_start_version
         && transition_document_restore_count(transition) == 1
         && matching_restore == 1
 }

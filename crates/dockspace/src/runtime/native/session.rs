@@ -89,13 +89,12 @@ impl DockspaceSession {
             .engine
             .create_backend_ingress_provider(self.presentation_host, PointerEdgeSequence::new(0))?;
         let mut native = RuntimeNativeState::new(recorder, profile);
-        let _ = native.commit(&self.engine);
+        let initial_commit = native.commit(&self.engine);
         if let Some(checkpoint) = pointer_checkpoint {
             native.record_initial_pointer_authority(checkpoint);
         }
-        let bindings = native.bindings.values().copied().collect();
         self.native = Some(native);
-        Ok(bindings)
+        Ok(initial_commit.bindings)
     }
 
     /// Records one exact-set native platform snapshot in backend order.

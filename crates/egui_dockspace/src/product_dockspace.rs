@@ -221,9 +221,13 @@ impl Dockspace {
         bytes: &[u8],
         recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
     ) -> Result<DockspaceMutation, DockspaceError> {
+        let restore = self
+            .session
+            .prepare_document_restore_json(bytes, recognize_external_item)
+            .map_err(DockspaceError::from_detail)?;
         let mut frame = self
             .session
-            .begin_document_restore_frame(bytes, recognize_external_item)
+            .begin_document_restore_frame(&restore)
             .map_err(DockspaceError::from_detail)?;
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)

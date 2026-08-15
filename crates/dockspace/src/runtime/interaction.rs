@@ -921,6 +921,7 @@ impl DockspaceHostFrame<'_> {
         &mut self,
         inputs: impl IntoIterator<Item = SurfacePointerInput<'receiver>>,
     ) -> Result<(), DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
         if self.pointer_input_submitted {
             return Err(DockspaceInteractionError::PointerInputAlreadySubmitted.into());
         }

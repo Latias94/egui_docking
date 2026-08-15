@@ -7,7 +7,8 @@ use thiserror::Error;
 use super::DockspaceSession;
 use crate::document::{
     BoundDocumentState, DockspaceDocumentCaptureError, DockspaceDocumentDecodeError,
-    DockspaceDocumentEnvelope, DockspaceDocumentRestoreError, RuntimeDocumentRestoreError,
+    DockspaceDocumentEnvelope, DockspaceDocumentRestoreError, PreparedRuntimeDocumentRestore,
+    RuntimeDocumentRestoreError,
 };
 use crate::external_item_key::{ExternalItemKeyMapError, ExternalItemKeyRestoreError};
 use crate::model::{DockspaceLayout, ItemId};
@@ -80,6 +81,25 @@ impl fmt::Debug for DockspaceDocumentBootstrap {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DockspaceDocumentBootstrap")
+            .finish_non_exhaustive()
+    }
+}
+
+/// One decoded and application-authorized live document replacement.
+///
+/// The value remains owned by the caller while a host-frame attempt borrows it.
+/// A failed begin, dropped frame, or failed commit therefore leaves the exact
+/// validated candidate available for an unchanged retry without decoding JSON
+/// or invoking the application recognizer again.
+#[must_use = "a prepared document restore should be submitted or intentionally discarded"]
+pub struct PreparedDockspaceDocumentRestore {
+    inner: PreparedRuntimeDocumentRestore,
+}
+
+impl fmt::Debug for PreparedDockspaceDocumentRestore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedDockspaceDocumentRestore")
             .finish_non_exhaustive()
     }
 }
@@ -178,36 +198,106 @@ impl DockspaceSession {
         Ok(session)
     }
 
-    /// Begins one rollbackable frame that replaces the live session from JSON.
+    /// Decodes and authorizes one complete live document replacement.
     ///
     /// The incoming document must belong to the session's existing lineage.
     /// `recognize_external_item` validates every persisted application key while
-    /// numeric [`ItemId`] values remain document-owned. The returned frame exposes
-    /// the restored candidate for measurement, but graph state, key history,
-    /// viewport placement, generation, and allocator frontiers publish only when
-    /// [`super::DockspaceHostFrame::commit`] succeeds.
-    /// When a native host is enrolled, restore must instead join that host's
-    /// ordered causal frame; this standalone entry point rejects before decoding.
+    /// numeric [`ItemId`] values remain document-owned. The returned opaque value
+    /// is bound to the current session authority, workspace version, and document
+    /// sidecars. It can be retried unchanged after a recoverable host-frame error.
     ///
     /// # Errors
     ///
-    /// Returns an error without changing published state when persistence is not
-    /// configured, the document is malformed or belongs to another lineage, an
-    /// external key is rejected, or the rollbackable host frame cannot begin.
-    pub fn begin_document_restore_frame(
-        &mut self,
+    /// Returns an error when persistence is not configured, the document is
+    /// malformed or belongs to another lineage, or an external key is rejected.
+    pub fn prepare_document_restore_json(
+        &self,
         bytes: &[u8],
         recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
-    ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
-        self.ensure_standalone_document_restore_available()?;
+    ) -> Result<PreparedDockspaceDocumentRestore, DockspacePersistenceError> {
         let document = decode_document(bytes)?;
-        let prepared = self
+        let inner = self
             .document
             .as_ref()
             .ok_or_else(DockspacePersistenceError::not_configured)?
             .prepare_runtime_restore(&self.engine, document, recognize_external_item)
             .map_err(DockspacePersistenceError::session)?;
-        self.begin_host_frame_with_document_restore(prepared)
+        Ok(PreparedDockspaceDocumentRestore { inner })
+    }
+
+    /// Begins one rollbackable frame that replaces the live session.
+    ///
+    /// The returned frame exposes the restored candidate for measurement, but
+    /// graph state, key history, viewport placement, generation, and allocator
+    /// frontiers publish only when [`super::DockspaceHostFrame::commit`] succeeds.
+    /// An observed-roots host joins this frame without a pointer resolver. A
+    /// managed-desktop host must use [`Self::begin_native_document_restore_frame`]
+    /// so pointer receiver questions remain in the same ordered causal frame.
+    ///
+    /// # Sequencing
+    ///
+    /// Document replacement is the final semantic mutation in this frame.
+    /// Product actions, close operations, configuration changes, and non-empty
+    /// pointer input must be submitted in an earlier prefix or a later frame.
+    /// Attempts after the replacement return `OperationConflict`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without changing published state when the prepared value
+    /// is stale or belongs to another session, or the rollbackable frame cannot
+    /// begin. The caller retains `restore` for an exact retry.
+    pub fn begin_document_restore_frame(
+        &mut self,
+        restore: &PreparedDockspaceDocumentRestore,
+    ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
+        self.ensure_standalone_document_restore_available()?;
+        self.ensure_prepared_document_restore_current(restore)?;
+        self.begin_host_frame_with_document_restore(restore.inner.clone())
+    }
+
+    /// Begins one native host frame that atomically replaces the live document.
+    ///
+    /// Native platform facts, pointer input, and the document replacement reduce
+    /// through the same ordered host frame. The restored candidate remains
+    /// unpublished if receiver resolution, measurement, presentation, or final
+    /// commit fails. This entry point is only for a managed-desktop host;
+    /// observed-roots hosts use [`Self::begin_document_restore_frame`].
+    ///
+    /// # Sequencing
+    ///
+    /// Document replacement is the final semantic mutation in this frame.
+    /// Product actions, close operations, configuration changes, and non-empty
+    /// pointer input must be submitted in the native prefix or a later frame.
+    /// Attempts after the replacement return `OperationConflict`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without changing published state when no managed native
+    /// host is active, the prepared value is stale or belongs to another session,
+    /// receiver facts are unavailable, or the rollbackable frame cannot begin.
+    /// The caller retains `restore` for an exact retry.
+    pub fn begin_native_document_restore_frame(
+        &mut self,
+        restore: &PreparedDockspaceDocumentRestore,
+        mut resolve: impl FnMut(super::NativeReceiverQuery) -> super::NativeReceiverAnswer,
+    ) -> Result<super::DockspaceHostFrame<'_>, super::DockspaceRuntimeError> {
+        self.ensure_managed_native_host_available()?;
+        self.ensure_prepared_document_restore_current(restore)?;
+        self.begin_host_frame_with_options(Some(&mut resolve), Some(restore.inner.clone()))
+    }
+
+    fn ensure_prepared_document_restore_current(
+        &self,
+        restore: &PreparedDockspaceDocumentRestore,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        let document = self
+            .document
+            .as_ref()
+            .ok_or_else(DockspacePersistenceError::not_configured)?;
+        if !restore.inner.is_current_for(&self.engine, document) {
+            return Err(super::DockspaceRuntimeError::prepared_document_restore_mismatch());
+        }
+        Ok(())
     }
 
     /// Returns the current document lineage, when persistence is configured.
