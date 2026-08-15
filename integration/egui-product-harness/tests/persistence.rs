@@ -4,7 +4,8 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use egui_dockspace::{
-    DockStyle, Dockspace, DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceErrorKind,
+    DockStyle, Dockspace, DockspaceActionStatus, DockspaceDocumentBootstrap,
+    DockspaceDocumentId, DockspaceErrorKind,
 };
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x42; 16]);
@@ -68,6 +69,38 @@ fn document_round_trip_preserves_complete_append_only_item_history() {
     assert!(restored.view().item(second).is_some());
     assert!(restored.view().item(closed).is_none());
     assert!(restored.view().item(later).is_none());
+}
+
+#[test]
+fn live_restore_publishes_atomically_and_stales_pre_restore_actions() {
+    let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
+    let first = bootstrap.ensure_item("pane:first").expect("first item");
+    let second = bootstrap.ensure_item("pane:second").expect("second item");
+    let mut dockspace = Dockspace::builder("live-restore", layout([first, second]))
+        .persistence(bootstrap)
+        .build()
+        .expect("the persistent facade builds");
+    let encoded = dockspace
+        .save_document_json()
+        .expect("the source document encodes");
+    let prepared = dockspace.prepare_select_item(second);
+    let before_restore = dockspace.version();
+
+    let mutation = dockspace
+        .restore_document_json(&encoded, |document, key| {
+            document == DOCUMENT && matches!(key, "pane:first" | "pane:second")
+        })
+        .expect("the complete document restores into the live session");
+
+    assert_eq!(mutation.before(), before_restore);
+    assert_ne!(mutation.after(), before_restore);
+    let stale = dockspace
+        .submit_prepared_action(prepared)
+        .expect("the pre-restore action is consumed as stale");
+    assert!(matches!(
+        stale.status(),
+        DockspaceActionStatus::Stale { .. }
+    ));
 }
 
 #[test]

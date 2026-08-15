@@ -37,11 +37,6 @@ impl DockspaceError {
         self.source.kind()
     }
 
-    #[cfg(any(feature = "backend", test))]
-    pub(crate) const fn detail(&self) -> &DockspaceErrorSource {
-        &self.source
-    }
-
     pub(crate) fn from_source(source: DockspaceErrorSource) -> Self {
         Self {
             source: Box::new(source),

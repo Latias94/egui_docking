@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::document::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use eframe::egui;
 use egui_dockspace::{
-    Dockspace, DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
+    Dockspace, DockspaceAxis, DockspaceDocumentBootstrap, DockspaceDocumentId, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId,
+    SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -25,25 +25,23 @@ fn main() -> eframe::Result {
 struct PersistenceApp {
     dockspace: Dockspace,
     panes: PersistencePanes,
-    saved: Option<String>,
+    saved: Option<Vec<u8>>,
     status: String,
 }
 
 impl PersistenceApp {
     fn new() -> Self {
-        let mut bootstrap = DockspaceDocumentBootstrap::new(PERSISTENCE_DOCUMENT_ID, 0);
+        let mut bootstrap = DockspaceDocumentBootstrap::new(PERSISTENCE_DOCUMENT_ID);
         let document = bootstrap
-            .ensure_external_item_key("pane/document")
+            .ensure_item("pane/document")
             .expect("the document identity must fit");
         let console = bootstrap
-            .ensure_external_item_key("pane/console")
+            .ensure_item("pane/console")
             .expect("the console identity must fit");
-        let mut dockspace = Dockspace::builder("persistence", example_layout(document, console))
+        let dockspace = Dockspace::builder("persistence", example_layout(document, console))
+            .persistence(bootstrap)
             .build()
             .expect("the static example layout is valid");
-        dockspace
-            .bind_document_persistence(bootstrap)
-            .expect("the static persistence identity must bind");
         Self {
             dockspace,
             panes: PersistencePanes::new(document, console),
@@ -69,10 +67,9 @@ impl PersistenceApp {
         };
         match self
             .dockspace
-            .load_document_json(snapshot, |document_id, item, key| {
+            .restore_document_json(snapshot, |document_id, key| {
                 document_id == PERSISTENCE_DOCUMENT_ID
-                    && ((item == ItemId::new(1) && key == "pane/document")
-                        || (item == ItemId::new(2) && key == "pane/console"))
+                    && matches!(key, "pane/document" | "pane/console")
             }) {
             Ok(_) => "Snapshot restored".clone_into(&mut self.status),
             Err(error) => self.status = error.to_string(),

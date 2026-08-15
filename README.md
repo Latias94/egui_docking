@@ -49,46 +49,33 @@ revision-bound tab selection/close and emit current-pass tab, splitter, and
 contained gesture actions without inventing a post-`FullOutput` renderer fact.
 Tab dragging now paints the complete core-owned center/four-way guide cluster,
 including exact active and rejected states, and commits the same target that
-was previewed. The product renderer still does not expose overflow-menu
-actions, retained pointer receivers, or native multi-viewport ownership.
-Output publication remains paint-only in the renderer-settlement sense; those
-missing capabilities are deliberate release blockers rather than heuristic
-fallbacks.
+was previewed. The product renderer still does not expose native multi-viewport
+ownership. Output publication remains paint-only in the renderer-settlement
+sense; the missing native lifecycle remains a deliberate release blocker rather
+than a heuristic fallback.
 
-The base adapter keeps the application-facing API at the crate root. Custom
-hosts opt into the low-level `backend` feature and use the
-`egui_dockspace::backend` protocol; raw `DockEngine` access is not exposed. That
-protocol freezes the complete logical surface roster, replaces intermediate
-egui multipass drafts, and commits final drafts in one reducer tick only after
-the host confirms each matching final `FullOutput`. Each final output is bound
-to an opaque renderer-settlement capability. The host
-consumes that bound value at its renderer boundary and returns `Presented` or
-`Dropped`; results are reduced on the next outer frame behind a contiguous
-per-stream causal barrier. This production path now drives tab selection and
-close, exact-guide docking, splitter resize, and contained-floating resize
-through the same pointer journal and exact egui receiver evidence used by its
-official-egui integration tests. The official-egui route is still a low-level
-host protocol: no registry-only event loop can provide its missing native facts.
-These vertical slices therefore do not constitute native multi-viewport product
-support.
+The base adapter now has one application-facing path at the crate root. The
+former egui backend facade, duplicate projection, presentation ledger, and
+test-only engine owner were deleted after the product and native paths moved to
+`DockspaceSession`. Renderer and native hosts integrate through the
+renderer-neutral `dockspace::runtime` contract instead of constructing another
+docking engine inside `egui_dockspace`.
 
 Ordinary commands, close decisions, style changes, and paint responses return
 product-level mutation and outcome values. They do not expose reducer ticks,
 `EngineTransition`, scene stamps, or presentation ledgers. Those diagnostics
-remain inside the adapter and core. The explicitly unstable backend protocol
-returns only host-actionable receipts: per-surface status, native close edges,
-effect acceptance, and presentation-settlement counts.
+remain inside the adapter and core. Renderer-neutral host reports expose only
+host-actionable outcomes: per-surface status, native close edges, affine native
+effects, presentation outputs, and repaint requirements.
 Facade failures follow the same boundary: callers branch on the six stable
 `DockspaceErrorKind` categories, while exact renderer and reducer diagnostics
 remain private in the standard error source chain.
 
 The renderer-neutral crate follows the same split. Its default API exposes the
 model and `dockspace::runtime` facade; adapter-only reducer, scene, pointer,
-effect, recovery, and viewport state machines are private. Renderer authors and
-workspace-private protocol harnesses explicitly enable `dockspace/backend` and
-import those unstable contracts through `dockspace::backend`. This is an
-intentional breaking boundary, not a compatibility alias for the former module
-paths.
+effect, recovery, and viewport state machines remain private or are isolated
+behind workspace-only core conformance seams. Product adapters do not enable a
+second egui backend feature.
 
 The base crate resolves the official egui release and treats receiver facts that
 upstream cannot prove as `Unknown`. The excluded native workspace pins the
@@ -102,8 +89,8 @@ condition for every remaining fork seam are recorded in
 
 ## Persistence
 
-The optional `serde` feature adds session-owned product persistence without
-enabling the backend protocol. Applications allocate stable pane identities
+The optional `serde` feature adds session-owned product persistence.
+Applications allocate stable pane identities
 through `DockspaceDocumentBootstrap`, construct a persistent `Dockspace`, and
 save or restore one versioned JSON document through the product facade. The
 document atomically binds workspace topology, append-only external pane keys,

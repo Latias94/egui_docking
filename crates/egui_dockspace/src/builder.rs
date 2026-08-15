@@ -2,11 +2,9 @@
 
 use std::{fmt::Debug, hash::Hash};
 
-#[cfg(any(feature = "backend", test))]
-use dockspace::backend::graph::Workspace;
 use dockspace::model::DockspaceLayout;
 use dockspace::policy::DockPolicy;
-#[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+#[cfg(feature = "serde")]
 use dockspace::runtime::DockspaceDocumentBootstrap;
 use egui::Id;
 
@@ -20,14 +18,12 @@ pub struct DockspaceBuilder {
     source: DockspaceBuilderSource,
     policy: DockPolicy,
     style: DockStyle,
-    #[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+    #[cfg(feature = "serde")]
     document: Option<DockspaceDocumentBootstrap>,
 }
 
 enum DockspaceBuilderSource {
     Layout(DockspaceLayout),
-    #[cfg(any(feature = "backend", test))]
-    BackendWorkspace(Workspace),
 }
 
 impl DockspaceBuilder {
@@ -38,18 +34,8 @@ impl DockspaceBuilder {
             source: DockspaceBuilderSource::Layout(layout),
             policy: DockPolicy::default(),
             style: DockStyle::default(),
-            #[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+            #[cfg(feature = "serde")]
             document: None,
-        }
-    }
-
-    #[cfg(any(feature = "backend", test))]
-    pub(crate) fn from_backend_workspace(id_salt: impl Hash + Debug, workspace: Workspace) -> Self {
-        Self {
-            id: Id::new(("egui_dockspace", id_salt)),
-            source: DockspaceBuilderSource::BackendWorkspace(workspace),
-            policy: DockPolicy::default(),
-            style: DockStyle::default(),
         }
     }
 
@@ -70,7 +56,7 @@ impl DockspaceBuilder {
     /// Binds the product layout to one session-owned document lineage.
     ///
     /// Every item in the layout must have been allocated through `bootstrap`.
-    #[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+    #[cfg(feature = "serde")]
     #[must_use]
     pub fn persistence(mut self, bootstrap: DockspaceDocumentBootstrap) -> Self {
         self.document = Some(bootstrap);
@@ -81,12 +67,12 @@ impl DockspaceBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`DockspaceError`] when style, layout, or backend workspace validation fails.
+    /// Returns [`DockspaceError`] when style or layout validation fails.
     pub fn build(self) -> Result<Dockspace, DockspaceError> {
         self.style.validate().map_err(DockspaceError::from_detail)?;
         match self.source {
             DockspaceBuilderSource::Layout(layout) => {
-                #[cfg(all(feature = "serde", not(any(feature = "backend", test))))]
+                #[cfg(feature = "serde")]
                 if let Some(document) = self.document {
                     return Dockspace::from_persistent_layout_parts(
                         self.id,
@@ -97,10 +83,6 @@ impl DockspaceBuilder {
                     );
                 }
                 Dockspace::from_layout_parts(self.id, layout, self.policy, self.style)
-            }
-            #[cfg(any(feature = "backend", test))]
-            DockspaceBuilderSource::BackendWorkspace(workspace) => {
-                Dockspace::from_parts(self.id, workspace, self.policy, self.style)
             }
         }
     }

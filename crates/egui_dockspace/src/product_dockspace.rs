@@ -23,6 +23,8 @@ use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
 use crate::product_render;
+#[cfg(feature = "serde")]
+use crate::response::DockspaceMutation;
 use crate::response::{
     DockspaceActionResult, DockspaceCloseResult, DockspaceResponse, DockspaceSurfaceStatus,
 };
@@ -198,6 +200,33 @@ impl Dockspace {
         self.session
             .save_document_json()
             .map_err(DockspaceError::from_detail)
+    }
+
+    /// Restores a complete document into this session at one host-frame boundary.
+    ///
+    /// The restored surfaces are initially deferred, so the next egui frame can
+    /// measure and paint their exact product plans before exposing interaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or host-frame error without publishing a partial
+    /// document when decoding, identity recognition, or candidate validation
+    /// fails.
+    #[cfg(feature = "serde")]
+    pub fn restore_document_json(
+        &mut self,
+        bytes: &[u8],
+        recognize_external_item: impl Fn(DockspaceDocumentId, &str) -> bool,
+    ) -> Result<DockspaceMutation, DockspaceError> {
+        let mut frame = self
+            .session
+            .begin_document_restore_frame(bytes, recognize_external_item)
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        Ok(DockspaceMutation::from_runtime_report(&report))
     }
 
     /// Prepares a revision-bound selection action.
