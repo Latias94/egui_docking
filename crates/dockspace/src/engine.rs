@@ -1961,7 +1961,7 @@ impl DockEngine {
             PresentationIdentityAuthority::new(&workspace, presentation_identity_frontier);
         let authority_domain =
             EngineAuthorityDomainId::mint().ok_or(EngineError::EngineAuthorityDomainExhausted)?;
-        let version = WorkspaceVersion::default();
+        let version = WorkspaceVersion::initial();
         let presentation_config_revision = PresentationConfigRevision::default();
         let policy = policy.snapshot(PolicyRevision::default());
         let requirement_revision = RequirementRevision::default();

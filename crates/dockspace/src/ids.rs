@@ -225,6 +225,7 @@ macro_rules! transient_counter_id {
 
             /// Returns the runtime counter representation.
             #[must_use]
+            #[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
             pub const fn get(self) -> u64 {
                 self.0
             }

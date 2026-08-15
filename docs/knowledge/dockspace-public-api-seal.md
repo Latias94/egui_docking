@@ -250,7 +250,7 @@ raw `EngineTransition` or surface-contribution FSM values. The renderer-neutral
 crate no longer exposes reducer events, transitions, interaction state, hit
 regions, or its other backend FSM modules at their former root paths; adapters
 use the explicit `dockspace::backend` feature and namespace. Product callers
-obtain `WorkspaceVersion` and typed close rejections through
+obtain the opaque, core-minted `WorkspaceVersion` and typed close rejections through
 `dockspace::runtime`. Examples and the official-egui harness declare
 `dockspace` directly when they intentionally exercise core contracts, so rustc
 rather than an API-classification script owns dependency and name resolution.

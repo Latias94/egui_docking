@@ -2319,7 +2319,7 @@ mod tests {
         let clusters = complete_guide_clusters(&fixture);
         let payload = partial_payload(&fixture);
         let policy = DockPolicySnapshot::default();
-        let workspace_version = WorkspaceVersion::default();
+        let workspace_version = WorkspaceVersion::initial();
         let workspace_index = WorkspaceIndex::build(&fixture.workspace, workspace_version)
             .expect("fixture index must build");
         let assessment = DropEligibilityContext::new(
@@ -2373,7 +2373,7 @@ mod tests {
         let mut policy = DockPolicy::default();
         policy.set_allow_edge_split(false);
         let policy = policy.snapshot(PolicyRevision::default());
-        let workspace_version = WorkspaceVersion::default();
+        let workspace_version = WorkspaceVersion::initial();
         let workspace_index = WorkspaceIndex::build(&fixture.workspace, workspace_version)
             .expect("fixture index must build");
         let assessment = DropEligibilityContext::new(
@@ -2575,7 +2575,7 @@ mod tests {
         ));
         ready.push_contained_minimum(contained_minimum(FloatingPresentationId::new(100)));
         let scene = seal_workspace(&workspace, ready);
-        let workspace_version = WorkspaceVersion::default();
+        let workspace_version = WorkspaceVersion::initial();
         let workspace_index = WorkspaceIndex::build(&workspace, workspace_version)
             .expect("scale workload index must build");
 
@@ -3337,7 +3337,7 @@ mod tests {
                 .expect("main source must be current"),
         );
 
-        let workspace_version = WorkspaceVersion::default();
+        let workspace_version = WorkspaceVersion::initial();
         let workspace_index = WorkspaceIndex::build(&workspace, workspace_version)
             .expect("suppression index must build");
         let source = workspace_index
