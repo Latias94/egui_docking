@@ -18,6 +18,7 @@ use dockspace::intent::{Authority, PointerButton, PointerId};
 use dockspace::interaction::{
     InteractionCancelReason, InteractionOutcome, InteractionRejection, InteractionStatus,
 };
+use dockspace::model::DockspaceAxis;
 use dockspace::pointer_journal::{
     PointerCaptureOwner, PointerEdge, PointerEdgeJournal, PointerEdgeKind, PointerEdgeLocation,
     PointerEdgeSequence, SurfaceLocalPointerEndpoint, SurfaceLocalPointerProvider,
@@ -1339,7 +1340,7 @@ fn stale_second_split_rejects_the_entire_resize_batch_without_mutation() {
 fn disabled_vertical_policy_omits_corner_and_rejects_direct_batch_without_partial_resize() {
     let (workspace, horizontal, vertical) = junction_workspace();
     let mut policy = DockPolicy::default();
-    policy.set_allow_resize_axis(Axis::Vertical, false);
+    policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
 
     let mut command_workspace = workspace.clone();
     let horizontal_source = command_workspace

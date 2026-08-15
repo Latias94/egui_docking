@@ -1,7 +1,8 @@
 use dockspace::model::{
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-    SurfaceId,
+    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    ItemId, RootId, SurfaceId,
 };
+use dockspace::policy::DockPolicy;
 use egui::{Context, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{Dockspace, DockspaceActionOutcome, DockspaceActionStatus, PaneView};
 
@@ -46,7 +47,10 @@ fn raw_input() -> RawInput {
 fn official_egui_consumes_the_default_product_facade() {
     let _native_options = eframe::NativeOptions::default();
     let context = Context::default();
+    let mut policy = DockPolicy::default();
+    policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
     let mut dockspace = Dockspace::builder("official-egui-consumer", product_layout())
+        .policy(policy)
         .build()
         .expect("the public facade accepts a valid product layout");
     let view = dockspace.view();

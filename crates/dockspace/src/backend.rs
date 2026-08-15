@@ -123,6 +123,11 @@ pub mod platform {
     };
 }
 
+/// Core policy evaluator facts, snapshots, requests, and decisions.
+pub mod policy {
+    pub use crate::policy_impl::*;
+}
+
 /// Lossless pointer edge journal protocol.
 pub mod pointer_journal {
     pub use crate::pointer_journal::*;

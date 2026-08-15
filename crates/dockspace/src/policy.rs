@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::graph::Axis;
 use crate::ids::{ItemId, RootId, SurfaceId};
+use crate::model::DockspaceAxis;
 
 /// Monotonic engine-local identity of one frozen policy value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -65,17 +66,6 @@ pub enum TearOffPresentation {
     Contained,
     /// Request a native surface through the platform protocol.
     Native,
-}
-
-/// Explicit behavior when a requested native presentation is unavailable.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub enum ContainedFallback {
-    /// Cancel the operation without changing presentation mode.
-    #[default]
-    Disabled,
-    /// Permit a contained-floating presentation instead.
-    Enabled,
 }
 
 /// Independently configurable classes of workspace mutation.
@@ -600,8 +590,8 @@ impl DockSurfaceRule {
     }
 
     /// Enables or disables resizing along one axis on this surface.
-    pub fn set_resize_axis(&mut self, axis: Axis, allowed: bool) {
-        set_membership(&mut self.resize_axes, axis, allowed);
+    pub fn set_resize_axis(&mut self, axis: DockspaceAxis, allowed: bool) {
+        set_membership(&mut self.resize_axes, axis.into(), allowed);
     }
 
     /// Replaces this surface's tab-bar policy.
@@ -672,7 +662,6 @@ impl Default for CentralNodePolicy {
 struct DockPolicyRules {
     allowed_operations: BTreeSet<DockOperation>,
     allowed_presentations: BTreeSet<DockPresentationMode>,
-    contained_fallback: ContainedFallback,
     resize_axes: BTreeSet<Axis>,
     tab_bar: TabBarPolicy,
     close: CloseCapability,
@@ -698,7 +687,6 @@ impl Default for DockPolicyRules {
                 DockPresentationMode::Tiled,
                 DockPresentationMode::Contained,
             ]),
-            contained_fallback: ContainedFallback::Disabled,
             resize_axes: all_axes(),
             tab_bar: TabBarPolicy::default(),
             close: CloseCapability::default(),
@@ -730,7 +718,7 @@ impl DockPolicy {
 
     /// Freezes this complete policy under an engine-owned monotonic revision.
     #[must_use]
-    pub fn snapshot(&self, revision: PolicyRevision) -> DockPolicySnapshot {
+    pub(crate) fn snapshot(&self, revision: PolicyRevision) -> DockPolicySnapshot {
         DockPolicySnapshot {
             revision,
             policy: self.clone(),
@@ -787,8 +775,8 @@ impl DockPolicy {
     }
 
     /// Enables or disables splitter resizing along one axis.
-    pub fn set_allow_resize_axis(&mut self, axis: Axis, allowed: bool) {
-        set_membership(&mut self.rules.resize_axes, axis, allowed);
+    pub fn set_allow_resize_axis(&mut self, axis: DockspaceAxis, allowed: bool) {
+        set_membership(&mut self.rules.resize_axes, axis.into(), allowed);
     }
 
     /// Returns whether contained-floating presentation is allowed.
@@ -830,17 +818,6 @@ impl DockPolicy {
     /// Enables or disables native-surface requests.
     pub fn set_allow_native_surfaces(&mut self, allowed: bool) {
         self.set_allowed(DockOperation::NativeSurface, allowed);
-    }
-
-    /// Returns the explicit native-to-contained fallback setting.
-    #[must_use]
-    pub const fn contained_fallback(&self) -> ContainedFallback {
-        self.rules.contained_fallback
-    }
-
-    /// Sets explicit native-to-contained fallback behavior.
-    pub fn set_contained_fallback(&mut self, fallback: ContainedFallback) {
-        self.rules.contained_fallback = fallback;
     }
 
     /// Returns whether one operation class is enabled.
@@ -951,57 +928,16 @@ impl DockPolicy {
         self.rules.surface_rules.insert(surface, rule)
     }
 
-    /// Checks a tab merge before constructing an unscoped command.
-    ///
-    /// Context-bearing interaction paths should use [`DockPolicySnapshot::evaluate`].
-    pub fn check_tab_merge(&self) -> Result<(), PolicyRejection> {
-        self.check_operation(DockOperation::TabMerge)
-    }
-
-    /// Checks an edge split before constructing an unscoped command.
-    ///
-    /// Context-bearing interaction paths should use [`DockPolicySnapshot::evaluate`].
-    pub fn check_edge_split(&self) -> Result<(), PolicyRejection> {
-        self.check_operation(DockOperation::EdgeSplit)
-    }
-
-    /// Checks splitter resizing before constructing an unscoped command.
-    ///
-    /// Context-bearing interaction paths should use [`DockPolicySnapshot::evaluate`].
-    pub fn check_splitter_resize(&self) -> Result<(), PolicyRejection> {
-        if self.allows_splitter_resize() {
-            Ok(())
-        } else {
-            Err(PolicyRejection::SplitterResizeDisabled)
-        }
-    }
-
     /// Checks one explicitly requested tear-off presentation.
-    pub fn check_tear_off(&self, presentation: TearOffPresentation) -> Result<(), PolicyRejection> {
+    pub(crate) fn check_tear_off(
+        &self,
+        presentation: TearOffPresentation,
+    ) -> Result<(), PolicyRejection> {
         match presentation {
             TearOffPresentation::Contained if self.allows_contained_floating() => Ok(()),
             TearOffPresentation::Contained => Err(PolicyRejection::ContainedFloatingDisabled),
             TearOffPresentation::Native if self.allows_native_surfaces() => Ok(()),
             TearOffPresentation::Native => Err(PolicyRejection::NativeSurfacesDisabled),
-        }
-    }
-
-    /// Resolves policy-only fallback after capability rejected a native request.
-    ///
-    /// This function never inspects pointer position, elapsed time, focus, or window geometry.
-    pub fn native_unavailable_fallback(&self) -> Result<TearOffPresentation, PolicyRejection> {
-        if self.rules.contained_fallback != ContainedFallback::Enabled {
-            return Err(PolicyRejection::ContainedFallbackDisabled);
-        }
-        self.check_tear_off(TearOffPresentation::Contained)?;
-        Ok(TearOffPresentation::Contained)
-    }
-
-    fn check_operation(&self, operation: DockOperation) -> Result<(), PolicyRejection> {
-        if self.allows(operation) {
-            Ok(())
-        } else {
-            Err(operation_disabled(operation))
         }
     }
 }
@@ -1860,9 +1796,6 @@ pub enum PolicyRejection {
     /// Native surfaces are disabled by application policy.
     #[error("native surfaces are disabled by workspace policy")]
     NativeSurfacesDisabled,
-    /// Native-to-contained fallback was not explicitly enabled.
-    #[error("contained fallback for unavailable native presentation is disabled")]
-    ContainedFallbackDisabled,
     /// A child surface cannot recover into itself.
     #[error("surface {surface} cannot be its own recovery host")]
     SurfaceRecoverySourceIsHost {
@@ -2124,27 +2057,6 @@ mod tests {
         assert!(policy.check_tear_off(TearOffPresentation::Native).is_ok());
         assert_eq!(
             policy.check_tear_off(TearOffPresentation::Contained),
-            Err(PolicyRejection::ContainedFloatingDisabled)
-        );
-    }
-
-    #[test]
-    fn contained_fallback_requires_two_explicit_permissions() {
-        let mut policy = DockPolicy::default();
-        assert_eq!(
-            policy.native_unavailable_fallback(),
-            Err(PolicyRejection::ContainedFallbackDisabled)
-        );
-
-        policy.set_contained_fallback(ContainedFallback::Enabled);
-        assert_eq!(
-            policy.native_unavailable_fallback(),
-            Ok(TearOffPresentation::Contained)
-        );
-
-        policy.set_allow_contained_floating(false);
-        assert_eq!(
-            policy.native_unavailable_fallback(),
             Err(PolicyRejection::ContainedFloatingDisabled)
         );
     }

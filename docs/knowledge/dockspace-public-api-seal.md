@@ -104,6 +104,13 @@ module paths are removed rather than preserved as compatibility aliases. This
 keeps the default product interface free of scene authority while giving the
 explicitly feature-gated migration adapter one coherent seam.
 
+The public `policy` module follows the same split. It contains only declarative
+configuration, stable application rule identities, and product-facing axis and
+presentation values. Policy revisions, frozen snapshots, evaluator requests,
+facts, decisions, and detailed rejections live under
+`dockspace::backend::policy`; product setters never accept the private graph
+`Axis` type.
+
 The same rule now applies to raw command/transaction errors, the complete
 external-item-key map, and low-level viewport generations/bindings. Product
 callers use `DockspaceRuntimeError`, `DockspaceDocumentBootstrap`, and opaque

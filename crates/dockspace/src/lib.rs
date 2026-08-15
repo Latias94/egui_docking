@@ -124,7 +124,27 @@ pub mod pointer_receiver;
 #[cfg(not(test))]
 #[cfg_attr(not(feature = "backend"), allow(dead_code, unused_imports))]
 mod pointer_receiver;
-pub mod policy;
+#[path = "policy.rs"]
+#[cfg_attr(not(any(feature = "backend", test)), allow(dead_code))]
+mod policy_impl;
+/// Declarative product policy for docking operations and presentation.
+pub mod policy {
+    pub use crate::policy_impl::{
+        CentralNodePolicy, CloseCapability, DockClassId, DockItemRule, DockOperation,
+        DockPayloadKind, DockPolicy, DockPresentationMode, DockSourceRule, DockSurfaceRule,
+        DockTargetRule, DockTargetRuleKey, TabBarInteraction, TabBarPolicy, TabBarVisibility,
+        TearOffPresentation,
+    };
+    pub(crate) use crate::policy_impl::{
+        DockContainedTransformPolicyRequest, DockDropOperation, DockDropTargetFacts,
+        DockPayloadPolicyFacts, DockPolicyRequest, DockPolicySnapshot,
+        DockPresentationPolicyRequest, DockPresentationTarget, DockResizePolicyRequest,
+        DockSurfaceRecoveryPolicyRequest, DockSurfaceRecoveryRootFacts, DockTabBarPolicyRequest,
+        PolicyDecision, PolicyRejection, PolicyRevision,
+    };
+    #[cfg(test)]
+    pub(crate) use crate::policy_impl::{DockDropPolicyRequest, PolicyRuleScope};
+}
 pub mod presentation_config;
 #[cfg(test)]
 pub mod presentation_hit;

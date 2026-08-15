@@ -1,5 +1,6 @@
 use dockspace::graph::Axis;
 use dockspace::ids::{ItemId, RootId, SurfaceId};
+use dockspace::model::DockspaceAxis;
 use dockspace::policy::{
     CloseCapability, DockClassId, DockDropOperation, DockDropPolicyRequest, DockDropTargetFacts,
     DockItemRule, DockPayloadKind, DockPayloadPolicyFacts, DockPolicy, DockPolicyRequest,
@@ -122,7 +123,7 @@ fn evaluator_applies_item_source_target_and_surface_rules_without_fallthrough() 
 #[test]
 fn axis_tab_close_and_presentation_permissions_are_independent() {
     let mut policy = DockPolicy::default();
-    policy.set_allow_resize_axis(Axis::Vertical, false);
+    policy.set_allow_resize_axis(DockspaceAxis::Vertical, false);
     policy.set_close_capability(CloseCapability::DeferredAllowed);
     policy.set_allow_native_surfaces(true);
 
@@ -138,7 +139,7 @@ fn axis_tab_close_and_presentation_permissions_are_independent() {
     let _ = policy.set_target_rule(TARGET, target);
 
     let mut surface = DockSurfaceRule::default();
-    surface.set_resize_axis(Axis::Horizontal, false);
+    surface.set_resize_axis(DockspaceAxis::Horizontal, false);
     surface.set_allowed_presentations([DockPresentationMode::Tiled]);
     surface.set_close_enabled(false);
     let _ = policy.set_surface_rule(TARGET_SURFACE, surface);

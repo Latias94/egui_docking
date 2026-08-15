@@ -8,8 +8,8 @@ use thiserror::Error;
 
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{EngineAuthorityDomainId, ItemId, NodeId, RootId, SurfaceId, WorkspaceEpoch};
-pub use crate::policy::PolicyRevision;
 use crate::policy::{CloseCapability, TabBarInteraction, TabBarPolicy};
+pub use crate::policy_impl::PolicyRevision;
 use crate::presentation_config::PresentationConfigRevision;
 use crate::scene::{TabBarSceneId, TabSceneId};
 use crate::tab_strip::{PopupPlaneRequirement, TabStripStateKey};

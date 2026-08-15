@@ -7,6 +7,7 @@ use dockspace::engine::DockEngine;
 use dockspace::geometry::LogicalRect;
 use dockspace::graph::{Axis, ContainedFloating, Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
+use dockspace::model::DockspaceAxis;
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_hit::{
     PresentationHitManifest, PresentationHitRegionKind, PresentationPointerLane,
@@ -356,7 +357,7 @@ fn rootless_background_is_one_output_bound_hover_drop_receiver() {
 #[test]
 fn resize_policy_is_frozen_into_splitter_and_junction_hit_rosters() {
     let mut policy = DockPolicy::default();
-    policy.set_allow_resize_axis(Axis::Horizontal, false);
+    policy.set_allow_resize_axis(DockspaceAxis::Horizontal, false);
     let mut engine = DockEngine::new(workspace(), policy).expect("engine is valid");
     let mut host = TestPresentationHost::new(&mut engine);
     publish_surface(&mut engine, &mut host, SURFACE, bounds());
