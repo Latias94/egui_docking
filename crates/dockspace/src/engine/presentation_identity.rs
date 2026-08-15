@@ -19,6 +19,22 @@ pub(super) struct DragPresentationIdentityReservation {
     floating: Option<FloatingPresentationId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeRootTransferIdentityReservation {
+    surface: SurfaceId,
+    floating: FloatingPresentationId,
+}
+
+impl NativeRootTransferIdentityReservation {
+    pub(super) const fn surface(self) -> SurfaceId {
+        self.surface
+    }
+
+    pub(super) const fn floating(self) -> FloatingPresentationId {
+        self.floating
+    }
+}
+
 impl DragPresentationIdentityReservation {
     pub(super) const fn surface(self) -> SurfaceId {
         self.surface
@@ -205,6 +221,23 @@ impl PresentationIdentityAuthority {
             floating,
         })
     }
+
+    pub(super) fn prepare_native_root_transfer(
+        &self,
+        existing_floating: Option<FloatingPresentationId>,
+    ) -> Result<NativeRootTransferIdentityReservation, EngineError> {
+        let mut candidate = self.frontier;
+        let surface = candidate
+            .reserve_surface()
+            .ok_or(EngineError::PresentationSurfaceIdentityExhausted)?;
+        let floating = match existing_floating {
+            Some(floating) => floating,
+            None => candidate
+                .reserve_floating()
+                .ok_or(EngineError::PresentationFloatingIdentityExhausted)?,
+        };
+        Ok(NativeRootTransferIdentityReservation { surface, floating })
+    }
 }
 
 impl DockEngine {
@@ -381,6 +414,16 @@ impl DockEngine {
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
         authority.prepare_floating()
+    }
+
+    pub(super) fn prepare_native_root_transfer_identities(
+        &self,
+        existing_floating: Option<FloatingPresentationId>,
+    ) -> Result<NativeRootTransferIdentityReservation, EngineError> {
+        let mut authority = self.presentation_identity;
+        authority.observe_workspace(&self.workspace);
+        authority.observe_native_reservations(self.pending_native_identity_reservations());
+        authority.prepare_native_root_transfer(existing_floating)
     }
 
     #[cfg(test)]

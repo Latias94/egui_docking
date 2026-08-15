@@ -21,8 +21,8 @@ use crate::ids::{
 };
 use crate::intent::{
     Authority, CloseSceneTarget, ContainedGestureKind, ContainedPresentationOffer,
-    ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer,
-    NativeTearOffProposal, PointerButton, PointerId, SurfaceBackgroundRootOffer, TabGestureSource,
+    ContainedTearOffProposal, ContainedTransformKind, NativePresentationOffer, PointerButton,
+    PointerId, SurfaceBackgroundRootOffer, TabGestureSource,
 };
 use crate::operation::PreparedContentClose;
 use crate::pointer_journal::{
@@ -39,13 +39,11 @@ use crate::scene::{
     TabListMenuRecord, TabListMenuRowRecord, TabSceneId, TabStripControlRecord,
 };
 use crate::scene_manifest::{RequirementRevision, SurfaceMeasurementTicket};
-use crate::surface_recovery::SurfaceRecoveryObligation;
 use crate::tab_strip::{
     PopupRoutingRevision, TabListMenuSessionId, TabStripControlId, TabStripStateKey,
 };
 use crate::transition::WorkspaceVersion;
 use crate::viewport::ViewportBinding;
-use crate::viewport_focus::{FocusCausalStamp, PaneFocusDisposition};
 
 macro_rules! interaction_counter {
     ($constructor_visibility:vis $name:ident, $description:literal) => {
@@ -1267,102 +1265,6 @@ pub enum WorkspaceDeliveryKind {
     Contained,
     /// Use the explicitly enabled contained fallback for an unavailable native request.
     ContainedFallback,
-}
-
-/// Native tear-off plan produced without moving source content.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PreparedNativeTearOff {
-    session: DragSessionId,
-    source_presentation: PresentedSurfaceAuthority,
-    payload: MovePayload,
-    source_version: WorkspaceVersion,
-    command: WorkspaceCommand,
-    proposal: NativeTearOffProposal,
-    recovery_obligation: SurfaceRecoveryObligation,
-    focus_causal: FocusCausalStamp,
-    pane_focus: PaneFocusDisposition,
-}
-
-impl PreparedNativeTearOff {
-    pub(crate) fn new(
-        session: DragSessionId,
-        source_presentation: PresentedSurfaceAuthority,
-        payload: MovePayload,
-        source_version: WorkspaceVersion,
-        command: WorkspaceCommand,
-        proposal: NativeTearOffProposal,
-        recovery_obligation: SurfaceRecoveryObligation,
-        focus_causal: FocusCausalStamp,
-        pane_focus: PaneFocusDisposition,
-    ) -> Self {
-        Self {
-            session,
-            source_presentation,
-            payload,
-            source_version,
-            command,
-            proposal,
-            recovery_obligation,
-            focus_causal,
-            pane_focus,
-        }
-    }
-
-    /// Returns the consumed drag generation.
-    #[must_use]
-    pub const fn session(&self) -> DragSessionId {
-        self.session
-    }
-
-    /// Returns the exact logical surface which owned the payload at release.
-    #[must_use]
-    pub const fn source_surface(&self) -> SurfaceId {
-        self.source_presentation.surface()
-    }
-
-    /// Returns the exact final-presentation authority frozen at release.
-    #[must_use]
-    pub const fn source_presentation(&self) -> PresentedSurfaceAuthority {
-        self.source_presentation
-    }
-
-    pub(crate) const fn payload(&self) -> &MovePayload {
-        &self.payload
-    }
-
-    /// Returns the exact workspace version against which the plan was prepared.
-    #[must_use]
-    pub const fn source_version(&self) -> WorkspaceVersion {
-        self.source_version
-    }
-
-    /// Returns the exact preflighted mutation frozen before native creation.
-    #[must_use]
-    pub const fn command(&self) -> &WorkspaceCommand {
-        &self.command
-    }
-
-    /// Returns the explicit native destination and placement.
-    #[must_use]
-    pub const fn proposal(&self) -> &NativeTearOffProposal {
-        &self.proposal
-    }
-
-    pub(crate) const fn recovery_obligation(&self) -> &SurfaceRecoveryObligation {
-        &self.recovery_obligation
-    }
-
-    /// Returns the release-edge causal position reserved for eventual focus admission.
-    #[must_use]
-    pub const fn focus_causal(&self) -> FocusCausalStamp {
-        self.focus_causal
-    }
-
-    /// Returns the source pane focus frozen at the release edge.
-    #[must_use]
-    pub const fn pane_focus(&self) -> PaneFocusDisposition {
-        self.pane_focus
-    }
 }
 
 /// Successful delivery produced by one consumed release.

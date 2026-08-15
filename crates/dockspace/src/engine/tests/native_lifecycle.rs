@@ -788,16 +788,14 @@ fn install_pending_native_root_reservation_with_work_area(
         .engine
         .interaction_authority(SOURCE_SURFACE)
         .expect("source surface must have presented interaction authority");
-    let prepared = PreparedNativeTearOff::new(
-        DragSessionId::new(fixture.engine.version().epoch(), DragGeneration::new(93)),
+    let prepared = crate::frame::PreparedNativeCreate::new(
         source_presentation,
         payload,
-        fixture.engine.version(),
+        fixture.engine.version().epoch(),
         command,
-        proposal,
+        crate::frame::NativeCreateProposal::from_tear_off(&proposal),
         obligation,
         focus_causal,
-        PaneFocusDisposition::Clear,
     );
     let request = fixture
         .engine
@@ -1450,7 +1448,10 @@ fn auto_focused_native_window_waits_for_first_live_before_pane_focus_is_admitted
     assert!(fixture.engine.viewport_focus.reserve_activation_causal(
         request.saga(),
         prepared.focus_causal(),
-        ViewportActivationRequest::tear_off_committed(request.binding(), prepared.pane_focus(),),
+        ViewportActivationRequest::tear_off_committed(
+            request.binding(),
+            PaneFocusDisposition::Clear,
+        ),
     ));
 
     let _ = fixture.engine.viewport.take_new_effects();
@@ -1547,7 +1548,10 @@ fn native_focus_reservation_replays_after_activation_control_becomes_available()
     assert!(fixture.engine.viewport_focus.reserve_activation_causal(
         request.saga(),
         prepared.focus_causal(),
-        ViewportActivationRequest::tear_off_committed(request.binding(), prepared.pane_focus(),),
+        ViewportActivationRequest::tear_off_committed(
+            request.binding(),
+            PaneFocusDisposition::Clear,
+        ),
     ));
 
     let _ = fixture.engine.viewport.take_new_effects();
@@ -1650,7 +1654,10 @@ fn delayed_auto_focus_from_a_superseded_native_create_reasserts_the_current_winn
     assert!(fixture.engine.viewport_focus.reserve_activation_causal(
         request.saga(),
         prepared.focus_causal(),
-        ViewportActivationRequest::tear_off_committed(request.binding(), prepared.pane_focus(),),
+        ViewportActivationRequest::tear_off_committed(
+            request.binding(),
+            PaneFocusDisposition::Clear,
+        ),
     ));
 
     let _ = fixture.engine.viewport.take_new_effects();

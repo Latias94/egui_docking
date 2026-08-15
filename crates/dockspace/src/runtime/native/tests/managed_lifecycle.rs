@@ -1,14 +1,174 @@
 use super::*;
 
 use crate::geometry::PhysicalPoint;
+use crate::graph::ContainedFloating;
+use crate::model::FloatingPresentationId;
 use crate::runtime::{
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
-    NativeEffectOperation, NativeStagingPresentationPhase,
+    NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
 };
 
 const SECOND_ITEM: ItemId = ItemId::new(2);
 const ROOT_ORIGIN_X: f64 = 100.0;
 const ROOT_ORIGIN_Y: f64 = 80.0;
+
+#[test]
+fn programmatic_native_root_tear_off_starts_the_shared_create_saga() {
+    let (mut session, _) = programmatic_tear_off_session();
+    let before = session.version();
+    let placement = PhysicalRect::new(920.0, 120.0, 420.0, 320.0)
+        .expect("the requested outer placement validates");
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the programmatic tear-off frame begins");
+    frame
+        .tear_off_root_current(ROOT, NativeWindowPlacement::new(placement))
+        .expect("the revision-bound root tear-off stages");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the source surface retains its exact presentation");
+    let mut report = frame.commit().expect("the native create request commits");
+    let effects = report.take_native_effects();
+    assert_eq!(
+        effects.len(),
+        1,
+        "programmatic tear-off produced the wrong effect set; inputs: {:?}",
+        report.inputs()
+    );
+    let request = effects.into_iter().next().expect("one effect was asserted");
+    let child_binding = match request.operation() {
+        NativeEffectOperation::CreateWindow {
+            binding,
+            placement: requested,
+            ..
+        } if *requested == placement => *binding,
+        operation => panic!("programmatic tear-off emitted the wrong effect: {operation:?}"),
+    };
+
+    assert_eq!(
+        report.inputs(),
+        &[super::super::super::HostInputOutcome::ProductActionApplied(
+            crate::model::DockspaceActionOutcome::NativeRootTearOffRequested {
+                root: ROOT,
+                source_surface: SURFACE,
+                target_surface: child_binding.surface(),
+                items: vec![ITEM, SECOND_ITEM],
+            },
+        )]
+    );
+    assert_eq!(session.version(), before);
+    assert_eq!(
+        session.view().item(ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert_eq!(
+        session.view().item(SECOND_ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+}
+
+#[test]
+fn duplicate_programmatic_native_root_tear_off_is_rejected_atomically() {
+    let (mut session, _) = programmatic_tear_off_session();
+    let before = session.version();
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(920.0, 120.0, 420.0, 320.0)
+            .expect("the requested outer placement validates"),
+    );
+
+    let mut first = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the first programmatic tear-off frame begins");
+    first
+        .tear_off_root_current(ROOT, placement)
+        .expect("the first programmatic tear-off stages");
+    first
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the first source presentation remains retained");
+    let mut first_report = first.commit().expect("the first native create commits");
+    let pending_request = first_report
+        .take_native_effects()
+        .into_iter()
+        .next()
+        .expect("the first create request remains outstanding");
+
+    let mut duplicate = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the duplicate programmatic tear-off frame begins");
+    duplicate
+        .tear_off_root_current(ROOT, placement)
+        .expect("the duplicate programmatic tear-off stages structurally");
+    duplicate
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the duplicate frame retains the source presentation");
+    let mut duplicate_report = duplicate
+        .commit()
+        .expect("the duplicate tear-off rejection commits");
+
+    assert_eq!(
+        duplicate_report.inputs(),
+        &[
+            super::super::super::HostInputOutcome::ProductActionRejected(
+                crate::model::DockspaceActionRejection::Conflict,
+            )
+        ]
+    );
+    assert!(duplicate_report.take_native_effects().is_empty());
+    assert_eq!(session.version(), before);
+    assert_eq!(
+        session.view().item(ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert_eq!(
+        session.view().item(SECOND_ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+
+    drop(pending_request);
+}
+
+#[test]
+fn programmatic_native_root_tear_off_rejects_when_it_would_remove_the_recovery_host() {
+    let (mut session, _) = managed_tear_off_session();
+    let before = session.version();
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(920.0, 120.0, 420.0, 320.0)
+            .expect("the requested outer placement validates"),
+    );
+
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the programmatic tear-off frame begins");
+    frame
+        .tear_off_root_current(ROOT, placement)
+        .expect("the revision-bound root tear-off stages structurally");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the source presentation remains retained");
+    let mut report = frame
+        .commit()
+        .expect("the missing recovery-host rejection commits");
+
+    assert_eq!(
+        report.inputs(),
+        &[
+            super::super::super::HostInputOutcome::ProductActionRejected(
+                crate::model::DockspaceActionRejection::NativeUnavailable,
+            )
+        ]
+    );
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(session.version(), before);
+    assert_eq!(
+        session.view().item(ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert_eq!(
+        session.view().item(SECOND_ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+}
 
 #[test]
 fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
@@ -297,13 +457,53 @@ fn managed_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
     let tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
+    managed_session_from_workspace(builder.build().expect("the tear-off workspace validates"))
+}
+
+fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
+    const MAIN_ROOT: RootId = RootId::new(2);
+    const MAIN_ITEM: ItemId = ItemId::new(3);
+    const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
+
+    let mut builder = Workspace::builder();
+    let contained_tabs = builder.insert_node(Node::tabs([ITEM, SECOND_ITEM]));
+    let main_tabs = builder.insert_node(Node::tabs([MAIN_ITEM]));
+    builder.set_root(
+        ROOT,
+        RootRecord::new(contained_tabs).with_central(contained_tabs),
+    );
+    builder.set_root(
+        MAIN_ROOT,
+        RootRecord::new(main_tabs).with_central(main_tabs),
+    );
+    builder.set_surface(
+        SURFACE,
+        SurfacePresentation {
+            main_root: Some(MAIN_ROOT),
+            contained: vec![FLOATING],
+        },
+    );
+    builder.set_contained_floating(
+        FLOATING,
+        ContainedFloating::new(
+            ROOT,
+            LogicalRect::new(40.0, 50.0, 360.0, 280.0).expect("the contained root bounds validate"),
+        ),
+    );
+    managed_session_from_workspace(
+        builder
+            .build()
+            .expect("the programmatic tear-off workspace validates"),
+    )
+}
+
+fn managed_session_from_workspace(
+    workspace: Workspace,
+) -> (DockspaceSession, NativeSurfaceBinding) {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let mut session = DockspaceSession::from_backend_workspace(
-        builder.build().expect("the tear-off workspace validates"),
-        policy,
-    )
-    .expect("the tear-off session initializes");
+    let mut session = DockspaceSession::from_backend_workspace(workspace, policy)
+        .expect("the tear-off session initializes");
     session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native provider enrolls");

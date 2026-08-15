@@ -13,7 +13,7 @@ pub use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 pub(crate) use action::ProductAction;
 pub use action::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
-    DockspaceActionRejection, InvalidDockFraction, PreparedDockAction,
+    DockspaceActionRejection, InvalidDockFraction, NativeWindowPlacement, PreparedDockAction,
     PreparedDockActionAuthorityMismatch,
 };
 pub use layout::{

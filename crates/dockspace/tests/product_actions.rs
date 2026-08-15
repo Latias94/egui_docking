@@ -1,10 +1,10 @@
 use crate::close_plan::ClosePlanTarget;
-use crate::geometry::LogicalRect;
+use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
     DockspaceActionRejection, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout,
+    DockspaceRootLayout, DockspaceSurfaceLayout, NativeWindowPlacement,
 };
 use crate::runtime::{
     DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
@@ -243,6 +243,71 @@ fn prepared_root_docking_rejects_a_newer_workspace_revision() {
         ]
     ));
     assert!(session.view().root(SOURCE_ROOT).is_some());
+}
+
+#[test]
+fn prepared_native_root_tear_off_rejects_a_newer_workspace_revision() {
+    let mut session = session();
+    let expected = session.version();
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(900.0, 120.0, 420.0, 320.0).expect("native placement validates"),
+    );
+    let prepared = session.prepare_tear_off_root(CONTAINED_ROOT, placement);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("stale native tear-off frame begins");
+    frame
+        .select_item_current(SECOND)
+        .expect("selection advances the candidate revision");
+    frame
+        .submit_prepared_action(prepared)
+        .expect("stale native tear-off is structurally accepted");
+    let report = commit(frame);
+
+    assert_eq!(
+        report.inputs(),
+        &[
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            }),
+            HostInputOutcome::StaleRejected {
+                expected,
+                accepted: report.after(),
+            },
+        ]
+    );
+    assert!(session.view().root(CONTAINED_ROOT).is_some());
+}
+
+#[test]
+fn native_root_tear_off_reports_an_unavailable_host_without_native_enrollment() {
+    let mut policy = crate::policy::DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut session = session_with_policy(policy);
+    let before = session.version();
+    let placement = NativeWindowPlacement::new(
+        PhysicalRect::new(900.0, 120.0, 420.0, 320.0).expect("native placement validates"),
+    );
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("unsupported native tear-off frame begins");
+    frame
+        .tear_off_root_current(CONTAINED_ROOT, placement)
+        .expect("unsupported native tear-off stages structurally");
+    let report = commit(frame);
+
+    assert_eq!(report.before(), before);
+    assert_eq!(report.after(), before);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionRejected(
+            DockspaceActionRejection::NativeUnavailable,
+        )]
+    );
+    assert!(session.view().root(CONTAINED_ROOT).is_some());
 }
 
 #[test]

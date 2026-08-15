@@ -1669,79 +1669,40 @@ impl DockEngine {
         policy: &DockPolicySnapshot,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let source_surface = source_presentation.surface();
         let proposal = offer.proposal();
         if !matches!(proposal.placement(), NativePlacementProof::TearOff(_)) {
             return Ok(InteractionOutcome::Rejected(
                 InteractionRejection::TargetChanged,
             ));
         }
-        let recovery_anchor = self
-            .surface_recovery_target(source_surface)
-            .map(|target| target.anchor())
-            .or_else(|| self.root_recovery_anchors.get(&source_surface).copied());
-        let Some(recovery_anchor) = recovery_anchor else {
+        if !self
+            .viewport
+            .native_placement_is_current(proposal.placement())
+        {
             return Ok(InteractionOutcome::Rejected(
-                InteractionRejection::CommandRejected(CommandError::SurfaceLifecycleFrozen {
-                    surface: source_surface,
-                }),
+                InteractionRejection::TargetChanged,
             ));
-        };
-        let recovery_target =
-            SurfaceRecoveryTarget::with_converted_main(recovery_anchor, proposal.converted_main());
-        let staged = match self.stage_journal_workspace_command(cause, &command, policy)? {
-            Ok(staged) => staged,
-            Err(error) => {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::CommandRejected(error),
-                ));
-            }
-        };
-        let id = self.next_surface_recovery_obligation_id(self.last_input)?;
-        let obligation = match self.authorize_surface_recovery_obligation(
-            self.last_input,
-            id,
-            &staged.publication.workspace,
-            proposal.surface(),
-            recovery_target,
-            policy,
-        ) {
-            Ok(obligation) => obligation,
-            Err(error) => {
-                return Ok(InteractionOutcome::Rejected(
-                    InteractionRejection::CommandRejected(error),
-                ));
-            }
-        };
-        let prepared = PreparedNativeTearOff::new(
-            session,
+        }
+        let normalized = crate::frame::NativeCreateProposal::from_tear_off(proposal);
+        let request = match self.start_native_root_create(
+            cause,
+            focus_causal,
             source_presentation,
             payload,
-            self.version,
             command,
-            proposal.clone(),
-            obligation,
-            focus_causal,
+            normalized,
             pane_focus,
-        );
-        let request = self
-            .viewport
-            .start_native_create(prepared)
-            .map_err(|source| EngineError::Viewport {
-                input: self.last_input,
-                source,
-            })?;
-        let _ = self.viewport_focus.reserve_activation_causal(
-            request.saga(),
-            focus_causal,
-            ViewportActivationRequest::tear_off_committed(request.binding(), pane_focus),
-        );
-        self.presentation_identity.observe_native(
-            proposal.surface(),
-            proposal.root(),
-            proposal.converted_main().floating(),
-        );
-        self.last_surface_recovery_obligation = id;
+            policy,
+        )? {
+            Ok(request) => request,
+            Err(rejection) => {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(
+                        rejection.into_interaction_command_error(),
+                    ),
+                ));
+            }
+        };
         interaction_events.push(InteractionEvent::new_caused(
             cause,
             self.version,

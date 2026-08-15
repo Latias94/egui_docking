@@ -20,7 +20,7 @@ mod report;
 
 use native::NativePlatformError;
 
-pub use crate::model::{PreparedDockAction, WorkspaceVersion};
+pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
 pub use crate::presentation_config::DockPresentationConfig;
 pub use crate::transition::{ContentCloseRequestRejection, SurfaceCloseRequestRejection};
 pub use close::{
@@ -323,6 +323,16 @@ impl DockspaceSession {
         placement: DockPlacement,
     ) -> PreparedDockAction {
         self.engine.prepare_dock_root(root, placement)
+    }
+
+    /// Prepares one complete-root native tear-off against the current published version.
+    #[must_use]
+    pub const fn prepare_tear_off_root(
+        &self,
+        root: crate::ids::RootId,
+        placement: NativeWindowPlacement,
+    ) -> PreparedDockAction {
+        self.engine.prepare_tear_off_root(root, placement)
     }
 
     /// Prepares one revision-bound contained-floating action.
@@ -648,6 +658,28 @@ impl DockspaceHostFrame<'_> {
         placement: DockPlacement,
     ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::DockRoot {
+            expected: self.frame.view().version(),
+            root,
+            placement,
+        })
+    }
+
+    /// Requests a native child window for one complete root.
+    ///
+    /// Source content remains on its current surface until post-show staging
+    /// authorizes the ownership-transfer barrier. First-live presentation then
+    /// admits routing, focus, accessibility, and source-resource retirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn tear_off_root_current(
+        &mut self,
+        root: crate::ids::RootId,
+        placement: NativeWindowPlacement,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::TearOffRoot {
             expected: self.frame.view().version(),
             root,
             placement,

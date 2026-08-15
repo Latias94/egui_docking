@@ -1360,6 +1360,18 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::TearOffRoot {
+                expected,
+                root,
+                placement,
+            } => self.reduce_product_native_tear_off(
+                cause,
+                focus_causal,
+                *expected,
+                *root,
+                *placement,
+                tick_start.policy,
+            ),
             EngineInput::FloatItem {
                 expected,
                 item,

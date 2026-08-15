@@ -465,6 +465,15 @@ pub enum EngineInput {
         /// Item-, root-, or surface-centric destination.
         placement: crate::model::DockPlacement,
     },
+    /// Start one native child-window lifecycle for a complete root.
+    TearOffRoot {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable complete root retained until the ownership-transfer barrier.
+        root: RootId,
+        /// Explicit application-requested outer-window placement.
+        placement: crate::model::NativeWindowPlacement,
+    },
     /// Move one open item into a contained presentation on an existing surface.
     FloatItem {
         /// Exact workspace version from which this product action was derived.
@@ -741,6 +750,7 @@ impl EngineInput {
             | Self::OpenItem { .. }
             | Self::DockItem { .. }
             | Self::DockRoot { .. }
+            | Self::TearOffRoot { .. }
             | Self::FloatItem { .. }
             | Self::SetContainedRect { .. }
             | Self::RaiseContained { .. }

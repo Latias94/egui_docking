@@ -7,6 +7,7 @@ mod input;
 mod local_contained;
 mod local_response;
 mod native_admission;
+mod native_tear_off;
 mod pointer_contained;
 mod pointer_proof;
 mod pointer_session;
@@ -135,11 +136,11 @@ use crate::interaction::{
     FrozenTabListMenuRowClick, FrozenTabStripControlClick, GestureOwner, InteractionCancelReason,
     InteractionCounterError, InteractionDelivery, InteractionEvent, InteractionEventKind,
     InteractionOutcome, InteractionRejection, InteractionState, InteractionStatus,
-    JournalDragSourceGeometry, JournalDragThresholdOrigin, PaintAcknowledgement,
-    PreparedNativeTearOff, PreviewProof, PreviewResolutionStatus, PreviewVisual,
-    ResizeGestureAuthority, ResizeStart, SceneGestureContinuation, SceneGestureContinuationDraft,
-    SceneGestureContinuationSource, SceneGestureSession, ScrollApplication, ScrollReductionOutcome,
-    ScrollSessionId, ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
+    JournalDragSourceGeometry, JournalDragThresholdOrigin, PaintAcknowledgement, PreviewProof,
+    PreviewResolutionStatus, PreviewVisual, ResizeGestureAuthority, ResizeStart,
+    SceneGestureContinuation, SceneGestureContinuationDraft, SceneGestureContinuationSource,
+    SceneGestureSession, ScrollApplication, ScrollReductionOutcome, ScrollSessionId,
+    ScrollSuppressionReason, ScrollTerminationReason, WorkspaceDeliveryKind,
 };
 use crate::journal_presentation::{JournalPresentationSnapshot, JournalSurfacePresentation};
 use crate::model::{DockspaceLayout, DockspaceView, ProductAction};
@@ -3710,7 +3711,6 @@ impl DockEngine {
         })
     }
 
-    #[cfg(test)]
     fn native_create_reserves_root(&self, root: crate::ids::RootId) -> bool {
         self.viewport
             .native_create_sagas()

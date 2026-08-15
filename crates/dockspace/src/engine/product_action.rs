@@ -6,7 +6,7 @@ use crate::command::{
 use crate::ids::NodeId;
 use crate::model::{
     DockAnchor, DockEdge, DockPlacement, DockspaceActionOutcome, DockspaceActionRejection,
-    PreparedDockAction, PreparedDockActionAuthorityMismatch, ProductAction,
+    NativeWindowPlacement, PreparedDockAction, PreparedDockActionAuthorityMismatch, ProductAction,
 };
 use crate::workspace::WorkspaceIndex;
 
@@ -143,6 +143,16 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockRoot { root, placement })
     }
 
+    /// Prepares one complete-root native tear-off against the exact published version.
+    #[must_use]
+    pub const fn prepare_tear_off_root(
+        &self,
+        root: RootId,
+        placement: NativeWindowPlacement,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::TearOffRoot { root, placement })
+    }
+
     /// Prepares one contained-floating action against the exact published workspace version.
     #[must_use]
     pub const fn prepare_float_item(
@@ -205,6 +215,11 @@ impl DockEngine {
                 placement,
             },
             ProductAction::DockRoot { root, placement } => EngineInput::DockRoot {
+                expected,
+                root,
+                placement,
+            },
+            ProductAction::TearOffRoot { root, placement } => EngineInput::TearOffRoot {
                 expected,
                 root,
                 placement,
@@ -339,6 +354,7 @@ impl DockEngine {
             ProductAction::DockRoot { root, placement } => {
                 self.compile_product_root_move(root, placement)
             }
+            ProductAction::TearOffRoot { .. } => Err(DockspaceActionRejection::Conflict),
             ProductAction::FloatItem {
                 item,
                 surface,
@@ -453,23 +469,7 @@ impl DockEngine {
         root: RootId,
         placement: DockPlacement,
     ) -> Result<ProductActionPlan, DockspaceActionRejection> {
-        let record = self
-            .workspace
-            .root(root)
-            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
-        let source = self
-            .workspace
-            .capture_node_source(root, record.node)
-            .map_err(|_| DockspaceActionRejection::Conflict)?;
-        let items = self.workspace.collect_items_in_subtree(record.node);
-        if items.is_empty() {
-            return Err(DockspaceActionRejection::Conflict);
-        }
-        let payload = match self.workspace.node(record.node) {
-            Some(Node::Tabs { .. }) => MovePayload::Tabs(source),
-            Some(Node::Split { .. }) => MovePayload::Subtree(source),
-            None => return Err(DockspaceActionRejection::Conflict),
-        };
+        let (_, payload, items) = self.capture_product_root_payload(root)?;
 
         let DockPlacement::Main(surface) = placement else {
             let (target, target_root) = self.capture_product_target(placement)?;
@@ -508,7 +508,31 @@ impl DockEngine {
         })
     }
 
-    fn capture_complete_root_payload(
+    pub(super) fn capture_product_root_payload(
+        &self,
+        root: RootId,
+    ) -> Result<(NodeSource, MovePayload, Vec<ItemId>), DockspaceActionRejection> {
+        let record = self
+            .workspace
+            .root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
+        let source = self
+            .workspace
+            .capture_node_source(root, record.node)
+            .map_err(|_| DockspaceActionRejection::Conflict)?;
+        let items = self.workspace.collect_items_in_subtree(record.node);
+        if items.is_empty() {
+            return Err(DockspaceActionRejection::Conflict);
+        }
+        let payload = match self.workspace.node(record.node) {
+            Some(Node::Tabs { .. }) => MovePayload::Tabs(source.clone()),
+            Some(Node::Split { .. }) => MovePayload::Subtree(source.clone()),
+            None => return Err(DockspaceActionRejection::Conflict),
+        };
+        Ok((source, payload, items))
+    }
+
+    pub(super) fn capture_complete_root_payload(
         &self,
         payload: &MovePayload,
     ) -> Result<Option<NodeSource>, DockspaceActionRejection> {
@@ -989,7 +1013,7 @@ fn command_fraction(fraction: crate::model::DockFraction) -> CommandDockFraction
         .expect("product dock fractions are validated at construction")
 }
 
-fn product_command_rejection(
+pub(super) fn product_command_rejection(
     action: ProductAction,
     error: &CommandError,
 ) -> Result<DockspaceActionRejection, EngineError> {

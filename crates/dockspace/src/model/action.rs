@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::geometry::LogicalRect;
+use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::ids::{EngineAuthorityDomainId, ItemId, RootId, SurfaceId};
 
 use super::WorkspaceVersion;
@@ -96,6 +96,30 @@ pub enum DockPlacement {
     Main(SurfaceId),
 }
 
+/// Explicit outer-window placement for one programmatic native tear-off.
+///
+/// This is an application request rather than observed platform authority. The
+/// native host may reject or adjust it, and must report the resulting exact
+/// window facts through the normal managed-native lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeWindowPlacement {
+    outer_rect: PhysicalRect,
+}
+
+impl NativeWindowPlacement {
+    /// Creates one native-window placement request from validated physical bounds.
+    #[must_use]
+    pub const fn new(outer_rect: PhysicalRect) -> Self {
+        Self { outer_rect }
+    }
+
+    /// Returns the requested desktop-physical outer bounds.
+    #[must_use]
+    pub const fn outer_rect(self) -> PhysicalRect {
+        self.outer_rect
+    }
+}
+
 /// Product-visible result of one accepted item action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DockspaceActionOutcome {
@@ -175,6 +199,17 @@ pub enum DockspaceActionOutcome {
         /// Whether stacking order changed.
         changed: bool,
     },
+    /// A complete root entered the native create lifecycle without moving its content yet.
+    NativeRootTearOffRequested {
+        /// Stable root reserved for transfer after post-show staging.
+        root: RootId,
+        /// Surface currently presenting the root.
+        source_surface: SurfaceId,
+        /// Fresh logical surface reserved for the native child.
+        target_surface: SurfaceId,
+        /// Stable items retained by the pending root transfer.
+        items: Vec<ItemId>,
+    },
 }
 
 impl DockspaceActionOutcome {
@@ -189,7 +224,7 @@ impl DockspaceActionOutcome {
             | Self::ContainedBoundsUpdated { changed, .. }
             | Self::ContainedRaised { changed, .. } => *changed,
             Self::Opened { .. } => true,
-            Self::Existing { .. } => false,
+            Self::Existing { .. } | Self::NativeRootTearOffRequested { .. } => false,
         }
     }
 }
@@ -242,6 +277,15 @@ pub enum DockspaceActionRejection {
     /// No fresh stable presentation identity remains available.
     #[error("stable presentation identity space is exhausted")]
     IdentityExhausted,
+    /// The managed native host cannot currently create a child surface.
+    #[error("native child-window creation is unavailable")]
+    NativeUnavailable,
+    /// The source surface has no exact currently presented output.
+    #[error("surface {surface} has no current presented output")]
+    PresentationUnavailable {
+        /// Source surface lacking exact presentation authority.
+        surface: SurfaceId,
+    },
 }
 
 /// Session- and revision-bound product docking action.
@@ -304,6 +348,10 @@ pub(crate) enum ProductAction {
     DockRoot {
         root: RootId,
         placement: DockPlacement,
+    },
+    TearOffRoot {
+        root: RootId,
+        placement: NativeWindowPlacement,
     },
     FloatItem {
         item: ItemId,

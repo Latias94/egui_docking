@@ -1,18 +1,21 @@
 use std::collections::BTreeMap;
 
+use crate::command::{MovePayload, WorkspaceCommand};
 use crate::effect::{EffectId, EffectInvalidation, EffectPhase, EffectRecord, PlatformEffect};
-use crate::ids::{NativeCreateSagaId, SurfaceId};
-use crate::interaction::PreparedNativeTearOff;
+use crate::geometry::PhysicalRect;
+use crate::ids::{NativeCreateSagaId, RootId, SurfaceId, WorkspaceEpoch};
 use crate::platform::WindowPresentationState;
 use crate::platform_provider::PlatformObservationLease;
 use crate::presentation_observation::{
     NativeStagingOwner, NativeStagingPresentation, NativeStagingResourceDescriptor,
-    NativeStagingResourceId, PresentedNativeStagingPresentation,
+    NativeStagingResourceId, PresentedNativeStagingPresentation, PresentedSurfaceAuthority,
 };
+use crate::surface_recovery::{ConvertedMainRecovery, SurfaceRecoveryObligation};
 use crate::viewport::{
     CoordinateGeneration, CoordinateObservationGeneration, InventoryGeneration,
     PresentationObservationGeneration, ViewportBinding, ViewportRole,
 };
+use crate::viewport_focus::FocusCausalStamp;
 use crate::viewport_registry::{ViewportLifecycle, ViewportRecord};
 
 use super::binding_cleanup::{BindingCleanupPurpose, BindingCleanupRequest};
@@ -23,6 +26,118 @@ use super::{
     NativeVisibleProof, RecoveryPendingStatus, ViewportCoordinator, ViewportCoordinatorError,
     ViewportLifecycleAction,
 };
+
+/// Placement and recovery identities shared by every native create entry point.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NativeCreateProposal {
+    surface: SurfaceId,
+    physical_placement: PhysicalRect,
+    converted_main: ConvertedMainRecovery,
+}
+
+impl NativeCreateProposal {
+    pub(crate) const fn new(
+        surface: SurfaceId,
+        physical_placement: PhysicalRect,
+        converted_main: ConvertedMainRecovery,
+    ) -> Self {
+        Self {
+            surface,
+            physical_placement,
+            converted_main,
+        }
+    }
+
+    pub(crate) fn from_tear_off(proposal: &crate::intent::NativeTearOffProposal) -> Self {
+        Self::new(
+            proposal.surface(),
+            proposal.physical_placement(),
+            proposal.converted_main(),
+        )
+    }
+
+    pub(crate) const fn surface(&self) -> SurfaceId {
+        self.surface
+    }
+
+    pub(crate) const fn root(&self) -> RootId {
+        self.converted_main.source_root()
+    }
+
+    pub(crate) const fn physical_placement(&self) -> PhysicalRect {
+        self.physical_placement
+    }
+
+    pub(crate) const fn converted_main(&self) -> ConvertedMainRecovery {
+        self.converted_main
+    }
+}
+
+/// Frozen source, mutation, recovery, and focus facts for one native create saga.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedNativeCreate {
+    source_presentation: PresentedSurfaceAuthority,
+    payload: MovePayload,
+    source_epoch: WorkspaceEpoch,
+    command: WorkspaceCommand,
+    proposal: NativeCreateProposal,
+    recovery_obligation: SurfaceRecoveryObligation,
+    focus_causal: FocusCausalStamp,
+}
+
+impl PreparedNativeCreate {
+    pub(crate) const fn new(
+        source_presentation: PresentedSurfaceAuthority,
+        payload: MovePayload,
+        source_epoch: WorkspaceEpoch,
+        command: WorkspaceCommand,
+        proposal: NativeCreateProposal,
+        recovery_obligation: SurfaceRecoveryObligation,
+        focus_causal: FocusCausalStamp,
+    ) -> Self {
+        Self {
+            source_presentation,
+            payload,
+            source_epoch,
+            command,
+            proposal,
+            recovery_obligation,
+            focus_causal,
+        }
+    }
+
+    pub(crate) const fn source_surface(&self) -> SurfaceId {
+        self.source_presentation.surface()
+    }
+
+    pub(crate) const fn source_presentation(&self) -> PresentedSurfaceAuthority {
+        self.source_presentation
+    }
+
+    pub(crate) const fn payload(&self) -> &MovePayload {
+        &self.payload
+    }
+
+    pub(crate) const fn source_epoch(&self) -> WorkspaceEpoch {
+        self.source_epoch
+    }
+
+    pub(crate) const fn command(&self) -> &WorkspaceCommand {
+        &self.command
+    }
+
+    pub(crate) const fn proposal(&self) -> &NativeCreateProposal {
+        &self.proposal
+    }
+
+    pub(crate) const fn recovery_obligation(&self) -> &SurfaceRecoveryObligation {
+        &self.recovery_obligation
+    }
+
+    pub(crate) const fn focus_causal(&self) -> FocusCausalStamp {
+        self.focus_causal
+    }
+}
 
 /// Queryable owner-specific phase of one native create saga.
 ///
@@ -297,7 +412,7 @@ pub struct NativeCreateSaga {
     pub(super) binding: ViewportBinding,
     pub(super) create: EffectId,
     pub(super) resource: NativeStagingResourceId,
-    pub(super) prepared: PreparedNativeTearOff,
+    pub(super) prepared: PreparedNativeCreate,
     pub(super) phase: NativeCreatePhase,
 }
 
@@ -376,7 +491,7 @@ impl NativeCreateSaga {
     }
 
     #[must_use]
-    pub const fn prepared(&self) -> &PreparedNativeTearOff {
+    pub(crate) const fn prepared(&self) -> &PreparedNativeCreate {
         &self.prepared
     }
 
@@ -390,20 +505,13 @@ impl ViewportCoordinator {
     /// Starts a non-idempotent native create saga without moving source content.
     pub(crate) fn start_native_create(
         &mut self,
-        prepared: PreparedNativeTearOff,
+        prepared: PreparedNativeCreate,
     ) -> Result<NativeCreateRequest, ViewportCoordinatorError> {
         let capability = self.native_tear_off_capability();
         if !capability.is_supported() {
             return Err(ViewportCoordinatorError::NativeCapabilityUnavailable { capability });
         }
         let proposal = prepared.proposal();
-        if !self.native_placement_is_current(proposal.placement()) {
-            return Err(ViewportCoordinatorError::StalePlacementProof);
-        }
-        if proposal.converted_main().source_root() != proposal.root() {
-            return Err(ViewportCoordinatorError::RecoveryRootMismatch);
-        }
-
         let mut candidate = self.clone();
         let saga = candidate
             .native_creates
@@ -423,7 +531,7 @@ impl ViewportCoordinator {
         let binding = candidate
             .registry
             .reserve(
-                prepared.source_version().epoch(),
+                prepared.source_epoch(),
                 proposal.surface(),
                 ViewportRole::Child,
             )

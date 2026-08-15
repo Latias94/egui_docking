@@ -24,6 +24,7 @@ pub use self::binding_cleanup::{
 pub use self::native_bringup::{NativeVisibilityProof, NativeVisibleProof};
 use self::native_create::NativeCreateState;
 pub use self::native_create::{NativeCreatePhase, NativeCreateRequest, NativeCreateSaga};
+pub(crate) use self::native_create::{NativeCreateProposal, PreparedNativeCreate};
 use self::native_staging_resource::{
     NativeStagingResourceConservationError, NativeStagingResourceLedger,
     NativeStagingResourceLedgerError, NativeStagingResourceOwner,
@@ -54,7 +55,6 @@ use crate::geometry::LogicalRect;
 pub use crate::ids::NativeCreateSagaId;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId, WorkspaceEpoch};
 use crate::intent::{NativePlacementProof, PointerId};
-use crate::interaction::PreparedNativeTearOff;
 use crate::platform::{
     CapabilityRosterObservationStream, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformSnapshot, WindowCloseObservation, WindowCloseState, WindowInputObservation,
@@ -135,7 +135,7 @@ enum DestroyedBindingDisposition {
 pub(crate) enum ViewportLifecycleAction {
     TransferNativeCreate {
         saga: NativeCreateSagaId,
-        prepared: Box<PreparedNativeTearOff>,
+        prepared: Box<native_create::PreparedNativeCreate>,
         proof: NativeVisibleProof,
     },
     SurfaceDestroyed {
