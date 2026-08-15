@@ -59,6 +59,16 @@ fn persistent_session_with_first_item() -> (DockspaceSession, ItemId) {
 }
 
 #[test]
+fn candidate_frame_resolves_session_owned_external_keys() {
+    let (mut session, first) = persistent_session_with_first_item();
+    let frame = session
+        .begin_host_frame()
+        .expect("the candidate frame begins");
+
+    assert_eq!(frame.external_key_for_item(first), Some("pane:first"));
+}
+
+#[test]
 fn restore_keeps_document_owned_item_ids_when_the_application_recognizes_keys() {
     let mut bootstrap = DockspaceDocumentBootstrap::new(DOCUMENT);
     let first = bootstrap.ensure_item("pane:first").expect("first item");

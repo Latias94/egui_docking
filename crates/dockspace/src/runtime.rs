@@ -528,6 +528,17 @@ impl DockspaceHostFrame<'_> {
         DockspaceView::new(self.frame.view().workspace())
     }
 
+    /// Resolves one stable item identity to its session-owned external key.
+    ///
+    /// This is available while a candidate frame is open so an adapter can build
+    /// its immutable render resources before the candidate is committed. The
+    /// mapping remains owned by the document-bound session.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn external_key_for_item(&self, item: crate::ids::ItemId) -> Option<&str> {
+        self.session.external_key_for_item(item)
+    }
+
     /// Returns the post-input candidate workspace visible inside this frame.
     #[cfg(any(feature = "backend", test))]
     #[doc(hidden)]
