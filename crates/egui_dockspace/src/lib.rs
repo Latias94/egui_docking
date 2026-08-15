@@ -36,7 +36,8 @@ pub use dockspace::model::{
 };
 pub use dockspace::runtime::{
     DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose,
-    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseResolution,
+    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
+    DockspaceCloseResolution, PreparedCloseRequest,
 };
 #[cfg(feature = "serde")]
 pub use dockspace::runtime::{
@@ -48,8 +49,9 @@ pub use facade::Dockspace;
 pub use pane::{PaneFocusState, PaneView};
 pub use response::{
     DockspaceActionResult, DockspaceActionStatus, DockspaceCapability, DockspaceCloseItem,
-    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRequest, DockspaceCloseResult,
-    DockspaceInteractionCapabilities, DockspaceMutation, DockspaceResponse,
-    DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus, DockspaceUnavailableReason,
+    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRequest, DockspaceCloseRequestResult,
+    DockspaceCloseRequestStatus, DockspaceCloseResult, DockspaceInteractionCapabilities,
+    DockspaceMutation, DockspaceResponse, DockspaceSurfaceCommitStatus, DockspaceSurfaceStatus,
+    DockspaceUnavailableReason,
 };
 pub use style::{DockStyle, DockStyleError};

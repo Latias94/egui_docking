@@ -14,7 +14,8 @@ use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::runtime::{
-    DockspaceSession, HostFrameReport, SurfaceUnavailableReason, WorkspaceVersion,
+    DockspaceSession, HostFrameReport, PreparedCloseRequest, SurfaceUnavailableReason,
+    WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};
@@ -27,7 +28,8 @@ use crate::product_render;
 #[cfg(feature = "serde")]
 use crate::response::DockspaceMutation;
 use crate::response::{
-    DockspaceActionResult, DockspaceCloseResult, DockspaceResponse, DockspaceSurfaceStatus,
+    DockspaceActionResult, DockspaceCloseRequestResult, DockspaceCloseResult, DockspaceResponse,
+    DockspaceSurfaceStatus,
 };
 use crate::style::DockStyle;
 
@@ -291,6 +293,16 @@ impl Dockspace {
         self.session.prepare_bring_contained_into_view(item)
     }
 
+    /// Prepares a revision-bound item close request.
+    pub const fn prepare_close_item(&self, item: ItemId) -> PreparedCloseRequest {
+        self.session.prepare_close_item(item)
+    }
+
+    /// Prepares a revision-bound complete-root close request.
+    pub const fn prepare_close_root(&self, root: RootId) -> PreparedCloseRequest {
+        self.session.prepare_close_root(root)
+    }
+
     /// Submits one core-issued product action against its source revision.
     ///
     /// # Errors
@@ -431,6 +443,59 @@ impl Dockspace {
         item: ItemId,
     ) -> Result<DockspaceActionResult, DockspaceError> {
         self.submit_prepared_action(self.prepare_bring_contained_into_view(item))
+    }
+
+    /// Submits one session- and revision-bound programmatic close request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request belongs to another session or the
+    /// atomic host frame cannot be committed. Stale targets and policy
+    /// rejections are returned in [`DockspaceCloseRequestResult`].
+    pub fn submit_prepared_close_request(
+        &mut self,
+        prepared: PreparedCloseRequest,
+    ) -> Result<DockspaceCloseRequestResult, DockspaceError> {
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .submit_prepared_close_request(prepared)
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        DockspaceCloseRequestResult::from_runtime_report(&report)
+            .ok_or(DockspaceErrorSource::ApplicationOutcomeUnavailable {
+                operation: "close request",
+            })
+            .map_err(Into::into)
+    }
+
+    /// Opens or reuses one close plan for an item at the current revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic request frame cannot be committed.
+    pub fn request_close_item_current(
+        &mut self,
+        item: ItemId,
+    ) -> Result<DockspaceCloseRequestResult, DockspaceError> {
+        self.submit_prepared_close_request(self.prepare_close_item(item))
+    }
+
+    /// Opens or reuses one close plan for a complete root at the current revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic request frame cannot be committed.
+    pub fn request_close_root_current(
+        &mut self,
+        root: RootId,
+    ) -> Result<DockspaceCloseRequestResult, DockspaceError> {
+        self.submit_prepared_close_request(self.prepare_close_root(root))
     }
 
     /// Resolves one initial pane-close decision.

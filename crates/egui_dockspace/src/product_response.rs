@@ -5,10 +5,12 @@ use dockspace::model::{
 };
 pub use dockspace::runtime::{
     DockspaceCloseItem, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePlan,
-    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseResolution,
+    DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
+    DockspaceCloseResolution,
 };
 use dockspace::runtime::{
-    DockspaceInteractionError, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
+    DockspaceInteractionError, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of one atomic docking publication.
@@ -122,7 +124,7 @@ impl DockspaceActionResult {
     }
 }
 
-/// One close request emitted by a local egui action.
+/// One product close request opened or reused by an interaction or application action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockspaceCloseRequest {
     plan: DockspaceClosePlan,
@@ -130,7 +132,7 @@ pub struct DockspaceCloseRequest {
 }
 
 impl DockspaceCloseRequest {
-    fn new(plan: &DockspaceClosePlan, reused: bool) -> Self {
+    pub(crate) fn new(plan: &DockspaceClosePlan, reused: bool) -> Self {
         Self {
             plan: plan.clone(),
             reused,
@@ -143,10 +145,73 @@ impl DockspaceCloseRequest {
         &self.plan
     }
 
-    /// Returns whether this interaction reused an unresolved plan.
+    /// Returns whether this request reused an unresolved plan.
     #[must_use]
     pub const fn reused(&self) -> bool {
         self.reused
+    }
+}
+
+/// Product-level terminal status of one programmatic close request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DockspaceCloseRequestStatus {
+    /// The request opened or reused one core-owned close plan.
+    Requested(DockspaceCloseRequest),
+    /// Current policy or topology rejected the item or root target.
+    Rejected(DockspaceCloseRequestRejection),
+    /// The request was prepared from an older workspace revision.
+    Stale {
+        /// Version carried by the prepared request.
+        expected: WorkspaceVersion,
+        /// Version accepted by the reducer boundary.
+        accepted: WorkspaceVersion,
+    },
+}
+
+/// Atomic publication plus one exact programmatic close-request result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockspaceCloseRequestResult {
+    mutation: DockspaceMutation,
+    status: DockspaceCloseRequestStatus,
+}
+
+impl DockspaceCloseRequestResult {
+    pub(crate) fn from_runtime_report(report: &HostFrameReport) -> Option<Self> {
+        let status = report.inputs().iter().find_map(|input| match input {
+            HostInputOutcome::CloseRequested {
+                plan,
+                reused,
+                origin: HostCloseRequestOrigin::Application,
+            } => Some(DockspaceCloseRequestStatus::Requested(
+                DockspaceCloseRequest::new(plan, *reused),
+            )),
+            HostInputOutcome::CloseRejected(reason) => {
+                Some(DockspaceCloseRequestStatus::Rejected(*reason))
+            }
+            HostInputOutcome::StaleRejected { expected, accepted } => {
+                Some(DockspaceCloseRequestStatus::Stale {
+                    expected: *expected,
+                    accepted: *accepted,
+                })
+            }
+            _ => None,
+        })?;
+        Some(Self {
+            mutation: DockspaceMutation::from_runtime_report(report),
+            status,
+        })
+    }
+
+    /// Returns the atomic publication summary.
+    #[must_use]
+    pub const fn mutation(&self) -> &DockspaceMutation {
+        &self.mutation
+    }
+
+    /// Returns the exact request status.
+    #[must_use]
+    pub const fn status(&self) -> &DockspaceCloseRequestStatus {
+        &self.status
     }
 }
 
@@ -359,9 +424,11 @@ impl DockspaceResponse {
             .inputs()
             .iter()
             .filter_map(|input| match input {
-                HostInputOutcome::CloseRequested { plan, reused, .. } => {
-                    Some(DockspaceCloseRequest::new(plan, *reused))
-                }
+                HostInputOutcome::CloseRequested {
+                    plan,
+                    reused,
+                    origin: HostCloseRequestOrigin::Interaction,
+                } => Some(DockspaceCloseRequest::new(plan, *reused)),
                 _ => None,
             })
             .collect();

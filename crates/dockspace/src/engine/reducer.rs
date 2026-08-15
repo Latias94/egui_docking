@@ -1425,7 +1425,6 @@ impl DockEngine {
                     input.sequence,
                     *expected,
                     *target,
-                    *application_base,
                     tick_start.policy,
                 ),
             EngineInput::RequestSceneClose {

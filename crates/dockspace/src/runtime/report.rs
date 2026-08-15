@@ -3,10 +3,11 @@
 use std::collections::BTreeSet;
 
 use super::{
-    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection, DockspaceCloseResolution,
-    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommit,
-    NativeEffectRequest, NativeSurfaceBinding, NativeSurfaceCloseRequest,
-    PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
+    DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, HostCloseRequestOrigin,
+    HostFrameReport, HostInputOutcome, HostSurfaceCommit, NativeEffectRequest,
+    NativeSurfaceBinding, NativeSurfaceCloseRequest, PaintedNativeStagingOutput,
+    PaintedSurfaceOutput, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -51,10 +52,9 @@ impl HostFrameReport {
                     })
                 }
                 InputOutcome::ContentCloseRejected { target, reason, .. } => {
-                    Some(HostInputOutcome::CloseRejected {
-                        target: *target,
-                        reason: reason.clone(),
-                    })
+                    Some(HostInputOutcome::CloseRejected(
+                        DockspaceCloseRequestRejection::from_core(*target, reason),
+                    ))
                 }
                 InputOutcome::CloseDecisionProcessed {
                     resolution,

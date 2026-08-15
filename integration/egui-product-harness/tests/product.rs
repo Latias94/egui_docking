@@ -1,8 +1,9 @@
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
-    CloseDecision, Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceAxis,
-    DockspaceCloseRequest, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    CloseDecision, ClosePlanTarget, Dockspace, DockspaceActionOutcome, DockspaceActionStatus,
+    DockspaceAxis, DockspaceCloseRequest, DockspaceCloseRequestRejection,
+    DockspaceCloseRequestStatus, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
     DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
     PaneView, RootId, SurfaceId,
 };
@@ -661,6 +662,76 @@ fn default_features_close_request_can_be_resolved() {
         .resolve_close(request.plan().request(), item.token(), CloseDecision::Allow)
         .expect("the close decision commits");
     assert!(dockspace.view().item(SECOND).is_none());
+}
+
+#[test]
+fn default_features_programmatic_root_close_uses_the_product_facade() {
+    let mut root_dockspace = Dockspace::builder("product-programmatic-root-close", layout())
+        .build()
+        .expect("the root-close product facade initializes");
+    let root_request = root_dockspace
+        .request_close_root_current(ROOT)
+        .expect("the root close request is reduced");
+    let DockspaceCloseRequestStatus::Requested(request) = root_request.status() else {
+        panic!("the root close request must open a plan")
+    };
+    assert_eq!(
+        request.plan().target(),
+        egui_dockspace::ClosePlanTarget::Root { root: ROOT }
+    );
+    for item in request.plan().items() {
+        root_dockspace
+            .resolve_close(request.plan().request(), item.token(), CloseDecision::Allow)
+            .expect("each root close decision commits");
+    }
+    assert!(root_dockspace.view().root(ROOT).is_none());
+}
+
+#[test]
+fn default_features_programmatic_close_reports_stale_and_root_rejection() {
+    let mut stale_dockspace = Dockspace::builder("product-programmatic-close-stale", layout())
+        .build()
+        .expect("the stale-close product facade initializes");
+    let prepared = stale_dockspace.prepare_close_item(FIRST);
+    let expected = prepared.expected_version();
+    let selection = stale_dockspace
+        .select_item_current(SECOND)
+        .expect("selection advances the product revision");
+    assert!(matches!(
+        selection.status(),
+        DockspaceActionStatus::Applied(DockspaceActionOutcome::Selected {
+            item: SECOND,
+            changed: true,
+        })
+    ));
+    let stale = stale_dockspace
+        .submit_prepared_close_request(prepared)
+        .expect("the stale close request is reduced");
+    assert!(matches!(
+        stale.status(),
+        DockspaceCloseRequestStatus::Stale {
+            expected: actual_expected,
+            accepted,
+        } if *actual_expected == expected && *accepted == stale.mutation().after()
+    ));
+
+    let mut policy = dockspace::policy::DockPolicy::default();
+    policy.set_close_capability(dockspace::policy::CloseCapability::Disabled);
+    let mut disabled_dockspace =
+        Dockspace::builder("product-programmatic-root-close-disabled", layout())
+            .policy(policy)
+            .build()
+            .expect("the disabled-close product facade initializes");
+    let rejected = disabled_dockspace
+        .request_close_root_current(ROOT)
+        .expect("the disabled root close request is reduced");
+    assert_eq!(
+        rejected.status(),
+        &DockspaceCloseRequestStatus::Rejected(DockspaceCloseRequestRejection::ItemCloseDisabled {
+            target: ClosePlanTarget::Root { root: ROOT },
+            item: FIRST,
+        })
+    );
 }
 
 #[test]

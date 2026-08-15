@@ -997,7 +997,7 @@ fn ogc_02_merge_and_close_restore_the_previous_target_selection_atomically() {
 
     let request = host.run(|frame| {
         frame
-            .request_close_item(X)
+            .request_close_item_current(X)
             .expect("the close request must append");
     });
     let plan = match request.inputs() {

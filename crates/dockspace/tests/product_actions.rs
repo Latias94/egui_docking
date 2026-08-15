@@ -7,8 +7,9 @@ use crate::model::{
     DockspaceRootLayout, DockspaceSurfaceLayout, NativeWindowPlacement,
 };
 use crate::runtime::{
-    DockspaceHostFrame, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
-    HostFrameReport, HostInputOutcome, SurfaceUnavailableReason,
+    DockspaceCloseRequestRejection, DockspaceHostFrame, DockspaceRuntimeErrorKind,
+    DockspaceSession, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
+    SurfaceUnavailableReason,
 };
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
@@ -1105,14 +1106,48 @@ fn product_action_policy_rejection_rolls_back_without_leaking_internal_errors() 
 }
 
 #[test]
-fn product_close_request_exposes_only_stable_item_identity() {
-    let mut session = session();
-    let mut frame = session.begin_host_frame().expect("close frame begins");
-    frame
-        .request_close_item(FIRST)
-        .expect("item close request stages");
-    let report = commit(frame);
+fn product_close_requests_are_revision_and_session_bound() {
+    let mut primary = session();
+    let expected = primary.version();
+    let prepared = primary.prepare_close_root(MAIN_ROOT);
 
+    let mut frame = primary.begin_host_frame().expect("close frame begins");
+    frame
+        .select_item_current(SECOND)
+        .expect("selection advances the candidate revision");
+    frame
+        .submit_prepared_close_request(prepared)
+        .expect("stale close request stages structurally");
+    let report = commit(frame);
+    assert!(matches!(
+        report.inputs(),
+        [
+            HostInputOutcome::ProductActionApplied(DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            }),
+            HostInputOutcome::StaleRejected {
+                expected: stale,
+                accepted,
+            },
+        ] if *stale == expected && *accepted == report.after()
+    ));
+
+    let foreign = primary.prepare_close_item(FIRST);
+    let mut other = session();
+    let mut frame = other
+        .begin_host_frame()
+        .expect("foreign close frame begins");
+    let error = frame
+        .submit_prepared_close_request(foreign)
+        .expect_err("a prepared close request cannot cross sessions");
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::OperationConflict);
+
+    let mut frame = primary.begin_host_frame().expect("root close frame begins");
+    frame
+        .request_close_root_current(MAIN_ROOT)
+        .expect("root close request stages");
+    let report = commit(frame);
     let [
         HostInputOutcome::CloseRequested {
             plan,
@@ -1125,5 +1160,27 @@ fn product_close_request_exposes_only_stable_item_identity() {
     };
     assert!(!reused);
     assert_eq!(*origin, HostCloseRequestOrigin::Application);
-    assert_eq!(plan.target(), ClosePlanTarget::Item { item: FIRST });
+    assert_eq!(plan.target(), ClosePlanTarget::Root { root: MAIN_ROOT });
+
+    let mut policy = crate::policy::DockPolicy::default();
+    policy.set_close_capability(crate::policy::CloseCapability::Disabled);
+    let mut disabled = session_with_policy(policy);
+    let mut frame = disabled
+        .begin_host_frame()
+        .expect("disabled close frame begins");
+    frame
+        .request_close_root_current(MAIN_ROOT)
+        .expect("disabled close request stages structurally");
+    let report = commit(frame);
+    let [HostInputOutcome::CloseRejected(reason)] = report.inputs() else {
+        panic!("disabled close must return one stable rejection")
+    };
+    assert_eq!(
+        *reason,
+        DockspaceCloseRequestRejection::ItemCloseDisabled {
+            target: ClosePlanTarget::Root { root: MAIN_ROOT },
+            item: FIRST,
+        }
+    );
+    assert_eq!(reason.target(), ClosePlanTarget::Root { root: MAIN_ROOT });
 }

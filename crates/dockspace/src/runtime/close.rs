@@ -4,12 +4,173 @@
 //! This module projects only the stable identities, decisions, and phases an
 //! application host can act on.
 
+use std::fmt;
+
+use thiserror::Error;
+
 use crate::close_plan::{
     CloseDecisionToken, CloseInertReason, CloseItemDecisionState, ClosePlan, ClosePlanPhase,
     ClosePlanTarget, CloseRequestId, CloseResolutionOutcome, DeferredCloseToken,
 };
-use crate::ids::ItemId;
+use crate::command::ContentCloseTarget;
+use crate::engine::EngineInput;
+use crate::ids::{EngineAuthorityDomainId, ItemId, RootId};
+use crate::model::WorkspaceVersion;
 use crate::policy::CloseCapability;
+use crate::transition::ContentCloseRequestRejection;
+
+pub(crate) const fn product_close_target(target: ContentCloseTarget) -> ClosePlanTarget {
+    match target {
+        ContentCloseTarget::Item(item) => ClosePlanTarget::Item { item },
+        ContentCloseTarget::Root(root) => ClosePlanTarget::Root { root },
+    }
+}
+
+/// Stable fail-closed reason for rejecting a programmatic close request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub enum DockspaceCloseRequestRejection {
+    /// The requested item is not currently open.
+    #[error("item {item} is not open")]
+    ItemUnavailable {
+        /// Missing item.
+        item: ItemId,
+    },
+    /// The requested root is not currently present.
+    #[error("root {root} is unavailable")]
+    RootUnavailable {
+        /// Missing root.
+        root: RootId,
+    },
+    /// The root contains no application-owned items to close.
+    #[error("root {root} contains no closeable items")]
+    RootEmpty {
+        /// Empty root.
+        root: RootId,
+    },
+    /// Current policy explicitly disables close for one item.
+    #[error("item {item} prevents closing the requested target")]
+    ItemCloseDisabled {
+        /// Stable item or root requested by the caller.
+        target: ClosePlanTarget,
+        /// Non-closeable item.
+        item: ItemId,
+    },
+    /// Current topology conflicts with the requested close target.
+    #[error("current docking topology conflicts with the close request")]
+    Conflict {
+        /// Stable requested target.
+        target: ClosePlanTarget,
+    },
+    /// Core could not capture a valid close source because an invariant failed.
+    #[error("dockspace could not capture the close request")]
+    Internal {
+        /// Stable requested target.
+        target: ClosePlanTarget,
+    },
+}
+
+impl DockspaceCloseRequestRejection {
+    pub(crate) const fn from_core(
+        target: ContentCloseTarget,
+        reason: &ContentCloseRequestRejection,
+    ) -> Self {
+        let target = product_close_target(target);
+        match reason {
+            ContentCloseRequestRejection::ItemUnavailable { item } => {
+                Self::ItemUnavailable { item: *item }
+            }
+            ContentCloseRequestRejection::RootUnavailable { root } => {
+                Self::RootUnavailable { root: *root }
+            }
+            ContentCloseRequestRejection::RootEmpty { root } => Self::RootEmpty { root: *root },
+            ContentCloseRequestRejection::ItemCloseDisabled { item } => Self::ItemCloseDisabled {
+                target,
+                item: *item,
+            },
+            ContentCloseRequestRejection::SourceUnavailable(error) => {
+                if error.is_expected_rejection() {
+                    Self::Conflict { target }
+                } else {
+                    Self::Internal { target }
+                }
+            }
+        }
+    }
+
+    /// Returns the stable item or root rejected by the request.
+    #[must_use]
+    pub const fn target(self) -> ClosePlanTarget {
+        match self {
+            Self::ItemUnavailable { item } => ClosePlanTarget::Item { item },
+            Self::ItemCloseDisabled { target, .. } => target,
+            Self::RootUnavailable { root } | Self::RootEmpty { root } => {
+                ClosePlanTarget::Root { root }
+            }
+            Self::Conflict { target } | Self::Internal { target } => target,
+        }
+    }
+}
+
+/// Session- and revision-bound programmatic content-close request.
+#[must_use = "a prepared close request must be submitted or deliberately discarded"]
+pub struct PreparedCloseRequest {
+    authority_domain: EngineAuthorityDomainId,
+    expected: WorkspaceVersion,
+    target: ContentCloseTarget,
+}
+
+impl PreparedCloseRequest {
+    pub(crate) const fn new(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        target: ContentCloseTarget,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            target,
+        }
+    }
+
+    /// Returns the stable item or root requested by this action.
+    #[must_use]
+    pub const fn target(&self) -> ClosePlanTarget {
+        product_close_target(self.target)
+    }
+
+    /// Returns the workspace revision from which this request was prepared.
+    #[must_use]
+    pub const fn expected_version(&self) -> WorkspaceVersion {
+        self.expected
+    }
+
+    pub(crate) fn into_engine_input(
+        self,
+        authority_domain: EngineAuthorityDomainId,
+    ) -> Result<EngineInput, PreparedCloseRequestAuthorityMismatch> {
+        if self.authority_domain != authority_domain {
+            return Err(PreparedCloseRequestAuthorityMismatch);
+        }
+        Ok(EngineInput::RequestContentClose {
+            expected: self.expected,
+            target: self.target,
+        })
+    }
+}
+
+impl fmt::Debug for PreparedCloseRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedCloseRequest")
+            .field("expected", &self.expected)
+            .field("target", &self.target())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("prepared close request belongs to another dockspace authority domain")]
+pub(crate) struct PreparedCloseRequestAuthorityMismatch;
 
 /// One application-facing item decision in a close plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

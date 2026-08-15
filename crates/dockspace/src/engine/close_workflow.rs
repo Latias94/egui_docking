@@ -779,13 +779,12 @@ impl DockEngine {
         input: InputSequence,
         expected: WorkspaceVersion,
         target: ContentCloseTarget,
-        application_base: WorkspaceVersion,
         policy: &DockPolicySnapshot,
     ) -> Result<InputOutcome, EngineError> {
-        if expected != application_base {
+        if expected != self.version {
             return Ok(InputOutcome::StaleRejected {
                 expected,
-                accepted_base: application_base,
+                accepted_base: self.version,
             });
         }
         let capture = match self.capture_content_close(target, policy) {

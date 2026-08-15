@@ -22,9 +22,11 @@ use native::NativePlatformError;
 
 pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
 pub use crate::presentation_config::DockPresentationConfig;
-pub use crate::transition::{ContentCloseRequestRejection, SurfaceCloseRequestRejection};
+pub use crate::transition::SurfaceCloseRequestRejection;
+use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{
-    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePlan, DockspaceCloseResolution,
+    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePlan,
+    DockspaceCloseRequestRejection, DockspaceCloseResolution, PreparedCloseRequest,
 };
 pub use interaction::{
     DockspaceInteractionError, PresentedDockReceiver, PresentedDockspaceSurface,
@@ -367,6 +369,24 @@ impl DockspaceSession {
         self.engine.prepare_bring_contained_into_view(item)
     }
 
+    /// Prepares one revision-bound item close request.
+    pub const fn prepare_close_item(&self, item: crate::ids::ItemId) -> PreparedCloseRequest {
+        PreparedCloseRequest::new(
+            self.engine.authority_domain(),
+            self.engine.version(),
+            ContentCloseTarget::Item(item),
+        )
+    }
+
+    /// Prepares one revision-bound complete-root close request.
+    pub const fn prepare_close_root(&self, root: crate::ids::RootId) -> PreparedCloseRequest {
+        PreparedCloseRequest::new(
+            self.engine.authority_domain(),
+            self.engine.version(),
+            ContentCloseTarget::Root(root),
+        )
+    }
+
     /// Begins one affine application host frame.
     ///
     /// Pending output observations are supplied from the facade-owned
@@ -455,6 +475,7 @@ impl DockspaceSession {
             self.presentation.submit_observation(&mut prelude)?
         };
         let frame = prelude.seal(&self.engine)?;
+        #[cfg(any(feature = "backend", test))]
         let application_base = frame.view().version();
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
@@ -464,6 +485,7 @@ impl DockspaceSession {
         let mut host_frame = DockspaceHostFrame {
             session: self,
             frame,
+            #[cfg(any(feature = "backend", test))]
             application_base,
             next_source_sequence,
             next_pointer_sequence,
@@ -528,6 +550,7 @@ impl DockspaceSession {
 pub struct DockspaceHostFrame<'session> {
     session: &'session mut DockspaceSession,
     frame: CoreHostFrame,
+    #[cfg(any(feature = "backend", test))]
     application_base: WorkspaceVersion,
     next_source_sequence: u64,
     next_pointer_sequence: Option<u64>,
@@ -810,27 +833,57 @@ impl DockspaceHostFrame<'_> {
         self.append(input)
     }
 
-    /// Opens or reuses one core-owned close plan for an item.
-    pub fn request_close_item(
+    /// Submits one revision-bound programmatic close request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without poisoning the frame when the request belongs to
+    /// another dockspace session. Stale requests are accepted structurally and
+    /// reported as [`HostInputOutcome::StaleRejected`].
+    pub fn submit_prepared_close_request(
         &mut self,
-        item: crate::ids::ItemId,
+        prepared: PreparedCloseRequest,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.request_close(ContentCloseTarget::Item(item))
+        let input = prepared
+            .into_engine_input(self.session.engine.authority_domain())
+            .map_err(DockspaceRuntimeError::prepared_close_request_authority_mismatch)?;
+        self.append(input)
     }
 
-    /// Opens one core-owned close plan for stable application content.
+    /// Opens or reuses one core-owned close plan for an item.
     ///
     /// # Errors
     ///
     /// Returns an error when the affine frame rejects the input structurally.
-    pub fn request_close(
+    pub fn request_close_item_current(
+        &mut self,
+        item: crate::ids::ItemId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.request_close_current(ContentCloseTarget::Item(item))
+    }
+
+    /// Opens or reuses one core-owned close plan for a complete root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame rejects the input structurally.
+    pub fn request_close_root_current(
+        &mut self,
+        root: crate::ids::RootId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.request_close_current(ContentCloseTarget::Root(root))
+    }
+
+    fn request_close_current(
         &mut self,
         target: ContentCloseTarget,
     ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::RequestContentClose {
-            expected: self.application_base,
+        let prepared = PreparedCloseRequest::new(
+            self.session.engine.authority_domain(),
+            self.frame.view().version(),
             target,
-        })
+        );
+        self.submit_prepared_close_request(prepared)
     }
 
     /// Resolves one initial close decision token.
@@ -959,7 +1012,8 @@ impl DockspaceHostFrame<'_> {
         let Self {
             session,
             frame,
-            application_base: _,
+            #[cfg(any(feature = "backend", test))]
+                application_base: _,
             next_source_sequence,
             next_pointer_sequence: _,
             pointer_input_submitted: _,
@@ -1132,12 +1186,7 @@ pub enum HostInputOutcome {
         origin: HostCloseRequestOrigin,
     },
     /// One content-close request was rejected without mutation.
-    CloseRejected {
-        /// Stable requested target.
-        target: ContentCloseTarget,
-        /// Typed fail-closed rejection.
-        reason: ContentCloseRequestRejection,
-    },
+    CloseRejected(DockspaceCloseRequestRejection),
     /// One close decision was consumed.
     CloseDecisionProcessed {
         /// Exact token-resolution result, including typed inert outcomes.
@@ -1409,6 +1458,9 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
+            DockspaceRuntimeErrorSource::PreparedCloseRequestAuthorityMismatch(_) => {
+                DockspaceRuntimeErrorKind::OperationConflict
+            }
             DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
@@ -1488,6 +1540,14 @@ impl DockspaceRuntimeError {
     ) -> Self {
         Self {
             source: DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(error),
+        }
+    }
+
+    const fn prepared_close_request_authority_mismatch(
+        error: PreparedCloseRequestAuthorityMismatch,
+    ) -> Self {
+        Self {
+            source: DockspaceRuntimeErrorSource::PreparedCloseRequestAuthorityMismatch(error),
         }
     }
 
@@ -1571,6 +1631,8 @@ enum DockspaceRuntimeErrorSource {
     HostFrame(Box<CoreHostFrameError>),
     #[error(transparent)]
     PreparedActionAuthorityMismatch(PreparedDockActionAuthorityMismatch),
+    #[error(transparent)]
+    PreparedCloseRequestAuthorityMismatch(PreparedCloseRequestAuthorityMismatch),
     #[error(transparent)]
     PreparedSurfaceActionAuthorityMismatch(PreparedSurfaceActionAuthorityMismatch),
     #[error("application input source sequence is exhausted")]
