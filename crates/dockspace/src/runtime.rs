@@ -528,6 +528,12 @@ impl DockspaceHostFrame<'_> {
         DockspaceView::new(self.frame.view().workspace())
     }
 
+    /// Returns the durable candidate workspace version visible inside this frame.
+    #[must_use]
+    pub fn version(&self) -> WorkspaceVersion {
+        self.frame.view().version()
+    }
+
     /// Resolves one stable item identity to its session-owned external key.
     ///
     /// This is available while a candidate frame is open so an adapter can build

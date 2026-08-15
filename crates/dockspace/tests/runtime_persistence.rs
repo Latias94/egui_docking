@@ -61,10 +61,12 @@ fn persistent_session_with_first_item() -> (DockspaceSession, ItemId) {
 #[test]
 fn candidate_frame_resolves_session_owned_external_keys() {
     let (mut session, first) = persistent_session_with_first_item();
+    let published = session.version();
     let frame = session
         .begin_host_frame()
         .expect("the candidate frame begins");
 
+    assert_eq!(frame.version(), published);
     assert_eq!(frame.external_key_for_item(first), Some("pane:first"));
 }
 
