@@ -34,8 +34,9 @@ crate.
 
 Default product interfaces are item- and surface-centric. Raw graph nodes,
 scene stamps, reducer inputs, provider leases, receipts, persistence candidates,
-and backend FSMs are private. Migration adapters must explicitly enable the
-unstable `dockspace::backend` interface.
+and backend FSMs are private. Renderers and native hosts integrate through the
+narrow `DockspaceSession` runtime facade rather than an unstable raw backend
+namespace.
 
 Facade errors follow the same rule. Both the renderer-neutral and egui product
 interfaces expose six action-oriented categories: invalid configuration,

@@ -641,52 +641,6 @@ impl CloseCancellationProof {
             inventory_generation,
         }
     }
-
-    /// Returns the exact engine-domain close request proved cancelled.
-    #[must_use]
-    pub const fn request(self) -> CloseRequestId {
-        self.request
-    }
-
-    /// Returns the exact live native-window incarnation observed after cancellation.
-    #[must_use]
-    pub const fn binding(self) -> ViewportBinding {
-        self.binding
-    }
-
-    /// Returns the original destructive close effect.
-    #[must_use]
-    pub const fn close_effect(self) -> Option<EffectId> {
-        self.close_effect
-    }
-
-    /// Returns the compensating cancellation effect, when core emitted one.
-    #[must_use]
-    pub const fn cancel_effect(self) -> Option<EffectId> {
-        self.cancel_effect
-    }
-
-    /// Returns the provider's known close-lane effect frontier.
-    ///
-    /// `None` is authoritative only when the provider explicitly reports a
-    /// known empty frontier; unknown provider authority cannot construct this
-    /// proof.
-    #[must_use]
-    pub const fn known_effect_frontier(self) -> Option<EffectId> {
-        self.known_effect_frontier
-    }
-
-    /// Returns the provider generation which observed the live, cleared binding.
-    #[must_use]
-    pub const fn observation_generation(self) -> CloseObservationGeneration {
-        self.observation_generation
-    }
-
-    /// Returns the core inventory generation in which the provider fact arrived.
-    #[must_use]
-    pub const fn inventory_generation(self) -> InventoryGeneration {
-        self.inventory_generation
-    }
 }
 
 /// Causal proof that one exact native window incarnation was destroyed.

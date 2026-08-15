@@ -5,16 +5,15 @@
 This document describes the target breaking boundary for the first shipping
 `dockspace` API and records the portions already sealed. `egui_dockspace` no
 longer re-exports the core or exposes its raw `DockEngine`; application-facing
-types remain at the crate root, while the low-level host protocol requires the
-explicit `backend` feature and `egui_dockspace::backend` namespace. The
-renderer-neutral crate now applies the same boundary: its default module tree
-keeps reducer, frame, scene, pointer, effect, recovery, viewport FSMs, raw graph,
-checked command, transaction, canonicalization, validation, and runtime identity
-modules private. Renderer implementations explicitly opt into the unstable
-`dockspace::backend` namespace. Product construction uses `DockspaceLayout`,
-read access uses `DockspaceView`, and mutations use revision-bound product
-actions. Persistence and close paths still need further consolidation into the
-target facade areas, so the seal remains an active breaking refactor.
+types remain at the crate root, while renderers and native hosts use the typed
+`DockspaceSession` runtime facade. The renderer-neutral crate keeps reducer,
+frame, scene, pointer, effect, recovery, viewport FSMs, raw graph, checked
+command, transaction, canonicalization, validation, and runtime identity modules
+private under every feature combination. Product construction uses
+`DockspaceLayout`, read access uses `DockspaceView`, and mutations use
+revision-bound product actions. Persistence and close paths still need further
+consolidation into the target facade areas, so the seal remains an active
+breaking refactor.
 
 ## Goal
 
@@ -106,25 +105,22 @@ pointer or drop commitment, this explicit application action does not
 manufacture or require retained input authority from those geometry facts.
 
 Adapter-only intent, scene-manifest, drop-guide, drop-target, and tab-strip
-types now live exclusively under `dockspace::backend`. Their former crate-root
-module paths are removed rather than preserved as compatibility aliases. This
-keeps the default product interface free of scene authority while giving the
-explicitly feature-gated migration adapter one coherent seam.
+types are private implementation details. Their former crate-root and backend
+module paths are removed rather than preserved as compatibility aliases. The
+runtime paint and host-frame DTOs expose only the product facts an adapter needs.
 
 The public `policy` module follows the same split. It contains only declarative
 configuration, stable application rule identities, and product-facing axis and
 presentation values. Policy revisions, frozen snapshots, evaluator requests,
-facts, decisions, and detailed rejections live under
-`dockspace::backend::policy`; product setters never accept the private graph
-`Axis` type.
+facts, decisions, and detailed rejections remain private; product setters never
+accept the private graph `Axis` type.
 
 The same rule now applies to raw command/transaction errors, the complete
 external-item-key map, and low-level viewport generations/bindings. Product
 callers use `DockspaceRuntimeError`, `DockspaceDocumentBootstrap`, and opaque
-native bindings from `dockspace::runtime`; migration backends that genuinely
-need the underlying types opt into `dockspace::backend::{error,
-external_item_key,viewport}`. The removed crate-root paths are not retained as
-compatibility aliases.
+native bindings from `dockspace::runtime`. The underlying error,
+external-item-key, and viewport FSM types remain private and their removed paths
+are not retained as compatibility aliases.
 
 `DockspaceRuntimeError` also belongs to the facade rather than mirroring the
 reducer. Callers inspect only the action-oriented `InvalidConfiguration`,
@@ -156,9 +152,8 @@ Close publication now follows the same boundary. `HostInputOutcome` carries a
 `CloseInertReason` FSM. Applications still receive exact opaque request and
 decision tokens, stable target/item identities, policy capability, and the
 public phase required to make a decision. Detailed plan authority, native
-destruction/cancellation state, and effect correlation are available only to
-explicit adapter backends through `dockspace::backend::close`; stable close
-decisions and target values live under `dockspace::close`.
+destruction/cancellation state, and effect correlation remain private; stable
+close decisions and target values live under `dockspace::close`.
 
 The primary docking-geometry slice is now renderer-complete. A borrowed
 `SurfacePaintPlan` exposes panes, tabs, tab bars, splitters, splitter junctions,
@@ -263,9 +258,9 @@ raw engine accessor are gone. Ordinary egui mutation and paint responses now
 return product-level command, close, surface, and mutation outcomes instead of
 raw `EngineTransition` or surface-contribution FSM values. The renderer-neutral
 crate no longer exposes reducer events, transitions, interaction state, hit
-regions, or its other backend FSM modules at their former root paths; adapters
-use the explicit `dockspace::backend` feature and namespace. Product callers
-obtain the opaque, core-minted `WorkspaceVersion` and typed close rejections through
+regions, or its other backend FSM modules at their former root or backend paths;
+adapters use the typed `dockspace::runtime` boundary. Product callers obtain the
+opaque, core-minted `WorkspaceVersion` and typed close rejections through
 `dockspace::runtime`. Examples and the official-egui harness declare
 `dockspace` directly when they intentionally exercise core contracts, so rustc
 rather than an API-classification script owns dependency and name resolution.

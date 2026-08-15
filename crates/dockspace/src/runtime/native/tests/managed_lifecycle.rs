@@ -502,7 +502,7 @@ fn managed_session_from_workspace(
 ) -> (DockspaceSession, NativeSurfaceBinding) {
     let mut policy = DockPolicy::default();
     policy.set_allow_native_surfaces(true);
-    let mut session = DockspaceSession::from_backend_workspace(workspace, policy)
+    let mut session = DockspaceSession::from_workspace_for_test(workspace, policy)
         .expect("the tear-off session initializes");
     session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))

@@ -98,8 +98,6 @@ use crate::close_plan::{
     SurfaceCloseRequest,
 };
 use crate::command::ContentCloseTarget;
-#[cfg(any(feature = "backend", test))]
-use crate::command::{CommandOutcome, WorkspaceCommand};
 #[cfg(feature = "serde")]
 use crate::document::{PendingRuntimeDocumentRestore, PreparedRuntimeDocumentRestore};
 use crate::engine::{
@@ -107,9 +105,7 @@ use crate::engine::{
     HostPresentationUnavailableReason, SurfaceContributionBeginError,
     SurfaceContributionPrepareError,
 };
-#[cfg(any(feature = "backend", test))]
-use crate::error::CommandError;
-#[cfg(any(feature = "backend", test))]
+#[cfg(test)]
 use crate::graph::Workspace;
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{
@@ -207,15 +203,14 @@ impl DockspaceSession {
         )
     }
 
-    /// Creates one backend session from a strictly validated runtime workspace and policy.
+    /// Creates one test session from a strictly validated runtime workspace and policy.
     ///
     /// # Errors
     ///
     /// Returns an error when the workspace is invalid or the core cannot mint
     /// the private presentation-host identity.
-    #[cfg(any(feature = "backend", test))]
-    #[doc(hidden)]
-    pub fn from_backend_workspace(
+    #[cfg(test)]
+    pub(crate) fn from_workspace_for_test(
         workspace: Workspace,
         policy: crate::policy::DockPolicy,
     ) -> Result<Self, DockspaceRuntimeError> {
@@ -270,10 +265,10 @@ impl DockspaceSession {
     }
 
     /// Returns the currently published, strictly validated workspace.
-    #[cfg(any(feature = "backend", test))]
+    #[cfg(test)]
     #[doc(hidden)]
     #[must_use]
-    pub const fn workspace(&self) -> &Workspace {
+    pub(crate) const fn workspace(&self) -> &Workspace {
         self.engine.workspace()
     }
 
@@ -475,8 +470,6 @@ impl DockspaceSession {
             self.presentation.submit_observation(&mut prelude)?
         };
         let frame = prelude.seal(&self.engine)?;
-        #[cfg(any(feature = "backend", test))]
-        let application_base = frame.view().version();
         let next_source_sequence = self.committed_source_sequence;
         let next_pointer_sequence = self
             .pointer
@@ -485,8 +478,6 @@ impl DockspaceSession {
         let mut host_frame = DockspaceHostFrame {
             session: self,
             frame,
-            #[cfg(any(feature = "backend", test))]
-            application_base,
             next_source_sequence,
             next_pointer_sequence,
             pointer_input_submitted: false,
@@ -548,8 +539,6 @@ impl DockspaceSession {
 pub struct DockspaceHostFrame<'session> {
     session: &'session mut DockspaceSession,
     frame: CoreHostFrame,
-    #[cfg(any(feature = "backend", test))]
-    application_base: WorkspaceVersion,
     next_source_sequence: u64,
     next_pointer_sequence: Option<u64>,
     pointer_input_submitted: bool,
@@ -588,39 +577,10 @@ impl DockspaceHostFrame<'_> {
             .or_else(|| self.session.external_key_for_item(item))
     }
 
-    /// Returns the post-input candidate workspace visible inside this frame.
-    #[cfg(any(feature = "backend", test))]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn workspace(&self) -> &Workspace {
-        self.frame.view().workspace()
-    }
-
     /// Returns the complete post-input logical surface roster.
     #[must_use]
     pub fn surfaces(&self) -> Vec<SurfaceId> {
         self.frame.surfaces().collect()
-    }
-
-    /// Appends one checked durable command in caller order.
-    ///
-    /// A structurally accepted input can still produce a typed command
-    /// rejection in [`HostFrameReport`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the affine frame is poisoned or its private source
-    /// sequence cannot advance.
-    #[cfg(any(feature = "backend", test))]
-    #[doc(hidden)]
-    pub fn submit_command(
-        &mut self,
-        command: WorkspaceCommand,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.append(EngineInput::WorkspaceCommand {
-            expected: self.application_base,
-            command,
-        })
     }
 
     /// Selects one currently open item by stable identity.
@@ -1014,8 +974,6 @@ impl DockspaceHostFrame<'_> {
         let Self {
             session,
             frame,
-            #[cfg(any(feature = "backend", test))]
-                application_base: _,
             next_source_sequence,
             next_pointer_sequence: _,
             pointer_input_submitted: _,
@@ -1167,17 +1125,6 @@ pub enum HostInputOutcome {
     ProductActionApplied(DockspaceActionOutcome),
     /// One stable item- or root-centric product action was rejected without mutation.
     ProductActionRejected(DockspaceActionRejection),
-    /// One checked durable command applied or produced a valid no-op.
-    #[cfg(any(feature = "backend", test))]
-    CommandApplied {
-        /// Structured command result.
-        outcome: CommandOutcome,
-        /// Whether the complete workspace changed.
-        changed: bool,
-    },
-    /// One checked durable command was consumed without mutation.
-    #[cfg(any(feature = "backend", test))]
-    CommandRejected(CommandError),
     /// One content-close request opened or reused a plan.
     CloseRequested {
         /// Read-only core-owned close plan.
@@ -1733,7 +1680,7 @@ mod tests {
         let tabs = builder.insert_node(crate::graph::Node::tabs([item]));
         builder.set_root(root, crate::graph::RootRecord::new(tabs).with_central(tabs));
         builder.set_surface(surface, crate::graph::SurfacePresentation::with_main(root));
-        DockspaceSession::from_backend_workspace(
+        DockspaceSession::from_workspace_for_test(
             builder.build().expect("runtime test workspace validates"),
             crate::policy::DockPolicy::default(),
         )

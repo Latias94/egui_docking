@@ -75,7 +75,7 @@ fn native_root_session_with_profile(
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::from_backend_workspace(
+    let mut session = DockspaceSession::from_workspace_for_test(
         builder
             .build()
             .expect("the native test workspace validates"),
@@ -150,7 +150,7 @@ fn foreign_semantic_output() -> DockspaceSemanticOutput {
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::from_backend_workspace(
+    let mut session = DockspaceSession::from_workspace_for_test(
         builder
             .build()
             .expect("the foreign semantic workspace validates"),
@@ -483,7 +483,7 @@ fn native_frame_distinguishes_missing_provider_from_wrong_profile() {
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::from_backend_workspace(
+    let mut session = DockspaceSession::from_workspace_for_test(
         builder.build().expect("the native workspace validates"),
         DockPolicy::default(),
     )
@@ -819,7 +819,7 @@ fn managed_pointer_enrollment_accepts_explicit_unknown_authority() {
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::from_backend_workspace(
+    let mut session = DockspaceSession::from_workspace_for_test(
         builder.build().expect("the native workspace validates"),
         DockPolicy::default(),
     )
@@ -849,7 +849,7 @@ fn invalid_native_pointer_roster_is_rejected_before_provider_enrollment() {
     let tabs = builder.insert_node(Node::tabs([ITEM]));
     builder.set_root(ROOT, RootRecord::new(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
-    let mut session = DockspaceSession::from_backend_workspace(
+    let mut session = DockspaceSession::from_workspace_for_test(
         builder.build().expect("the native workspace validates"),
         DockPolicy::default(),
     )

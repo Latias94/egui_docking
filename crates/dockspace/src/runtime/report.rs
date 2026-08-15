@@ -27,17 +27,6 @@ impl HostFrameReport {
         let mut ordered_inputs = Vec::new();
         for reduced in transition.reduced_inputs() {
             let outcome = match reduced.outcome() {
-                #[cfg(any(feature = "backend", test))]
-                InputOutcome::CommandProcessed {
-                    outcome, changed, ..
-                } => Some(HostInputOutcome::CommandApplied {
-                    outcome: outcome.clone(),
-                    changed: *changed,
-                }),
-                #[cfg(any(feature = "backend", test))]
-                InputOutcome::CommandRejected { error, .. } => {
-                    Some(HostInputOutcome::CommandRejected(error.clone()))
-                }
                 InputOutcome::ProductActionProcessed { outcome, .. } => {
                     Some(HostInputOutcome::ProductActionApplied(outcome.clone()))
                 }

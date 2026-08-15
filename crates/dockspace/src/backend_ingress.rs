@@ -379,19 +379,7 @@ impl BackendIngressPrefixRetirementReceipt {
 /// This type deliberately does not implement `Clone` or `Copy`, and it never
 /// exposes the core-owned platform reservation. A joined replacement can therefore
 /// activate the platform, desktop-pointer, and backend-order lanes only through
-/// `DockEngine::finish_backend_ingress_provider_replacement`.
-///
-/// ```compile_fail
-/// use dockspace::backend_ingress::BackendIngressProviderReplacementTicket;
-/// use dockspace::engine::DockEngine;
-///
-/// fn cannot_finish_only_the_platform_lane(
-///     engine: &mut DockEngine,
-///     ticket: BackendIngressProviderReplacementTicket,
-/// ) {
-///     let _ = engine.finish_platform_provider_replacement(ticket);
-/// }
-/// ```
+/// the engine-owned joined replacement path.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BackendIngressProviderReplacementTicket {
     authority: Option<BackendIngressProviderReplacementAuthority>,

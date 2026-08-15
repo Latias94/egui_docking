@@ -8,9 +8,9 @@ presentation results, and execute typed platform effects.
 
 The default public interface is deliberately item- and surface-centric. Runtime
 node identities, scene stamps, reducer inputs, provider leases, receipts, and
-other backend state machines are private. Renderer implementations that are
-migrating against the unstable low-level protocol must opt into the `backend`
-feature and `dockspace::backend` namespace.
+other backend state machines are private. Renderer implementations use the
+typed `runtime` facade; the raw engine and protocol modules are not a supported
+integration surface.
 
 ```rust
 use dockspace::model::{
@@ -37,8 +37,6 @@ assert!(session.view().item(item).is_some());
 
 - `serde`: session-owned versioned JSON persistence with append-only external
   item identity and viewport placement.
-- `backend`: unstable adapter protocol. Ordinary applications should not enable
-  it.
 
 This crate does not own an OS event loop, renderer, widget tree, animation
 clock, or platform window. Those responsibilities belong to adapters.
