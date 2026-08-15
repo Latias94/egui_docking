@@ -15,7 +15,7 @@ The product contract remains simple:
 Pinned baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `bbb96417d63340c2ad92876049e7a3388c8e00a6`
+- public egui/eframe fork: `7f704e49c5f97da0176027ce7aa92d2e13126c90`
 - upstream winit `0.30.13`: `e9809ef5`
 - public winit fork: `180bfc09743586137fec014ef5543cdde56ce5d0`
 

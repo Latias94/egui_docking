@@ -58,7 +58,7 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace pins the graph-neutral egui/eframe fork revision
-`bbb96417d63340c2ad92876049e7a3388c8e00a6` and the event-time Winit revision
+`7f704e49c5f97da0176027ce7aa92d2e13126c90` and the event-time Winit revision
 `180bfc09743586137fec014ef5543cdde56ce5d0`. Remaining fork seams and their
 removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
@@ -95,9 +95,11 @@ development fixture, not a multiview product demo.
 
 `dockspace` must be packaged and published before `egui_dockspace`, because the
 adapter's packaged manifest resolves the exact core version from the registry.
-Before the first core release, the adapter is verified by the local product and
-official-egui downstream workspaces; after the core version exists in the
-registry, rerun the full `cargo package -p egui_dockspace` verification.
+Before the first core release, CI fully verifies the core package and checks the
+adapter's package file list; the local product and official-egui downstream
+workspaces provide the adapter build and behavior evidence. After the core
+version exists in the registry, rerun the full
+`cargo package -p egui_dockspace` verification.
 
 ## License
 
