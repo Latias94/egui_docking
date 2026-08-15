@@ -286,6 +286,11 @@ impl Dockspace {
         self.session.prepare_raise_contained(item)
     }
 
+    /// Prepares a revision-bound contained bring-into-view action.
+    pub const fn prepare_bring_contained_into_view(&self, item: ItemId) -> PreparedDockAction {
+        self.session.prepare_bring_contained_into_view(item)
+    }
+
     /// Submits one core-issued product action against its source revision.
     ///
     /// # Errors
@@ -411,6 +416,21 @@ impl Dockspace {
         item: ItemId,
     ) -> Result<DockspaceActionResult, DockspaceError> {
         self.submit_prepared_action(self.prepare_raise_contained(item))
+    }
+
+    /// Clamps the contained presentation owning one item into current visible bounds.
+    ///
+    /// Passive resize and minimum-size changes preserve durable geometry. This
+    /// explicit action is the product boundary which may commit a clamped rectangle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the atomic action frame cannot be committed.
+    pub fn bring_contained_into_view_current(
+        &mut self,
+        item: ItemId,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_bring_contained_into_view(item))
     }
 
     /// Resolves one initial pane-close decision.

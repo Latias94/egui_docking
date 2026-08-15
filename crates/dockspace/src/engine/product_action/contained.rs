@@ -154,6 +154,49 @@ impl DockEngine {
         })
     }
 
+    pub(super) fn compile_product_contained_bring_into_view(
+        &self,
+        item: ItemId,
+    ) -> Result<ProductActionPlan, DockspaceActionRejection> {
+        let contained = self.capture_product_contained(item)?;
+        let ready = self
+            .scene()
+            .surface(contained.surface)
+            .and_then(crate::scene::SurfaceScene::ready)
+            .filter(|ready| ready.stamp().requirement().workspace_epoch() == self.version().epoch())
+            .ok_or(DockspaceActionRejection::PresentationUnavailable {
+                surface: contained.surface,
+            })?;
+        let minimum = ready
+            .plan()
+            .contained_minimums()
+            .iter()
+            .find(|minimum| minimum.floating() == contained.floating)
+            .map(|minimum| minimum.minimum_size())
+            .ok_or(DockspaceActionRejection::Conflict)?;
+        let rect = clamp_contained_rect(
+            contained.surface,
+            ready.plan().bounds(),
+            contained.rect,
+            minimum,
+        )
+        .map_err(|_| DockspaceActionRejection::Conflict)?;
+        Ok(ProductActionPlan::Command {
+            command: WorkspaceCommand::UpdateContainedRect {
+                surface: contained.surface,
+                root: contained.root,
+                floating: contained.floating,
+                expected_rect: contained.rect,
+                rect,
+            },
+            context: ProductCommandContext::SetContainedRect {
+                root: contained.root,
+                surface: contained.surface,
+                floating: contained.floating,
+            },
+        })
+    }
+
     fn capture_product_contained(
         &self,
         item: ItemId,

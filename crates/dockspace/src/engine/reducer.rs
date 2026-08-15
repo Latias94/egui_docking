@@ -1412,6 +1412,14 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::BringContainedIntoView { expected, item } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                ProductAction::BringContainedIntoView { item: *item },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::RequestContentClose { expected, target } => self
                 .reduce_content_close_request(
                     input.sequence,

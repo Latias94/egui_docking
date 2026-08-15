@@ -184,6 +184,12 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::RaiseContained { item })
     }
 
+    /// Prepares one contained bring-into-view action against the published workspace version.
+    #[must_use]
+    pub const fn prepare_bring_contained_into_view(&self, item: ItemId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::BringContainedIntoView { item })
+    }
+
     const fn prepare_product_action(&self, action: ProductAction) -> PreparedDockAction {
         PreparedDockAction::new(self.authority_domain, self.version, action)
     }
@@ -241,6 +247,9 @@ impl DockEngine {
             },
             ProductAction::RaiseContained { item } => {
                 EngineInput::RaiseContained { expected, item }
+            }
+            ProductAction::BringContainedIntoView { item } => {
+                EngineInput::BringContainedIntoView { expected, item }
             }
         })
     }
@@ -364,6 +373,9 @@ impl DockEngine {
                 self.compile_product_contained_rect(item, rect)
             }
             ProductAction::RaiseContained { item } => self.compile_product_contained_raise(item),
+            ProductAction::BringContainedIntoView { item } => {
+                self.compile_product_contained_bring_into_view(item)
+            }
         }
     }
 

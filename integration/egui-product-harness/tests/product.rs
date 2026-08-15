@@ -1,9 +1,10 @@
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
-    CloseDecision, Dockspace, DockspaceAxis, DockspaceCloseRequest, DockspaceContainedLayout,
-    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
-    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
+    CloseDecision, Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceAxis,
+    DockspaceCloseRequest, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
+    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
+    PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -53,6 +54,13 @@ fn split_layout() -> DockspaceLayout {
 }
 
 fn contained_layout() -> DockspaceLayout {
+    contained_layout_at(
+        LogicalRect::new(500.0, 260.0, 240.0, 220.0)
+            .expect("the contained product fixture rectangle is valid"),
+    )
+}
+
+fn contained_layout_at(rect: LogicalRect) -> DockspaceLayout {
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
         DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
@@ -60,8 +68,7 @@ fn contained_layout() -> DockspaceLayout {
     .with_contained(DockspaceContainedLayout::new(
         FLOATING,
         DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
-        LogicalRect::new(500.0, 260.0, 240.0, 220.0)
-            .expect("the contained product fixture rectangle is valid"),
+        rect,
     ))])
     .expect("the contained product layout is valid")
 }
@@ -416,6 +423,66 @@ fn default_features_expose_item_centric_contained_actions() {
             .map(|contained| contained.id())
             .collect::<Vec<_>>(),
         vec![first_floating, second_floating],
+    );
+}
+
+#[test]
+fn default_features_bring_contained_content_into_current_ready_bounds() {
+    let context = Context::default();
+    let offscreen = LogicalRect::new(900.0, 700.0, 240.0, 220.0)
+        .expect("the offscreen contained rectangle is valid");
+    let mut dockspace = Dockspace::builder(
+        "product-contained-bring-into-view",
+        contained_layout_at(offscreen),
+    )
+    .build()
+    .expect("the product contained facade initializes");
+    let mut panes = Panes;
+    let roster = dockspace
+        .view()
+        .surface(SURFACE)
+        .expect("the surface is present")
+        .contained()
+        .map(|contained| contained.id())
+        .collect::<Vec<_>>();
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let result = dockspace
+        .bring_contained_into_view_current(SECOND)
+        .expect("the public product action uses current ready bounds");
+    assert!(
+        matches!(
+            result.status(),
+            DockspaceActionStatus::Applied(DockspaceActionOutcome::ContainedBoundsUpdated {
+                root: FLOATING_ROOT,
+                surface: SURFACE,
+                floating: FLOATING,
+                changed: true,
+            })
+        ),
+        "unexpected bring-into-view status: {:?}",
+        result.status(),
+    );
+
+    let rect = dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained presentation remains available")
+        .rect();
+    assert_eq!(rect.size(), offscreen.size());
+    assert!(rect.min().x() >= 0.0 && rect.min().y() >= 0.0);
+    assert!(rect.max().x() <= 800.0 && rect.max().y() <= 600.0);
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the surface remains present")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        roster,
+        "bring-into-view must not change contained stacking order",
     );
 }
 

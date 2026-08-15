@@ -98,6 +98,13 @@ closed. The independent `dockspace_host_conformance` executor uses this boundary
 for `OGC-01` through `OGC-04` without importing engine internals, scene stamps,
 provider leases, or the core hit resolver.
 
+Contained geometry follows the same explicit-action rule: passive surface or
+minimum-size changes never rewrite durable rectangles, while item-centric
+`bring_contained_into_view` may clamp one contained presentation against the
+current exact ready surface bounds without implicitly raising it. Unlike
+pointer or drop commitment, this explicit application action does not
+manufacture or require retained input authority from those geometry facts.
+
 Adapter-only intent, scene-manifest, drop-guide, drop-target, and tab-strip
 types now live exclusively under `dockspace::backend`. Their former crate-root
 module paths are removed rather than preserved as compatibility aliases. This

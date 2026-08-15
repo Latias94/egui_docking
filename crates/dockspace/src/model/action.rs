@@ -280,10 +280,10 @@ pub enum DockspaceActionRejection {
     /// The managed native host cannot currently create a child surface.
     #[error("native child-window creation is unavailable")]
     NativeUnavailable,
-    /// The source surface has no exact currently presented output.
-    #[error("surface {surface} has no current presented output")]
+    /// The source surface has no exact current presentation geometry.
+    #[error("surface {surface} has no current presentation geometry")]
     PresentationUnavailable {
-        /// Source surface lacking exact presentation authority.
+        /// Source surface lacking exact presentation geometry.
         surface: SurfaceId,
     },
 }
@@ -363,6 +363,9 @@ pub(crate) enum ProductAction {
         rect: LogicalRect,
     },
     RaiseContained {
+        item: ItemId,
+    },
+    BringContainedIntoView {
         item: ItemId,
     },
 }

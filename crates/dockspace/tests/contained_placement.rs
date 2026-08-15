@@ -10,6 +10,7 @@ use dockspace::ids::{
 };
 use dockspace::intent::ContainedPlacementUnavailable;
 use dockspace::interaction::{InteractionOutcome, InteractionRejection};
+use dockspace::model::{DockspaceActionOutcome, DockspaceActionRejection};
 use dockspace::policy::DockPolicy;
 use dockspace::presentation_config::DockPresentationConfig;
 use dockspace::scene::SurfaceScene;
@@ -328,6 +329,116 @@ fn current_proof_commits_the_exact_clamped_rect() {
             .rect,
         rect(320.0, 190.0, 80.0, 60.0)
     );
+}
+
+#[test]
+fn bring_into_view_requires_ready_geometry_and_preserves_stacking() {
+    let persisted = rect(520.0, 400.0, 120.0, 90.0);
+    let expected = rect(280.0, 160.0, 120.0, 90.0);
+    let mut fixture = fixture_at(persisted);
+    let item = ItemId::new(4);
+    let before = fixture.engine.workspace().clone();
+    let before_version = fixture.engine.version();
+
+    let prepared = fixture.engine.prepare_bring_contained_into_view(item);
+    let input = fixture
+        .engine
+        .accept_prepared_action(prepared)
+        .expect("the prepared action belongs to this engine");
+    let transition = submit_input(
+        &mut fixture.engine,
+        &mut fixture.host,
+        CONTAINED_INPUT_SOURCE,
+        input,
+    )
+    .expect("missing ready geometry is a typed product rejection");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::PresentationUnavailable { surface: SURFACE_A },
+            version,
+        } if *version == before_version
+    ));
+    assert_eq!(fixture.engine.workspace(), &before);
+    assert_eq!(fixture.engine.version(), before_version);
+    assert!(transition.events().is_empty());
+
+    publish_ready_scene(&mut fixture.engine, &mut fixture.host);
+    let roster = fixture
+        .engine
+        .workspace()
+        .surface(SURFACE_A)
+        .expect("surface A remains available")
+        .contained
+        .clone();
+    let prepared = fixture.engine.prepare_bring_contained_into_view(item);
+    let input = fixture
+        .engine
+        .accept_prepared_action(prepared)
+        .expect("the prepared action belongs to this engine");
+    let transition = submit_input(
+        &mut fixture.engine,
+        &mut fixture.host,
+        CONTAINED_INPUT_SOURCE,
+        input,
+    )
+    .expect("bring-into-view commits against current presentation facts");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::ContainedBoundsUpdated {
+                root: ROOT_FLOATING,
+                surface: SURFACE_A,
+                floating: FLOATING,
+                changed: true,
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .contained_floating(FLOATING)
+            .expect("the floating presentation remains available")
+            .rect,
+        expected,
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .workspace()
+            .surface(SURFACE_A)
+            .expect("surface A remains available")
+            .contained,
+        roster,
+        "bring-into-view must not raise or reorder contained presentations",
+    );
+    assert_eq!(transition.events().len(), 1);
+
+    publish_ready_scene(&mut fixture.engine, &mut fixture.host);
+    let before_noop = fixture.engine.version();
+    let prepared = fixture.engine.prepare_bring_contained_into_view(item);
+    let input = fixture
+        .engine
+        .accept_prepared_action(prepared)
+        .expect("the prepared action belongs to this engine");
+    let transition = submit_input(
+        &mut fixture.engine,
+        &mut fixture.host,
+        CONTAINED_INPUT_SOURCE,
+        input,
+    )
+    .expect("an already-visible presentation produces a checked no-op");
+    assert!(matches!(
+        transition.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionProcessed {
+            outcome: DockspaceActionOutcome::ContainedBoundsUpdated { changed: false, .. },
+            version,
+        } if *version == before_noop
+    ));
+    assert_eq!(fixture.engine.version(), before_noop);
+    assert!(transition.events().is_empty());
 }
 
 #[test]

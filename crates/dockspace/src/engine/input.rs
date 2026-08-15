@@ -501,6 +501,13 @@ pub enum EngineInput {
         /// Stable application item inside the contained root.
         item: ItemId,
     },
+    /// Clamp the contained presentation owning one item into exact current surface bounds.
+    BringContainedIntoView {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable application item inside the contained root.
+        item: ItemId,
+    },
     /// Request a core-owned close plan for stable application content.
     RequestContentClose {
         /// Version from which the stable target was selected.
@@ -754,6 +761,7 @@ impl EngineInput {
             | Self::FloatItem { .. }
             | Self::SetContainedRect { .. }
             | Self::RaiseContained { .. }
+            | Self::BringContainedIntoView { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }

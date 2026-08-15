@@ -359,6 +359,14 @@ impl DockspaceSession {
         self.engine.prepare_raise_contained(item)
     }
 
+    /// Prepares one revision-bound contained bring-into-view action.
+    pub const fn prepare_bring_contained_into_view(
+        &self,
+        item: crate::ids::ItemId,
+    ) -> PreparedDockAction {
+        self.engine.prepare_bring_contained_into_view(item)
+    }
+
     /// Begins one affine application host frame.
     ///
     /// Pending output observations are supplied from the facade-owned
@@ -738,6 +746,25 @@ impl DockspaceHostFrame<'_> {
         item: crate::ids::ItemId,
     ) -> Result<(), DockspaceRuntimeError> {
         self.append(EngineInput::RaiseContained {
+            expected: self.frame.view().version(),
+            item,
+        })
+    }
+
+    /// Clamps the contained presentation owning one item into current exact surface bounds.
+    ///
+    /// Passive surface or measurement changes never rewrite durable geometry. This
+    /// explicit action uses the latest exact ready surface bounds and contained minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn bring_contained_into_view_current(
+        &mut self,
+        item: crate::ids::ItemId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::BringContainedIntoView {
             expected: self.frame.view().version(),
             item,
         })
