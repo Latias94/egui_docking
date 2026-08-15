@@ -146,6 +146,11 @@ impl PresentationIdentityAuthority {
         candidate.reserve_root()
     }
 
+    pub(super) fn prepare_floating(&self) -> Option<FloatingPresentationId> {
+        let mut candidate = self.frontier;
+        candidate.reserve_floating()
+    }
+
     #[cfg(test)]
     pub(super) fn reserve_root(&mut self) -> Result<RootId, EngineError> {
         self.frontier
@@ -369,6 +374,13 @@ impl DockEngine {
         authority.observe_workspace(&self.workspace);
         authority.observe_native_reservations(self.pending_native_identity_reservations());
         authority.prepare_root()
+    }
+
+    pub(super) fn prepare_presentation_floating_identity(&self) -> Option<FloatingPresentationId> {
+        let mut authority = self.presentation_identity;
+        authority.observe_workspace(&self.workspace);
+        authority.observe_native_reservations(self.pending_native_identity_reservations());
+        authority.prepare_floating()
     }
 
     #[cfg(test)]

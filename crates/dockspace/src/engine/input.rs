@@ -465,6 +465,33 @@ pub enum EngineInput {
         /// Item-, root-, or surface-centric destination.
         placement: crate::model::DockPlacement,
     },
+    /// Move one open item into a contained presentation on an existing surface.
+    FloatItem {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable application item.
+        item: ItemId,
+        /// Existing target surface.
+        surface: SurfaceId,
+        /// Durable surface-local contained bounds.
+        rect: crate::geometry::LogicalRect,
+    },
+    /// Replace the durable bounds of the contained presentation owning one item.
+    SetContainedRect {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable application item inside the contained root.
+        item: ItemId,
+        /// New durable surface-local bounds.
+        rect: crate::geometry::LogicalRect,
+    },
+    /// Raise the contained presentation owning one item.
+    RaiseContained {
+        /// Exact workspace version from which this product action was derived.
+        expected: WorkspaceVersion,
+        /// Stable application item inside the contained root.
+        item: ItemId,
+    },
     /// Request a core-owned close plan for stable application content.
     RequestContentClose {
         /// Version from which the stable target was selected.
@@ -714,6 +741,9 @@ impl EngineInput {
             | Self::OpenItem { .. }
             | Self::DockItem { .. }
             | Self::DockRoot { .. }
+            | Self::FloatItem { .. }
+            | Self::SetContainedRect { .. }
+            | Self::RaiseContained { .. }
             | Self::RequestContentClose { .. }
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }

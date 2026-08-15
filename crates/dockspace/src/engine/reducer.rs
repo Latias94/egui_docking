@@ -1360,6 +1360,46 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::FloatItem {
+                expected,
+                item,
+                surface,
+                rect,
+            } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                ProductAction::FloatItem {
+                    item: *item,
+                    surface: *surface,
+                    rect: *rect,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::SetContainedRect {
+                expected,
+                item,
+                rect,
+            } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                ProductAction::SetContainedRect {
+                    item: *item,
+                    rect: *rect,
+                },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
+            EngineInput::RaiseContained { expected, item } => self.reduce_product_action(
+                input.sequence,
+                *expected,
+                ProductAction::RaiseContained { item: *item },
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::RequestContentClose { expected, target } => self
                 .reduce_content_close_request(
                     input.sequence,

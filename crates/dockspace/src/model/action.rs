@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::geometry::LogicalRect;
 use crate::ids::{EngineAuthorityDomainId, ItemId, RootId, SurfaceId};
 
 use super::WorkspaceVersion;
@@ -139,6 +140,41 @@ pub enum DockspaceActionOutcome {
         /// Whether topology, presentation ownership, or tab order changed.
         changed: bool,
     },
+    /// One item was moved into or repositioned within a contained presentation.
+    Floated {
+        /// Stable item used to address the product action.
+        item: ItemId,
+        /// Stable root which owns the resulting contained presentation.
+        root: RootId,
+        /// Surface which owns the contained presentation.
+        surface: SurfaceId,
+        /// Stable contained-presentation identity.
+        floating: crate::ids::FloatingPresentationId,
+        /// Whether topology, geometry, or stacking changed.
+        changed: bool,
+    },
+    /// One contained presentation's durable bounds were checked and optionally changed.
+    ContainedBoundsUpdated {
+        /// Stable root presented by the contained window.
+        root: RootId,
+        /// Surface which owns the contained presentation.
+        surface: SurfaceId,
+        /// Stable contained-presentation identity.
+        floating: crate::ids::FloatingPresentationId,
+        /// Whether durable bounds changed.
+        changed: bool,
+    },
+    /// One contained presentation was checked and optionally raised to the front.
+    ContainedRaised {
+        /// Stable root presented by the contained window.
+        root: RootId,
+        /// Surface which owns the contained presentation.
+        surface: SurfaceId,
+        /// Stable contained-presentation identity.
+        floating: crate::ids::FloatingPresentationId,
+        /// Whether stacking order changed.
+        changed: bool,
+    },
 }
 
 impl DockspaceActionOutcome {
@@ -148,7 +184,10 @@ impl DockspaceActionOutcome {
         match self {
             Self::Selected { changed, .. }
             | Self::Docked { changed, .. }
-            | Self::RootDocked { changed, .. } => *changed,
+            | Self::RootDocked { changed, .. }
+            | Self::Floated { changed, .. }
+            | Self::ContainedBoundsUpdated { changed, .. }
+            | Self::ContainedRaised { changed, .. } => *changed,
             Self::Opened { .. } => true,
             Self::Existing { .. } => false,
         }
@@ -162,6 +201,12 @@ pub enum DockspaceActionRejection {
     #[error("item {item} is not open")]
     ItemUnavailable {
         /// Missing item.
+        item: ItemId,
+    },
+    /// The item is open but its root is not presented as contained floating content.
+    #[error("item {item} is not in a contained presentation")]
+    ItemNotContained {
+        /// Item whose containing presentation was requested.
         item: ItemId,
     },
     /// The stable target no longer names an available tabs or root anchor.
@@ -180,6 +225,12 @@ pub enum DockspaceActionRejection {
     #[error("surface {surface} cannot accept a main root")]
     MainSurfaceUnavailable {
         /// Missing or occupied surface.
+        surface: SurfaceId,
+    },
+    /// The requested surface is unavailable for contained presentation.
+    #[error("surface {surface} cannot accept contained content")]
+    SurfaceUnavailable {
+        /// Missing target surface.
         surface: SurfaceId,
     },
     /// Current policy rejects the requested source, target, or mutation class.
@@ -253,5 +304,17 @@ pub(crate) enum ProductAction {
     DockRoot {
         root: RootId,
         placement: DockPlacement,
+    },
+    FloatItem {
+        item: ItemId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    },
+    SetContainedRect {
+        item: ItemId,
+        rect: LogicalRect,
+    },
+    RaiseContained {
+        item: ItemId,
     },
 }

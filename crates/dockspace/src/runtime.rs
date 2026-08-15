@@ -324,6 +324,30 @@ impl DockspaceSession {
         self.engine.prepare_dock_root(root, placement)
     }
 
+    /// Prepares one revision-bound contained-floating action.
+    pub const fn prepare_float_item(
+        &self,
+        item: crate::ids::ItemId,
+        surface: crate::ids::SurfaceId,
+        rect: crate::geometry::LogicalRect,
+    ) -> PreparedDockAction {
+        self.engine.prepare_float_item(item, surface, rect)
+    }
+
+    /// Prepares one revision-bound contained-bounds update addressed by item identity.
+    pub const fn prepare_set_contained_rect(
+        &self,
+        item: crate::ids::ItemId,
+        rect: crate::geometry::LogicalRect,
+    ) -> PreparedDockAction {
+        self.engine.prepare_set_contained_rect(item, rect)
+    }
+
+    /// Prepares one revision-bound contained raise addressed by item identity.
+    pub const fn prepare_raise_contained(&self, item: crate::ids::ItemId) -> PreparedDockAction {
+        self.engine.prepare_raise_contained(item)
+    }
+
     /// Begins one affine application host frame.
     ///
     /// Pending output observations are supplied from the facade-owned
@@ -609,6 +633,63 @@ impl DockspaceHostFrame<'_> {
             expected: self.frame.view().version(),
             root,
             placement,
+        })
+    }
+
+    /// Moves one open item into a contained presentation on an existing surface.
+    ///
+    /// A complete singleton root preserves its root identity. Moving one item out
+    /// of a larger root allocates a fresh root and contained-presentation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn float_item_current(
+        &mut self,
+        item: crate::ids::ItemId,
+        surface: crate::ids::SurfaceId,
+        rect: crate::geometry::LogicalRect,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::FloatItem {
+            expected: self.frame.view().version(),
+            item,
+            surface,
+            rect,
+        })
+    }
+
+    /// Updates the contained bounds owning one open item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn set_contained_rect_current(
+        &mut self,
+        item: crate::ids::ItemId,
+        rect: crate::geometry::LogicalRect,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::SetContainedRect {
+            expected: self.frame.view().version(),
+            item,
+            rect,
+        })
+    }
+
+    /// Raises the contained presentation owning one open item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the affine frame is poisoned or its private source
+    /// sequence cannot advance.
+    pub fn raise_contained_current(
+        &mut self,
+        item: crate::ids::ItemId,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.append(EngineInput::RaiseContained {
+            expected: self.frame.view().version(),
+            item,
         })
     }
 

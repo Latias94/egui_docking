@@ -10,6 +10,8 @@ use crate::model::{
 };
 use crate::workspace::WorkspaceIndex;
 
+mod contained;
+
 enum ProductActionPlan {
     Noop(DockspaceActionOutcome),
     Command {
@@ -74,6 +76,34 @@ enum ProductCommandContext {
         floating: FloatingPresentationId,
         items: Vec<ItemId>,
     },
+    FloatCreate {
+        item: ItemId,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
+    FloatRehome {
+        item: ItemId,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
+    FloatUpdate {
+        item: ItemId,
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
+    SetContainedRect {
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
+    RaiseContained {
+        root: RootId,
+        surface: SurfaceId,
+        floating: FloatingPresentationId,
+    },
 }
 
 impl DockEngine {
@@ -113,6 +143,37 @@ impl DockEngine {
         self.prepare_product_action(ProductAction::DockRoot { root, placement })
     }
 
+    /// Prepares one contained-floating action against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_float_item(
+        &self,
+        item: ItemId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::FloatItem {
+            item,
+            surface,
+            rect,
+        })
+    }
+
+    /// Prepares one contained-bounds update against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_set_contained_rect(
+        &self,
+        item: ItemId,
+        rect: LogicalRect,
+    ) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::SetContainedRect { item, rect })
+    }
+
+    /// Prepares one contained raise against the exact published workspace version.
+    #[must_use]
+    pub const fn prepare_raise_contained(&self, item: ItemId) -> PreparedDockAction {
+        self.prepare_product_action(ProductAction::RaiseContained { item })
+    }
+
     const fn prepare_product_action(&self, action: ProductAction) -> PreparedDockAction {
         PreparedDockAction::new(self.authority_domain, self.version, action)
     }
@@ -148,6 +209,24 @@ impl DockEngine {
                 root,
                 placement,
             },
+            ProductAction::FloatItem {
+                item,
+                surface,
+                rect,
+            } => EngineInput::FloatItem {
+                expected,
+                item,
+                surface,
+                rect,
+            },
+            ProductAction::SetContainedRect { item, rect } => EngineInput::SetContainedRect {
+                expected,
+                item,
+                rect,
+            },
+            ProductAction::RaiseContained { item } => {
+                EngineInput::RaiseContained { expected, item }
+            }
         })
     }
 
@@ -260,6 +339,15 @@ impl DockEngine {
             ProductAction::DockRoot { root, placement } => {
                 self.compile_product_root_move(root, placement)
             }
+            ProductAction::FloatItem {
+                item,
+                surface,
+                rect,
+            } => self.compile_product_float(item, surface, rect),
+            ProductAction::SetContainedRect { item, rect } => {
+                self.compile_product_contained_rect(item, rect)
+            }
+            ProductAction::RaiseContained { item } => self.compile_product_contained_raise(item),
         }
     }
 
@@ -768,6 +856,118 @@ impl ProductCommandContext {
                     changed,
                 })
             }
+            (
+                Self::FloatCreate {
+                    item,
+                    root: expected_root,
+                    surface: expected_surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::ContainedRootCreated {
+                    surface,
+                    root,
+                    floating,
+                    items,
+                },
+            ) if surface == expected_surface
+                && root == expected_root
+                && floating == expected_floating
+                && items.as_slice() == [item]
+                && changed =>
+            {
+                Ok(DockspaceActionOutcome::Floated {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                    changed,
+                })
+            }
+            (
+                Self::FloatRehome {
+                    item,
+                    root: expected_root,
+                    surface: expected_surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::RootRehomed {
+                    root,
+                    surface,
+                    floating: Some(floating),
+                    changed: outcome_changed,
+                },
+            ) if root == expected_root
+                && surface == expected_surface
+                && floating == expected_floating
+                && changed == outcome_changed =>
+            {
+                Ok(DockspaceActionOutcome::Floated {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                    changed,
+                })
+            }
+            (
+                Self::FloatUpdate {
+                    item,
+                    root,
+                    surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::ContainedPresentationUpdated {
+                    floating,
+                    rect_changed,
+                    order_changed,
+                    ..
+                },
+            ) if floating == expected_floating && changed == (rect_changed || order_changed) => {
+                Ok(DockspaceActionOutcome::Floated {
+                    item,
+                    root,
+                    surface,
+                    floating,
+                    changed,
+                })
+            }
+            (
+                Self::SetContainedRect {
+                    root,
+                    surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::ContainedRectUpdated {
+                    floating,
+                    changed: outcome_changed,
+                },
+            ) if floating == expected_floating && changed == outcome_changed => {
+                Ok(DockspaceActionOutcome::ContainedBoundsUpdated {
+                    root,
+                    surface,
+                    floating,
+                    changed,
+                })
+            }
+            (
+                Self::RaiseContained {
+                    root,
+                    surface,
+                    floating: expected_floating,
+                },
+                CommandOutcome::ContainedRaised {
+                    floating,
+                    changed: outcome_changed,
+                    ..
+                },
+            ) if floating == expected_floating && changed == outcome_changed => {
+                Ok(DockspaceActionOutcome::ContainedRaised {
+                    root,
+                    surface,
+                    floating,
+                    changed,
+                })
+            }
             _ => Err(EngineError::ReductionCauseInvariant {
                 detail: "product action command outcome did not match its compiled action",
             }),
@@ -820,6 +1020,11 @@ fn product_command_rejection(
             ) =>
         {
             Ok(DockspaceActionRejection::MainSurfaceUnavailable { surface: *surface })
+        }
+        CommandError::MissingSurface { surface }
+            if matches!(action, ProductAction::FloatItem { .. }) =>
+        {
+            Ok(DockspaceActionRejection::SurfaceUnavailable { surface: *surface })
         }
         _ => Ok(DockspaceActionRejection::Conflict),
     }
