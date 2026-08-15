@@ -12,94 +12,13 @@ const ROOT_ORIGIN_Y: f64 = 80.0;
 
 #[test]
 fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
-    let (mut session, root_binding) = managed_tear_off_session();
-    let work_area_binding = session
-        .native_work_area(HostWorkAreaToken::new(1))
-        .expect("the committed work-area roster mints route authority");
-    let source_receiver = presented_tab_receiver(&mut session, ITEM);
-    let source_point = source_receiver.center();
-    let source_desktop = PhysicalPoint::new(
-        ROOT_ORIGIN_X + source_point.x(),
-        ROOT_ORIGIN_Y + source_point.y(),
-    )
-    .expect("the source desktop point is finite");
-    let outside = PhysicalPoint::new(1_000.0, 700.0).expect("the outside point is finite");
-    let pointer = NativePointerId::new(1);
-
-    session
-        .record_native_pointer(NativePointerInput::new(
-            pointer,
-            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
-            NativeDesktopPointerLocation::new(
-                NativeDesktopPosition::Exact(source_desktop),
-                NativePointerHover::Dock(root_binding),
-                None,
-            ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
-        ))
-        .expect("the exact source press records");
-    session
-        .record_native_pointer(NativePointerInput::new(
-            pointer,
-            NativePointerEvent::Moved,
-            NativeDesktopPointerLocation::new(
-                NativeDesktopPosition::Exact(outside),
-                NativePointerHover::OutsideAll,
-                Some(work_area_binding),
-            ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::Native(root_binding),
-        ))
-        .expect("the exact outside-all move records");
-
-    let mut preview = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
-        .expect("the native drag frame begins");
-    assert!(
-        preview
-            .paint_plan(SURFACE)
-            .expect("the source plan resolves")
-            .expect("the source remains paintable")
-            .drag_preview()
-            .is_some(),
-        "the outside-all move must expose a core-owned native preview"
-    );
-    preview
-        .confirm_surface_painted(SURFACE)
-        .expect("the exact preview is painted");
-    let mut preview_report = preview.commit().expect("the preview frame commits");
-    assert!(preview_report.take_native_effects().is_empty());
-    present_surface_outputs(&mut session, &mut preview_report);
-    commit_managed_frame(&mut session);
-
-    session
-        .record_native_pointer(NativePointerInput::new(
-            pointer,
-            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
-            NativeDesktopPointerLocation::new(
-                NativeDesktopPosition::Exact(outside),
-                NativePointerHover::OutsideAll,
-                Some(work_area_binding),
-            ),
-            NativePointerOwner::Native(root_binding),
-            NativePointerOwner::None,
-        ))
-        .expect("the exact outside-all release records");
-    let mut release = session
-        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
-        .expect("the native release frame begins");
-    release
-        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
-        .expect("the release frame retains current surface authority");
-    let mut release_report = release.commit().expect("the native release commits");
-    let create = take_only_native_effect(&mut release_report);
-    let (child_binding, placement) = match create.operation() {
-        NativeEffectOperation::CreateWindow {
-            binding, placement, ..
-        } => (*binding, *placement),
-        operation => panic!("outside-all release emitted {operation:?} instead of CreateWindow"),
-    };
+    let PendingNativeCreate {
+        mut session,
+        root_binding,
+        child_binding,
+        placement,
+        request: create,
+    } = request_native_create();
     let create_ack = match create.accepted() {
         Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
         acknowledgement => panic!("create returned the wrong acknowledgement: {acknowledgement:?}"),
@@ -233,6 +152,144 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         session.view().item(SECOND_ITEM).map(|item| item.surface()),
         Some(SURFACE)
     );
+}
+
+#[test]
+fn managed_native_create_dispatch_failure_preserves_source_ownership() {
+    let PendingNativeCreate {
+        mut session,
+        child_binding,
+        request,
+        ..
+    } = request_native_create();
+    let failed = request.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
+    session
+        .report_native_effect_result(failed)
+        .expect("the exact create failure records");
+    let mut report = commit_managed_frame_report(&mut session);
+
+    assert!(report.take_native_effects().is_empty());
+    assert_eq!(
+        session.view().item(ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert_eq!(
+        session.view().item(SECOND_ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+    assert!(!session.is_current_native_binding(child_binding));
+}
+
+struct PendingNativeCreate {
+    session: DockspaceSession,
+    root_binding: NativeSurfaceBinding,
+    child_binding: NativeSurfaceBinding,
+    placement: PhysicalRect,
+    request: crate::runtime::NativeEffectRequest,
+}
+
+fn request_native_create() -> PendingNativeCreate {
+    let (mut session, root_binding) = managed_tear_off_session();
+    let work_area_binding = session
+        .native_work_area(HostWorkAreaToken::new(1))
+        .expect("the committed work-area roster mints route authority");
+    let source_receiver = presented_tab_receiver(&mut session, ITEM);
+    let source_point = source_receiver.center();
+    let source_desktop = PhysicalPoint::new(
+        ROOT_ORIGIN_X + source_point.x(),
+        ROOT_ORIGIN_Y + source_point.y(),
+    )
+    .expect("the source desktop point is finite");
+    let outside = PhysicalPoint::new(1_000.0, 700.0).expect("the outside point is finite");
+    let pointer = NativePointerId::new(1);
+
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(source_desktop),
+                NativePointerHover::Dock(root_binding),
+                None,
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding),
+        ))
+        .expect("the exact source press records");
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(outside),
+                NativePointerHover::OutsideAll,
+                Some(work_area_binding),
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding),
+        ))
+        .expect("the exact outside-all move records");
+
+    let mut preview = session
+        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .expect("the native drag frame begins");
+    assert!(
+        preview
+            .paint_plan(SURFACE)
+            .expect("the source plan resolves")
+            .expect("the source remains paintable")
+            .drag_preview()
+            .is_some(),
+        "the outside-all move must expose a core-owned native preview"
+    );
+    preview
+        .confirm_surface_painted(SURFACE)
+        .expect("the exact preview is painted");
+    let mut preview_report = preview.commit().expect("the preview frame commits");
+    assert!(preview_report.take_native_effects().is_empty());
+    present_surface_outputs(&mut session, &mut preview_report);
+    commit_managed_frame(&mut session);
+
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(outside),
+                NativePointerHover::OutsideAll,
+                Some(work_area_binding),
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::None,
+        ))
+        .expect("the exact outside-all release records");
+    let mut release = session
+        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .expect("the native release frame begins");
+    release
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the release frame retains current surface authority");
+    let mut release_report = release.commit().expect("the native release commits");
+    let request = take_only_native_effect(&mut release_report);
+    let (child_binding, placement) = match request.operation() {
+        NativeEffectOperation::CreateWindow {
+            binding, placement, ..
+        } => (*binding, *placement),
+        operation => panic!("outside-all release emitted {operation:?} instead of CreateWindow"),
+    };
+    assert_ne!(child_binding.surface(), SURFACE);
+    assert_eq!(
+        session.view().item(ITEM).map(|item| item.surface()),
+        Some(SURFACE)
+    );
+
+    PendingNativeCreate {
+        session,
+        root_binding,
+        child_binding,
+        placement,
+        request,
+    }
 }
 
 fn managed_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
