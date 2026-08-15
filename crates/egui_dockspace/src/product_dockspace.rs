@@ -6,6 +6,7 @@ use std::{fmt::Debug, hash::Hash};
 use dockspace::close::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
 };
+use dockspace::geometry::LogicalRect;
 use dockspace::model::{
     DockPlacement, DockspaceLayout, DockspaceView, ItemId, PreparedDockAction, RootId, SurfaceId,
 };
@@ -261,6 +262,30 @@ impl Dockspace {
         self.session.prepare_dock_root(root, placement)
     }
 
+    /// Prepares a revision-bound action that moves one item into contained floating content.
+    pub const fn prepare_float_item(
+        &self,
+        item: ItemId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    ) -> PreparedDockAction {
+        self.session.prepare_float_item(item, surface, rect)
+    }
+
+    /// Prepares a revision-bound contained-bounds update addressed by item identity.
+    pub const fn prepare_set_contained_rect(
+        &self,
+        item: ItemId,
+        rect: LogicalRect,
+    ) -> PreparedDockAction {
+        self.session.prepare_set_contained_rect(item, rect)
+    }
+
+    /// Prepares a revision-bound contained raise addressed by item identity.
+    pub const fn prepare_raise_contained(&self, item: ItemId) -> PreparedDockAction {
+        self.session.prepare_raise_contained(item)
+    }
+
     /// Submits one core-issued product action against its source revision.
     ///
     /// # Errors
@@ -341,6 +366,51 @@ impl Dockspace {
         placement: DockPlacement,
     ) -> Result<DockspaceActionResult, DockspaceError> {
         self.submit_prepared_action(self.prepare_dock_root(root, placement))
+    }
+
+    /// Moves one open item into a contained presentation on an existing surface.
+    ///
+    /// A complete singleton root preserves its root identity. Moving one item out
+    /// of a larger root allocates a fresh root and contained-presentation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item or surface is unavailable, current policy
+    /// rejects contained floating, or the action cannot be reduced atomically.
+    pub fn float_item_current(
+        &mut self,
+        item: ItemId,
+        surface: SurfaceId,
+        rect: LogicalRect,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_float_item(item, surface, rect))
+    }
+
+    /// Updates the durable bounds of the contained presentation owning one item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is not contained, current policy rejects
+    /// the update, or the action cannot be reduced atomically.
+    pub fn set_contained_rect_current(
+        &mut self,
+        item: ItemId,
+        rect: LogicalRect,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_set_contained_rect(item, rect))
+    }
+
+    /// Raises the contained presentation owning one item to the front.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item is not contained, current policy rejects
+    /// the update, or the action cannot be reduced atomically.
+    pub fn raise_contained_current(
+        &mut self,
+        item: ItemId,
+    ) -> Result<DockspaceActionResult, DockspaceError> {
+        self.submit_prepared_action(self.prepare_raise_contained(item))
     }
 
     /// Resolves one initial pane-close decision.

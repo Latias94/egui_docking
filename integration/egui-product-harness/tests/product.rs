@@ -1,12 +1,10 @@
-use dockspace::geometry::LogicalRect;
-use dockspace::model::{
-    DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
-    DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId, SurfaceId,
-};
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{CloseDecision, DockspaceCloseRequest};
-use egui_dockspace::{Dockspace, PaneView};
+use egui_dockspace::{
+    CloseDecision, Dockspace, DockspaceAxis, DockspaceCloseRequest, DockspaceContainedLayout,
+    DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    FloatingPresentationId, ItemId, LogicalRect, PaneView, RootId, SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -352,6 +350,73 @@ fn default_features_render_a_ready_product_surface() {
     let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     let _ = tab_center(&ready.output, "First");
     let _ = tab_center(&ready.output, "Second");
+}
+
+#[test]
+fn default_features_expose_item_centric_contained_actions() {
+    let first_rect =
+        LogicalRect::new(40.0, 50.0, 260.0, 180.0).expect("the first contained rectangle is valid");
+    let second_rect = LogicalRect::new(340.0, 80.0, 280.0, 200.0)
+        .expect("the second contained rectangle is valid");
+    let updated_rect = LogicalRect::new(90.0, 120.0, 300.0, 240.0)
+        .expect("the updated contained rectangle is valid");
+    let mut dockspace = Dockspace::builder("product-contained-actions", layout())
+        .build()
+        .expect("the product facade initializes");
+
+    dockspace
+        .float_item_current(SECOND, SURFACE, first_rect)
+        .expect("the first item floats through the product facade");
+    let second_floating = dockspace
+        .view()
+        .item(SECOND)
+        .and_then(|item| item.contained())
+        .expect("the floated item owns a contained presentation");
+
+    dockspace
+        .float_item_current(FIRST, SURFACE, second_rect)
+        .expect("the singleton main root floats through the product facade");
+    let first_floating = dockspace
+        .view()
+        .item(FIRST)
+        .and_then(|item| item.contained())
+        .expect("the second floated item owns a contained presentation");
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the surface remains available")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        vec![second_floating, first_floating],
+    );
+
+    dockspace
+        .set_contained_rect_current(SECOND, updated_rect)
+        .expect("contained bounds update through the product facade");
+    assert_eq!(
+        dockspace
+            .view()
+            .contained(second_floating)
+            .expect("the updated contained presentation remains available")
+            .rect(),
+        updated_rect,
+    );
+
+    dockspace
+        .raise_contained_current(SECOND)
+        .expect("contained raise through the product facade");
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the surface remains available")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        vec![first_floating, second_floating],
+    );
 }
 
 #[test]

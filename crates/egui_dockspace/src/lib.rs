@@ -25,6 +25,7 @@ pub use dockspace::close::{
     ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
     SurfaceCloseDisposition,
 };
+pub use dockspace::geometry::LogicalRect;
 pub use dockspace::model::{
     DockAnchor, DockEdge, DockFraction, DockPlacement, DockspaceActionOutcome,
     DockspaceActionRejection, DockspaceAxis, DockspaceContainedLayout, DockspaceContainedView,

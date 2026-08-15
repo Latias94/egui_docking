@@ -2,12 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::geometry::LogicalRect;
 use eframe::egui;
 use egui_dockspace::{
     Dockspace, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
-    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, PaneView, RootId,
-    SurfaceId,
+    DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
+    PaneView, RootId, SurfaceId,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
