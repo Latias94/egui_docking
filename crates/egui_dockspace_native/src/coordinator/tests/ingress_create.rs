@@ -6,12 +6,14 @@ use dockspace::runtime::{
     NativeEffectOperation, NativePointerRoster, NativeWindowInputState,
     NativeWindowPresentationState, SurfacePresentationResult, UniformSurfaceMetrics,
 };
+use eframe::NativeViewportPointerPassthroughStatus;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute, WindowEvent,
 };
 
 use super::*;
+use crate::input_control::NativePointerPassthroughRecord;
 use crate::work_area::FrozenWorkAreaRoster;
 
 const SOURCE_SURFACE: SurfaceId = SurfaceId::new(41);
@@ -86,9 +88,7 @@ fn publish_desktop_authority(native: &mut NativeCoordinator, binding: NativeSurf
         )],
         FrozenWorkAreaRoster::for_test_exact([(1, display_bounds, work_area, scale)]),
     );
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(roster));
+    native.bridge.push_viewport_roster(roster);
     assert!(
         native
             .reduce_callback_head()
@@ -359,6 +359,260 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
         .expect("source item stays reachable until the native lifecycle barrier");
     assert_eq!(source_after.surface(), source_surface);
     assert_eq!(source_after.root(), source_root);
+}
+
+#[test]
+fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+
+    let enable = native
+        .pointer_passthrough_command()
+        .expect("the first ordered input command is ready");
+    assert_eq!(enable.viewport(), ViewportId::ROOT);
+    assert!(enable.enabled());
+    let enable_token = dispatch_pointer_passthrough(&mut native);
+    assert!(native.pointer_passthrough_command().is_none());
+
+    let unrelated_token = pointer_passthrough_token(ViewportId::ROOT, true);
+    assert_ne!(unrelated_token, enable_token);
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            NativePointerPassthroughRecord::for_test(
+                unrelated_token,
+                ViewportId::ROOT,
+                source_window(),
+                Some(source),
+                true,
+                NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("an unrelated same-value host command is consumed")
+    );
+    assert_eq!(
+        native.input_control.snapshot_fact(source),
+        None,
+        "an unrelated token cannot publish over the owned input command"
+    );
+    let mut unrelated = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the unrelated callback boundary begins");
+    unrelated
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the unrelated callback boundary settles every surface");
+    unrelated
+        .commit()
+        .expect("the unrelated callback boundary commits");
+
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            NativePointerPassthroughRecord::for_test(
+                enable_token,
+                ViewportId::ROOT,
+                source_window(),
+                Some(source),
+                true,
+                NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the enable callback records")
+    );
+    assert!(
+        native
+            .input_control
+            .snapshot_fact(source)
+            .is_some_and(|(_, acknowledgement)| acknowledgement.is_some())
+    );
+
+    let mut enabled = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the enable callback boundary begins");
+    enabled
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the enable callback boundary settles every surface");
+    enabled
+        .commit()
+        .expect("the enable callback boundary commits");
+
+    let late_unrelated_token = pointer_passthrough_token(ViewportId::ROOT, true);
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            NativePointerPassthroughRecord::for_test(
+                late_unrelated_token,
+                ViewportId::ROOT,
+                source_window(),
+                Some(source),
+                true,
+                NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("a late unrelated same-value command is consumed")
+    );
+    assert!(
+        native
+            .input_control
+            .snapshot_fact(source)
+            .is_some_and(|(_, acknowledgement)| acknowledgement.is_some()),
+        "an unrelated token cannot erase the retained acknowledgement"
+    );
+    let mut late_unrelated = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the late unrelated callback boundary begins");
+    late_unrelated
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the late unrelated callback boundary settles every surface");
+    late_unrelated
+        .commit()
+        .expect("the late unrelated callback boundary commits");
+
+    assert!(
+        native.pointer_passthrough_command().is_none(),
+        "the restore must wait for an exact input snapshot"
+    );
+
+    let scale = ScaleFactor::new(1.0).expect("test scale validates");
+    let source_bounds = PhysicalRect::new(0.0, 0.0, 640.0, 360.0).expect("source bounds validate");
+    native
+        .bridge
+        .push_viewport_roster(NativeViewportRosterRecord::for_test(
+            [
+                CompiledWindowObservation::new(source, ready_window_facts(source_bounds, scale)),
+                CompiledWindowObservation::new(child, NativeWindowFacts::live()),
+            ],
+            true,
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the enabling snapshot records")
+    );
+    let mut enabled_snapshot = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the enabling snapshot boundary begins");
+    enabled_snapshot
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the enabling snapshot settles every surface");
+    let enabled_report = enabled_snapshot
+        .commit()
+        .expect("the enabling snapshot commits");
+    assert!(native.settle_host_frame_inputs(enabled_report.inputs()));
+
+    let restore = native
+        .pointer_passthrough_command()
+        .expect("the causal restore waits for the enable observation");
+    assert_eq!(restore.viewport(), ViewportId::ROOT);
+    assert!(!restore.enabled());
+    let restore_token = dispatch_pointer_passthrough(&mut native);
+
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            NativePointerPassthroughRecord::for_test(
+                restore_token,
+                ViewportId::ROOT,
+                source_window(),
+                Some(source),
+                false,
+                NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the restore callback records")
+    );
+    let mut restored = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the restore callback boundary begins");
+    restored
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the restore callback boundary settles every surface");
+    restored
+        .commit()
+        .expect("the restore callback boundary commits");
+
+    native
+        .bridge
+        .push_viewport_roster(NativeViewportRosterRecord::for_test(
+            [
+                CompiledWindowObservation::new(source, ready_window_facts(source_bounds, scale)),
+                CompiledWindowObservation::new(child, NativeWindowFacts::live()),
+            ],
+            true,
+        ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the restoring snapshot records")
+    );
+    let mut restored_snapshot = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the restoring snapshot boundary begins");
+    restored_snapshot
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the restoring snapshot settles every surface");
+    let restored_report = restored_snapshot
+        .commit()
+        .expect("the restoring snapshot commits");
+    assert!(native.settle_host_frame_inputs(restored_report.inputs()));
+    assert_eq!(
+        native.input_control.snapshot_fact(source),
+        Some((NativeWindowInputState::ReceivesInput, None))
+    );
+    assert!(native.pointer_passthrough_command().is_none());
+}
+
+#[test]
+fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let _child = request_native_child(&mut native, receiver);
+    let enable_token = dispatch_pointer_passthrough(&mut native);
+
+    assert!(native.quarantine_after_fatal().is_empty());
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(
+            NativePointerPassthroughRecord::for_test(
+                enable_token,
+                ViewportId::ROOT,
+                source_window(),
+                Some(source),
+                true,
+                NativeViewportPointerPassthroughStatus::Applied,
+            ),
+        ));
+    let enable_boundary = native
+        .advance_shutdown_boundary()
+        .expect("shutdown consumes the exact enable callback");
+    assert!(enable_boundary.pointer_passthrough.is_none());
+
+    native.bridge.push_viewport_roster(live_roster([source]));
+    let snapshot_boundary = native
+        .advance_shutdown_boundary()
+        .expect("shutdown commits the exact enable observation");
+    let restore = snapshot_boundary
+        .pointer_passthrough
+        .expect("the causal restore becomes dispatchable after the snapshot");
+    assert_eq!(restore.viewport(), ViewportId::ROOT);
+    assert!(!restore.enabled());
 }
 
 #[test]

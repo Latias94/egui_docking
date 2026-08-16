@@ -18,6 +18,7 @@ pub(crate) struct NativeShutdownAdvance {
     pub(crate) progress: bool,
     pub(crate) registrations: Vec<NativeShutdownRegistration>,
     pub(crate) commands: Vec<(ViewportId, ViewportCommand)>,
+    pub(crate) pointer_passthrough: Option<NativePointerPassthroughCommand>,
     pub(crate) abandoned_outputs: Vec<NativeOutputToken>,
 }
 
@@ -49,6 +50,7 @@ impl NativeCoordinator {
             .collect();
         let had_inputs = !report.inputs().is_empty();
         let native_snapshot_applied = self.settle_host_frame_inputs(report.inputs());
+        let native_close_settled = self.settle_close_control_inputs(report.inputs())?;
         let native_admission_settled = self.settle_native_admissions(report.native_admissions())?;
         let retirement_committed = prepared_retirements.is_some();
         let abandoned_outputs = prepared_retirements
@@ -58,7 +60,9 @@ impl NativeCoordinator {
         let effects_emitted = !effects.is_empty();
         self.fail_shutdown_effects(effects)?;
         let commands = self.take_viewport_commands();
+        let pointer_passthrough = self.pointer_passthrough_command();
         let commands_pending = !commands.is_empty();
+        let pointer_passthrough_pending = pointer_passthrough.is_some();
 
         Ok(NativeShutdownAdvance {
             progress: output_prefix_pending
@@ -66,14 +70,17 @@ impl NativeCoordinator {
                 || reduced_callback
                 || had_inputs
                 || native_snapshot_applied
+                || native_close_settled
                 || native_admission_settled
                 || retirement_committed
                 || !abandoned_outputs.is_empty()
                 || effects_emitted
                 || commands_pending
+                || pointer_passthrough_pending
                 || repaint_requested,
             registrations,
             commands,
+            pointer_passthrough,
             abandoned_outputs,
         })
     }

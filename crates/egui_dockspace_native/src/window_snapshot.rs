@@ -1,8 +1,10 @@
 //! Exact conversion from fork-owned window snapshots into core native facts.
 
 use dockspace::geometry::{PhysicalRect, ScaleFactor};
-use dockspace::runtime::{NativeSurfaceBinding, NativeWindowFacts, NativeWindowPresentationState};
-use dockspace::runtime::NativePresentationEffectAcknowledgement;
+use dockspace::runtime::{
+    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
+    NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+};
 use eframe::{NativePhysicalRect, NativeWindowSnapshot};
 
 use crate::error::NativeHostProtocolError;
@@ -11,7 +13,9 @@ use crate::error::NativeHostProtocolError;
 pub(crate) struct CompiledWindowObservation {
     binding: NativeSurfaceBinding,
     facts: NativeWindowFacts,
+    input_acknowledged: bool,
     presentation_acknowledged: bool,
+    focus_reportable: bool,
 }
 
 impl CompiledWindowObservation {
@@ -19,7 +23,9 @@ impl CompiledWindowObservation {
         Self {
             binding,
             facts,
+            input_acknowledged: false,
             presentation_acknowledged: false,
+            focus_reportable: false,
         }
     }
 
@@ -33,6 +39,30 @@ impl CompiledWindowObservation {
 
     pub(crate) const fn presentation_acknowledged(self) -> bool {
         self.presentation_acknowledged
+    }
+
+    pub(crate) const fn input_acknowledged(self) -> bool {
+        self.input_acknowledged
+    }
+
+    pub(crate) const fn focus_reportable(self) -> bool {
+        self.focus_reportable
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn with_focus_reportable_for_test(mut self) -> Self {
+        self.focus_reportable = true;
+        self
+    }
+
+    pub(crate) const fn with_input(
+        mut self,
+        state: NativeWindowInputState,
+        acknowledgement: Option<NativeInputEffectAcknowledgement>,
+    ) -> Self {
+        self.facts = self.facts.with_input(state, acknowledgement);
+        self.input_acknowledged = acknowledgement.is_some();
+        self
     }
 }
 
@@ -64,10 +94,15 @@ pub(crate) fn compile_window_observation(
     snapshot: NativeWindowSnapshot,
     acknowledgement: Option<NativePresentationEffectAcknowledgement>,
 ) -> Result<CompiledWindowObservation, NativeHostProtocolError> {
-    compile_window_facts(snapshot.into(), acknowledgement).map(|facts| CompiledWindowObservation {
+    let snapshot = SnapshotParts::from(snapshot);
+    let focus_reportable = presentation_state(snapshot.visible, snapshot.minimized)
+        == Some(NativeWindowPresentationState::Visible);
+    compile_window_facts(snapshot, acknowledgement).map(|facts| CompiledWindowObservation {
         binding,
         facts,
+        input_acknowledged: false,
         presentation_acknowledged: acknowledgement.is_some(),
+        focus_reportable,
     })
 }
 
@@ -205,23 +240,24 @@ mod tests {
 
     #[test]
     fn missing_snapshot_fields_remain_unknown() {
-        let facts = compile_window_facts(SnapshotParts {
-            inner_rect: None,
-            outer_rect: None,
-            native_scale_factor: 1.5,
-            presentation_scale_factor: 1.25,
-            visible: None,
-            minimized: None,
-        }, None)
+        let facts = compile_window_facts(
+            SnapshotParts {
+                inner_rect: None,
+                outer_rect: None,
+                native_scale_factor: 1.5,
+                presentation_scale_factor: 1.25,
+                visible: None,
+                minimized: None,
+            },
+            None,
+        )
         .expect("partial snapshot compiles");
 
         assert_eq!(
             facts,
             NativeWindowFacts::live()
                 .with_native_scale_factor(ScaleFactor::new(1.5).expect("scale validates"))
-                .with_presentation_scale_factor(
-                    ScaleFactor::new(1.25).expect("scale validates"),
-                )
+                .with_presentation_scale_factor(ScaleFactor::new(1.25).expect("scale validates"),)
         );
     }
 

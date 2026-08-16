@@ -762,7 +762,7 @@ impl RuntimeNativeState {
                 surface: binding.surface(),
             });
         }
-        if !self.retired_bindings.remove(&binding.binding) {
+        if !self.retired_bindings.contains(&binding.binding) {
             return Err(NativePlatformError::BindingNotRetired {
                 surface: binding.surface(),
             });
@@ -772,9 +772,11 @@ impl RuntimeNativeState {
             .record_platform_binding_quiescence(binding.binding)
             .is_err()
         {
-            self.retired_bindings.insert(binding.binding);
             return Err(NativePlatformError::ProtocolInvariant);
         }
+        let removed = self.retired_bindings.remove(&binding.binding);
+        debug_assert!(removed, "validated retired binding remains present");
+        self.close_generations.remove(&binding.binding);
         Ok(())
     }
 
@@ -1061,6 +1063,7 @@ impl RuntimeNativeState {
             self.bindings
                 .get(&binding.surface())
                 .is_some_and(|current| current.binding == *binding)
+                || self.retired_bindings.contains(binding)
         });
         self.binding_roster_unsettled = false;
         NativeHostCommit {

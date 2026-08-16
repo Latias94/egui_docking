@@ -6,21 +6,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 use dockspace::geometry::PhysicalRect;
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseEffectAcknowledgement,
-    NativeCloseState, NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation,
-    NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError, NativeHostErrorKind,
-    NativePointerInput, NativePointerRoster, NativePresentationEffectAcknowledgement,
-    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason,
-    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput,
-    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason,
+    DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseDisposition,
+    NativeCloseEffectAcknowledgement, NativeCloseState, NativeDispatchFailure,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
+    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativePointerInput,
+    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
+    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
+    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
+    SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailureKind, NativeViewportVisibilityStatus,
+    NativeViewportCreateFailureKind, NativeViewportFocusStatus,
+    NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughStatus,
+    NativeViewportVisibilityStatus,
     egui::{ViewportCommand, ViewportId},
 };
 use winit::window::WindowId;
 
+use crate::close_control::NativeCloseControl;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
     NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan, PendingShowEffect,
@@ -28,21 +32,31 @@ use crate::effect_coordinator::{
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
 };
+use crate::focus_control::{NativeFocusControl, NativeFocusResultDisposition};
 use crate::host_frame::NativeHostFrame;
+use crate::input_control::{
+    NativeInputControl, NativeInputResultDisposition, NativePointerPassthroughCommand,
+};
+use crate::lifecycle_progress::NativeLifecycleProgress;
 use crate::mailbox::{
-    DeferredViewportPaint, NativeHostBridge, NativeViewportRosterRecord, PreparedRouteRetirements,
+    DeferredViewportPaint, NativeHostBridge, NativeViewportRosterEnvelope,
+    NativeViewportRosterRecord, PreparedRouteRetirements,
 };
 #[cfg(test)]
 use crate::mailbox::{HostRecord, OutputReservation};
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::receiver::NativeReceiverStore;
-use crate::retirement::{CleanupResultRetentionError, CommittedRetirement, NativeRetirementState};
+use crate::retirement::{
+    CleanupResultRetentionError, CommittedRetirement, DestroyedObservation, NativeRetirementState,
+};
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAreaRoster};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
+mod close_driver;
+mod effect_dispatch;
 mod shutdown;
 
 pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
@@ -67,11 +81,18 @@ pub(crate) struct NativeCoordinator {
     retirements: NativeRetirementState,
     pointer_translator: NativePointerTranslator,
     work_areas: NativeWorkAreaState,
+    close_control: NativeCloseControl,
+    focus_control: NativeFocusControl,
+    input_control: NativeInputControl,
+    lifecycle_progress: NativeLifecycleProgress,
 }
 
 #[derive(Debug)]
 struct QueuedNativeSnapshot {
-    acknowledgements: Vec<NativeSurfaceBinding>,
+    roster: NativeViewportRosterEnvelope,
+    presentation_acknowledgements: Vec<NativeSurfaceBinding>,
+    input_acknowledgement: Option<NativeSurfaceBinding>,
+    focus_reportable: Vec<NativeSurfaceBinding>,
     work_areas: PreparedWorkAreaRoster,
 }
 
@@ -83,12 +104,6 @@ pub(crate) struct PreparedNativeRetirements {
 enum PendingNativeOutput {
     Surface(PaintedSurfaceOutput),
     Staging(PaintedNativeStagingOutput),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeRetirementDispatch {
-    OmitDeferredViewport,
-    CloseViewport,
 }
 
 impl std::fmt::Debug for PendingNativeOutput {
@@ -125,17 +140,35 @@ impl std::fmt::Debug for NativeCoordinator {
                 &self.pending_presentation_acknowledgements.len(),
             )
             .field(
-                "queued_snapshot_acknowledgements",
+                "queued_snapshot_presentation_acknowledgements",
                 &self
                     .queued_snapshot
                     .as_ref()
-                    .map_or(0, |queued| queued.acknowledgements.len()),
+                    .map_or(0, |queued| queued.presentation_acknowledgements.len()),
+            )
+            .field(
+                "queued_snapshot_input_acknowledgement",
+                &self
+                    .queued_snapshot
+                    .as_ref()
+                    .is_some_and(|queued| queued.input_acknowledgement.is_some()),
+            )
+            .field(
+                "queued_snapshot_focus_reportable",
+                &self
+                    .queued_snapshot
+                    .as_ref()
+                    .map_or(0, |queued| queued.focus_reportable.len()),
             )
             .field("deferred_viewports", &self.deferred_viewports)
             .field("receivers", &self.receivers)
             .field("effects", &self.effects)
             .field("retirements", &self.retirements)
             .field("pointer_translator", &self.pointer_translator)
+            .field("close_control", &self.close_control)
+            .field("focus_control", &self.focus_control)
+            .field("input_control", &self.input_control)
+            .field("lifecycle_progress", &self.lifecycle_progress)
             .finish_non_exhaustive()
     }
 }
@@ -152,6 +185,7 @@ impl NativeCoordinator {
         initial_pointer_roster: NativePointerRoster,
     ) -> Result<Self, NativeRuntimeError> {
         session.enable_managed_native_host(initial_pointer_roster)?;
+        session.report_native_inventory_unknown()?;
         let viewports = Arc::new(Mutex::new(NativeViewportMap::default()));
         Ok(Self {
             session,
@@ -166,6 +200,10 @@ impl NativeCoordinator {
             retirements: NativeRetirementState::default(),
             pointer_translator: NativePointerTranslator::default(),
             work_areas: NativeWorkAreaState::default(),
+            close_control: NativeCloseControl::default(),
+            focus_control: NativeFocusControl::default(),
+            input_control: NativeInputControl::default(),
+            lifecycle_progress: NativeLifecycleProgress::default(),
         })
     }
 
@@ -179,6 +217,10 @@ impl NativeCoordinator {
     #[must_use]
     pub const fn session(&self) -> &DockspaceSession {
         &self.session
+    }
+
+    pub(crate) const fn lifecycle_progress(&self) -> NativeLifecycleProgress {
+        self.lifecycle_progress
     }
 
     /// Associates one eframe viewport with an exact current core binding.
@@ -355,6 +397,18 @@ impl NativeCoordinator {
         self.effects.take_commands()
     }
 
+    pub(crate) fn pointer_passthrough_command(&self) -> Option<NativePointerPassthroughCommand> {
+        self.input_control.command_to_dispatch()
+    }
+
+    pub(crate) fn mark_pointer_passthrough_dispatched(
+        &mut self,
+        command: NativePointerPassthroughCommand,
+        token: NativeViewportPointerPassthroughCommandToken,
+    ) -> bool {
+        self.input_control.mark_dispatched(command, token)
+    }
+
     /// Classifies one exact deferred callback without reducing core state.
     pub(crate) fn deferred_viewport_paint(
         &self,
@@ -414,6 +468,9 @@ impl NativeCoordinator {
             self.pending_presentation_acknowledgements
                 .remove(&retirement.binding());
             self.effects.remove_show(retirement.binding());
+            self.effects.remove_commands(retirement.binding());
+            self.focus_control.retire_binding(retirement.binding());
+            self.input_control.retire_binding(retirement.binding());
             self.receivers.retire_binding(retirement.binding());
         }
         for &token in &abandoned {
@@ -446,15 +503,65 @@ impl NativeCoordinator {
             "one queued native snapshot has one outcome"
         );
         self.retirements.settle_snapshot(applied && !rejected);
+        debug_assert!(
+            self.bridge
+                .settle_viewport_roster(&queued.roster, applied && !rejected),
+            "one queued native snapshot settles its exact roster envelope"
+        );
         if applied && !rejected {
             self.work_areas.commit(queued.work_areas, &self.session);
-            for binding in queued.acknowledgements {
+            self.viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .set_focus_reportable(queued.focus_reportable);
+            for binding in queued.presentation_acknowledgements {
                 self.pending_presentation_acknowledgements.remove(&binding);
             }
+            self.input_control
+                .settle_snapshot(queued.input_acknowledgement);
             true
         } else {
             false
         }
+    }
+
+    pub(crate) fn settle_close_control_inputs(
+        &mut self,
+        inputs: &[HostInputOutcome],
+    ) -> Result<bool, NativeRuntimeError> {
+        let mut matched_request = false;
+        let mut close_observation_applied = false;
+        let mut close_observation_rejected = false;
+        for input in inputs {
+            match input {
+                HostInputOutcome::NativePlatformSnapshotApplied { close_requests }
+                | HostInputOutcome::NativeCloseObservationApplied { close_requests } => {
+                    close_observation_applied = true;
+                    for request in close_requests {
+                        match self.close_control.bind_request(*request) {
+                            Ok(matched) => matched_request |= matched,
+                            Err(()) => {
+                                return Err(
+                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into()
+                                );
+                            }
+                        }
+                    }
+                }
+                HostInputOutcome::NativePlatformSnapshotStale
+                | HostInputOutcome::NativePlatformProviderRejected => {
+                    close_observation_rejected = true;
+                }
+                _ => {}
+            }
+        }
+        let clear_pending = self
+            .close_control
+            .settle_clear(close_observation_applied && !close_observation_rejected);
+        if clear_pending && (!close_observation_applied || close_observation_rejected) {
+            return Err(NativeHostProtocolError::NativeCloseCancellationRejected.into());
+        }
+        Ok(matched_request || clear_pending)
     }
 
     pub(crate) fn settle_native_admissions(
@@ -474,7 +581,10 @@ impl NativeCoordinator {
                 )
                 .into());
             }
-            changed |= self.bridge.clear_hidden_render(viewport, *binding);
+            if self.bridge.clear_hidden_render(viewport, *binding) {
+                self.lifecycle_progress.record_first_live_admission();
+                changed = true;
+            }
         }
         Ok(changed)
     }
@@ -488,6 +598,9 @@ impl NativeCoordinator {
                 || self.deferred_viewports.viewport_for(binding).is_some()
                 || self.effects.references_binding(binding)
                 || self.retirements.references_cleanup(binding)
+                || self.close_control.references_binding(binding)
+                || self.focus_control.references_binding(binding)
+                || self.input_control.references_binding(binding)
                 || self
                     .pending_presentation_acknowledgements
                     .contains_key(&binding)
@@ -497,413 +610,12 @@ impl NativeCoordinator {
             self.session.report_native_binding_quiescence(binding)?;
             let finished = self.retirements.finish_quiescence(binding);
             debug_assert!(finished, "quiescence candidate remains pending");
+            if finished {
+                self.lifecycle_progress.record_quiescent_retirement();
+            }
             recorded = true;
         }
         Ok(recorded)
-    }
-
-    fn exact_viewport_for_binding(&self, binding: NativeSurfaceBinding) -> Option<ViewportId> {
-        let viewports = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let viewport = viewports.viewport(binding.surface())?;
-        (viewports.binding(viewport) == Some(binding)).then_some(viewport)
-    }
-
-    fn fail_pending_viewport_effect(
-        &mut self,
-        viewport: ViewportId,
-        binding: NativeSurfaceBinding,
-    ) -> Result<(), NativeRuntimeError> {
-        let failure = NativeViewportCreateFailureRecord::new(
-            viewport,
-            binding,
-            NativeViewportCreateFailureKind::WindowUnavailable,
-        );
-        if !self.effects.prepare_failure(failure) {
-            return Ok(());
-        }
-        if let Some(result) = self.effects.take_failure_result(failure)
-            && let Err(error) = self.session.report_native_effect_result(result)
-        {
-            let (kind, result) = error.into_parts();
-            self.effects
-                .restore_failure_result(failure, result)
-                .unwrap_or_else(|_| {
-                    panic!("destroyed native effect lost its retryable terminal result")
-                });
-            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
-        }
-        if self.effects.failure_reported(failure) {
-            debug_assert!(self.effects.finish_failure(failure));
-        }
-        Ok(())
-    }
-
-    fn retire_deferred_sidecars(&mut self, viewport: ViewportId, binding: NativeSurfaceBinding) {
-        let suppressed = self
-            .viewports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .suppress_pointer_route(viewport, binding);
-        debug_assert!(
-            suppressed,
-            "retired sidecars retain one exact viewport route"
-        );
-        self.deferred_viewports.remove(binding);
-        self.effects.remove_show(binding);
-        self.receivers.retire_binding(binding);
-        for token in self.bridge.retire_deferred_binding(viewport, binding) {
-            self.pending_outputs.remove(&token);
-            self.receivers.abandon(token);
-        }
-    }
-
-    fn accept_retirement_effect(
-        &mut self,
-        request: NativeEffectRequest,
-        binding: NativeSurfaceBinding,
-        dispatch: NativeRetirementDispatch,
-    ) -> Result<(), NativeRuntimeError> {
-        let Some(viewport) = self.exact_viewport_for_binding(binding) else {
-            if self.session.is_current_native_binding(binding) {
-                return self.submit_unsupported_effect(request);
-            }
-            return Err(
-                NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface()).into(),
-            );
-        };
-        if !self.session.recognizes_native_binding(binding)
-            || !self.retirements.can_begin_release(viewport, binding)
-        {
-            return self.submit_unsupported_effect(request);
-        }
-        self.fail_pending_viewport_effect(viewport, binding)?;
-        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = request.accepted() else {
-            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
-        };
-        self.retire_deferred_sidecars(viewport, binding);
-        let inserted = self
-            .retirements
-            .begin_release(viewport, binding, acknowledgement);
-        assert!(inserted, "preflighted native retirement must insert");
-        if dispatch == NativeRetirementDispatch::CloseViewport {
-            self.effects
-                .queue_command(viewport, binding, ViewportCommand::Close);
-        }
-        Ok(())
-    }
-
-    /// Accepts the minimal platform effects implemented by this vertical slice.
-    ///
-    /// New and replacement child windows retain their affine request until
-    /// eframe reports the first exact callback or a typed create failure.
-    /// `ShowWindow` is accepted only for an existing exact retained viewport.
-    /// `ReleaseChild` stops re-declaring the child but retains its route until
-    /// an exact destruction callback commits. `RequestRootClose` uses the same
-    /// retirement lane and additionally queues one exact eframe close command.
-    /// Unrelated platform operations remain explicitly unsupported.
-    pub(crate) fn accept_native_effects(
-        &mut self,
-        requests: Vec<NativeEffectRequest>,
-    ) -> Result<(), NativeRuntimeError> {
-        for request in requests {
-            match request.operation() {
-                NativeEffectOperation::CreateWindow {
-                    binding,
-                    placement,
-                    role,
-                }
-                | NativeEffectOperation::RequestReplacement {
-                    binding,
-                    placement,
-                    role,
-                } => {
-                    let binding = *binding;
-                    let placement = *placement;
-                    let role = *role;
-                    let kind = match request.operation() {
-                        NativeEffectOperation::CreateWindow { .. } => {
-                            NativeViewportEffectKind::Create
-                        }
-                        NativeEffectOperation::RequestReplacement { .. } => {
-                            NativeViewportEffectKind::Replacement
-                        }
-                        _ => unreachable!("matched one deferred viewport operation"),
-                    };
-                    let viewport = match kind {
-                        NativeViewportEffectKind::Create => viewport_id_for(binding),
-                        NativeViewportEffectKind::Replacement => {
-                            let Some(viewport) = self.surface_viewport(binding.surface()) else {
-                                self.submit_unsupported_effect(request)?;
-                                continue;
-                            };
-                            viewport
-                        }
-                    };
-                    let predecessor = match kind {
-                        NativeViewportEffectKind::Create => None,
-                        NativeViewportEffectKind::Replacement => self.viewport_binding(viewport),
-                    };
-                    if !self
-                        .deferred_viewports
-                        .can_insert(viewport, binding, placement, role)
-                        || predecessor.is_some_and(|predecessor| {
-                            !self
-                                .retirements
-                                .can_retire_committed_route_for_replacement(viewport, predecessor)
-                        })
-                    {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    }
-                    let plan = match self.retain_viewport_effect(viewport, request) {
-                        Ok(plan) => plan,
-                        Err(request) => {
-                            self.submit_unsupported_effect(request)?;
-                            continue;
-                        }
-                    };
-                    debug_assert_eq!(plan.binding(), binding);
-                    debug_assert_eq!(plan.placement(), placement);
-                    debug_assert_eq!(plan.role(), role);
-                    debug_assert_eq!(plan.kind(), kind);
-                    let inserted = self
-                        .deferred_viewports
-                        .insert(viewport, binding, placement, role);
-                    assert!(inserted, "preflighted deferred viewport must insert");
-                    if let Some(predecessor) = predecessor {
-                        assert!(
-                            self.retirements
-                                .retire_committed_route_for_replacement(viewport, predecessor),
-                            "preflighted predecessor route must retire through replacement"
-                        );
-                        self.receivers.retire_binding(predecessor);
-                    }
-                }
-                NativeEffectOperation::ShowWindow { binding } => {
-                    let binding = *binding;
-                    let Some(viewport) = self.deferred_viewports.viewport_for(binding) else {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    };
-                    let current = self
-                        .viewports
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .binding(viewport);
-                    if current != Some(binding) || self.has_pending_presentation_effect(binding) {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    }
-                    let shown = self.deferred_viewports.set_visible(binding);
-                    assert_eq!(shown, Some(viewport));
-                    self.effects.retain_show(binding, request).map_err(|_| {
-                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                    })?;
-                }
-                NativeEffectOperation::ReleaseChild { binding }
-                | NativeEffectOperation::CompensatingClose { binding } => {
-                    let binding = *binding;
-                    self.accept_retirement_effect(
-                        request,
-                        binding,
-                        NativeRetirementDispatch::OmitDeferredViewport,
-                    )?;
-                }
-                NativeEffectOperation::RequestRootClose { binding } => {
-                    let binding = *binding;
-                    self.accept_retirement_effect(
-                        request,
-                        binding,
-                        NativeRetirementDispatch::CloseViewport,
-                    )?;
-                }
-                NativeEffectOperation::AwaitCleanup { binding } => {
-                    let binding = *binding;
-                    if !self.session.recognizes_native_binding(binding)
-                        || !self.retirements.can_accept_cleanup_observation(binding)
-                    {
-                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
-                        continue;
-                    }
-                    let Some(NativeEffectAcknowledgement::Cleanup(observation)) =
-                        request.accepted()
-                    else {
-                        return Err(
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
-                        );
-                    };
-                    let correlated = self
-                        .retirements
-                        .accept_cleanup_observation(binding, observation)
-                        .map_err(|()| NativeHostProtocolError::CleanupRelayConflict)?;
-                    if let Some(result) = correlated {
-                        self.report_cleanup_result(binding, result)?;
-                    }
-                }
-                _ => {
-                    self.submit_unsupported_effect(request)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn submit_unsupported_effect(
-        &mut self,
-        request: NativeEffectRequest,
-    ) -> Result<(), NativeRuntimeError> {
-        let binding = request.operation().binding();
-        let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
-    }
-
-    fn submit_failed_effect(
-        &mut self,
-        request: NativeEffectRequest,
-        reason: NativeDispatchFailure,
-    ) -> Result<(), NativeRuntimeError> {
-        let binding = request.operation().binding();
-        let result = request.dispatch_failed(reason);
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
-    }
-
-    fn report_cleanup_result(
-        &mut self,
-        binding: NativeSurfaceBinding,
-        result: NativeEffectResult,
-    ) -> Result<(), NativeRuntimeError> {
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            return self.retain_or_return_effect_result(binding, error);
-        }
-        Ok(())
-    }
-
-    fn retain_or_return_effect_result(
-        &mut self,
-        binding: NativeSurfaceBinding,
-        error: NativeEffectSubmissionError,
-    ) -> Result<(), NativeRuntimeError> {
-        let (kind, result) = error.into_parts();
-        if !result.binding().same_window_lifetime(binding)
-            || !result.can_be_correlated_by_cleanup()
-            || !matches!(kind, NativeHostErrorKind::StaleBinding)
-        {
-            return Err(Self::fatal_effect_submission(kind, result));
-        }
-        if self.retirements.cleanup_is_terminal(binding) {
-            drop(result);
-            return Ok(());
-        }
-        if !self.retirements.can_accept_cleanup_result(binding) {
-            return Err(Self::fatal_effect_submission(kind, result));
-        }
-        match self.retirements.retain_cleanup_result(binding, result) {
-            Ok(Some(correlated)) => self.report_cleanup_result(binding, correlated),
-            Ok(None) => Ok(()),
-            Err(CleanupResultRetentionError::CorrelationMismatch) => {
-                Err(NativeHostProtocolError::CleanupRelayConflict.into())
-            }
-            Err(CleanupResultRetentionError::Occupied(result)) => {
-                Err(Self::fatal_effect_submission(kind, result))
-            }
-        }
-    }
-
-    fn fatal_effect_submission(
-        kind: NativeHostErrorKind,
-        result: NativeEffectResult,
-    ) -> NativeRuntimeError {
-        // The application treats host-protocol errors as terminal and drops
-        // the whole coordinator/session. Do not expose a misleading recovery
-        // capability whose owning session can no longer make progress.
-        drop(result);
-        NativeHostProtocolError::NativeEffectResultRejected(kind).into()
-    }
-
-    /// Retains one core-emitted deferred viewport effect until eframe reports
-    /// an exact success or failure callback.
-    ///
-    /// The caller must invoke this only after the core host frame which emitted
-    /// `request` committed. A rejected request is returned unchanged so the
-    /// driver can convert it into an explicit typed dispatch result.
-    pub(crate) fn retain_viewport_effect(
-        &mut self,
-        viewport: ViewportId,
-        request: dockspace::runtime::NativeEffectRequest,
-    ) -> Result<NativeViewportEffectPlan, dockspace::runtime::NativeEffectRequest> {
-        let Some(plan) = self.effects.plan(viewport, &request) else {
-            return Err(request);
-        };
-        if !self.session.is_current_native_binding(plan.binding()) {
-            return Err(request);
-        }
-        let predecessor = {
-            let viewports = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            viewports.binding(viewport)
-        };
-        if matches!(plan.kind(), NativeViewportEffectKind::Replacement) && predecessor.is_none() {
-            return Err(request);
-        }
-        let Some(requested_rect) = exact_native_rect(plan.placement()) else {
-            return Err(request);
-        };
-        if !self
-            .bridge
-            .reserve_create(viewport, plan.binding(), requested_rect)
-        {
-            return Err(request);
-        }
-        if let Err(request) = self.effects.insert(plan, request) {
-            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
-            return Err(request);
-        }
-
-        let reserve_result = {
-            let mut viewports = self
-                .viewports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            match (plan.kind(), predecessor) {
-                (NativeViewportEffectKind::Create, None) => {
-                    viewports.reserve(viewport, plan.binding())
-                }
-                (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
-                    viewports.reserve_retired_replacement(viewport, predecessor, plan.binding())
-                }
-                (NativeViewportEffectKind::Create, Some(_)) => {
-                    Err(NativeViewportBindingError::ViewportAlreadyBound {
-                        viewport,
-                        existing: viewports
-                            .binding(viewport)
-                            .expect("matched viewport binding remains present")
-                            .surface(),
-                    })
-                }
-                (NativeViewportEffectKind::Replacement, None) => {
-                    unreachable!("replacement predecessor was checked before retention")
-                }
-            }
-        };
-        if reserve_result.is_err() {
-            debug_assert!(self.bridge.clear_create(viewport, plan.binding()));
-            return Err(self
-                .effects
-                .remove_unstarted(plan)
-                .expect("failed viewport reservation retains its affine request"));
-        }
-        Ok(plan)
     }
 
     /// Reduces one exact deferred-viewport failure without losing the affine
@@ -1077,6 +789,9 @@ impl NativeCoordinator {
         if self.bridge.callback_boundary_pending() {
             return Ok(false);
         }
+        if self.reduce_next_viewport_close_cancelled()? {
+            return Ok(true);
+        }
         if self.reduce_next_viewport_roster()? {
             return Ok(true);
         }
@@ -1092,6 +807,15 @@ impl NativeCoordinator {
         if self.reduce_next_staging_painted()? {
             return Ok(true);
         }
+        if self.reduce_next_viewport_pointer_passthrough()? {
+            return Ok(true);
+        }
+        if self.reduce_next_global_focus()? {
+            return Ok(true);
+        }
+        if self.reduce_next_viewport_focus()? {
+            return Ok(true);
+        }
         let Some(record) = self.next_window_event()? else {
             return Ok(false);
         };
@@ -1104,6 +828,174 @@ impl NativeCoordinator {
         }
         self.acknowledge_window_event(record.ordinal())?;
         self.pointer_translator = candidate;
+        Ok(true)
+    }
+
+    fn reduce_next_viewport_pointer_passthrough(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(record) = self.bridge.front_viewport_pointer_passthrough() else {
+            return Ok(false);
+        };
+        let disposition = self.input_control.classify(record);
+        match disposition {
+            NativeInputResultDisposition::Unrelated => {
+                if record.status() == NativeViewportPointerPassthroughStatus::Applied
+                    && let Some(binding) = record.binding()
+                {
+                    let route = self.exact_window_route_for_binding(binding);
+                    if route == Some((record.viewport(), record.window()))
+                        && self.session.is_current_native_binding(binding)
+                    {
+                        if self.input_control.observe_applied(record, None) {
+                            self.bridge.invalidate_viewport_roster();
+                        }
+                    }
+                }
+            }
+            NativeInputResultDisposition::Current { binding, status }
+                if self.session.is_current_native_binding(binding)
+                    && self.exact_window_route_for_binding(binding)
+                        == Some((record.viewport(), record.window())) =>
+            {
+                let request = self
+                    .input_control
+                    .take_request(record)
+                    .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
+                match status {
+                    NativeViewportPointerPassthroughStatus::Applied => {
+                        let Some(NativeEffectAcknowledgement::Input(acknowledgement)) =
+                            request.accepted()
+                        else {
+                            return Err(
+                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                    .into(),
+                            );
+                        };
+                        if !self
+                            .input_control
+                            .observe_applied(record, Some(acknowledgement))
+                        {
+                            return Err(
+                                NativeHostProtocolError::NativeInputCorrelationChanged.into()
+                            );
+                        }
+                        self.bridge.invalidate_viewport_roster();
+                    }
+                    NativeViewportPointerPassthroughStatus::Unsupported => {
+                        self.submit_unsupported_effect(request)?;
+                        debug_assert!(self.input_control.complete_failed(record));
+                    }
+                    NativeViewportPointerPassthroughStatus::Failed => {
+                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
+                        debug_assert!(self.input_control.complete_failed(record));
+                    }
+                }
+            }
+            NativeInputResultDisposition::Current { binding, .. }
+            | NativeInputResultDisposition::Stale { binding } => {
+                let request = self
+                    .input_control
+                    .take_request(record)
+                    .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
+                self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
+                debug_assert!(self.input_control.complete_failed(record));
+                debug_assert!(
+                    !self.session.is_current_native_binding(binding)
+                        || self.exact_window_route_for_binding(binding)
+                            != Some((record.viewport(), record.window())),
+                    "a current input callback must take the exact route branch"
+                );
+            }
+        }
+        if !self.bridge.acknowledge_viewport_pointer_passthrough(record) {
+            return Err(
+                NativeHostProtocolError::ViewportPointerPassthroughAcknowledgementMismatch.into(),
+            );
+        }
+        Ok(true)
+    }
+
+    fn reduce_next_global_focus(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(record) = self.bridge.front_global_focus() else {
+            return Ok(false);
+        };
+        debug_assert_ne!(record.event(), 0, "native event ordinals are non-zero");
+        self.session.report_native_global_focus(record.focus())?;
+        if !self.bridge.acknowledge_global_focus(record) {
+            return Err(NativeHostProtocolError::GlobalFocusAcknowledgementMismatch.into());
+        }
+        Ok(true)
+    }
+
+    fn reduce_next_viewport_focus(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(record) = self.bridge.front_viewport_focus() else {
+            return Ok(false);
+        };
+        let disposition = self.focus_control.classify(record);
+        match disposition {
+            NativeFocusResultDisposition::Unrelated => {}
+            NativeFocusResultDisposition::Current { binding, status }
+                if self.session.is_current_native_binding(binding)
+                    && self
+                        .viewports
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .focus_binding_for_event(record.window(), Some(record.viewport()))
+                        == Some(binding) =>
+            {
+                if status == NativeViewportFocusStatus::AlreadyFocused {
+                    self.session
+                        .report_native_global_focus(NativeGlobalFocus::Dock(binding))?;
+                }
+                let request = self
+                    .focus_control
+                    .take(record)
+                    .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
+                if request.accepted().is_some() {
+                    return Err(
+                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
+                    );
+                }
+            }
+            NativeFocusResultDisposition::Current { binding, .. }
+            | NativeFocusResultDisposition::Stale { binding } => {
+                let request = self
+                    .focus_control
+                    .take(record)
+                    .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
+                let result = request.dispatch_failed(NativeDispatchFailure::AdapterRejected);
+                if let Err(error) = self.session.report_native_effect_result(result) {
+                    self.retain_or_return_effect_result(binding, error)?;
+                }
+            }
+        }
+        if !self.bridge.acknowledge_viewport_focus(record) {
+            return Err(NativeHostProtocolError::ViewportFocusAcknowledgementMismatch.into());
+        }
+        Ok(true)
+    }
+
+    fn reduce_next_viewport_close_cancelled(&mut self) -> Result<bool, NativeRuntimeError> {
+        self.prepare_output_prefix()?;
+        let Some(record) = self.bridge.front_viewport_close_cancelled() else {
+            return Ok(false);
+        };
+        let acknowledgement = self
+            .close_control
+            .cancellation_observation(record)
+            .ok_or(NativeHostProtocolError::NativeCloseCorrelationChanged)?;
+        self.publish_close(
+            record.binding(),
+            NativeCloseState::Clear,
+            Some(acknowledgement),
+        )?;
+        if !self.bridge.acknowledge_viewport_close_cancelled(record)
+            || !self.close_control.mark_clear_recorded(record.binding())
+        {
+            return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
+        }
         Ok(true)
     }
 
@@ -1144,6 +1036,7 @@ impl NativeCoordinator {
                 };
                 self.pending_presentation_acknowledgements
                     .insert(record.binding(), acknowledgement);
+                self.bridge.invalidate_viewport_roster();
             }
             (
                 NativeViewportVisibilityStatus::Unsupported,
@@ -1215,6 +1108,7 @@ impl NativeCoordinator {
         };
         self.pending_presentation_acknowledgements
             .insert(created.binding(), acknowledgement);
+        self.bridge.invalidate_viewport_roster();
         if !self.bridge.acknowledge_viewport_created(created) {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
         }
@@ -1277,16 +1171,50 @@ impl NativeCoordinator {
         };
         match record.event() {
             winit::event::WindowEvent::CloseRequested => {
+                self.close_control.observe_request(record, binding);
                 self.publish_close(binding, NativeCloseState::Requested, None)?;
             }
             winit::event::WindowEvent::Destroyed => {
+                let accepted_close = self
+                    .close_control
+                    .accepted_destroyed_matches(record, binding)
+                    .map_err(|()| NativeHostProtocolError::NativeCloseCorrelationChanged)?;
                 if self.session.recognizes_native_binding(binding)
                     && let Some(viewport) = record.viewport_id()
                 {
                     self.fail_pending_viewport_effect(viewport, binding)?;
-                    if self.retirements.observe_destroyed(viewport, binding) {
-                        self.retire_deferred_sidecars(viewport, binding);
+                    match self.retirements.observe_destroyed(viewport, binding) {
+                        DestroyedObservation::Recorded => {
+                            self.bridge.invalidate_viewport_roster();
+                            if accepted_close
+                                && !self
+                                    .close_control
+                                    .settle_accepted_destroyed(record, binding)
+                            {
+                                return Err(
+                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into()
+                                );
+                            }
+                            self.lifecycle_progress.record_destroyed_observation();
+                            self.retire_deferred_sidecars(viewport, binding);
+                        }
+                        DestroyedObservation::Duplicate => {
+                            if accepted_close {
+                                return Err(
+                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into()
+                                );
+                            }
+                        }
+                        DestroyedObservation::Rejected => {
+                            if accepted_close {
+                                return Err(
+                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into()
+                                );
+                            }
+                        }
                     }
+                } else if accepted_close {
+                    return Err(NativeHostProtocolError::NativeCloseCorrelationChanged.into());
                 }
             }
             _ => {}
@@ -1306,8 +1234,8 @@ impl NativeCoordinator {
         let Some(roster) = self.bridge.front_viewport_roster() else {
             return Ok(false);
         };
-        self.record_viewport_roster(&roster)?;
-        if !self.bridge.acknowledge_viewport_roster() {
+        self.record_viewport_roster(roster.roster(), roster.clone())?;
+        if !self.bridge.acknowledge_viewport_roster(&roster) {
             return Err(NativeHostProtocolError::ViewportRosterAcknowledgementMismatch.into());
         }
         Ok(true)
@@ -1316,6 +1244,7 @@ impl NativeCoordinator {
     fn record_viewport_roster(
         &mut self,
         roster: &NativeViewportRosterRecord,
+        envelope: NativeViewportRosterEnvelope,
     ) -> Result<(), NativeRuntimeError> {
         if let (Ok(mut observations), Ok(frozen_work_areas)) =
             (self.compile_viewport_roster(roster), roster.work_areas())
@@ -1327,11 +1256,24 @@ impl NativeCoordinator {
                 .map(|(binding, facts)| CompiledWindowObservation::new(binding, facts))
                 .collect::<Vec<_>>();
             observations.extend(destroyed.iter().copied());
-            let acknowledged_bindings = observations
-                .iter()
-                .filter(|observation| observation.presentation_acknowledged())
-                .map(|observation| observation.binding())
-                .collect::<Vec<_>>();
+            let mut presentation_acknowledgements = Vec::new();
+            let mut input_acknowledgement = None;
+            let mut focus_reportable = Vec::new();
+            for observation in &observations {
+                let binding = observation.binding();
+                if observation.presentation_acknowledged() {
+                    presentation_acknowledgements.push(binding);
+                }
+                if observation.input_acknowledged() {
+                    debug_assert!(
+                        input_acknowledgement.replace(binding).is_none(),
+                        "one globally ordered input lane acknowledges at most one binding"
+                    );
+                }
+                if observation.focus_reportable() {
+                    focus_reportable.push(binding);
+                }
+            }
             match self.session.report_managed_native_snapshot(
                 observations
                     .iter()
@@ -1341,7 +1283,10 @@ impl NativeCoordinator {
                 Ok(()) => {
                     debug_assert!(self.queued_snapshot.is_none());
                     self.queued_snapshot = Some(QueuedNativeSnapshot {
-                        acknowledgements: acknowledged_bindings,
+                        roster: envelope,
+                        presentation_acknowledgements,
+                        input_acknowledgement,
+                        focus_reportable,
                         work_areas: prepared_work_areas,
                     });
                     if !destroyed.is_empty() {
@@ -1365,7 +1310,10 @@ impl NativeCoordinator {
         self.session.report_native_inventory_unknown()?;
         debug_assert!(self.queued_snapshot.is_none());
         self.queued_snapshot = Some(QueuedNativeSnapshot {
-            acknowledgements: Vec::new(),
+            roster: envelope,
+            presentation_acknowledgements: Vec::new(),
+            input_acknowledgement: None,
+            focus_reportable: Vec::new(),
             work_areas: prepared_work_areas,
         });
         Ok(())
@@ -1377,7 +1325,12 @@ impl NativeCoordinator {
     ) -> Result<Vec<CompiledWindowObservation>, NativeHostProtocolError> {
         #[cfg(test)]
         if let Some(compiled) = roster.compiled_override() {
-            return compiled;
+            return compiled.map(|observations| {
+                observations
+                    .into_iter()
+                    .map(|observation| self.with_native_input_observation(observation))
+                    .collect()
+            });
         }
 
         roster
@@ -1392,8 +1345,20 @@ impl NativeCoordinator {
                         .get(&observation.binding())
                         .copied(),
                 )
+                .map(|compiled| self.with_native_input_observation(compiled))
             })
             .collect()
+    }
+
+    fn with_native_input_observation(
+        &self,
+        observation: CompiledWindowObservation,
+    ) -> CompiledWindowObservation {
+        self.input_control
+            .snapshot_fact(observation.binding())
+            .map_or(observation, |(state, acknowledgement)| {
+                observation.with_input(state, acknowledgement)
+            })
     }
 
     /// Registers one application root window with the core-owned native roster.
@@ -1532,6 +1497,7 @@ impl NativeCoordinator {
             self.session.begin_native_host_frame(resolve)?,
             self.bridge.clone(),
             self.viewports.clone(),
+            None,
         ))
     }
 
@@ -1549,7 +1515,12 @@ impl NativeCoordinator {
         let frame = self
             .session
             .begin_native_host_frame(|query| receivers.resolve(context, query))?;
-        Ok(NativeHostFrame::new(frame, bridge, self.viewports.clone()))
+        Ok(NativeHostFrame::new(
+            frame,
+            bridge,
+            self.viewports.clone(),
+            Some(context.clone()),
+        ))
     }
 
     /// Binds one affine painted output and its final-pass receiver roster to the
@@ -1661,10 +1632,24 @@ impl NativeCoordinator {
             self.receivers.abandon(token);
             self.pending_outputs.remove(&token);
         }
+        self.cancel_undispatched_control_commands();
         abandoned.extend(self.cancel_unadmitted_viewport_effects());
         abandoned.sort_unstable();
         abandoned.dedup();
         abandoned
+    }
+
+    fn cancel_undispatched_control_commands(&mut self) {
+        if let Some(command) = self.input_control.quarantine_cancellable_front() {
+            debug_assert!(self.input_control.cancel_quarantine_candidate(command));
+        }
+        if let Some((viewport, binding)) = self.focus_control.pending_command()
+            && self
+                .effects
+                .remove_command(viewport, binding, &ViewportCommand::Focus)
+        {
+            self.focus_control.cancel_pending();
+        }
     }
 
     fn cancel_unadmitted_viewport_effects(&mut self) -> Vec<NativeOutputToken> {

@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "../../crates/egui_dockspace_native",
+    "../egui-native-smoke",
 ]
 
 [patch.crates-io]

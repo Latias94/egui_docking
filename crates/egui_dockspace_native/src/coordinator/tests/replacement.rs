@@ -84,9 +84,7 @@ fn request_replacement_on_existing_viewport() -> (
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([root])));
+    native.bridge.push_viewport_roster(live_roster([root]));
     assert!(
         native
             .reduce_callback_head()

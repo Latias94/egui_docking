@@ -281,6 +281,7 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         child_binding,
         placement,
         request: create,
+        restore_acknowledgement,
     } = request_native_create();
     let create_ack = match create.accepted() {
         Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
@@ -295,7 +296,13 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     session
         .report_managed_native_snapshot(
             [
-                (root_binding, root_window_facts()),
+                (
+                    root_binding,
+                    root_window_facts().with_input(
+                        NativeWindowInputState::ReceivesInput,
+                        Some(restore_acknowledgement),
+                    ),
+                ),
                 (
                     child_binding,
                     NativeWindowFacts::live()
@@ -421,14 +428,31 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
 fn managed_native_create_dispatch_failure_preserves_source_ownership() {
     let PendingNativeCreate {
         mut session,
+        root_binding,
         child_binding,
         request,
+        restore_acknowledgement,
         ..
     } = request_native_create();
     let failed = request.dispatch_failed(NativeDispatchFailure::WindowUnavailable);
     session
         .report_native_effect_result(failed)
         .expect("the exact create failure records");
+    let mut failure_report = commit_managed_frame_report(&mut session);
+    assert!(failure_report.take_native_effects().is_empty());
+
+    session
+        .report_managed_native_snapshot(
+            [(
+                root_binding,
+                root_window_facts().with_input(
+                    NativeWindowInputState::ReceivesInput,
+                    Some(restore_acknowledgement),
+                ),
+            )],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the exact root input restoration records after create failure");
     let mut report = commit_managed_frame_report(&mut session);
 
     assert!(report.take_native_effects().is_empty());
@@ -449,6 +473,7 @@ struct PendingNativeCreate {
     child_binding: NativeSurfaceBinding,
     placement: PhysicalRect,
     request: crate::runtime::NativeEffectRequest,
+    restore_acknowledgement: crate::runtime::NativeInputEffectAcknowledgement,
 }
 
 fn request_native_create() -> PendingNativeCreate {
@@ -509,8 +534,31 @@ fn request_native_create() -> PendingNativeCreate {
         .confirm_surface_painted(SURFACE)
         .expect("the exact preview is painted");
     let mut preview_report = preview.commit().expect("the preview frame commits");
-    assert!(preview_report.take_native_effects().is_empty());
+    let enable = take_only_native_effect(&mut preview_report);
+    assert!(matches!(
+        enable.operation(),
+        NativeEffectOperation::SetPointerPassthrough {
+            binding,
+            enabled: true,
+        } if *binding == root_binding
+    ));
+    let enable_acknowledgement = match enable.accepted() {
+        Some(NativeEffectAcknowledgement::Input(acknowledgement)) => acknowledgement,
+        acknowledgement => panic!("pointer enable returned {acknowledgement:?}"),
+    };
     present_surface_outputs(&mut session, &mut preview_report);
+    session
+        .report_managed_native_snapshot(
+            [(
+                root_binding,
+                root_window_facts().with_input(
+                    NativeWindowInputState::PassThrough,
+                    Some(enable_acknowledgement),
+                ),
+            )],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the exact enabled input observation records");
     commit_managed_frame(&mut session);
 
     session
@@ -533,12 +581,36 @@ fn request_native_create() -> PendingNativeCreate {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the release frame retains current surface authority");
     let mut release_report = release.commit().expect("the native release commits");
-    let request = take_only_native_effect(&mut release_report);
+    let mut create = None;
+    let mut restore_acknowledgement = None;
+    let effects = release_report.take_native_effects();
+    for request in effects {
+        match request.operation() {
+            NativeEffectOperation::CreateWindow { .. } => create = Some(request),
+            NativeEffectOperation::SetPointerPassthrough {
+                binding,
+                enabled: false,
+            } if *binding == root_binding => {
+                restore_acknowledgement = match request.accepted() {
+                    Some(NativeEffectAcknowledgement::Input(acknowledgement)) => {
+                        Some(acknowledgement)
+                    }
+                    acknowledgement => {
+                        panic!("pointer restore returned {acknowledgement:?}")
+                    }
+                };
+            }
+            operation => panic!("outside-all release emitted unexpected {operation:?}"),
+        }
+    }
+    let request = create.expect("outside-all release emits one CreateWindow");
+    let restore_acknowledgement =
+        restore_acknowledgement.expect("outside-all release restores pointer input");
     let (child_binding, placement) = match request.operation() {
         NativeEffectOperation::CreateWindow {
             binding, placement, ..
         } => (*binding, *placement),
-        operation => panic!("outside-all release emitted {operation:?} instead of CreateWindow"),
+        operation => unreachable!("stored create request changed to {operation:?}"),
     };
     assert_ne!(child_binding.surface(), SURFACE);
     assert_eq!(
@@ -552,6 +624,7 @@ fn request_native_create() -> PendingNativeCreate {
         child_binding,
         placement,
         request,
+        restore_acknowledgement,
     }
 }
 

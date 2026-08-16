@@ -465,6 +465,15 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the owned child redock settles every surface");
     let mut report = redock.commit().expect("the owned child redock commits");
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .active_cleanup_obligations(),
+        1,
+        "redocking retains one exact child cleanup obligation",
+    );
     let effects = report.take_native_effects();
     assert!(matches!(
         effects.as_slice(),
@@ -479,11 +488,49 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
         .into_iter()
         .next()
         .expect("the release effect exists")
-        .accepted();
-    assert!(matches!(
-        acknowledgement,
-        Some(super::super::NativeEffectAcknowledgement::Close(_))
-    ));
+        .accepted()
+        .expect("the release effect returns an exact acknowledgement");
+    let super::super::NativeEffectAcknowledgement::Close(acknowledgement) = acknowledgement else {
+        panic!("the release effect returns one close acknowledgement");
+    };
+
+    session
+        .report_managed_native_snapshot(
+            [
+                (root_binding, NativeWindowFacts::live()),
+                (
+                    child_binding,
+                    NativeWindowFacts::destroyed_after(acknowledgement),
+                ),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the exact destroyed child records");
+    commit_managed_frame(&mut session);
+    let binding_retention = session.engine.runtime_retention_manifest().bindings();
+    assert_eq!(
+        (
+            binding_retention.active_cleanup_obligations(),
+            binding_retention.destroyed_binding_guards(),
+        ),
+        (0, 1),
+        "the destroyed snapshot finishes cleanup while retaining its exact producer guard",
+    );
+
+    session
+        .report_native_binding_quiescence(child_binding)
+        .expect("the retired binding can report producer quiescence");
+    commit_managed_frame(&mut session);
+    commit_managed_frame(&mut session);
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+        "the following boundary reclaims the committed guard",
+    );
 }
 
 #[test]
@@ -737,7 +784,7 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(managed.global_window_placement().is_supported());
     assert!(managed.work_area().is_supported());
     assert!(managed.pointer_hit_test_observation().is_supported());
-    assert!(!managed.pointer_hit_test_control().is_supported());
+    assert!(managed.pointer_hit_test_control().is_supported());
     assert!(managed.global_focus_observation().is_supported());
     assert!(managed.window_activation_control().is_supported());
     assert!(managed.close_cancellation().is_supported());

@@ -4,13 +4,16 @@ use dockspace::model::{
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{HostInputOutcome, SurfaceUnavailableReason};
-use eframe::NativeViewportVisibilityStatus;
+use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
 
 use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
+mod close;
+mod focus;
 mod ingress_create;
+mod input_control;
 mod replacement;
 mod retirement;
 mod wheel;
@@ -186,6 +189,29 @@ fn live_roster(
     )
 }
 
+fn dispatch_pointer_passthrough(
+    coordinator: &mut NativeCoordinator,
+) -> NativeViewportPointerPassthroughCommandToken {
+    let command = coordinator
+        .pointer_passthrough_command()
+        .expect("one pointer pass-through command is ready to dispatch");
+    let context = egui::Context::default();
+    let token = eframe::queue_native_viewport_pointer_passthrough(
+        &context,
+        command.viewport(),
+        command.enabled(),
+    );
+    assert!(coordinator.mark_pointer_passthrough_dispatched(command, token));
+    token
+}
+
+fn pointer_passthrough_token(
+    viewport: ViewportId,
+    enabled: bool,
+) -> NativeViewportPointerPassthroughCommandToken {
+    eframe::queue_native_viewport_pointer_passthrough(&egui::Context::default(), viewport, enabled)
+}
+
 #[test]
 fn coordinator_owns_registration_and_viewport_identity() {
     let mut native = coordinator();
@@ -253,6 +279,10 @@ fn viewport_reservation_requires_exact_window_attachment() {
 #[test]
 fn native_admission_releases_the_exact_hidden_render_lease() {
     let mut native = coordinator();
+    assert_eq!(
+        native.lifecycle_progress(),
+        NativeLifecycleProgress::default()
+    );
     let (_, binding) = register_roots(&mut native);
     let child = ViewportId::from_hash_of("first-live-hidden-render");
 
@@ -274,6 +304,7 @@ fn native_admission_releases_the_exact_hidden_render_lease() {
             .settle_native_admissions(&[binding])
             .expect("the exact admitted route settles")
     );
+    assert_eq!(native.lifecycle_progress().first_live_admissions(), 1);
     assert!(
         !native
             .native_host_handler()
@@ -285,6 +316,7 @@ fn native_admission_releases_the_exact_hidden_render_lease() {
             .settle_native_admissions(&[binding])
             .expect("duplicate settlement is idempotent")
     );
+    assert_eq!(native.lifecycle_progress().first_live_admissions(), 1);
 }
 
 #[test]
@@ -758,9 +790,7 @@ fn destroyed_event_is_published_only_with_the_next_complete_roster() {
             Some(first),
             WindowEvent::Destroyed,
         )));
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([second])));
+    native.bridge.push_viewport_roster(live_roster([second]));
 
     assert!(
         native
@@ -845,7 +875,7 @@ fn complete_root_roster_publishes_one_exact_platform_snapshot() {
     let (first, second) = register_roots(&mut native);
     native
         .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([first, second])));
+        .push_viewport_roster(live_roster([first, second]));
 
     assert!(
         native
@@ -872,9 +902,7 @@ fn complete_root_roster_publishes_one_exact_platform_snapshot() {
 fn incomplete_root_roster_revokes_inventory_without_destroying_bindings() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([first])));
+    native.bridge.push_viewport_roster(live_roster([first]));
 
     assert!(
         native
@@ -904,9 +932,7 @@ fn invalid_root_window_facts_fail_closed_to_unknown() {
         )],
         false,
     );
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(invalid));
+    native.bridge.push_viewport_roster(invalid);
 
     assert!(
         native

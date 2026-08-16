@@ -99,11 +99,7 @@ impl NativeReceiverStore {
         Ok(())
     }
 
-    pub(crate) fn presented(
-        &mut self,
-        token: NativeOutputToken,
-        binding: NativeSurfaceBinding,
-    ) {
+    pub(crate) fn presented(&mut self, token: NativeOutputToken, binding: NativeSurfaceBinding) {
         let pending = self.pending.remove(&token);
         self.finish_presented(pending, token.viewport_id(), binding);
     }

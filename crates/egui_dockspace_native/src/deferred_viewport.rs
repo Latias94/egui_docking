@@ -181,9 +181,7 @@ pub(crate) fn paint_placeholder(
                 "Activating dockspace window…"
             }
         },
-        Some(DeferredViewportPaint::Semantic(_)) => {
-            "Waiting for semantic dockspace rendering…"
-        }
+        Some(DeferredViewportPaint::Semantic(_)) => "Waiting for semantic dockspace rendering…",
         Some(DeferredViewportPaint::Waiting) | None => "Waiting for dockspace authority…",
     };
     ui.centered_and_justified(|ui| {

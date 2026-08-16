@@ -7,8 +7,9 @@ use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceReceiverRole, DockspaceSession, DockspaceVisualId, UniformSurfaceMetrics,
 };
+use eframe::egui::emath::GuiRounding;
 use eframe::egui::{
-    Context, Event, Id, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
+    Context, Event, Id, InputState, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
 };
 use egui_dockspace::{DockStyle, PaneView, native_support};
 
@@ -100,6 +101,8 @@ fn run_surface_frame(
     let mut receivers = Vec::new();
     let mut receiver_generation = None;
     let mut output = context.run_ui(input(events), |ui| {
+        let dock_rect = ui.available_rect_before_wrap();
+        let popup_rect = ui.ctx().input(InputState::content_rect).round_ui();
         let mut frame = session.begin_host_frame().expect("host frame begins");
         if let Some(plan) = frame
             .paint_plan(SURFACE)
@@ -136,8 +139,16 @@ fn run_surface_frame(
             native_support::defer_unpainted_surfaces(&mut frame)
                 .expect("deferred surface settlement succeeds");
         } else {
-            native_support::measure_surface(&mut frame, SURFACE, ui, panes, &DockStyle::default())
-                .expect("native surface measures");
+            native_support::measure_surface(
+                &mut frame,
+                SURFACE,
+                ui,
+                dock_rect,
+                popup_rect,
+                panes,
+                &DockStyle::default(),
+            )
+            .expect("native surface measures");
         }
         frame.commit().expect("host frame commits");
     });

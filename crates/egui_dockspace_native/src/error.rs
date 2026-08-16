@@ -53,6 +53,12 @@ pub(crate) enum NativeHostProtocolError {
     CallbackRecordPending,
     #[error("the native window event acknowledgement does not match the journal head")]
     WindowEventAcknowledgementMismatch,
+    #[error("the global native-focus acknowledgement does not match the journal head")]
+    GlobalFocusAcknowledgementMismatch,
+    #[error("the viewport focus-command acknowledgement does not match the journal head")]
+    ViewportFocusAcknowledgementMismatch,
+    #[error("the viewport pointer pass-through acknowledgement does not match the journal head")]
+    ViewportPointerPassthroughAcknowledgementMismatch,
     #[error("the viewport creation failure acknowledgement does not match the journal head")]
     ViewportCreateFailureAcknowledgementMismatch,
     #[error("the viewport visibility acknowledgement does not match the journal head")]
@@ -101,6 +107,20 @@ pub(crate) enum NativeHostProtocolError {
         "the retired native viewport route for surface {0} changed before its destruction frame committed"
     )]
     RetiredViewportRouteChanged(SurfaceId),
+    #[error("native close callback correlation changed before the causal boundary committed")]
+    NativeCloseCorrelationChanged,
+    #[error("native focus callback correlation changed before the causal boundary committed")]
+    NativeFocusCorrelationChanged,
+    #[error(
+        "native pointer-input callback correlation changed before the causal boundary committed"
+    )]
+    NativeInputCorrelationChanged,
+    #[error("native pointer pass-through dispatch changed before it was registered")]
+    NativeInputDispatchChanged,
+    #[error("an exact native close cancellation was not accepted by the core")]
+    NativeCloseCancellationRejected,
+    #[error("a queued application action committed without one exact product outcome")]
+    ApplicationActionOutcomeMissing,
 }
 
 impl NativeRuntimeError {

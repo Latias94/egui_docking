@@ -34,9 +34,7 @@ fn publish_work_areas(
         }),
         work_areas,
     );
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(roster));
+    native.bridge.push_viewport_roster(roster);
     assert!(
         native
             .reduce_next_viewport_roster()

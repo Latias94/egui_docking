@@ -5,14 +5,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::{
-    DockspaceHostFrame, HostFrameReport, NativeStagingPaintRequest, PreparedSurfaceAction,
-    SurfaceUnavailableReason,
+    DockspaceHostFrame, HostFrameReport, NativeStagingPaintRequest, PreparedDockAction,
+    PreparedSurfaceAction, SurfaceUnavailableReason,
 };
 use eframe::egui;
 use egui_dockspace::{DockStyle, PaneView};
 
-use crate::error::NativeRuntimeError;
 use crate::error::NativeHostProtocolError;
+use crate::error::NativeRuntimeError;
 use crate::mailbox::NativeHostBridge;
 use crate::viewport_map::NativeViewportMap;
 
@@ -22,6 +22,7 @@ pub(crate) struct NativeHostFrame<'session> {
     pub(crate) frame: DockspaceHostFrame<'session>,
     bridge: Arc<NativeHostBridge>,
     viewports: Arc<Mutex<NativeViewportMap>>,
+    repaint_context: Option<egui::Context>,
 }
 
 impl std::fmt::Debug for NativeHostFrame<'_> {
@@ -37,11 +38,13 @@ impl<'session> NativeHostFrame<'session> {
         frame: DockspaceHostFrame<'session>,
         bridge: Arc<NativeHostBridge>,
         viewports: Arc<Mutex<NativeViewportMap>>,
+        repaint_context: Option<egui::Context>,
     ) -> Self {
         NativeHostFrame {
             frame,
             bridge,
             viewports,
+            repaint_context,
         }
     }
 
@@ -77,12 +80,22 @@ impl<'session> NativeHostFrame<'session> {
         &mut self,
         surface: SurfaceId,
         ui: &egui::Ui,
+        dock_rect: egui::Rect,
+        popup_rect: egui::Rect,
         panes: &dyn PaneView,
         style: &DockStyle,
     ) -> Result<(), NativeRuntimeError> {
-        egui_dockspace::native_support::measure_surface(&mut self.frame, surface, ui, panes, style)
-            .map(|_| ())
-            .map_err(Into::into)
+        egui_dockspace::native_support::measure_surface(
+            &mut self.frame,
+            surface,
+            ui,
+            dock_rect,
+            popup_rect,
+            panes,
+            style,
+        )
+        .map(|_| ())
+        .map_err(Into::into)
     }
 
     pub(crate) fn submit_surface_action(
@@ -90,6 +103,15 @@ impl<'session> NativeHostFrame<'session> {
         action: PreparedSurfaceAction,
     ) -> Result<(), NativeRuntimeError> {
         self.frame.submit_surface_action(action).map_err(Into::into)
+    }
+
+    pub(crate) fn submit_prepared_action(
+        &mut self,
+        action: PreparedDockAction,
+    ) -> Result<(), NativeRuntimeError> {
+        self.frame
+            .submit_prepared_action(action)
+            .map_err(Into::into)
     }
 
     pub(crate) fn confirm_surface_painted(
@@ -110,14 +132,21 @@ impl<'session> NativeHostFrame<'session> {
     /// core rejects the candidate frame.
     pub fn commit(self) -> Result<HostFrameReport, NativeRuntimeError> {
         let staging_requests = self.compile_staging_requests()?;
+        let staging_viewports = staging_requests.keys().copied().collect::<Vec<_>>();
         let Self {
             frame,
             bridge,
             viewports: _,
+            repaint_context,
         } = self;
         let report = frame.commit()?;
         bridge.replace_staging_requests(staging_requests);
         bridge.commit_frame_boundary();
+        if let Some(context) = repaint_context {
+            for viewport in staging_viewports {
+                context.request_repaint_of(viewport);
+            }
+        }
         Ok(report)
     }
 

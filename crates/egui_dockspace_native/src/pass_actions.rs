@@ -32,10 +32,13 @@ impl NativePassActions {
     ) -> Result<(), NativePassActionError> {
         let surface = paint.surface();
         let current = paint.take_local_actions();
-        let retained = self.retained.entry(token).or_insert_with(|| RetainedPassActions {
-            surface,
-            local: Vec::new(),
-        });
+        let retained = self
+            .retained
+            .entry(token)
+            .or_insert_with(|| RetainedPassActions {
+                surface,
+                local: Vec::new(),
+            });
         if retained.surface != surface {
             return Err(NativePassActionError::OutputChanged);
         }
@@ -117,5 +120,4 @@ mod tests {
             Err(NativePassActionError::LocalActionConflict)
         );
     }
-
 }

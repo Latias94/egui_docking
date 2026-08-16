@@ -22,6 +22,7 @@ pub(crate) struct NativeViewportMap {
     viewports: BTreeMap<ViewportId, NativeViewportRoute>,
     windows: BTreeMap<WindowId, ViewportId>,
     surfaces: BTreeMap<SurfaceId, ViewportId>,
+    focus_reportable: BTreeSet<NativeSurfaceBinding>,
     pointer_suppressed: BTreeSet<NativeSurfaceBinding>,
     prepared_retirements: BTreeSet<NativeSurfaceBinding>,
 }
@@ -96,7 +97,14 @@ impl NativeViewportMap {
                 surface: expected.surface(),
             });
         }
-        self.attach(viewport, expected, window)
+        self.attach(viewport, expected, window)?;
+        let route = self
+            .viewports
+            .get(&viewport)
+            .expect("an attached output retains its exact viewport route");
+        debug_assert_eq!(route.binding, expected);
+        debug_assert_eq!(route.window, Some(window));
+        Ok(())
     }
 
     pub(crate) fn bind(
@@ -268,6 +276,10 @@ impl NativeViewportMap {
         self.viewports.get(&viewport).map(|route| route.binding)
     }
 
+    pub(crate) fn window(&self, viewport: ViewportId) -> Option<WindowId> {
+        self.viewports.get(&viewport).and_then(|route| route.window)
+    }
+
     pub(crate) fn pointer_binding_for_window(
         &self,
         window: WindowId,
@@ -295,6 +307,39 @@ impl NativeViewportMap {
     ) -> Option<NativeSurfaceBinding> {
         self.route_for_event(window, viewport)
             .map(|(_, binding)| binding)
+    }
+
+    /// Returns the exact binding whose last committed roster made focus reportable.
+    pub(crate) fn focus_binding_for_event(
+        &self,
+        window: WindowId,
+        viewport: Option<ViewportId>,
+    ) -> Option<NativeSurfaceBinding> {
+        let (_, binding) = self.route_for_event(window, viewport)?;
+        (self.focus_reportable.contains(&binding)
+            && !self.pointer_suppressed.contains(&binding)
+            && !self.prepared_retirements.contains(&binding))
+        .then_some(binding)
+    }
+
+    /// Replaces the exact focus-reportable roster after a platform snapshot commits.
+    pub(crate) fn set_focus_reportable(
+        &mut self,
+        bindings: impl IntoIterator<Item = NativeSurfaceBinding>,
+    ) {
+        self.focus_reportable = bindings
+            .into_iter()
+            .filter(|binding| {
+                self.surfaces
+                    .get(&binding.surface())
+                    .and_then(|viewport| self.viewports.get(viewport))
+                    .is_some_and(|route| {
+                        route.binding == *binding
+                            && !self.pointer_suppressed.contains(binding)
+                            && !self.prepared_retirements.contains(binding)
+                    })
+            })
+            .collect();
     }
 
     pub(crate) fn route_for_event(
@@ -513,7 +558,7 @@ impl NativeViewportMap {
         window: Option<WindowId>,
         binding: NativeSurfaceBinding,
     ) {
-        self.viewports.insert(
+        let previous = self.viewports.insert(
             viewport,
             NativeViewportRoute {
                 window,
@@ -521,6 +566,9 @@ impl NativeViewportMap {
                 create_attempt: None,
             },
         );
+        if let Some(previous) = previous {
+            self.focus_reportable.remove(&previous.binding);
+        }
         if let Some(window) = window {
             self.windows.insert(window, viewport);
         }
@@ -534,5 +582,6 @@ impl NativeViewportMap {
             self.windows.remove(&window);
         }
         self.surfaces.remove(&route.binding.surface());
+        self.focus_reportable.remove(&route.binding);
     }
 }

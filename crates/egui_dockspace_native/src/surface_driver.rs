@@ -1,14 +1,18 @@
 //! Shared root/child surface driver over one native coordinator.
 
-use dockspace::model::{DockspaceView, SurfaceId};
+use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
 use dockspace::runtime::{HostInputOutcome, HostWindowToken, SurfaceUnavailableReason};
+use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id};
-use eframe::{NativeHostWake, NativeOutputToken};
-use egui_dockspace::{DockStyle, PaneView};
+use eframe::{NativeHostWake, NativeOutputToken, queue_native_viewport_pointer_passthrough};
+use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
+use crate::application_action::{NativeActionRequestError, NativeApplicationActions};
+use crate::close_control::NativeWindowClosePolicy;
 use crate::coordinator::{NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration};
 use crate::deferred_viewport::DeferredViewportSpec;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
+use crate::lifecycle_progress::NativeLifecycleProgress;
 use crate::pass_actions::{NativePassActionError, NativePassActions};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
@@ -44,7 +48,9 @@ pub(crate) struct NativeRuntimeState<P> {
     instance_id: Id,
     style: DockStyle,
     panes: P,
+    application_actions: NativeApplicationActions,
     pass_actions: NativePassActions,
+    close_policy: NativeWindowClosePolicy,
     shutdown: Option<NativeShutdownState>,
 }
 
@@ -61,6 +67,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         root_surface: SurfaceId,
         panes: P,
         style: DockStyle,
+        close_policy: NativeWindowClosePolicy,
     ) -> Result<Self, NativeRuntimeError> {
         if session.view().surface(root_surface).is_none() {
             return Err(NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into());
@@ -74,7 +81,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             instance_id,
             style,
             panes,
+            application_actions: NativeApplicationActions::default(),
             pass_actions: NativePassActions::default(),
+            close_policy,
             shutdown: None,
         })
     }
@@ -104,6 +113,51 @@ impl<P: PaneView> NativeRuntimeState<P> {
             Some(shutdown) => Some(&shutdown.primary),
             None => None,
         }
+    }
+
+    pub(crate) const fn lifecycle_progress(&self) -> NativeLifecycleProgress {
+        self.coordinator.lifecycle_progress()
+    }
+
+    pub(crate) fn is_surface_presented(&self, surface: SurfaceId) -> bool {
+        self.coordinator
+            .session()
+            .presented_surface(surface)
+            .is_some()
+    }
+
+    pub(crate) fn request_dock_root(
+        &mut self,
+        root: RootId,
+        placement: DockPlacement,
+    ) -> Result<(), NativeActionRequestError> {
+        if self.shutdown.is_some() {
+            return Err(NativeActionRequestError::stopped());
+        }
+        let action = self
+            .coordinator
+            .session()
+            .prepare_dock_root(root, placement);
+        self.application_actions.enqueue(action)
+    }
+
+    pub(crate) fn request_tear_off_root(
+        &mut self,
+        root: RootId,
+        placement: NativeWindowPlacement,
+    ) -> Result<(), NativeActionRequestError> {
+        if self.shutdown.is_some() {
+            return Err(NativeActionRequestError::stopped());
+        }
+        let action = self
+            .coordinator
+            .session()
+            .prepare_tear_off_root(root, placement);
+        self.application_actions.enqueue(action)
+    }
+
+    pub(crate) fn take_action_status(&mut self) -> Option<DockspaceActionStatus> {
+        self.application_actions.take_result()
     }
 
     pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
@@ -138,7 +192,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let instance_id = self.instance_id.with(surface.get());
         let style = &self.style;
         let panes = &mut self.panes;
+        let application_actions = &mut self.application_actions;
         let pass_actions = &mut self.pass_actions;
+        let root_surface = self.root_surface;
         let mut host_frame = coordinator.begin_resolved_host_frame(&context)?;
         let mut final_paint = None;
         let mut painted_output_expected = false;
@@ -146,6 +202,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let mut discarded = false;
 
         let render_result = egui::CentralPanel::default().show(ui, |ui| {
+            let dock_rect = ui.available_rect_before_wrap();
+            let popup_rect = context.input(egui::InputState::content_rect).round_ui();
             let mut paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
             if context.will_discard() {
                 pass_actions
@@ -158,7 +216,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             let actions = pass_actions
                 .finish_pass(token, &mut paint)
                 .map_err(map_pass_action_error)?;
-            let has_actions = actions.has_actions();
+            let has_application_action =
+                surface == root_surface && application_actions.has_queued();
+            let has_actions = actions.has_actions() || has_application_action;
             let disposition = surface_frame_disposition(
                 paint.had_ready_plan(),
                 paint.transient_visuals_complete(),
@@ -167,6 +227,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
             );
             if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
                 return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
+            }
+            if has_application_action {
+                let action = application_actions
+                    .take()
+                    .expect("a checked application action remains pending");
+                host_frame.submit_prepared_action(action)?;
             }
             for action in actions.into_ordered() {
                 host_frame.submit_surface_action(action)?;
@@ -183,7 +249,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     post_action_repaint = has_actions;
                 }
                 SurfaceFrameDisposition::Measure => {
-                    host_frame.measure_surface(surface, ui, panes, style)?;
+                    host_frame.measure_surface(surface, ui, dock_rect, popup_rect, panes, style)?;
                     host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
                 }
                 SurfaceFrameDisposition::RejectIncompletePaint => unreachable!(
@@ -199,8 +265,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
 
         let mut report = host_frame.commit()?;
+        let application_action_settled = application_actions
+            .settle(report.inputs())
+            .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
+        let native_close_settled = coordinator.settle_close_control_inputs(report.inputs())?;
         let native_admission_settled =
             coordinator.settle_native_admissions(report.native_admissions())?;
         if let Some(prepared_retirements) = prepared_retirements {
@@ -254,8 +324,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let coordinator = &mut self.coordinator;
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
+        let native_close_progress = coordinator.drive_close_policy(self.close_policy)?;
         for (viewport, command) in coordinator.take_viewport_commands() {
             context.send_viewport_cmd_to(viewport, command);
+        }
+        if let Some(command) = coordinator.pointer_passthrough_command() {
+            let token = queue_native_viewport_pointer_passthrough(
+                &context,
+                command.viewport(),
+                command.enabled(),
+            );
+            if !coordinator.mark_pointer_passthrough_dispatched(command, token) {
+                return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+            }
         }
         for repaint_surface in report.repaint_surfaces() {
             match coordinator.repaint_viewport(*repaint_surface) {
@@ -271,7 +352,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             || native_snapshot_applied
             || native_admission_settled
             || post_action_repaint
+            || application_action_settled
             || native_effects_emitted
+            || native_close_settled
+            || native_close_progress
         {
             context.request_repaint_of(egui::ViewportId::ROOT);
         }
@@ -310,6 +394,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
+        self.application_actions.clear();
         self.shutdown = Some(NativeShutdownState {
             primary: error,
             cleanup_errors: Vec::new(),
@@ -349,6 +434,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             progress,
             registrations,
             commands,
+            pointer_passthrough,
             abandoned_outputs,
         } = advance;
         for token in abandoned_outputs {
@@ -356,6 +442,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         for (viewport, command) in commands {
             context.send_viewport_cmd_to(viewport, command);
+        }
+        if let Some(command) = pointer_passthrough {
+            let token = queue_native_viewport_pointer_passthrough(
+                context,
+                command.viewport(),
+                command.enabled(),
+            );
+            if !self
+                .coordinator
+                .mark_pointer_passthrough_dispatched(command, token)
+            {
+                return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+            }
         }
         if let Some(root_window) = root_window {
             for registration in registrations {
@@ -424,7 +523,8 @@ mod tests {
     use std::error::Error as _;
 
     use dockspace::model::{
-        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+        DockAnchor, DockPlacement, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, ItemId, RootId,
     };
     use eframe::egui::{Ui, WidgetText};
 
@@ -462,6 +562,7 @@ mod tests {
             SURFACE,
             TestPanes,
             DockStyle::default(),
+            NativeWindowClosePolicy::Cancel,
         )
         .expect("the native runtime test state initializes")
     }
@@ -483,6 +584,60 @@ mod tests {
         assert_eq!(
             surface_frame_disposition(true, true, false, false),
             SurfaceFrameDisposition::ConfirmPainted
+        );
+    }
+
+    #[test]
+    fn programmatic_action_queue_is_bounded_and_stops_with_the_runtime() {
+        let mut state = test_state();
+        let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
+
+        state
+            .request_dock_root(RootId::new(1), placement)
+            .expect("the empty application-action slot accepts one request");
+        assert_eq!(
+            state
+                .request_dock_root(RootId::new(1), placement)
+                .expect_err("a second action cannot overtake the pending request")
+                .kind(),
+            crate::NativeActionRequestErrorKind::Busy
+        );
+
+        let action = state
+            .application_actions
+            .take()
+            .expect("the final root pass takes the pending action");
+        assert_eq!(
+            action.expected_version(),
+            state.coordinator.session().version()
+        );
+        state
+            .application_actions
+            .settle(&[HostInputOutcome::ProductActionRejected(
+                dockspace::model::DockspaceActionRejection::PolicyDenied,
+            )])
+            .expect("the exact product result settles the action");
+        assert!(!state.application_actions.has_queued());
+        assert!(state.application_actions.is_occupied());
+        assert!(matches!(
+            state.take_action_status(),
+            Some(DockspaceActionStatus::Rejected(
+                dockspace::model::DockspaceActionRejection::PolicyDenied
+            ))
+        ));
+
+        state
+            .request_dock_root(RootId::new(1), placement)
+            .expect("consuming the result releases the bounded slot");
+
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        assert!(!state.application_actions.is_occupied());
+        assert_eq!(
+            state
+                .request_dock_root(RootId::new(1), placement)
+                .expect_err("a stopped runtime rejects new application actions")
+                .kind(),
+            crate::NativeActionRequestErrorKind::Stopped
         );
     }
 
@@ -561,6 +716,7 @@ mod tests {
                     progress: true,
                     registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
                     commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
+                    pointer_passthrough: None,
                     abandoned_outputs: Vec::new(),
                 },
                 Some(winit::window::WindowId::from(7)),

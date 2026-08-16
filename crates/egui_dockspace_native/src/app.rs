@@ -2,18 +2,20 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use dockspace::model::{DockspaceView, SurfaceId};
+use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
 use dockspace::runtime::DockspaceSession;
 use eframe::NativeHostHandler;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
-use egui_dockspace::{DockStyle, PaneView};
+use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
+use crate::close_control::NativeWindowClosePolicy;
 use crate::deferred_viewport::{
     DeferredViewportSpec, declare_deferred_viewports, paint_placeholder,
 };
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::NativeRuntimeState;
+use crate::{NativeActionRequestError, NativeLifecycleProgress};
 
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
@@ -46,7 +48,37 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         panes: P,
         style: DockStyle,
     ) -> Result<Self, NativeRuntimeError> {
-        let state = NativeRuntimeState::new(instance_id, session, root_surface, panes, style)?;
+        Self::new_with_close_policy(
+            instance_id,
+            session,
+            root_surface,
+            panes,
+            style,
+            NativeWindowClosePolicy::Cancel,
+        )
+    }
+
+    /// Creates one native application with an explicit synchronous window-close policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same initialization failures as [`Self::new`].
+    pub fn new_with_close_policy(
+        instance_id: Id,
+        session: DockspaceSession,
+        root_surface: SurfaceId,
+        panes: P,
+        style: DockStyle,
+        close_policy: NativeWindowClosePolicy,
+    ) -> Result<Self, NativeRuntimeError> {
+        let state = NativeRuntimeState::new(
+            instance_id,
+            session,
+            root_surface,
+            panes,
+            style,
+            close_policy,
+        )?;
         let native_host = state.native_host_handler();
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
@@ -84,6 +116,75 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         lock_state(&self.state)
             .error()
             .map(NativeRuntimeError::kind)
+    }
+
+    /// Returns fixed-size monotonic progress for exact native lifecycle milestones.
+    ///
+    /// This snapshot is suitable for health checks and one-shot integration smoke tests. It does
+    /// not expose callback history, internal lifecycle phases, or renderer tokens.
+    #[must_use]
+    pub fn lifecycle_progress(&self) -> NativeLifecycleProgress {
+        lock_state(&self.state).lifecycle_progress()
+    }
+
+    /// Returns whether one logical surface has an exact currently presented output.
+    ///
+    /// This is a product readiness query, not a renderer token or historical
+    /// acknowledgement. It becomes false again when the current presentation
+    /// authority is retired or invalidated.
+    #[must_use]
+    pub fn is_surface_presented(&self, surface: SurfaceId) -> bool {
+        lock_state(&self.state).is_surface_presented(surface)
+    }
+
+    /// Queues one complete-root dock action for the next final root pass.
+    ///
+    /// The action is prepared against the exact published revision while the
+    /// native runtime lock is held. At most one application action may wait at
+    /// a time, which keeps retention bounded and preserves deterministic input
+    /// ordering ahead of local actions produced by that pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another application action is pending or the
+    /// native runtime has stopped.
+    pub fn request_dock_root(
+        &self,
+        context: &egui::Context,
+        root: RootId,
+        placement: DockPlacement,
+    ) -> Result<(), NativeActionRequestError> {
+        lock_state(&self.state).request_dock_root(root, placement)?;
+        context.request_repaint_of(ViewportId::ROOT);
+        Ok(())
+    }
+
+    /// Queues one complete-root native tear-off for the next final root pass.
+    ///
+    /// Source ownership remains in place until the managed native lifecycle
+    /// reaches its exact post-show transfer and first-live barriers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another application action is pending or the
+    /// native runtime has stopped.
+    pub fn request_tear_off_root(
+        &self,
+        context: &egui::Context,
+        root: RootId,
+        placement: NativeWindowPlacement,
+    ) -> Result<(), NativeActionRequestError> {
+        lock_state(&self.state).request_tear_off_root(root, placement)?;
+        context.request_repaint_of(ViewportId::ROOT);
+        Ok(())
+    }
+
+    /// Takes the exact terminal status of the last queued application action.
+    ///
+    /// A new action remains busy until this result is consumed, so the native
+    /// facade never overwrites or grows an unbounded action-result history.
+    pub fn take_action_status(&self) -> Option<DockspaceActionStatus> {
+        lock_state(&self.state).take_action_status()
     }
 
     fn update_root(&self, ui: &mut egui::Ui) {

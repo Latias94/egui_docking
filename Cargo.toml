@@ -8,6 +8,7 @@ members = [
 exclude = [
     "crates/egui_dockspace_native",
     "integration/egui-fork-workspace",
+    "integration/egui-native-smoke",
     "integration/egui-official-harness",
     "integration/egui-product-harness",
     "repo-ref/egui",

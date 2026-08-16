@@ -13,7 +13,6 @@ use dockspace::runtime::{
     DockspaceSemanticOutput, DockspaceVisualId, NativeReceiverQuery, PreparedSurfaceAction,
     PresentedDockReceiver, SurfaceUnavailableReason,
 };
-use egui::emath::GuiRounding;
 use egui::{Id, Ui};
 
 use crate::error::DockspaceError;
@@ -240,11 +239,11 @@ pub fn measure_surface(
     frame: &mut DockspaceHostFrame<'_>,
     surface: SurfaceId,
     ui: &Ui,
+    dock_rect: egui::Rect,
+    popup_rect: egui::Rect,
     panes: &dyn PaneView,
     style: &DockStyle,
 ) -> Result<BTreeSet<ItemId>, DockspaceError> {
-    let dock_rect = ui.available_rect_before_wrap();
-    let popup_rect = ui.ctx().input(egui::InputState::content_rect).round_ui();
     product_render::measure_surface(frame, surface, ui, dock_rect, popup_rect, panes, style)
 }
 

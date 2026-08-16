@@ -10,6 +10,10 @@ use crate::event::NativePointerRouteSnapshot;
 #[test]
 fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     let mut native = coordinator();
+    assert_eq!(
+        native.lifecycle_progress(),
+        NativeLifecycleProgress::default()
+    );
     let (first, second) = register_root_and_child(&mut native);
     let first_window = WindowId::from(11);
     let second_window = WindowId::from(22);
@@ -68,6 +72,9 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     assert_eq!(destroyed.binding(), Some(second));
     native
         .bridge
+        .push_record(HostRecord::WindowEvent(destroyed.clone()));
+    native
+        .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
     let late_pointer = NativeWindowEventRecord::for_test_snapshot(
         15,
@@ -94,9 +101,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
     assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
     assert!(!late_pointer.references_binding(second));
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([first])));
+    native.bridge.push_viewport_roster(live_roster([first]));
     native
         .bridge
         .push_record(HostRecord::WindowEvent(late_pointer));
@@ -106,6 +111,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
             .reduce_callback_head()
             .expect("the exact destruction callback is retained")
     );
+    assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
     let mut event_frame = native
         .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the destruction callback boundary begins");
@@ -115,6 +121,23 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     event_frame
         .commit()
         .expect("the destruction callback boundary commits");
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the duplicate destruction callback is retained idempotently")
+    );
+    assert_eq!(native.lifecycle_progress().destroyed_observations(), 1);
+    let mut duplicate_event_frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the duplicate destruction callback boundary begins");
+    duplicate_event_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the duplicate callback boundary settles every surface");
+    duplicate_event_frame
+        .commit()
+        .expect("the duplicate destruction callback boundary commits");
+
     assert_eq!(native.viewport_binding(child), Some(second));
     assert!(!native.session.is_current_native_binding(second));
     assert!(native.session.recognizes_native_binding(second));
@@ -204,6 +227,7 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
             .try_report_retirement_quiescence()
             .expect("the retired route becomes quiescent")
     );
+    assert_eq!(native.lifecycle_progress().quiescent_retirements(), 1);
     assert!(!native.session.recognizes_native_binding(second));
 
     let mut quiescence_frame = native
@@ -215,6 +239,16 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     quiescence_frame
         .commit()
         .expect("the quiescence boundary commits");
+
+    let mut reclaimed_frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the committed quiescence prefix is reclaimed");
+    reclaimed_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the reclamation boundary settles every surface");
+    reclaimed_frame
+        .commit()
+        .expect("the quiescence prefix retires its exact destroyed guard");
 }
 
 #[test]
@@ -266,9 +300,7 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     native
         .bridge
         .push_record(HostRecord::WindowEvent(destroyed));
-    native
-        .bridge
-        .push_record(HostRecord::ViewportRoster(live_roster([root])));
+    native.bridge.push_viewport_roster(live_roster([root]));
 
     for phase in ["destroyed", "roster", "route", "quiescence"] {
         let advance = native

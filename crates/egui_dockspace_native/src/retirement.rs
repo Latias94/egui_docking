@@ -21,6 +21,13 @@ enum RetirementPhase {
     RouteRetired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DestroyedObservation {
+    Rejected,
+    Duplicate,
+    Recorded,
+}
+
 #[derive(Debug, Default)]
 struct CleanupRelay {
     observation: Option<NativeCleanupObservation>,
@@ -161,10 +168,10 @@ impl NativeRetirementState {
         &mut self,
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
-    ) -> bool {
+    ) -> DestroyedObservation {
         if let Some(existing) = self.pending_lifetime_key(binding) {
             if existing != binding && self.pending.contains_key(&binding) {
-                return false;
+                return DestroyedObservation::Rejected;
             }
             // Validate the callback route before moving the exact binding key.
             // A rejected successor observation must not clear the predecessor's
@@ -174,29 +181,30 @@ impl NativeRetirementState {
                 .get(&existing)
                 .is_some_and(|pending| pending.viewport == viewport)
             {
-                return false;
+                return DestroyedObservation::Rejected;
             }
             if existing != binding {
                 if !self.adopt_successor_binding(existing, binding) {
-                    return false;
+                    return DestroyedObservation::Rejected;
                 }
             }
         }
         if let Some(pending) = self.pending.get_mut(&binding) {
             if pending.viewport != viewport {
-                return false;
+                return DestroyedObservation::Rejected;
             }
             if pending.phase == RetirementPhase::AwaitingDestroyed {
                 pending.phase = RetirementPhase::DestroyedObserved;
+                return DestroyedObservation::Recorded;
             }
-            return true;
+            return DestroyedObservation::Duplicate;
         }
         if self
             .pending
             .values()
             .any(|pending| pending.viewport == viewport)
         {
-            return false;
+            return DestroyedObservation::Rejected;
         }
         self.pending.insert(
             binding,
@@ -207,13 +215,10 @@ impl NativeRetirementState {
                 cleanup: CleanupRelay::default(),
             },
         );
-        true
+        DestroyedObservation::Recorded
     }
 
-    fn pending_for_lifetime(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<&PendingRetirement> {
+    fn pending_for_lifetime(&self, binding: NativeSurfaceBinding) -> Option<&PendingRetirement> {
         self.pending_lifetime_key(binding)
             .and_then(|key| self.pending.get(&key))
     }
@@ -226,10 +231,7 @@ impl NativeRetirementState {
         self.pending.get_mut(&key)
     }
 
-    fn pending_lifetime_key(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<NativeSurfaceBinding> {
+    fn pending_lifetime_key(&self, binding: NativeSurfaceBinding) -> Option<NativeSurfaceBinding> {
         self.pending
             .keys()
             .copied()
@@ -265,10 +267,7 @@ impl NativeRetirementState {
         self.adopt_successor_binding(predecessor, binding)
     }
 
-    pub(crate) fn can_accept_cleanup_observation(
-        &self,
-        binding: NativeSurfaceBinding,
-    ) -> bool {
+    pub(crate) fn can_accept_cleanup_observation(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending_for_lifetime(binding).is_some_and(|pending| {
             matches!(
                 pending.phase,
@@ -419,9 +418,7 @@ impl NativeRetirementState {
         }
     }
 
-    pub(crate) fn quiescence_candidates(
-        &self,
-    ) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
+    pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
         self.pending.iter().filter_map(|(binding, pending)| {
             (pending.phase == RetirementPhase::RouteRetired).then_some(*binding)
         })
@@ -443,8 +440,8 @@ impl NativeRetirementState {
 #[cfg(test)]
 mod tests {
     use dockspace::model::{
-        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
-        SurfaceId,
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId,
+        RootId, SurfaceId,
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
@@ -472,7 +469,9 @@ mod tests {
         session
             .register_native_root(surface, HostWindowToken::new(1))
             .expect("native root registration queues");
-        let mut frame = session.begin_host_frame().expect("registration frame begins");
+        let mut frame = session
+            .begin_host_frame()
+            .expect("registration frame begins");
         frame
             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
             .expect("registration frame settles");
@@ -493,7 +492,14 @@ mod tests {
         let binding = binding();
         let viewport = ViewportId::from_hash_of("retired-child");
         let mut state = NativeRetirementState::default();
-        assert!(state.observe_destroyed(viewport, binding));
+        assert_eq!(
+            state.observe_destroyed(viewport, binding),
+            DestroyedObservation::Recorded
+        );
+        assert_eq!(
+            state.observe_destroyed(viewport, binding),
+            DestroyedObservation::Duplicate
+        );
         assert_eq!(state.destroyed_observations().count(), 1);
         assert!(state.committed_routes().is_empty());
 

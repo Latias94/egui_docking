@@ -9,12 +9,17 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod application_action;
+mod close_control;
 mod coordinator;
 mod deferred_viewport;
 mod effect_coordinator;
 mod error;
 mod event;
+mod focus_control;
 mod host_frame;
+mod input_control;
+mod lifecycle_progress;
 mod mailbox;
 mod pass_actions;
 mod pointer_event;
@@ -27,8 +32,11 @@ mod window_snapshot;
 mod work_area;
 
 pub use app::NativeDockspaceApp;
+pub use application_action::{NativeActionRequestError, NativeActionRequestErrorKind};
+pub use close_control::NativeWindowClosePolicy;
 pub use error::{
     NativeOutputBindingError, NativeOutputBindingErrorKind, NativeRuntimeError,
     NativeRuntimeErrorKind, NativeViewportBindingError,
 };
 pub use event::NativeWindowEventRecord;
+pub use lifecycle_progress::NativeLifecycleProgress;

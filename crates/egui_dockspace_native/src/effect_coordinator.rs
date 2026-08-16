@@ -133,6 +133,28 @@ impl NativeEffectCoordinator {
             .collect()
     }
 
+    pub(crate) fn remove_commands(&mut self, binding: NativeSurfaceBinding) {
+        self.pending_commands
+            .retain(|pending| pending.binding != binding);
+    }
+
+    pub(crate) fn remove_command(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        command: &ViewportCommand,
+    ) -> bool {
+        let Some(index) = self.pending_commands.iter().position(|pending| {
+            pending.viewport == viewport
+                && pending.binding == binding
+                && pending.command == *command
+        }) else {
+            return false;
+        };
+        self.pending_commands.remove(index);
+        true
+    }
+
     pub(crate) fn has_pending_show(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending_shows.contains_key(&binding)
     }
