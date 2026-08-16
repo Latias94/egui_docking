@@ -107,6 +107,101 @@ fn cancel_policy_waits_for_the_exact_child_viewport_callback_before_live_clear()
 }
 
 #[test]
+fn destroyed_before_cancel_callback_retires_close_sidecar_and_allows_quiescence() {
+    let mut native = coordinator();
+    let (survivor, binding) = register_roots(&mut native);
+    let viewport = ViewportId::from_hash_of("destroyed-before-cancel-callback");
+    let window = WindowId::from(45);
+    observe_close(
+        &mut native,
+        binding,
+        [survivor, binding],
+        viewport,
+        window,
+        19,
+    );
+
+    assert!(
+        native
+            .drive_close_policy(NativeWindowClosePolicy::Cancel)
+            .expect("the explicit cancellation policy commits")
+    );
+    assert_eq!(
+        native.take_viewport_commands(),
+        vec![(viewport, ViewportCommand::CancelClose)]
+    );
+    assert!(native.close_control.references_binding(binding));
+
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(NativeWindowEventRecord::for_test(
+            20,
+            window,
+            Some(viewport),
+            Some(binding),
+            WindowEvent::Destroyed,
+        )));
+    native.bridge.push_viewport_roster(live_roster([survivor]));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the exact destroyed callback records")
+    );
+    let mut destroyed = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the destroyed callback frame begins");
+    destroyed
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the destroyed callback settles every surface");
+    destroyed
+        .commit()
+        .expect("the destroyed callback frame commits");
+    assert!(
+        native.close_control.references_binding(binding),
+        "the close correlation remains until the destroyed tombstone commits"
+    );
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the exact tombstone roster records")
+    );
+    let mut roster = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the destroyed roster frame begins");
+    roster
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the destroyed roster settles every surface");
+    let report = roster
+        .commit()
+        .expect("the destroyed roster commits the exact tombstone");
+    assert!(native.settle_host_frame_inputs(report.inputs()));
+
+    let prepared = native
+        .prepare_committed_retirements()
+        .expect("the committed route prepares atomically")
+        .expect("one exact route is ready to retire");
+    let mut retirement = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the route retirement frame begins");
+    retirement
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the route retirement frame settles every surface");
+    retirement
+        .commit()
+        .expect("the route retirement frame commits");
+    assert!(native.commit_retirements(prepared).is_empty());
+
+    assert!(!native.close_control.references_binding(binding));
+    assert!(
+        native
+            .try_report_retirement_quiescence()
+            .expect("terminal close correlation no longer blocks quiescence")
+    );
+}
+
+#[test]
 fn retain_layout_accepts_close_and_retires_only_after_destroyed_acknowledgement() {
     let mut native = coordinator();
     let (binding, survivor) = register_roots(&mut native);

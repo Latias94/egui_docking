@@ -288,6 +288,12 @@ impl NativeCloseControl {
         !bindings.is_empty()
     }
 
+    /// Retires close correlation after the exact native route reaches its
+    /// terminal destroyed state.
+    pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
+        self.pending.remove(&binding);
+    }
+
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending.contains_key(&binding)
     }

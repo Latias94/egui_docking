@@ -497,6 +497,7 @@ impl NativeCoordinator {
                 .remove(&retirement.binding());
             self.effects.remove_show(retirement.binding());
             self.effects.remove_commands(retirement.binding());
+            self.close_control.retire_binding(retirement.binding());
             self.focus_control.retire_binding(retirement.binding());
             self.input_control.retire_binding(retirement.binding());
             self.receivers.retire_binding(retirement.binding());
