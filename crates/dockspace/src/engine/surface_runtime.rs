@@ -517,6 +517,38 @@ impl DockEngine {
         })
     }
 
+    pub(super) fn reduce_global_focus_fact(
+        &mut self,
+        input: InputSequence,
+        provider: PlatformObservationLease,
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+        focus_causal: FocusCausalStamp,
+        application_base: &mut crate::model::WorkspaceVersion,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if let Some(rejected) = self.platform_provider_rejection(provider) {
+            return Ok(rejected);
+        }
+        if expected_epoch != self.version.epoch() {
+            return Ok(InputOutcome::PlatformSnapshotStale {
+                expected_epoch,
+                current_epoch: self.version.epoch(),
+            });
+        }
+        self.reconcile_viewport_focus_authority();
+        let transition = self.reduce_global_focus_observation(
+            input,
+            provider,
+            observation,
+            focus_causal,
+            self.platform_focus_restore_gate(),
+            events,
+        )?;
+        *application_base = self.version;
+        Ok(InputOutcome::GlobalFocusObservationPublished { transition })
+    }
+
     fn settle_cleared_native_surface_close(
         &mut self,
         provider: PlatformObservationLease,

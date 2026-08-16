@@ -112,6 +112,9 @@ impl HostFrameReport {
                                 .collect(),
                         }
                     }),
+                    InputOutcome::GlobalFocusObservationPublished { .. } => {
+                        Some(HostInputOutcome::NativeFocusObservationApplied)
+                    }
                     InputOutcome::SurfaceCloseRequested { request, plan, .. } => {
                         Some(HostInputOutcome::NativeSurfaceCloseRequested {
                             request: request.clone(),

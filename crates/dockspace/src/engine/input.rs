@@ -417,6 +417,15 @@ pub enum EngineInput {
         /// Provider-owned close fact for one exact native binding.
         observation: WindowCloseObservation,
     },
+    /// Publish one globally consistent native-focus observation.
+    PublishGlobalFocusObservation {
+        /// Exact platform provider which captured this focus fact.
+        provider: PlatformObservationLease,
+        /// Workspace epoch whose binding incarnation was observed.
+        expected_epoch: crate::ids::WorkspaceEpoch,
+        /// Provider-owned global focus fact.
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+    },
     /// Report an adapter dispatch result without claiming the effect was observed applied.
     ReportPlatformEffect {
         /// Exact platform provider which received and dispatched the effect.
@@ -797,6 +806,7 @@ impl EngineInput {
             | Self::RestoreWorkspace(_) => InputPriority::LifecycleControl,
             Self::PublishPlatformSnapshot { .. }
             | Self::PublishNativeCloseObservation { .. }
+            | Self::PublishGlobalFocusObservation { .. }
             | Self::ReportPlatformEffect { .. } => InputPriority::PlatformObservation,
             Self::PublishPaneFocusObservation { .. } => InputPriority::PlatformObservation,
             Self::ActivateViewport { .. }
@@ -854,6 +864,7 @@ impl EngineInput {
             self,
             Self::PublishPlatformSnapshot { .. }
                 | Self::PublishNativeCloseObservation { .. }
+                | Self::PublishGlobalFocusObservation { .. }
                 | Self::ReportPlatformEffect { .. }
         )
     }

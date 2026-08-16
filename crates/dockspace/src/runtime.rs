@@ -55,13 +55,13 @@ pub use measurement::{
 };
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
-    NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
+    NativeDesktopPosition, NativeGlobalFocus, NativeHostErrorKind, NativePointerButton,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativePointerRoster, NativePointerState, NativeProjectedScrollDelta,
+    NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason,
+    NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
+    NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeSurfaceBinding, NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState, NativeWorkAreaBinding, NativeWorkAreaFacts,
     NativeWorkAreaRoster,
 };
@@ -236,6 +236,8 @@ pub enum HostInputOutcome {
         /// Exact close edges newly observed by this binding-scoped fact.
         close_requests: Vec<NativeSurfaceCloseRequest>,
     },
+    /// One globally consistent native-focus observation was applied.
+    NativeFocusObservationApplied,
     /// One explicit native surface-close request opened a core-owned close plan.
     NativeSurfaceCloseRequested {
         /// Exact surface disposition accepted by the core.

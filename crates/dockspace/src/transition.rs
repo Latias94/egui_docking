@@ -144,6 +144,11 @@ pub enum InputOutcome {
         /// Exact close edges newly observed at this backend position.
         native_close_edges: Vec<NativeCloseEdge>,
     },
+    /// One globally consistent native-focus fact was published.
+    GlobalFocusObservationPublished {
+        /// Focus authority, activation, and effect settlement caused by the fact.
+        transition: crate::viewport_focus::FocusObservationTransition,
+    },
     /// Platform facts from an earlier workspace epoch were consumed without mutation.
     PlatformSnapshotStale {
         expected_epoch: WorkspaceEpoch,

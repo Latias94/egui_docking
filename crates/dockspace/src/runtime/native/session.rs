@@ -149,6 +149,27 @@ impl DockspaceSession {
         Ok(())
     }
 
+    /// Records one globally consistent native-focus fact in backend order.
+    ///
+    /// `Unknown` explicitly revokes prior focus authority. Losing focus from
+    /// one window does not by itself prove `Foreign` or `None`; hosts should
+    /// report those variants only when their platform integration can prove
+    /// the global state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile, a stale docking binding,
+    /// a superseded provider, or generation exhaustion.
+    pub fn report_native_global_focus(
+        &mut self,
+        focus: NativeGlobalFocus,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let expected_epoch = self.version().epoch();
+        self.native_state_mut()?
+            .record_global_focus(expected_epoch, focus)?;
+        Ok(())
+    }
+
     /// Returns the latest committed exact binding for one platform work area.
     ///
     /// A snapshot recorded but not yet committed cannot mint route authority.

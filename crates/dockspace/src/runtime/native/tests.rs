@@ -21,6 +21,13 @@ const ROOT: RootId = RootId::new(1);
 const ITEM: ItemId = ItemId::new(1);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 
+fn unknown_focus() -> crate::viewport_focus::FocusObservationEnvelope {
+    crate::viewport_focus::unknown_focus_observation(
+        crate::viewport_focus::FocusObservationGeneration::new(0),
+        AuthorityUnavailableReason::NotReported,
+    )
+}
+
 #[test]
 fn admission_diff_reports_only_the_same_pending_binding() {
     let domain = crate::ids::EngineAuthorityDomainId::new_for_test(1);
@@ -329,8 +336,9 @@ fn live_window_facts_leave_independent_authority_unknown() {
 
 #[test]
 fn unknown_inventory_compilation_does_not_infer_destruction() {
-    let snapshot = compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1)
-        .expect("the provider compiles an inventory tombstone");
+    let snapshot =
+        compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1, unknown_focus())
+            .expect("the provider compiles an inventory tombstone");
     let capabilities = snapshot
         .capability_observation()
         .known_roster()
@@ -694,8 +702,9 @@ fn work_area(token: u64) -> NativeWorkAreaFacts {
 
 #[test]
 fn native_capability_profiles_are_fixed_and_honest() {
-    let observed = compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1)
-        .expect("observed capabilities compile");
+    let observed =
+        compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1, unknown_focus())
+            .expect("observed capabilities compile");
     let observed = observed
         .capability_observation()
         .known_roster()
@@ -713,8 +722,9 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(!observed.window_activation_control().is_supported());
     assert!(!observed.close_cancellation().is_supported());
 
-    let managed = compile_unknown_inventory_snapshot(NativeHostProfile::ManagedDesktop, 1)
-        .expect("managed capabilities compile");
+    let managed =
+        compile_unknown_inventory_snapshot(NativeHostProfile::ManagedDesktop, 1, unknown_focus())
+            .expect("managed capabilities compile");
     let managed = managed
         .capability_observation()
         .known_roster()
@@ -728,8 +738,8 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(managed.work_area().is_supported());
     assert!(managed.pointer_hit_test_observation().is_supported());
     assert!(!managed.pointer_hit_test_control().is_supported());
-    assert!(!managed.global_focus_observation().is_supported());
-    assert!(!managed.window_activation_control().is_supported());
+    assert!(managed.global_focus_observation().is_supported());
+    assert!(managed.window_activation_control().is_supported());
     assert!(managed.close_cancellation().is_supported());
 }
 
@@ -739,7 +749,11 @@ fn narrow_close_and_complete_snapshots_advance_independent_generations() {
         native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
     session
         .report_managed_native_snapshot(
-            [(binding, NativeWindowFacts::live())],
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
             NativeWorkAreaRoster::Unknown,
         )
         .expect("the initial complete snapshot records");
@@ -765,6 +779,167 @@ fn narrow_close_and_complete_snapshots_advance_independent_generations() {
         )
         .expect("the later complete snapshot keeps every stream contiguous");
     commit_managed_frame(&mut session);
+}
+
+#[test]
+fn narrow_focus_lane_is_ordered_and_does_not_advance_with_unchanged_snapshots() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    assert_eq!(
+        session.native.as_ref().expect("native host exists").focus,
+        NativeGlobalFocus::Unknown
+    );
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .expect("native host exists")
+            .focus_generation,
+        0
+    );
+
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the initial capability snapshot records first");
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("exact dock focus records after its capability roster");
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("focus frame begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("focus frame settles every surface");
+    let report = frame.commit().expect("focus frame commits");
+    assert!(matches!(
+        report.inputs(),
+        [
+            super::super::HostInputOutcome::NativePlatformSnapshotApplied { .. },
+            super::super::HostInputOutcome::NativeFocusObservationApplied
+        ]
+    ));
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .expect("native host exists")
+            .focus_generation,
+        1
+    );
+
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("unchanged focus joins a complete snapshot");
+    commit_managed_frame(&mut session);
+    assert_eq!(
+        session
+            .native
+            .as_ref()
+            .expect("native host exists")
+            .focus_generation,
+        1,
+        "a complete snapshot repeats rather than fabricates a focus edge"
+    );
+
+    session
+        .report_native_global_focus(NativeGlobalFocus::Unknown)
+        .expect("an explicit focus tombstone records");
+    commit_managed_frame(&mut session);
+    let native = session.native.as_ref().expect("native host exists");
+    assert_eq!(native.focus_generation, 2);
+    assert_eq!(native.focus, NativeGlobalFocus::Unknown);
+}
+
+#[test]
+fn losing_inventory_revokes_dock_focus_without_guessing_a_successor() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the initial capability snapshot records");
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("exact dock focus records");
+    commit_managed_frame(&mut session);
+
+    session
+        .report_native_inventory_unknown()
+        .expect("inventory authority can be revoked");
+    commit_managed_frame(&mut session);
+
+    let native = session.native.as_ref().expect("native host exists");
+    assert_eq!(native.focus_generation, 2);
+    assert_eq!(native.focus, NativeGlobalFocus::Unknown);
+}
+
+#[test]
+fn focus_before_the_initial_managed_snapshot_is_rejected_atomically() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let native = session.native.as_ref().expect("native host exists");
+    let recorded_before = native.recorder.recorded_through();
+
+    let error = session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect_err("focus cannot precede the capability roster that authorizes it");
+    assert_eq!(
+        error.native_kind(),
+        Some(NativeHostErrorKind::OperationConflict)
+    );
+    let native = session.native.as_ref().expect("native host exists");
+    assert_eq!(native.recorder.recorded_through(), recorded_before);
+    assert_eq!(native.focus_generation, 0);
+    assert_eq!(native.focus, NativeGlobalFocus::Unknown);
+
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live()
+                    .with_presentation(NativeWindowPresentationState::Visible, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the initial capability snapshot remains recordable");
+    session
+        .report_native_global_focus(NativeGlobalFocus::Dock(binding))
+        .expect("focus remains recordable after the capability snapshot");
+    commit_managed_frame(&mut session);
+}
+
+#[test]
+fn global_focus_rejects_foreign_provider_bindings_atomically() {
+    let (mut session, _) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    let (_, foreign) = native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+
+    let error = session
+        .report_native_global_focus(NativeGlobalFocus::Dock(foreign))
+        .expect_err("a foreign provider binding cannot acquire focus authority");
+    assert_eq!(error.native_kind(), Some(NativeHostErrorKind::StaleBinding));
+    let native = session.native.as_ref().expect("native host exists");
+    assert_eq!(native.focus_generation, 0);
+    assert_eq!(native.focus, NativeGlobalFocus::Unknown);
 }
 
 #[test]

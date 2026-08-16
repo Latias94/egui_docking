@@ -1133,7 +1133,8 @@ impl DockEngine {
             .iter()
             .flat_map(|input| {
                 match input.outcome() {
-                    InputOutcome::PlatformSnapshotPublished { focus, .. } => focus
+                    InputOutcome::PlatformSnapshotPublished { focus, .. }
+                    | InputOutcome::GlobalFocusObservationPublished { transition: focus } => focus
                         .effect_settlement()
                         .map_or(&[][..], |settlement| settlement.observed_effects()),
                     InputOutcome::ViewportRegistered { .. }
@@ -1254,6 +1255,19 @@ impl DockEngine {
                     events,
                     interaction_events,
                 },
+            ),
+            EngineInput::PublishGlobalFocusObservation {
+                provider,
+                expected_epoch,
+                observation,
+            } => self.reduce_global_focus_fact(
+                input.sequence,
+                *provider,
+                *expected_epoch,
+                *observation,
+                focus_causal,
+                application_base,
+                events,
             ),
             EngineInput::ReportPlatformEffect {
                 provider,

@@ -32,7 +32,9 @@ use crate::viewport::{
     WorkAreaToken,
 };
 use crate::viewport_registry::ViewportAdmission;
-use compiler::{compile_platform_snapshot, compile_unknown_inventory_snapshot};
+use compiler::{
+    compile_focus_observation, compile_platform_snapshot, compile_unknown_inventory_snapshot,
+};
 pub use pointer::{
     NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
     NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
@@ -112,6 +114,22 @@ pub enum NativeWorkAreaRoster {
     /// Complete current platform work-area roster.
     Exact(Vec<NativeWorkAreaFacts>),
     /// Work-area authority is unavailable at this causal boundary.
+    Unknown,
+}
+
+/// Globally consistent native focus supplied by a managed host.
+///
+/// `Unknown` revokes prior focus authority. It is not equivalent to proving
+/// that no native window is focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeGlobalFocus {
+    /// One exact current docking window owns native focus.
+    Dock(NativeSurfaceBinding),
+    /// A non-docking application or system window owns native focus.
+    Foreign,
+    /// The platform authoritatively reports that no native window is focused.
+    None,
+    /// The globally focused native window cannot currently be proven.
     Unknown,
 }
 
@@ -554,6 +572,9 @@ pub(super) enum NativePlatformError {
     /// An operation was submitted through the wrong native host profile.
     #[error("native operation is unavailable for the enrolled host profile")]
     HostProfileMismatch,
+    /// Focus cannot become authoritative before the managed capability roster exists.
+    #[error("native focus authority requires an initial managed platform snapshot")]
+    FocusAuthorityUnavailable,
     /// Standalone restore cannot bypass an enrolled native causal stream.
     #[cfg(feature = "serde")]
     #[error("document restore requires the enrolled native host causal frame")]
@@ -594,7 +615,8 @@ impl NativePlatformError {
             Self::PointerProviderAlreadyEnabled
             | Self::BindingRosterUnsettled
             | Self::BindingStillLive { .. }
-            | Self::BindingNotRetired { .. } => NativeHostErrorKind::OperationConflict,
+            | Self::BindingNotRetired { .. }
+            | Self::FocusAuthorityUnavailable => NativeHostErrorKind::OperationConflict,
             #[cfg(feature = "serde")]
             Self::DocumentRestoreRequiresNativeFrame => NativeHostErrorKind::OperationConflict,
             Self::ReceiverResolverRequired | Self::HostProfileMismatch => {
@@ -619,6 +641,8 @@ pub(super) struct RuntimeNativeState {
     retired_bindings: BTreeSet<ViewportBinding>,
     work_areas: BTreeMap<WorkAreaToken, NativeWorkAreaBinding>,
     close_generations: BTreeMap<ViewportBinding, u64>,
+    focus_generation: u64,
+    focus: NativeGlobalFocus,
 }
 
 #[derive(Debug)]
@@ -641,6 +665,8 @@ impl RuntimeNativeState {
             retired_bindings: BTreeSet::new(),
             work_areas: BTreeMap::new(),
             close_generations: BTreeMap::new(),
+            focus_generation: 0,
+            focus: NativeGlobalFocus::Unknown,
         }
     }
 
@@ -775,6 +801,41 @@ impl RuntimeNativeState {
             .ok_or(NativePlatformError::GenerationExhausted)
     }
 
+    fn next_focus_generation(&self) -> Result<u64, NativePlatformError> {
+        self.focus_generation
+            .checked_add(1)
+            .ok_or(NativePlatformError::GenerationExhausted)
+    }
+
+    fn current_focus_observation(
+        &self,
+    ) -> Result<crate::viewport_focus::FocusObservationEnvelope, NativePlatformError> {
+        compile_focus_observation(self.provider(), self.focus_generation, self.focus)
+    }
+
+    fn focus_observation_for_bindings(
+        &self,
+        bindings: impl IntoIterator<Item = ViewportBinding>,
+    ) -> Result<
+        (
+            crate::viewport_focus::FocusObservationEnvelope,
+            Option<(u64, NativeGlobalFocus)>,
+        ),
+        NativePlatformError,
+    > {
+        let live = bindings.into_iter().collect::<BTreeSet<_>>();
+        if let NativeGlobalFocus::Dock(binding) = self.focus
+            && !live.contains(&binding.binding)
+        {
+            let generation = self.next_focus_generation()?;
+            return Ok((
+                compile_focus_observation(self.provider(), generation, NativeGlobalFocus::Unknown)?,
+                Some((generation, NativeGlobalFocus::Unknown)),
+            ));
+        }
+        Ok((self.current_focus_observation()?, None))
+    }
+
     fn next_close_generations(
         &self,
         bindings: impl IntoIterator<Item = ViewportBinding>,
@@ -848,10 +909,15 @@ impl RuntimeNativeState {
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
         let close_generations = self.next_close_generations(supplied.keys().copied())?;
+        let (focus, focus_update) =
+            self.focus_observation_for_bindings(supplied.iter().filter_map(|(binding, facts)| {
+                matches!(facts.lifecycle, NativeWindowLifecycleFact::Live).then_some(*binding)
+            }))?;
         let snapshot = compile_platform_snapshot(
             self.profile,
             self.provider(),
             generation,
+            focus,
             &close_generations,
             &supplied,
             &work_areas,
@@ -864,6 +930,10 @@ impl RuntimeNativeState {
             .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }));
         self.snapshot_generation = generation;
         self.close_generations.extend(close_generations);
+        if let Some((generation, focus)) = focus_update {
+            self.focus_generation = generation;
+            self.focus = focus;
+        }
         Ok(())
     }
 
@@ -872,11 +942,47 @@ impl RuntimeNativeState {
         expected_epoch: WorkspaceEpoch,
     ) -> Result<(), NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
-        let snapshot = compile_unknown_inventory_snapshot(self.profile, generation)?;
+        let (focus, focus_update) = self.focus_observation_for_bindings([])?;
+        let snapshot = compile_unknown_inventory_snapshot(self.profile, generation, focus)?;
         self.recorder
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         self.snapshot_generation = generation;
+        if let Some((generation, focus)) = focus_update {
+            self.focus_generation = generation;
+            self.focus = focus;
+        }
+        Ok(())
+    }
+
+    fn record_global_focus(
+        &mut self,
+        expected_epoch: WorkspaceEpoch,
+        focus: NativeGlobalFocus,
+    ) -> Result<(), NativePlatformError> {
+        if self.profile != NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch);
+        }
+        if let NativeGlobalFocus::Dock(binding) = focus {
+            if binding.provider != self.provider() {
+                return Err(NativePlatformError::ProviderSuperseded);
+            }
+            if self.bindings.get(&binding.surface()) != Some(&binding) {
+                return Err(NativePlatformError::StaleSurface {
+                    surface: binding.surface(),
+                });
+            }
+        }
+        if self.snapshot_generation == 0 {
+            return Err(NativePlatformError::FocusAuthorityUnavailable);
+        }
+        let generation = self.next_focus_generation()?;
+        let observation = compile_focus_observation(self.provider(), generation, focus)?;
+        self.recorder
+            .record_global_focus_observation(expected_epoch, observation)
+            .map_err(|_| NativePlatformError::ProtocolInvariant)?;
+        self.focus_generation = generation;
+        self.focus = focus;
         Ok(())
     }
 

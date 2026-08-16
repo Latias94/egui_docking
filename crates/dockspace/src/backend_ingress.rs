@@ -597,6 +597,13 @@ pub enum BackendIngressPayload {
         /// Exact close fact captured at this ingress position.
         observation: WindowCloseObservation,
     },
+    /// One globally consistent native-focus observation.
+    GlobalFocusObservation {
+        /// Workspace epoch whose binding incarnation the backend observed.
+        expected_epoch: WorkspaceEpoch,
+        /// Provider-owned focus fact captured at this ingress position.
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+    },
     /// One non-observational platform-effect dispatch result.
     PlatformEffectResult(EffectResult),
     /// One narrow non-pointer semantic action captured by the backend event loop.
@@ -1117,6 +1124,18 @@ impl BackendIngressRecorder {
         })
     }
 
+    /// Records one globally consistent native-focus observation.
+    pub fn record_global_focus_observation(
+        &mut self,
+        expected_epoch: WorkspaceEpoch,
+        observation: crate::viewport_focus::FocusObservationEnvelope,
+    ) -> Result<BackendIngressOrdinal, BackendIngressError> {
+        self.push(BackendIngressPayload::GlobalFocusObservation {
+            expected_epoch,
+            observation,
+        })
+    }
+
     /// Records one platform-effect result at the next backend position.
     pub fn record_platform_effect_result(
         &mut self,
@@ -1350,6 +1369,7 @@ impl BackendIngressRecorder {
                 BackendIngressPayload::PlatformBindingQuiesced { binding } => Some(*binding),
                 BackendIngressPayload::PlatformSnapshot { .. }
                 | BackendIngressPayload::NativeCloseObservation { .. }
+                | BackendIngressPayload::GlobalFocusObservation { .. }
                 | BackendIngressPayload::PlatformEffectResult(_)
                 | BackendIngressPayload::SemanticInput(_)
                 | BackendIngressPayload::PresentationObservation { .. }

@@ -1188,6 +1188,23 @@ impl CoreHostFrame {
                         },
                     )?;
                 }
+                BackendIngressPayload::GlobalFocusObservation {
+                    expected_epoch,
+                    observation,
+                } => {
+                    let provider = self
+                        .backend_ingress
+                        .expect("validated backend ingress remains frozen")
+                        .platform_provider();
+                    self.append_backend_input(
+                        ordinal,
+                        EngineInput::PublishGlobalFocusObservation {
+                            provider,
+                            expected_epoch,
+                            observation,
+                        },
+                    )?;
+                }
                 BackendIngressPayload::PlatformEffectResult(result) => {
                     let provider = self
                         .backend_ingress
@@ -1846,6 +1863,7 @@ impl CoreHostFrame {
                 | EngineInput::BootstrapChildViewport { .. }
                 | EngineInput::PublishPlatformSnapshot { .. }
                 | EngineInput::PublishNativeCloseObservation { .. }
+                | EngineInput::PublishGlobalFocusObservation { .. }
                 | EngineInput::ReplaceWorkspace(_)
                 | EngineInput::RestoreWorkspace(_)
         );

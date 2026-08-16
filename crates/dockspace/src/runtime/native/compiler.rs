@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
-    NativeHostProfile, NativeInputFact, NativePlatformError, NativePresentationFact,
-    NativeWindowFacts, NativeWindowLifecycleFact, NativeWorkAreaRoster,
+    NativeGlobalFocus, NativeHostProfile, NativeInputFact, NativePlatformError,
+    NativePresentationFact, NativeWindowFacts, NativeWindowLifecycleFact, NativeWorkAreaRoster,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
@@ -22,11 +22,44 @@ use crate::viewport::{
     InputObservationGeneration, InventoryObservationGeneration, PlatformSnapshotGeneration,
     PresentationObservationGeneration, ViewportBinding, WorkAreaObservationGeneration,
 };
-use crate::viewport_focus::{FocusObservationEnvelope, FocusObservationGeneration};
+use crate::viewport_focus::{
+    FocusObservationEnvelope, FocusObservationGeneration, GlobalFocusedWindow,
+};
+
+pub(super) fn compile_focus_observation(
+    provider: PlatformObservationLease,
+    generation: u64,
+    focus: NativeGlobalFocus,
+) -> Result<FocusObservationEnvelope, NativePlatformError> {
+    let reason = AuthorityUnavailableReason::NotReported;
+    let focused = match focus {
+        NativeGlobalFocus::Dock(binding) => {
+            if binding.provider != provider {
+                return Err(NativePlatformError::ProviderSuperseded);
+            }
+            Authority::Known(GlobalFocusedWindow::Dock(binding.binding))
+        }
+        NativeGlobalFocus::Foreign => Authority::Known(GlobalFocusedWindow::Foreign),
+        NativeGlobalFocus::None => Authority::Known(GlobalFocusedWindow::None),
+        NativeGlobalFocus::Unknown => Authority::Unknown(reason),
+    };
+    let acknowledged_effect = match focus {
+        NativeGlobalFocus::Unknown => Authority::Unknown(reason),
+        NativeGlobalFocus::Dock(_) | NativeGlobalFocus::Foreign | NativeGlobalFocus::None => {
+            Authority::Known(None)
+        }
+    };
+    Ok(FocusObservationEnvelope::new(
+        FocusObservationGeneration::new(generation),
+        focused,
+        acknowledged_effect,
+    ))
+}
 
 pub(super) fn compile_unknown_inventory_snapshot(
     profile: NativeHostProfile,
     generation: u64,
+    focus: FocusObservationEnvelope,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
     let reason = AuthorityUnavailableReason::NotReported;
     PlatformSnapshot::new(
@@ -35,11 +68,7 @@ pub(super) fn compile_unknown_inventory_snapshot(
             CapabilityObservationGeneration::new(generation),
             Authority::Known(capabilities(profile)),
         ),
-        FocusObservationEnvelope::new(
-            FocusObservationGeneration::new(generation),
-            Authority::Unknown(reason),
-            Authority::Unknown(reason),
-        ),
+        focus,
         WindowInventoryObservation::unknown(
             InventoryObservationGeneration::new(generation),
             reason,
@@ -55,6 +84,7 @@ pub(super) fn compile_platform_snapshot(
     profile: NativeHostProfile,
     provider: PlatformObservationLease,
     generation: u64,
+    focus: FocusObservationEnvelope,
     close_generations: &BTreeMap<ViewportBinding, u64>,
     supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
     work_areas: &NativeWorkAreaRoster,
@@ -117,11 +147,7 @@ pub(super) fn compile_platform_snapshot(
             CapabilityObservationGeneration::new(generation),
             Authority::Known(capabilities(profile)),
         ),
-        FocusObservationEnvelope::new(
-            FocusObservationGeneration::new(generation),
-            Authority::Unknown(reason),
-            Authority::Unknown(reason),
-        ),
+        focus,
         WindowInventoryObservation::new(
             InventoryObservationGeneration::new(generation),
             Authority::Known(live_bindings),
@@ -158,10 +184,9 @@ fn capabilities(profile: NativeHostProfile) -> PlatformCapabilities {
     // lacks a corresponding property callback.
     capabilities
         .set_pointer_hit_test_control(unsupported(PlatformRequirement::PointerHitTestControl));
+    capabilities.set_global_focus_observation(managed(PlatformRequirement::GlobalFocusObservation));
     capabilities
-        .set_global_focus_observation(unsupported(PlatformRequirement::GlobalFocusObservation));
-    capabilities
-        .set_window_activation_control(unsupported(PlatformRequirement::WindowActivationControl));
+        .set_window_activation_control(managed(PlatformRequirement::WindowActivationControl));
     capabilities.set_close_cancellation(managed(PlatformRequirement::CloseCancellation));
     capabilities
 }
