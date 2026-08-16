@@ -7,6 +7,7 @@
 //! authority.
 
 mod close;
+mod error_kind;
 mod host_frame;
 mod interaction;
 mod local_action;
@@ -23,6 +24,10 @@ mod session;
 pub use host_frame::DockspaceHostFrame;
 pub use session::DockspaceSession;
 
+use error_kind::{
+    engine_error_kind, host_frame_error_kind, interaction_error_kind, native_error_kind,
+    presentation_observation_error_kind, surface_contribution_prepare_error_kind,
+};
 use native::NativePlatformError;
 
 pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
@@ -485,7 +490,7 @@ impl DockspaceRuntimeError {
     pub const fn kind(&self) -> DockspaceRuntimeErrorKind {
         match &self.source {
             DockspaceRuntimeErrorSource::Engine(error) => engine_error_kind(error),
-            DockspaceRuntimeErrorSource::HostFrame(_) => DockspaceRuntimeErrorKind::HostProtocol,
+            DockspaceRuntimeErrorSource::HostFrame(error) => host_frame_error_kind(error),
             DockspaceRuntimeErrorSource::PreparedActionAuthorityMismatch(_) => {
                 DockspaceRuntimeErrorKind::OperationConflict
             }
@@ -512,12 +517,12 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::SurfaceContributionBegin(_) => {
                 DockspaceRuntimeErrorKind::HostProtocol
             }
-            DockspaceRuntimeErrorSource::SurfaceContributionPrepare(_) => {
-                DockspaceRuntimeErrorKind::HostProtocol
+            DockspaceRuntimeErrorSource::SurfaceContributionPrepare(error) => {
+                surface_contribution_prepare_error_kind(error)
             }
             DockspaceRuntimeErrorSource::Interaction(error) => interaction_error_kind(*error),
-            DockspaceRuntimeErrorSource::PresentationObservation(_) => {
-                DockspaceRuntimeErrorKind::HostProtocol
+            DockspaceRuntimeErrorSource::PresentationObservation(error) => {
+                presentation_observation_error_kind(*error)
             }
             DockspaceRuntimeErrorSource::Native(error) => native_error_kind(error.kind()),
             #[cfg(feature = "serde")]
@@ -610,57 +615,6 @@ impl DockspaceRuntimeError {
         Self {
             source: DockspaceRuntimeErrorSource::PreparedSurfaceActionAuthorityMismatch(error),
         }
-    }
-}
-
-const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeErrorKind {
-    match error {
-        EngineError::InvalidWorkspace(_) => DockspaceRuntimeErrorKind::InvalidConfiguration,
-        EngineError::WorkspaceReplacementIdentityRetired { .. } => {
-            DockspaceRuntimeErrorKind::OperationConflict
-        }
-        _ => DockspaceRuntimeErrorKind::Internal,
-    }
-}
-
-const fn interaction_error_kind(error: DockspaceInteractionError) -> DockspaceRuntimeErrorKind {
-    match error {
-        DockspaceInteractionError::PointerProviderUnavailable => {
-            DockspaceRuntimeErrorKind::Unsupported
-        }
-        DockspaceInteractionError::PointerProviderAlreadyActive
-        | DockspaceInteractionError::PresentationAuthorityUnavailable { .. }
-        | DockspaceInteractionError::SurfaceNotPaintable { .. }
-        | DockspaceInteractionError::PointerInputAlreadySubmitted
-        | DockspaceInteractionError::PointerFrameInFlight => {
-            DockspaceRuntimeErrorKind::OperationConflict
-        }
-        DockspaceInteractionError::MeasurementRosterInvariant
-        | DockspaceInteractionError::PointerSequenceExhausted
-        | DockspaceInteractionError::PointerProtocolInvariant => {
-            DockspaceRuntimeErrorKind::Internal
-        }
-        DockspaceInteractionError::InvalidMeasurementProfile
-        | DockspaceInteractionError::SurfaceOutsideRoster { .. }
-        | DockspaceInteractionError::SurfaceAlreadyAnswered { .. }
-        | DockspaceInteractionError::MeasurementAnswerMismatch
-        | DockspaceInteractionError::PointerBatchEmpty
-        | DockspaceInteractionError::InvalidScrollSample => DockspaceRuntimeErrorKind::HostProtocol,
-    }
-}
-
-const fn native_error_kind(error: NativeHostErrorKind) -> DockspaceRuntimeErrorKind {
-    match error {
-        NativeHostErrorKind::NotEnabled | NativeHostErrorKind::Unsupported => {
-            DockspaceRuntimeErrorKind::Unsupported
-        }
-        NativeHostErrorKind::AlreadyEnabled | NativeHostErrorKind::OperationConflict => {
-            DockspaceRuntimeErrorKind::OperationConflict
-        }
-        NativeHostErrorKind::StaleBinding | NativeHostErrorKind::InvalidFacts => {
-            DockspaceRuntimeErrorKind::HostProtocol
-        }
-        NativeHostErrorKind::Internal => DockspaceRuntimeErrorKind::Internal,
     }
 }
 
