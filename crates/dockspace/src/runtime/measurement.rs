@@ -8,7 +8,7 @@ pub use crate::scene_manifest::{
 use crate::geometry::{LogicalRect, LogicalSize};
 use crate::ids::{ItemId, SurfaceId};
 use crate::policy::TabBarVisibility;
-use crate::scene::PaneSceneId;
+use crate::scene::{PaneSceneId, SurfaceScene};
 use crate::scene_manifest::{Measurement, SurfaceMeasurements, TabIntrinsic};
 
 use super::{
@@ -158,6 +158,34 @@ impl SurfaceMeasurementAnswer {
 }
 
 impl DockspaceHostFrame<'_> {
+    /// Supplies one complete uniform measurement answer for a frozen surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the surface is outside the frozen roster, already
+    /// answered, or the measurements cannot satisfy the core manifest.
+    pub fn measure_surface(
+        &mut self,
+        surface: SurfaceId,
+        metrics: UniformSurfaceMetrics,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.measure_surface_with(surface, |request| match request {
+            SurfaceMeasurementRequest::DockBounds { .. }
+            | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
+                SurfaceMeasurementAnswer::Bounds(metrics.bounds)
+            }
+            SurfaceMeasurementRequest::PaneMinimum { .. } => {
+                SurfaceMeasurementAnswer::PaneMinimum(metrics.pane_minimum)
+            }
+            SurfaceMeasurementRequest::TabIntrinsic { .. } => {
+                SurfaceMeasurementAnswer::TabIntrinsic(metrics.tab_intrinsic.content_width())
+            }
+            SurfaceMeasurementRequest::TabStrip { .. } => {
+                SurfaceMeasurementAnswer::TabStrip(metrics.tab_strip)
+            }
+        })
+    }
+
     /// Resolves every exact surface measurement through product-level questions.
     ///
     /// Core owns deterministic traversal, structural identities, exact-set
@@ -258,6 +286,41 @@ impl DockspaceHostFrame<'_> {
             .view()
             .prepare_surface_contribution(token, measurements)?;
         self.frame.push_surface_contribution(contribution)?;
+        Ok(())
+    }
+
+    /// Explicitly settles every unanswered surface by retaining a current
+    /// Ready candidate or reporting the supplied unavailability reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any contribution is stale, duplicated, or cannot
+    /// satisfy the frozen surface roster.
+    pub fn complete_unpainted_surfaces(
+        &mut self,
+        reason: SurfaceUnavailableReason,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.complete_pointer_input()?;
+        let surfaces = self.frame.surfaces().collect::<Vec<_>>();
+        for surface in surfaces {
+            if self.surface_answered(surface) {
+                continue;
+            }
+            let token = self.frame.view().begin_surface_contribution(surface)?;
+            let contribution = if matches!(
+                self.frame.view().scene().surface(surface),
+                Some(SurfaceScene::Ready(_))
+            ) {
+                self.frame
+                    .view()
+                    .prepare_surface_retained_contribution(token)?
+            } else {
+                self.frame
+                    .view()
+                    .prepare_surface_unavailable_contribution(token, reason.into())?
+            };
+            self.frame.push_surface_contribution(contribution)?;
+        }
         Ok(())
     }
 }

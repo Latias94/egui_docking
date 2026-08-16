@@ -4,7 +4,6 @@ use thiserror::Error;
 
 use super::{
     DockspaceHostFrame, DockspaceReceiverDescriptor, DockspaceRuntimeError, DockspaceSession,
-    SurfacePaintPlan, SurfaceUnavailableReason, UniformSurfaceMetrics,
 };
 use crate::engine::EngineError;
 use crate::geometry::{LogicalPoint, LogicalRect};
@@ -24,7 +23,6 @@ use crate::pointer_receiver::{
     PresentedPointerReceiverObservation,
 };
 use crate::presentation_observation::{PresentedSurfaceAuthority, SurfacePresentationOutputTicket};
-use crate::scene::SurfaceScene;
 
 /// Exact presented surface capability used to qualify known-empty facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,125 +768,6 @@ impl DockspaceSession {
 }
 
 impl DockspaceHostFrame<'_> {
-    /// Supplies one complete uniform measurement answer for a frozen surface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the surface is outside the frozen roster, already
-    /// answered, or the measurements cannot satisfy the core manifest.
-    pub fn measure_surface(
-        &mut self,
-        surface: SurfaceId,
-        metrics: UniformSurfaceMetrics,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.measure_surface_with(surface, |request| match request {
-            super::SurfaceMeasurementRequest::DockBounds { .. }
-            | super::SurfaceMeasurementRequest::PopupPlaneBounds { .. } => {
-                super::SurfaceMeasurementAnswer::Bounds(metrics.bounds)
-            }
-            super::SurfaceMeasurementRequest::PaneMinimum { .. } => {
-                super::SurfaceMeasurementAnswer::PaneMinimum(metrics.pane_minimum)
-            }
-            super::SurfaceMeasurementRequest::TabIntrinsic { .. } => {
-                super::SurfaceMeasurementAnswer::TabIntrinsic(metrics.tab_intrinsic.content_width())
-            }
-            super::SurfaceMeasurementRequest::TabStrip { .. } => {
-                super::SurfaceMeasurementAnswer::TabStrip(metrics.tab_strip)
-            }
-        })
-    }
-
-    /// Freezes pointer input and returns the current candidate plan which the
-    /// renderer may paint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the pointer-input phase cannot be completed.
-    pub fn paint_plan(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<Option<SurfacePaintPlan<'_>>, DockspaceRuntimeError> {
-        self.complete_pointer_input()?;
-        let view = self.frame.view();
-        let Some(scene) = view.scene().surface(surface).and_then(SurfaceScene::ready) else {
-            return Ok(None);
-        };
-        let candidate = scene.candidate();
-        let drop_affordance = view.interaction().drop_affordance().filter(|affordance| {
-            affordance.surface() == surface && affordance.scene() == candidate.stamp()
-        });
-        Ok(Some(SurfacePaintPlan {
-            surface,
-            authority_domain: self.session.engine.authority_domain(),
-            version: view.version(),
-            scene: candidate.stamp(),
-            output: candidate.output_ticket(),
-            plan: candidate.plan(),
-            hit_manifest: candidate.hit_manifest(),
-            splitter_keyboard_step: view.presentation_config().splitter_keyboard_step(),
-            escape_available: view.interaction().local_response_gesture_surface() == Some(surface),
-            drop_affordance,
-            drag_preview: view.presentation_drag_preview(surface),
-            contained_transform_preview: view.presentation_contained_transform_preview(surface),
-        }))
-    }
-
-    /// Records that the renderer painted the complete current plan, including
-    /// every transient preview exposed by [`Self::paint_plan`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the surface was already answered or has no
-    /// current paintable plan.
-    pub fn confirm_surface_painted(
-        &mut self,
-        surface: SurfaceId,
-    ) -> Result<(), DockspaceRuntimeError> {
-        if self.surface_answered(surface) {
-            return Err(DockspaceInteractionError::SurfaceAlreadyAnswered { surface }.into());
-        }
-        if self.paint_plan(surface)?.is_none() {
-            return Err(DockspaceInteractionError::SurfaceNotPaintable { surface }.into());
-        }
-        self.painted_surfaces.insert(surface);
-        Ok(())
-    }
-
-    /// Explicitly settles every unanswered surface by retaining a current
-    /// Ready candidate or reporting the supplied unavailability reason.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any contribution is stale, duplicated, or cannot
-    /// satisfy the frozen surface roster.
-    pub fn complete_unpainted_surfaces(
-        &mut self,
-        reason: SurfaceUnavailableReason,
-    ) -> Result<(), DockspaceRuntimeError> {
-        self.complete_pointer_input()?;
-        let surfaces = self.frame.surfaces().collect::<Vec<_>>();
-        for surface in surfaces {
-            if self.surface_answered(surface) {
-                continue;
-            }
-            let token = self.frame.view().begin_surface_contribution(surface)?;
-            let contribution = if matches!(
-                self.frame.view().scene().surface(surface),
-                Some(SurfaceScene::Ready(_))
-            ) {
-                self.frame
-                    .view()
-                    .prepare_surface_retained_contribution(token)?
-            } else {
-                self.frame
-                    .view()
-                    .prepare_surface_unavailable_contribution(token, reason.into())?
-            };
-            self.frame.push_surface_contribution(contribution)?;
-        }
-        Ok(())
-    }
-
     /// Submits one ordered surface-local edge.
     ///
     /// This is the one-element form of [`Self::submit_surface_pointer_batch`].
