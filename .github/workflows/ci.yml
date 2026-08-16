@@ -50,9 +50,9 @@ jobs:
       - name: Run documentation tests
         run: cargo test --doc --workspace --all-features --locked
       - name: Package publishable crates
-        run: |
-          cargo package -p dockspace --locked -j1
-          cargo package -p egui_dockspace --locked --list
+        run: >-
+          cargo package --workspace --exclude dockspace_host_conformance
+          --all-features --locked -j1
 
   official-egui:
     name: Official egui consumer

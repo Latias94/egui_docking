@@ -80,6 +80,7 @@ cargo check --workspace --all-features --all-targets --locked -j1
 cargo nextest run --workspace --all-features --all-targets --test-threads=1
 cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --all-features --test-threads=1
 cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1
+cargo package --workspace --exclude dockspace_host_conformance --all-features --locked -j1
 ```
 
 The fork-backed native workspace uses one thin Cargo launcher:
@@ -94,13 +95,15 @@ development fixture, not a multiview product demo.
 
 ## Packaging and release order
 
-`dockspace` must be packaged and published before `egui_dockspace`, because the
-adapter's packaged manifest resolves the exact core version from the registry.
-Before the first core release, CI fully verifies the core package and checks the
-adapter's package file list; the local product and official-egui downstream
-workspaces provide the adapter build and behavior evidence. After the core
-version exists in the registry, rerun the full
-`cargo package -p egui_dockspace` verification.
+`dockspace` must still be published before `egui_dockspace`, because the
+adapter's packaged manifest resolves its declared core dependency from the
+registry.
+Publication is not required for local package verification: Cargo 1.95 packages
+the publishable workspace members in dependency order and uses a temporary local
+registry to verify the normalized `dockspace` and `egui_dockspace` packages
+together. CI runs that workspace package gate directly; it does not substitute a
+path-dependent downstream build or a package file listing for adapter package
+verification.
 
 ## License
 
