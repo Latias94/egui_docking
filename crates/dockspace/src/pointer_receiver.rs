@@ -493,6 +493,14 @@ impl PointerReceiverCandidateSpec {
             scroll_challenge: None,
         }
     }
+
+    const fn referenced_presented_surface(&self) -> Option<SurfaceId> {
+        match self.probes {
+            PointerReceiverProbeRequest::NotApplicable => None,
+            PointerReceiverProbeRequest::Delivery => self.delivery_surface,
+            PointerReceiverProbeRequest::HoverHit => self.hover_surface,
+        }
+    }
 }
 
 /// Exact interactive output admitted into one candidate roster.
@@ -533,6 +541,33 @@ pub struct PointerReceiverCandidateRoster {
 }
 
 impl PointerReceiverCandidateRoster {
+    /// Freezes only outputs referenced by this segment's exact receiver probes.
+    ///
+    /// A missing output leaves its candidate intact, but prevents that
+    /// candidate from submitting known presentation authority.
+    pub(crate) fn freeze_referenced_outputs(
+        attempt: PointerReceiverFrameAttempt,
+        specs: Vec<PointerReceiverCandidateSpec>,
+        available_outputs: &BTreeMap<SurfaceId, PointerReceiverPresentedOutput>,
+    ) -> Result<Self, PointerReceiverCandidateRosterError> {
+        let specs = Self::canonicalize_specs(specs)?;
+        let presented_outputs = specs
+            .iter()
+            .filter_map(PointerReceiverCandidateSpec::referenced_presented_surface)
+            .filter_map(|surface| {
+                available_outputs
+                    .get(&surface)
+                    .copied()
+                    .map(|output| (surface, output))
+            })
+            .collect();
+        Ok(Self::from_canonical_parts(
+            attempt,
+            specs,
+            presented_outputs,
+        ))
+    }
+
     #[allow(
         dead_code,
         reason = "reserved for CoreHostFrame pointer-receiver integration"
@@ -542,7 +577,27 @@ impl PointerReceiverCandidateRoster {
         specs: Vec<PointerReceiverCandidateSpec>,
         outputs: Vec<PointerReceiverPresentedOutput>,
     ) -> Result<Self, PointerReceiverCandidateRosterError> {
-        let mut specs = specs;
+        let specs = Self::canonicalize_specs(specs)?;
+        let mut presented_outputs = BTreeMap::new();
+        for output in outputs {
+            let surface = output.ticket.surface();
+            if presented_outputs.insert(surface, output).is_some() {
+                return Err(
+                    PointerReceiverCandidateRosterError::DuplicatePresentedSurface { surface },
+                );
+            }
+        }
+
+        Ok(Self::from_canonical_parts(
+            attempt,
+            specs,
+            presented_outputs,
+        ))
+    }
+
+    fn canonicalize_specs(
+        mut specs: Vec<PointerReceiverCandidateSpec>,
+    ) -> Result<Vec<PointerReceiverCandidateSpec>, PointerReceiverCandidateRosterError> {
         specs.sort_unstable_by_key(|spec| spec.sequence);
         if let Some(pair) = specs
             .windows(2)
@@ -554,17 +609,14 @@ impl PointerReceiverCandidateRoster {
                 },
             );
         }
+        Ok(specs)
+    }
 
-        let mut presented_outputs = BTreeMap::new();
-        for output in outputs {
-            let surface = output.ticket.surface();
-            if presented_outputs.insert(surface, output).is_some() {
-                return Err(
-                    PointerReceiverCandidateRosterError::DuplicatePresentedSurface { surface },
-                );
-            }
-        }
-
+    fn from_canonical_parts(
+        attempt: PointerReceiverFrameAttempt,
+        specs: Vec<PointerReceiverCandidateSpec>,
+        presented_outputs: BTreeMap<SurfaceId, PointerReceiverPresentedOutput>,
+    ) -> Self {
         let candidates = specs
             .into_iter()
             .map(|spec| PointerReceiverCandidate {
@@ -578,12 +630,12 @@ impl PointerReceiverCandidateRoster {
                 scroll_challenge: spec.scroll_challenge,
             })
             .collect();
-        Ok(Self {
+        Self {
             attempt: attempt.id,
             lease: attempt.lease,
             candidates,
             presented_outputs,
-        })
+        }
     }
 
     /// Returns the exact non-replayable frame-attempt identity.
@@ -1722,6 +1774,93 @@ mod tests {
             ticket,
             authority: authority(ticket, emission),
         }
+    }
+
+    #[test]
+    fn candidate_roster_freezes_only_referenced_presented_outputs() {
+        let authority_domain = domain(7);
+        let provider = lease(authority_domain, 1);
+        let issuer = PointerReceiverAttemptIssuer::new(authority_domain);
+        let outputs = (1..=1_024)
+            .map(|identity| {
+                let surface = SurfaceId::new(identity);
+                let ticket = output(authority_domain, surface, identity);
+                (surface, presented_output(ticket, 1))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let delivery_surface = SurfaceId::new(17);
+        let hover_surface = SurfaceId::new(997);
+        let missing_surface = SurfaceId::new(2_048);
+        let missing_ticket = output(authority_domain, missing_surface, 2_048);
+        let missing_authority = authority(missing_ticket, 1);
+
+        let roster = PointerReceiverCandidateRoster::freeze_referenced_outputs(
+            issuer.issue(provider).expect("attempt"),
+            vec![
+                PointerReceiverCandidateSpec::delivery(
+                    PointerEdgeSequence::new(1),
+                    Some(delivery_surface),
+                    None,
+                    PointerReceiverDeliveryRequest::Click,
+                ),
+                PointerReceiverCandidateSpec::hover_hit(
+                    PointerEdgeSequence::new(2),
+                    Some(hover_surface),
+                    None,
+                ),
+                PointerReceiverCandidateSpec::delivery(
+                    PointerEdgeSequence::new(3),
+                    Some(missing_surface),
+                    None,
+                    PointerReceiverDeliveryRequest::Click,
+                ),
+                PointerReceiverCandidateSpec::not_applicable(PointerEdgeSequence::new(4)),
+            ],
+            &outputs,
+        )
+        .expect("roster");
+
+        assert_eq!(
+            roster.presented_outputs.keys().copied().collect::<Vec<_>>(),
+            vec![delivery_surface, hover_surface],
+        );
+
+        let known_missing =
+            PresentedPointerReceiverObservation::new([PointerReceiverProbeReceipt::Delivery(
+                PointerReceiverDelivery {
+                    output: Some(missing_ticket),
+                    authority: Some(missing_authority),
+                    click: PointerReceiverDeliveryDisposition::Blocked,
+                    drag: PointerReceiverDeliveryDisposition::Blocked,
+                    scroll: PointerReceiverDeliveryDisposition::Blocked,
+                },
+            )])
+            .expect("missing output claim is structurally valid");
+        let candidates = roster.candidates();
+        let receipts = PointerReceiverReceiptBatch::new([
+            candidates[0].receipt(PointerReceiverObservation::Unknown(
+                PointerReceiverUnknownReason::NotReported,
+            )),
+            candidates[1].receipt(PointerReceiverObservation::Unknown(
+                PointerReceiverUnknownReason::NotReported,
+            )),
+            candidates[2].receipt(PointerReceiverObservation::Presented(known_missing)),
+            candidates[3].receipt(PointerReceiverObservation::NotApplicable),
+        ])
+        .expect("receipt batch remains exact");
+
+        assert!(matches!(
+            roster.validate(receipts),
+            Err(
+                PointerReceiverReceiptValidationError::PresentationAuthorityNotCurrent {
+                    candidate,
+                    submitted_output,
+                    current_output: None,
+                    current_authority: None,
+                    ..
+                }
+            ) if candidate == candidates[2].id() && submitted_output == missing_ticket
+        ));
     }
 
     #[test]

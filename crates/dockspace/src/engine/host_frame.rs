@@ -1560,13 +1560,10 @@ impl CoreHostFrame {
                 return self.reject(CoreHostFrameError::PointerReceiverAttempt { source });
             }
         };
-        let candidates = match PointerReceiverCandidateRoster::freeze(
+        let candidates = match PointerReceiverCandidateRoster::freeze_referenced_outputs(
             attempt,
             specs,
-            self.frozen_pointer_outputs
-                .values()
-                .copied()
-                .collect::<Vec<_>>(),
+            &self.frozen_pointer_outputs,
         ) {
             Ok(candidates) => candidates,
             Err(source) => {
