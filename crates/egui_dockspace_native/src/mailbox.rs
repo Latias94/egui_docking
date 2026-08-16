@@ -183,6 +183,7 @@ pub(crate) struct OutputReservation {
     window: Option<NativeWindowSnapshot>,
     terminal_recorded: bool,
     abandoned: bool,
+    wake_on_terminal: bool,
 }
 
 impl OutputReservation {
@@ -192,6 +193,7 @@ impl OutputReservation {
             window: Some(window),
             terminal_recorded: false,
             abandoned: false,
+            wake_on_terminal: true,
         }
     }
 
@@ -201,6 +203,27 @@ impl OutputReservation {
             window: Some(window),
             terminal_recorded: false,
             abandoned: false,
+            wake_on_terminal: true,
+        }
+    }
+
+    const fn diagnostic(window: NativeWindowSnapshot) -> Self {
+        Self {
+            binding: None,
+            window: Some(window),
+            terminal_recorded: false,
+            abandoned: true,
+            wake_on_terminal: false,
+        }
+    }
+
+    const fn terminal_create(binding: NativeSurfaceBinding, window: NativeWindowSnapshot) -> Self {
+        Self {
+            binding: Some(binding),
+            window: Some(window),
+            terminal_recorded: false,
+            abandoned: true,
+            wake_on_terminal: true,
         }
     }
 
@@ -227,6 +250,7 @@ impl OutputReservation {
             window: None,
             terminal_recorded: false,
             abandoned: false,
+            wake_on_terminal: true,
         }
     }
 
@@ -237,6 +261,7 @@ impl OutputReservation {
             window: None,
             terminal_recorded: false,
             abandoned: false,
+            wake_on_terminal: true,
         }
     }
 
@@ -246,6 +271,10 @@ impl OutputReservation {
         }
         self.abandoned = true;
         true
+    }
+
+    const fn wakes_on_terminal(self) -> bool {
+        self.wake_on_terminal
     }
 }
 
@@ -393,7 +422,7 @@ mod tests {
         let window = WindowId::from(11);
         let mut records = HostRecords::active();
 
-        records.quarantine_after_fatal(None);
+        assert!(records.quarantine_after_fatal().is_empty());
 
         assert_eq!(records.mode, HostIngressMode::Quarantined);
         assert!(records.accepts_window_event(&WindowEvent::Destroyed));
@@ -433,6 +462,7 @@ mod tests {
 enum OutputRecordDisposition {
     Recorded,
     Ignored,
+    IgnoredAndWake,
     ProtocolViolation,
     Inactive,
 }
@@ -472,6 +502,7 @@ struct HostRecords {
     last_output_ordinal: u64,
     output_order_invalid: bool,
     event_boundary_pending: bool,
+    terminal_roster_pending: bool,
 }
 
 impl HostRecords {
@@ -487,6 +518,7 @@ impl HostRecords {
             last_output_ordinal: 0,
             output_order_invalid: false,
             event_boundary_pending: false,
+            terminal_roster_pending: false,
         }
     }
 
@@ -501,14 +533,34 @@ impl HostRecords {
         {
             return false;
         }
-        let mut reservation = binding.map_or_else(
-            || OutputReservation::unbound(window),
-            |binding| OutputReservation::bound(binding, window),
-        );
-        if matches!(self.mode, HostIngressMode::Quarantined) {
-            reservation.abandon();
-        }
+        let reservation = match self.mode {
+            HostIngressMode::Active => binding.map_or_else(
+                || OutputReservation::unbound(window),
+                |binding| OutputReservation::bound(binding, window),
+            ),
+            HostIngressMode::Quarantined => binding
+                .filter(|binding| {
+                    token.create_attempt().is_some()
+                        && self
+                            .create_reservations
+                            .get(&token.viewport_id())
+                            .is_some_and(|reservation| reservation.binding == *binding)
+                })
+                .map_or_else(
+                    || OutputReservation::diagnostic(window),
+                    |binding| OutputReservation::terminal_create(binding, window),
+                ),
+            HostIngressMode::Frozen => unreachable!("frozen outputs return before reservation"),
+        };
+        let terminal_create =
+            matches!(self.mode, HostIngressMode::Quarantined) && reservation.binding().is_some();
         self.output_reservations.insert(token, reservation);
+        if terminal_create {
+            let binding = reservation
+                .binding()
+                .expect("terminal create reservation retains its exact binding");
+            let _ = self.record_viewport_created(NativeViewportCreatedRecord::new(token, binding));
+        }
         true
     }
 
@@ -541,8 +593,13 @@ impl HostRecords {
             .expect("validated output reservation remains present");
         reservation.terminal_recorded = true;
         if reservation.abandoned {
+            let wake = reservation.wakes_on_terminal();
             self.output_reservations.remove(&result.token());
-            return OutputRecordDisposition::Ignored;
+            return if wake {
+                OutputRecordDisposition::IgnoredAndWake
+            } else {
+                OutputRecordDisposition::Ignored
+            };
         }
         self.journal.push_back(HostRecord::Output {
             result,
@@ -592,7 +649,7 @@ impl HostRecords {
     }
 
     fn record_viewport_created(&mut self, record: NativeViewportCreatedRecord) -> bool {
-        if !self.mode.accepts_new_work() {
+        if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
         if self.journal.iter().any(|queued| {
@@ -655,15 +712,29 @@ impl HostRecords {
         self.mode = HostIngressMode::Frozen;
     }
 
-    fn quarantine_after_fatal(&mut self, token: Option<NativeOutputToken>) -> bool {
+    fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
         if !matches!(self.mode, HostIngressMode::Frozen) {
             self.mode = HostIngressMode::Quarantined;
         }
-        token.is_some_and(|token| self.abandon_output(token))
+        self.terminal_roster_pending |= self.journal.iter().any(|record| {
+            matches!(record, HostRecord::WindowEvent(event) if matches!(event.event(), winit::event::WindowEvent::Destroyed))
+        });
+        self.output_reservations
+            .iter_mut()
+            .filter_map(|(token, reservation)| {
+                (!reservation.terminal_recorded && reservation.abandon()).then_some(*token)
+            })
+            .collect()
     }
 
     fn accepts_window_event(&self, event: &winit::event::WindowEvent) -> bool {
         self.mode.accepts_window_event(event)
+    }
+
+    fn record_window_event(&mut self, record: NativeWindowEventRecord) {
+        self.terminal_roster_pending |=
+            matches!(record.event(), winit::event::WindowEvent::Destroyed);
+        self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
     fn retire_deferred_binding(
@@ -1201,9 +1272,20 @@ impl NativeHostBridge {
             return false;
         }
         if let Some(roster) = roster {
-            records
-                .journal
-                .push_back(HostRecord::ViewportRoster(roster));
+            match records.mode {
+                HostIngressMode::Active => {
+                    records
+                        .journal
+                        .push_back(HostRecord::ViewportRoster(roster));
+                }
+                HostIngressMode::Quarantined if records.terminal_roster_pending => {
+                    records.terminal_roster_pending = false;
+                    records
+                        .journal
+                        .push_back(HostRecord::ViewportRoster(roster));
+                }
+                HostIngressMode::Quarantined | HostIngressMode::Frozen => {}
+            }
         }
         true
     }
@@ -1259,8 +1341,8 @@ impl NativeHostBridge {
         self.lock().freeze();
     }
 
-    pub(crate) fn quarantine_after_fatal(&self, token: Option<NativeOutputToken>) -> bool {
-        self.lock().quarantine_after_fatal(token)
+    pub(crate) fn quarantine_after_fatal(&self) -> Vec<NativeOutputToken> {
+        self.lock().quarantine_after_fatal()
     }
 
     fn admit_viewport_create_attempt(
@@ -1385,7 +1467,7 @@ impl NativeHostHandler for NativeHostBridge {
             return;
         }
         let record = NativeWindowEventRecord::from_eframe(event, &mut viewports);
-        records.journal.push_back(HostRecord::WindowEvent(record));
+        records.record_window_event(record);
     }
 
     fn on_output_begin(
@@ -1399,10 +1481,13 @@ impl NativeHostHandler for NativeHostBridge {
 
     fn on_output(&self, result: NativeOutputResult) -> NativeHostWake {
         match self.lock().record_output(result) {
-            OutputRecordDisposition::Recorded
-            | OutputRecordDisposition::Ignored
-            | OutputRecordDisposition::ProtocolViolation => NativeHostWake::RepaintRoot,
-            OutputRecordDisposition::Inactive => NativeHostWake::Wait,
+            OutputRecordDisposition::Recorded | OutputRecordDisposition::ProtocolViolation => {
+                NativeHostWake::RepaintRoot
+            }
+            OutputRecordDisposition::Ignored | OutputRecordDisposition::Inactive => {
+                NativeHostWake::Wait
+            }
+            OutputRecordDisposition::IgnoredAndWake => NativeHostWake::RepaintRoot,
         }
     }
 

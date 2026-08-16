@@ -218,6 +218,76 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
 }
 
 #[test]
+fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
+    let mut native = coordinator();
+    let (root, child_binding) = register_root_and_child(&mut native);
+    let root_window = WindowId::from(31);
+    let child_window = WindowId::from(32);
+    let child = ViewportId::from_hash_of("shutdown-drain-child");
+    native
+        .bind_viewport(ViewportId::ROOT, root_window, root)
+        .expect("root viewport binds");
+    native
+        .bind_viewport(child, child_window, child_binding)
+        .expect("child viewport binds");
+
+    let mut redock = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child redock frame begins");
+    redock
+        .frame
+        .dock_root_current(
+            RootId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .expect("the complete child root redocks");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child redock settles every surface");
+    let mut report = redock.commit().expect("the child redock commits");
+    native
+        .accept_native_effects(report.take_native_effects())
+        .expect("the child release is accepted before shutdown");
+    assert!(native.quarantine_after_fatal().is_empty());
+
+    let destroyed = {
+        let mut viewports = native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        NativeWindowEventRecord::for_test_ingress(
+            41,
+            child_window,
+            Some(child),
+            WindowEvent::Destroyed,
+            &mut viewports,
+        )
+    };
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed));
+    native
+        .bridge
+        .push_record(HostRecord::ViewportRoster(live_roster([root])));
+
+    for phase in ["destroyed", "roster", "route", "quiescence"] {
+        let advance = native
+            .advance_shutdown_boundary()
+            .unwrap_or_else(|error| panic!("shutdown {phase} boundary failed: {error}"));
+        assert!(
+            advance.progress,
+            "shutdown {phase} boundary made no progress"
+        );
+        assert!(advance.commands.is_empty());
+        assert!(advance.abandoned_outputs.is_empty());
+    }
+
+    assert_eq!(native.viewport_binding(child), None);
+    assert!(!native.session.is_current_native_binding(child_binding));
+    assert!(!native.session.recognizes_native_binding(child_binding));
+}
+
+#[test]
 fn redocked_external_root_does_not_request_platform_close() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);

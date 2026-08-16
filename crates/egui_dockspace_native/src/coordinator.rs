@@ -43,6 +43,10 @@ use crate::window_snapshot::{CompiledWindowObservation, compile_window_observati
 use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAreaRoster};
 use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
+mod shutdown;
+
+pub(crate) use shutdown::{NativeShutdownAdvance, NativeShutdownRegistration};
+
 /// Sole native coordinator for one renderer-neutral docking session.
 ///
 /// Native callbacks only append immutable records. Application code reduces
@@ -1651,12 +1655,54 @@ impl NativeCoordinator {
         NativeHostWake::RepaintRoot
     }
 
-    pub(crate) fn quarantine_after_fatal(&mut self, token: Option<NativeOutputToken>) {
-        let abandoned = self.bridge.quarantine_after_fatal(token);
-        if abandoned && let Some(token) = token {
+    pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
+        let mut abandoned = self.bridge.quarantine_after_fatal();
+        for &token in &abandoned {
             self.receivers.abandon(token);
             self.pending_outputs.remove(&token);
         }
+        abandoned.extend(self.cancel_unadmitted_viewport_effects());
+        abandoned.sort_unstable();
+        abandoned.dedup();
+        abandoned
+    }
+
+    fn cancel_unadmitted_viewport_effects(&mut self) -> Vec<NativeOutputToken> {
+        let plans = {
+            let viewports = self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            self.effects
+                .awaiting_viewport_callbacks()
+                .filter(|plan| {
+                    !viewports.has_admitted_create_attempt(plan.viewport(), plan.binding())
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut abandoned = Vec::new();
+        for plan in plans {
+            let Some(request) = self.effects.remove_unstarted(plan) else {
+                continue;
+            };
+            abandoned.extend(
+                self.bridge
+                    .retire_deferred_binding(plan.viewport(), plan.binding()),
+            );
+            self.deferred_viewports.remove(plan.binding());
+            self.receivers.retire_binding(plan.binding());
+            let removed = self
+                .viewports
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove_viewport(plan.viewport(), plan.binding());
+            debug_assert!(
+                removed.is_ok(),
+                "unadmitted viewport effect retains one exact route"
+            );
+            drop(request);
+        }
+        abandoned
     }
 
     fn prepare_output_prefix(&mut self) -> Result<(), NativeRuntimeError> {

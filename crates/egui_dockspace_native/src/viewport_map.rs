@@ -7,8 +7,8 @@ use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
-use crate::retirement::CommittedRetirement;
 use crate::NativeViewportBindingError;
+use crate::retirement::CommittedRetirement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NativeViewportRoute {
@@ -391,6 +391,20 @@ impl NativeViewportMap {
             && !self.pointer_suppressed.contains(&route.binding)
             && !self.prepared_retirements.contains(&route.binding))
         .then_some(route.binding)
+    }
+
+    pub(crate) fn has_admitted_create_attempt(
+        &self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        self.viewports.get(&viewport).is_some_and(|route| {
+            route.binding == binding
+                && route.window.is_none()
+                && route.create_attempt.is_some()
+                && !self.pointer_suppressed.contains(&binding)
+                && !self.prepared_retirements.contains(&binding)
+        })
     }
 
     pub(crate) fn viewport(&self, surface: SurfaceId) -> Option<ViewportId> {

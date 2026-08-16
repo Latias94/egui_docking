@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::model::{DockspaceView, SurfaceId};
 use dockspace::runtime::DockspaceSession;
-use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use eframe::NativeHostHandler;
+use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use egui_dockspace::{DockStyle, PaneView};
 
 use crate::deferred_viewport::{
@@ -91,7 +91,17 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         let (specs, stopped) = {
             let mut state = lock_state(&self.state);
             if state.error().is_some() {
+                let progress = match state.advance_shutdown(&context) {
+                    Ok(progress) => progress,
+                    Err(error) => {
+                        state.record_cleanup_error(error);
+                        false
+                    }
+                };
                 state.render_error(ui);
+                if progress {
+                    context.request_repaint_of(ViewportId::ROOT);
+                }
                 return;
             }
             let root_surface = state.root_surface();

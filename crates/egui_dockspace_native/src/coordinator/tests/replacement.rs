@@ -41,8 +41,12 @@ fn measure_ready_surfaces(native: &mut NativeCoordinator) {
     frame.commit().expect("the ready surfaces commit");
 }
 
-#[test]
-fn destroyed_owned_child_retains_replacement_on_the_existing_viewport() {
+fn request_replacement_on_existing_viewport() -> (
+    NativeCoordinator,
+    ViewportId,
+    NativeSurfaceBinding,
+    NativeSurfaceBinding,
+) {
     let mut native = coordinator();
     let (root, predecessor) = register_root_and_child(&mut native);
     let child_viewport = ViewportId::from_hash_of("replacement-owned-child");
@@ -130,6 +134,14 @@ fn destroyed_owned_child_retains_replacement_on_the_existing_viewport() {
         .accept_native_effects(effects)
         .expect("the replacement request is retained by the native coordinator");
 
+    (native, child_viewport, predecessor, successor)
+}
+
+#[test]
+fn destroyed_owned_child_retains_replacement_on_the_existing_viewport() {
+    let (mut native, child_viewport, predecessor, successor) =
+        request_replacement_on_existing_viewport();
+
     assert_eq!(native.viewport_binding(child_viewport), Some(successor));
     assert!(
         native
@@ -151,4 +163,41 @@ fn destroyed_owned_child_retains_replacement_on_the_existing_viewport() {
     );
     assert!(!native.session.recognizes_native_binding(predecessor));
     assert!(native.session.is_current_native_binding(successor));
+}
+
+#[test]
+fn shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor() {
+    let (mut native, child_viewport, predecessor, successor) =
+        request_replacement_on_existing_viewport();
+
+    assert!(native.session.recognizes_native_binding(predecessor));
+    assert!(native.quarantine_after_fatal().is_empty());
+
+    assert_eq!(native.viewport_binding(child_viewport), None);
+    assert!(
+        native
+            .deferred_viewport_specs()
+            .iter()
+            .all(|spec| spec.binding() != successor)
+    );
+    assert!(!native.effects.references_binding(successor));
+    assert!(!native.bridge.references_binding(successor));
+    assert!(
+        native.session.recognizes_native_binding(predecessor),
+        "cancelling the successor must preserve predecessor retirement ownership"
+    );
+
+    assert!(
+        native
+            .try_report_retirement_quiescence()
+            .expect("the preserved predecessor becomes quiescent")
+    );
+    assert!(!native.session.recognizes_native_binding(predecessor));
+
+    let advance = native
+        .advance_shutdown_boundary()
+        .expect("the provider-stopped replacement result commits");
+    assert!(advance.commands.is_empty());
+    assert!(advance.abandoned_outputs.is_empty());
+    assert!(!native.session.is_current_native_binding(successor));
 }

@@ -362,6 +362,34 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
 }
 
 #[test]
+fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
+    let mut native = tear_off_coordinator();
+    let source_binding = register_source(&mut native);
+    publish_desktop_authority(&mut native, source_binding);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+    let child_viewport = viewport_id_for(child);
+
+    assert_eq!(native.viewport_binding(child_viewport), Some(child));
+    assert!(native.effects.references_binding(child));
+    assert!(native.bridge.references_binding(child));
+
+    assert!(native.quarantine_after_fatal().is_empty());
+
+    assert_eq!(native.viewport_binding(child_viewport), None);
+    assert!(native.deferred_viewport_specs().is_empty());
+    assert!(!native.effects.references_binding(child));
+    assert!(!native.bridge.references_binding(child));
+
+    let advance = native
+        .advance_shutdown_boundary()
+        .expect("the provider-stopped create result commits");
+    assert!(advance.commands.is_empty());
+    assert!(advance.abandoned_outputs.is_empty());
+    assert!(!native.session.is_current_native_binding(child));
+}
+
+#[test]
 fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_output_token() {
     let mut native = tear_off_coordinator();
     let source_binding = register_source(&mut native);

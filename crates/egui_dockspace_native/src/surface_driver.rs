@@ -1,14 +1,12 @@
 //! Shared root/child surface driver over one native coordinator.
 
 use dockspace::model::{DockspaceView, SurfaceId};
-use dockspace::runtime::{
-    HostInputOutcome, HostWindowToken, SurfaceUnavailableReason,
-};
+use dockspace::runtime::{HostInputOutcome, HostWindowToken, SurfaceUnavailableReason};
 use eframe::egui::{self, Id};
 use eframe::{NativeHostWake, NativeOutputToken};
 use egui_dockspace::{DockStyle, PaneView};
 
-use crate::coordinator::NativeCoordinator;
+use crate::coordinator::{NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration};
 use crate::deferred_viewport::DeferredViewportSpec;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
 use crate::pass_actions::{NativePassActionError, NativePassActions};
@@ -47,7 +45,13 @@ pub(crate) struct NativeRuntimeState<P> {
     style: DockStyle,
     panes: P,
     pass_actions: NativePassActions,
-    error: Option<NativeRuntimeError>,
+    shutdown: Option<NativeShutdownState>,
+}
+
+#[derive(Debug)]
+struct NativeShutdownState {
+    primary: NativeRuntimeError,
+    cleanup_errors: Vec<NativeRuntimeError>,
 }
 
 impl<P: PaneView> NativeRuntimeState<P> {
@@ -61,10 +65,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if session.view().surface(root_surface).is_none() {
             return Err(NativeHostProtocolError::RootSurfaceUnavailable(root_surface).into());
         }
-        let mut coordinator = NativeCoordinator::new(
-            session,
-            dockspace::runtime::NativePointerRoster::Unknown,
-        )?;
+        let mut coordinator =
+            NativeCoordinator::new(session, dockspace::runtime::NativePointerRoster::Unknown)?;
         coordinator.register_native_root(root_surface, ROOT_WINDOW_TOKEN)?;
         Ok(Self {
             coordinator,
@@ -73,13 +75,11 @@ impl<P: PaneView> NativeRuntimeState<P> {
             style,
             panes,
             pass_actions: NativePassActions::default(),
-            error: None,
+            shutdown: None,
         })
     }
 
-    pub(crate) fn native_host_handler(
-        &self,
-    ) -> std::sync::Arc<dyn eframe::NativeHostHandler> {
+    pub(crate) fn native_host_handler(&self) -> std::sync::Arc<dyn eframe::NativeHostHandler> {
         self.coordinator.native_host_handler()
     }
 
@@ -100,7 +100,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) const fn error(&self) -> Option<&NativeRuntimeError> {
-        self.error.as_ref()
+        match &self.shutdown {
+            Some(shutdown) => Some(&shutdown.primary),
+            None => None,
+        }
     }
 
     pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
@@ -123,8 +126,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
         let coordinator = &mut self.coordinator;
-        let quiescence_recorded = surface == self.root_surface
-            && coordinator.try_report_retirement_quiescence()?;
+        let quiescence_recorded =
+            surface == self.root_surface && coordinator.try_report_retirement_quiescence()?;
         let reduced_callback = coordinator.reduce_callback_head()?;
         let prepared_retirements = if surface == self.root_surface {
             coordinator.prepare_committed_retirements()?
@@ -301,23 +304,104 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn stop_current_output(&mut self, error: NativeRuntimeError) {
-        if self.error.is_some() {
+        if self.shutdown.is_some() {
             return;
         }
-        let token = eframe::current_native_output_token();
-        if let Some(token) = token {
+        for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
-        self.coordinator.quarantine_after_fatal(token);
-        self.error = Some(error);
+        self.shutdown = Some(NativeShutdownState {
+            primary: error,
+            cleanup_errors: Vec::new(),
+        });
+    }
+
+    pub(crate) fn advance_shutdown(
+        &mut self,
+        context: &egui::Context,
+    ) -> Result<bool, NativeRuntimeError> {
+        debug_assert!(
+            self.shutdown.is_some(),
+            "shutdown advance requires a primary failure"
+        );
+        let advance = self.coordinator.advance_shutdown_boundary()?;
+        self.apply_shutdown_advance(context, advance)
+    }
+
+    fn apply_shutdown_advance(
+        &mut self,
+        context: &egui::Context,
+        advance: NativeShutdownAdvance,
+    ) -> Result<bool, NativeRuntimeError> {
+        let root_window = eframe::current_native_output_token()
+            .filter(|token| token.viewport_id() == egui::ViewportId::ROOT)
+            .map(NativeOutputToken::window_id);
+        self.apply_shutdown_advance_for_root_window(context, advance, root_window)
+    }
+
+    fn apply_shutdown_advance_for_root_window(
+        &mut self,
+        context: &egui::Context,
+        advance: NativeShutdownAdvance,
+        root_window: Option<winit::window::WindowId>,
+    ) -> Result<bool, NativeRuntimeError> {
+        let NativeShutdownAdvance {
+            progress,
+            registrations,
+            commands,
+            abandoned_outputs,
+        } = advance;
+        for token in abandoned_outputs {
+            self.pass_actions.abandon(token);
+        }
+        for (viewport, command) in commands {
+            context.send_viewport_cmd_to(viewport, command);
+        }
+        if let Some(root_window) = root_window {
+            for registration in registrations {
+                match registration {
+                    NativeShutdownRegistration::Registered(binding)
+                        if binding.surface() == self.root_surface =>
+                    {
+                        self.coordinator
+                            .bind_viewport(egui::ViewportId::ROOT, root_window, binding)
+                            .map_err(|_| NativeHostProtocolError::RootViewportBindingFailed)?;
+                    }
+                    NativeShutdownRegistration::Rejected(surface)
+                        if surface == self.root_surface =>
+                    {
+                        return Err(
+                            NativeHostProtocolError::RootRegistrationRejected(surface).into()
+                        );
+                    }
+                    NativeShutdownRegistration::Registered(_)
+                    | NativeShutdownRegistration::Rejected(_) => {}
+                }
+            }
+        }
+        Ok(progress)
+    }
+
+    pub(crate) fn record_cleanup_error(&mut self, error: NativeRuntimeError) {
+        let Some(shutdown) = &mut self.shutdown else {
+            self.stop_current_output(error);
+            return;
+        };
+        shutdown.cleanup_errors.push(error);
     }
 
     pub(crate) fn render_error(&self, ui: &mut egui::Ui) {
         ui.painter()
             .rect_filled(ui.max_rect(), 0.0, self.style.workspace_fill);
         ui.heading("Native dockspace stopped");
-        if let Some(error) = &self.error {
-            ui.label(error.to_string());
+        if let Some(shutdown) = &self.shutdown {
+            ui.label(shutdown.primary.to_string());
+            if !shutdown.cleanup_errors.is_empty() {
+                ui.label(format!(
+                    "{} cleanup error(s) retained",
+                    shutdown.cleanup_errors.len()
+                ));
+            }
         } else {
             ui.label("unknown native runtime error");
         }
@@ -337,6 +421,8 @@ fn map_pass_action_error(error: NativePassActionError) -> NativeRuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
+
     use dockspace::model::{
         DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
     };
@@ -420,5 +506,76 @@ mod tests {
             first_error
         );
         assert!(state.with_view(|_| ()).is_some());
+    }
+
+    #[test]
+    fn shutdown_retains_cleanup_errors_in_observation_order() {
+        let mut state = test_state();
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        state.record_cleanup_error(
+            NativeHostProtocolError::RootRegistrationRejected(SURFACE).into(),
+        );
+        state.record_cleanup_error(
+            NativeHostProtocolError::IncompleteTransientPaint(SURFACE).into(),
+        );
+
+        let shutdown = state
+            .shutdown
+            .as_ref()
+            .expect("fatal stop owns one shutdown record");
+        assert_eq!(shutdown.cleanup_errors.len(), 2);
+        assert!(
+            shutdown.cleanup_errors[0]
+                .source()
+                .expect("cleanup error retains its source")
+                .to_string()
+                .contains("registration")
+        );
+        assert!(
+            shutdown.cleanup_errors[1]
+                .source()
+                .expect("cleanup error retains its source")
+                .to_string()
+                .contains("transient")
+        );
+        assert!(
+            shutdown
+                .primary
+                .source()
+                .expect("primary error retains its source")
+                .to_string()
+                .contains("output callback")
+        );
+    }
+
+    #[test]
+    fn shutdown_applies_committed_commands_before_registration_errors() {
+        let mut state = test_state();
+        let context = egui::Context::default();
+        context.begin_pass(egui::RawInput::default());
+
+        let error = state
+            .apply_shutdown_advance_for_root_window(
+                &context,
+                NativeShutdownAdvance {
+                    progress: true,
+                    registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
+                    commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
+                    abandoned_outputs: Vec::new(),
+                },
+                Some(winit::window::WindowId::from(7)),
+            )
+            .expect_err("the root registration rejection remains observable");
+        assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
+
+        let mut output = context.end_pass();
+        let close_was_queued = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the committed root command remains in egui output")
+            .commands
+            .contains(&egui::ViewportCommand::Close);
+        output.textures_delta.clear();
+        assert!(close_was_queued);
     }
 }

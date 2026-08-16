@@ -35,6 +35,10 @@ pub(crate) struct NativeViewportEffectPlan {
 }
 
 impl NativeViewportEffectPlan {
+    pub(crate) const fn viewport(self) -> ViewportId {
+        self.viewport
+    }
+
     pub(crate) const fn binding(self) -> NativeSurfaceBinding {
         self.binding
     }
@@ -86,6 +90,18 @@ struct PendingViewportCommand {
 }
 
 impl NativeEffectCoordinator {
+    pub(crate) fn awaiting_viewport_callbacks(
+        &self,
+    ) -> impl Iterator<Item = NativeViewportEffectPlan> + '_ {
+        self.pending_viewports.values().filter_map(|pending| {
+            matches!(
+                pending.state,
+                PendingViewportEffectState::AwaitingCallback(_)
+            )
+            .then_some(pending.plan)
+        })
+    }
+
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
         self.pending_viewports
             .values()
