@@ -1,8 +1,11 @@
 //! Action-oriented classification for private runtime failure sources.
 
 use crate::backend_ingress::BackendIngressError;
-use crate::engine::{CoreHostFrameError, EngineError, SurfaceContributionPrepareError};
+use crate::engine::{
+    CoreHostFrameError, EngineError, PointerReceiverGeometryError, SurfaceContributionPrepareError,
+};
 use crate::layout::LayoutError;
+use crate::platform_provider::PlatformObservationAuthorityError;
 use crate::pointer_journal::{PointerJournalLedgerError, SurfaceLocalPointerProviderError};
 use crate::pointer_receiver::PointerReceiverAttemptError;
 use crate::scene_compiler::{PresentationCompilationError, SceneCompilationError};
@@ -21,7 +24,23 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::PresentationAttemptSpaceExhausted
         | Error::PresentationOutputRequestExhausted
         | Error::PointerReceiverRoster { .. }
-        | Error::InputPrefixReductionFailed => DockspaceRuntimeErrorKind::Internal,
+        | Error::InputPrefixReductionFailed
+        | Error::PresentationObligationsAlreadyIssued
+        | Error::PresentationObligationsNotIssued
+        | Error::PresentationObligationsPartiallyResolved
+        | Error::PresentationObligationAttemptMismatch { .. }
+        | Error::PresentationObligationOutsideRoster { .. }
+        | Error::PresentationObligationAlreadyResolved { .. }
+        | Error::PresentationObligationSurfaceMismatch { .. }
+        | Error::PresentationInteractionMismatch { .. }
+        | Error::PresentationOutputUnavailable { .. }
+        | Error::NativeStagingPresentationUnavailable { .. }
+        | Error::DuplicatePresentationOutput { .. }
+        | Error::RetainedContributionNotPaintable { .. }
+        | Error::RetainedContributionStampMismatch { .. }
+        | Error::RetainedContributionCoordinateMismatch { .. } => {
+            DockspaceRuntimeErrorKind::Internal
+        }
         Error::BackendIngressRejected { source } => backend_ingress_error_kind(source),
         Error::PointerJournalRejected { source } => pointer_journal_error_kind(source),
         Error::SurfaceLocalPointerProducerRejected { source } => {
@@ -47,20 +66,6 @@ pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> Dockspa
         | Error::DuplicateSurfaceContribution { .. }
         | Error::SurfaceOutsideRoster { .. }
         | Error::InputAfterPresentation
-        | Error::PresentationObligationsAlreadyIssued
-        | Error::PresentationObligationsNotIssued
-        | Error::PresentationObligationsPartiallyResolved
-        | Error::PresentationObligationAttemptMismatch { .. }
-        | Error::PresentationObligationOutsideRoster { .. }
-        | Error::PresentationObligationAlreadyResolved { .. }
-        | Error::PresentationObligationSurfaceMismatch { .. }
-        | Error::PresentationInteractionMismatch { .. }
-        | Error::PresentationOutputUnavailable { .. }
-        | Error::NativeStagingPresentationUnavailable { .. }
-        | Error::DuplicatePresentationOutput { .. }
-        | Error::RetainedContributionNotPaintable { .. }
-        | Error::RetainedContributionStampMismatch { .. }
-        | Error::RetainedContributionCoordinateMismatch { .. }
         | Error::PointerJournalUnexpected
         | Error::SurfaceLocalPointerProducerRequired { .. }
         | Error::PointerJournalMissingBeforePresentation { .. }
@@ -218,12 +223,14 @@ pub(super) const fn surface_contribution_prepare_error_kind(
             presentation_compilation_error_kind(error)
         }
         SurfaceContributionPrepareError::Validation(_) => DockspaceRuntimeErrorKind::Internal,
-        SurfaceContributionPrepareError::SurfaceOutsideRoster { .. }
-        | SurfaceContributionPrepareError::StaleBase { .. }
+        SurfaceContributionPrepareError::SurfaceOutsideRoster { .. } => {
+            DockspaceRuntimeErrorKind::HostProtocol
+        }
+        SurfaceContributionPrepareError::StaleBase { .. }
         | SurfaceContributionPrepareError::TicketMismatch { .. }
         | SurfaceContributionPrepareError::PolicyAuthorityChanged { .. }
         | SurfaceContributionPrepareError::CoordinateAuthorityChanged { .. } => {
-            DockspaceRuntimeErrorKind::HostProtocol
+            DockspaceRuntimeErrorKind::Internal
         }
     }
 }
@@ -233,7 +240,7 @@ const fn presentation_compilation_error_kind(
 ) -> DockspaceRuntimeErrorKind {
     match error {
         PresentationCompilationError::WorkspaceVersionMismatch { .. }
-        | PresentationCompilationError::Manifest(_) => DockspaceRuntimeErrorKind::HostProtocol,
+        | PresentationCompilationError::Manifest(_) => DockspaceRuntimeErrorKind::Internal,
         PresentationCompilationError::Authority(_)
         | PresentationCompilationError::RequirementsVanished { .. } => {
             DockspaceRuntimeErrorKind::Internal
@@ -329,7 +336,141 @@ pub(super) const fn engine_error_kind(error: &EngineError) -> DockspaceRuntimeEr
         EngineError::WorkspaceReplacementIdentityRetired { .. } => {
             DockspaceRuntimeErrorKind::OperationConflict
         }
-        _ => DockspaceRuntimeErrorKind::Internal,
+        EngineError::PointerJournal { source } => pointer_journal_error_kind(source),
+        EngineError::SurfaceLocalPointerCommit { source } => {
+            surface_pointer_provider_error_kind(*source)
+        }
+        EngineError::BackendIngress { source } => backend_ingress_error_kind(source),
+        EngineError::PlatformProvider { source } => platform_provider_error_kind(*source),
+        EngineError::PointerReceiverAttempt { source } => {
+            pointer_receiver_attempt_error_kind(*source)
+        }
+        EngineError::HostFramePoisoned { source } => host_frame_error_kind(source),
+        EngineError::PointerReceiverGeometry { source } => {
+            pointer_receiver_geometry_error_kind(*source)
+        }
+        EngineError::SurfaceLocalPointerProviderAbandoned { .. }
+        | EngineError::PointerProviderSurfaceHostMismatch { .. }
+        | EngineError::PointerProviderSurfaceAuthorityUnavailable { .. }
+        | EngineError::PointerProviderSurfaceEndpointMismatch { .. }
+        | EngineError::PointerProviderSurfacePresentationMismatch { .. }
+        | EngineError::PresentationHostRetired { .. }
+        | EngineError::PresentationHostRetiredCompacted { .. }
+        | EngineError::GlobalFocusBindingUnavailable { .. } => {
+            DockspaceRuntimeErrorKind::OperationConflict
+        }
+        EngineError::SurfaceLocalPointerProducerRequired
+        | EngineError::PointerReceiverReceipt { .. }
+        | EngineError::PointerProviderScope { .. }
+        | EngineError::PointerProviderHostOutsideFrameScope { .. }
+        | EngineError::HostFramePointerProviderStale { .. }
+        | EngineError::HostFramePointerJournalMissing { .. }
+        | EngineError::HostFramePointerReceiverReceiptsMissing { .. }
+        | EngineError::HostFrameBackendIngressIncomplete
+        | EngineError::HostFrameBackendIngressUnexpected
+        | EngineError::SourceSequenceNotIncreasing { .. }
+        | EngineError::HostFrameAuthorityDomainMismatch { .. }
+        | EngineError::HostFrameStale { .. }
+        | EngineError::HostFramePredecessorStale { .. }
+        | EngineError::HostFramePresentationHostFrontierStale { .. }
+        | EngineError::HostFramePlatformProviderFrontierStale { .. }
+        | EngineError::HostFrameRuntimeRetentionStale { .. }
+        | EngineError::HostFrameRosterStale { .. }
+        | EngineError::HostFramePresentationObservationMissing
+        | EngineError::HostFrameSupplementaryPresentationObservationMissing { .. }
+        | EngineError::HostFrameObserverIsRenderingHost { .. }
+        | EngineError::HostFrameObserverDuplicate { .. }
+        | EngineError::HostFramePresentationScopeStale { .. }
+        | EngineError::HostFrameSupplementaryPresentationScopeStale { .. }
+        | EngineError::HostFrameContributionRosterIncomplete { .. }
+        | EngineError::HostFramePresentationObligationRosterIncomplete { .. } => {
+            DockspaceRuntimeErrorKind::HostProtocol
+        }
+        EngineError::EngineAuthorityDomainExhausted
+        | EngineError::InputSequenceExhausted
+        | EngineError::ReducerTickExhausted
+        | EngineError::PresentationOutputSerialExhausted
+        | EngineError::PresentationSurfaceIdentityExhausted
+        | EngineError::PresentationRootIdentityExhausted
+        | EngineError::PresentationFloatingIdentityExhausted
+        | EngineError::PresentationLedger { .. }
+        | EngineError::SurfaceLocalPointerRetirementExternalObligation { .. }
+        | EngineError::BackendIngressProviderMismatch { .. }
+        | EngineError::JournalPresentationSnapshot { .. }
+        | EngineError::PointerInteractionInvariant { .. }
+        | EngineError::SurfaceRecoveryObligationExhausted { .. }
+        | EngineError::RootRecoveryAnchorExhausted { .. }
+        | EngineError::RuntimeRetentionRevisionExhausted
+        | EngineError::HostPresentationRosterCollision { .. }
+        | EngineError::HostPresentationStagingResourceMissing { .. }
+        | EngineError::ReductionCauseInvariant { .. }
+        | EngineError::WorkspaceEpochExhausted { .. }
+        | EngineError::WorkspaceRevisionExhausted { .. }
+        | EngineError::PresentationRequirementRevisionExhausted { .. }
+        | EngineError::PresentationConfigRevisionExhausted { .. }
+        | EngineError::PolicyRevisionExhausted { .. }
+        | EngineError::SurfaceRequirementRevisionExhausted { .. }
+        | EngineError::PresentationRequirementInvariant { .. }
+        | EngineError::ClosePlanInvariant { .. }
+        | EngineError::SurfaceContributionInvariant { .. }
+        | EngineError::SurfaceContributionBatchInvariant { .. }
+        | EngineError::SurfacePresentationObservationBatchInvariant { .. }
+        | EngineError::PresentationHostRetirementInvariant { .. }
+        | EngineError::Command { .. }
+        | EngineError::MissingCommandOutcome { .. }
+        | EngineError::SurfaceSceneRevisionExhausted { .. }
+        | EngineError::Interaction { .. }
+        | EngineError::DropResolution { .. }
+        | EngineError::Viewport { .. }
+        | EngineError::ViewportFocus { .. }
+        | EngineError::CausedViewportFocus { .. }
+        | EngineError::SurfaceRoster { .. }
+        | EngineError::SurfaceRecovery { .. }
+        | EngineError::MissingSurfaceRoster { .. }
+        | EngineError::ConflictingSurfaceRecovery { .. } => DockspaceRuntimeErrorKind::Internal,
+    }
+}
+
+const fn platform_provider_error_kind(
+    error: PlatformObservationAuthorityError,
+) -> DockspaceRuntimeErrorKind {
+    match error {
+        PlatformObservationAuthorityError::ProviderAlreadyActive { .. }
+        | PlatformObservationAuthorityError::ProviderReplacementPending { .. }
+        | PlatformObservationAuthorityError::ProviderAuthorityRetired
+        | PlatformObservationAuthorityError::SupersededLease { .. }
+        | PlatformObservationAuthorityError::RetiredLease { .. } => {
+            DockspaceRuntimeErrorKind::OperationConflict
+        }
+        PlatformObservationAuthorityError::ForeignLease { .. }
+        | PlatformObservationAuthorityError::UnknownLease { .. }
+        | PlatformObservationAuthorityError::ForeignReplacementTicket { .. }
+        | PlatformObservationAuthorityError::UnknownReplacementTicket => {
+            DockspaceRuntimeErrorKind::HostProtocol
+        }
+        PlatformObservationAuthorityError::ProviderIncarnationExhausted
+        | PlatformObservationAuthorityError::ProviderAuthorityFrontierExhausted => {
+            DockspaceRuntimeErrorKind::Internal
+        }
+    }
+}
+
+const fn pointer_receiver_geometry_error_kind(
+    error: PointerReceiverGeometryError,
+) -> DockspaceRuntimeErrorKind {
+    match error {
+        PointerReceiverGeometryError::InteractionManifestUnavailable { .. }
+        | PointerReceiverGeometryError::ReceiverWinnerAmbiguous { .. } => {
+            DockspaceRuntimeErrorKind::Internal
+        }
+        PointerReceiverGeometryError::LogicalPointUnavailable { .. }
+        | PointerReceiverGeometryError::AbsenceSurfaceMismatch { .. }
+        | PointerReceiverGeometryError::DesktopRoutePresentationMismatch { .. }
+        | PointerReceiverGeometryError::SurfaceMismatch { .. }
+        | PointerReceiverGeometryError::RegionDoesNotCoverPoint { .. }
+        | PointerReceiverGeometryError::ReceiverWinnerMismatch { .. } => {
+            DockspaceRuntimeErrorKind::HostProtocol
+        }
     }
 }
 
@@ -413,6 +554,38 @@ mod tests {
                 CoreHostFrameError::BackendIngressRequired,
                 DockspaceRuntimeErrorKind::HostProtocol,
             ),
+            (
+                CoreHostFrameError::PresentationObligationsNotIssued,
+                DockspaceRuntimeErrorKind::Internal,
+            ),
+        ] {
+            assert_eq!(DockspaceRuntimeError::from(error).kind(), expected);
+        }
+    }
+
+    #[test]
+    fn engine_error_kinds_delegate_and_remain_exhaustive() {
+        let surface = SurfaceId::new(1);
+        for (error, expected) in [
+            (
+                crate::engine::EngineError::HostFrameContributionRosterIncomplete {
+                    expected: vec![surface],
+                    submitted: Vec::new(),
+                },
+                DockspaceRuntimeErrorKind::HostProtocol,
+            ),
+            (
+                crate::engine::EngineError::HostFramePoisoned {
+                    source: CoreHostFrameError::PresentationObligationsNotIssued,
+                },
+                DockspaceRuntimeErrorKind::Internal,
+            ),
+            (
+                crate::engine::EngineError::BackendIngress {
+                    source: BackendIngressError::ProviderReplacementPending,
+                },
+                DockspaceRuntimeErrorKind::OperationConflict,
+            ),
         ] {
             assert_eq!(DockspaceRuntimeError::from(error).kind(), expected);
         }
@@ -446,6 +619,10 @@ mod tests {
             ),
             (
                 SurfaceContributionPrepareError::RetainedCandidateUnavailable { surface },
+                DockspaceRuntimeErrorKind::Internal,
+            ),
+            (
+                SurfaceContributionPrepareError::CoordinateAuthorityChanged { surface },
                 DockspaceRuntimeErrorKind::Internal,
             ),
         ] {
