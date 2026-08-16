@@ -9,8 +9,7 @@ pub use dockspace::runtime::{
     DockspaceCloseResolution,
 };
 use dockspace::runtime::{
-    DockspaceInteractionError, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
-    HostSurfaceCommitStatus,
+    HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostSurfaceCommitStatus,
 };
 
 /// Product-level summary of one atomic docking publication.
@@ -382,7 +381,6 @@ impl DockspaceInteractionCapabilities {
 #[derive(Debug)]
 struct SurfacePaintResponse {
     missing_panes: Vec<ItemId>,
-    capture_errors: Vec<DockspaceInteractionError>,
     interaction_capabilities: DockspaceInteractionCapabilities,
     surface_status: DockspaceSurfaceStatus,
     contained_capability: DockspaceCapability,
@@ -436,7 +434,6 @@ impl DockspaceResponse {
             mutation: DockspaceMutation::from_runtime_report(report),
             paint: SurfacePaintResponse {
                 missing_panes,
-                capture_errors: Vec::new(),
                 interaction_capabilities: DockspaceInteractionCapabilities::new(
                     local_actions_current,
                 ),
@@ -480,12 +477,6 @@ impl DockspaceResponse {
     #[must_use]
     pub fn missing_panes(&self) -> &[ItemId] {
         &self.paint.missing_panes
-    }
-
-    /// Returns renderer-neutral interaction capture failures.
-    #[must_use]
-    pub fn capture_errors(&self) -> &[DockspaceInteractionError] {
-        &self.paint.capture_errors
     }
 
     /// Returns independent interaction capabilities for this paint.

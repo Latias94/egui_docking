@@ -82,14 +82,14 @@ fn official_egui_consumes_the_default_product_facade() {
                 .show_single_surface(SURFACE, ui, &mut panes)
                 .expect("the public facade advances an official-egui frame");
             assert!(response.missing_panes().is_empty());
-            assert!(response.capture_errors().is_empty());
-            local_actions_current |= response
-                .interaction_capabilities()
-                .local_actions_current();
+            local_actions_current |= response.interaction_capabilities().local_actions_current();
         });
         output.textures_delta.clear();
     }
 
     assert!(panes.paint_count > 0, "the product pane must paint");
-    assert!(local_actions_current, "the product facade must become interactive after bootstrap");
+    assert!(
+        local_actions_current,
+        "the product facade must become interactive after bootstrap"
+    );
 }
