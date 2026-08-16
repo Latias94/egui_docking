@@ -803,9 +803,20 @@ impl PresentationHitManifest {
     #[must_use]
     pub fn region(&self, id: PresentationHitRegionId) -> Option<&PresentationHitRegion> {
         self.regions
-            .binary_search_by_key(&id, |region| region.id())
+            .binary_search_by_key(&id, |region| {
+                #[cfg(test)]
+                crate::drop_resolver::structural_work::record_presentation_hit_lookup_comparison();
+                region.id()
+            })
             .ok()
             .map(|index| &self.regions[index])
+    }
+
+    pub(crate) fn region_for_kind(
+        &self,
+        kind: PresentationHitRegionKind,
+    ) -> Option<&PresentationHitRegion> {
+        self.region(PresentationHitRegionId::new(self.output.surface(), kind))
     }
 
     #[allow(

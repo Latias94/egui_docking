@@ -201,6 +201,49 @@ fn scene_target_fingerprints_are_built_once_per_root_at_scale() {
 }
 
 #[test]
+fn exact_presentation_hit_lookup_scales_with_manifest_height() {
+    for leaf_count in [16, 128, 1_024] {
+        let (workspace, manifest, measurements, _) = balanced_hot_root_fixture(leaf_count);
+        let plan = compile_surface_measurements(
+            &workspace,
+            version(),
+            &policy_snapshot(),
+            &DockPresentationConfig::default(),
+            &manifest,
+            &measurements,
+            &TabStripStateStore::default(),
+            &[],
+        )
+        .expect("complete measurements should compile");
+        let hit_manifest = hit_manifest(&plan, &measurements);
+        let kinds = hit_manifest
+            .regions()
+            .iter()
+            .map(|region| region.id().kind())
+            .collect::<Vec<_>>();
+        let region_count = kinds.len();
+        assert!(region_count > 0);
+
+        crate::drop_resolver::structural_work::reset();
+        for kind in kinds {
+            assert!(hit_manifest.region_for_kind(kind).is_some());
+        }
+        let comparisons =
+            crate::drop_resolver::structural_work::snapshot().presentation_hit_lookup_comparisons;
+        let binary_search_height =
+            usize::try_from(region_count.ilog2()).expect("lookup height should fit usize") + 2;
+        assert!(
+            comparisons >= region_count,
+            "every exact lookup performs at least one comparison"
+        );
+        assert!(
+            comparisons <= region_count * binary_search_height,
+            "{region_count} exact receiver lookups used {comparisons} comparisons at {leaf_count} leaves"
+        );
+    }
+}
+
+#[test]
 fn measured_future_drop_preview_does_not_reindex_the_candidate_workspace() {
     for leaf_count in [16, 128, 1_024] {
         let (workspace, manifest, measurements, node_count) = balanced_hot_root_fixture(leaf_count);

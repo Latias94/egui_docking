@@ -699,11 +699,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Prepares a current-candidate tab selection without exposing scene identity.
     #[must_use]
     pub fn prepare_tab_select(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
-        let tab = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| record.id().item == item)?;
+        let tab = self.tab_record(item)?;
         Some(super::PreparedSurfaceAction::select_tab(
             self.authority_domain,
             self.version,
@@ -715,11 +711,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
     /// Prepares a close request for one visible tab close control.
     #[must_use]
     pub fn prepare_tab_close(self, item: ItemId) -> Option<super::PreparedSurfaceAction> {
-        let tab = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| record.id().item == item && record.close_bounds().is_some())?;
+        let tab = self.tab_record(item)?;
+        tab.close_bounds()?;
         Some(super::PreparedSurfaceAction::close(
             self.authority_domain,
             self.version,
@@ -870,9 +863,8 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
     #[must_use]
     pub fn tab_receiver(self, item: ItemId) -> Option<DockspaceReceiverDescriptor> {
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabBody(tab) if tab.item == item),
-        )
+        let tab = self.tab_record(item)?;
+        self.receiver(PresentationHitRegionKind::TabBody(*tab.id()))
     }
 
     /// Returns the exact receiver for one painted pane body.
@@ -882,9 +874,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         pane: PanePaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let pane_id = pane.record.id();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::PaneBody(id) if id == pane_id),
-        )
+        self.receiver(PresentationHitRegionKind::PaneBody(pane_id))
     }
 
     /// Returns the exact receiver for one painted tab body.
@@ -894,7 +884,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let tab_id = *tab.record.id();
-        self.receiver(|kind| matches!(kind, PresentationHitRegionKind::TabBody(id) if id == tab_id))
+        self.receiver(PresentationHitRegionKind::TabBody(tab_id))
     }
 
     /// Returns the exact receiver for one painted tab close control.
@@ -904,9 +894,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         tab: TabPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let tab_id = *tab.record.id();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabClose(id) if id == tab_id),
-        )
+        self.receiver(PresentationHitRegionKind::TabClose(tab_id))
     }
 
     /// Returns the exact receiver for one whole-tab-group drag grip.
@@ -916,9 +904,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         bar: TabBarPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let bar_id = *bar.record.id();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabGroupGrip(id) if id == bar_id),
-        )
+        self.receiver(PresentationHitRegionKind::TabGroupGrip(bar_id))
     }
 
     /// Returns the exact receiver for one core-owned tab-strip control.
@@ -928,9 +914,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         control: TabStripControlPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         let control_id = control.record.id();
-        self.receiver(|kind| {
-            matches!(kind, PresentationHitRegionKind::TabStripControl(id) if id == control_id)
-        })
+        self.receiver(PresentationHitRegionKind::TabStripControl(control_id))
     }
 
     /// Returns the exact receiver for one visible tab-list menu row.
@@ -941,15 +925,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = row.session;
         let tab = row.record.tab();
-        self.receiver(|kind| {
-            matches!(
-                kind,
-                PresentationHitRegionKind::TabListMenuRow {
-                    menu: candidate,
-                    tab: candidate_tab,
-                } if candidate == session && candidate_tab == tab
-            )
-        })
+        self.receiver(PresentationHitRegionKind::TabListMenuRow { menu: session, tab })
     }
 
     /// Returns the blocker receiver covering one open tab-list menu frame.
@@ -959,9 +935,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         menu: TabListMenuPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = menu.record.session();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuBlocker(id) if id == session),
-        )
+        self.receiver(PresentationHitRegionKind::TabListMenuBlocker(session))
     }
 
     /// Returns the scroll receiver for one open tab-list menu.
@@ -971,9 +945,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         menu: TabListMenuPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = menu.record.session();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuScroll(id) if id == session),
-        )
+        self.receiver(PresentationHitRegionKind::TabListMenuScroll(session))
     }
 
     /// Returns the full-surface backdrop receiver for one open tab-list menu.
@@ -983,9 +955,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         backdrop: TabListMenuBackdropPaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
         let session = backdrop.record.session();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuBackdrop(id) if id == session),
-        )
+        self.receiver(PresentationHitRegionKind::TabListMenuBackdrop(session))
     }
 
     /// Returns the exact receiver for one painted splitter handle.
@@ -995,9 +965,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         splitter: SplitterPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let splitter_id = *splitter.record.id();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::SplitterHandle(id) if id == splitter_id),
-        )
+        self.receiver(PresentationHitRegionKind::SplitterHandle(splitter_id))
     }
 
     /// Returns the exact blocker receiver for one contained floating surface.
@@ -1007,9 +975,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let floating = contained.record.floating();
-        self.receiver(|kind| {
-            matches!(kind, PresentationHitRegionKind::ContainedFrameBlocker(id) if id == floating)
-        })
+        self.receiver(PresentationHitRegionKind::ContainedFrameBlocker(floating))
     }
 
     /// Returns the exact title-drag receiver for one contained floating surface.
@@ -1019,9 +985,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let floating = contained.record.floating();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::ContainedTitle(id) if id == floating),
-        )
+        self.receiver(PresentationHitRegionKind::ContainedTitle(floating))
     }
 
     /// Returns the exact close receiver for one contained floating surface.
@@ -1031,9 +995,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let floating = contained.record.floating();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::ContainedClose(id) if id == floating),
-        )
+        self.receiver(PresentationHitRegionKind::ContainedClose(floating))
     }
 
     /// Returns the exact resize receiver for one contained floating edge.
@@ -1045,14 +1007,9 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Option<DockspaceReceiverDescriptor> {
         let floating = contained.record.floating();
         let direction = resize.record.direction();
-        self.receiver(|kind| {
-            matches!(
-                kind,
-                PresentationHitRegionKind::ContainedResize {
-                    floating: id,
-                    direction: candidate,
-                } if id == floating && candidate == direction
-            )
+        self.receiver(PresentationHitRegionKind::ContainedResize {
+            floating,
+            direction,
         })
     }
 
@@ -1063,9 +1020,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         target: DropAffordanceTargetPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
         let target_id = target.target_id();
-        self.receiver(
-            |kind| matches!(kind, PresentationHitRegionKind::DropTarget(id) if id == target_id),
-        )
+        self.receiver(PresentationHitRegionKind::DropTarget(target_id))
     }
 
     #[must_use]
@@ -1073,22 +1028,15 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         item: ItemId,
     ) -> Option<DockspaceReceiverDescriptor> {
-        let tabs = self
-            .plan
-            .tab_records()
-            .iter()
-            .find(|record| record.id().item == item)?
-            .id()
-            .tabs;
-        self.receiver(|kind| {
-            matches!(
-                kind,
-                PresentationHitRegionKind::DropTarget(DropTargetId::Center {
-                    tabs: target,
-                    ..
-                }) if target == tabs
-            )
-        })
+        let tab = self.tab_record(item)?;
+        let tab = *tab.id();
+        self.receiver(PresentationHitRegionKind::DropTarget(
+            DropTargetId::Center {
+                surface: self.output.surface(),
+                root: tab.root,
+                tabs: tab.tabs,
+            },
+        ))
     }
 
     #[must_use]
@@ -1104,26 +1052,24 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .map(|preview| DockspaceContainedTransformPreview { preview })
     }
 
-    fn receiver(
-        self,
-        matches: impl Fn(PresentationHitRegionKind) -> bool,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let region = self
-            .hit_manifest
-            .regions()
+    fn tab_record(self, item: ItemId) -> Option<&'frame crate::scene::TabRecord> {
+        self.plan
+            .tab_records()
             .iter()
-            .copied()
-            .find(|region| !region.is_passive() && matches(region.id().kind()))?;
-        self.descriptor(region.id(), region.hit().rect())
+            .find(|record| record.id().item == item)
     }
 
-    fn descriptor(
-        self,
-        region: PresentationHitRegionId,
-        bounds: LogicalRect,
-    ) -> Option<DockspaceReceiverDescriptor> {
-        let lanes = self.hit_manifest.region(region)?.lanes();
-        DockspaceReceiverDescriptor::from_projection_region(self.output, region, lanes, bounds)
+    fn receiver(self, kind: PresentationHitRegionKind) -> Option<DockspaceReceiverDescriptor> {
+        let region = *self.hit_manifest.region_for_kind(kind)?;
+        if region.is_passive() {
+            return None;
+        }
+        DockspaceReceiverDescriptor::from_projection_region(
+            self.output,
+            region.id(),
+            region.lanes(),
+            region.hit().rect(),
+        )
     }
 }
 

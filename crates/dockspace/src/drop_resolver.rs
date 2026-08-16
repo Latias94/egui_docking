@@ -1087,6 +1087,7 @@ pub(crate) mod structural_work {
         pub(crate) root_fingerprint_node_visits: usize,
         pub(crate) drop_targets_assessed: usize,
         pub(crate) geometric_winners: usize,
+        pub(crate) presentation_hit_lookup_comparisons: usize,
         pub(crate) transaction_prepares: usize,
         pub(crate) transaction_commands: usize,
         pub(crate) workspace_deep_clones: WorkspaceDeepCloneWork,
@@ -1096,6 +1097,7 @@ pub(crate) mod structural_work {
     thread_local! {
         static STRUCTURAL_WORK: Cell<StructuralWorkMetrics> =
             Cell::new(StructuralWorkMetrics::default());
+        static PRESENTATION_HIT_LOOKUP_COMPARISONS: Cell<usize> = Cell::new(0);
     }
 
     fn update(update: impl FnOnce(&mut StructuralWorkMetrics)) {
@@ -1108,10 +1110,14 @@ pub(crate) mod structural_work {
 
     pub(crate) fn reset() {
         STRUCTURAL_WORK.with(|work| work.set(StructuralWorkMetrics::default()));
+        PRESENTATION_HIT_LOOKUP_COMPARISONS.with(|comparisons| comparisons.set(0));
     }
 
     pub(crate) fn snapshot() -> StructuralWorkMetrics {
-        STRUCTURAL_WORK.with(Cell::get)
+        let mut snapshot = STRUCTURAL_WORK.with(Cell::get);
+        snapshot.presentation_hit_lookup_comparisons =
+            PRESENTATION_HIT_LOOKUP_COMPARISONS.with(Cell::get);
+        snapshot
     }
 
     pub(crate) fn record_root_fingerprint_build() {
@@ -1128,6 +1134,12 @@ pub(crate) mod structural_work {
 
     pub(crate) fn record_geometric_winner() {
         update(|work| work.geometric_winners += 1);
+    }
+
+    pub(crate) fn record_presentation_hit_lookup_comparison() {
+        PRESENTATION_HIT_LOOKUP_COMPARISONS.with(|comparisons| {
+            comparisons.set(comparisons.get() + 1);
+        });
     }
 
     pub(crate) fn record_transaction_prepare(commands: usize) {
