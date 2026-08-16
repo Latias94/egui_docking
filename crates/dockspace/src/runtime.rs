@@ -66,11 +66,11 @@ pub use native::{
     NativeWorkAreaRoster,
 };
 pub use native_effect::{
-    NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseEffectAcknowledgement,
-    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest,
-    NativeEffectResult, NativeEffectSubmissionError, NativeIndeterminateReason,
-    NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement, NativeSurfaceRole,
-    NativeUnsupportedReason,
+    NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,
+    NativeCloseEffectAcknowledgement, NativeDispatchFailure, NativeEffectAcknowledgement,
+    NativeEffectOperation, NativeEffectRequest, NativeEffectResult, NativeEffectSubmissionError,
+    NativeIndeterminateReason, NativeInputEffectAcknowledgement,
+    NativePresentationEffectAcknowledgement, NativeSurfaceRole, NativeUnsupportedReason,
 };
 pub use paint::{
     ContainedPaintRecord, ContainedResizeDirection, ContainedResizePaintRecord,

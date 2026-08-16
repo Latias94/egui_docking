@@ -271,6 +271,7 @@ fn live_window_facts_leave_independent_authority_unknown() {
         binding.binding,
         NativeWindowFacts::live(),
         1,
+        1,
     )
     .expect("inventory-only facts compile");
     let window = compiled
@@ -522,6 +523,7 @@ fn destroyed_fact_can_acknowledge_the_exact_destructive_effect() {
         binding.binding,
         NativeWindowFacts::destroyed_after(acknowledgement),
         1,
+        1,
     )
     .expect("an exact destructive acknowledgement compiles");
 
@@ -728,7 +730,41 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(!managed.pointer_hit_test_control().is_supported());
     assert!(!managed.global_focus_observation().is_supported());
     assert!(!managed.window_activation_control().is_supported());
-    assert!(!managed.close_cancellation().is_supported());
+    assert!(managed.close_cancellation().is_supported());
+}
+
+#[test]
+fn narrow_close_and_complete_snapshots_advance_independent_generations() {
+    let (mut session, binding) =
+        native_root_session_with_profile(NativeHostProfile::ManagedDesktop);
+    session
+        .report_managed_native_snapshot(
+            [(binding, NativeWindowFacts::live())],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the initial complete snapshot records");
+    commit_managed_frame(&mut session);
+
+    session
+        .publish_native_close(binding, NativeCloseState::Requested, None)
+        .expect("the narrow close observation records");
+    commit_managed_frame(&mut session);
+
+    session
+        .report_native_inventory_unknown()
+        .expect("an independent inventory tombstone records");
+    commit_managed_frame(&mut session);
+
+    session
+        .report_managed_native_snapshot(
+            [(
+                binding,
+                NativeWindowFacts::live().with_close(NativeCloseState::Requested, None),
+            )],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the later complete snapshot keeps every stream contiguous");
+    commit_managed_frame(&mut session);
 }
 
 #[test]

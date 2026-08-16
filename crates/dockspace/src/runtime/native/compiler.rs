@@ -55,6 +55,7 @@ pub(super) fn compile_platform_snapshot(
     profile: NativeHostProfile,
     provider: PlatformObservationLease,
     generation: u64,
+    close_generations: &BTreeMap<ViewportBinding, u64>,
     supplied: &BTreeMap<ViewportBinding, NativeWindowFacts>,
     work_areas: &NativeWorkAreaRoster,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
@@ -63,7 +64,11 @@ pub(super) fn compile_platform_snapshot(
     let mut windows = Vec::new();
     let mut close_observations = Vec::new();
     for (&binding, &facts) in supplied {
-        let compiled = compile_window_fact(provider, binding, facts, generation)?;
+        let close_generation = close_generations
+            .get(&binding)
+            .copied()
+            .ok_or(NativePlatformError::ProtocolInvariant)?;
+        let compiled = compile_window_fact(provider, binding, facts, generation, close_generation)?;
         if compiled.is_live {
             live_bindings.push(binding);
         }
@@ -148,15 +153,16 @@ fn capabilities(profile: NativeHostProfile) -> PlatformCapabilities {
     capabilities.set_work_area(managed(PlatformRequirement::WorkArea));
     capabilities
         .set_pointer_hit_test_observation(managed(PlatformRequirement::PointerHitTestObservation));
-    // The current managed host can observe receiver facts but does not yet
-    // execute the pass-through property lane or a vetoable close handshake.
+    // The current managed host can observe receiver facts and completes an
+    // exact viewport-close cancellation handshake. Pointer pass-through still
+    // lacks a corresponding property callback.
     capabilities
         .set_pointer_hit_test_control(unsupported(PlatformRequirement::PointerHitTestControl));
     capabilities
         .set_global_focus_observation(unsupported(PlatformRequirement::GlobalFocusObservation));
     capabilities
         .set_window_activation_control(unsupported(PlatformRequirement::WindowActivationControl));
-    capabilities.set_close_cancellation(unsupported(PlatformRequirement::CloseCancellation));
+    capabilities.set_close_cancellation(managed(PlatformRequirement::CloseCancellation));
     capabilities
 }
 
@@ -165,11 +171,12 @@ pub(super) fn compile_window_fact(
     binding: ViewportBinding,
     facts: NativeWindowFacts,
     generation: u64,
+    close_generation: u64,
 ) -> Result<CompiledNativeWindow, NativePlatformError> {
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
     let input_generation = InputObservationGeneration::new(generation);
     let presentation_generation = PresentationObservationGeneration::new(generation);
-    let close_generation = CloseObservationGeneration::new(generation);
+    let close_generation = CloseObservationGeneration::new(close_generation);
     let reason = AuthorityUnavailableReason::NotReported;
 
     match facts.lifecycle {

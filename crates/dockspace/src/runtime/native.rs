@@ -770,14 +770,28 @@ impl RuntimeNativeState {
     }
 
     fn next_snapshot_generation(&self) -> Result<u64, NativePlatformError> {
-        self.close_generations
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .max(self.snapshot_generation)
+        self.snapshot_generation
             .checked_add(1)
             .ok_or(NativePlatformError::GenerationExhausted)
+    }
+
+    fn next_close_generations(
+        &self,
+        bindings: impl IntoIterator<Item = ViewportBinding>,
+    ) -> Result<BTreeMap<ViewportBinding, u64>, NativePlatformError> {
+        bindings
+            .into_iter()
+            .map(|binding| {
+                let generation = self
+                    .close_generations
+                    .get(&binding)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(NativePlatformError::GenerationExhausted)?;
+                Ok((binding, generation))
+            })
+            .collect()
     }
 
     fn validate_snapshot_roster(
@@ -833,10 +847,12 @@ impl RuntimeNativeState {
         }
         let generation = self.next_snapshot_generation()?;
         let supplied = self.validate_snapshot_roster(observations)?;
+        let close_generations = self.next_close_generations(supplied.keys().copied())?;
         let snapshot = compile_platform_snapshot(
             self.profile,
             self.provider(),
             generation,
+            &close_generations,
             &supplied,
             &work_areas,
         )?;
@@ -847,9 +863,7 @@ impl RuntimeNativeState {
             .values()
             .any(|facts| matches!(facts.lifecycle, NativeWindowLifecycleFact::Destroyed { .. }));
         self.snapshot_generation = generation;
-        for binding in supplied.into_keys() {
-            self.close_generations.insert(binding, generation);
-        }
+        self.close_generations.extend(close_generations);
         Ok(())
     }
 
@@ -863,9 +877,6 @@ impl RuntimeNativeState {
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         self.snapshot_generation = generation;
-        for binding in self.bindings.values() {
-            self.close_generations.insert(binding.binding, generation);
-        }
         Ok(())
     }
 
