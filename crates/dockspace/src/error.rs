@@ -314,9 +314,6 @@ pub enum TransactionError {
     /// The final application-item multiset differs from the command-declared delta.
     #[error("transaction item reconciliation failed")]
     ItemReconciliation {
-        /// Command after which reconciliation failed, or `None` for the final
-        /// canonical candidate check.
-        command_index: Option<usize>,
         /// Multiset obtained by applying declared open/close deltas.
         expected: BTreeMap<ItemId, usize>,
         /// Multiset found in the final canonical candidate.

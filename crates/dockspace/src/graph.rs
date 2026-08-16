@@ -446,16 +446,24 @@ impl Workspace {
     /// Counts every item occurrence without hiding duplicate corruption.
     pub fn item_multiset(&self) -> BTreeMap<ItemId, usize> {
         let mut items = BTreeMap::new();
+        #[cfg(test)]
+        let mut item_visits = 0;
         for node in self.nodes.values() {
             if let Node::Tabs {
                 items: tab_items, ..
             } = node
             {
+                #[cfg(test)]
+                {
+                    item_visits += tab_items.len();
+                }
                 for item in tab_items {
                     *items.entry(*item).or_insert(0) += 1;
                 }
             }
         }
+        #[cfg(test)]
+        crate::drop_resolver::structural_work::record_item_multiset_scan(item_visits);
         items
     }
 

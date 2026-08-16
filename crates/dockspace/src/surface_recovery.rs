@@ -1457,6 +1457,39 @@ mod tests {
         workspace_with_surfaces(main, Some(TARGET_MAIN))
     }
 
+    fn scaled_rootless_recovery(
+        contained_count: usize,
+    ) -> (Workspace, SurfaceRosterDisposition, SurfaceRosterPlacement) {
+        let mut builder = Workspace::builder();
+        insert_root(&mut builder, TARGET_MAIN, 1);
+        builder.set_surface(SOURCE, SurfacePresentation::rootless());
+        builder.set_surface(TARGET, SurfacePresentation::with_main(TARGET_MAIN));
+        let mut placements = Vec::with_capacity(contained_count);
+        for index in 0..contained_count {
+            let ordinal = u64::try_from(index).expect("fixture ordinal fits u64");
+            let root = RootId::new(1_000 + ordinal);
+            let floating = FloatingPresentationId::new(1_000 + ordinal);
+            insert_root(&mut builder, root, 10_000 + ordinal);
+            builder.set_contained_floating(
+                floating,
+                ContainedFloating::new(root, rect(ordinal as f64)),
+            );
+            builder
+                .attach_contained(SOURCE, floating)
+                .expect("scaled source surface exists");
+            placements.push(ContainedRootPlacement::new(
+                floating,
+                root,
+                rect(10_000.0 + ordinal as f64),
+            ));
+        }
+        let workspace = builder.build().expect("scaled recovery workspace is valid");
+        let roster = SurfaceRosterDisposition::capture(&workspace, SOURCE, None)
+            .expect("scaled source roster is capturable");
+        let placement = SurfaceRosterPlacement::new(TARGET, None, placements);
+        (workspace, roster, placement)
+    }
+
     fn contained_placements() -> Vec<ContainedRootPlacement> {
         vec![
             ContainedRootPlacement::new(FLOATING_A, ROOT_A, rect(120.0)),
@@ -1541,6 +1574,29 @@ mod tests {
                 .contained,
             [TARGET_EXISTING, FLOATING_A, FLOATING_B]
         );
+    }
+
+    #[test]
+    fn complete_recovery_uses_constant_full_item_reconciliation_scans() {
+        for contained_count in [16, 128, 1_024] {
+            let (mut workspace, roster, placement) = scaled_rootless_recovery(contained_count);
+            let transaction = roster
+                .compile_recovery_placement_transaction(&workspace, &placement)
+                .expect("scaled rootless recovery compiles");
+            let command_count = transaction.commands().len();
+            let item_count = workspace.item_multiset().len();
+
+            crate::drop_resolver::structural_work::reset();
+            transaction
+                .apply(&mut workspace)
+                .expect("scaled rootless recovery publishes atomically");
+
+            let work = crate::drop_resolver::structural_work::snapshot();
+            assert_eq!(command_count, contained_count);
+            assert_eq!(work.transaction_commands, command_count);
+            assert!(work.item_multiset_scans <= 4);
+            assert!(work.item_multiset_item_visits <= item_count * 4);
+        }
     }
 
     #[test]

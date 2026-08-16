@@ -228,7 +228,6 @@ pub(crate) fn prepare_surface_content_close(
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
         return Err(TransactionError::ItemReconciliation {
-            command_index: None,
             expected: expected_after,
             actual: actual_after,
         });
@@ -260,7 +259,6 @@ pub(crate) fn prepare_content_close(
     let actual_items = workspace.item_multiset();
     if &actual_items != expected_items {
         return Err(TransactionError::ItemReconciliation {
-            command_index: None,
             expected: expected_items.clone(),
             actual: actual_items,
         });
@@ -346,7 +344,6 @@ pub(crate) fn prepare_content_close(
     let actual_after = candidate.item_multiset();
     if actual_after != expected_after {
         return Err(TransactionError::ItemReconciliation {
-            command_index: None,
             expected: expected_after,
             actual: actual_after,
         });
@@ -515,7 +512,9 @@ fn prepare_transaction_inner(
         crate::drop_resolver::structural_work::record_transaction_candidate_clone(workspace);
     }
     let mut candidate = workspace.clone();
-    let mut expected_items = workspace.item_multiset();
+    // Typed command deltas own the staged item roster. Reconcile the graph once,
+    // after canonicalization, so multi-command transactions stay linear in items.
+    let mut item_ledger = workspace.item_multiset();
     let mut outcomes = Vec::with_capacity(commands.len());
 
     for (index, command) in commands.iter().enumerate() {
@@ -527,6 +526,8 @@ fn prepare_transaction_inner(
                 );
                 candidate.clone()
             });
+        validate_declared_open_item(&item_ledger, command)
+            .map_err(|source| TransactionError::Command { index, source })?;
         if let TransactionAuthority::Policy(policy) = authority {
             authorize_workspace_command(&candidate, policy, command)
                 .map_err(|source| TransactionError::Command { index, source })?;
@@ -538,16 +539,8 @@ fn prepare_transaction_inner(
                 .as_ref()
                 .map_or_else(|| candidate != *workspace, |before| candidate != *before);
         }
-        apply_item_delta(&mut expected_items, applied.delta)
+        apply_item_delta(&mut item_ledger, applied.delta)
             .map_err(|source| TransactionError::Command { index, source })?;
-        let actual_items = candidate.item_multiset();
-        if actual_items != expected_items {
-            return Err(TransactionError::ItemReconciliation {
-                command_index: Some(index),
-                expected: expected_items,
-                actual: actual_items,
-            });
-        }
         outcomes.push(applied.outcome);
     }
 
@@ -560,10 +553,9 @@ fn prepare_transaction_inner(
         *changed = candidate != *workspace;
     }
     let actual_items = candidate.item_multiset();
-    if actual_items != expected_items {
+    if actual_items != item_ledger {
         return Err(TransactionError::ItemReconciliation {
-            command_index: None,
-            expected: expected_items,
+            expected: item_ledger,
             actual: actual_items,
         });
     }
@@ -574,7 +566,7 @@ fn prepare_transaction_inner(
     })
 }
 
-pub(crate) fn authorize_workspace_command(
+fn authorize_workspace_command(
     workspace: &Workspace,
     policy: &DockPolicySnapshot,
     command: &WorkspaceCommand,
@@ -872,9 +864,6 @@ fn authorize_open(
     item: ItemId,
     target: &DockTarget,
 ) -> Result<(), CommandError> {
-    if workspace.item_multiset().contains_key(&item) {
-        return Err(CommandError::ItemAlreadyOpen { item });
-    }
     validate_target(workspace, target)?;
     if matches!(target, DockTarget::TabGap { .. }) {
         authorize_tab_bar(policy, target)?;
@@ -1183,6 +1172,18 @@ fn apply_item_delta(
     }
 }
 
+fn validate_declared_open_item(
+    items: &BTreeMap<ItemId, usize>,
+    command: &WorkspaceCommand,
+) -> Result<(), CommandError> {
+    if let Some(item) = command.opened_item()
+        && items.contains_key(&item)
+    {
+        return Err(CommandError::ItemAlreadyOpen { item });
+    }
+    Ok(())
+}
+
 fn apply_command(
     workspace: &mut Workspace,
     command: &WorkspaceCommand,
@@ -1307,9 +1308,6 @@ fn open(
     item: ItemId,
     target: &DockTarget,
 ) -> Result<AppliedCommand, CommandError> {
-    if workspace.item_multiset().contains_key(&item) {
-        return Err(CommandError::ItemAlreadyOpen { item });
-    }
     validate_target(workspace, target)?;
     let root = target_root(target);
     let payload = DetachedPayload::Item {
@@ -2321,13 +2319,7 @@ fn validate_tab_target(
 
 fn validate_root_content(workspace: &Workspace, content: &RootContent) -> Result<(), CommandError> {
     match content {
-        RootContent::OpenItem(item) => {
-            if workspace.item_multiset().contains_key(item) {
-                Err(CommandError::ItemAlreadyOpen { item: *item })
-            } else {
-                Ok(())
-            }
-        }
+        RootContent::OpenItem(_) => Ok(()),
         RootContent::Move(payload) => {
             validate_move_payload(workspace, payload)?;
             if move_removes_complete_root(workspace, payload)? {
@@ -3312,6 +3304,29 @@ mod tests {
         DockPolicy::default().snapshot(PolicyRevision::new(1))
     }
 
+    fn scaled_open_item_transaction(command_count: usize) -> (Workspace, Vec<WorkspaceCommand>) {
+        let mut builder = Workspace::builder();
+        insert_root(&mut builder, MAIN, &[1]);
+        builder.set_surface(SOURCE, SurfacePresentation::with_main(MAIN));
+        let workspace = builder
+            .build()
+            .expect("scaled open workspace must be valid");
+        let commands = (0..command_count)
+            .map(|index| {
+                let ordinal = u64::try_from(index).expect("fixture ordinal fits u64");
+                WorkspaceCommand::CreateContainedRoot {
+                    surface: SOURCE,
+                    root: RootId::new(1_000 + ordinal),
+                    floating: FloatingPresentationId::new(1_000 + ordinal),
+                    rect: rect(ordinal as f64),
+                    position: ContainedPosition::Front,
+                    content: RootContent::OpenItem(ItemId::new(10_000 + ordinal)),
+                }
+            })
+            .collect();
+        (workspace, commands)
+    }
+
     fn capture_surface_close(
         workspace: &Workspace,
         policy: &DockPolicySnapshot,
@@ -3336,6 +3351,24 @@ mod tests {
             .map(|item| CloseItemRequirement::new(item, policy.pane_close_capability(item)))
             .collect();
         PreparedSurfaceContentClose::new(roster, roots, requirements)
+    }
+
+    #[test]
+    fn open_item_transactions_use_constant_full_item_reconciliation_scans() {
+        for command_count in [16, 128, 1_024] {
+            let (mut workspace, commands) = scaled_open_item_transaction(command_count);
+
+            crate::drop_resolver::structural_work::reset();
+            let report = crate::transaction::WorkspaceTransaction::from_commands(commands)
+                .apply(&mut workspace, &default_policy())
+                .expect("scaled item opens publish atomically");
+
+            let work = crate::drop_resolver::structural_work::snapshot();
+            assert_eq!(report.outcomes().len(), command_count);
+            assert_eq!(work.transaction_commands, command_count);
+            assert!(work.item_multiset_scans <= 4);
+            assert!(work.item_multiset_item_visits <= (command_count + 1) * 4);
+        }
     }
 
     fn append_item_to_root(workspace: &mut Workspace, root: RootId, item: ItemId) {

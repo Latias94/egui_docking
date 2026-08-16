@@ -1088,6 +1088,8 @@ pub(crate) mod structural_work {
         pub(crate) drop_targets_assessed: usize,
         pub(crate) geometric_winners: usize,
         pub(crate) presentation_hit_lookup_comparisons: usize,
+        pub(crate) item_multiset_scans: usize,
+        pub(crate) item_multiset_item_visits: usize,
         pub(crate) transaction_prepares: usize,
         pub(crate) transaction_commands: usize,
         pub(crate) workspace_deep_clones: WorkspaceDeepCloneWork,
@@ -1139,6 +1141,13 @@ pub(crate) mod structural_work {
     pub(crate) fn record_presentation_hit_lookup_comparison() {
         PRESENTATION_HIT_LOOKUP_COMPARISONS.with(|comparisons| {
             comparisons.set(comparisons.get() + 1);
+        });
+    }
+
+    pub(crate) fn record_item_multiset_scan(item_visits: usize) {
+        update(|work| {
+            work.item_multiset_scans += 1;
+            work.item_multiset_item_visits += item_visits;
         });
     }
 
