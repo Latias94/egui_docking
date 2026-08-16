@@ -4,49 +4,31 @@ use dockspace::model::WorkspaceVersion;
 use dockspace::runtime::{HostInputOutcome, PreparedDockAction};
 use egui_dockspace::DockspaceActionStatus;
 
-/// Stable reason why the native application did not queue a product action.
+/// Failure to queue one application-owned product action.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeActionRequestErrorKind {
+pub enum NativeActionRequestError {
     /// Another application action is waiting for the next final root pass.
     Busy,
     /// The native runtime has entered terminal shutdown.
     Stopped,
 }
 
-/// Failure to queue one application-owned product action.
-#[derive(Debug)]
-pub struct NativeActionRequestError {
-    kind: NativeActionRequestErrorKind,
-}
-
 impl NativeActionRequestError {
     pub(crate) const fn busy() -> Self {
-        Self {
-            kind: NativeActionRequestErrorKind::Busy,
-        }
+        Self::Busy
     }
 
     pub(crate) const fn stopped() -> Self {
-        Self {
-            kind: NativeActionRequestErrorKind::Stopped,
-        }
-    }
-
-    /// Returns the stable failure category.
-    #[must_use]
-    pub const fn kind(&self) -> NativeActionRequestErrorKind {
-        self.kind
+        Self::Stopped
     }
 }
 
 impl std::fmt::Display for NativeActionRequestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self.kind {
-            NativeActionRequestErrorKind::Busy => {
-                "a native dockspace application action is already pending"
-            }
-            NativeActionRequestErrorKind::Stopped => "the native dockspace runtime is stopped",
+        let message = match self {
+            Self::Busy => "a native dockspace application action is already pending",
+            Self::Stopped => "the native dockspace runtime is stopped",
         };
         formatter.write_str(message)
     }

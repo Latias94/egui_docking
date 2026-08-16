@@ -143,6 +143,10 @@ pub(crate) struct NativeFocusControl {
 }
 
 impl NativeFocusControl {
+    pub(crate) const fn has_pending_work(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(crate) fn retain(
         &mut self,
         viewport: ViewportId,

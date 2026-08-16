@@ -25,6 +25,10 @@ pub(crate) struct NativePassActions {
 }
 
 impl NativePassActions {
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.retained.is_empty()
+    }
+
     pub(crate) fn discard_pass(
         &mut self,
         token: NativeOutputToken,

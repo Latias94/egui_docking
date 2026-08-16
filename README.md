@@ -14,8 +14,8 @@ The current design and implementation sequence live in
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Interactive official-egui single-surface docking: tab select/close/reorder, center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | Does not expose native multi-viewport ownership |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator and native lifecycle vertical slices | Not release-ready until the real two-window create-to-quiescence smoke and complete effect/capability matrix pass |
-| Open-GPUI adapter | Reference implementation and migration tests | Production cutover to one shared `DockspaceSession` remains U8 work |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with one bounded real-window Glow smoke covering hidden child creation through exact retirement | The smoke uses product actions for tear-off and redock; release still requires a remotely reproducible fork pin, CI admission, platform capability coverage, and physical cross-window input evidence |
+| Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 The repository should therefore be described as a high-correctness docking core
 with a usable official-egui single-surface product path and an experimental

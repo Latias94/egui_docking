@@ -131,6 +131,10 @@ pub(crate) struct NativeRetirementState {
 }
 
 impl NativeRetirementState {
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub(crate) fn can_begin_release(
         &self,
         viewport: ViewportId,

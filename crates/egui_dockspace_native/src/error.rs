@@ -1,28 +1,15 @@
 //! Public failures for the native coordinator boundary.
 
 use dockspace::model::SurfaceId;
+pub use dockspace::runtime::DockspaceRuntimeErrorKind as NativeRuntimeErrorKind;
 use dockspace::runtime::{
     DockspaceRuntimeError, NativeHostErrorKind, NativeStagingPresentationReportError,
-    PaintedNativeStagingOutput, PaintedSurfaceOutput, SurfacePresentationReportError,
+    PaintedSurfaceOutput, SurfacePresentationReportError,
 };
 use eframe::{NativeOutputToken, egui::ViewportId};
-use egui_dockspace::DockspaceError;
+use egui_dockspace::{DockspaceError, DockspaceErrorKind};
 use thiserror::Error;
 use winit::window::WindowId;
-
-/// Stable category for one native coordinator failure.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeRuntimeErrorKind {
-    /// The renderer-neutral session rejected an exact fact or host frame.
-    Dockspace,
-    /// A renderer settlement did not belong to the pending presentation stream.
-    Presentation,
-    /// The host attempted to cross an uncommitted callback-order boundary.
-    HostProtocol,
-    /// The egui renderer could not represent a core paint or measurement fact.
-    Adapter,
-}
 
 /// Failure while reducing one native coordinator cycle.
 #[derive(Debug)]
@@ -127,40 +114,14 @@ impl NativeRuntimeError {
     /// Returns the stable product-level failure category.
     #[must_use]
     pub const fn kind(&self) -> NativeRuntimeErrorKind {
-        match self.source {
-            NativeRuntimeErrorSource::Dockspace(_) => NativeRuntimeErrorKind::Dockspace,
+        match &self.source {
+            NativeRuntimeErrorSource::Dockspace(source) => source.kind(),
             NativeRuntimeErrorSource::Presentation(_)
             | NativeRuntimeErrorSource::StagingPresentation(_) => {
-                NativeRuntimeErrorKind::Presentation
+                NativeRuntimeErrorKind::HostProtocol
             }
             NativeRuntimeErrorSource::HostProtocol(_) => NativeRuntimeErrorKind::HostProtocol,
-            NativeRuntimeErrorSource::Adapter(_) => NativeRuntimeErrorKind::Adapter,
-        }
-    }
-
-    /// Recovers the affine painted output from a presentation failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged error when it did not originate from renderer
-    /// presentation settlement.
-    pub fn into_painted_output(self) -> Result<PaintedSurfaceOutput, Self> {
-        match self.source {
-            NativeRuntimeErrorSource::Presentation(source) => Ok(source.into_output()),
-            source => Err(Self { source }),
-        }
-    }
-
-    /// Recovers the affine staging output from a presentation failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns the unchanged error when it did not originate from native
-    /// staging presentation settlement.
-    pub fn into_painted_staging_output(self) -> Result<PaintedNativeStagingOutput, Self> {
-        match self.source {
-            NativeRuntimeErrorSource::StagingPresentation(source) => Ok(source.into_output()),
-            source => Err(Self { source }),
+            NativeRuntimeErrorSource::Adapter(source) => adapter_error_kind(source.kind()),
         }
     }
 }
@@ -168,20 +129,37 @@ impl NativeRuntimeError {
 impl std::fmt::Display for NativeRuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self.kind() {
-            NativeRuntimeErrorKind::Dockspace => {
-                "dockspace rejected the native coordinator operation"
+            NativeRuntimeErrorKind::InvalidConfiguration => {
+                "native dockspace configuration is invalid"
             }
-            NativeRuntimeErrorKind::Presentation => {
-                "dockspace rejected a renderer presentation result"
+            NativeRuntimeErrorKind::Persistence => "native dockspace persistence validation failed",
+            NativeRuntimeErrorKind::Unsupported => {
+                "the selected native host does not support this operation"
+            }
+            NativeRuntimeErrorKind::OperationConflict => {
+                "the native dockspace operation conflicts with current state"
             }
             NativeRuntimeErrorKind::HostProtocol => {
-                "native callback records are not ready for the next host frame"
+                "the native host supplied stale, incomplete, or out-of-order facts"
             }
-            NativeRuntimeErrorKind::Adapter => {
-                "egui could not represent the core-owned native surface"
+            NativeRuntimeErrorKind::Internal => {
+                "the native dockspace runtime encountered an internal failure"
             }
+            _ => "the native dockspace runtime encountered an unknown failure",
         };
         formatter.write_str(message)
+    }
+}
+
+const fn adapter_error_kind(kind: DockspaceErrorKind) -> NativeRuntimeErrorKind {
+    match kind {
+        DockspaceErrorKind::InvalidConfiguration => NativeRuntimeErrorKind::InvalidConfiguration,
+        DockspaceErrorKind::Persistence => NativeRuntimeErrorKind::Persistence,
+        DockspaceErrorKind::Unsupported => NativeRuntimeErrorKind::Unsupported,
+        DockspaceErrorKind::OperationConflict => NativeRuntimeErrorKind::OperationConflict,
+        DockspaceErrorKind::HostProtocol => NativeRuntimeErrorKind::HostProtocol,
+        DockspaceErrorKind::Internal => NativeRuntimeErrorKind::Internal,
+        _ => NativeRuntimeErrorKind::Internal,
     }
 }
 
@@ -239,7 +217,7 @@ impl From<DockspaceError> for NativeRuntimeError {
 
 /// Why a viewport could not be associated with one logical native surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum NativeViewportBindingError {
+pub(crate) enum NativeViewportBindingError {
     /// The binding is foreign, retired, or no longer current in this session.
     #[error("native viewport {viewport:?} names a non-current binding for surface {surface}")]
     BindingNotCurrent {
@@ -312,7 +290,7 @@ pub enum NativeViewportBindingError {
 
 /// Stable reason why an affine painted output could not be bound to an eframe token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeOutputBindingErrorKind {
+pub(crate) enum NativeOutputBindingErrorKind {
     /// The token was not reserved during its viewport callback.
     TokenNotReserved,
     /// The viewport/window pair had no exact current native binding when paint completed.
@@ -327,7 +305,7 @@ pub enum NativeOutputBindingErrorKind {
 
 /// Failed token-to-output binding which retains the affine output for recovery.
 #[derive(Debug)]
-pub struct NativeOutputBindingError {
+pub(crate) struct NativeOutputBindingError {
     kind: NativeOutputBindingErrorKind,
     token: NativeOutputToken,
     output: Box<PaintedSurfaceOutput>,
@@ -346,20 +324,11 @@ impl NativeOutputBindingError {
         }
     }
 
-    /// Returns the stable failure category.
-    #[must_use]
-    pub const fn kind(&self) -> NativeOutputBindingErrorKind {
+    pub(crate) const fn kind(&self) -> NativeOutputBindingErrorKind {
         self.kind
     }
 
-    /// Returns the rejected eframe output token.
-    #[must_use]
-    pub const fn token(&self) -> NativeOutputToken {
-        self.token
-    }
-
-    /// Recovers the unconsumed affine output.
-    pub fn into_output(self) -> PaintedSurfaceOutput {
+    pub(crate) fn into_output(self) -> PaintedSurfaceOutput {
         *self.output
     }
 }

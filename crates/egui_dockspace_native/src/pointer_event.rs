@@ -10,7 +10,7 @@ use dockspace::runtime::{
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
-use crate::NativeWindowEventRecord;
+use crate::event::NativeWindowEventRecord;
 use crate::event::{NativePointerRouteSnapshot, NativePointerRoutes};
 
 const POINTER_ID: NativePointerId = NativePointerId::new(1);

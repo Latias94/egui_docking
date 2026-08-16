@@ -8,6 +8,7 @@ use eframe::NativeHostHandler;
 use eframe::egui::{self, Id, ViewportClass, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
+use crate::NativeActionRequestError;
 use crate::close_control::NativeWindowClosePolicy;
 use crate::deferred_viewport::{
     DeferredViewportSpec, declare_deferred_viewports, paint_placeholder,
@@ -15,7 +16,6 @@ use crate::deferred_viewport::{
 use crate::error::{NativeHostProtocolError, NativeRuntimeError, NativeRuntimeErrorKind};
 use crate::mailbox::DeferredViewportPaint;
 use crate::surface_driver::NativeRuntimeState;
-use crate::{NativeActionRequestError, NativeLifecycleProgress};
 
 /// Fork-backed eframe application whose [`DockspaceSession`] is the sole graph authority.
 ///
@@ -118,15 +118,6 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
             .map(NativeRuntimeError::kind)
     }
 
-    /// Returns fixed-size monotonic progress for exact native lifecycle milestones.
-    ///
-    /// This snapshot is suitable for health checks and one-shot integration smoke tests. It does
-    /// not expose callback history, internal lifecycle phases, or renderer tokens.
-    #[must_use]
-    pub fn lifecycle_progress(&self) -> NativeLifecycleProgress {
-        lock_state(&self.state).lifecycle_progress()
-    }
-
     /// Returns whether one logical surface has an exact currently presented output.
     ///
     /// This is a product readiness query, not a renderer token or historical
@@ -135,6 +126,16 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     #[must_use]
     pub fn is_surface_presented(&self, surface: SurfaceId) -> bool {
         lock_state(&self.state).is_surface_presented(surface)
+    }
+
+    /// Returns whether native lifecycle work is settled at the current committed boundary.
+    ///
+    /// Stable live viewports and their ordinary repaint outputs do not make the
+    /// runtime busy. Pending application actions, create/show barriers, close or
+    /// focus effects, callback records, and binding retirement do.
+    #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        lock_state(&self.state).is_quiescent()
     }
 
     /// Queues one complete-root dock action for the next final root pass.
@@ -150,13 +151,10 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// native runtime has stopped.
     pub fn request_dock_root(
         &self,
-        context: &egui::Context,
         root: RootId,
         placement: DockPlacement,
     ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_dock_root(root, placement)?;
-        context.request_repaint_of(ViewportId::ROOT);
-        Ok(())
+        lock_state(&self.state).request_dock_root(root, placement)
     }
 
     /// Queues one complete-root native tear-off for the next final root pass.
@@ -170,13 +168,10 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
     /// native runtime has stopped.
     pub fn request_tear_off_root(
         &self,
-        context: &egui::Context,
         root: RootId,
         placement: NativeWindowPlacement,
     ) -> Result<(), NativeActionRequestError> {
-        lock_state(&self.state).request_tear_off_root(root, placement)?;
-        context.request_repaint_of(ViewportId::ROOT);
-        Ok(())
+        lock_state(&self.state).request_tear_off_root(root, placement)
     }
 
     /// Takes the exact terminal status of the last queued application action.

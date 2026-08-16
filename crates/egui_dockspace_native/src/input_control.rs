@@ -178,6 +178,14 @@ pub(crate) struct NativeInputControl {
 }
 
 impl NativeInputControl {
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.pending.is_empty()
+            || self
+                .observations
+                .values()
+                .any(|observation| observation.acknowledgement.is_some())
+    }
+
     pub(crate) fn retain(
         &mut self,
         viewport: ViewportId,

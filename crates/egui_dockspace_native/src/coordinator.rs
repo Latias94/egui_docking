@@ -24,6 +24,7 @@ use eframe::{
 };
 use winit::window::WindowId;
 
+use crate::NativeRuntimeError;
 use crate::close_control::NativeCloseControl;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
@@ -31,7 +32,9 @@ use crate::effect_coordinator::{
 };
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
+    NativeViewportBindingError,
 };
+use crate::event::NativeWindowEventRecord;
 use crate::focus_control::{NativeFocusControl, NativeFocusResultDisposition};
 use crate::host_frame::NativeHostFrame;
 use crate::input_control::{
@@ -53,7 +56,6 @@ use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewport
 use crate::viewport_map::NativeViewportMap;
 use crate::window_snapshot::{CompiledWindowObservation, compile_window_observation};
 use crate::work_area::{FrozenWorkAreaRoster, NativeWorkAreaState, PreparedWorkAreaRoster};
-use crate::{NativeRuntimeError, NativeViewportBindingError, NativeWindowEventRecord};
 
 mod close_driver;
 mod effect_dispatch;
@@ -118,6 +120,15 @@ impl std::fmt::Debug for PendingNativeOutput {
                 .field(&output.surface())
                 .field(&output.phase())
                 .finish(),
+        }
+    }
+}
+
+impl PendingNativeOutput {
+    fn requires_lifecycle_settlement(&self, session: &DockspaceSession) -> bool {
+        match self {
+            Self::Staging(_) => true,
+            Self::Surface(output) => session.presented_surface(output.surface()).is_none(),
         }
     }
 }
@@ -219,8 +230,25 @@ impl NativeCoordinator {
         &self.session
     }
 
+    #[cfg(test)]
     pub(crate) const fn lifecycle_progress(&self) -> NativeLifecycleProgress {
         self.lifecycle_progress
+    }
+
+    pub(crate) fn is_quiescent(&self) -> bool {
+        !self.bridge.has_pending_coordinator_work()
+            && self
+                .pending_outputs
+                .values()
+                .all(|output| !output.requires_lifecycle_settlement(&self.session))
+            && self.pending_presentation_acknowledgements.is_empty()
+            && self.queued_snapshot.is_none()
+            && !self.deferred_viewports.has_transitional_viewport()
+            && !self.effects.has_pending_work()
+            && !self.retirements.has_pending_work()
+            && !self.close_control.has_pending_work()
+            && !self.focus_control.has_pending_work()
+            && !self.input_control.has_pending_work()
     }
 
     /// Associates one eframe viewport with an exact current core binding.

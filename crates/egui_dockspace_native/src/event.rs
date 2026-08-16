@@ -77,7 +77,7 @@ impl NativePointerRoutes {
 /// schema. Missing [`winit::event::PointerEventFacts`] remain missing; callers
 /// must not reconstruct them from cached cursor or window state.
 #[derive(Debug, Clone, PartialEq)]
-pub struct NativeWindowEventRecord {
+pub(crate) struct NativeWindowEventRecord {
     ordinal: u64,
     window_id: WindowId,
     viewport_id: Option<ViewportId>,
@@ -102,19 +102,19 @@ impl NativeWindowEventRecord {
 
     /// Returns the exact eframe event ordinal.
     #[must_use]
-    pub const fn ordinal(&self) -> u64 {
+    pub(crate) const fn ordinal(&self) -> u64 {
         self.ordinal
     }
 
     /// Returns the native delivery window.
     #[must_use]
-    pub const fn window_id(&self) -> WindowId {
+    pub(crate) const fn window_id(&self) -> WindowId {
         self.window_id
     }
 
     /// Returns the mapped eframe viewport, when the window still belongs to eframe.
     #[must_use]
-    pub const fn viewport_id(&self) -> Option<ViewportId> {
+    pub(crate) const fn viewport_id(&self) -> Option<ViewportId> {
         self.viewport_id
     }
 
@@ -123,7 +123,7 @@ impl NativeWindowEventRecord {
     /// `None` is an explicit authority gap. Callers must not resolve the event
     /// against a newer viewport mapping after a native window was recreated.
     #[must_use]
-    pub const fn binding(&self) -> Option<NativeSurfaceBinding> {
+    pub(crate) const fn binding(&self) -> Option<NativeSurfaceBinding> {
         self.binding
     }
 
@@ -140,7 +140,7 @@ impl NativeWindowEventRecord {
 
     /// Returns the exact cloned winit event.
     #[must_use]
-    pub const fn event(&self) -> &WindowEvent {
+    pub(crate) const fn event(&self) -> &WindowEvent {
         &self.event
     }
 

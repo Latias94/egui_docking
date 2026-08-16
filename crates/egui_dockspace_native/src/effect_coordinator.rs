@@ -90,6 +90,12 @@ struct PendingViewportCommand {
 }
 
 impl NativeEffectCoordinator {
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.pending_viewports.is_empty()
+            || !self.pending_shows.is_empty()
+            || !self.pending_commands.is_empty()
+    }
+
     pub(crate) fn awaiting_viewport_callbacks(
         &self,
     ) -> impl Iterator<Item = NativeViewportEffectPlan> + '_ {

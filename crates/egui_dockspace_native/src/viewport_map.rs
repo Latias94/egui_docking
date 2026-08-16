@@ -7,7 +7,7 @@ use dockspace::runtime::NativeSurfaceBinding;
 use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
-use crate::NativeViewportBindingError;
+use crate::error::NativeViewportBindingError;
 use crate::retirement::CommittedRetirement;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

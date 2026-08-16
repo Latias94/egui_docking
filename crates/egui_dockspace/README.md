@@ -36,5 +36,7 @@ implementation to measure and paint application panes. See the packaged
   adapter; it is not a public multiview runtime.
 
 Native multi-viewport support is intentionally not claimed by this crate. The
-fork-backed `egui_dockspace_native` workspace remains unpublished until its
-real two-window lifecycle smoke and platform capability gates pass.
+fork-backed `egui_dockspace_native` workspace has one bounded real-window
+lifecycle smoke, but remains unpublished until its fork revision is remotely
+reproducible and its CI, platform capability, and physical cross-window input
+gates pass.

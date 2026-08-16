@@ -135,6 +135,10 @@ impl DeferredViewportDriver {
     pub(crate) fn retained_specs(&self) -> Vec<DeferredViewportSpec> {
         self.specs().collect()
     }
+
+    pub(crate) fn has_transitional_viewport(&self) -> bool {
+        self.entries.values().any(|spec| !spec.visible)
+    }
 }
 
 pub(crate) fn viewport_id_for(binding: NativeSurfaceBinding) -> ViewportId {

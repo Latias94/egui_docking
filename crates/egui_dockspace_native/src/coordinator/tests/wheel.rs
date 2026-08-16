@@ -14,7 +14,7 @@ use winit::keyboard::ModifiersState;
 use winit::window::WindowId;
 
 use super::{coordinator, register_roots};
-use crate::NativeWindowEventRecord;
+use crate::event::NativeWindowEventRecord;
 use crate::pointer_event::{NativePointerTranslation, NativePointerTranslator};
 use crate::viewport_map::NativeViewportMap;
 

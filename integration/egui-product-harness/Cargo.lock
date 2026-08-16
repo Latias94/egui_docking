@@ -182,7 +182,6 @@ version = "0.1.0"
 dependencies = [
  "dockspace",
  "egui",
- "serde_json",
  "thiserror",
 ]
 

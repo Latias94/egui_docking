@@ -514,6 +514,33 @@ mod tests {
     }
 
     #[test]
+    fn active_destroyed_does_not_leave_a_shutdown_roster_obligation() {
+        let (binding, _) = bindings();
+        let mut records = HostRecords::active();
+        records.record_window_event(NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::Destroyed,
+        ));
+
+        assert!(!records.terminal_roster_pending);
+        assert!(records.journal.pop_front().is_some());
+        assert!(!records.has_pending_coordinator_work());
+
+        records.quarantine_after_fatal();
+        records.record_window_event(NativeWindowEventRecord::for_test(
+            2,
+            WindowId::from(11),
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::Destroyed,
+        ));
+        assert!(records.terminal_roster_pending);
+    }
+
+    #[test]
     fn freeze_preserves_owned_mailbox_prefix_and_rejects_new_callbacks() {
         let (binding, _) = bindings();
         let viewport = ViewportId::ROOT;
@@ -685,6 +712,17 @@ impl HostRecords {
             event_boundary_pending: false,
             terminal_roster_pending: false,
         }
+    }
+
+    fn has_pending_coordinator_work(&self) -> bool {
+        !self.journal.is_empty()
+            || !self.create_reservations.is_empty()
+            || !self.hidden_render_bindings.is_empty()
+            || !self.staging_requests.is_empty()
+            || self.in_flight_viewport_roster.is_some()
+            || self.output_order_invalid
+            || self.event_boundary_pending
+            || self.terminal_roster_pending
     }
 
     fn reserve_output(
@@ -950,8 +988,13 @@ impl HostRecords {
     }
 
     fn record_window_event(&mut self, record: NativeWindowEventRecord) {
-        self.terminal_roster_pending |=
-            matches!(record.event(), winit::event::WindowEvent::Destroyed);
+        self.terminal_roster_pending |= matches!(
+            (self.mode, record.event()),
+            (
+                HostIngressMode::Quarantined,
+                winit::event::WindowEvent::Destroyed
+            )
+        );
         self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
@@ -1119,8 +1162,7 @@ fn semantic_prelude_ready(
 ) -> bool {
     let mut records = records.peekable();
     records.peek().is_none()
-        || (!event_boundary_pending
-            && records.all(|viewport| viewport == Some(ViewportId::ROOT)))
+        || (!event_boundary_pending && records.all(|viewport| viewport == Some(ViewportId::ROOT)))
 }
 
 const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
@@ -1181,6 +1223,10 @@ impl NativeHostBridge {
         self.viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn has_pending_coordinator_work(&self) -> bool {
+        self.lock().has_pending_coordinator_work()
     }
 
     pub(crate) fn front_event(&self) -> Option<NativeWindowEventRecord> {
@@ -1706,7 +1752,9 @@ impl NativeHostBridge {
             };
         }
         let Some(request) = records.staging_requests.get(&token.viewport_id()).copied() else {
-            if records.semantic_prelude_ready() && let Some(binding) = reservation.binding() {
+            if records.semantic_prelude_ready()
+                && let Some(binding) = reservation.binding()
+            {
                 return DeferredViewportPaint::Semantic(binding);
             }
             records

@@ -3,7 +3,7 @@
 use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
 use dockspace::runtime::{HostInputOutcome, HostWindowToken, SurfaceUnavailableReason};
 use eframe::egui::emath::GuiRounding;
-use eframe::egui::{self, Id};
+use eframe::egui::{self, Id, ViewportId};
 use eframe::{NativeHostWake, NativeOutputToken, queue_native_viewport_pointer_passthrough};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 
@@ -12,7 +12,6 @@ use crate::close_control::NativeWindowClosePolicy;
 use crate::coordinator::{NativeCoordinator, NativeShutdownAdvance, NativeShutdownRegistration};
 use crate::deferred_viewport::DeferredViewportSpec;
 use crate::error::{NativeHostProtocolError, NativeRuntimeError};
-use crate::lifecycle_progress::NativeLifecycleProgress;
 use crate::pass_actions::{NativePassActionError, NativePassActions};
 
 const ROOT_WINDOW_TOKEN: HostWindowToken = HostWindowToken::new(1);
@@ -51,6 +50,7 @@ pub(crate) struct NativeRuntimeState<P> {
     application_actions: NativeApplicationActions,
     pass_actions: NativePassActions,
     close_policy: NativeWindowClosePolicy,
+    root_context: Option<egui::Context>,
     shutdown: Option<NativeShutdownState>,
 }
 
@@ -84,6 +84,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
             application_actions: NativeApplicationActions::default(),
             pass_actions: NativePassActions::default(),
             close_policy,
+            root_context: None,
             shutdown: None,
         })
     }
@@ -115,15 +116,23 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
     }
 
-    pub(crate) const fn lifecycle_progress(&self) -> NativeLifecycleProgress {
-        self.coordinator.lifecycle_progress()
-    }
-
     pub(crate) fn is_surface_presented(&self, surface: SurfaceId) -> bool {
         self.coordinator
             .session()
             .presented_surface(surface)
             .is_some()
+    }
+
+    pub(crate) fn is_quiescent(&self) -> bool {
+        self.shutdown.is_none()
+            && self
+                .coordinator
+                .session()
+                .presented_surface(self.root_surface)
+                .is_some()
+            && !self.application_actions.is_occupied()
+            && !self.pass_actions.has_pending_work()
+            && self.coordinator.is_quiescent()
     }
 
     pub(crate) fn request_dock_root(
@@ -138,7 +147,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .session()
             .prepare_dock_root(root, placement);
-        self.application_actions.enqueue(action)
+        self.application_actions.enqueue(action)?;
+        self.request_root_repaint();
+        Ok(())
     }
 
     pub(crate) fn request_tear_off_root(
@@ -153,11 +164,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .coordinator
             .session()
             .prepare_tear_off_root(root, placement);
-        self.application_actions.enqueue(action)
+        self.application_actions.enqueue(action)?;
+        self.request_root_repaint();
+        Ok(())
     }
 
     pub(crate) fn take_action_status(&mut self) -> Option<DockspaceActionStatus> {
         self.application_actions.take_result()
+    }
+
+    fn request_root_repaint(&self) {
+        if let Some(context) = &self.root_context {
+            context.request_repaint_of(ViewportId::ROOT);
+        }
     }
 
     pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
@@ -177,6 +196,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         surface: SurfaceId,
     ) -> Result<(), NativeRuntimeError> {
         let context = ui.ctx().clone();
+        if surface == self.root_surface {
+            self.root_context = Some(context.clone());
+        }
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
         let coordinator = &mut self.coordinator;
@@ -598,9 +620,8 @@ mod tests {
         assert_eq!(
             state
                 .request_dock_root(RootId::new(1), placement)
-                .expect_err("a second action cannot overtake the pending request")
-                .kind(),
-            crate::NativeActionRequestErrorKind::Busy
+                .expect_err("a second action cannot overtake the pending request"),
+            crate::NativeActionRequestError::Busy
         );
 
         let action = state
@@ -635,9 +656,8 @@ mod tests {
         assert_eq!(
             state
                 .request_dock_root(RootId::new(1), placement)
-                .expect_err("a stopped runtime rejects new application actions")
-                .kind(),
-            crate::NativeActionRequestErrorKind::Stopped
+                .expect_err("a stopped runtime rejects new application actions"),
+            crate::NativeActionRequestError::Stopped
         );
     }
 

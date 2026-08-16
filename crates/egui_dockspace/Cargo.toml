@@ -13,7 +13,7 @@ readme = "README.md"
 [features]
 default = []
 example-app = ["dep:eframe"]
-serde = ["dockspace/serde", "dep:serde_json"]
+serde = ["dockspace/serde"]
 # Internal seam consumed by the unpublished fork-backed native adapter. This
 # deliberately exposes only sessionless paint/measurement helpers; it does not
 # create or own a docking session.
@@ -23,7 +23,6 @@ native-render-support = []
 dockspace = { workspace = true, default-features = false }
 eframe = { workspace = true, optional = true, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui.workspace = true
-serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -17,7 +17,7 @@ use dockspace::runtime::DockspaceSession;
 use eframe::egui::{self, ViewportCommand, ViewportId};
 use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::{
-    NativeActionRequestError, NativeDockspaceApp, NativeLifecycleProgress, NativeWindowClosePolicy,
+    NativeActionRequestError, NativeDockspaceApp, NativeWindowClosePolicy,
 };
 
 const ROOT_SURFACE: SurfaceId = SurfaceId::new(1);
@@ -44,7 +44,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let outcome = Arc::new(Mutex::new(None));
     let reported_outcome = Arc::clone(&outcome);
     let smoke = SmokeApp {
-        baseline: dockspace.lifecycle_progress(),
         dockspace,
         phase: SmokePhase::AwaitRootPresentation,
         deadline: Instant::now() + Duration::from_secs(30),
@@ -83,13 +82,12 @@ enum SmokePhase {
     AwaitFirstLive { target_surface: SurfaceId },
     QueueRedock { target_surface: SurfaceId },
     AwaitRedock { target_surface: SurfaceId },
-    AwaitRetirement,
+    AwaitRetirement { target_surface: SurfaceId },
     Done,
 }
 
 struct SmokeApp {
     dockspace: NativeDockspaceApp<SmokePanes>,
-    baseline: NativeLifecycleProgress,
     phase: SmokePhase,
     deadline: Instant,
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
@@ -138,7 +136,9 @@ impl SmokeApp {
                 self.queue_redock(context, target_surface)
             }
             SmokePhase::AwaitRedock { target_surface } => self.await_redock(target_surface),
-            SmokePhase::AwaitRetirement => self.await_retirement(context),
+            SmokePhase::AwaitRetirement { target_surface } => {
+                self.await_retirement(context, target_surface)
+            }
             SmokePhase::Done => {}
         }
         if matches!(self.phase, SmokePhase::Done) {
@@ -151,10 +151,7 @@ impl SmokeApp {
             PhysicalRect::new(760.0, 100.0, 420.0, 320.0)
                 .expect("the smoke child placement is valid"),
         );
-        match self
-            .dockspace
-            .request_tear_off_root(context, CHILD_ROOT, placement)
-        {
+        match self.dockspace.request_tear_off_root(CHILD_ROOT, placement) {
             Ok(()) => self.transition(SmokePhase::AwaitTearOff),
             Err(error) => self.finish(context, Err(action_request_message(error))),
         }
@@ -188,15 +185,7 @@ impl SmokeApp {
     }
 
     fn await_first_live(&mut self, target_surface: SurfaceId) {
-        let progress = self.dockspace.lifecycle_progress();
-        let expected = self.baseline.first_live_admissions() + 1;
-        if progress.first_live_admissions() > expected {
-            self.fail_without_context(format!(
-                "first-live admission advanced more than once: {progress:?}"
-            ));
-            return;
-        }
-        if progress.first_live_admissions() != expected {
+        if !self.dockspace.is_surface_presented(target_surface) {
             return;
         }
         let transferred = self.dockspace.with_view(|view| {
@@ -212,7 +201,6 @@ impl SmokeApp {
 
     fn queue_redock(&mut self, context: &egui::Context, target_surface: SurfaceId) {
         match self.dockspace.request_dock_root(
-            context,
             CHILD_ROOT,
             DockPlacement::Center(DockAnchor::Item(MAIN_ITEM)),
         ) {
@@ -244,7 +232,7 @@ impl SmokeApp {
                         .is_none_or(|surface| surface.is_rootless())
                 });
                 if left_child == Some(true) {
-                    self.transition(SmokePhase::AwaitRetirement);
+                    self.transition(SmokePhase::AwaitRetirement { target_surface });
                 } else {
                     self.fail_without_context(
                         "redock outcome did not match the published item ownership".to_owned(),
@@ -260,22 +248,8 @@ impl SmokeApp {
         }
     }
 
-    fn await_retirement(&mut self, context: &egui::Context) {
-        let progress = self.dockspace.lifecycle_progress();
-        let expected_destroyed = self.baseline.destroyed_observations() + 1;
-        let expected_quiescent = self.baseline.quiescent_retirements() + 1;
-        if progress.destroyed_observations() > expected_destroyed
-            || progress.quiescent_retirements() > expected_quiescent
-        {
-            self.finish(
-                context,
-                Err(format!("retirement advanced more than once: {progress:?}")),
-            );
-            return;
-        }
-        if progress.destroyed_observations() != expected_destroyed
-            || progress.quiescent_retirements() != expected_quiescent
-        {
+    fn await_retirement(&mut self, context: &egui::Context, target_surface: SurfaceId) {
+        if self.dockspace.is_surface_presented(target_surface) || !self.dockspace.is_quiescent() {
             return;
         }
         let restored = self.dockspace.with_view(|view| {

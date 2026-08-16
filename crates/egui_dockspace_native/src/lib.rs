@@ -32,11 +32,6 @@ mod window_snapshot;
 mod work_area;
 
 pub use app::NativeDockspaceApp;
-pub use application_action::{NativeActionRequestError, NativeActionRequestErrorKind};
+pub use application_action::NativeActionRequestError;
 pub use close_control::NativeWindowClosePolicy;
-pub use error::{
-    NativeOutputBindingError, NativeOutputBindingErrorKind, NativeRuntimeError,
-    NativeRuntimeErrorKind, NativeViewportBindingError,
-};
-pub use event::NativeWindowEventRecord;
-pub use lifecycle_progress::NativeLifecycleProgress;
+pub use error::{NativeRuntimeError, NativeRuntimeErrorKind};
