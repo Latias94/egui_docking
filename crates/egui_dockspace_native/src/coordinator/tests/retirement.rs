@@ -1,3 +1,4 @@
+use eframe::egui::ViewportCommand;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute, WindowEvent,
@@ -214,6 +215,73 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     quiescence_frame
         .commit()
         .expect("the quiescence boundary commits");
+}
+
+#[test]
+fn redocked_external_root_does_not_request_platform_close() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let second_viewport = ViewportId::from_hash_of("externally-owned-secondary-root");
+    native
+        .bind_viewport(ViewportId::ROOT, WindowId::from(11), first)
+        .expect("primary root viewport binds");
+    native
+        .bind_viewport(second_viewport, WindowId::from(22), second)
+        .expect("secondary root viewport binds");
+    native
+        .report_snapshot(
+            [
+                (first, NativeWindowFacts::live()),
+                (second, NativeWindowFacts::live()),
+            ],
+            NativeWorkAreaRoster::Unknown,
+        )
+        .expect("the exact root inventory records");
+    let mut inventory = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the root inventory frame begins");
+    inventory
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the root inventory settles every surface");
+    inventory.commit().expect("the root inventory commits");
+
+    let mut redock = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the application root redock frame begins");
+    redock
+        .frame
+        .dock_root_current(
+            RootId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .expect("the complete application root redocks through the product action");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the application root redock settles every surface");
+    let mut report = redock.commit().expect("the external root redock commits");
+    assert!(
+        report.take_native_effects().is_empty(),
+        "an externally owned root unbinds without a platform close effect"
+    );
+    assert!(native.take_viewport_commands().is_empty());
+    assert!(!native.session().is_current_native_binding(second));
+}
+
+#[test]
+fn queued_viewport_close_retains_its_exact_binding_until_dispatch() {
+    let mut native = coordinator();
+    let (_, binding) = register_roots(&mut native);
+    let viewport = ViewportId::from_hash_of("queued-root-close-command");
+
+    native
+        .effects
+        .queue_command(viewport, binding, ViewportCommand::Close);
+    assert!(native.effects.references_binding(binding));
+    assert_eq!(
+        native.take_viewport_commands(),
+        [(viewport, ViewportCommand::Close)]
+    );
+    assert!(!native.effects.references_binding(binding));
 }
 
 #[test]

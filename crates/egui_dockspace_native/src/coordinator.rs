@@ -16,7 +16,8 @@ use dockspace::runtime::{
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailureKind, NativeViewportVisibilityStatus, egui::ViewportId,
+    NativeViewportCreateFailureKind, NativeViewportVisibilityStatus,
+    egui::{ViewportCommand, ViewportId},
 };
 use winit::window::WindowId;
 
@@ -78,6 +79,12 @@ pub(crate) struct PreparedNativeRetirements {
 enum PendingNativeOutput {
     Surface(PaintedSurfaceOutput),
     Staging(PaintedNativeStagingOutput),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeRetirementDispatch {
+    OmitDeferredViewport,
+    CloseViewport,
 }
 
 impl std::fmt::Debug for PendingNativeOutput {
@@ -340,6 +347,10 @@ impl NativeCoordinator {
         self.deferred_viewports.retained_specs()
     }
 
+    pub(crate) fn take_viewport_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
+        self.effects.take_commands()
+    }
+
     /// Classifies one exact deferred callback without reducing core state.
     pub(crate) fn deferred_viewport_paint(
         &self,
@@ -545,14 +556,50 @@ impl NativeCoordinator {
         }
     }
 
+    fn accept_retirement_effect(
+        &mut self,
+        request: NativeEffectRequest,
+        binding: NativeSurfaceBinding,
+        dispatch: NativeRetirementDispatch,
+    ) -> Result<(), NativeRuntimeError> {
+        let Some(viewport) = self.exact_viewport_for_binding(binding) else {
+            if self.session.is_current_native_binding(binding) {
+                return self.submit_unsupported_effect(request);
+            }
+            return Err(
+                NativeHostProtocolError::RetiredViewportRouteChanged(binding.surface()).into(),
+            );
+        };
+        if !self.session.recognizes_native_binding(binding)
+            || !self.retirements.can_begin_release(viewport, binding)
+        {
+            return self.submit_unsupported_effect(request);
+        }
+        self.fail_pending_viewport_effect(viewport, binding)?;
+        let Some(NativeEffectAcknowledgement::Close(acknowledgement)) = request.accepted() else {
+            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
+        };
+        self.retire_deferred_sidecars(viewport, binding);
+        let inserted = self
+            .retirements
+            .begin_release(viewport, binding, acknowledgement);
+        assert!(inserted, "preflighted native retirement must insert");
+        if dispatch == NativeRetirementDispatch::CloseViewport {
+            self.effects
+                .queue_command(viewport, binding, ViewportCommand::Close);
+        }
+        Ok(())
+    }
+
     /// Accepts the minimal platform effects implemented by this vertical slice.
     ///
     /// New and replacement child windows retain their affine request until
     /// eframe reports the first exact callback or a typed create failure.
     /// `ShowWindow` is accepted only for an existing exact retained viewport.
     /// `ReleaseChild` stops re-declaring the child but retains its route until
-    /// an exact destruction callback commits. Unrelated platform operations
-    /// remain explicitly unsupported.
+    /// an exact destruction callback commits. `RequestRootClose` uses the same
+    /// retirement lane and additionally queues one exact eframe close command.
+    /// Unrelated platform operations remain explicitly unsupported.
     pub(crate) fn accept_native_effects(
         &mut self,
         requests: Vec<NativeEffectRequest>,
@@ -655,35 +702,19 @@ impl NativeCoordinator {
                 NativeEffectOperation::ReleaseChild { binding }
                 | NativeEffectOperation::CompensatingClose { binding } => {
                     let binding = *binding;
-                    let Some(viewport) = self.exact_viewport_for_binding(binding) else {
-                        if self.session.is_current_native_binding(binding) {
-                            self.submit_unsupported_effect(request)?;
-                            continue;
-                        }
-                        return Err(NativeHostProtocolError::RetiredViewportRouteChanged(
-                            binding.surface(),
-                        )
-                        .into());
-                    };
-                    if !self.session.recognizes_native_binding(binding)
-                        || !self.retirements.can_begin_release(viewport, binding)
-                    {
-                        self.submit_unsupported_effect(request)?;
-                        continue;
-                    }
-                    self.fail_pending_viewport_effect(viewport, binding)?;
-                    let Some(NativeEffectAcknowledgement::Close(acknowledgement)) =
-                        request.accepted()
-                    else {
-                        return Err(
-                            NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
-                        );
-                    };
-                    self.retire_deferred_sidecars(viewport, binding);
-                    let inserted =
-                        self.retirements
-                            .begin_release(viewport, binding, acknowledgement);
-                    assert!(inserted, "preflighted native retirement must insert");
+                    self.accept_retirement_effect(
+                        request,
+                        binding,
+                        NativeRetirementDispatch::OmitDeferredViewport,
+                    )?;
+                }
+                NativeEffectOperation::RequestRootClose { binding } => {
+                    let binding = *binding;
+                    self.accept_retirement_effect(
+                        request,
+                        binding,
+                        NativeRetirementDispatch::CloseViewport,
+                    )?;
                 }
                 NativeEffectOperation::AwaitCleanup { binding } => {
                     let binding = *binding;
@@ -844,8 +875,9 @@ impl NativeCoordinator {
                 (NativeViewportEffectKind::Create, None) => {
                     viewports.reserve(viewport, plan.binding())
                 }
-                (NativeViewportEffectKind::Replacement, Some(predecessor)) => viewports
-                    .reserve_retired_replacement(viewport, predecessor, plan.binding()),
+                (NativeViewportEffectKind::Replacement, Some(predecessor)) => {
+                    viewports.reserve_retired_replacement(viewport, predecessor, plan.binding())
+                }
                 (NativeViewportEffectKind::Create, Some(_)) => {
                     Err(NativeViewportBindingError::ViewportAlreadyBound {
                         viewport,

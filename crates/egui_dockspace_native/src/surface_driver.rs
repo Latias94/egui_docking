@@ -290,6 +290,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
             .expect("an error-free native runtime retains its coordinator");
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
+        for (viewport, command) in coordinator.take_viewport_commands() {
+            context.send_viewport_cmd_to(viewport, command);
+        }
         for repaint_surface in report.repaint_surfaces() {
             match coordinator.repaint_viewport(*repaint_surface) {
                 Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {

@@ -12,7 +12,10 @@ use dockspace::runtime::{
     NativeDispatchFailure, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
     NativeSurfaceBinding, NativeSurfaceRole, NativeUnsupportedReason,
 };
-use eframe::{NativeViewportCreateFailureKind, egui::ViewportId};
+use eframe::{
+    NativeViewportCreateFailureKind,
+    egui::{ViewportCommand, ViewportId},
+};
 
 use crate::viewport_callback::NativeViewportCreateFailureRecord;
 
@@ -72,6 +75,14 @@ pub(crate) enum PendingShowEffect {
 pub(crate) struct NativeEffectCoordinator {
     pending_viewports: BTreeMap<ViewportId, PendingViewportEffect>,
     pending_shows: BTreeMap<NativeSurfaceBinding, PendingShowEffect>,
+    pending_commands: Vec<PendingViewportCommand>,
+}
+
+#[derive(Debug)]
+struct PendingViewportCommand {
+    viewport: ViewportId,
+    binding: NativeSurfaceBinding,
+    command: ViewportCommand,
 }
 
 impl NativeEffectCoordinator {
@@ -80,6 +91,30 @@ impl NativeEffectCoordinator {
             .values()
             .any(|pending| pending.plan.binding == binding)
             || self.pending_shows.contains_key(&binding)
+            || self
+                .pending_commands
+                .iter()
+                .any(|pending| pending.binding == binding)
+    }
+
+    pub(crate) fn queue_command(
+        &mut self,
+        viewport: ViewportId,
+        binding: NativeSurfaceBinding,
+        command: ViewportCommand,
+    ) {
+        self.pending_commands.push(PendingViewportCommand {
+            viewport,
+            binding,
+            command,
+        });
+    }
+
+    pub(crate) fn take_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
+        std::mem::take(&mut self.pending_commands)
+            .into_iter()
+            .map(|pending| (pending.viewport, pending.command))
+            .collect()
     }
 
     pub(crate) fn has_pending_show(&self, binding: NativeSurfaceBinding) -> bool {
