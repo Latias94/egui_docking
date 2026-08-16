@@ -62,7 +62,8 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     /// Inspects the current item/surface-centric product view while holding the runtime lock.
     ///
-    /// Returns `None` after a fatal native-cycle error has retired the session.
+    /// A fatal native-cycle error freezes further host ingress but preserves
+    /// the last committed read-only view while owned host state is quarantined.
     pub fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> Option<R> {
         lock_state(&self.state).with_view(inspect)
     }

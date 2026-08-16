@@ -263,6 +263,8 @@ mod tests {
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::DockspaceSession;
+    use winit::event::WindowEvent;
+    use winit::window::WindowId;
 
     use super::*;
 
@@ -337,6 +339,51 @@ mod tests {
         assert!(!is_next_output_ordinal(1, 1));
         assert!(!is_next_output_ordinal(1, 3));
         assert!(!is_next_output_ordinal(u64::MAX, 1));
+    }
+
+    #[test]
+    fn freeze_preserves_owned_mailbox_prefix_and_rejects_new_callbacks() {
+        let (binding, _) = bindings();
+        let viewport = ViewportId::ROOT;
+        let rect = NativePhysicalRect::new(10, 20, 800, 600);
+        let pending = NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(11),
+            Some(viewport),
+            Some(binding),
+            WindowEvent::Focused(true),
+        );
+        let mut records = HostRecords::active();
+        records
+            .journal
+            .push_back(HostRecord::WindowEvent(pending.clone()));
+        records
+            .create_reservations
+            .insert(viewport, NativeCreateReservation { binding, rect });
+        records.hidden_render_bindings.insert(viewport, binding);
+
+        records.freeze();
+
+        assert!(!records.active);
+        assert!(matches!(
+            records.journal.front(),
+            Some(HostRecord::WindowEvent(event)) if *event == pending
+        ));
+        assert_eq!(
+            records.create_reservations.get(&viewport),
+            Some(&NativeCreateReservation { binding, rect })
+        );
+        assert_eq!(
+            records.hidden_render_bindings.get(&viewport),
+            Some(&binding)
+        );
+        let accepted =
+            records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
+                viewport,
+                binding,
+                NativeViewportCreateFailureKind::WindowUnavailable,
+            ));
+        assert!(!accepted);
     }
 }
 
@@ -510,17 +557,39 @@ impl HostRecords {
         true
     }
 
-    fn deactivate(&mut self) {
+    fn abandon_output(&mut self, token: NativeOutputToken) -> bool {
+        if self.journal.iter().any(|record| {
+            matches!(
+                record,
+                HostRecord::Output {
+                    result,
+                    submitted: true,
+                } if result.token() == token
+            )
+        }) {
+            return false;
+        }
+        let previous_len = self.journal.len();
+        self.journal.retain(|record| {
+            !matches!(record, HostRecord::Output { result, .. } if result.token() == token)
+        });
+        if self.journal.len() != previous_len {
+            self.output_reservations.remove(&token);
+            return true;
+        }
+        let Some(reservation) = self.output_reservations.get_mut(&token) else {
+            return false;
+        };
+        reservation.abandon()
+    }
+
+    fn freeze(&mut self) {
         self.active = false;
-        self.journal.clear();
-        self.output_reservations.clear();
-        self.create_reservations.clear();
-        self.hidden_render_bindings.clear();
-        self.staging_requests.clear();
-        self.output_context = None;
-        self.last_output_ordinal = 0;
-        self.output_order_invalid = false;
-        self.event_boundary_pending = false;
+    }
+
+    fn freeze_after_fatal(&mut self, token: Option<NativeOutputToken>) -> bool {
+        self.freeze();
+        token.is_some_and(|token| self.abandon_output(token))
     }
 
     fn retire_deferred_binding(
@@ -1088,31 +1157,7 @@ impl NativeHostBridge {
     }
 
     pub(crate) fn abandon_output(&self, token: NativeOutputToken) -> bool {
-        let mut records = self.lock();
-        if records.journal.iter().any(|record| {
-            matches!(
-                record,
-                HostRecord::Output {
-                    result,
-                    submitted: true,
-                } if result.token() == token
-            )
-        }) {
-            return false;
-        }
-        let previous_len = records.journal.len();
-        records.journal.retain(|record| {
-            !matches!(record, HostRecord::Output { result, .. } if result.token() == token)
-        });
-        if records.journal.len() != previous_len {
-            records.output_reservations.remove(&token);
-            return true;
-        }
-        let Some(reservation) = records.output_reservations.get_mut(&token) else {
-            return false;
-        };
-        reservation.abandon();
-        true
+        self.lock().abandon_output(token)
     }
 
     pub(crate) fn commit_frame_boundary(&self) {
@@ -1132,8 +1177,12 @@ impl NativeHostBridge {
         }
     }
 
-    pub(crate) fn deactivate(&self) {
-        self.lock().deactivate();
+    pub(crate) fn freeze(&self) {
+        self.lock().freeze();
+    }
+
+    pub(crate) fn freeze_after_fatal(&self, token: Option<NativeOutputToken>) -> bool {
+        self.lock().freeze_after_fatal(token)
     }
 
     fn admit_viewport_create_attempt(

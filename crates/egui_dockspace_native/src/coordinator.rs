@@ -1651,6 +1651,14 @@ impl NativeCoordinator {
         NativeHostWake::RepaintRoot
     }
 
+    pub(crate) fn freeze_after_fatal(&mut self, token: Option<NativeOutputToken>) {
+        let abandoned = self.bridge.freeze_after_fatal(token);
+        if abandoned && let Some(token) = token {
+            self.receivers.abandon(token);
+            self.pending_outputs.remove(&token);
+        }
+    }
+
     fn prepare_output_prefix(&mut self) -> Result<(), NativeRuntimeError> {
         if !self.bridge.output_order_is_valid() {
             return Err(NativeHostProtocolError::OutputOrderViolation.into());
@@ -1728,7 +1736,7 @@ fn exact_non_zero_u32(value: f64) -> Option<u32> {
 
 impl Drop for NativeCoordinator {
     fn drop(&mut self) {
-        self.bridge.deactivate();
+        self.bridge.freeze();
     }
 }
 

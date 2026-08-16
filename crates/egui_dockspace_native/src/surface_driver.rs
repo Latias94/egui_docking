@@ -41,7 +41,7 @@ const fn surface_frame_disposition(
 }
 
 pub(crate) struct NativeRuntimeState<P> {
-    coordinator: Option<NativeCoordinator>,
+    coordinator: NativeCoordinator,
     root_surface: SurfaceId,
     instance_id: Id,
     style: DockStyle,
@@ -67,7 +67,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         )?;
         coordinator.register_native_root(root_surface, ROOT_WINDOW_TOKEN)?;
         Ok(Self {
-            coordinator: Some(coordinator),
+            coordinator,
             root_surface,
             instance_id,
             style,
@@ -80,10 +80,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
     pub(crate) fn native_host_handler(
         &self,
     ) -> std::sync::Arc<dyn eframe::NativeHostHandler> {
-        self.coordinator
-            .as_ref()
-            .expect("an initialized native runtime retains its coordinator")
-            .native_host_handler()
+        self.coordinator.native_host_handler()
     }
 
     pub(crate) const fn root_surface(&self) -> SurfaceId {
@@ -91,9 +88,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn with_view<R>(&self, inspect: impl FnOnce(DockspaceView<'_>) -> R) -> Option<R> {
-        self.coordinator
-            .as_ref()
-            .map(|coordinator| inspect(coordinator.session().view()))
+        Some(inspect(self.coordinator.session().view()))
     }
 
     pub(crate) const fn panes(&self) -> &P {
@@ -109,27 +104,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn deferred_viewport_specs(&self) -> Vec<DeferredViewportSpec> {
-        self.coordinator
-            .as_ref()
-            .map_or_else(Vec::new, NativeCoordinator::deferred_viewport_specs)
+        self.coordinator.deferred_viewport_specs()
     }
 
     pub(crate) fn deferred_viewport_paint(
         &self,
         token: NativeOutputToken,
     ) -> crate::mailbox::DeferredViewportPaint {
-        self.coordinator
-            .as_ref()
-            .map_or(crate::mailbox::DeferredViewportPaint::Waiting, |coordinator| {
-                coordinator.deferred_viewport_paint(token)
-            })
-    }
-
-    pub(crate) fn abandon_output(&mut self, token: NativeOutputToken) {
-        self.pass_actions.abandon(token);
-        if let Some(coordinator) = self.coordinator.as_mut() {
-            let _ = coordinator.abandon_output_token(token);
-        }
+        self.coordinator.deferred_viewport_paint(token)
     }
 
     pub(crate) fn update_surface(
@@ -140,10 +122,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let context = ui.ctx().clone();
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
-        let coordinator = self
-            .coordinator
-            .as_mut()
-            .expect("an error-free native runtime retains its coordinator");
+        let coordinator = &mut self.coordinator;
         let quiescence_recorded = surface == self.root_surface
             && coordinator.try_report_retirement_quiescence()?;
         let reduced_callback = coordinator.reduce_callback_head()?;
@@ -217,10 +196,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
 
         let mut report = host_frame.commit()?;
-        let coordinator = self
-            .coordinator
-            .as_mut()
-            .expect("an error-free native runtime retains its coordinator");
+        let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
         let native_admission_settled =
             coordinator.settle_native_admissions(report.native_admissions())?;
@@ -248,19 +224,10 @@ impl<P: PaneView> NativeRuntimeState<P> {
             let paint = final_paint
                 .as_ref()
                 .expect("a committed painted output has final-pass paint metadata");
-            if let Err(error) = self
-                .coordinator
-                .as_mut()
-                .expect("an error-free native runtime retains its coordinator")
-                .bind_painted_surface(token, output, paint)
-            {
+            if let Err(error) = self.coordinator.bind_painted_surface(token, output, paint) {
                 let kind = error.kind();
                 drop(error.into_output());
-                let _ = self
-                    .coordinator
-                    .as_mut()
-                    .expect("an error-free native runtime retains its coordinator")
-                    .abandon_output_token(token);
+                let _ = self.coordinator.abandon_output_token(token);
                 return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
             }
         } else {
@@ -274,20 +241,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .into());
             }
             if matches!(
-                self.coordinator
-                    .as_mut()
-                    .expect("an error-free native runtime retains its coordinator")
-                    .abandon_output_token(token),
+                self.coordinator.abandon_output_token(token),
                 NativeHostWake::RepaintRoot
             ) {
                 context.request_repaint_of(egui::ViewportId::ROOT);
             }
         }
 
-        let coordinator = self
-            .coordinator
-            .as_mut()
-            .expect("an error-free native runtime retains its coordinator");
+        let coordinator = &mut self.coordinator;
         let native_effects_emitted = !native_effects.is_empty();
         coordinator.accept_native_effects(native_effects)?;
         for (viewport, command) in coordinator.take_viewport_commands() {
@@ -325,8 +286,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     if binding.surface() == self.root_surface =>
                 {
                     self.coordinator
-                        .as_mut()
-                        .expect("an error-free native runtime retains its coordinator")
                         .bind_viewport(egui::ViewportId::ROOT, token.window_id(), *binding)
                         .map_err(|_| NativeHostProtocolError::RootViewportBindingFailed)?;
                 }
@@ -342,11 +301,15 @@ impl<P: PaneView> NativeRuntimeState<P> {
     }
 
     pub(crate) fn stop_current_output(&mut self, error: NativeRuntimeError) {
-        if let Some(token) = eframe::current_native_output_token() {
-            self.abandon_output(token);
+        if self.error.is_some() {
+            return;
         }
+        let token = eframe::current_native_output_token();
+        if let Some(token) = token {
+            self.pass_actions.abandon(token);
+        }
+        self.coordinator.freeze_after_fatal(token);
         self.error = Some(error);
-        self.coordinator = None;
     }
 
     pub(crate) fn render_error(&self, ui: &mut egui::Ui) {
@@ -374,7 +337,48 @@ fn map_pass_action_error(error: NativePassActionError) -> NativeRuntimeError {
 
 #[cfg(test)]
 mod tests {
+    use dockspace::model::{
+        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+    };
+    use eframe::egui::{Ui, WidgetText};
+
     use super::*;
+
+    const SURFACE: SurfaceId = SurfaceId::new(1);
+
+    struct TestPanes;
+
+    impl PaneView for TestPanes {
+        fn title(&self, _item: ItemId) -> Option<WidgetText> {
+            Some("Pane".into())
+        }
+
+        fn ui(&mut self, _item: ItemId, _ui: &mut Ui) {}
+    }
+
+    fn test_state() -> NativeRuntimeState<TestPanes> {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("the native runtime test layout validates");
+        let session = dockspace::runtime::DockspaceSession::from_layout(
+            layout,
+            dockspace::policy::DockPolicy::default(),
+        )
+        .expect("the native runtime test session initializes");
+        NativeRuntimeState::new(
+            Id::new("native-runtime-stop-test"),
+            session,
+            SURFACE,
+            TestPanes,
+            DockStyle::default(),
+        )
+        .expect("the native runtime test state initializes")
+    }
 
     #[test]
     fn actions_defer_and_incomplete_transient_paint_is_rejected() {
@@ -394,5 +398,27 @@ mod tests {
             surface_frame_disposition(true, true, false, false),
             SurfaceFrameDisposition::ConfirmPainted
         );
+    }
+
+    #[test]
+    fn fatal_stop_retains_the_coordinator_and_first_error() {
+        let mut state = test_state();
+
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+        let first_error = state
+            .error()
+            .expect("fatal stop records its primary error")
+            .to_string();
+        state
+            .stop_current_output(NativeHostProtocolError::RootRegistrationRejected(SURFACE).into());
+
+        assert_eq!(
+            state
+                .error()
+                .expect("later failures do not replace the primary error")
+                .to_string(),
+            first_error
+        );
+        assert!(state.with_view(|_| ()).is_some());
     }
 }
