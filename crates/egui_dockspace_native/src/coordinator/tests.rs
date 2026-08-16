@@ -11,8 +11,8 @@ use super::*;
 use crate::viewport_callback::NativeViewportVisibilityRecord;
 
 mod ingress_create;
-mod retirement;
 mod replacement;
+mod retirement;
 mod wheel;
 mod work_area;
 
@@ -577,7 +577,7 @@ fn output_reservation_binds_only_after_the_ui_callback_updates_the_viewport() {
 }
 
 #[test]
-fn staged_viewport_output_uses_reserved_binding_before_window_attachment() {
+fn staged_viewport_output_requires_an_admitted_create_attempt() {
     let mut native = coordinator();
     let (_, binding) = register_roots(&mut native);
     let viewport = ViewportId::from_hash_of("staged-output");
@@ -597,9 +597,9 @@ fn staged_viewport_output_uses_reserved_binding_before_window_attachment() {
         "the reverse window route is intentionally absent before attachment"
     );
     assert_eq!(
-        viewports.binding_for_output(viewport, window),
-        Some(binding),
-        "the staged viewport route remains authoritative for its first output"
+        viewports.binding_for_output(viewport, window, None),
+        None,
+        "a logical reservation alone cannot authorize a physical output"
     );
     assert_eq!(
         viewports.binding_for_roster(viewport, window),

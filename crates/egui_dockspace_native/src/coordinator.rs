@@ -353,7 +353,11 @@ impl NativeCoordinator {
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_output(token.viewport_id(), token.window_id());
+            .binding_for_output(
+                token.viewport_id(),
+                token.window_id(),
+                token.create_attempt(),
+            );
         if current == Some(binding) && self.session.is_current_native_binding(binding) {
             disposition
         } else {
@@ -1156,10 +1160,11 @@ impl NativeCoordinator {
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .attach(
+            .attach_output(
                 created.token().viewport_id(),
                 created.binding(),
                 created.token().window_id(),
+                created.token().create_attempt(),
             );
         if attach.is_err() {
             return Err(NativeHostProtocolError::OutputRouteAttachmentFailed.into());
@@ -1542,7 +1547,11 @@ impl NativeCoordinator {
             .viewports
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .binding_for_output(token.viewport_id(), token.window_id());
+            .binding_for_output(
+                token.viewport_id(),
+                token.window_id(),
+                token.create_attempt(),
+            );
         let binding = reservation.binding().or(current_binding);
         let Some(binding) = binding else {
             return Err(NativeOutputBindingError::new(

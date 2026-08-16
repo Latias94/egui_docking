@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::model::SurfaceId;
 use dockspace::runtime::NativeSurfaceBinding;
-use eframe::egui::ViewportId;
+use eframe::{NativeViewportCreateAttempt, egui::ViewportId};
 use winit::window::WindowId;
 
 use crate::retirement::CommittedRetirement;
@@ -14,6 +14,7 @@ use crate::NativeViewportBindingError;
 struct NativeViewportRoute {
     window: Option<WindowId>,
     binding: NativeSurfaceBinding,
+    create_attempt: Option<NativeViewportCreateAttempt>,
 }
 
 #[derive(Debug, Default)]
@@ -72,10 +73,30 @@ impl NativeViewportMap {
             NativeViewportRoute {
                 window: Some(window),
                 binding: current.binding,
+                create_attempt: current.create_attempt,
             },
         );
         self.windows.insert(window, viewport);
         Ok(())
+    }
+
+    pub(crate) fn attach_output(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        window: WindowId,
+        create_attempt: Option<NativeViewportCreateAttempt>,
+    ) -> Result<(), NativeViewportBindingError> {
+        let Some(current) = self.viewports.get(&viewport).copied() else {
+            return Err(NativeViewportBindingError::ViewportUnbound { viewport });
+        };
+        if current.create_attempt != create_attempt {
+            return Err(NativeViewportBindingError::BindingNotCurrent {
+                viewport,
+                surface: expected.surface(),
+            });
+        }
+        self.attach(viewport, expected, window)
     }
 
     pub(crate) fn bind(
@@ -306,17 +327,23 @@ impl NativeViewportMap {
     /// Returns the exact binding which may own an output callback.
     ///
     /// A deferred viewport can receive its first output after the native
-    /// window exists but before the adapter has attached the callback window
-    /// to the reserved route. In that interval the viewport route is still
-    /// authoritative, while the reverse window index is intentionally empty.
-    /// This query accepts that one staged state without inferring ownership
-    /// from a window rectangle or callback order.
+    /// window exists but before the adapter has attached the callback window.
+    /// That staged output is accepted only when eframe echoes the exact create
+    /// attempt admitted for this route. A logical reservation without that
+    /// physical incarnation remains unavailable.
     pub(crate) fn binding_for_output(
         &self,
         viewport: ViewportId,
         window: WindowId,
+        create_attempt: Option<NativeViewportCreateAttempt>,
     ) -> Option<NativeSurfaceBinding> {
         let route = self.viewports.get(&viewport).copied()?;
+        if route.create_attempt != create_attempt {
+            return None;
+        }
+        if route.window.is_none() && create_attempt.is_none() {
+            return None;
+        }
         if route.window.is_some_and(|current| current != window) {
             return None;
         }
@@ -328,6 +355,42 @@ impl NativeViewportMap {
             return None;
         }
         Some(route.binding)
+    }
+
+    pub(crate) fn admit_create_attempt(
+        &mut self,
+        viewport: ViewportId,
+        expected: NativeSurfaceBinding,
+        attempt: NativeViewportCreateAttempt,
+    ) -> bool {
+        let Some(route) = self.viewports.get_mut(&viewport) else {
+            return false;
+        };
+        if attempt.viewport_id() != viewport
+            || route.binding != expected
+            || route.window.is_some()
+            || self.pointer_suppressed.contains(&expected)
+            || self.prepared_retirements.contains(&expected)
+            || route
+                .create_attempt
+                .is_some_and(|current| current != attempt)
+        {
+            return false;
+        }
+        route.create_attempt = Some(attempt);
+        true
+    }
+
+    pub(crate) fn binding_for_create_attempt(
+        &self,
+        attempt: NativeViewportCreateAttempt,
+    ) -> Option<NativeSurfaceBinding> {
+        let route = self.viewports.get(&attempt.viewport_id())?;
+        (route.window.is_none()
+            && route.create_attempt == Some(attempt)
+            && !self.pointer_suppressed.contains(&route.binding)
+            && !self.prepared_retirements.contains(&route.binding))
+        .then_some(route.binding)
     }
 
     pub(crate) fn viewport(&self, surface: SurfaceId) -> Option<ViewportId> {
@@ -436,8 +499,14 @@ impl NativeViewportMap {
         window: Option<WindowId>,
         binding: NativeSurfaceBinding,
     ) {
-        self.viewports
-            .insert(viewport, NativeViewportRoute { window, binding });
+        self.viewports.insert(
+            viewport,
+            NativeViewportRoute {
+                window,
+                binding,
+                create_attempt: None,
+            },
+        );
         if let Some(window) = window {
             self.windows.insert(window, viewport);
         }

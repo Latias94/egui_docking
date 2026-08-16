@@ -59,7 +59,7 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace pins the graph-neutral egui/eframe fork revision
-`7f704e49c5f97da0176027ce7aa92d2e13126c90` and the event-time Winit revision
+`a3c5ee57f4158ef717b5a956bf0d5c4aeda186ed` and the event-time Winit revision
 `180bfc09743586137fec014ef5543cdde56ce5d0`. Remaining fork seams and their
 removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).

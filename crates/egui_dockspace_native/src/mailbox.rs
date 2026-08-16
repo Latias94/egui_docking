@@ -4,10 +4,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
+#[cfg(test)]
+use eframe::NativeViewportCreateFailureKind;
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputResult, NativeOutputToken, NativePhysicalRect,
-    NativeViewportCreateFailure, NativeViewportCreateFailureKind, NativeViewportRoster,
-    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
+    NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
+    NativeViewportRoster, NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
+    egui::ViewportId,
 };
 
 use crate::error::NativeHostProtocolError;
@@ -15,9 +18,9 @@ use crate::event::NativeWindowEventRecord;
 use crate::retirement::CommittedRetirement;
 use crate::viewport_callback::{NativeViewportCreateFailureRecord, NativeViewportVisibilityRecord};
 use crate::viewport_map::NativeViewportMap;
-use crate::work_area::FrozenWorkAreaRoster;
 #[cfg(test)]
 use crate::window_snapshot::CompiledWindowObservation;
+use crate::work_area::FrozenWorkAreaRoster;
 
 #[derive(Debug, Clone)]
 pub(crate) enum HostRecord {
@@ -134,9 +137,7 @@ impl NativeViewportRosterRecord {
         &self.observations
     }
 
-    pub(crate) fn work_areas(
-        &self,
-    ) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
+    pub(crate) fn work_areas(&self) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
         self.work_areas.clone()
     }
 
@@ -867,12 +868,7 @@ impl NativeHostBridge {
         !self.lock().output_order_invalid
     }
 
-    /// Reserves the exact binding which owns one deferred create callback.
-    ///
-    /// The fork callback reports only a viewport id on creation failure. The
-    /// binding therefore has to be frozen before eframe starts the deferred
-    /// create operation; looking it up after a replacement would be a
-    /// time-of-check/time-of-use guess.
+    /// Reserves the exact binding which may admit one deferred create attempt.
     pub(crate) fn reserve_create(
         &self,
         viewport: ViewportId,
@@ -966,13 +962,6 @@ impl NativeHostBridge {
             .map(|reservation| reservation.binding)
     }
 
-    pub(crate) fn create_rect(&self, viewport: ViewportId) -> Option<NativePhysicalRect> {
-        self.lock()
-            .create_reservations
-            .get(&viewport)
-            .map(|reservation| reservation.rect)
-    }
-
     pub(crate) fn replace_staging_requests(
         &self,
         requests: BTreeMap<ViewportId, NativeStagingPaintRequest>,
@@ -1053,7 +1042,11 @@ impl NativeHostBridge {
         // quiescence between observing this callback and publishing its
         // exact binding reference.
         let viewports = self.lock_viewports();
-        let binding = viewports.binding_for_output(token.viewport_id(), token.window_id());
+        let binding = viewports.binding_for_output(
+            token.viewport_id(),
+            token.window_id(),
+            token.create_attempt(),
+        );
         let roster =
             root_roster.map(|roster| NativeViewportRosterRecord::capture(roster, &viewports));
         let mut records = self.lock();
@@ -1143,9 +1136,59 @@ impl NativeHostBridge {
         self.lock().deactivate();
     }
 
-    fn record_viewport_create_failure(
+    fn admit_viewport_create_attempt(
         &self,
-        viewport: eframe::egui::ViewportId,
+        attempt: NativeViewportCreateAttempt,
+    ) -> NativeViewportCreateAdmission {
+        let viewport = attempt.viewport_id();
+        let mut viewports = self.lock_viewports();
+        let records = self.lock();
+        let Some(reservation) = records.create_reservations.get(&viewport).copied() else {
+            return NativeViewportCreateAdmission::Defer;
+        };
+        if !records.active
+            || records.hidden_render_bindings.get(&viewport) != Some(&reservation.binding)
+            || !viewports.admit_create_attempt(viewport, reservation.binding, attempt)
+        {
+            return NativeViewportCreateAdmission::Defer;
+        }
+        NativeViewportCreateAdmission::Proceed {
+            undecorated_outer_rect: Some(reservation.rect),
+        }
+    }
+
+    fn record_eframe_viewport_create_failure(
+        &self,
+        failure: NativeViewportCreateFailure,
+    ) -> NativeHostWake {
+        let attempt = failure.create_attempt();
+        let viewport = attempt.viewport_id();
+        let viewports = self.lock_viewports();
+        let Some(binding) = viewports.binding_for_create_attempt(attempt) else {
+            return NativeHostWake::Wait;
+        };
+        let mut records = self.lock();
+        if records
+            .create_reservations
+            .get(&viewport)
+            .is_none_or(|reservation| reservation.binding != binding)
+        {
+            return NativeHostWake::Wait;
+        }
+        if !records.record_viewport_create_failure(NativeViewportCreateFailureRecord::new(
+            viewport,
+            binding,
+            failure.kind(),
+        )) {
+            return NativeHostWake::Wait;
+        }
+        NativeHostWake::RepaintRoot
+    }
+
+    #[cfg(test)]
+    fn record_reserved_viewport_create_failure_for_test(
+        &self,
+        viewport: ViewportId,
         kind: NativeViewportCreateFailureKind,
     ) -> NativeHostWake {
         let mut records = self.lock();
@@ -1167,7 +1210,7 @@ impl NativeHostBridge {
         &self,
         viewport: eframe::egui::ViewportId,
     ) -> NativeHostWake {
-        self.record_viewport_create_failure(
+        self.record_reserved_viewport_create_failure_for_test(
             viewport,
             NativeViewportCreateFailureKind::WindowUnavailable,
         )
@@ -1194,11 +1237,11 @@ impl NativeHostBridge {
 }
 
 impl NativeHostHandler for NativeHostBridge {
-    fn deferred_undecorated_outer_rect(
+    fn begin_deferred_viewport_create(
         &self,
-        viewport_id: ViewportId,
-    ) -> Option<NativePhysicalRect> {
-        self.create_rect(viewport_id)
+        attempt: NativeViewportCreateAttempt,
+    ) -> NativeViewportCreateAdmission {
+        self.admit_viewport_create_attempt(attempt)
     }
 
     fn render_hidden_deferred_viewport(&self, viewport_id: ViewportId) -> bool {
@@ -1236,7 +1279,7 @@ impl NativeHostHandler for NativeHostBridge {
     }
 
     fn on_viewport_create_failed(&self, failure: NativeViewportCreateFailure) -> NativeHostWake {
-        self.record_viewport_create_failure(failure.viewport_id(), failure.kind())
+        self.record_eframe_viewport_create_failure(failure)
     }
 
     fn on_viewport_visibility(&self, result: NativeViewportVisibilityResult) -> NativeHostWake {
