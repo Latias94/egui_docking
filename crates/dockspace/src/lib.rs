@@ -8,7 +8,31 @@
 //! even when every crate feature is enabled:
 //!
 //! ```compile_fail
-//! use dockspace::backend::engine::DockEngine;
+//! use dockspace::engine::DockEngine;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::graph::Workspace;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::ids::NodeId;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::scene::SurfaceSceneStamp;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::platform_provider::PlatformObservationLease;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::persistence::WorkspaceSnapshot;
+//! ```
+//!
+//! ```compile_fail
+//! use dockspace::close::ClosePlanPhase;
 //! ```
 
 #![forbid(unsafe_code)]
@@ -27,8 +51,10 @@ mod canonical;
 mod close_plan;
 /// Stable application close decisions, targets, and opaque decision identities.
 pub mod close {
+    #[cfg(test)]
+    pub use crate::close_plan::ClosePlanPhase;
     pub use crate::close_plan::{
-        CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget,
+        CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanTarget,
         ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
         SurfaceCloseDisposition,
     };

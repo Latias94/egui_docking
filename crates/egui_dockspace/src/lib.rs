@@ -1,4 +1,10 @@
 //! egui renderer and viewport adapter for [`dockspace`].
+//!
+//! Core-owned close lifecycle phases are intentionally not re-exported:
+//!
+//! ```compile_fail
+//! use egui_dockspace::ClosePlanPhase;
+//! ```
 
 #![forbid(unsafe_code)]
 
@@ -21,7 +27,7 @@ mod response;
 
 pub use builder::DockspaceBuilder;
 pub use dockspace::close::{
-    CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget,
+    CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanTarget,
     ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
     SurfaceCloseDisposition,
 };
@@ -35,7 +41,7 @@ pub use dockspace::model::{
     PreparedDockAction, RootId, SurfaceId, WorkspaceVersion,
 };
 pub use dockspace::runtime::{
-    DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose,
+    DockspaceCloseInertReason, DockspaceCloseOutcome as DockspaceAppliedClose, DockspaceClosePhase,
     DockspaceCloseRejection as DockspaceCloseApplicationRejection, DockspaceCloseRequestRejection,
     DockspaceCloseResolution, PreparedCloseRequest,
 };

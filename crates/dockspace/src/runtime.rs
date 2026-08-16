@@ -31,7 +31,7 @@ pub use crate::presentation_config::{
 };
 use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{
-    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePlan,
+    DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePhase, DockspaceClosePlan,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, PreparedCloseRequest,
 };
 pub use interaction::{

@@ -9,8 +9,9 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::close_plan::{
-    CloseDecisionToken, CloseInertReason, CloseItemDecisionState, ClosePlan, ClosePlanPhase,
-    ClosePlanTarget, CloseRequestId, CloseResolutionOutcome, DeferredCloseToken,
+    CloseDecisionToken, CloseInertReason, CloseItemDecisionState, ClosePlan,
+    ClosePlanPhase as CoreClosePlanPhase, ClosePlanTarget, CloseRequestId, CloseResolutionOutcome,
+    DeferredCloseToken,
 };
 use crate::command::ContentCloseTarget;
 use crate::engine::EngineInput;
@@ -181,6 +182,62 @@ pub struct DockspaceCloseItem {
     state: CloseItemDecisionState,
 }
 
+/// Product-visible phase of a close request.
+///
+/// Exact native destruction, cancellation, effect, and recovery states remain
+/// private to the core and native coordinator.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DockspaceClosePhase {
+    /// At least one application close decision is still unresolved.
+    AwaitingDecision,
+    /// Core is applying or retiring the request and no application decision is pending.
+    Settling,
+    /// The semantic close transaction was applied.
+    Applied,
+    /// The request became terminal without applying its semantic close transaction.
+    NotApplied,
+}
+
+impl DockspaceClosePhase {
+    const fn from_core(plan: &ClosePlan) -> Self {
+        Self::from_core_parts(plan.phase(), plan.target())
+    }
+
+    const fn from_core_parts(phase: CoreClosePlanPhase, target: ClosePlanTarget) -> Self {
+        match phase {
+            CoreClosePlanPhase::Requested
+            | CoreClosePlanPhase::Resolving
+            | CoreClosePlanPhase::Deferred => Self::AwaitingDecision,
+            CoreClosePlanPhase::Approved
+            | CoreClosePlanPhase::EffectEmitted
+            | CoreClosePlanPhase::AwaitingDestroyed
+            | CoreClosePlanPhase::CancelRequested
+            | CoreClosePlanPhase::Indeterminate => Self::Settling,
+            CoreClosePlanPhase::Applied => Self::Applied,
+            CoreClosePlanPhase::Vetoed => match target {
+                ClosePlanTarget::Surface { .. } => Self::Settling,
+                ClosePlanTarget::Item { .. } | ClosePlanTarget::Root { .. } => Self::NotApplied,
+            },
+            CoreClosePlanPhase::Stale
+            | CoreClosePlanPhase::Cancelled
+            | CoreClosePlanPhase::ExternallyDestroyedUnproved => Self::NotApplied,
+        }
+    }
+
+    /// Returns whether the application still owns an unresolved decision.
+    #[must_use]
+    pub const fn requires_decision(self) -> bool {
+        matches!(self, Self::AwaitingDecision)
+    }
+
+    /// Returns whether core has finished the semantic close request.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Applied | Self::NotApplied)
+    }
+}
+
 impl DockspaceCloseItem {
     const fn from_core(item: crate::close_plan::ClosePlanItem) -> Self {
         Self {
@@ -236,7 +293,7 @@ pub struct DockspaceClosePlan {
     request: CloseRequestId,
     target: ClosePlanTarget,
     items: Box<[DockspaceCloseItem]>,
-    phase: ClosePlanPhase,
+    phase: DockspaceClosePhase,
 }
 
 impl DockspaceClosePlan {
@@ -250,7 +307,7 @@ impl DockspaceClosePlan {
                 .copied()
                 .map(DockspaceCloseItem::from_core)
                 .collect(),
-            phase: plan.phase(),
+            phase: DockspaceClosePhase::from_core(plan),
         }
     }
 
@@ -274,7 +331,7 @@ impl DockspaceClosePlan {
 
     /// Returns the current application-visible phase.
     #[must_use]
-    pub const fn phase(&self) -> ClosePlanPhase {
+    pub const fn phase(&self) -> DockspaceClosePhase {
         self.phase
     }
 }
@@ -357,8 +414,6 @@ pub enum DockspaceCloseResolution {
         request: CloseRequestId,
         /// Item whose decision was recorded.
         item: ItemId,
-        /// Resulting public close phase.
-        phase: ClosePlanPhase,
     },
     /// One initial token was exchanged for a deferred continuation.
     Deferred {
@@ -391,12 +446,8 @@ impl DockspaceCloseResolution {
             CloseResolutionOutcome::Recorded {
                 request,
                 item,
-                phase,
-            } => Self::Recorded {
-                request,
-                item,
-                phase,
-            },
+                phase: _,
+            } => Self::Recorded { request, item },
             CloseResolutionOutcome::Deferred {
                 request,
                 item,
@@ -410,5 +461,91 @@ impl DockspaceCloseResolution {
             CloseResolutionOutcome::Vetoed { request, item } => Self::Vetoed { request, item },
             CloseResolutionOutcome::Inert(reason) => Self::Inert(reason.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DockspaceClosePhase;
+    use crate::close_plan::{ClosePlanPhase, ClosePlanTarget, SurfaceCloseDisposition};
+    use crate::ids::{ItemId, RootId, SurfaceId};
+
+    #[test]
+    fn product_phase_hides_native_close_lifecycle_details() {
+        let item = ClosePlanTarget::Item {
+            item: ItemId::new(1),
+        };
+        let root = ClosePlanTarget::Root {
+            root: RootId::new(2),
+        };
+        let surface = ClosePlanTarget::Surface {
+            surface: SurfaceId::new(3),
+            disposition: SurfaceCloseDisposition::RetainLayout,
+        };
+
+        for phase in [
+            ClosePlanPhase::Requested,
+            ClosePlanPhase::Resolving,
+            ClosePlanPhase::Deferred,
+        ] {
+            assert_eq!(
+                DockspaceClosePhase::from_core_parts(phase, item),
+                DockspaceClosePhase::AwaitingDecision
+            );
+        }
+
+        for phase in [
+            ClosePlanPhase::Approved,
+            ClosePlanPhase::EffectEmitted,
+            ClosePlanPhase::AwaitingDestroyed,
+            ClosePlanPhase::CancelRequested,
+            ClosePlanPhase::Indeterminate,
+        ] {
+            assert_eq!(
+                DockspaceClosePhase::from_core_parts(phase, surface),
+                DockspaceClosePhase::Settling
+            );
+        }
+
+        assert_eq!(
+            DockspaceClosePhase::from_core_parts(ClosePlanPhase::Vetoed, surface),
+            DockspaceClosePhase::Settling
+        );
+        assert_eq!(
+            DockspaceClosePhase::from_core_parts(ClosePlanPhase::Vetoed, item),
+            DockspaceClosePhase::NotApplied
+        );
+        assert_eq!(
+            DockspaceClosePhase::from_core_parts(ClosePlanPhase::Vetoed, root),
+            DockspaceClosePhase::NotApplied
+        );
+        assert_eq!(
+            DockspaceClosePhase::from_core_parts(ClosePlanPhase::Applied, item),
+            DockspaceClosePhase::Applied
+        );
+
+        for phase in [
+            ClosePlanPhase::Stale,
+            ClosePlanPhase::Cancelled,
+            ClosePlanPhase::ExternallyDestroyedUnproved,
+        ] {
+            assert_eq!(
+                DockspaceClosePhase::from_core_parts(phase, surface),
+                DockspaceClosePhase::NotApplied
+            );
+        }
+    }
+
+    #[test]
+    fn product_phase_reports_only_application_owned_decisions_and_terminality() {
+        assert!(DockspaceClosePhase::AwaitingDecision.requires_decision());
+        assert!(!DockspaceClosePhase::Settling.requires_decision());
+        assert!(!DockspaceClosePhase::Applied.requires_decision());
+        assert!(!DockspaceClosePhase::NotApplied.requires_decision());
+
+        assert!(!DockspaceClosePhase::AwaitingDecision.is_terminal());
+        assert!(!DockspaceClosePhase::Settling.is_terminal());
+        assert!(DockspaceClosePhase::Applied.is_terminal());
+        assert!(DockspaceClosePhase::NotApplied.is_terminal());
     }
 }
