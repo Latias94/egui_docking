@@ -30,8 +30,7 @@ pub mod close {
     pub use crate::close_plan::{
         CloseDecision, CloseDecisionToken, CloseItemDecisionState, ClosePlanPhase, ClosePlanTarget,
         ClosePlanTargetKind, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
-        SurfaceCloseDisposition, SurfaceCloseRequest, SurfaceContainedRehomeTarget,
-        SurfaceMainRehomeTarget, SurfaceRehomeTarget,
+        SurfaceCloseDisposition,
     };
 }
 #[allow(dead_code, unused_imports)]

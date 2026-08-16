@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
-use dockspace::close::SurfaceCloseRequest;
 use dockspace::runtime::{
-    NativeCloseEffectAcknowledgement, NativeSurfaceBinding, NativeSurfaceCloseRequest,
+    NativeCloseEffectAcknowledgement, NativeSurfaceBinding, NativeSurfaceCloseAction,
+    NativeSurfaceCloseRequest,
 };
 use eframe::{NativeViewportCloseRequest, egui::ViewportId};
 use winit::window::WindowId;
 
-use crate::NativeWindowEventRecord;
+use crate::event::NativeWindowEventRecord;
 
 /// Explicit product policy for an operating-system native close request.
 ///
@@ -29,11 +29,11 @@ pub enum NativeWindowClosePolicy {
 }
 
 impl NativeWindowClosePolicy {
-    pub(crate) const fn request(self) -> Option<SurfaceCloseRequest> {
+    pub(crate) const fn request(self) -> Option<NativeSurfaceCloseAction> {
         match self {
             Self::Cancel => None,
-            Self::RetainLayout => Some(SurfaceCloseRequest::RetainLayout),
-            Self::CloseContent => Some(SurfaceCloseRequest::CloseContent),
+            Self::RetainLayout => Some(NativeSurfaceCloseAction::RetainLayout),
+            Self::CloseContent => Some(NativeSurfaceCloseAction::CloseContent),
         }
     }
 }
@@ -116,6 +116,10 @@ pub(crate) struct NativeCloseControl {
 }
 
 impl NativeCloseControl {
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub(crate) fn observe_request(
         &mut self,
         event: &NativeWindowEventRecord,

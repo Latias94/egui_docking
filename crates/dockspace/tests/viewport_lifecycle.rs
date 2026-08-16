@@ -3,8 +3,7 @@ use super::support;
 use std::collections::BTreeMap;
 
 use dockspace::RootPresentationOwner;
-use dockspace::close::SurfaceCloseRequest;
-use dockspace::close_plan::NativeCloseEdge;
+use dockspace::close_plan::{NativeCloseEdge, SurfaceCloseRequest};
 use dockspace::command::{
     CloseCommitOutcome, ContainedPosition, ContentCloseTarget, MovePayload, RootContent,
     RootPresentationTarget, WorkspaceCommand,

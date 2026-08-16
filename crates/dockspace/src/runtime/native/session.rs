@@ -395,7 +395,7 @@ impl DockspaceSession {
     pub fn request_native_surface_close(
         &mut self,
         close: NativeSurfaceCloseRequest,
-        request: crate::close_plan::SurfaceCloseRequest,
+        action: NativeSurfaceCloseAction,
     ) -> Result<(), DockspaceRuntimeError> {
         let expected = self.version();
         let native = self.native_state_mut()?;
@@ -405,7 +405,7 @@ impl DockspaceSession {
             .record_semantic_input(EngineInput::RequestSurfaceClose {
                 expected,
                 edge: close.edge,
-                request,
+                request: action.into_request(),
             })
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;
         Ok(())

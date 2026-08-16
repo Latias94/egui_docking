@@ -11,10 +11,11 @@ use support::TestPresentationHost;
 
 use dockspace::close::{
     CloseDecision, CloseItemDecisionState, ClosePlanPhase, DeferredCloseDecision,
-    SurfaceCloseRequest, SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget,
-    SurfaceRehomeTarget,
 };
-use dockspace::close_plan::{CloseCancellationState, ClosePlan, ClosePlanLookup, NativeCloseEdge};
+use dockspace::close_plan::{
+    CloseCancellationState, ClosePlan, ClosePlanLookup, NativeCloseEdge, SurfaceCloseRequest,
+    SurfaceContainedRehomeTarget, SurfaceMainRehomeTarget, SurfaceRehomeTarget,
+};
 use dockspace::command::ContainedPosition;
 use dockspace::effect::{
     DispatchFailureReason, EffectDispatchResult, EffectId, EffectRecordLookup, EffectResult,

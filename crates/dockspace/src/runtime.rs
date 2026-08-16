@@ -29,7 +29,6 @@ pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersi
 pub use crate::presentation_config::{
     DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
 };
-pub use crate::transition::SurfaceCloseRequestRejection;
 use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{
     DockspaceCloseInertReason, DockspaceCloseItem, DockspaceClosePlan,
@@ -61,7 +60,8 @@ pub use native::{
     NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason,
     NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers,
     NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
-    NativeSurfaceBinding, NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
+    NativeSurfaceBinding, NativeSurfaceCloseAction, NativeSurfaceCloseRejection,
+    NativeSurfaceCloseRequest, NativeWindowFacts, NativeWindowInputState,
     NativeWindowPresentationState, NativeWorkAreaBinding, NativeWorkAreaFacts,
     NativeWorkAreaRoster,
 };
@@ -99,7 +99,7 @@ pub use presentation::{
 
 use thiserror::Error;
 
-use crate::close_plan::SurfaceCloseRequest;
+use crate::close_plan::SurfaceCloseDisposition;
 use crate::engine::{
     CoreHostFrameError, EngineError, SurfaceContributionBeginError, SurfaceContributionPrepareError,
 };
@@ -240,8 +240,8 @@ pub enum HostInputOutcome {
     NativeFocusObservationApplied,
     /// One explicit native surface-close request opened a core-owned close plan.
     NativeSurfaceCloseRequested {
-        /// Exact surface disposition accepted by the core.
-        request: SurfaceCloseRequest,
+        /// Stable surface disposition accepted by the core.
+        disposition: SurfaceCloseDisposition,
         /// Frozen close plan shared with the ordinary decision workflow.
         plan: DockspaceClosePlan,
     },
@@ -249,10 +249,10 @@ pub enum HostInputOutcome {
     NativeSurfaceCloseRejected {
         /// Exact close edge which remains available for a different explicit request.
         close: NativeSurfaceCloseRequest,
-        /// Surface disposition rejected by the core.
-        request: SurfaceCloseRequest,
+        /// Stable surface disposition rejected by the core.
+        disposition: SurfaceCloseDisposition,
         /// Typed fail-closed rejection.
-        reason: SurfaceCloseRequestRejection,
+        reason: NativeSurfaceCloseRejection,
     },
     /// A vetoed native close now requires an exact platform cancellation.
     NativeSurfaceCloseCancellationRequired {

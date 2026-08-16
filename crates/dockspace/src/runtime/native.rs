@@ -263,6 +263,91 @@ impl NativeSurfaceCloseRequest {
     }
 }
 
+/// Product action used to resolve one exact native surface-close edge.
+///
+/// Rehoming requires an explicit destination program and is intentionally not
+/// part of this minimal facade. Hosts must never guess such a destination from
+/// the current window roster.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeSurfaceCloseAction {
+    /// Destroy the native binding while retaining its logical surface roster.
+    RetainLayout,
+    /// Close every content item owned by the logical surface.
+    CloseContent,
+}
+
+impl NativeSurfaceCloseAction {
+    fn into_request(self) -> crate::close_plan::SurfaceCloseRequest {
+        match self {
+            Self::RetainLayout => crate::close_plan::SurfaceCloseRequest::RetainLayout,
+            Self::CloseContent => crate::close_plan::SurfaceCloseRequest::CloseContent,
+        }
+    }
+}
+
+/// Stable product reason why a native surface-close action was rejected.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum NativeSurfaceCloseRejection {
+    /// The exact close edge is stale or no longer current.
+    #[error("the native close edge is no longer current")]
+    StaleEdge,
+    /// The window is still inside its native create or replacement barrier.
+    #[error("the native surface is still staging")]
+    Staging,
+    /// The logical source surface disappeared before the action was prepared.
+    #[error("native surface {surface} is unavailable")]
+    SurfaceUnavailable {
+        /// Stable logical source surface.
+        surface: SurfaceId,
+    },
+    /// The platform cannot explicitly cancel a rejected close request.
+    #[error("the native host cannot cancel this close request")]
+    CancellationUnsupported,
+    /// Current docking policy rejected the action.
+    #[error("current docking policy rejects this native close action")]
+    PolicyDenied,
+    /// One pane on the source surface is not closeable.
+    #[error("pane {item} cannot be closed")]
+    PaneCloseDisabled {
+        /// Stable application item which rejected closure.
+        item: crate::ids::ItemId,
+    },
+    /// The source surface has no complete closeable content roster.
+    #[error("the native surface has no complete closeable content roster")]
+    ContentUnavailable,
+    /// Another non-terminal close plan already owns the exact binding.
+    #[error("another close plan already owns this native surface")]
+    OperationConflict,
+    /// The requested operation is outside the stable native close facade.
+    #[error("the requested native close operation is unsupported")]
+    Unsupported,
+}
+
+impl From<&crate::transition::SurfaceCloseRequestRejection> for NativeSurfaceCloseRejection {
+    fn from(reason: &crate::transition::SurfaceCloseRequestRejection) -> Self {
+        use crate::transition::SurfaceCloseRequestRejection;
+
+        match reason {
+            SurfaceCloseRequestRejection::EdgeUnavailable { .. } => Self::StaleEdge,
+            SurfaceCloseRequestRejection::StagingBinding { .. } => Self::Staging,
+            SurfaceCloseRequestRejection::SurfaceUnavailable { surface } => {
+                Self::SurfaceUnavailable { surface: *surface }
+            }
+            SurfaceCloseRequestRejection::CancellationUnsupported => Self::CancellationUnsupported,
+            SurfaceCloseRequestRejection::PolicyRejected(_)
+            | SurfaceCloseRequestRejection::RehomePolicyRejected(_) => Self::PolicyDenied,
+            SurfaceCloseRequestRejection::RehomeProgramUnavailable => Self::Unsupported,
+            SurfaceCloseRequestRejection::PaneCloseDisabled { item } => {
+                Self::PaneCloseDisabled { item: *item }
+            }
+            SurfaceCloseRequestRejection::CloseContentUnavailable => Self::ContentUnavailable,
+            SurfaceCloseRequestRejection::ActivePlan { .. } => Self::OperationConflict,
+        }
+    }
+}
+
 /// Native close fact accepted by the narrow live-binding lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCloseState {

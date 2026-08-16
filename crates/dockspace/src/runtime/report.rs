@@ -6,8 +6,8 @@ use super::{
     DockspaceCloseOutcome, DockspaceClosePlan, DockspaceCloseRejection,
     DockspaceCloseRequestRejection, DockspaceCloseResolution, HostCloseRequestOrigin,
     HostFrameReport, HostInputOutcome, HostSurfaceCommit, NativeEffectRequest,
-    NativeSurfaceBinding, NativeSurfaceCloseRequest, PaintedNativeStagingOutput,
-    PaintedSurfaceOutput, native_effect,
+    NativeSurfaceBinding, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
+    PaintedNativeStagingOutput, PaintedSurfaceOutput, native_effect,
 };
 use crate::command::CloseCommitOutcome;
 use crate::error::CommandError;
@@ -117,7 +117,7 @@ impl HostFrameReport {
                     }
                     InputOutcome::SurfaceCloseRequested { request, plan, .. } => {
                         Some(HostInputOutcome::NativeSurfaceCloseRequested {
-                            request: request.clone(),
+                            disposition: request.disposition(),
                             plan: DockspaceClosePlan::from_core(plan),
                         })
                     }
@@ -129,8 +129,8 @@ impl HostFrameReport {
                     } => native_provider.map(|provider| {
                         HostInputOutcome::NativeSurfaceCloseRejected {
                             close: NativeSurfaceCloseRequest::from_edge(provider, *edge),
-                            request: request.clone(),
-                            reason: reason.clone(),
+                            disposition: request.disposition(),
+                            reason: NativeSurfaceCloseRejection::from(reason),
                         }
                     }),
                     InputOutcome::SurfaceCloseCancellationRequested { edge, plan, .. } => {
