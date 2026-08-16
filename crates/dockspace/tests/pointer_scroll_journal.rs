@@ -651,7 +651,8 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         )));
     }
 
-    let successor = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
+    let successor =
+        fixture.submit_known(ScrollPhase::Begin, Some(ScrollSequenceToken::new(43)), None);
     assert!(matches!(
         successor.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::Scroll(

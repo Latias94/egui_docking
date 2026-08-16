@@ -220,10 +220,11 @@ Unknown modifiers fail closed whenever the configured policy distinguishes
 plain scroll from modified scroll.
 
 `ScrollDeviceId` and `ScrollSequenceToken` are provider-owned observations.
-Sequence tokens increase across every scroll device in one pointer stream, so
-the retained watermark is bounded by live streams rather than historical
-devices. The core additionally mints an opaque `ScrollSessionId`; provider
-token reuse can therefore never resurrect a prior session.
+Sequence tokens increase across every smooth sequence emitted by one provider
+lease. The core retains one watermark until that provider retires, so a delayed
+edge from a retired pointer stream cannot alias a successor stream while state
+remains bounded by live providers rather than historical devices or streams.
+The core additionally mints an opaque `ScrollSessionId`.
 
 ## Delivery Candidates And Receipts
 

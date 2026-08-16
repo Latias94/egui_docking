@@ -151,7 +151,7 @@ struct ActiveScrollSession {
 pub(super) struct ScrollInteractionState {
     last_session: ScrollSessionId,
     active: BTreeMap<ScrollSequenceKey, ActiveScrollSession>,
-    token_watermarks: BTreeMap<PointerStreamId, ScrollSequenceToken>,
+    token_watermarks: BTreeMap<PointerInputLease, ScrollSequenceToken>,
 }
 
 impl ScrollInteractionState {
@@ -175,12 +175,12 @@ impl ScrollInteractionState {
             .any(|active| ScrollDeviceKey::from_sequence(*active) == device)
             || self
                 .token_watermarks
-                .get(&key.stream)
+                .get(&key.provider)
                 .is_some_and(|watermark| key.token <= *watermark)
     }
 
     fn advance_token_watermark(&mut self, key: ScrollSequenceKey) {
-        self.token_watermarks.insert(key.stream, key.token);
+        self.token_watermarks.insert(key.provider, key.token);
     }
 
     fn retire(&mut self, key: ScrollSequenceKey) -> Result<ActiveScrollSession, &'static str> {
@@ -235,8 +235,7 @@ impl ScrollInteractionState {
             .filter(scroll_session_is_semantically_active)
             .map(|session| (session.id, scroll_session_receiver(session)))
             .collect();
-        self.token_watermarks
-            .retain(|stream, _| stream.lease() != provider);
+        self.token_watermarks.remove(&provider);
         sessions
     }
 
@@ -252,9 +251,6 @@ impl ScrollInteractionState {
             .filter_map(|key| self.active.remove(&key))
             .filter(scroll_session_is_semantically_active)
             .collect();
-        // The pointer stream incarnation is itself terminal authority. No
-        // scroll-token tombstone from that stream is needed after retirement.
-        self.token_watermarks.remove(&stream);
         sessions
     }
 
@@ -1485,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_manifest_accounts_for_sessions_and_live_stream_watermarks() {
+    fn retention_manifest_accounts_for_sessions_and_provider_watermarks() {
         let lease = PointerInputLease::new(
             EngineAuthorityDomainId::new_for_test(91),
             1,
@@ -1520,6 +1516,9 @@ mod tests {
         assert_eq!(retained.retained_structure_count(), 2);
 
         assert_eq!(state.retire_stream(stream).len(), 1);
+        assert_eq!(state.retention_manifest().active_sessions(), 0);
+        assert_eq!(state.retention_manifest().sequence_watermark_guards(), 1);
+        assert!(state.retire_provider(lease).is_empty());
         assert_eq!(
             state.retention_manifest(),
             crate::retention::ScrollRetentionManifest::default()
@@ -1527,7 +1526,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_scroll_device_churn_keeps_one_watermark_per_live_stream() {
+    fn completed_scroll_device_churn_keeps_one_watermark_per_provider() {
         let lease = PointerInputLease::new(
             EngineAuthorityDomainId::new_for_test(92),
             1,
@@ -1566,9 +1565,63 @@ mod tests {
         assert_eq!(retained.active_sessions(), 0);
         assert_eq!(retained.sequence_watermark_guards(), 1);
         assert_eq!(state.retire_stream(stream).len(), 0);
+        assert_eq!(state.retention_manifest().sequence_watermark_guards(), 1);
+        assert!(state.retire_provider(lease).is_empty());
         assert_eq!(
             state.retention_manifest(),
             crate::retention::ScrollRetentionManifest::default()
         );
+    }
+
+    #[test]
+    fn retired_stream_token_cannot_alias_a_successor_stream() {
+        let lease = PointerInputLease::new(
+            EngineAuthorityDomainId::new_for_test(93),
+            1,
+            PointerProviderScope::DesktopGlobal,
+        );
+        let predecessor = PointerStreamId::new(lease, PointerId::new(9), 1);
+        let successor = PointerStreamId::new(lease, PointerId::new(9), 2);
+        let predecessor_key = ScrollSequenceKey::new(
+            lease,
+            predecessor,
+            ScrollDeviceId::new(1),
+            ScrollSequenceToken::new(41),
+        );
+        let successor_key = ScrollSequenceKey::new(
+            lease,
+            successor,
+            ScrollDeviceId::new(1),
+            ScrollSequenceToken::new(42),
+        );
+        let delayed_predecessor_key = ScrollSequenceKey::new(
+            lease,
+            successor,
+            ScrollDeviceId::new(1),
+            ScrollSequenceToken::new(41),
+        );
+        let mut state = ScrollInteractionState::default();
+
+        state.advance_token_watermark(predecessor_key);
+        assert!(state.retire_stream(predecessor).is_empty());
+        assert!(state.key_conflicts(delayed_predecessor_key));
+        assert!(!state.key_conflicts(successor_key));
+
+        state.advance_token_watermark(successor_key);
+        state.active.insert(
+            successor_key,
+            ActiveScrollSession {
+                id: ScrollSessionId::new(2),
+                disposition: ActiveScrollDisposition::AwaitingProviderTerminal(
+                    AwaitingScrollProviderTerminal {
+                        receiver: None,
+                        claim_derivative: false,
+                    },
+                ),
+            },
+        );
+
+        assert!(!state.active.contains_key(&delayed_predecessor_key));
+        assert!(state.active.contains_key(&successor_key));
     }
 }

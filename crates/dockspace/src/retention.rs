@@ -323,7 +323,7 @@ impl InputSourceRetentionManifest {
     }
 }
 
-/// Core-owned smooth-scroll sessions and per-stream sequence replay guards.
+/// Core-owned smooth-scroll sessions and provider sequence replay guards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScrollRetentionManifest {
     active_sessions: usize,
@@ -344,7 +344,7 @@ impl ScrollRetentionManifest {
         self.active_sessions
     }
 
-    /// Returns per-device sequence watermarks retained for live pointer streams.
+    /// Returns sequence watermarks retained for live pointer providers.
     #[must_use]
     pub const fn sequence_watermark_guards(self) -> usize {
         self.sequence_watermark_guards
