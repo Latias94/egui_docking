@@ -2,18 +2,19 @@
 
 ## Status
 
-This document describes the target breaking boundary for the first shipping
-`dockspace` API and records the portions already sealed. `egui_dockspace` no
-longer re-exports the core or exposes its raw `DockEngine`; application-facing
+This document describes the breaking boundary for the first shipping
+`dockspace` API and records the sealed default product surface. `egui_dockspace`
+no longer re-exports the core or exposes its raw `DockEngine`; application-facing
 types remain at the crate root, while renderers and native hosts use the typed
 `DockspaceSession` runtime facade. The renderer-neutral crate keeps reducer,
 frame, scene, pointer, effect, recovery, viewport FSMs, raw graph, checked
 command, transaction, canonicalization, validation, and runtime identity modules
-private under every feature combination. Product construction uses
-`DockspaceLayout`, read access uses `DockspaceView`, and mutations use
-revision-bound product actions. Persistence and close paths still need further
-consolidation into the target facade areas, so the seal remains an active
-breaking refactor.
+private under every non-test feature combination. Product construction uses
+`DockspaceLayout`, read access uses `DockspaceView`, mutations use revision-bound
+product actions, and close plus persistence publication pass through the same
+session-owned host frame. Remaining API-seal work belongs to the unpublished
+native adapter and the deferred Open-GPUI cutover; it must not widen the sealed
+core or official-egui product boundary.
 
 ## Goal
 

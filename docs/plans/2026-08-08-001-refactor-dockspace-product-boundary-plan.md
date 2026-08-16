@@ -162,7 +162,7 @@ Explicit non-goals:
 - KTD2. **Use current egui responses for local interaction.** Current-frame `Response` and AccessKit facts authorize local widget actions; renderer terminal facts are reserved for retained/native routing and first-live admission. (session-settled: user-directed — chosen over requiring unobservable GPU presentation for a local click.)
 - KTD3. **Retain normalized N-ary layout.** Same-axis flattening, central-root metadata, touching-leaf splitter rules, and future-layout projection stay in core; binary ImGui nodes and GPUI runtime nodes are reference behavior only.
 - KTD4. **Use one action vocabulary.** egui and Open-GPUI submit the same product actions and consume the same product outcomes. No adapter gets its own resolver, policy evaluator, or fallback graph mutation.
-- KTD5. **Pin official egui 0.36.1 plus two minimal native seams.** The egui/eframe fork is based on upstream 0.36.1 and pinned at `bbb96417d`; the winit event-time fork is pinned at `180bfc09743586137fec014ef5543cdde56ce5d0`. Each fork change requires a missing-fact test, a narrow seam, and a deletion or upstream condition. Broad hosted-cycle code is not revived.
+- KTD5. **Pin official egui 0.36.1 plus two minimal native seams.** The egui/eframe fork is based on upstream 0.36.1 and pinned at `7f704e49c5f97da0176027ce7aa92d2e13126c90`; the winit event-time fork is pinned at `180bfc09743586137fec014ef5543cdde56ce5d0`. Each fork change requires a missing-fact test, a narrow seam, and a deletion or upstream condition. Broad hosted-cycle code is not revived.
 - KTD6. **Keep tests black-box and ordinary.** Characterization, state-machine, property, downstream, and one smoke test replace the old protocol interpreter. A test helper may assemble domain fixtures, but it may not become a second engine or source analyzer.
 - KTD7. **One engine owner in every production path.** `DockspaceSession` owns core state. egui rendering, native coordination, document persistence, and GPUI integration attach to that owner instead of wrapping their own `DockEngine` or dual-writing another graph.
 - KTD8. **Make persistence session-owned and bytes-only.** Versioned UTF-8 JSON bytes are the stable wire boundary. External item identity, topology, placement, frontiers, lineage, and generation publish atomically. Raw snapshot parts and mutable candidate assembly remain private.
@@ -259,7 +259,7 @@ flowchart LR
 
 ## Implementation Units
 
-The repository already contains meaningful evidence for several units: official egui 0.36.1, the pinned `bbb96417d` fork, default product interaction tests, session-owned JSON persistence, removal of the protocol oracle, no active `egui_tiles` dependency, and a partial Open-GPUI shared-core adapter. `ce-work` must inspect the current tree and execute only the unmet contract in each unit; it must not replay landed work or use commit SHAs as test gates.
+The repository already contains meaningful evidence for several units: official egui 0.36.1, the pinned `7f704e49c5f97da0176027ce7aa92d2e13126c90` fork, default product interaction tests, session-owned JSON persistence, removal of the protocol oracle, no active `egui_tiles` dependency, and a partial Open-GPUI shared-core adapter. `ce-work` must inspect the current tree and execute only the unmet contract in each unit; it must not replay landed work or use commit SHAs as test gates.
 
 ### U1. Reproducible egui and fork baseline
 
@@ -267,7 +267,7 @@ The repository already contains meaningful evidence for several units: official 
 - **Requirements:** R9, R12.
 - **Dependencies:** None.
 - **Files:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `integration/egui-fork-workspace/Cargo.toml`, `integration/egui-fork-workspace/Cargo.lock`, `.github/workflows/ci.yml`, `README.md`, `repo-ref/egui-release` metadata, `repo-ref/winit-release` metadata.
-- **Approach:** Keep official egui/eframe at exact 0.36.1, the egui/eframe fork at `bbb96417d`, and the winit fork at `180bfc09743586137fec014ef5543cdde56ce5d0`. Update CI and documentation to those same revisions. Verify that each pinned commit contains every API used by native code and that no ignored dirty directory is required. Dependency pins are reproducibility inputs; root commit SHAs and worktree digests are not behavior or completion gates.
+- **Approach:** Keep official egui/eframe at exact 0.36.1, the egui/eframe fork at `7f704e49c5f97da0176027ce7aa92d2e13126c90`, and the winit fork at `180bfc09743586137fec014ef5543cdde56ce5d0`. Update CI and documentation to those same revisions. Verify that each pinned commit contains every API used by native code and that no ignored dirty directory is required. Dependency pins are reproducibility inputs; root commit SHAs and worktree digests are not behavior or completion gates.
 - **Test scenarios:**
   - A clean root checkout builds against official egui without fork-only cfg.
   - A clean fork workspace resolves the exact pinned revision and compiles egui, eframe, egui-winit, and the native crate.
