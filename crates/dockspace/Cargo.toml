@@ -28,3 +28,7 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "managed_native_lifecycle"
+path = "tests/managed_native_lifecycle.rs"
