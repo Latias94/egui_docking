@@ -1,6 +1,6 @@
 //! Affine host-frame orchestration and atomic publication.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::close_plan::{
     CloseDecision, CloseDecisionToken, CloseRequestId, DeferredCloseDecision, DeferredCloseToken,
@@ -8,7 +8,9 @@ use crate::close_plan::{
 use crate::command::ContentCloseTarget;
 #[cfg(feature = "serde")]
 use crate::document::PendingRuntimeDocumentRestore;
-use crate::engine::{CoreHostFrame, EngineInput, HostPresentationUnavailableReason};
+use crate::engine::{
+    CoreHostFrame, EngineInput, HostPresentationSlot, HostPresentationUnavailableReason,
+};
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
 use crate::policy::DockPolicy;
@@ -521,15 +523,16 @@ impl DockspaceHostFrame<'_> {
             document_restore,
         } = self;
         let mut frame = frame.into_presentation()?;
-        let mut obligations = frame.take_presentation_obligations()?;
+        let mut obligations = BTreeMap::new();
+        for obligation in frame.take_presentation_obligations()? {
+            if obligations.insert(obligation.slot(), obligation).is_some() {
+                return Err(NativePlatformError::ProtocolInvariant.into());
+            }
+        }
         for surface in painted_surfaces {
-            let index = obligations
-                .iter()
-                .position(|obligation| {
-                    obligation.slot() == (crate::engine::HostPresentationSlot::Surface { surface })
-                })
+            let obligation = obligations
+                .remove(&HostPresentationSlot::Surface { surface })
                 .ok_or_else(|| DockspaceRuntimeError::paint_obligation_unavailable(surface))?;
-            let obligation = obligations.swap_remove(index);
             let token = frame.view().begin_surface_contribution(surface)?;
             let interaction = frame
                 .view()
@@ -538,18 +541,13 @@ impl DockspaceHostFrame<'_> {
             frame.record_painted_surface_contribution(obligation, token, interaction)?;
         }
         for presentation in painted_native_staging {
-            let index = obligations
-                .iter()
-                .position(|obligation| {
-                    obligation.slot()
-                        == (crate::engine::HostPresentationSlot::NativeStaging { presentation })
-                })
+            let obligation = obligations
+                .remove(&HostPresentationSlot::NativeStaging { presentation })
                 .ok_or_else(|| {
                     DockspaceRuntimeError::paint_obligation_unavailable(
                         presentation.binding().surface(),
                     )
                 })?;
-            let obligation = obligations.swap_remove(index);
             frame.resolve_presentation_obligation(
                 obligation,
                 crate::engine::HostPresentationDisposition::Painted(
@@ -557,7 +555,7 @@ impl DockspaceHostFrame<'_> {
                 ),
             )?;
         }
-        for obligation in obligations {
+        for obligation in obligations.into_values() {
             frame.resolve_presentation_obligation(
                 obligation,
                 crate::engine::HostPresentationDisposition::Unavailable(
