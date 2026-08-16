@@ -25,7 +25,6 @@ use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
 use crate::product_render;
-#[cfg(feature = "serde")]
 use crate::response::DockspaceMutation;
 use crate::response::{
     DockspaceActionResult, DockspaceCloseRequestResult, DockspaceCloseResult, DockspaceResponse,
@@ -146,6 +145,61 @@ impl Dockspace {
     #[must_use]
     pub const fn style(&self) -> &DockStyle {
         &self.style
+    }
+
+    /// Replaces the complete declarative docking policy atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without changing the published policy when the host frame cannot commit.
+    pub fn set_policy(&mut self, policy: DockPolicy) -> Result<DockspaceMutation, DockspaceError> {
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .replace_policy(policy)
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        Ok(DockspaceMutation::from_runtime_report(&report))
+    }
+
+    /// Replaces renderer geometry and visual styling atomically.
+    ///
+    /// Core semantic geometry is committed before the adapter publishes the new visual style.
+    /// A failed validation or host-frame commit leaves both authorities unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the style is invalid or the host frame cannot commit.
+    pub fn set_style(&mut self, style: DockStyle) -> Result<DockspaceMutation, DockspaceError> {
+        style.validate().map_err(DockspaceError::from_detail)?;
+        let presentation = style
+            .presentation_config()
+            .map_err(DockspaceError::from_detail)?;
+        let style_changed = self.style != style;
+        let mut frame = self
+            .session
+            .begin_host_frame()
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .replace_presentation_config(presentation)
+            .map_err(DockspaceError::from_detail)?;
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .map_err(DockspaceError::from_detail)?;
+        let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        self.style = style;
+        let mut mutation = DockspaceMutation::from_runtime_report(&report);
+        if style_changed {
+            mutation.include_adapter_presentation_change(
+                self.session.view().surfaces().map(|surface| surface.id()),
+            );
+        }
+        Ok(mutation)
     }
 
     /// Returns the current durable document lineage, when configured.

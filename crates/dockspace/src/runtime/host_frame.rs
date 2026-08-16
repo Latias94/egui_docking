@@ -11,6 +11,7 @@ use crate::document::PendingRuntimeDocumentRestore;
 use crate::engine::{CoreHostFrame, EngineInput, HostPresentationUnavailableReason};
 use crate::ids::{SourceSequence, StableInputSourceId, SurfaceId};
 use crate::model::{DockPlacement, DockspaceView, WorkspaceVersion};
+use crate::policy::DockPolicy;
 
 #[cfg(feature = "serde")]
 use super::DockspacePersistenceError;
@@ -19,8 +20,9 @@ use super::local_action::PreparedSurfaceAction;
 use super::native::NativePlatformError;
 use super::presentation;
 use super::{
-    DockspaceRuntimeError, DockspaceSession, HostFrameReport, NativeStagingPaintRequest,
-    NativeSurfaceBinding, NativeWindowPlacement, PreparedDockAction, SurfaceUnavailableReason,
+    DockPresentationConfig, DockspaceRuntimeError, DockspaceSession, HostFrameReport,
+    NativeStagingPaintRequest, NativeSurfaceBinding, NativeWindowPlacement, PreparedDockAction,
+    SurfaceUnavailableReason,
 };
 
 const APPLICATION_INPUT_SOURCE: StableInputSourceId =
@@ -380,6 +382,45 @@ impl DockspaceHostFrame<'_> {
         })
     }
 
+    /// Replaces the complete declarative docking policy at the terminal configuration phase.
+    ///
+    /// Earlier semantic and pointer input remains ordered before this replacement. Later
+    /// semantic input is rejected, while surface contributions may still settle the frame's
+    /// pre-configuration presentation before the replacement invalidates it atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input prefix is incomplete, document replacement already owns
+    /// the terminal phase, or the private application source sequence is exhausted.
+    pub fn replace_policy(&mut self, policy: DockPolicy) -> Result<(), DockspaceRuntimeError> {
+        let sequence = self.begin_configuration_input()?;
+        self.frame
+            .append_policy_replacement(APPLICATION_INPUT_SOURCE, sequence, policy)?;
+        Ok(())
+    }
+
+    /// Replaces renderer-neutral presentation geometry at the terminal configuration phase.
+    ///
+    /// The configuration controls semantic layout and interaction geometry. Visual-only colors,
+    /// fonts, and animation remain adapter-owned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the input prefix is incomplete, document replacement already owns
+    /// the terminal phase, or the private application source sequence is exhausted.
+    pub fn replace_presentation_config(
+        &mut self,
+        config: DockPresentationConfig,
+    ) -> Result<(), DockspaceRuntimeError> {
+        let sequence = self.begin_configuration_input()?;
+        self.frame.append_presentation_config_replacement(
+            APPLICATION_INPUT_SOURCE,
+            sequence,
+            config,
+        )?;
+        Ok(())
+    }
+
     /// Explicitly marks one frozen surface unavailable for this presentation pass.
     ///
     /// # Errors
@@ -559,14 +600,26 @@ impl DockspaceHostFrame<'_> {
 
     pub(super) fn append(&mut self, input: EngineInput) -> Result<(), DockspaceRuntimeError> {
         self.ensure_semantic_input_allowed()?;
+        let sequence = self.next_application_source_sequence()?;
+        self.frame
+            .append_input(APPLICATION_INPUT_SOURCE, sequence, input)?;
+        Ok(())
+    }
+
+    fn begin_configuration_input(&mut self) -> Result<SourceSequence, DockspaceRuntimeError> {
+        self.ensure_semantic_input_allowed()?;
+        self.complete_pointer_input()?;
+        self.next_application_source_sequence()
+    }
+
+    fn next_application_source_sequence(
+        &mut self,
+    ) -> Result<SourceSequence, DockspaceRuntimeError> {
         self.next_source_sequence = self
             .next_source_sequence
             .checked_add(1)
             .ok_or_else(DockspaceRuntimeError::source_sequence_exhausted)?;
-        let sequence = SourceSequence::new(self.next_source_sequence);
-        self.frame
-            .append_input(APPLICATION_INPUT_SOURCE, sequence, input)?;
-        Ok(())
+        Ok(SourceSequence::new(self.next_source_sequence))
     }
 
     pub(super) fn ensure_semantic_input_allowed(&self) -> Result<(), DockspaceRuntimeError> {

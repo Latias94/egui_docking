@@ -1697,6 +1697,38 @@ impl CoreHostFrame {
         )
     }
 
+    pub(crate) fn append_policy_replacement(
+        &mut self,
+        source: StableInputSourceId,
+        source_sequence: SourceSequence,
+        policy: DockPolicy,
+    ) -> Result<(), CoreHostFrameError> {
+        self.append_configuration(
+            source,
+            source_sequence,
+            EngineInput::ReplacePolicy {
+                expected: self.application_base,
+                policy,
+            },
+        )
+    }
+
+    pub(crate) fn append_presentation_config_replacement(
+        &mut self,
+        source: StableInputSourceId,
+        source_sequence: SourceSequence,
+        config: DockPresentationConfig,
+    ) -> Result<(), CoreHostFrameError> {
+        self.append_configuration(
+            source,
+            source_sequence,
+            EngineInput::ReplacePresentationConfig {
+                expected: self.application_base,
+                config,
+            },
+        )
+    }
+
     /// Closes provider and semantic ingress before terminal configuration begins.
     ///
     /// Calling this method is an irreversible type-state transition for this

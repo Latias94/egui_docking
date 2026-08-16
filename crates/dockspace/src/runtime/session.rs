@@ -166,6 +166,12 @@ impl DockspaceSession {
         self.engine.policy()
     }
 
+    /// Returns the renderer-neutral geometry and interaction configuration.
+    #[must_use]
+    pub const fn presentation_config(&self) -> &DockPresentationConfig {
+        self.engine.presentation_config()
+    }
+
     /// Prepares one revision-bound selection action from the published workspace.
     pub const fn prepare_select_item(&self, item: crate::ids::ItemId) -> PreparedDockAction {
         self.engine.prepare_select_item(item)

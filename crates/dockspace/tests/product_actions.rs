@@ -7,9 +7,9 @@ use crate::model::{
     DockspaceRootLayout, DockspaceSurfaceLayout, NativeWindowPlacement,
 };
 use crate::runtime::{
-    DockspaceCloseRequestRejection, DockspaceHostFrame, DockspaceRuntimeErrorKind,
-    DockspaceSession, HostCloseRequestOrigin, HostFrameReport, HostInputOutcome,
-    SurfaceUnavailableReason,
+    DockPresentationConfig, DockspaceCloseRequestRejection, DockspaceHostFrame,
+    DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostFrameReport,
+    HostInputOutcome, SurfaceUnavailableReason,
 };
 
 const MAIN_SURFACE: SurfaceId = SurfaceId::new(10);
@@ -1183,4 +1183,85 @@ fn product_close_requests_are_revision_and_session_bound() {
         }
     );
     assert_eq!(reason.target(), ClosePlanTarget::Root { root: MAIN_ROOT });
+}
+
+#[test]
+fn terminal_configuration_commits_after_semantic_actions() {
+    let mut session = session();
+    let initial_version = session.version();
+    let mut policy = session.policy().clone();
+    policy.set_allow_tab_merge(false);
+    let presentation = DockPresentationConfig::builder()
+        .tab_bar_height(36.0)
+        .build()
+        .expect("replacement presentation config validates");
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("configuration frame begins");
+    frame
+        .select_item_current(SECOND)
+        .expect("semantic input stages before configuration");
+    frame
+        .replace_policy(policy.clone())
+        .expect("policy replacement enters the terminal phase");
+    frame
+        .replace_presentation_config(presentation.clone())
+        .expect("presentation replacement shares the terminal phase");
+    let report = commit(frame);
+
+    assert_ne!(report.after(), initial_version);
+    assert!(report.published_state_changed());
+    assert_eq!(report.repaint_surfaces(), &[MAIN_SURFACE, ROOTLESS_SURFACE]);
+    assert_eq!(session.policy(), &policy);
+    assert_eq!(session.presentation_config(), &presentation);
+    assert_eq!(
+        report.inputs(),
+        &[HostInputOutcome::ProductActionApplied(
+            DockspaceActionOutcome::Selected {
+                item: SECOND,
+                changed: true,
+            },
+        )]
+    );
+}
+
+#[test]
+fn terminal_configuration_is_rollbackable_and_rejects_later_semantic_input() {
+    let mut session = session();
+    let initial_policy = session.policy().clone();
+    let initial_presentation = session.presentation_config().clone();
+    let mut policy = initial_policy.clone();
+    policy.set_allow_tab_merge(false);
+    let presentation = DockPresentationConfig::builder()
+        .tab_bar_height(36.0)
+        .build()
+        .expect("replacement presentation config validates");
+
+    let mut dropped = session
+        .begin_host_frame()
+        .expect("rollback configuration frame begins");
+    dropped
+        .replace_policy(policy.clone())
+        .expect("policy replacement stages");
+    dropped
+        .replace_presentation_config(presentation.clone())
+        .expect("presentation replacement stages");
+    drop(dropped);
+    assert_eq!(session.policy(), &initial_policy);
+    assert_eq!(session.presentation_config(), &initial_presentation);
+
+    let mut rejected = session
+        .begin_host_frame()
+        .expect("terminal-order frame begins");
+    rejected
+        .replace_policy(policy)
+        .expect("configuration phase begins");
+    let error = rejected
+        .select_item_current(SECOND)
+        .expect_err("semantic input cannot follow terminal configuration");
+    assert_eq!(error.kind(), DockspaceRuntimeErrorKind::HostProtocol);
+    drop(rejected);
+    assert_eq!(session.policy(), &initial_policy);
+    assert_eq!(session.presentation_config(), &initial_presentation);
 }

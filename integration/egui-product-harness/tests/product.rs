@@ -1257,3 +1257,49 @@ fn default_features_contained_title_redocks_through_the_canonical_guide() {
     );
     assert!(dockspace.view().contained(FLOATING).is_none());
 }
+
+#[test]
+fn default_features_replace_policy_and_style_atomically() {
+    let mut dockspace = Dockspace::builder("product-online-configuration", layout())
+        .build()
+        .expect("the product configuration facade initializes");
+    let initial_style = dockspace.style().clone();
+    let mut replacement_style = initial_style.clone();
+    replacement_style.tab_bar_height += 8.0;
+    replacement_style.tab_active_fill = egui::Color32::from_rgb(12, 34, 56);
+
+    let style_mutation = dockspace
+        .set_style(replacement_style.clone())
+        .expect("valid style replacement commits");
+    assert_eq!(dockspace.style(), &replacement_style);
+    assert!(!style_mutation.workspace_changed());
+    assert!(style_mutation.published_state_changed());
+    assert_eq!(style_mutation.affected_surfaces(), &[SURFACE]);
+
+    let version_before_visual_only_style = dockspace.version();
+    let mut visual_only_style = replacement_style.clone();
+    visual_only_style.tab_active_fill = egui::Color32::from_rgb(78, 90, 123);
+    let visual_only_mutation = dockspace
+        .set_style(visual_only_style.clone())
+        .expect("visual-only style replacement commits");
+    assert_eq!(dockspace.version(), version_before_visual_only_style);
+    assert_eq!(dockspace.style(), &visual_only_style);
+    assert!(!visual_only_mutation.workspace_changed());
+    assert!(visual_only_mutation.published_state_changed());
+    assert_eq!(visual_only_mutation.affected_surfaces(), &[SURFACE]);
+
+    let mut replacement_policy = dockspace.policy().clone();
+    replacement_policy.set_allow_tab_merge(false);
+    let policy_mutation = dockspace
+        .set_policy(replacement_policy.clone())
+        .expect("valid policy replacement commits");
+    assert_eq!(dockspace.policy(), &replacement_policy);
+    assert!(policy_mutation.published_state_changed());
+
+    let version_before_invalid_style = dockspace.version();
+    let mut invalid_style = visual_only_style.clone();
+    invalid_style.tab_min_width = invalid_style.tab_max_width + 1.0;
+    assert!(dockspace.set_style(invalid_style).is_err());
+    assert_eq!(dockspace.version(), version_before_invalid_style);
+    assert_eq!(dockspace.style(), &visual_only_style);
+}

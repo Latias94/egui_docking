@@ -33,6 +33,16 @@ impl DockspaceMutation {
         }
     }
 
+    pub(crate) fn include_adapter_presentation_change(
+        &mut self,
+        surfaces: impl IntoIterator<Item = SurfaceId>,
+    ) {
+        self.published_state_changed = true;
+        self.affected_surfaces.extend(surfaces);
+        self.affected_surfaces.sort_unstable();
+        self.affected_surfaces.dedup();
+    }
+
     /// Returns the durable workspace version before publication.
     #[must_use]
     pub const fn before(&self) -> WorkspaceVersion {
