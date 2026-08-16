@@ -46,6 +46,7 @@ use self::contained_geometry::{
     clamp_contained_rect, clamp_moved_contained_rect, contained_resize_edges,
     contained_transform_requested_rect, translated_contained_rect,
 };
+pub(crate) use self::input::LocalTabChromeAction;
 use self::input::TabScrollAdjustmentKind;
 pub use self::input::{
     EngineInput, LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase,

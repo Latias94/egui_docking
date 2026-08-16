@@ -329,7 +329,46 @@ pub enum LocalContainedGesturePhase {
     Cancel,
 }
 
+/// One current-frame tab-strip or tab-list-menu action prepared from an exact
+/// Ready paint candidate.
+///
+/// The runtime facade keeps this type private. It carries the structural
+/// records required for core revalidation without exposing scene or popup
+/// authority to renderer adapters.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LocalTabChromeAction {
+    /// Activate one exact scroll or tab-list-menu control.
+    ActivateControl(FrozenTabStripControlClick),
+    /// Select one exact row from the active tab-list menu.
+    ActivateMenuRow(FrozenTabListMenuRowClick),
+    /// Dismiss the exact active tab-list menu.
+    DismissMenu {
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        record: TabListMenuRecord,
+        backdrop: TabListMenuBackdropRecord,
+    },
+    /// Scroll the exact active tab-list menu.
+    ScrollMenu {
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        record: TabListMenuRecord,
+        adjustment: TabScrollAdjustment,
+    },
+    /// Move focus within the exact active tab-list menu.
+    NavigateMenu {
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        record: TabListMenuRecord,
+        target: ItemId,
+    },
+}
+
 /// Input accepted by the U3 engine boundary.
+#[allow(
+    private_interfaces,
+    reason = "test-only raw engine exposure retains sealed product action payloads"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineInput {
     /// Bind an existing adapter window to a current logical surface.
@@ -545,6 +584,15 @@ pub enum EngineInput {
         scene: SurfaceSceneStamp,
         /// Stable tab identity exposed by that candidate.
         tab: crate::scene::TabSceneId,
+    },
+    /// Apply one current-frame tab-strip or popup action from an exact Ready candidate.
+    ApplyLocalTabChromeAction {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Opaque control, row, dismissal, scroll, or navigation action.
+        action: LocalTabChromeAction,
     },
     /// Deliver one keyboard or accessibility action to an exact presented receiver.
     ActivateSemanticReceiver {
@@ -766,6 +814,7 @@ impl EngineInput {
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }
             | Self::SelectLocalSceneTab { .. }
+            | Self::ApplyLocalTabChromeAction { .. }
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::AdjustLocalSplitterResize { .. }

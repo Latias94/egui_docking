@@ -6,14 +6,18 @@ use crate::model::{
 use crate::policy::DockPolicy;
 use crate::runtime::{
     DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostInputOutcome,
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment,
-    SurfaceUnavailableReason, UniformSurfaceMetrics,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfaceSplitterAdjustment, SurfaceUnavailableReason,
+    TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
+    TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
+const THIRD: ItemId = ItemId::new(3);
+const FOURTH: ItemId = ItemId::new(4);
 
 fn session() -> DockspaceSession {
     let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
@@ -41,6 +45,19 @@ fn split_session() -> DockspaceSession {
     .expect("surface-action split layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("surface-action split session initializes")
+}
+
+fn overflow_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(
+            ROOT,
+            DockspaceNode::central_tabs([FIRST, SECOND, THIRD, FOURTH]),
+        ),
+    )])
+    .expect("overflow surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("overflow surface-action session initializes")
 }
 
 fn split_weights(session: &DockspaceSession) -> Vec<f32> {
@@ -72,6 +89,59 @@ fn install_ready_candidate(session: &mut DockspaceSession) {
         .measure_surface(SURFACE, metrics())
         .expect("surface measurement succeeds");
     frame.commit().expect("ready candidate commits");
+}
+
+fn overflow_measurement(request: SurfaceMeasurementRequest) -> SurfaceMeasurementAnswer {
+    match request {
+        SurfaceMeasurementRequest::DockBounds { .. }
+        | SurfaceMeasurementRequest::PopupPlaneBounds { .. } => SurfaceMeasurementAnswer::Bounds(
+            LogicalRect::new(0.0, 0.0, 260.0, 180.0).expect("overflow bounds validate"),
+        ),
+        SurfaceMeasurementRequest::PaneMinimum { .. } => SurfaceMeasurementAnswer::PaneMinimum(
+            LogicalSize::new(64.0, 48.0).expect("overflow pane minimum validates"),
+        ),
+        SurfaceMeasurementRequest::TabIntrinsic { .. } => {
+            SurfaceMeasurementAnswer::TabIntrinsic(88.0)
+        }
+        SurfaceMeasurementRequest::TabStrip { .. } => {
+            let controls = TabStripControlMetrics::new(4.0)
+                .expect("overflow control spacing validates")
+                .with_scroll_backward(
+                    TabStripControlMetric::new(18.0, TabStripControlPlacement::OverlayLeading)
+                        .expect("backward control validates"),
+                )
+                .with_scroll_forward(
+                    TabStripControlMetric::new(18.0, TabStripControlPlacement::OverlayTrailing)
+                        .expect("forward control validates"),
+                )
+                .with_tab_list_menu(
+                    TabStripControlMetric::new(20.0, TabStripControlPlacement::ReservedTrailing)
+                        .expect("menu control validates"),
+                );
+            let menu = TabListMenuMetrics::new(24.0, 8.0, 8.0, 2.0, 92.0, 10.0)
+                .expect("menu metrics validate");
+            SurfaceMeasurementAnswer::TabStrip(
+                TabStripMetrics::new(0.0, 0.0)
+                    .expect("overflow strip metrics validate")
+                    .with_controls(controls)
+                    .with_tab_list_menu(menu),
+            )
+        }
+    }
+}
+
+fn measure_overflow_surface(frame: &mut crate::runtime::DockspaceHostFrame<'_>) {
+    frame
+        .measure_surface_with(SURFACE, overflow_measurement)
+        .expect("overflow surface measurement succeeds");
+}
+
+fn install_overflow_candidate(session: &mut DockspaceSession) {
+    let mut frame = session
+        .begin_host_frame()
+        .expect("overflow measurement frame begins");
+    measure_overflow_surface(&mut frame);
+    frame.commit().expect("overflow candidate commits");
 }
 
 fn prepare_tab_select(session: &mut DockspaceSession, item: ItemId) -> PreparedSurfaceAction {
@@ -315,4 +385,88 @@ fn exact_surface_splitter_adjustment_uses_the_local_ready_candidate() {
     frame.commit().expect("the adjustment frame commits");
 
     assert!(split_weights(&session)[0] > before[0]);
+}
+
+#[test]
+fn exact_surface_tab_list_actions_open_and_select_from_the_current_candidate() {
+    let mut session = overflow_session();
+    install_overflow_candidate(&mut session);
+
+    let mut prepare = session
+        .begin_host_frame()
+        .expect("overflow control paint frame begins");
+    let plan = prepare
+        .paint_plan(SURFACE)
+        .expect("overflow control plan lookup succeeds")
+        .expect("overflow control plan is paintable");
+    let control = plan
+        .tab_strip_controls()
+        .find(|control| control.kind() == TabStripControlKind::TabListMenu)
+        .expect("overflow plan exposes the menu control");
+    let open = plan
+        .prepare_tab_strip_control_activation(control)
+        .expect("enabled menu control prepares an action");
+    prepare
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the control plan is retained");
+    prepare.commit().expect("control paint frame commits");
+
+    let mut open_frame = session
+        .begin_host_frame()
+        .expect("menu open action frame begins");
+    open_frame
+        .submit_surface_action(open)
+        .expect("menu open action is accepted");
+    open_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("menu open defers remeasurement");
+    open_frame.commit().expect("menu open action commits");
+
+    let mut publish_menu = session
+        .begin_host_frame()
+        .expect("menu publication frame begins");
+    measure_overflow_surface(&mut publish_menu);
+    publish_menu.commit().expect("menu candidate commits");
+
+    let mut prepare_row = session
+        .begin_host_frame()
+        .expect("menu row paint frame begins");
+    let plan = prepare_row
+        .paint_plan(SURFACE)
+        .expect("menu plan lookup succeeds")
+        .expect("menu plan is paintable");
+    let menu = plan
+        .tab_list_menus()
+        .next()
+        .expect("the tab-list menu is open");
+    let row = menu
+        .rows()
+        .find(|row| row.item() == FOURTH)
+        .expect("the fourth item has a menu row");
+    let select = plan
+        .prepare_tab_list_menu_row_activation(row)
+        .expect("the visible menu row prepares an action");
+    prepare_row
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the menu plan is retained");
+    prepare_row.commit().expect("menu row paint frame commits");
+
+    let mut select_frame = session
+        .begin_host_frame()
+        .expect("menu selection frame begins");
+    select_frame
+        .submit_surface_action(select)
+        .expect("menu row action is accepted");
+    select_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("menu selection defers remeasurement");
+    select_frame.commit().expect("menu row selection commits");
+
+    assert!(
+        session
+            .view()
+            .item(FOURTH)
+            .expect("fourth item remains open")
+            .is_selected()
+    );
 }

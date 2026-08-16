@@ -1,14 +1,20 @@
 //! Opaque framework gesture preparation over one exact paint plan.
 
 use crate::ids::{FloatingPresentationId, ItemId};
+use crate::interaction::{FrozenTabListMenuRowClick, FrozenTabStripControlClick};
 use crate::scene::{
     ContainedResizeDirection as CoreContainedResizeDirection, SplitterResizeTarget,
 };
+use crate::tab_strip::TabStripStateKey;
 
 use super::super::{
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment, SurfaceTabNavigation,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment,
+    SurfaceTabListNavigation, SurfaceTabNavigation,
 };
-use super::{DockspaceVisualId, SurfacePaintPlan, VisualIdentity};
+use super::{
+    DockspaceVisualId, SurfacePaintPlan, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
+    TabListMenuRowPaintRecord, TabStripControlPaintRecord, VisualIdentity,
+};
 
 /// Product-facing direction of one contained-floating resize handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,6 +66,162 @@ impl ContainedResizeDirection {
 }
 
 impl SurfacePaintPlan<'_> {
+    /// Prepares activation of one exact current-frame tab-strip control.
+    #[must_use]
+    pub fn prepare_tab_strip_control_activation(
+        self,
+        control: TabStripControlPaintRecord,
+    ) -> Option<PreparedSurfaceAction> {
+        let record = self
+            .plan
+            .tab_strip_control_records()
+            .iter()
+            .copied()
+            .find(|record| *record == control.record && record.enabled())?;
+        let key = TabStripStateKey::new(self.surface, record.id().bar());
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::ActivateControl(FrozenTabStripControlClick {
+                key,
+                record,
+            }),
+        ))
+    }
+
+    /// Prepares activation of one exact current-frame tab-list row.
+    #[must_use]
+    pub fn prepare_tab_list_menu_row_activation(
+        self,
+        row: TabListMenuRowPaintRecord,
+    ) -> Option<PreparedSurfaceAction> {
+        let menu = self
+            .plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|menu| menu.session() == row.session)?;
+        let record = menu
+            .rows()
+            .iter()
+            .copied()
+            .find(|record| *record == row.record)?;
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::ActivateMenuRow(FrozenTabListMenuRowClick {
+                session: row.session,
+                record,
+                revision: self.plan.popup().revision(),
+            }),
+        ))
+    }
+
+    /// Prepares dismissal of the exact open tab-list menu covered by `backdrop`.
+    #[must_use]
+    pub fn prepare_tab_list_menu_dismiss(
+        self,
+        backdrop: TabListMenuBackdropPaintRecord,
+    ) -> Option<PreparedSurfaceAction> {
+        let record = self
+            .plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| record.session() == backdrop.record.session())?
+            .clone();
+        let projected = self
+            .plan
+            .tab_list_menu_backdrop_records()
+            .iter()
+            .copied()
+            .find(|record| *record == backdrop.record)?;
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::DismissMenu {
+                session: projected.session(),
+                revision: projected.revision(),
+                record,
+                backdrop: projected,
+            },
+        ))
+    }
+
+    /// Prepares a finite logical scroll adjustment for one exact open tab-list menu.
+    #[must_use]
+    pub fn prepare_tab_list_menu_scroll_by(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+        delta: f64,
+    ) -> Option<PreparedSurfaceAction> {
+        let adjustment =
+            crate::engine::TabScrollAdjustment::scroll_by_preserving(delta, []).ok()?;
+        self.prepare_tab_list_menu_scroll(menu, adjustment)
+    }
+
+    /// Prepares the minimum scroll needed to reveal one exact menu row.
+    #[must_use]
+    pub fn prepare_tab_list_menu_reveal(
+        self,
+        row: TabListMenuRowPaintRecord,
+    ) -> Option<PreparedSurfaceAction> {
+        let menu = self
+            .tab_list_menus()
+            .find(|menu| menu.record.session() == row.session)?;
+        self.prepare_tab_list_menu_scroll(
+            menu,
+            crate::engine::TabScrollAdjustment::reveal_item(row.item()),
+        )
+    }
+
+    /// Prepares one clamped focus move within an exact open tab-list menu.
+    #[must_use]
+    pub fn prepare_tab_list_menu_navigation(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+        navigation: SurfaceTabListNavigation,
+    ) -> Option<PreparedSurfaceAction> {
+        let record = self.current_tab_list_menu(menu)?;
+        let rows = record.rows();
+        let current = rows.iter().position(|row| row.focused())?;
+        let last = rows.len().checked_sub(1)?;
+        let target = match navigation {
+            SurfaceTabListNavigation::Previous => rows[current.saturating_sub(1)].tab().item,
+            SurfaceTabListNavigation::Next => rows[current.saturating_add(1).min(last)].tab().item,
+            SurfaceTabListNavigation::First => rows[0].tab().item,
+            SurfaceTabListNavigation::Last => rows[last].tab().item,
+        };
+        self.prepare_tab_list_menu_focus(menu, target)
+    }
+
+    /// Prepares focus of one exact item in an open tab-list menu.
+    #[must_use]
+    pub fn prepare_tab_list_menu_focus(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+        item: ItemId,
+    ) -> Option<PreparedSurfaceAction> {
+        let record = self.current_tab_list_menu(menu)?;
+        record
+            .rows()
+            .iter()
+            .any(|row| row.tab().item == item)
+            .then_some(())?;
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::NavigateMenu {
+                session: record.session(),
+                revision: self.plan.popup().revision(),
+                record,
+                target: item,
+            },
+        ))
+    }
+
     /// Prepares navigation within the exact tab strip which owns `item`.
     #[must_use]
     pub fn prepare_tab_navigation(
@@ -293,6 +455,36 @@ impl SurfacePaintPlan<'_> {
             crate::intent::ContainedGestureKind::Resize(direction),
             contained_gesture_phase(self.scene, phase),
         ))
+    }
+
+    fn prepare_tab_list_menu_scroll(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+        adjustment: crate::engine::TabScrollAdjustment,
+    ) -> Option<PreparedSurfaceAction> {
+        let record = self.current_tab_list_menu(menu)?;
+        Some(PreparedSurfaceAction::tab_chrome(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            crate::engine::LocalTabChromeAction::ScrollMenu {
+                session: record.session(),
+                revision: self.plan.popup().revision(),
+                record,
+                adjustment,
+            },
+        ))
+    }
+
+    fn current_tab_list_menu(
+        self,
+        menu: TabListMenuPaintRecord<'_>,
+    ) -> Option<crate::scene::TabListMenuRecord> {
+        self.plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| *record == menu.record)
+            .cloned()
     }
 }
 

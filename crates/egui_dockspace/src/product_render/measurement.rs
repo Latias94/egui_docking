@@ -43,14 +43,31 @@ impl PaintResources {
     ) -> Self {
         let mut resources = Self::default();
         for tab in plan.tabs() {
-            let resource = shape_tab(ui, panes, style, tab.item());
-            if resource.missing {
-                resources.missing.insert(tab.item());
-            }
-            resources.items.insert(tab.item(), resource.clone());
-            resources.tabs.insert(tab.visual_id(), resource);
+            resources.insert_tab(tab.visual_id(), tab.item(), ui, panes, style);
+        }
+        for row in plan.tab_list_menus().flat_map(|menu| menu.rows()) {
+            resources.insert_tab(row.tab_visual_id(), row.item(), ui, panes, style);
         }
         resources
+    }
+
+    fn insert_tab(
+        &mut self,
+        visual: DockspaceVisualId,
+        item: ItemId,
+        ui: &Ui,
+        panes: &dyn PaneView,
+        style: &DockStyle,
+    ) {
+        let resource = self.items.get(&item).cloned().unwrap_or_else(|| {
+            let resource = shape_tab(ui, panes, style, item);
+            if resource.missing {
+                self.missing.insert(item);
+            }
+            self.items.insert(item, resource.clone());
+            resource
+        });
+        self.tabs.insert(visual, resource);
     }
 
     pub(crate) fn tab(&self, visual: DockspaceVisualId) -> Option<&TabPaintResource> {

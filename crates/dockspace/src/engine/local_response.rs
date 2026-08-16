@@ -93,6 +93,71 @@ impl DockEngine {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_tab_chrome_action(
+        &mut self,
+        cause: ReductionCause,
+        focus_causal: FocusCausalStamp,
+        expected: WorkspaceVersion,
+        application_base: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        action: &LocalTabChromeAction,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+        let plan = match self.local_response_candidate(scene) {
+            Ok(candidate) => candidate.plan().clone(),
+            Err(error) => return Ok(self.local_response_rejection(error)),
+        };
+        let outcome = match action {
+            LocalTabChromeAction::ActivateControl(control) => {
+                self.finish_journal_tab_strip_control(cause, control, &plan)?
+            }
+            LocalTabChromeAction::ActivateMenuRow(row) => self.finish_journal_tab_list_menu_row(
+                cause,
+                focus_causal,
+                row,
+                &plan,
+                policy,
+                events,
+            )?,
+            LocalTabChromeAction::DismissMenu {
+                session,
+                revision,
+                record,
+                backdrop,
+            } => self.finish_tab_list_menu_dismiss(
+                cause, &plan, *session, *revision, record, *backdrop,
+            )?,
+            LocalTabChromeAction::ScrollMenu {
+                session,
+                revision,
+                record,
+                adjustment,
+            } => self.finish_tab_list_menu_scroll(
+                cause, &plan, *session, *revision, record, adjustment,
+            )?,
+            LocalTabChromeAction::NavigateMenu {
+                session,
+                revision,
+                record,
+                target,
+            } => self.finish_tab_list_menu_navigation(
+                cause, &plan, *session, *revision, record, *target,
+            )?,
+        };
+        Ok(InputOutcome::InteractionProcessed {
+            outcome,
+            version: self.version,
+        })
+    }
+
     pub(super) fn reduce_local_scene_close_input(
         &mut self,
         input: InputSequence,

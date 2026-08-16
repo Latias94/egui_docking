@@ -921,6 +921,73 @@ impl<'frame> SurfacePaintPlan<'frame> {
         )
     }
 
+    /// Returns the exact receiver for one core-owned tab-strip control.
+    #[must_use]
+    pub fn receiver_for_tab_strip_control(
+        self,
+        control: TabStripControlPaintRecord,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let control_id = control.record.id();
+        self.receiver(|kind| {
+            matches!(kind, PresentationHitRegionKind::TabStripControl(id) if id == control_id)
+        })
+    }
+
+    /// Returns the exact receiver for one visible tab-list menu row.
+    #[must_use]
+    pub fn receiver_for_tab_list_menu_row(
+        self,
+        row: TabListMenuRowPaintRecord,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let session = row.session;
+        let tab = row.record.tab();
+        self.receiver(|kind| {
+            matches!(
+                kind,
+                PresentationHitRegionKind::TabListMenuRow {
+                    menu: candidate,
+                    tab: candidate_tab,
+                } if candidate == session && candidate_tab == tab
+            )
+        })
+    }
+
+    /// Returns the blocker receiver covering one open tab-list menu frame.
+    #[must_use]
+    pub fn receiver_for_tab_list_menu_frame(
+        self,
+        menu: TabListMenuPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let session = menu.record.session();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuBlocker(id) if id == session),
+        )
+    }
+
+    /// Returns the scroll receiver for one open tab-list menu.
+    #[must_use]
+    pub fn receiver_for_tab_list_menu_scroll(
+        self,
+        menu: TabListMenuPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let session = menu.record.session();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuScroll(id) if id == session),
+        )
+    }
+
+    /// Returns the full-surface backdrop receiver for one open tab-list menu.
+    #[must_use]
+    pub fn receiver_for_tab_list_menu_backdrop(
+        self,
+        backdrop: TabListMenuBackdropPaintRecord,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let session = backdrop.record.session();
+        self.receiver(
+            |kind| matches!(kind, PresentationHitRegionKind::TabListMenuBackdrop(id) if id == session),
+        )
+    }
+
     /// Returns the exact receiver for one painted splitter handle.
     #[must_use]
     pub fn receiver_for_splitter(

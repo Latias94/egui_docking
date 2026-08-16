@@ -1459,6 +1459,20 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::ApplyLocalTabChromeAction {
+                expected,
+                scene,
+                action,
+            } => self.reduce_local_tab_chrome_action(
+                cause,
+                focus_causal,
+                *expected,
+                *application_base,
+                *scene,
+                action,
+                tick_start.policy,
+                events,
+            ),
             EngineInput::ActivateSemanticReceiver { expected, event } => self
                 .reduce_semantic_receiver_input(
                     input.sequence,

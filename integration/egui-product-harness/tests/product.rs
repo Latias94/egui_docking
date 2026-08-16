@@ -1,8 +1,8 @@
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
 use egui_dockspace::{
-    CloseDecision, ClosePlanTarget, Dockspace, DockspaceActionOutcome, DockspaceActionStatus,
-    DockspaceAxis, DockspaceCloseRequest, DockspaceCloseRequestRejection,
+    CloseDecision, ClosePlanTarget, DockStyle, Dockspace, DockspaceActionOutcome,
+    DockspaceActionStatus, DockspaceAxis, DockspaceCloseRequest, DockspaceCloseRequestRejection,
     DockspaceCloseRequestStatus, DockspaceContainedLayout, DockspaceLayout, DockspaceNode,
     DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
     PaneView, RootId, SurfaceId,
@@ -14,6 +14,8 @@ const FLOATING_ROOT: RootId = RootId::new(2);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
+const THIRD: ItemId = ItemId::new(3);
+const FOURTH: ItemId = ItemId::new(4);
 
 struct Panes;
 
@@ -22,6 +24,8 @@ impl PaneView for Panes {
         match item {
             FIRST => Some("First".into()),
             SECOND => Some("Second".into()),
+            THIRD => Some("Third".into()),
+            FOURTH => Some("Fourth".into()),
             _ => None,
         }
     }
@@ -37,6 +41,17 @@ fn layout() -> DockspaceLayout {
         DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, SECOND])),
     )])
     .expect("the product fixture is valid")
+}
+
+fn overflow_layout() -> DockspaceLayout {
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(
+            ROOT,
+            DockspaceNode::central_tabs([FIRST, SECOND, THIRD, FOURTH]),
+        ),
+    )])
+    .expect("the overflow product fixture is valid")
 }
 
 fn split_layout() -> DockspaceLayout {
@@ -164,7 +179,14 @@ fn accesskit_node<'a>(
         .find_map(|(id, node)| {
             (node.role() == role && node.label() == Some(label)).then_some((*id, node))
         })
-        .expect("the requested accessibility node is present")
+        .unwrap_or_else(|| {
+            let nodes = tree
+                .nodes
+                .iter()
+                .map(|(_, node)| (node.role(), node.label().map(str::to_owned)))
+                .collect::<Vec<_>>();
+            panic!("missing accessibility node {role:?} {label:?}; nodes={nodes:?}")
+        })
 }
 
 fn tab_center(output: &egui::FullOutput, label: &str) -> Pos2 {
@@ -521,6 +543,104 @@ fn default_features_click_selects_a_tab() {
     );
 
     assert_eq!(selected(&dockspace), Some(SECOND));
+}
+
+#[test]
+fn default_features_overflow_menu_opens_and_selects_hidden_tab() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut style = DockStyle::default();
+    style.tab_min_width = 220.0;
+    style.tab_max_width = 220.0;
+    let mut dockspace = Dockspace::builder("product-overflow-menu", overflow_layout())
+        .style(style)
+        .build()
+        .expect("the overflow product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (control, control_node) = accesskit_node(&stable.output, Role::Button, "Show hidden tabs");
+    assert!(control_node.supports_action(Action::Click));
+    let control_point = node_center(&stable.output, Role::Button, "Show hidden tabs");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(control_point),
+            pointer_button(control_point, true),
+            pointer_button(control_point, false),
+        ],
+    );
+    let menu = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (row, row_node) = accesskit_node(&menu.output, Role::MenuItem, "Fourth");
+    assert!(row_node.supports_action(Action::Click));
+    assert!(row_node.supports_action(Action::ScrollIntoView));
+    let row_point = node_center(&menu.output, Role::MenuItem, "Fourth");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(row_point),
+            pointer_button(row_point, true),
+            pointer_button(row_point, false),
+        ],
+    );
+
+    assert!(
+        dockspace
+            .view()
+            .item(FOURTH)
+            .expect("fourth item remains open")
+            .is_selected(),
+        "activating a menu row selects the hidden item"
+    );
+    let _ = (control, row);
+}
+
+#[test]
+fn default_features_overflow_menu_supports_accesskit_and_keyboard() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut style = DockStyle::default();
+    style.tab_min_width = 220.0;
+    style.tab_max_width = 220.0;
+    let mut dockspace = Dockspace::builder("product-overflow-menu-inputs", overflow_layout())
+        .style(style)
+        .build()
+        .expect("the overflow product facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (control, control_node) = accesskit_node(&stable.output, Role::Button, "Show hidden tabs");
+    assert!(control_node.supports_action(Action::Click));
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(control, Action::Click)],
+    );
+
+    let menu = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, row_node) = accesskit_node(&menu.output, Role::MenuItem, "Fourth");
+    assert!(row_node.supports_action(Action::Focus));
+    assert!(row_node.supports_action(Action::ScrollIntoView));
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::End));
+    let _ = run_frame(&context, &mut dockspace, &mut panes, key_press(Key::Enter));
+
+    assert!(
+        dockspace
+            .view()
+            .item(FOURTH)
+            .expect("fourth item remains open")
+            .is_selected(),
+        "keyboard activation selects the focused hidden item"
+    );
 }
 
 #[test]

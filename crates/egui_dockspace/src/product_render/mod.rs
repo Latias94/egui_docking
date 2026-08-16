@@ -6,6 +6,7 @@ mod geometry;
 mod guides;
 mod measurement;
 mod splitters;
+mod tab_chrome;
 mod tabs;
 
 use std::collections::BTreeSet;
@@ -165,6 +166,8 @@ pub(crate) fn paint_surface(
             splitters::paint_root(&mut context, record.root());
             contained::paint_controls(&mut context, record);
         }
+
+        tab_chrome::paint(&mut context);
 
         let drag_preview_required = context.plan.drag_preview().is_some();
         let drag_preview_painted = paint_preview(context.ui, context.plan, context.style);

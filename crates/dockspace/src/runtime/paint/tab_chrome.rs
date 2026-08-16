@@ -70,8 +70,8 @@ impl TabStripControlPaintRecord {
 /// Read-only row within one core-owned tab-list popup.
 #[derive(Debug, Clone, Copy)]
 pub struct TabListMenuRowPaintRecord {
-    session: TabListMenuSessionId,
-    record: TabListMenuRowRecord,
+    pub(super) session: TabListMenuSessionId,
+    pub(super) record: TabListMenuRowRecord,
 }
 
 impl TabListMenuRowPaintRecord {

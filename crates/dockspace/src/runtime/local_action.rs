@@ -4,8 +4,10 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::engine::EngineInput;
-use crate::engine::{LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabGesturePhase};
+use crate::engine::{
+    EngineInput, LocalContainedGesturePhase, LocalSplitterGesturePhase, LocalTabChromeAction,
+    LocalTabGesturePhase,
+};
 use crate::geometry::LogicalPoint;
 use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId};
 use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
@@ -37,6 +39,19 @@ impl SurfaceTabNavigation {
             Self::Last => crate::tab_strip::TabNavigation::Last,
         }
     }
+}
+
+/// Product-facing navigation within one exact open tab-list menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceTabListNavigation {
+    /// Move focus to the preceding row, clamped at the first row.
+    Previous,
+    /// Move focus to the following row, clamped at the last row.
+    Next,
+    /// Move focus to the first row.
+    First,
+    /// Move focus to the last row.
+    Last,
 }
 
 /// Product-facing signed adjustment of one exact splitter.
@@ -238,6 +253,20 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn tab_chrome(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        action: LocalTabChromeAction,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::TabChrome { scene, action },
+        }
+    }
+
     /// Returns the published workspace version from which the action was prepared.
     #[must_use]
     pub const fn expected_version(&self) -> WorkspaceVersion {
@@ -256,6 +285,7 @@ impl PreparedSurfaceAction {
         match self.action {
             SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
             SurfaceAction::Close { .. }
+            | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::CancelWithEscape
             | SurfaceAction::LocalTabGesture { .. }
@@ -283,6 +313,11 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 scene,
                 target,
+            },
+            SurfaceAction::TabChrome { scene, action } => EngineInput::ApplyLocalTabChromeAction {
+                expected: self.expected,
+                scene,
+                action,
             },
             SurfaceAction::LocalTabGesture { source, phase } => EngineInput::LocalTabGesture {
                 expected: self.expected,
@@ -360,6 +395,10 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         target: CloseSceneTarget,
     },
+    TabChrome {
+        scene: SurfaceSceneStamp,
+        action: LocalTabChromeAction,
+    },
     LocalTabGesture {
         source: TabGestureSource,
         phase: LocalTabGesturePhase,
@@ -392,6 +431,7 @@ impl SurfaceAction {
         match self {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
+            Self::TabChrome { .. } => "tab-chrome",
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",
             Self::LocalContainedGesture { .. } => "contained-gesture",

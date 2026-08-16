@@ -531,56 +531,14 @@ impl DockEngine {
     ) -> Result<InputOutcome, EngineError> {
         let outcome = match self.prepared_tab_strip_plan(prepared.presentation) {
             Err(rejection) => InteractionOutcome::Rejected(rejection),
-            Ok(plan) => {
-                if let Err(rejection) =
-                    self.validate_tab_list_menu_popup(&plan, prepared.session, prepared.revision)
-                {
-                    InteractionOutcome::Rejected(rejection)
-                } else {
-                    let menu = plan
-                        .tab_list_menu_records()
-                        .iter()
-                        .find(|record| record.session() == prepared.session);
-                    let backdrop = plan
-                        .tab_list_menu_backdrop_records()
-                        .iter()
-                        .find(|record| record.session() == prepared.session);
-                    if menu != Some(&prepared.record) {
-                        InteractionOutcome::Rejected(
-                            InteractionRejection::TabListMenuRecordChanged {
-                                session: prepared.session,
-                            },
-                        )
-                    } else if backdrop.copied() != Some(prepared.backdrop) {
-                        InteractionOutcome::Rejected(
-                            InteractionRejection::TabListMenuBackdropRecordChanged {
-                                session: prepared.session,
-                            },
-                        )
-                    } else if !self
-                        .presentation_authority
-                        .tab_strip_states
-                        .active_menu_for(prepared.session.key())
-                        .is_some_and(|active| active.session() == prepared.session)
-                    {
-                        InteractionOutcome::Rejected(
-                            InteractionRejection::TabListMenuSessionUnavailable {
-                                session: prepared.session,
-                            },
-                        )
-                    } else {
-                        let mut states = self.presentation_authority.tab_strip_states.clone();
-                        let delta = states
-                            .close_tab_list_menu(prepared.session)
-                            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
-                        self.presentation_authority.tab_strip_states = states;
-                        self.consume_tab_strip_state_delta(cause, &delta)?;
-                        InteractionOutcome::TabListMenuDismissed {
-                            session: prepared.session,
-                        }
-                    }
-                }
-            }
+            Ok(plan) => self.finish_tab_list_menu_dismiss(
+                cause,
+                &plan,
+                prepared.session,
+                prepared.revision,
+                &prepared.record,
+                prepared.backdrop,
+            )?,
         };
         Ok(InputOutcome::InteractionProcessed {
             outcome,
@@ -623,24 +581,16 @@ impl DockEngine {
         cause: ReductionCause,
         prepared: &PreparedTabListMenuScroll,
     ) -> Result<InputOutcome, EngineError> {
-        let outcome = match self.resolve_prepared_tab_list_menu_scroll(prepared) {
+        let outcome = match self.prepared_tab_strip_plan(prepared.presentation) {
             Err(rejection) => InteractionOutcome::Rejected(rejection),
-            Ok(offset) => {
-                let mut states = self.presentation_authority.tab_strip_states.clone();
-                let delta = states
-                    .set_active_menu_scroll_offset(prepared.session, offset)
-                    .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
-                let changed = delta.state_changed();
-                if changed {
-                    self.presentation_authority.tab_strip_states = states;
-                    self.consume_tab_strip_state_delta(cause, &delta)?;
-                }
-                InteractionOutcome::TabListMenuScrolled {
-                    session: prepared.session,
-                    offset,
-                    changed,
-                }
-            }
+            Ok(plan) => self.finish_tab_list_menu_scroll(
+                cause,
+                &plan,
+                prepared.session,
+                prepared.revision,
+                &prepared.record,
+                &prepared.adjustment,
+            )?,
         };
         Ok(InputOutcome::InteractionProcessed {
             outcome,
@@ -653,33 +603,145 @@ impl DockEngine {
         cause: ReductionCause,
         prepared: &PreparedTabListMenuNavigation,
     ) -> Result<InputOutcome, EngineError> {
-        let outcome = match self.resolve_prepared_tab_list_menu_navigation(prepared) {
+        let outcome = match self.prepared_tab_strip_plan(prepared.presentation) {
             Err(rejection) => InteractionOutcome::Rejected(rejection),
-            Ok(offset) => {
-                let mut states = self.presentation_authority.tab_strip_states.clone();
-                let focus_delta = states
-                    .set_active_menu_focus(prepared.session, prepared.target)
-                    .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
-                let scroll_delta = states
-                    .set_active_menu_scroll_offset(prepared.session, offset)
-                    .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
-                let delta = focus_delta.merge(scroll_delta);
-                let changed = delta.state_changed();
-                if changed {
-                    self.presentation_authority.tab_strip_states = states;
-                    self.consume_tab_strip_state_delta(cause, &delta)?;
-                }
-                InteractionOutcome::TabListMenuFocusMoved {
-                    session: prepared.session,
-                    item: prepared.target,
-                    offset,
-                    changed,
-                }
-            }
+            Ok(plan) => self.finish_tab_list_menu_navigation(
+                cause,
+                &plan,
+                prepared.session,
+                prepared.revision,
+                &prepared.record,
+                prepared.target,
+            )?,
         };
         Ok(InputOutcome::InteractionProcessed {
             outcome,
             version: self.version,
+        })
+    }
+
+    pub(super) fn finish_tab_list_menu_dismiss(
+        &mut self,
+        cause: ReductionCause,
+        plan: &PresentationPlan,
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        expected_record: &TabListMenuRecord,
+        expected_backdrop: TabListMenuBackdropRecord,
+    ) -> Result<InteractionOutcome, EngineError> {
+        if let Err(rejection) = self.validate_tab_list_menu_popup(plan, session, revision) {
+            return Ok(InteractionOutcome::Rejected(rejection));
+        }
+        let menu = plan
+            .tab_list_menu_records()
+            .iter()
+            .find(|record| record.session() == session);
+        let backdrop = plan
+            .tab_list_menu_backdrop_records()
+            .iter()
+            .find(|record| record.session() == session);
+        if menu != Some(expected_record) {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::TabListMenuRecordChanged { session },
+            ));
+        }
+        if backdrop.copied() != Some(expected_backdrop) {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::TabListMenuBackdropRecordChanged { session },
+            ));
+        }
+        if !self
+            .presentation_authority
+            .tab_strip_states
+            .active_menu_for(session.key())
+            .is_some_and(|active| active.session() == session)
+        {
+            return Ok(InteractionOutcome::Rejected(
+                InteractionRejection::TabListMenuSessionUnavailable { session },
+            ));
+        }
+
+        let mut states = self.presentation_authority.tab_strip_states.clone();
+        let delta = states
+            .close_tab_list_menu(session)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        self.presentation_authority.tab_strip_states = states;
+        self.consume_tab_strip_state_delta(cause, &delta)?;
+        Ok(InteractionOutcome::TabListMenuDismissed { session })
+    }
+
+    pub(super) fn finish_tab_list_menu_scroll(
+        &mut self,
+        cause: ReductionCause,
+        plan: &PresentationPlan,
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        expected_record: &TabListMenuRecord,
+        adjustment: &TabScrollAdjustment,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let offset = match self.resolve_tab_list_menu_scroll(
+            plan,
+            session,
+            revision,
+            expected_record,
+            adjustment,
+        ) {
+            Ok(offset) => offset,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        let mut states = self.presentation_authority.tab_strip_states.clone();
+        let delta = states
+            .set_active_menu_scroll_offset(session, offset)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        let changed = delta.state_changed();
+        if changed {
+            self.presentation_authority.tab_strip_states = states;
+            self.consume_tab_strip_state_delta(cause, &delta)?;
+        }
+        Ok(InteractionOutcome::TabListMenuScrolled {
+            session,
+            offset,
+            changed,
+        })
+    }
+
+    pub(super) fn finish_tab_list_menu_navigation(
+        &mut self,
+        cause: ReductionCause,
+        plan: &PresentationPlan,
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        expected_record: &TabListMenuRecord,
+        target: ItemId,
+    ) -> Result<InteractionOutcome, EngineError> {
+        let offset = match self.resolve_tab_list_menu_navigation(
+            plan,
+            session,
+            revision,
+            expected_record,
+            target,
+        ) {
+            Ok(offset) => offset,
+            Err(rejection) => return Ok(InteractionOutcome::Rejected(rejection)),
+        };
+        let mut states = self.presentation_authority.tab_strip_states.clone();
+        let focus_delta = states
+            .set_active_menu_focus(session, target)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        let scroll_delta = states
+            .set_active_menu_scroll_offset(session, offset)
+            .map_err(|source| Self::tab_strip_state_invariant(cause, source))?;
+        let delta = focus_delta.merge(scroll_delta);
+        let changed = delta.state_changed();
+        if changed {
+            self.presentation_authority.tab_strip_states = states;
+            self.consume_tab_strip_state_delta(cause, &delta)?;
+        }
+        Ok(InteractionOutcome::TabListMenuFocusMoved {
+            session,
+            item: target,
+            offset,
+            changed,
         })
     }
 
@@ -759,33 +821,30 @@ impl DockEngine {
         }
     }
 
-    fn resolve_prepared_tab_list_menu_scroll(
+    fn resolve_tab_list_menu_scroll(
         &self,
-        prepared: &PreparedTabListMenuScroll,
+        plan: &PresentationPlan,
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        expected_record: &TabListMenuRecord,
+        adjustment: &TabScrollAdjustment,
     ) -> Result<f64, InteractionRejection> {
-        let plan = self.prepared_tab_strip_plan_ref(prepared.presentation)?;
-        self.validate_tab_list_menu_popup(plan, prepared.session, prepared.revision)?;
+        self.validate_tab_list_menu_popup(plan, session, revision)?;
         let record = plan
             .tab_list_menu_records()
             .iter()
-            .find(|record| record.session() == prepared.session)
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable {
-                session: prepared.session,
-            })?;
-        if record != &prepared.record {
-            return Err(InteractionRejection::TabListMenuRecordChanged {
-                session: prepared.session,
-            });
+            .find(|record| record.session() == session)
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        if record != expected_record {
+            return Err(InteractionRejection::TabListMenuRecordChanged { session });
         }
         if !self
             .presentation_authority
             .tab_strip_states
-            .active_menu_for(prepared.session.key())
-            .is_some_and(|active| active.session() == prepared.session)
+            .active_menu_for(session.key())
+            .is_some_and(|active| active.session() == session)
         {
-            return Err(InteractionRejection::TabListMenuSessionUnavailable {
-                session: prepared.session,
-            });
+            return Err(InteractionRejection::TabListMenuSessionUnavailable { session });
         }
         let row = |item: ItemId| {
             record
@@ -793,12 +852,9 @@ impl DockEngine {
                 .iter()
                 .find(|row| row.tab().item == item)
                 .copied()
-                .ok_or(InteractionRejection::TabListMenuScrollItemUnavailable {
-                    session: prepared.session,
-                    item,
-                })
+                .ok_or(InteractionRejection::TabListMenuScrollItemUnavailable { session, item })
         };
-        match &prepared.adjustment.0 {
+        match &adjustment.0 {
             TabScrollAdjustmentKind::RevealItem(item) => {
                 let row = row(*item)?;
                 Ok(reveal_scroll_offset(
@@ -838,45 +894,42 @@ impl DockEngine {
         }
     }
 
-    fn resolve_prepared_tab_list_menu_navigation(
+    fn resolve_tab_list_menu_navigation(
         &self,
-        prepared: &PreparedTabListMenuNavigation,
+        plan: &PresentationPlan,
+        session: crate::tab_strip::TabListMenuSessionId,
+        revision: PopupRoutingRevision,
+        expected_record: &TabListMenuRecord,
+        target: ItemId,
     ) -> Result<f64, InteractionRejection> {
-        let plan = self.prepared_tab_strip_plan_ref(prepared.presentation)?;
-        self.validate_tab_list_menu_popup(plan, prepared.session, prepared.revision)?;
+        self.validate_tab_list_menu_popup(plan, session, revision)?;
         let record = plan
             .tab_list_menu_records()
             .iter()
-            .find(|record| record.session() == prepared.session)
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable {
-                session: prepared.session,
-            })?;
-        if record != &prepared.record {
-            return Err(InteractionRejection::TabListMenuRecordChanged {
-                session: prepared.session,
-            });
+            .find(|record| record.session() == session)
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        if record != expected_record {
+            return Err(InteractionRejection::TabListMenuRecordChanged { session });
         }
         let active = self
             .presentation_authority
             .tab_strip_states
-            .active_menu_for(prepared.session.key())
-            .filter(|active| active.session() == prepared.session)
-            .ok_or(InteractionRejection::TabListMenuSessionUnavailable {
-                session: prepared.session,
-            })?;
-        if !active.items().contains(&prepared.target) {
+            .active_menu_for(session.key())
+            .filter(|active| active.session() == session)
+            .ok_or(InteractionRejection::TabListMenuSessionUnavailable { session })?;
+        if !active.items().contains(&target) {
             return Err(InteractionRejection::TabListMenuFocusItemUnavailable {
-                session: prepared.session,
-                item: prepared.target,
+                session,
+                item: target,
             });
         }
         let row = record
             .rows()
             .iter()
-            .find(|row| row.tab().item == prepared.target)
+            .find(|row| row.tab().item == target)
             .ok_or(InteractionRejection::TabListMenuFocusItemUnavailable {
-                session: prepared.session,
-                item: prepared.target,
+                session,
+                item: target,
             })?;
         Ok(reveal_scroll_offset(
             record.scroll_offset(),
