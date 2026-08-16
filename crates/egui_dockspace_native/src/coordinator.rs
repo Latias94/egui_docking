@@ -1651,8 +1651,8 @@ impl NativeCoordinator {
         NativeHostWake::RepaintRoot
     }
 
-    pub(crate) fn freeze_after_fatal(&mut self, token: Option<NativeOutputToken>) {
-        let abandoned = self.bridge.freeze_after_fatal(token);
+    pub(crate) fn quarantine_after_fatal(&mut self, token: Option<NativeOutputToken>) {
+        let abandoned = self.bridge.quarantine_after_fatal(token);
         if abandoned && let Some(token) = token {
             self.receivers.abandon(token);
             self.pending_outputs.remove(&token);

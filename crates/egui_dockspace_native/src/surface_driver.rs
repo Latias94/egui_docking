@@ -308,7 +308,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         if let Some(token) = token {
             self.pass_actions.abandon(token);
         }
-        self.coordinator.freeze_after_fatal(token);
+        self.coordinator.quarantine_after_fatal(token);
         self.error = Some(error);
     }
 
