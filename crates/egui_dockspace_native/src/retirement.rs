@@ -166,6 +166,16 @@ impl NativeRetirementState {
             if existing != binding && self.pending.contains_key(&binding) {
                 return false;
             }
+            // Validate the callback route before moving the exact binding key.
+            // A rejected successor observation must not clear the predecessor's
+            // close acknowledgement or otherwise mutate the retirement lane.
+            if !self
+                .pending
+                .get(&existing)
+                .is_some_and(|pending| pending.viewport == viewport)
+            {
+                return false;
+            }
             if existing != binding {
                 if !self.adopt_successor_binding(existing, binding) {
                     return false;

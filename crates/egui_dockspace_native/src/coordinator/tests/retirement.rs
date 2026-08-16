@@ -190,7 +190,10 @@ fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {
     retirement_frame
         .commit()
         .expect("the route retirement boundary commits");
-    native.commit_retirements(prepared);
+    assert!(
+        native.commit_retirements(prepared).is_empty(),
+        "the fixture has no abandoned renderer outputs"
+    );
 
     assert_eq!(native.viewport_binding(child), None);
     assert!(!native.session.is_current_native_binding(second));

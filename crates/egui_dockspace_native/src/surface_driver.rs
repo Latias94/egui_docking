@@ -225,7 +225,9 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let native_admission_settled =
             coordinator.settle_native_admissions(report.native_admissions())?;
         if let Some(prepared_retirements) = prepared_retirements {
-            coordinator.commit_retirements(prepared_retirements);
+            for token in coordinator.commit_retirements(prepared_retirements) {
+                self.pass_actions.abandon(token);
+            }
         }
         if surface == self.root_surface {
             self.bind_root_registration(token, report.inputs())?;

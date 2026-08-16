@@ -384,7 +384,11 @@ impl NativeCoordinator {
         Ok(Some(PreparedNativeRetirements { committed, routes }))
     }
 
-    pub(crate) fn commit_retirements(&mut self, prepared: PreparedNativeRetirements) {
+    #[must_use = "retired output tokens must be abandoned by every output-owned sidecar"]
+    pub(crate) fn commit_retirements(
+        &mut self,
+        prepared: PreparedNativeRetirements,
+    ) -> Vec<NativeOutputToken> {
         let PreparedNativeRetirements { committed, routes } = prepared;
         let abandoned = routes.commit();
         for retirement in &committed {
@@ -393,11 +397,12 @@ impl NativeCoordinator {
             self.effects.remove_show(retirement.binding());
             self.receivers.retire_binding(retirement.binding());
         }
-        for token in abandoned {
+        for &token in &abandoned {
             self.pending_outputs.remove(&token);
             self.receivers.abandon(token);
         }
         self.retirements.commit_routes(&committed);
+        abandoned
     }
 
     pub(crate) fn settle_host_frame_inputs(&mut self, inputs: &[HostInputOutcome]) -> bool {
