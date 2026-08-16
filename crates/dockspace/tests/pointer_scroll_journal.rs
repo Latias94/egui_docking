@@ -629,7 +629,7 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     let second = fixture.submit_known_for_device(
         ScrollDeviceId::new(2),
         ScrollPhase::Begin,
-        Some(token),
+        Some(ScrollSequenceToken::new(42)),
         None,
     );
     let second_session = match second.reduced_pointer_edges()[0].interaction_outcomes() {

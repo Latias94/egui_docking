@@ -151,7 +151,7 @@ struct ActiveScrollSession {
 pub(super) struct ScrollInteractionState {
     last_session: ScrollSessionId,
     active: BTreeMap<ScrollSequenceKey, ActiveScrollSession>,
-    token_watermarks: BTreeMap<ScrollDeviceKey, ScrollSequenceToken>,
+    token_watermarks: BTreeMap<PointerStreamId, ScrollSequenceToken>,
 }
 
 impl ScrollInteractionState {
@@ -175,13 +175,12 @@ impl ScrollInteractionState {
             .any(|active| ScrollDeviceKey::from_sequence(*active) == device)
             || self
                 .token_watermarks
-                .get(&device)
+                .get(&key.stream)
                 .is_some_and(|watermark| key.token <= *watermark)
     }
 
     fn advance_token_watermark(&mut self, key: ScrollSequenceKey) {
-        self.token_watermarks
-            .insert(ScrollDeviceKey::from_sequence(key), key.token);
+        self.token_watermarks.insert(key.stream, key.token);
     }
 
     fn retire(&mut self, key: ScrollSequenceKey) -> Result<ActiveScrollSession, &'static str> {
@@ -237,7 +236,7 @@ impl ScrollInteractionState {
             .map(|session| (session.id, scroll_session_receiver(session)))
             .collect();
         self.token_watermarks
-            .retain(|key, _| key.provider != provider);
+            .retain(|stream, _| stream.lease() != provider);
         sessions
     }
 
@@ -255,7 +254,7 @@ impl ScrollInteractionState {
             .collect();
         // The pointer stream incarnation is itself terminal authority. No
         // scroll-token tombstone from that stream is needed after retirement.
-        self.token_watermarks.retain(|key, _| key.stream != stream);
+        self.token_watermarks.remove(&stream);
         sessions
     }
 
@@ -1521,6 +1520,52 @@ mod tests {
         assert_eq!(retained.retained_structure_count(), 2);
 
         assert_eq!(state.retire_stream(stream).len(), 1);
+        assert_eq!(
+            state.retention_manifest(),
+            crate::retention::ScrollRetentionManifest::default()
+        );
+    }
+
+    #[test]
+    fn completed_scroll_device_churn_keeps_one_watermark_per_live_stream() {
+        let lease = PointerInputLease::new(
+            EngineAuthorityDomainId::new_for_test(92),
+            1,
+            PointerProviderScope::DesktopGlobal,
+        );
+        let stream = PointerStreamId::new(lease, PointerId::new(8), 1);
+        let mut state = ScrollInteractionState::default();
+
+        for identity in 1..=10_000 {
+            let key = ScrollSequenceKey::new(
+                lease,
+                stream,
+                ScrollDeviceId::new(identity),
+                ScrollSequenceToken::new(identity),
+            );
+            assert!(!state.key_conflicts(key));
+            state.advance_token_watermark(key);
+            state.active.insert(
+                key,
+                ActiveScrollSession {
+                    id: ScrollSessionId::new(identity),
+                    disposition: ActiveScrollDisposition::AwaitingProviderTerminal(
+                        AwaitingScrollProviderTerminal {
+                            receiver: None,
+                            claim_derivative: false,
+                        },
+                    ),
+                },
+            );
+            state
+                .retire(key)
+                .expect("the completed device sequence remains exact");
+        }
+
+        let retained = state.retention_manifest();
+        assert_eq!(retained.active_sessions(), 0);
+        assert_eq!(retained.sequence_watermark_guards(), 1);
+        assert_eq!(state.retire_stream(stream).len(), 0);
         assert_eq!(
             state.retention_manifest(),
             crate::retention::ScrollRetentionManifest::default()

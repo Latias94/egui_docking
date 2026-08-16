@@ -220,8 +220,10 @@ Unknown modifiers fail closed whenever the configured policy distinguishes
 plain scroll from modified scroll.
 
 `ScrollDeviceId` and `ScrollSequenceToken` are provider-owned observations.
-The core additionally mints an opaque `ScrollSessionId`; provider token reuse
-can therefore never resurrect a prior session.
+Sequence tokens increase across every scroll device in one pointer stream, so
+the retained watermark is bounded by live streams rather than historical
+devices. The core additionally mints an opaque `ScrollSessionId`; provider
+token reuse can therefore never resurrect a prior session.
 
 ## Delivery Candidates And Receipts
 

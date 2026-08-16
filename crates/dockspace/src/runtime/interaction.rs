@@ -251,6 +251,8 @@ impl SurfaceScrollDeviceId {
 }
 
 /// Provider-owned monotonic identity of one smooth-scroll sequence.
+///
+/// Identities must increase across all scroll devices in the same pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct SurfaceScrollSequenceId(u64);

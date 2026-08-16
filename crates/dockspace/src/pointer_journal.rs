@@ -653,9 +653,10 @@ pub struct ScrollDeviceId(u64);
 
 /// Provider-owned monotonic identity of one explicitly phaseful smooth-scroll sequence.
 ///
-/// Tokens must increase strictly within one provider, pointer stream, and
-/// scroll-device tuple. A provider which resets or exhausts this counter must
-/// replace its input lease before publishing another smooth sequence.
+/// Tokens must increase strictly within one provider-owned pointer stream,
+/// across all scroll devices carried by that stream. A provider which resets
+/// or exhausts this counter must replace its input lease before publishing
+/// another smooth sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct ScrollSequenceToken(u64);

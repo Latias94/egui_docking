@@ -183,6 +183,8 @@ impl NativeScrollDeviceId {
 }
 
 /// Monotonic identity of one explicitly phaseful native scroll sequence.
+///
+/// Identities must increase across all scroll devices in the same pointer stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct NativeScrollSequenceId(u64);

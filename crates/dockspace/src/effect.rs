@@ -681,8 +681,15 @@ fn semantic_effect_references(record: &EffectRecord) -> [Option<EffectId>; 2] {
     };
     let delivery_predecessor = match record.request.effect() {
         // Once the successor itself was emitted, its immutable delivery proof replaces the need
-        // to retain every older observation request in the same provider lane.
-        PlatformEffect::ContinueCleanup { .. } if record.was_emitted() => None,
+        // to retain every older request in the same provider lane. Semantic subjects such as a
+        // destructive cleanup predecessor remain retained independently above.
+        PlatformEffect::ContinueCleanup { .. }
+        | PlatformEffect::SetPointerPassthrough { .. }
+        | PlatformEffect::RequestFocus { .. }
+            if record.was_emitted() =>
+        {
+            None
+        }
         _ => effect_delivery_predecessors(record)[0],
     };
     [semantic_subject, delivery_predecessor]
@@ -1714,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn live_owner_retains_the_complete_terminal_effect_predecessor_chain() {
+    fn emitted_lane_tail_does_not_retain_terminal_predecessor_detail() {
         let binding = binding(0, 1);
         let mut ledger = EffectLedger::default();
         let first = ledger
@@ -1750,11 +1757,53 @@ mod tests {
 
         assert_eq!(
             ledger.compact_published_terminal(&BTreeSet::from([second])),
-            0,
+            1,
         );
-        assert_eq!(ledger.records().count(), 2);
-        assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 2);
+        assert_eq!(ledger.records().count(), 1);
+        assert_eq!(ledger.compact_published_terminal(&BTreeSet::new()), 1);
         assert_eq!(ledger.records().count(), 0);
+    }
+
+    #[test]
+    fn ten_thousand_completed_focus_requests_retain_only_the_live_lane_tail() {
+        let provider = test_provider();
+        let mut ledger = EffectLedger::default();
+        let mut tail = None;
+
+        for index in 0..10_000 {
+            let binding = binding((index % 2) + 1, 1);
+            let effect = ledger
+                .request(PlatformEffect::RequestFocus {
+                    binding,
+                    after: tail,
+                })
+                .expect("focus effect identity must remain available");
+            let emissions = ledger
+                .take_new_requests(provider, InventoryGeneration::new(index + 1), |_| false)
+                .expect("the next focus request must follow the emitted lane tail");
+            assert_eq!(emissions.len(), 1);
+            assert_eq!(emissions[0].id(), effect);
+            assert_eq!(
+                ledger.mark_observed_applied(
+                    provider,
+                    effect,
+                    binding,
+                    InventoryGeneration::new(index + 2),
+                ),
+                EffectTransition::Applied,
+            );
+            tail = Some(effect);
+        }
+
+        ledger.mark_boundary_published();
+        assert_eq!(ledger.retention_manifest().terminal_record_guards(), 10_000);
+        assert_eq!(
+            ledger.compact_published_terminal(&BTreeSet::from([
+                tail.expect("the focus lane has a tail"),
+            ])),
+            9_999,
+        );
+        assert_eq!(ledger.retention_manifest().terminal_record_guards(), 1);
     }
 
     #[test]
