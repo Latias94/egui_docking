@@ -1,6 +1,6 @@
 //! Splitter rendering and current-pass pointer gestures.
 
-use dockspace::model::{DockspaceAxis, RootId};
+use dockspace::model::DockspaceAxis;
 use dockspace::runtime::SurfaceSplitterAdjustment;
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense};
@@ -8,13 +8,10 @@ use egui::{CursorIcon, EventFilter, Key, Sense};
 use super::RenderContext;
 use super::actions::gesture_phase;
 use super::geometry::egui_rect;
+use super::schedule::RootPaintSchedule;
 
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: RootId) {
-    for splitter in context
-        .plan
-        .splitters()
-        .filter(|splitter| splitter.root() == root)
-    {
+pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+    for splitter in root.splitters() {
         let Some(draw) = egui_rect(splitter.draw_bounds()) else {
             continue;
         };

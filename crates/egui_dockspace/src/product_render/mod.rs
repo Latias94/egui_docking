@@ -1,15 +1,16 @@
 //! Default single-surface renderer over the headless product session.
 
+use std::collections::BTreeSet;
+
 mod actions;
 mod contained;
 mod geometry;
 mod guides;
 mod measurement;
+mod schedule;
 mod splitters;
 mod tab_chrome;
 mod tabs;
-
-use std::collections::BTreeSet;
 
 use dockspace::model::ItemId;
 use dockspace::runtime::{
@@ -128,17 +129,7 @@ pub(crate) fn paint_surface(
         ui.painter().rect_filled(bounds, 0.0, style.workspace_fill);
     }
 
-    let mut contained = plan.contained().collect::<Vec<_>>();
-    contained.sort_by_key(|record| record.ordinal());
-    let contained_roots = contained
-        .iter()
-        .map(|record| record.root())
-        .collect::<BTreeSet<_>>();
-    let main_roots = plan
-        .panes()
-        .map(dockspace::runtime::PanePaintRecord::root)
-        .filter(|root| !contained_roots.contains(root))
-        .collect::<BTreeSet<_>>();
+    let schedule = schedule::SurfacePaintSchedule::from_plan(plan);
 
     {
         let mut context = RenderContext {
@@ -155,15 +146,16 @@ pub(crate) fn paint_surface(
             defer_measurement: &mut defer_measurement,
             pointer_authority,
         };
-        for root in main_roots {
+        for root in schedule.main_roots() {
             tabs::paint_root(&mut context, root);
             splitters::paint_root(&mut context, root);
         }
 
-        for record in contained.iter().copied() {
-            contained::paint_background(&mut context, record);
-            tabs::paint_root(&mut context, record.root());
-            splitters::paint_root(&mut context, record.root());
+        for root in schedule.contained_roots() {
+            let record = root.contained();
+            contained::paint_background(&mut context, record, root.records());
+            tabs::paint_root(&mut context, root.records());
+            splitters::paint_root(&mut context, root.records());
             contained::paint_controls(&mut context, record);
         }
 

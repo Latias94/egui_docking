@@ -1,6 +1,6 @@
 //! Pane and tab rendering over opaque product paint records.
 
-use dockspace::model::{ItemId, RootId};
+use dockspace::model::ItemId;
 use dockspace::runtime::{SurfaceTabNavigation, TabPaintRecord};
 use egui::accesskit::{Action, Role};
 use egui::{
@@ -14,15 +14,16 @@ use super::RenderContext;
 use super::actions::gesture_phase;
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
+use super::schedule::RootPaintSchedule;
 
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: RootId) {
+pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
     paint_panes(context, root);
     paint_tab_bars(context, root);
     paint_tabs(context, root);
 }
 
-fn paint_panes(context: &mut RenderContext<'_, '_>, root: RootId) {
-    for pane in context.plan.panes().filter(|pane| pane.root() == root) {
+fn paint_panes(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+    for pane in root.panes() {
         let Some(bounds) = egui_rect(pane.bounds()) else {
             continue;
         };
@@ -67,8 +68,8 @@ fn paint_panes(context: &mut RenderContext<'_, '_>, root: RootId) {
     }
 }
 
-fn paint_tab_bars(context: &mut RenderContext<'_, '_>, root: RootId) {
-    for bar in context.plan.tab_bars().filter(|bar| bar.root() == root) {
+fn paint_tab_bars(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+    for bar in root.tab_bars() {
         if let Some(bounds) = egui_rect(bar.bounds()) {
             context
                 .ui
@@ -136,13 +137,8 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, style: &DockStyle, active: b
     }
 }
 
-fn paint_tabs(context: &mut RenderContext<'_, '_>, root: RootId) {
-    let tabs = context
-        .plan
-        .tabs()
-        .filter(|tab| tab.root() == root)
-        .collect::<Vec<_>>();
-    for tab in tabs {
+fn paint_tabs(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+    for tab in root.tabs() {
         let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
             continue;
         };

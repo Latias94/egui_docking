@@ -6,10 +6,12 @@ use egui::{CursorIcon, Sense, Stroke, StrokeKind, pos2};
 use super::RenderContext;
 use super::actions::gesture_phase;
 use super::geometry::egui_rect;
+use super::schedule::RootPaintSchedule;
 
 pub(crate) fn paint_background(
     context: &mut RenderContext<'_, '_>,
     contained: ContainedPaintRecord<'_>,
+    root: &RootPaintSchedule<'_>,
 ) {
     let Some(outer) = egui_rect(contained.outer_bounds()) else {
         return;
@@ -54,10 +56,9 @@ pub(crate) fn paint_background(
         );
     }
 
-    let label = context
-        .plan
+    let label = root
         .panes()
-        .find(|pane| pane.root() == contained.root())
+        .next()
         .and_then(dockspace::runtime::PanePaintRecord::selected)
         .and_then(|item| context.resources.item(item))
         .map_or("Floating", |resource| resource.title.as_str());
