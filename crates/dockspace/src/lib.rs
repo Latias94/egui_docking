@@ -144,7 +144,7 @@ pub mod policy {
     #[cfg(test)]
     pub(crate) use crate::policy_impl::{DockDropPolicyRequest, PolicyRuleScope};
 }
-pub mod presentation_config;
+mod presentation_config;
 #[cfg(test)]
 pub mod presentation_hit;
 #[cfg(not(test))]

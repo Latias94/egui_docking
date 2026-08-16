@@ -7,7 +7,7 @@ use crate::drop_resolver::{
     DropAffordance, DropAffordanceCluster, DropAffordanceTarget,
     DropGuideEligibility as CoreDropGuideEligibility, DropGuideTargetKey,
 };
-use crate::drop_target::{DropTargetAvailability, DropTargetId, DropTargetKind};
+use crate::drop_target::DropTargetId;
 use crate::geometry::LogicalRect;
 use crate::ids::{RootId, SurfaceId};
 
@@ -71,11 +71,9 @@ impl fmt::Debug for DropGuideTargetPaintRecord<'_> {
             .debug_struct("DropGuideTargetPaintRecord")
             .field("visual_id", &self.visual_id())
             .field("direction", &self.direction())
-            .field("kind", &self.kind())
             .field("draw_bounds", &self.draw_bounds())
             .field("hit_bounds", &self.hit_bounds())
             .field("preview_bounds", &self.preview_bounds())
-            .field("availability", &self.availability())
             .finish()
     }
 }
@@ -91,12 +89,6 @@ impl DropGuideTargetPaintRecord<'_> {
     #[must_use]
     pub const fn direction(self) -> DockspaceDropDirection {
         DockspaceDropDirection::from_core(self.slot)
-    }
-
-    /// Returns the target's stable semantic class.
-    #[must_use]
-    pub const fn kind(self) -> DropTargetKind {
-        self.record.id().kind()
     }
 
     /// Returns the exact visible button rectangle.
@@ -115,12 +107,6 @@ impl DropGuideTargetPaintRecord<'_> {
     #[must_use]
     pub const fn preview_bounds(self) -> LogicalRect {
         self.record.target().visual().rect()
-    }
-
-    /// Returns scene-level availability before a payload is evaluated.
-    #[must_use]
-    pub const fn availability(self) -> DropTargetAvailability {
-        self.record.target().availability()
     }
 }
 

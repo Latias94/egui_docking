@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use dockspace::presentation_config::{DockPresentationConfig, DockPresentationConfigError};
+use dockspace::runtime::{DockPresentationConfig, DockPresentationConfigError};
 use egui::{Color32, Vec2};
 
 /// Configurable geometry and colors used to paint a docking scene.

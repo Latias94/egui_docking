@@ -1,6 +1,6 @@
 //! Stable error details for the renderer-neutral product facade.
 
-use dockspace::presentation_config::DockPresentationConfigError;
+use dockspace::runtime::DockPresentationConfigError;
 #[cfg(feature = "serde")]
 use dockspace::runtime::DockspacePersistenceError;
 use dockspace::runtime::DockspaceRuntimeError;

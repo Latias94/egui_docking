@@ -330,7 +330,7 @@ impl PreparedDockAction {
 /// A prepared product action was submitted to a different dockspace session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("prepared docking action belongs to another dockspace authority domain")]
-pub struct PreparedDockActionAuthorityMismatch;
+pub(crate) struct PreparedDockActionAuthorityMismatch;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ProductAction {

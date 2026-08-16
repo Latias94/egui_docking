@@ -26,7 +26,9 @@ pub use session::DockspaceSession;
 use native::NativePlatformError;
 
 pub use crate::model::{NativeWindowPlacement, PreparedDockAction, WorkspaceVersion};
-pub use crate::presentation_config::DockPresentationConfig;
+pub use crate::presentation_config::{
+    DockPresentationConfig, DockPresentationConfigBuilder, DockPresentationConfigError,
+};
 pub use crate::transition::SurfaceCloseRequestRejection;
 use close::PreparedCloseRequestAuthorityMismatch;
 pub use close::{

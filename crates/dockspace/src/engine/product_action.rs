@@ -194,13 +194,7 @@ impl DockEngine {
         PreparedDockAction::new(self.authority_domain, self.version, action)
     }
 
-    /// Converts one core-issued product action into exact reducer input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PreparedDockActionAuthorityMismatch`] when the action was
-    /// prepared by another engine authority domain.
-    pub fn accept_prepared_action(
+    pub(crate) fn accept_prepared_action(
         &self,
         prepared: PreparedDockAction,
     ) -> Result<EngineInput, PreparedDockActionAuthorityMismatch> {
