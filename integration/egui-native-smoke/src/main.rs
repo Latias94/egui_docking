@@ -77,10 +77,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Clone, Copy, Debug)]
 enum SmokePhase {
     AwaitRootPresentation,
-    QueueTearOff,
     AwaitTearOff,
     AwaitFirstLive { target_surface: SurfaceId },
-    QueueRedock { target_surface: SurfaceId },
     AwaitRedock { target_surface: SurfaceId },
     AwaitRetirement { target_surface: SurfaceId },
     Done,
@@ -96,9 +94,11 @@ struct SmokeApp {
 impl eframe::App for SmokeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         <NativeDockspaceApp<SmokePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
+        // Native callbacks drive progress; this delayed repaint only bounds a missing wake.
         self.drive(ui.ctx());
         if !matches!(self.phase, SmokePhase::Done) {
-            ui.ctx().request_repaint_after(Duration::from_millis(10));
+            ui.ctx()
+                .request_repaint_after(self.deadline.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -126,16 +126,16 @@ impl SmokeApp {
         match self.phase {
             SmokePhase::AwaitRootPresentation => {
                 if self.dockspace.is_surface_presented(ROOT_SURFACE) {
-                    self.transition(SmokePhase::QueueTearOff);
+                    self.queue_tear_off(context);
                 }
             }
-            SmokePhase::QueueTearOff => self.queue_tear_off(context),
-            SmokePhase::AwaitTearOff => self.await_tear_off(),
-            SmokePhase::AwaitFirstLive { target_surface } => self.await_first_live(target_surface),
-            SmokePhase::QueueRedock { target_surface } => {
-                self.queue_redock(context, target_surface)
+            SmokePhase::AwaitTearOff => self.await_tear_off(context),
+            SmokePhase::AwaitFirstLive { target_surface } => {
+                self.await_first_live(context, target_surface)
             }
-            SmokePhase::AwaitRedock { target_surface } => self.await_redock(target_surface),
+            SmokePhase::AwaitRedock { target_surface } => {
+                self.await_redock(context, target_surface)
+            }
             SmokePhase::AwaitRetirement { target_surface } => {
                 self.await_retirement(context, target_surface)
             }
@@ -157,7 +157,7 @@ impl SmokeApp {
         }
     }
 
-    fn await_tear_off(&mut self) {
+    fn await_tear_off(&mut self, context: &egui::Context) {
         let Some(status) = self.dockspace.take_action_status() else {
             return;
         };
@@ -176,7 +176,7 @@ impl SmokeApp {
                 self.transition(SmokePhase::AwaitFirstLive { target_surface });
             }
             DockspaceActionStatus::Stale { .. } => {
-                self.transition(SmokePhase::AwaitRootPresentation);
+                self.queue_tear_off(context);
             }
             status => self.fail_without_context(format!(
                 "tear-off returned an unexpected terminal status: {status:?}"
@@ -184,7 +184,7 @@ impl SmokeApp {
         }
     }
 
-    fn await_first_live(&mut self, target_surface: SurfaceId) {
+    fn await_first_live(&mut self, context: &egui::Context, target_surface: SurfaceId) {
         if !self.dockspace.is_surface_presented(target_surface) {
             return;
         }
@@ -195,7 +195,7 @@ impl SmokeApp {
             })
         });
         if transferred == Some(true) {
-            self.transition(SmokePhase::QueueRedock { target_surface });
+            self.queue_redock(context, target_surface);
         }
     }
 
@@ -209,7 +209,7 @@ impl SmokeApp {
         }
     }
 
-    fn await_redock(&mut self, target_surface: SurfaceId) {
+    fn await_redock(&mut self, context: &egui::Context, target_surface: SurfaceId) {
         let Some(status) = self.dockspace.take_action_status() else {
             return;
         };
@@ -240,7 +240,7 @@ impl SmokeApp {
                 }
             }
             DockspaceActionStatus::Stale { .. } => {
-                self.transition(SmokePhase::QueueRedock { target_surface });
+                self.queue_redock(context, target_surface);
             }
             status => self.fail_without_context(format!(
                 "redock returned an unexpected terminal status: {status:?}"
