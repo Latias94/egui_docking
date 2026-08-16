@@ -40,14 +40,12 @@ impl NativePointerTranslator {
             .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
 
         match record.event() {
-            WindowEvent::CursorMoved { facts, .. } => {
-                self.input(
-                    NativePointerEvent::Moved,
-                    facts.desktop_position,
-                    routes,
-                    &mut resolve_work_area,
-                )
-            }
+            WindowEvent::CursorMoved { facts, .. } => self.input(
+                NativePointerEvent::Moved,
+                facts.desktop_position,
+                routes,
+                &mut resolve_work_area,
+            ),
             WindowEvent::MouseInput {
                 state,
                 button,
@@ -59,16 +57,19 @@ impl NativePointerTranslator {
                     ElementState::Pressed => NativePointerEvent::ButtonPressed(button),
                     ElementState::Released => NativePointerEvent::ButtonReleased(button),
                 };
-                self.input(event, facts.desktop_position, routes, &mut resolve_work_area)
-            }
-            WindowEvent::PointerCaptureChanged { .. } => {
                 self.input(
-                    NativePointerEvent::CaptureChanged,
-                    None,
+                    event,
+                    facts.desktop_position,
                     routes,
                     &mut resolve_work_area,
                 )
             }
+            WindowEvent::PointerCaptureChanged { .. } => self.input(
+                NativePointerEvent::CaptureChanged,
+                None,
+                routes,
+                &mut resolve_work_area,
+            ),
             WindowEvent::MouseWheel {
                 delta,
                 phase,

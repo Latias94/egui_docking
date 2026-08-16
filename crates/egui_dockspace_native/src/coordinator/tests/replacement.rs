@@ -8,8 +8,7 @@ use super::*;
 
 fn exact_live_window(x: f64) -> NativeWindowFacts {
     let content = PhysicalRect::new(x, 0.0, 900.0, 700.0).expect("content bounds validate");
-    let outer = PhysicalRect::new(x - 8.0, -30.0, 916.0, 738.0)
-        .expect("outer bounds validate");
+    let outer = PhysicalRect::new(x - 8.0, -30.0, 916.0, 738.0).expect("outer bounds validate");
     let scale = ScaleFactor::new(1.0).expect("scale validates");
     NativeWindowFacts::live()
         .with_content_bounds(content)

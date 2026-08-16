@@ -168,11 +168,7 @@ fn committed_unknown_roster_revokes_the_previous_work_area_route() {
     let point = PhysicalPoint::new(1600.0, 1060.0).expect("desktop point validates");
     assert!(native.work_area_for_point(point).is_some());
 
-    publish_work_areas(
-        &mut native,
-        [first, second],
-        FrozenWorkAreaRoster::Unknown,
-    );
+    publish_work_areas(&mut native, [first, second], FrozenWorkAreaRoster::Unknown);
 
     assert_eq!(native.work_area_for_point(point), None);
 }

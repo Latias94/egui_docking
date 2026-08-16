@@ -174,11 +174,7 @@ impl NativeWorkAreaState {
         })
     }
 
-    pub(crate) fn commit(
-        &mut self,
-        prepared: PreparedWorkAreaRoster,
-        session: &DockspaceSession,
-    ) {
+    pub(crate) fn commit(&mut self, prepared: PreparedWorkAreaRoster, session: &DockspaceSession) {
         let routes = match prepared.routes {
             PreparedRoutes::Exact(prepared_routes) => {
                 let routes = prepared_routes
@@ -286,10 +282,8 @@ mod tests {
         };
         let roster = FrozenWorkAreaRoster::for_test_exact([(
             7,
-            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0)
-                .expect("display bounds validate"),
-            PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0)
-                .expect("work-area bounds validate"),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1080.0).expect("display bounds validate"),
+            PhysicalRect::new(0.0, 0.0, 1920.0, 1040.0).expect("work-area bounds validate"),
             ScaleFactor::new(1.0).expect("scale validates"),
         )]);
 
