@@ -49,7 +49,7 @@ Verified checkpoint on 2026-08-01:
 - Scroll is carried losslessly through core trace, official egui, the fork, and
   native ingress. Ordinary pointer-stream retirement terminates phaseful scroll
   sessions, and runtime retention accounting now includes semantic source
-  watermarks plus scroll sessions and per-stream sequence guards.
+  watermarks plus scroll sessions and provider-lifetime sequence guards.
 - Presentation-host retirement terminally fails pending release authority;
   joined backend replacement remains retryable after validation failure; exact
   close resolution reaches the public headless facade; same-batch clicks and

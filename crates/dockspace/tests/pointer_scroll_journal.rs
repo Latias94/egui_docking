@@ -1,6 +1,6 @@
 use super::support;
 
-use dockspace::engine::{CoreHostFrame, DockEngine};
+use dockspace::engine::{CoreHostFrame, CoreHostFrameError, DockEngine};
 use dockspace::geometry::{LogicalPoint, LogicalRect};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use dockspace::ids::{ItemId, RootId, SurfaceId};
@@ -192,6 +192,24 @@ impl ScrollFixture {
         self.submit_known_for_device(ScrollDeviceId::new(1), phase, token, delta)
     }
 
+    fn try_submit_known(
+        &mut self,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+    ) -> Result<dockspace::transition::EngineTransition, CoreHostFrameError> {
+        self.try_submit_with_receipt_and_modifiers_and_inspect(
+            ScrollDeviceId::new(1),
+            phase,
+            token,
+            delta,
+            self.endpoint,
+            Some(PointerReceiverDeliveryDisposition::Dock(self.region)),
+            ScrollModifiers::default(),
+            |_| {},
+        )
+    }
+
     fn submit_known_for_device(
         &mut self,
         device: ScrollDeviceId,
@@ -299,6 +317,31 @@ impl ScrollFixture {
         modifiers: ScrollModifiers,
         inspect: impl FnOnce(&dockspace::pointer_receiver::PointerReceiverCandidate),
     ) -> dockspace::transition::EngineTransition {
+        self.try_submit_with_receipt_and_modifiers_and_inspect(
+            device,
+            phase,
+            token,
+            delta,
+            endpoint,
+            disposition,
+            modifiers,
+            inspect,
+        )
+        .expect("scroll receipt reduces")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_submit_with_receipt_and_modifiers_and_inspect(
+        &mut self,
+        device: ScrollDeviceId,
+        phase: ScrollPhase,
+        token: Option<ScrollSequenceToken>,
+        delta: Option<ScrollDelta>,
+        endpoint: ScrollDeliveryEndpoint,
+        disposition: Option<PointerReceiverDeliveryDisposition>,
+        modifiers: ScrollModifiers,
+        inspect: impl FnOnce(&dockspace::pointer_receiver::PointerReceiverCandidate),
+    ) -> Result<dockspace::transition::EngineTransition, CoreHostFrameError> {
         let sequence = self.watermark + 1;
         let edge = self.scroll_edge(sequence, device, phase, token, delta, endpoint, modifiers);
         let journal = PointerEdgeJournal::new(
@@ -338,16 +381,14 @@ impl ScrollFixture {
                 },
             )
         };
-        frame
-            .submit_pointer_receiver_receipts(
-                PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
-                    .expect("scroll receipt roster is exact"),
-            )
-            .expect("scroll receipt reduces");
+        frame.submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new([candidate.receipt(observation)])
+                .expect("scroll receipt roster is exact"),
+        )?;
         complete_host_frame_with_retained_or_unavailable(&self.engine, &mut frame);
         let transition = self.host.finish(frame, &mut self.engine);
         self.watermark = sequence;
-        transition
+        Ok(transition)
     }
 
     fn end_pointer_stream(&mut self) -> dockspace::transition::EngineTransition {
@@ -618,7 +659,7 @@ fn semantically_identical_emission_refresh_preserves_smooth_scroll_owner() {
 }
 
 #[test]
-fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
+fn pointer_stream_end_rejects_delayed_scroll_tail_without_harming_successor() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
     let began = fixture.submit_known(ScrollPhase::Begin, Some(token), None);
@@ -636,6 +677,19 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         [InteractionOutcome::Scroll(ScrollReductionOutcome::Began { session, .. })] => *session,
         outcomes => panic!("second smooth scroll must freeze its begin receiver, got {outcomes:?}"),
     };
+
+    let first_continuation = fixture.submit_known_for_device(
+        ScrollDeviceId::new(1),
+        ScrollPhase::Update,
+        Some(token),
+        Some(line_delta(0.0, 0.0)),
+    );
+    assert!(matches!(
+        first_continuation.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(
+            _
+        ))]
+    ));
 
     let terminal = fixture.end_pointer_stream();
     let terminal_outcomes = terminal.reduced_pointer_edges()[0].interaction_outcomes();
@@ -660,6 +714,44 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
         )] if *actual != first_session && *actual != second_session
     ));
 
+    let version_before_delayed_tail = fixture.engine.version();
+    let retention_before_delayed_tail = fixture.engine.runtime_retention_manifest();
+    for phase in [ScrollPhase::Update, ScrollPhase::End] {
+        let delta = matches!(phase, ScrollPhase::Update).then(|| line_delta(1.0, 0.0));
+        assert_eq!(
+            fixture.try_submit_known(phase, Some(token), delta),
+            Err(CoreHostFrameError::InputPrefixReductionFailed)
+        );
+        assert_eq!(fixture.engine.version(), version_before_delayed_tail);
+        assert_eq!(
+            fixture.engine.runtime_retention_manifest(),
+            retention_before_delayed_tail
+        );
+    }
+
+    let successor_update = fixture.submit_known(
+        ScrollPhase::Update,
+        Some(ScrollSequenceToken::new(43)),
+        Some(line_delta(0.0, 0.0)),
+    );
+    assert!(matches!(
+        successor_update.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(
+            _
+        ))]
+    ));
+    let successor_end =
+        fixture.submit_known(ScrollPhase::End, Some(ScrollSequenceToken::new(43)), None);
+    assert!(matches!(
+        successor_end.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Terminated {
+                reason: ScrollTerminationReason::Completed,
+                ..
+            }
+        )]
+    ));
+
     let ScrollFixture {
         mut engine,
         provider,
@@ -676,7 +768,7 @@ fn ordinary_pointer_stream_end_terminates_smooth_scroll_exactly_once() {
     let retired = engine
         .retire_quiesced_surface_local_pointer_provider(&mut receipt)
         .expect("provider retirement remains valid after the stream terminal");
-    assert!(retired.interaction_changed());
+    assert!(!retired.interaction_changed());
     assert!(receipt.is_consumed());
     assert_eq!(engine.pointer_provider(), None);
     assert_eq!(
