@@ -7,8 +7,8 @@ use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
 #[cfg(test)]
 use eframe::NativeViewportCreateFailureKind;
 use eframe::{
-    NativeGlobalFocusObservation, NativeHostHandler, NativeHostWake, NativeOutputResult,
-    NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
+    NativeGlobalFocusObservation, NativeHostAttachment, NativeHostHandler, NativeHostWake,
+    NativeOutputResult, NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
     NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
     NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
     NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
@@ -428,6 +428,19 @@ mod tests {
     }
 
     #[test]
+    fn native_runtime_host_attachment_is_one_shot() {
+        let mut attachment = HostAttachmentState::Available;
+
+        assert!(attachment.try_attach());
+        assert_eq!(attachment, HostAttachmentState::Attached);
+        assert!(!attachment.try_attach());
+
+        attachment.detach();
+        assert_eq!(attachment, HostAttachmentState::Retired);
+        assert!(!attachment.try_attach());
+    }
+
+    #[test]
     fn semantic_prelude_accepts_only_an_empty_or_root_output_only_journal() {
         let child = ViewportId::from_hash_of("semantic-prelude-child");
         let cases = [
@@ -660,6 +673,29 @@ enum HostIngressMode {
     Frozen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostAttachmentState {
+    Available,
+    Attached,
+    Retired,
+}
+
+impl HostAttachmentState {
+    fn try_attach(&mut self) -> bool {
+        if !matches!(self, Self::Available) {
+            return false;
+        }
+        *self = Self::Attached;
+        true
+    }
+
+    fn detach(&mut self) {
+        if matches!(self, Self::Attached) {
+            *self = Self::Retired;
+        }
+    }
+}
+
 impl HostIngressMode {
     const fn accepts_new_work(self) -> bool {
         matches!(self, Self::Active)
@@ -678,6 +714,7 @@ impl HostIngressMode {
 
 #[derive(Debug)]
 struct HostRecords {
+    attachment: HostAttachmentState,
     mode: HostIngressMode,
     journal: VecDeque<HostRecord>,
     output_reservations: BTreeMap<NativeOutputToken, OutputReservation>,
@@ -697,6 +734,7 @@ struct HostRecords {
 impl HostRecords {
     fn active() -> Self {
         Self {
+            attachment: HostAttachmentState::Available,
             mode: HostIngressMode::Active,
             journal: VecDeque::new(),
             output_reservations: BTreeMap::new(),
@@ -1992,6 +2030,14 @@ impl NativeHostBridge {
 }
 
 impl NativeHostHandler for NativeHostBridge {
+    fn try_attach(&self, _attachment: NativeHostAttachment) -> bool {
+        self.lock().attachment.try_attach()
+    }
+
+    fn detach(&self, _attachment: NativeHostAttachment) {
+        self.lock().attachment.detach();
+    }
+
     fn begin_deferred_viewport_create(
         &self,
         attempt: NativeViewportCreateAttempt,

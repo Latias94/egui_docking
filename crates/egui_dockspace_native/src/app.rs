@@ -86,7 +86,12 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         })
     }
 
-    /// Returns the host callback to install in [`eframe::NativeOptions::native_host`].
+    /// Returns the one-shot host callback to install in [`eframe::NativeOptions::native_host`].
+    ///
+    /// The returned `Arc` may be cloned for ownership plumbing, but the native
+    /// runtime accepts exactly one eframe context attachment. Construct a new
+    /// application and session instead of reusing this handler for another
+    /// event loop.
     #[must_use]
     pub fn native_host_handler(&self) -> Arc<dyn NativeHostHandler> {
         Arc::clone(&self.native_host)
