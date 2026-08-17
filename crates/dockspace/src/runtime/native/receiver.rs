@@ -15,7 +15,7 @@ use crate::runtime::{
     DockspaceRuntimeError, PresentedDockReceiver, PresentedDockspaceSurface, interaction,
 };
 
-pub(in crate::runtime) fn resolve_receiver_observation(
+pub(super) fn resolve_receiver_observation(
     frame: &CoreHostFrame,
     candidate: &PointerReceiverCandidate,
     resolver: &mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer,

@@ -1,6 +1,7 @@
 //! Opaque native-window lifecycle facts and bindings for renderer-neutral hosts.
 
 mod compiler;
+mod input_batch;
 mod pointer;
 mod receiver;
 mod session;
@@ -16,9 +17,7 @@ use super::native_effect::{
     NativeInputEffectAcknowledgement, NativePresentationEffectAcknowledgement,
 };
 use super::{DockspaceRuntimeError, DockspaceSession};
-use crate::backend_ingress::{
-    BackendIngressBatch, BackendIngressPrefixRetirementReceipt, BackendIngressRecorder,
-};
+use crate::backend_ingress::{BackendIngressPrefixRetirementReceipt, BackendIngressRecorder};
 use crate::engine::EngineInput;
 use crate::geometry::{PhysicalRect, ScaleFactor};
 use crate::ids::{SurfaceId, WorkspaceEpoch};
@@ -43,7 +42,6 @@ pub use pointer::{
     NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
     NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
 };
-pub(in crate::runtime) use receiver::resolve_receiver_observation;
 
 /// Adapter-owned opaque native-window token.
 ///
@@ -776,16 +774,6 @@ impl RuntimeNativeState {
 
     pub(super) fn recorder_mut(&mut self) -> &mut BackendIngressRecorder {
         &mut self.recorder
-    }
-
-    pub(super) fn prepare_batch(
-        &mut self,
-        engine: &crate::engine::DockEngine,
-    ) -> Result<BackendIngressBatch, NativePlatformError> {
-        let committed = engine.backend_ingress_committed_through();
-        self.recorder
-            .batch_after(committed)
-            .map_err(|_| NativePlatformError::ProtocolInvariant)
     }
 
     pub(super) fn reclaim_committed_prefix(

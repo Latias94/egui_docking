@@ -341,7 +341,7 @@ impl DockspaceSession {
 
     pub(super) fn begin_host_frame_with_options(
         &mut self,
-        mut resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
+        resolver: Option<&mut dyn FnMut(NativeReceiverQuery) -> NativeReceiverAnswer>,
         #[cfg(feature = "serde")] mut document_restore: Option<PreparedRuntimeDocumentRestore>,
         #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
@@ -389,38 +389,11 @@ impl DockspaceSession {
             document_restore: None,
         };
         if let Some(native) = host_frame.session.native.as_mut() {
-            let batch = native.prepare_batch(&host_frame.session.engine)?;
-            let mut progress = host_frame.frame.submit_backend_ingress(batch)?;
-            while progress == crate::engine::BackendIngressProgress::ReceiverReceiptsRequired {
-                let candidates = host_frame
-                    .frame
-                    .pointer_receiver_candidates()
-                    .ok_or(NativePlatformError::ProtocolInvariant)?;
-                let receipts = candidates
-                    .candidates()
-                    .iter()
-                    .map(|candidate| {
-                        let observation = if candidate.receiver_is_applicable() {
-                            let resolver = resolver
-                                .as_deref_mut()
-                                .ok_or(NativePlatformError::ReceiverResolverRequired)?;
-                            native::resolve_receiver_observation(
-                                &host_frame.frame,
-                                candidate,
-                                resolver,
-                            )?
-                        } else {
-                            crate::pointer_receiver::PointerReceiverObservation::NotApplicable
-                        };
-                        Ok(candidate.receipt(observation))
-                    })
-                    .collect::<Result<Vec<_>, DockspaceRuntimeError>>()?;
-                let receipts = crate::pointer_receiver::PointerReceiverReceiptBatch::new(receipts)
-                    .map_err(|_| NativePlatformError::ProtocolInvariant)?;
-                progress = host_frame
-                    .frame
-                    .submit_backend_pointer_receiver_receipts(receipts)?;
-            }
+            native.reduce_pending_input(
+                &host_frame.session.engine,
+                &mut host_frame.frame,
+                resolver,
+            )?;
         }
         #[cfg(feature = "serde")]
         if let Some(restore) = document_restore.take() {
