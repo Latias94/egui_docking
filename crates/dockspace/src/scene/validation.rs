@@ -1,14 +1,16 @@
 //! Validation and canonicalization of complete semantic presentation plans.
 
 use super::*;
+use crate::workspace::WorkspaceIndexView;
 
 /// Reusable validator for one complete surface presentation plan.
 ///
-/// The validator owns the workspace-derived index so callers validating a batch
-/// of independent surface contributions pay the indexing cost only once.
+/// The validator reuses one workspace-derived index when the caller already has
+/// a requirement manifest, while retaining the standalone constructor used by
+/// direct scene and drop-resolution tests.
 pub(crate) struct PresentationPlanValidator<'a> {
     workspace: &'a Workspace,
-    workspace_index: SceneWorkspaceIndex,
+    workspace_index: SceneWorkspaceIndex<'a>,
     policy: &'a DockPolicySnapshot,
 }
 
@@ -24,12 +26,48 @@ impl<'a> PresentationPlanValidator<'a> {
         })
     }
 
+    pub(crate) fn for_manifest_surface(
+        workspace: &'a Workspace,
+        workspace_version: WorkspaceVersion,
+        manifest: &'a SceneRequirementManifest,
+        policy: &'a DockPolicySnapshot,
+        surface: SurfaceId,
+    ) -> Result<Self, SceneBuildError> {
+        let actual = manifest.workspace_index().version();
+        let Some(workspace_index) = manifest.workspace_index().at_version(workspace_version) else {
+            return Err(SceneBuildError::WorkspaceIndexVersionMismatch {
+                expected: workspace_version,
+                actual,
+            });
+        };
+        if manifest.surface(surface).is_none() {
+            return Err(SceneBuildError::UnexpectedSceneSurface { surface });
+        }
+        Ok(Self {
+            workspace,
+            workspace_index: SceneWorkspaceIndex::from_manifest_surface(
+                workspace,
+                workspace_index,
+                surface,
+            )?,
+            policy,
+        })
+    }
+
     /// Validates and canonicalizes one plan without publishing partial state.
     pub(crate) fn validate_and_canonicalize(
         &self,
         mut ready: PresentationPlan,
     ) -> Result<PresentationPlan, SceneBuildError> {
         let surface = ready.surface;
+        if let Some(expected) = self.workspace_index.bound_surface()
+            && expected != surface
+        {
+            return Err(SceneBuildError::PresentationSurfaceMismatch {
+                expected,
+                actual: surface,
+            });
+        }
         validate_semantic_uniqueness(&ready)?;
         validate_popup_plane(&ready)?;
         if !rect_has_area(ready.bounds) {
@@ -360,7 +398,7 @@ fn validate_contained_records(
         .into_iter()
         .flat_map(|presentation| presentation.contained.iter().copied().enumerate())
         .filter_map(|(ordinal, floating)| {
-            let indexed = workspace_index.contained.get(&floating)?;
+            let indexed = workspace_index.contained_records().get(&floating)?;
             rects_overlap_with_area(ready.bounds, indexed.rect).then_some((
                 floating,
                 ordinal,
@@ -1780,13 +1818,25 @@ struct IndexedContained {
     layer: SceneLayerKey,
 }
 
-struct SceneWorkspaceIndex {
+enum SceneWorkspaceIndex<'a> {
+    Complete(CompleteSceneWorkspaceIndex),
+    SharedSurface(SharedSurfaceSceneWorkspaceIndex<'a>),
+}
+
+struct CompleteSceneWorkspaceIndex {
     roots: HashMap<RootId, IndexedRoot>,
     contained: HashMap<FloatingPresentationId, IndexedContained>,
     contained_by_surface: HashMap<SurfaceId, Vec<FloatingPresentationId>>,
 }
 
-impl SceneWorkspaceIndex {
+struct SharedSurfaceSceneWorkspaceIndex<'a> {
+    workspace_index: WorkspaceIndexView<'a>,
+    surface: SurfaceId,
+    contained: HashMap<FloatingPresentationId, IndexedContained>,
+    contained_roster: Vec<FloatingPresentationId>,
+}
+
+impl<'a> SceneWorkspaceIndex<'a> {
     fn new(workspace: &Workspace) -> Result<Self, SceneBuildError> {
         let mut root_presentations = HashMap::with_capacity(workspace.roots().count());
         let mut contained = HashMap::with_capacity(workspace.contained_floatings().count());
@@ -1851,11 +1901,52 @@ impl SceneWorkspaceIndex {
                 },
             );
         }
-        Ok(Self {
+        Ok(Self::Complete(CompleteSceneWorkspaceIndex {
             roots,
             contained,
             contained_by_surface,
-        })
+        }))
+    }
+
+    fn from_manifest_surface(
+        workspace: &Workspace,
+        workspace_index: WorkspaceIndexView<'a>,
+        surface: SurfaceId,
+    ) -> Result<Self, SceneBuildError> {
+        let presentation = workspace
+            .surface(surface)
+            .ok_or(SceneBuildError::UnexpectedSceneSurface { surface })?;
+        let mut contained = HashMap::with_capacity(presentation.contained.len());
+        let mut contained_roster = Vec::with_capacity(presentation.contained.len());
+        for (index, floating) in presentation.contained.iter().copied().enumerate() {
+            let layer = SceneLayerKey::contained(index)
+                .ok_or(SceneBuildError::ContainedLayerCapacityExceeded { surface, floating })?;
+            contained_roster.push(floating);
+            if let Some(record) = workspace.contained_floating(floating) {
+                contained.insert(
+                    floating,
+                    IndexedContained {
+                        surface,
+                        root: record.root,
+                        rect: record.rect,
+                        layer,
+                    },
+                );
+            }
+        }
+        Ok(Self::SharedSurface(SharedSurfaceSceneWorkspaceIndex {
+            workspace_index,
+            surface,
+            contained,
+            contained_roster,
+        }))
+    }
+
+    fn bound_surface(&self) -> Option<SurfaceId> {
+        match self {
+            Self::Complete(_) => None,
+            Self::SharedSurface(index) => Some(index.surface),
+        }
     }
 
     fn root_belongs_to_surface(&self, surface: SurfaceId, root: RootId) -> bool {
@@ -1871,9 +1962,13 @@ impl SceneWorkspaceIndex {
     }
 
     fn contains_node(&self, root: RootId, node: NodeId) -> bool {
-        self.roots
-            .get(&root)
-            .is_some_and(|record| record.nodes.contains(&node))
+        match self {
+            Self::Complete(index) => index
+                .roots
+                .get(&root)
+                .is_some_and(|record| record.nodes.contains(&node)),
+            Self::SharedSurface(index) => index.workspace_index.root_contains_node(root, node),
+        }
     }
 
     fn semantic_node_exists(&self, surface: SurfaceId, root: RootId, node: NodeId) -> bool {
@@ -1881,22 +1976,48 @@ impl SceneWorkspaceIndex {
     }
 
     fn fingerprint_is_current(&self, root: RootId, expected: &NodeFingerprint) -> bool {
-        self.roots
-            .get(&root)
-            .and_then(|record| record.fingerprint.as_ref())
-            .is_some_and(|current| current == expected)
+        match self {
+            Self::Complete(index) => index
+                .roots
+                .get(&root)
+                .and_then(|record| record.fingerprint.as_ref())
+                .is_some_and(|current| current == expected),
+            Self::SharedSurface(index) => {
+                index.workspace_index.fingerprint_is_current(root, expected)
+            }
+        }
     }
 
     fn root_node(&self, root: RootId) -> Option<NodeId> {
-        self.roots.get(&root).map(|record| record.root_node)
+        match self {
+            Self::Complete(index) => index.roots.get(&root).map(|record| record.root_node),
+            Self::SharedSurface(index) => index.workspace_index.root_node(root),
+        }
     }
 
     fn root_layer(&self, root: RootId) -> Option<SceneLayerKey> {
-        self.roots.get(&root).map(|record| record.layer)
+        match self {
+            Self::Complete(index) => index.roots.get(&root).map(|record| record.layer),
+            Self::SharedSurface(index) => match index.workspace_index.root_owner(root)? {
+                RootPresentationOwner::Main {
+                    surface: owner_surface,
+                } if owner_surface == index.surface => Some(SceneLayerKey::surface_base()),
+                RootPresentationOwner::Contained {
+                    surface: owner_surface,
+                    floating,
+                } if owner_surface == index.surface => {
+                    index.contained.get(&floating).map(|record| record.layer)
+                }
+                _ => None,
+            },
+        }
     }
 
     fn root_owner(&self, root: RootId) -> Option<RootPresentationOwner> {
-        self.roots.get(&root).map(|record| record.owner)
+        match self {
+            Self::Complete(index) => index.roots.get(&root).map(|record| record.owner),
+            Self::SharedSurface(index) => index.workspace_index.root_owner(root),
+        }
     }
 
     fn contained_belongs_to_surface(
@@ -1904,23 +2025,29 @@ impl SceneWorkspaceIndex {
         surface: SurfaceId,
         floating: FloatingPresentationId,
     ) -> bool {
-        self.contained.get(&floating).is_some_and(|record| {
-            record.surface == surface
-                && self.root_owner(record.root)
-                    == Some(RootPresentationOwner::Contained { surface, floating })
-        })
+        self.contained_records()
+            .get(&floating)
+            .is_some_and(|record| {
+                record.surface == surface
+                    && self.root_owner(record.root)
+                        == Some(RootPresentationOwner::Contained { surface, floating })
+            })
     }
 
     fn contained_layer(&self, floating: FloatingPresentationId) -> Option<SceneLayerKey> {
-        self.contained.get(&floating).map(|record| record.layer)
+        self.contained_records()
+            .get(&floating)
+            .map(|record| record.layer)
     }
 
     fn contained_rect(&self, floating: FloatingPresentationId) -> Option<LogicalRect> {
-        self.contained.get(&floating).map(|record| record.rect)
+        self.contained_records()
+            .get(&floating)
+            .map(|record| record.rect)
     }
 
     fn contained_layers(&self, surface: SurfaceId) -> impl Iterator<Item = SceneLayerKey> + '_ {
-        self.contained
+        self.contained_records()
             .values()
             .filter(move |record| record.surface == surface)
             .map(|record| record.layer)
@@ -1930,10 +2057,21 @@ impl SceneWorkspaceIndex {
         &self,
         surface: SurfaceId,
     ) -> impl Iterator<Item = FloatingPresentationId> + '_ {
-        self.contained_by_surface
-            .get(&surface)
-            .into_iter()
-            .flatten()
-            .copied()
+        let roster = match self {
+            Self::Complete(index) => index
+                .contained_by_surface
+                .get(&surface)
+                .map_or(&[] as &[FloatingPresentationId], Vec::as_slice),
+            Self::SharedSurface(index) if index.surface == surface => &index.contained_roster,
+            Self::SharedSurface(_) => &[] as &[FloatingPresentationId],
+        };
+        roster.iter().copied()
+    }
+
+    fn contained_records(&self) -> &HashMap<FloatingPresentationId, IndexedContained> {
+        match self {
+            Self::Complete(index) => &index.contained,
+            Self::SharedSurface(index) => &index.contained,
+        }
     }
 }

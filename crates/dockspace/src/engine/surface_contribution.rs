@@ -285,8 +285,14 @@ impl DockEngine {
             &resize_overrides,
         ) {
             Ok(plan) => {
-                let validator = PresentationPlanValidator::new(&self.workspace, &self.policy)
-                    .map_err(SurfaceContributionPrepareError::Validation)?;
+                let validator = PresentationPlanValidator::for_manifest_surface(
+                    &self.workspace,
+                    self.version,
+                    &self.presentation_authority.presentation_requirements,
+                    &self.policy,
+                    surface,
+                )
+                .map_err(SurfaceContributionPrepareError::Validation)?;
                 let plan = validator
                     .validate_and_canonicalize(plan)
                     .map_err(SurfaceContributionPrepareError::Validation)?;

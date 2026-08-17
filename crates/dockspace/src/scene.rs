@@ -55,6 +55,7 @@ use crate::splitter_junction_index::derive_splitter_junction_candidates;
 use crate::tab_strip::{PopupPlaneRequirement, TabStripControlId, TabStripStateKey};
 #[cfg(test)]
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId};
+use crate::transition::WorkspaceVersion;
 use crate::viewport::{CoordinateGeneration, ViewportBinding};
 use crate::viewport_registry::ViewportLifecycle;
 
@@ -714,6 +715,22 @@ pub enum SceneBuildError {
     MissingSceneSurface {
         /// Lowest omitted surface identity in stable workspace order.
         surface: SurfaceId,
+    },
+    /// A manifest-backed validator was paired with a different workspace revision.
+    #[error("workspace index version {actual:?} does not match expected version {expected:?}")]
+    WorkspaceIndexVersionMismatch {
+        /// Workspace revision required by the current host frame.
+        expected: WorkspaceVersion,
+        /// Workspace revision captured by the manifest index.
+        actual: WorkspaceVersion,
+    },
+    /// A surface-bound validator received a plan for a different surface.
+    #[error("presentation validator for surface {expected} received surface {actual}")]
+    PresentationSurfaceMismatch {
+        /// Surface whose manifest-backed index was frozen.
+        expected: SurfaceId,
+        /// Surface carried by the submitted plan.
+        actual: SurfaceId,
     },
     /// Ready facts named a surface outside the frozen roster.
     #[error("ready facts name surface {surface} outside the active scene roster")]

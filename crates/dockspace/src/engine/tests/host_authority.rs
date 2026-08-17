@@ -698,6 +698,59 @@ fn surface_contribution_authority_diff_is_linear_in_surface_count() {
 }
 
 #[test]
+fn surface_contribution_validation_reuses_the_manifest_workspace_index() {
+    for surface_count in [16_usize, 128, 1_024] {
+        let mut builder = Workspace::builder();
+        for index in 0..surface_count {
+            let identity = u64::try_from(index + 1).expect("surface fixture identity fits u64");
+            let item = ItemId::new(identity);
+            let root = RootId::new(identity);
+            let surface = SurfaceId::new(identity);
+            let tabs = builder.insert_node(Node::tabs([item]));
+            builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(surface, SurfacePresentation::with_main(root));
+        }
+        let mut engine = DockEngine::new(
+            builder.build().expect("scale fixture workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("scale fixture engine initializes");
+        let host = engine
+            .create_presentation_host()
+            .expect("scale fixture presentation host mints");
+        let mut frame = begin_test_host_frame(&engine, host);
+
+        crate::drop_resolver::structural_work::reset();
+        for identity in 1..=surface_count {
+            let surface =
+                SurfaceId::new(u64::try_from(identity).expect("surface fixture identity fits u64"));
+            let token = frame
+                .view()
+                .begin_surface_contribution(surface)
+                .expect("rostered surface has one contribution token");
+            let measurements = tab_strip_reducer_measurements_for(&engine, surface, false);
+            let contribution = frame
+                .view()
+                .prepare_surface_contribution(token, measurements)
+                .expect("current surface measurements prepare");
+            frame
+                .push_surface_contribution(contribution)
+                .expect("each surface contributes once");
+        }
+
+        let work = crate::drop_resolver::structural_work::snapshot();
+        assert!(
+            work.root_fingerprint_builds <= surface_count,
+            "surface validation rebuilt more than one root fingerprint per surface: {work:?}"
+        );
+        assert!(
+            work.root_fingerprint_node_visits <= surface_count,
+            "surface validation revisited more than one root node per surface: {work:?}"
+        );
+    }
+}
+
+#[test]
 fn reverse_surface_contributions_use_indexed_canonical_storage() {
     for surface_count in [16_usize, 128, 1_024] {
         let mut builder = Workspace::builder();

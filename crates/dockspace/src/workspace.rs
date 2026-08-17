@@ -130,6 +130,10 @@ impl WorkspaceIndex {
         self.version
     }
 
+    pub(crate) fn at_version(&self, version: WorkspaceVersion) -> Option<WorkspaceIndexView<'_>> {
+        (self.version == version).then_some(WorkspaceIndexView { index: self })
+    }
+
     fn require_version(&self, version: WorkspaceVersion) -> Result<(), CommandError> {
         if self.version == version {
             Ok(())
@@ -308,6 +312,35 @@ impl WorkspaceIndex {
             rule: DockTargetRuleKey::Root(root),
             scope: EdgeTargetScope::Outer,
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WorkspaceIndexView<'a> {
+    index: &'a WorkspaceIndex,
+}
+
+impl WorkspaceIndexView<'_> {
+    pub(crate) fn root_owner(&self, root: RootId) -> Option<RootPresentationOwner> {
+        self.index.roots.get(&root).map(|record| record.owner)
+    }
+
+    pub(crate) fn root_node(&self, root: RootId) -> Option<NodeId> {
+        self.index.roots.get(&root).map(|record| record.root_node)
+    }
+
+    pub(crate) fn root_contains_node(&self, root: RootId, node: NodeId) -> bool {
+        self.index
+            .roots
+            .get(&root)
+            .is_some_and(|record| record.members.contains(&node))
+    }
+
+    pub(crate) fn fingerprint_is_current(&self, root: RootId, expected: &NodeFingerprint) -> bool {
+        self.index
+            .roots
+            .get(&root)
+            .is_some_and(|record| record.fingerprint == *expected)
     }
 }
 

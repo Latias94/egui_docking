@@ -208,6 +208,60 @@ fn validate(
         .validate_and_canonicalize(plan)
 }
 
+#[test]
+fn manifest_surface_validator_rejects_a_stale_workspace_revision() {
+    let surface = SurfaceId::new(501);
+    let workspace = rootless_workspace(surface);
+    let manifest = manifest([(surface, 1)], 1);
+    let expected = WorkspaceVersion::new(WorkspaceEpoch::new(2), WorkspaceRevision::new(6));
+    let policy = DockPolicySnapshot::default();
+
+    let result = PresentationPlanValidator::for_manifest_surface(
+        &workspace, expected, &manifest, &policy, surface,
+    );
+    assert!(matches!(
+        result,
+        Err(SceneBuildError::WorkspaceIndexVersionMismatch {
+            expected: rejected_expected,
+            actual,
+        }) if rejected_expected == expected && actual == manifest.workspace()
+    ));
+}
+
+#[test]
+fn manifest_surface_validator_rejects_a_plan_for_another_surface() {
+    let surface = SurfaceId::new(511);
+    let other_surface = SurfaceId::new(512);
+    let mut builder = Workspace::builder();
+    for (root, item, owner) in [
+        (RootId::new(513), ItemId::new(515), surface),
+        (RootId::new(514), ItemId::new(516), other_surface),
+    ] {
+        let tabs = builder.insert_node(Node::tabs([item]));
+        builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+        builder.set_surface(owner, SurfacePresentation::with_main(root));
+    }
+    let workspace = builder.build().expect("workspace is valid");
+    let manifest = manifest([(surface, 1), (other_surface, 2)], 1);
+    let policy = DockPolicySnapshot::default();
+    let validator = PresentationPlanValidator::for_manifest_surface(
+        &workspace,
+        manifest.workspace(),
+        &manifest,
+        &policy,
+        surface,
+    )
+    .expect("surface-bound validator is current");
+
+    assert_eq!(
+        validator.validate_and_canonicalize(PresentationPlan::new(other_surface, bounds())),
+        Err(SceneBuildError::PresentationSurfaceMismatch {
+            expected: surface,
+            actual: other_surface,
+        })
+    );
+}
+
 fn publish_rootless_occlusions(plan: &mut PresentationPlan) {
     for (floating, offset, layer) in [
         (FloatingPresentationId::new(21), 10.0, 2),
