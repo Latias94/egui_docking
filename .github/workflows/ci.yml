@@ -131,7 +131,15 @@ jobs:
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
 
+      - name: Install native smoke runtime dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --no-install-recommends -y
+          libxkbcommon-x11-0
+
       - name: Run one real-window Glow smoke
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: >-
           timeout 90s xvfb-run -a
           --server-args="-screen 0 1280x1024x24"
