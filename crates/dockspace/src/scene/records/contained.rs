@@ -63,6 +63,7 @@ pub struct ContainedRecord {
     title_drag_hit: HitRegion,
     content_bounds: LogicalRect,
     close_bounds: Option<LogicalRect>,
+    transform_operable: bool,
     resize: [ContainedResizeRecord; 8],
     minimum_size: LogicalSize,
     layer: SceneLayerKey,
@@ -80,6 +81,7 @@ impl ContainedRecord {
         title_drag_hit: HitRegion,
         content_bounds: LogicalRect,
         close_bounds: Option<LogicalRect>,
+        transform_operable: bool,
         resize: [ContainedResizeRecord; 8],
         minimum_size: LogicalSize,
         layer: SceneLayerKey,
@@ -94,6 +96,7 @@ impl ContainedRecord {
             title_drag_hit,
             content_bounds,
             close_bounds,
+            transform_operable,
             resize,
             minimum_size,
             layer,
@@ -152,6 +155,13 @@ impl ContainedRecord {
     #[must_use]
     pub const fn close_bounds(&self) -> Option<LogicalRect> {
         self.close_bounds
+    }
+
+    /// Returns whether the complete root, every item, and the owning surface
+    /// permit an in-place contained transform under the frozen policy.
+    #[must_use]
+    pub const fn transform_operable(&self) -> bool {
+        self.transform_operable
     }
 
     /// Returns all eight non-overlapping resize regions in canonical order.

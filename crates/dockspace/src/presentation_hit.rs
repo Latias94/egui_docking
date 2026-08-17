@@ -705,27 +705,29 @@ impl PresentationHitManifest {
                     ),
                 );
             }
-            for resize in contained.resize() {
-                push_region_if_hittable(
-                    &mut regions,
-                    PresentationHitRegion::new(
-                        PresentationHitRegionId::new(
-                            surface,
-                            PresentationHitRegionKind::ContainedResize {
-                                floating,
-                                direction: resize.direction(),
-                            },
+            if contained.transform_operable() {
+                for resize in contained.resize() {
+                    push_region_if_hittable(
+                        &mut regions,
+                        PresentationHitRegion::new(
+                            PresentationHitRegionId::new(
+                                surface,
+                                PresentationHitRegionKind::ContainedResize {
+                                    floating,
+                                    direction: resize.direction(),
+                                },
+                            ),
+                            resize.hit(),
+                            PresentationPointerLanes::DRAG,
+                            PresentationHitStackKey::new(
+                                PresentationPlane::Workspace,
+                                contained.layer(),
+                                PresentationHitPrecedence::ContainedResize,
+                            ),
+                            PresentationHitBehavior::ExclusiveReceiver,
                         ),
-                        resize.hit(),
-                        PresentationPointerLanes::DRAG,
-                        PresentationHitStackKey::new(
-                            PresentationPlane::Workspace,
-                            contained.layer(),
-                            PresentationHitPrecedence::ContainedResize,
-                        ),
-                        PresentationHitBehavior::ExclusiveReceiver,
-                    ),
-                );
+                    );
+                }
             }
         }
 

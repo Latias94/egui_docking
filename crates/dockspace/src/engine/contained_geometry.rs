@@ -149,42 +149,83 @@ pub(super) fn contained_transform_requested_rect(
             transform.source_rect.height(),
         )
         .map_err(|_| ()),
-        ContainedTransformKind::Resize(edges) => {
-            let horizontal = match edges.horizontal_edge() {
-                Some(ContainedHorizontalResizeEdge::Left) => Some(TransformAxisEdge::Minimum),
-                Some(ContainedHorizontalResizeEdge::Right) => Some(TransformAxisEdge::Maximum),
-                None => None,
-            };
-            let vertical = match edges.vertical_edge() {
-                Some(ContainedVerticalResizeEdge::Top) => Some(TransformAxisEdge::Minimum),
-                Some(ContainedVerticalResizeEdge::Bottom) => Some(TransformAxisEdge::Maximum),
-                None => None,
-            };
-            let (min_x, max_x) = contained_resize_axis(
-                transform.source_rect.x(),
-                transform.source_rect.max().x(),
-                bounds.x(),
-                bounds.max().x(),
-                transform.minimum_size.width(),
-                delta_x,
-                horizontal,
-            )
-            .ok_or(())?;
-            let (min_y, max_y) = contained_resize_axis(
-                transform.source_rect.y(),
-                transform.source_rect.max().y(),
-                bounds.y(),
-                bounds.max().y(),
-                transform.minimum_size.height(),
-                delta_y,
-                vertical,
-            )
-            .ok_or(())?;
-            let min = LogicalPoint::new(min_x, min_y).map_err(|_| ())?;
-            let max = LogicalPoint::new(max_x, max_y).map_err(|_| ())?;
-            LogicalRect::from_min_max(min, max).map_err(|_| ())
-        }
+        ContainedTransformKind::Resize(edges) => contained_resized_rect(
+            transform.source_rect,
+            bounds,
+            transform.minimum_size,
+            edges,
+            delta_x,
+            delta_y,
+        ),
     }
+}
+
+pub(super) fn cardinal_contained_resize_requested_rect(
+    source: LogicalRect,
+    bounds: LogicalRect,
+    minimum: LogicalSize,
+    direction: ContainedResizeDirection,
+    delta: f64,
+) -> Result<LogicalRect, ()> {
+    let (delta_x, delta_y) = match direction {
+        ContainedResizeDirection::North | ContainedResizeDirection::South => (0.0, delta),
+        ContainedResizeDirection::East | ContainedResizeDirection::West => (delta, 0.0),
+        ContainedResizeDirection::NorthEast
+        | ContainedResizeDirection::SouthEast
+        | ContainedResizeDirection::SouthWest
+        | ContainedResizeDirection::NorthWest => return Err(()),
+    };
+    contained_resized_rect(
+        source,
+        bounds,
+        minimum,
+        contained_resize_edges(direction),
+        delta_x,
+        delta_y,
+    )
+}
+
+fn contained_resized_rect(
+    source: LogicalRect,
+    bounds: LogicalRect,
+    minimum: LogicalSize,
+    edges: ContainedResizeEdges,
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<LogicalRect, ()> {
+    let horizontal = match edges.horizontal_edge() {
+        Some(ContainedHorizontalResizeEdge::Left) => Some(TransformAxisEdge::Minimum),
+        Some(ContainedHorizontalResizeEdge::Right) => Some(TransformAxisEdge::Maximum),
+        None => None,
+    };
+    let vertical = match edges.vertical_edge() {
+        Some(ContainedVerticalResizeEdge::Top) => Some(TransformAxisEdge::Minimum),
+        Some(ContainedVerticalResizeEdge::Bottom) => Some(TransformAxisEdge::Maximum),
+        None => None,
+    };
+    let (min_x, max_x) = contained_resize_axis(
+        source.x(),
+        source.max().x(),
+        bounds.x(),
+        bounds.max().x(),
+        minimum.width(),
+        delta_x,
+        horizontal,
+    )
+    .ok_or(())?;
+    let (min_y, max_y) = contained_resize_axis(
+        source.y(),
+        source.max().y(),
+        bounds.y(),
+        bounds.max().y(),
+        minimum.height(),
+        delta_y,
+        vertical,
+    )
+    .ok_or(())?;
+    let min = LogicalPoint::new(min_x, min_y).map_err(|_| ())?;
+    let max = LogicalPoint::new(max_x, max_y).map_err(|_| ())?;
+    LogicalRect::from_min_max(min, max).map_err(|_| ())
 }
 
 pub(super) fn clamp_moved_contained_rect(

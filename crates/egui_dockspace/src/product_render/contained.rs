@@ -1,8 +1,10 @@
 //! Contained-floating chrome and local pointer gestures.
 
-use dockspace::runtime::{ContainedPaintRecord, ContainedResizeDirection};
-use egui::accesskit::{Action, Role};
-use egui::{CursorIcon, Sense, Stroke, StrokeKind, pos2};
+use dockspace::runtime::{
+    ContainedPaintRecord, ContainedResizeDirection, SurfaceContainedResizeAdjustment,
+};
+use egui::accesskit::{Action, Orientation, Role};
+use egui::{CursorIcon, EventFilter, Key, Sense, Stroke, StrokeKind, pos2};
 
 use super::RenderContext;
 use super::actions::{button_activated, gesture_phase};
@@ -93,14 +95,17 @@ pub(crate) fn paint_controls(
             title,
             id,
             Sense::drag(),
-            context.plan.receiver_for_contained_title(contained),
+            context
+                .ui
+                .is_enabled()
+                .then(|| context.plan.receiver_for_contained_title(contained))
+                .flatten(),
         );
         let label = title_label(context, root);
         context.ui.ctx().accesskit_node_builder(id, |node| {
             node.set_role(Role::TitleBar);
             node.set_bounds(accesskit_bounds(title));
             node.set_label(label);
-            node.add_action(Action::Focus);
         });
         if response.hovered() || response.dragged() {
             context.ui.ctx().set_cursor_icon(if response.dragged() {
@@ -129,15 +134,17 @@ pub(crate) fn paint_controls(
             close,
             id,
             Sense::click(),
-            context.plan.receiver_for_contained_close(contained),
+            context
+                .ui
+                .is_enabled()
+                .then(|| context.plan.receiver_for_contained_close(contained))
+                .flatten(),
         );
         let label = title_label(context, root);
         context.ui.ctx().accesskit_node_builder(id, |node| {
             node.set_role(Role::Button);
             node.set_bounds(accesskit_bounds(close));
             node.set_label(format!("Close floating {label}"));
-            node.add_action(Action::Click);
-            node.add_action(Action::Focus);
         });
         let color = if response.hovered() {
             context.style.tab_active_text_color
@@ -177,21 +184,70 @@ pub(crate) fn paint_controls(
             contained.floating(),
             resize.direction(),
         ));
+        let cardinal = cardinal_resize_axis(resize.direction());
+        let enabled = resize.operable() && context.ui.is_enabled();
         let response = context.interact_receiver(
             bounds,
             id,
-            Sense::drag(),
-            context
-                .plan
-                .receiver_for_contained_resize(contained, resize),
+            match (enabled, cardinal) {
+                (true, Some(_)) => Sense::drag(),
+                (true, None) => Sense::DRAG,
+                (false, _) => Sense::hover(),
+            },
+            enabled
+                .then(|| {
+                    context
+                        .plan
+                        .receiver_for_contained_resize(contained, resize)
+                })
+                .flatten(),
         );
+        let enabled = enabled && response.enabled();
+        if let Some((orientation, horizontal_arrows)) = cardinal {
+            configure_resize_accessibility(
+                context.ui,
+                &response,
+                bounds,
+                resize.direction(),
+                orientation,
+                enabled,
+            );
+            if enabled && response.has_focus() {
+                context.ui.memory_mut(|memory| {
+                    memory.set_focus_lock_filter(
+                        id,
+                        EventFilter {
+                            horizontal_arrows,
+                            vertical_arrows: !horizontal_arrows,
+                            ..Default::default()
+                        },
+                    );
+                });
+            }
+            if enabled
+                && let Some(adjustment) = contained_resize_adjustment(
+                    context.ui,
+                    id,
+                    resize.direction(),
+                    response.has_focus(),
+                )
+                && let Some(action) = context.plan.prepare_contained_resize_adjustment(
+                    contained.floating(),
+                    resize.direction(),
+                    adjustment,
+                )
+            {
+                context.push_local_action(action);
+            }
+        }
         if response.hovered() || response.dragged() {
             context
                 .ui
                 .ctx()
                 .set_cursor_icon(resize_cursor(resize.direction()));
         }
-        if context.pointer_authority.accepts_local_pointer_actions()
+        if enabled
+            && context.pointer_authority.accepts_local_pointer_actions()
             && let Some(phase) = gesture_phase(&response)
             && let Some(action) = context.plan.prepare_contained_resize_gesture(
                 contained.floating(),
@@ -201,6 +257,95 @@ pub(crate) fn paint_controls(
         {
             context.push_local_action(action);
         }
+    }
+}
+
+fn contained_resize_adjustment(
+    ui: &egui::Ui,
+    id: egui::Id,
+    direction: ContainedResizeDirection,
+    focused: bool,
+) -> Option<SurfaceContainedResizeAdjustment> {
+    if focused {
+        let keyboard = ui.input_mut(|input| {
+            let (increment, decrement) = match direction {
+                ContainedResizeDirection::North => (Key::ArrowDown, Key::ArrowUp),
+                ContainedResizeDirection::East => (Key::ArrowRight, Key::ArrowLeft),
+                ContainedResizeDirection::South => (Key::ArrowDown, Key::ArrowUp),
+                ContainedResizeDirection::West => (Key::ArrowRight, Key::ArrowLeft),
+                ContainedResizeDirection::NorthEast
+                | ContainedResizeDirection::SouthEast
+                | ContainedResizeDirection::SouthWest
+                | ContainedResizeDirection::NorthWest => return None,
+            };
+            if input.consume_key(egui::Modifiers::NONE, increment) {
+                Some(SurfaceContainedResizeAdjustment::Increment)
+            } else if input.consume_key(egui::Modifiers::NONE, decrement) {
+                Some(SurfaceContainedResizeAdjustment::Decrement)
+            } else {
+                None
+            }
+        });
+        if keyboard.is_some() {
+            return keyboard;
+        }
+    }
+    ui.input(|input| {
+        if input.has_accesskit_action_request(id, Action::Increment) {
+            Some(SurfaceContainedResizeAdjustment::Increment)
+        } else if input.has_accesskit_action_request(id, Action::Decrement) {
+            Some(SurfaceContainedResizeAdjustment::Decrement)
+        } else {
+            None
+        }
+    })
+}
+
+fn configure_resize_accessibility(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    bounds: egui::Rect,
+    direction: ContainedResizeDirection,
+    orientation: Orientation,
+    operable: bool,
+) {
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_role(Role::Splitter);
+        node.set_bounds(accesskit_bounds(bounds));
+        node.set_label(match direction {
+            ContainedResizeDirection::North => "Resize floating top edge",
+            ContainedResizeDirection::East => "Resize floating right edge",
+            ContainedResizeDirection::South => "Resize floating bottom edge",
+            ContainedResizeDirection::West => "Resize floating left edge",
+            ContainedResizeDirection::NorthEast
+            | ContainedResizeDirection::SouthEast
+            | ContainedResizeDirection::SouthWest
+            | ContainedResizeDirection::NorthWest => {
+                unreachable!("diagonal resize handles are not accessibility controls")
+            }
+        });
+        node.set_orientation(orientation);
+        if operable {
+            node.add_action(Action::Increment);
+            node.add_action(Action::Decrement);
+        } else {
+            node.set_disabled();
+        }
+    });
+}
+
+const fn cardinal_resize_axis(direction: ContainedResizeDirection) -> Option<(Orientation, bool)> {
+    match direction {
+        ContainedResizeDirection::North | ContainedResizeDirection::South => {
+            Some((Orientation::Horizontal, false))
+        }
+        ContainedResizeDirection::East | ContainedResizeDirection::West => {
+            Some((Orientation::Vertical, true))
+        }
+        ContainedResizeDirection::NorthEast
+        | ContainedResizeDirection::SouthEast
+        | ContainedResizeDirection::SouthWest
+        | ContainedResizeDirection::NorthWest => None,
     }
 }
 

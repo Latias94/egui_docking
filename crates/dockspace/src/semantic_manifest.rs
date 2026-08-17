@@ -60,14 +60,16 @@ impl PresentationSemanticManifest {
                     contained.floating(),
                 ));
             }
-            receivers.extend(contained.resize().iter().filter_map(|resize| {
-                is_cardinal_resize(resize.direction()).then_some(
-                    PresentationHitRegionKind::ContainedResize {
-                        floating: contained.floating(),
-                        direction: resize.direction(),
-                    },
-                )
-            }));
+            if contained.transform_operable() {
+                receivers.extend(contained.resize().iter().filter_map(|resize| {
+                    is_cardinal_resize(resize.direction()).then_some(
+                        PresentationHitRegionKind::ContainedResize {
+                            floating: contained.floating(),
+                            direction: resize.direction(),
+                        },
+                    )
+                }));
+            }
         }
 
         receivers.sort_unstable();

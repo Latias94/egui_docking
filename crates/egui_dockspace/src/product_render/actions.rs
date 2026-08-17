@@ -12,6 +12,9 @@ pub(super) fn button_activated(
     response: &Response,
     pointer_authority: PointerActionAuthority,
 ) -> bool {
+    if !response.enabled() {
+        return false;
+    }
     let keyboard = response.has_focus()
         && ui.input_mut(|input| {
             input.consume_key(egui::Modifiers::NONE, Key::Enter)

@@ -632,6 +632,19 @@ pub enum EngineInput {
         /// Signed displacement along the split axis in logical surface units.
         delta: f64,
     },
+    /// Apply one cardinal contained resize captured from an exact current-frame response.
+    AdjustLocalContainedResize {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable contained presentation identity.
+        floating: FloatingPresentationId,
+        /// Exact cardinal edge exposed by that candidate.
+        direction: crate::scene::ContainedResizeDirection,
+        /// Signed displacement of that edge in logical surface units.
+        delta: f64,
+    },
     /// Drive one local-response splitter or junction gesture through the core resize FSM.
     LocalSplitterGesture {
         /// Workspace version current when the framework response was captured.
@@ -828,6 +841,7 @@ impl EngineInput {
             | Self::ActivateSemanticReceiver { .. }
             | Self::AdjustSplitterResize { .. }
             | Self::AdjustLocalSplitterResize { .. }
+            | Self::AdjustLocalContainedResize { .. }
             | Self::LocalSplitterGesture { .. }
             | Self::LocalTabGesture { .. }
             | Self::LocalContainedGesture { .. }

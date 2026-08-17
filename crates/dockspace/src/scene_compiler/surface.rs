@@ -1591,6 +1591,8 @@ fn compile_contained_record(
         .transpose()?
         .filter(|close| rect_has_area(*close));
     let title_drag = clip_rect(durable_title_drag, surface_bounds)?;
+    let transform_operable =
+        crate::operation::contained_transform_operable(workspace, policy, surface, root)?;
     Ok(ContainedRecord::new(
         floating,
         root,
@@ -1601,6 +1603,7 @@ fn compile_contained_record(
         HitRegion::new(title_drag),
         content,
         close,
+        transform_operable,
         contained_resize_records(
             durable_outer,
             surface_bounds,

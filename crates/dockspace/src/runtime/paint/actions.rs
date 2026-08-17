@@ -8,8 +8,8 @@ use crate::scene::{
 use crate::tab_strip::TabStripStateKey;
 
 use super::super::{
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceSplitterAdjustment,
-    SurfaceTabListNavigation, SurfaceTabNavigation,
+    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
+    SurfaceSplitterAdjustment, SurfaceTabListNavigation, SurfaceTabNavigation,
 };
 use super::{
     DockspaceVisualId, SurfacePaintPlan, TabListMenuBackdropPaintRecord, TabListMenuPaintRecord,
@@ -284,6 +284,44 @@ impl SurfacePaintPlan<'_> {
             })
     }
 
+    /// Prepares one keyboard or accessibility adjustment for an exact cardinal
+    /// contained-floating resize edge.
+    #[must_use]
+    pub fn prepare_contained_resize_adjustment(
+        self,
+        floating: FloatingPresentationId,
+        direction: ContainedResizeDirection,
+        adjustment: SurfaceContainedResizeAdjustment,
+    ) -> Option<PreparedSurfaceAction> {
+        let direction = direction.into_core();
+        match direction {
+            CoreContainedResizeDirection::North
+            | CoreContainedResizeDirection::East
+            | CoreContainedResizeDirection::South
+            | CoreContainedResizeDirection::West => {}
+            CoreContainedResizeDirection::NorthEast
+            | CoreContainedResizeDirection::SouthEast
+            | CoreContainedResizeDirection::SouthWest
+            | CoreContainedResizeDirection::NorthWest => return None,
+        }
+        self.plan.contained_records().iter().find(|record| {
+            record.floating() == floating
+                && record.transform_operable()
+                && record
+                    .resize()
+                    .iter()
+                    .any(|resize| resize.direction() == direction)
+        })?;
+        Some(PreparedSurfaceAction::adjust_contained_resize(
+            self.authority_domain,
+            self.version,
+            self.scene,
+            floating,
+            direction,
+            self.splitter_keyboard_step * adjustment.direction(),
+        ))
+    }
+
     /// Prepares Escape cancellation only for this surface's active local gesture.
     #[must_use]
     pub fn prepare_escape_cancel(self) -> Option<PreparedSurfaceAction> {
@@ -436,6 +474,7 @@ impl SurfacePaintPlan<'_> {
         let direction = direction.into_core();
         self.plan.contained_records().iter().find(|record| {
             record.floating() == floating
+                && record.transform_operable()
                 && record
                     .resize()
                     .iter()

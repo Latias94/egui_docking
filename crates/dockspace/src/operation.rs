@@ -929,12 +929,33 @@ fn authorize_contained_transform(
     payload: DockPayloadPolicyFacts,
     surface: SurfaceId,
 ) -> Result<(), CommandError> {
-    evaluate_policy(
-        policy,
-        &DockPolicyRequest::TransformContained(DockContainedTransformPolicyRequest::new(
-            payload, surface,
-        )),
-    )
+    match contained_transform_policy_decision(policy, payload, surface) {
+        PolicyDecision::Allow => Ok(()),
+        PolicyDecision::Reject(reason) => Err(reason.into()),
+    }
+}
+
+pub(crate) fn contained_transform_operable(
+    workspace: &Workspace,
+    policy: &DockPolicySnapshot,
+    surface: SurfaceId,
+    root: RootId,
+) -> Result<bool, CommandError> {
+    let payload = root_payload_policy_facts(workspace, root, false)?;
+    Ok(matches!(
+        contained_transform_policy_decision(policy, payload, surface),
+        PolicyDecision::Allow
+    ))
+}
+
+fn contained_transform_policy_decision(
+    policy: &DockPolicySnapshot,
+    payload: DockPayloadPolicyFacts,
+    surface: SurfaceId,
+) -> PolicyDecision {
+    policy.evaluate(&DockPolicyRequest::TransformContained(
+        DockContainedTransformPolicyRequest::new(payload, surface),
+    ))
 }
 
 fn evaluate_policy(

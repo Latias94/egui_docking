@@ -172,6 +172,28 @@ fn run_frame(
     }
 }
 
+fn run_disabled_frame(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut Panes,
+    events: Vec<Event>,
+) -> FrameOutput {
+    let mut close_requests = Vec::new();
+    let mut output = context.run_ui(input(events), |ui| {
+        ui.add_enabled_ui(false, |ui| {
+            let response = dockspace
+                .show_single_surface(SURFACE, ui, panes)
+                .expect("the disabled product frame advances");
+            close_requests.extend(response.close_request_events().iter().cloned());
+        });
+    });
+    output.textures_delta.clear();
+    FrameOutput {
+        output,
+        close_requests,
+    }
+}
+
 fn run_frame_with_discard_after_dockspace(
     context: &Context,
     dockspace: &mut Dockspace,
@@ -343,6 +365,14 @@ fn contained_title_point(dockspace: &Dockspace) -> Pos2 {
             + style.tab_horizontal_padding,
         rect.min().y() as f32 + style.floating_border_width + style.floating_title_height * 0.5,
     )
+}
+
+fn contained_rect(dockspace: &Dockspace) -> LogicalRect {
+    dockspace
+        .view()
+        .contained(FLOATING)
+        .expect("the contained fixture is present")
+        .rect()
 }
 
 fn pointer_button(pos: Pos2, pressed: bool) -> Event {
@@ -681,13 +711,166 @@ fn default_features_contained_close_supports_pointer_accesskit_and_keyboard() {
             }
         };
 
-        let request = activated
-            .close_requests
-            .first()
-            .unwrap_or_else(|| panic!("{name} activation opens one close plan"));
+        assert_eq!(activated.close_requests.len(), 1, "{name}");
+        let request = &activated.close_requests[0];
+        assert!(!request.reused(), "{name}");
+        assert_eq!(
+            request.plan().target(),
+            ClosePlanTarget::Root {
+                root: FLOATING_ROOT,
+            },
+            "{name}",
+        );
         assert_eq!(request.plan().items().len(), 1);
         assert_eq!(request.plan().items()[0].item(), SECOND);
     }
+}
+
+#[test]
+fn disabled_ui_ignores_delayed_contained_accesskit_actions() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-disabled-contained-close", contained_layout())
+        .build()
+        .expect("the product contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (close, _) = accesskit_node(&stable.output, Role::Button, "Close floating Second");
+    let (right, _) = accesskit_node(&stable.output, Role::Splitter, "Resize floating right edge");
+    let before = contained_rect(&dockspace);
+    let disabled = run_disabled_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            accesskit_action(close, Action::Click),
+            accesskit_action(right, Action::Increment),
+        ],
+    );
+
+    assert!(disabled.close_requests.is_empty());
+    assert_eq!(contained_rect(&dockspace), before);
+    let (_, resize_node) = accesskit_node(
+        &disabled.output,
+        Role::Splitter,
+        "Resize floating right edge",
+    );
+    assert!(!resize_node.supports_action(Action::Focus));
+    assert!(!resize_node.supports_action(Action::Increment));
+    assert!(!resize_node.supports_action(Action::Decrement));
+}
+
+#[test]
+fn default_features_contained_cardinal_resize_supports_accesskit_and_keyboard() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace =
+        Dockspace::builder("product-contained-resize-semantics", contained_layout())
+            .build()
+            .expect("the product contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let resize_nodes = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::Splitter)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        resize_nodes.len(),
+        4,
+        "only cardinal contained edges are focusable controls",
+    );
+    for (_, node) in resize_nodes {
+        assert!(node.supports_action(Action::Focus));
+        assert!(node.supports_action(Action::Increment));
+        assert!(node.supports_action(Action::Decrement));
+    }
+
+    let (right, _) = accesskit_node(&stable.output, Role::Splitter, "Resize floating right edge");
+    let (top, _) = accesskit_node(&stable.output, Role::Splitter, "Resize floating top edge");
+    let initial = contained_rect(&dockspace);
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(right, Action::Increment)],
+    );
+    let widened = contained_rect(&dockspace);
+    assert_eq!(widened.min(), initial.min());
+    assert!(widened.width() > initial.width());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(top, Action::Focus)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        key_press(Key::ArrowUp),
+    );
+    let raised = contained_rect(&dockspace);
+    assert!(raised.min().y() < widened.min().y());
+    assert_eq!(raised.max().y(), widened.max().y());
+}
+
+#[test]
+fn contained_resize_policy_denial_advertises_no_adjustment_actions() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut policy = dockspace::policy::DockPolicy::default();
+    policy.set_allow_contained_transform(false);
+    let mut dockspace = Dockspace::builder("product-contained-resize-disabled", contained_layout())
+        .policy(policy)
+        .build()
+        .expect("the policy-disabled contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let resize_nodes = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == Role::Splitter)
+        .collect::<Vec<_>>();
+    assert_eq!(resize_nodes.len(), 4);
+    for (_, node) in &resize_nodes {
+        assert!(!node.supports_action(Action::Focus));
+        assert!(!node.supports_action(Action::Increment));
+        assert!(!node.supports_action(Action::Decrement));
+    }
+
+    let before = contained_rect(&dockspace);
+    let right = resize_nodes
+        .iter()
+        .find_map(|(id, node)| (node.label() == Some("Resize floating right edge")).then_some(*id))
+        .expect("the disabled right edge remains described");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(right, Action::Increment)],
+    );
+    assert_eq!(contained_rect(&dockspace), before);
 }
 
 #[test]

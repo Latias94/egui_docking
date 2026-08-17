@@ -523,6 +523,7 @@ impl SplitterJunctionPaintRecord<'_> {
 #[derive(Debug, Clone, Copy)]
 pub struct ContainedResizePaintRecord {
     record: ContainedResizeRecord,
+    operable: bool,
 }
 
 impl ContainedResizePaintRecord {
@@ -534,6 +535,13 @@ impl ContainedResizePaintRecord {
     #[must_use]
     pub const fn hit_bounds(self) -> LogicalRect {
         self.record.hit().rect()
+    }
+
+    /// Returns whether the exact contained root, its items, and its owning
+    /// surface permit a transform under the policy frozen into this plan.
+    #[must_use]
+    pub const fn operable(self) -> bool {
+        self.operable
     }
 }
 
@@ -595,11 +603,12 @@ impl<'plan> ContainedPaintRecord<'plan> {
     }
 
     pub fn resize(self) -> impl ExactSizeIterator<Item = ContainedResizePaintRecord> + 'plan {
+        let operable = self.record.transform_operable();
         self.record
             .resize()
             .iter()
             .copied()
-            .map(|record| ContainedResizePaintRecord { record })
+            .map(move |record| ContainedResizePaintRecord { record, operable })
     }
 
     #[must_use]

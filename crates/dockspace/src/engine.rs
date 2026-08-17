@@ -43,8 +43,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use self::contained_geometry::{
-    clamp_contained_rect, clamp_moved_contained_rect, contained_resize_edges,
-    contained_transform_requested_rect, translated_contained_rect,
+    cardinal_contained_resize_requested_rect, clamp_contained_rect, clamp_moved_contained_rect,
+    contained_resize_edges, contained_transform_requested_rect, translated_contained_rect,
 };
 pub(crate) use self::input::LocalTabChromeAction;
 use self::input::TabScrollAdjustmentKind;
@@ -1576,6 +1576,12 @@ enum SplitterAdjustmentAuthority {
     LocalReady,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainedPlacementAuthority {
+    PresentedCoordinates,
+    LocalReady,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum PreparedCloseOperation {
     Content(PreparedContentClose),
@@ -3070,6 +3076,19 @@ impl DockEngine {
                 });
             }
         };
+        Self::validate_contained_placement_geometry(proof, ready)
+    }
+
+    fn validate_contained_placement_geometry(
+        proof: ContainedPlacementProof,
+        ready: &crate::scene::SurfacePlanScene,
+    ) -> Result<(), ContainedPlacementUnavailable> {
+        if ready.stamp() != proof.scene() {
+            return Err(ContainedPlacementUnavailable::StaleScene {
+                expected: proof.scene(),
+                current: Some(ready.stamp()),
+            });
+        }
         if ready.plan().bounds() != proof.surface_bounds() {
             return Err(ContainedPlacementUnavailable::ProofMismatch {
                 surface: proof.surface(),
@@ -3505,7 +3524,14 @@ impl DockEngine {
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         self.reduce_versioned_interaction(expected, |engine| {
-            engine.apply_contained_placement(input, placement, policy, events, interaction_events)
+            engine.apply_contained_placement(
+                input,
+                placement,
+                ContainedPlacementAuthority::PresentedCoordinates,
+                policy,
+                events,
+                interaction_events,
+            )
         })
     }
 
@@ -3622,11 +3648,12 @@ impl DockEngine {
         &mut self,
         input: InputSequence,
         update: ContainedPlacementInput,
+        authority: ContainedPlacementAuthority,
         policy: &DockPolicySnapshot,
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InteractionOutcome, EngineError> {
-        let command = match self.checked_contained_placement_command(update) {
+        let command = match self.checked_contained_placement_command(update, authority) {
             Ok(command) => command,
             Err(error) => return Ok(InteractionOutcome::Rejected(error)),
         };
@@ -3650,15 +3677,31 @@ impl DockEngine {
     fn checked_contained_placement_command(
         &self,
         update: ContainedPlacementInput,
+        authority: ContainedPlacementAuthority,
     ) -> Result<WorkspaceCommand, InteractionRejection> {
-        self.validate_contained_placement(update.placement)
-            .map_err(|error| match error {
-                ContainedPlacementUnavailable::StaleScene { .. }
-                | ContainedPlacementUnavailable::SceneUnavailable => {
-                    InteractionRejection::StaleScene
-                }
-                other => InteractionRejection::ContainedPlacementUnavailable(other),
-            })?;
+        let validated = match authority {
+            ContainedPlacementAuthority::PresentedCoordinates => {
+                self.validate_contained_placement(update.placement)
+            }
+            ContainedPlacementAuthority::LocalReady => self
+                .local_response_candidate(update.placement.scene())
+                .map_err(|_| ContainedPlacementUnavailable::StaleScene {
+                    expected: update.placement.scene(),
+                    current: self
+                        .presentation_authority
+                        .scene
+                        .surface(update.placement.surface())
+                        .map(SurfaceScene::stamp),
+                })
+                .and_then(|candidate| {
+                    Self::validate_contained_placement_geometry(update.placement, candidate)
+                }),
+        };
+        validated.map_err(|error| match error {
+            ContainedPlacementUnavailable::StaleScene { .. }
+            | ContainedPlacementUnavailable::SceneUnavailable => InteractionRejection::StaleScene,
+            other => InteractionRejection::ContainedPlacementUnavailable(other),
+        })?;
         Ok(WorkspaceCommand::UpdateContainedRect {
             surface: update.placement.surface(),
             root: update.root,

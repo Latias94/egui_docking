@@ -2,7 +2,6 @@
 
 use crate::command::WorkspaceCommand;
 use crate::event::{ReductionCause, WorkspaceEvent};
-use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
 use crate::intent::{CloseActivation, CloseSceneTarget};
 use crate::interaction::{
     InteractionEvent, InteractionEventKind, InteractionOutcome, InteractionRejection,
@@ -17,9 +16,9 @@ use crate::transition::{InputOutcome, WorkspaceVersion};
 use crate::viewport_focus::FocusCausalStamp;
 
 use super::{
-    ContainedPlacementInput, DockEngine, EngineError, PreparedTabListMenuNavigation,
-    PreparedTabListMenuRowActivation, PreparedTabListMenuScroll, PreparedTabStripControlActivation,
-    TabListMenuNavigation, TabScrollAdjustment,
+    DockEngine, EngineError, PreparedTabListMenuNavigation, PreparedTabListMenuRowActivation,
+    PreparedTabListMenuScroll, PreparedTabStripControlActivation, TabListMenuNavigation,
+    TabScrollAdjustment,
 };
 
 impl DockEngine {
@@ -593,73 +592,25 @@ impl DockEngine {
         events: &mut Vec<WorkspaceEvent>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
-        let Some(contained) = projection
-            .plan()
-            .contained_records()
-            .iter()
-            .find(|record| record.floating() == floating)
-        else {
-            return Ok(self.semantic_rejection(
-                InteractionRejection::SemanticReceiverUnavailable {
-                    target: PresentationHitRegionKind::ContainedResize {
-                        floating,
-                        direction,
-                    },
-                },
-            ));
-        };
-        let Some(workspace_record) = self.workspace.contained_floating(floating) else {
-            return Ok(self.semantic_rejection(InteractionRejection::TargetAuthorityInvalid));
-        };
-        if workspace_record.root != contained.root() {
-            return Ok(self.semantic_rejection(InteractionRejection::TargetAuthorityInvalid));
-        }
         let delta = self
             .presentation_authority
             .presentation_config
             .splitter_keyboard_step()
             * direction_sign;
-        let requested = match semantic_contained_resize_rect(
-            projection.output_ticket().surface(),
-            workspace_record.rect,
-            projection.plan().bounds(),
-            contained.minimum_size(),
+        let placement = match self.prepare_cardinal_contained_resize_placement(
+            projection.plan_stamp(),
+            projection.plan(),
+            floating,
             direction,
             delta,
         ) {
-            Ok(requested) => requested,
+            Ok(placement) => placement,
             Err(rejection) => return Ok(self.semantic_rejection(rejection)),
         };
-        let clamped = match super::clamp_contained_rect(
-            projection.output_ticket().surface(),
-            projection.plan().bounds(),
-            requested,
-            contained.minimum_size(),
-        ) {
-            Ok(clamped) => clamped,
-            Err(error) => {
-                return Ok(self.semantic_rejection(
-                    InteractionRejection::ContainedPlacementUnavailable(error),
-                ));
-            }
-        };
-        let placement = crate::intent::ContainedPlacementProof::new(
-            projection.plan_stamp(),
-            projection.output_ticket().surface(),
-            requested,
-            contained.minimum_size(),
-            projection.plan().bounds(),
-            clamped,
-        );
         self.reduce_contained_placement_input(
             input,
             expected,
-            ContainedPlacementInput {
-                root: contained.root(),
-                floating,
-                expected_rect: workspace_record.rect,
-                placement,
-            },
+            placement,
             policy,
             events,
             interaction_events,
@@ -733,104 +684,5 @@ const fn semantic_direction(key: SemanticKey) -> f64 {
         SemanticKey::ArrowLeft | SemanticKey::ArrowUp => -1.0,
         SemanticKey::ArrowRight | SemanticKey::ArrowDown => 1.0,
         SemanticKey::Home | SemanticKey::End | SemanticKey::Enter | SemanticKey::Space => 0.0,
-    }
-}
-
-fn semantic_contained_resize_rect(
-    surface: crate::ids::SurfaceId,
-    source: LogicalRect,
-    bounds: LogicalRect,
-    minimum: LogicalSize,
-    direction: crate::scene::ContainedResizeDirection,
-    delta: f64,
-) -> Result<LogicalRect, InteractionRejection> {
-    let horizontal_edge = match direction {
-        crate::scene::ContainedResizeDirection::West => Some(false),
-        crate::scene::ContainedResizeDirection::East => Some(true),
-        crate::scene::ContainedResizeDirection::North
-        | crate::scene::ContainedResizeDirection::South => None,
-        crate::scene::ContainedResizeDirection::NorthEast
-        | crate::scene::ContainedResizeDirection::SouthEast
-        | crate::scene::ContainedResizeDirection::SouthWest
-        | crate::scene::ContainedResizeDirection::NorthWest => {
-            return Err(InteractionRejection::TargetAuthorityInvalid);
-        }
-    };
-    let vertical_edge = match direction {
-        crate::scene::ContainedResizeDirection::North => Some(false),
-        crate::scene::ContainedResizeDirection::South => Some(true),
-        crate::scene::ContainedResizeDirection::East
-        | crate::scene::ContainedResizeDirection::West => None,
-        crate::scene::ContainedResizeDirection::NorthEast
-        | crate::scene::ContainedResizeDirection::SouthEast
-        | crate::scene::ContainedResizeDirection::SouthWest
-        | crate::scene::ContainedResizeDirection::NorthWest => unreachable!(
-            "diagonal semantic resize directions were rejected before vertical projection"
-        ),
-    };
-    let unavailable = || {
-        InteractionRejection::ContainedPlacementUnavailable(
-            crate::intent::ContainedPlacementUnavailable::UnrepresentableGeometry { surface },
-        )
-    };
-    let (min_x, max_x) = semantic_resize_axis(
-        source.x(),
-        source.max().x(),
-        bounds.x(),
-        bounds.max().x(),
-        minimum.width(),
-        delta,
-        horizontal_edge,
-    )
-    .ok_or_else(unavailable)?;
-    let (min_y, max_y) = semantic_resize_axis(
-        source.y(),
-        source.max().y(),
-        bounds.y(),
-        bounds.max().y(),
-        minimum.height(),
-        delta,
-        vertical_edge,
-    )
-    .ok_or_else(unavailable)?;
-    let min = LogicalPoint::new(min_x, min_y).map_err(|_| unavailable())?;
-    let max = LogicalPoint::new(max_x, max_y).map_err(|_| unavailable())?;
-    LogicalRect::from_min_max(min, max).map_err(|_| unavailable())
-}
-
-fn semantic_resize_axis(
-    source_min: f64,
-    source_max: f64,
-    bounds_min: f64,
-    bounds_max: f64,
-    minimum_extent: f64,
-    delta: f64,
-    moving_max: Option<bool>,
-) -> Option<(f64, f64)> {
-    if !source_min.is_finite()
-        || !source_max.is_finite()
-        || !bounds_min.is_finite()
-        || !bounds_max.is_finite()
-        || !minimum_extent.is_finite()
-        || !delta.is_finite()
-    {
-        return None;
-    }
-    match moving_max {
-        None => Some((source_min, source_max)),
-        Some(false) => {
-            let latest_min = source_max - minimum_extent;
-            (bounds_min <= latest_min)
-                .then_some(source_min + delta)
-                .filter(|requested| requested.is_finite())
-                .map(|requested| (requested.clamp(bounds_min, latest_min), source_max))
-        }
-        Some(true) => {
-            let earliest_max = source_min + minimum_extent;
-            (earliest_max <= bounds_max)
-                .then_some(source_max + delta)
-                .filter(|requested| requested.is_finite())
-                .map(|requested| (source_min, requested.clamp(earliest_max, bounds_max)))
-        }
     }
 }

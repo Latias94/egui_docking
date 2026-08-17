@@ -9,13 +9,15 @@ use crate::engine::{
     LocalTabGesturePhase,
 };
 use crate::geometry::LogicalPoint;
-use crate::ids::{EngineAuthorityDomainId, ItemId, SurfaceId};
+use crate::ids::{EngineAuthorityDomainId, FloatingPresentationId, ItemId, SurfaceId};
 use crate::intent::{CloseSceneTarget, ContainedGestureKind, TabGestureSource};
 use crate::interaction::{
     ContainedTransformPaintAcknowledgement, EscapeDelivery, PaintAcknowledgement,
 };
 use crate::model::WorkspaceVersion;
-use crate::scene::{SplitterResizeTarget, SplitterSceneId, SurfaceSceneStamp, TabSceneId};
+use crate::scene::{
+    ContainedResizeDirection, SplitterResizeTarget, SplitterSceneId, SurfaceSceneStamp, TabSceneId,
+};
 
 /// Product-facing navigation within one exact tab strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,6 +66,24 @@ pub enum SurfaceSplitterAdjustment {
 }
 
 impl SurfaceSplitterAdjustment {
+    pub(super) const fn direction(self) -> f64 {
+        match self {
+            Self::Decrement => -1.0,
+            Self::Increment => 1.0,
+        }
+    }
+}
+
+/// Product-facing signed adjustment of one contained-floating edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceContainedResizeAdjustment {
+    /// Move the edge toward the beginning of its logical axis.
+    Decrement,
+    /// Move the edge toward the end of its logical axis.
+    Increment,
+}
+
+impl SurfaceContainedResizeAdjustment {
     pub(super) const fn direction(self) -> f64 {
         match self {
             Self::Decrement => -1.0,
@@ -212,6 +232,27 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn adjust_contained_resize(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        direction: ContainedResizeDirection,
+        delta: f64,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::AdjustContainedResize {
+                scene,
+                floating,
+                direction,
+                delta,
+            },
+        }
+    }
+
     pub(super) const fn cancel_with_escape(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -287,6 +328,7 @@ impl PreparedSurfaceAction {
             SurfaceAction::Close { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
+            | SurfaceAction::AdjustContainedResize { .. }
             | SurfaceAction::CancelWithEscape
             | SurfaceAction::LocalTabGesture { .. }
             | SurfaceAction::LocalSplitterGesture { .. }
@@ -354,6 +396,18 @@ impl PreparedSurfaceAction {
                 splitter,
                 delta,
             },
+            SurfaceAction::AdjustContainedResize {
+                scene,
+                floating,
+                direction,
+                delta,
+            } => EngineInput::AdjustLocalContainedResize {
+                expected: self.expected,
+                scene,
+                floating,
+                direction,
+                delta,
+            },
             SurfaceAction::CancelWithEscape => EngineInput::CancelActiveInteractionWithEscape {
                 expected: self.expected,
                 delivery: EscapeDelivery::Surface(self.surface),
@@ -417,6 +471,12 @@ enum SurfaceAction {
         splitter: SplitterSceneId,
         delta: f64,
     },
+    AdjustContainedResize {
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        direction: ContainedResizeDirection,
+        delta: f64,
+    },
     CancelWithEscape,
     AcknowledgePreview {
         acknowledgement: PaintAcknowledgement,
@@ -436,6 +496,7 @@ impl SurfaceAction {
             Self::LocalSplitterGesture { .. } => "splitter-gesture",
             Self::LocalContainedGesture { .. } => "contained-gesture",
             Self::AdjustSplitter { .. } => "adjust-splitter",
+            Self::AdjustContainedResize { .. } => "adjust-contained-resize",
             Self::CancelWithEscape => "cancel-with-escape",
             Self::AcknowledgePreview { .. } => "acknowledge-preview",
             Self::AcknowledgeContainedTransformPreview { .. } => {

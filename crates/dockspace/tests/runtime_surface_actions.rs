@@ -1,19 +1,22 @@
 use crate::geometry::{LogicalPoint, LogicalRect, LogicalSize};
-use crate::ids::{ItemId, RootId, SurfaceId};
+use crate::ids::{FloatingPresentationId, ItemId, RootId, SurfaceId};
 use crate::model::{
-    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
+    DockspaceAxis, DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+    DockspaceSurfaceLayout,
 };
-use crate::policy::DockPolicy;
+use crate::policy::{DockItemRule, DockPolicy, DockSourceRule, DockSurfaceRule};
 use crate::runtime::{
-    DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin, HostInputOutcome,
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfaceSplitterAdjustment, SurfaceUnavailableReason,
-    TabListMenuMetrics, TabStripControlKind, TabStripControlMetric, TabStripControlMetrics,
-    TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
+    ContainedResizeDirection, DockspaceRuntimeErrorKind, DockspaceSession, HostCloseRequestOrigin,
+    HostInputOutcome, PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfaceSplitterAdjustment,
+    SurfaceUnavailableReason, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
+    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
+const FLOATING_ROOT: RootId = RootId::new(2);
+const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
@@ -60,6 +63,23 @@ fn overflow_session() -> DockspaceSession {
         .expect("overflow surface-action session initializes")
 }
 
+fn contained_session(policy: DockPolicy) -> DockspaceSession {
+    let contained_rect =
+        LogicalRect::new(160.0, 120.0, 320.0, 240.0).expect("contained rectangle validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        contained_rect,
+    ))])
+    .expect("contained surface-action layout validates");
+    DockspaceSession::from_layout(layout, policy)
+        .expect("contained surface-action session initializes")
+}
+
 fn split_weights(session: &DockspaceSession) -> Vec<f32> {
     session
         .view()
@@ -70,6 +90,14 @@ fn split_weights(session: &DockspaceSession) -> Vec<f32> {
         .expect("the test main root remains split")
         .weights()
         .collect()
+}
+
+fn contained_rect(session: &DockspaceSession) -> LogicalRect {
+    session
+        .view()
+        .contained(FLOATING)
+        .expect("the test contained presentation remains open")
+        .rect()
 }
 
 fn metrics() -> UniformSurfaceMetrics {
@@ -172,6 +200,201 @@ fn prepare_tab_close(session: &mut DockspaceSession, item: ItemId) -> PreparedSu
         .expect("the unchanged candidate is retained");
     frame.commit().expect("paint pass commits");
     action
+}
+
+#[test]
+fn contained_resize_operability_honors_exact_root_item_and_surface_policy() {
+    let mut policies = Vec::new();
+
+    let mut global = DockPolicy::default();
+    global.set_allow_contained_transform(false);
+    policies.push(("global", global));
+
+    let mut root = DockPolicy::default();
+    let mut root_rule = DockSourceRule::new();
+    root_rule.set_enabled(false);
+    root.set_source_rule(FLOATING_ROOT, root_rule);
+    policies.push(("root", root));
+
+    let mut item = DockPolicy::default();
+    let mut item_rule = DockItemRule::new();
+    item_rule.set_source_enabled(false);
+    item.set_item_rule(SECOND, item_rule);
+    policies.push(("item", item));
+
+    let mut surface = DockPolicy::default();
+    let mut surface_rule = DockSurfaceRule::new();
+    surface_rule.set_target_enabled(false);
+    surface.set_surface_rule(SURFACE, surface_rule);
+    policies.push(("surface", surface));
+
+    for (scope, policy) in policies {
+        let mut session = contained_session(policy);
+        install_ready_candidate(&mut session);
+        let mut frame = session.begin_host_frame().expect("paint frame begins");
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("paint plan lookup succeeds")
+            .expect("contained candidate is paintable");
+        let contained = plan
+            .contained()
+            .next()
+            .expect("the exact contained presentation is painted");
+        let cardinal = contained
+            .resize()
+            .filter(|resize| {
+                matches!(
+                    resize.direction(),
+                    ContainedResizeDirection::North
+                        | ContainedResizeDirection::East
+                        | ContainedResizeDirection::South
+                        | ContainedResizeDirection::West
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(cardinal.len(), 4);
+        assert!(
+            cardinal.iter().all(|resize| !resize.operable()),
+            "{scope} policy denial must be frozen into every cardinal resize record",
+        );
+        assert!(
+            cardinal.iter().all(|resize| plan
+                .receiver_for_contained_resize(contained, *resize)
+                .is_none()),
+            "{scope} policy denial must remove every cardinal resize receiver",
+        );
+        assert!(
+            cardinal.iter().all(|resize| {
+                plan.prepare_contained_resize_adjustment(
+                    contained.floating(),
+                    resize.direction(),
+                    SurfaceContainedResizeAdjustment::Increment,
+                )
+                .is_none()
+            }),
+            "{scope} policy denial must reject every cardinal resize action",
+        );
+        frame
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the unchanged candidate is retained");
+        frame.commit().expect("paint pass commits");
+    }
+}
+
+#[test]
+fn contained_resize_adjustment_uses_current_ready_geometry_for_every_cardinal_edge() {
+    let source = LogicalRect::new(160.0, 120.0, 320.0, 240.0).expect("source rectangle validates");
+    let cases = [
+        (
+            ContainedResizeDirection::North,
+            SurfaceContainedResizeAdjustment::Decrement,
+            LogicalRect::new(160.0, 104.0, 320.0, 256.0).expect("north rectangle validates"),
+        ),
+        (
+            ContainedResizeDirection::East,
+            SurfaceContainedResizeAdjustment::Increment,
+            LogicalRect::new(160.0, 120.0, 336.0, 240.0).expect("east rectangle validates"),
+        ),
+        (
+            ContainedResizeDirection::South,
+            SurfaceContainedResizeAdjustment::Increment,
+            LogicalRect::new(160.0, 120.0, 320.0, 256.0).expect("south rectangle validates"),
+        ),
+        (
+            ContainedResizeDirection::West,
+            SurfaceContainedResizeAdjustment::Decrement,
+            LogicalRect::new(144.0, 120.0, 336.0, 240.0).expect("west rectangle validates"),
+        ),
+    ];
+
+    for (direction, adjustment, expected) in cases {
+        let mut session = contained_session(DockPolicy::default());
+        install_ready_candidate(&mut session);
+        assert_eq!(contained_rect(&session), source);
+
+        let mut frame = session.begin_host_frame().expect("adjustment frame begins");
+        let plan = frame
+            .paint_plan(SURFACE)
+            .expect("paint plan lookup succeeds")
+            .expect("contained candidate is paintable");
+        let contained = plan
+            .contained()
+            .next()
+            .expect("the contained presentation is painted");
+        let resize = contained
+            .resize()
+            .find(|resize| resize.direction() == direction)
+            .expect("the requested cardinal edge is painted");
+        assert!(resize.operable());
+        let action = plan
+            .prepare_contained_resize_adjustment(
+                contained.floating(),
+                resize.direction(),
+                adjustment,
+            )
+            .expect("the current Ready edge prepares an adjustment");
+        frame
+            .submit_surface_action(action)
+            .expect("the same-frame action is accepted");
+        frame
+            .measure_surface(SURFACE, metrics())
+            .expect("the adjusted surface measures");
+        frame.commit().expect("the adjustment frame commits");
+
+        assert_eq!(contained_rect(&session), expected, "{direction:?}");
+    }
+}
+
+#[test]
+fn stale_contained_resize_adjustment_is_inert() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+    let before = contained_rect(&session);
+
+    let mut prepare = session.begin_host_frame().expect("prepare frame begins");
+    let plan = prepare
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("contained candidate is paintable");
+    let contained = plan
+        .contained()
+        .next()
+        .expect("the contained presentation is painted");
+    let action = plan
+        .prepare_contained_resize_adjustment(
+            contained.floating(),
+            ContainedResizeDirection::East,
+            SurfaceContainedResizeAdjustment::Increment,
+        )
+        .expect("the current edge prepares an adjustment");
+    prepare
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the candidate is retained");
+    prepare.commit().expect("prepare frame commits");
+
+    let mut mutate = session.begin_host_frame().expect("mutation frame begins");
+    mutate
+        .select_item_current(THIRD)
+        .expect("the main-root selection changes the revision");
+    mutate
+        .measure_surface(SURFACE, metrics())
+        .expect("the mutated surface measures");
+    mutate.commit().expect("mutation frame commits");
+
+    let mut stale = session.begin_host_frame().expect("stale frame begins");
+    stale
+        .submit_surface_action(action)
+        .expect("same-session stale action is structurally accepted");
+    stale
+        .measure_surface(SURFACE, metrics())
+        .expect("the stale surface measures");
+    let report = stale.commit().expect("stale frame commits");
+
+    assert!(matches!(
+        report.inputs(),
+        [HostInputOutcome::StaleRejected { .. }]
+    ));
+    assert_eq!(contained_rect(&session), before);
 }
 
 #[test]
