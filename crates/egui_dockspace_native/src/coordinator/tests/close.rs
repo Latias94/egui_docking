@@ -3,7 +3,7 @@ use eframe::egui::ViewportCommand;
 use super::*;
 use crate::close_control::{NativeViewportCloseCancellationRecord, NativeWindowClosePolicy};
 
-fn observe_close(
+pub(super) fn observe_close(
     native: &mut NativeCoordinator,
     binding: NativeSurfaceBinding,
     live_bindings: impl IntoIterator<Item = NativeSurfaceBinding>,

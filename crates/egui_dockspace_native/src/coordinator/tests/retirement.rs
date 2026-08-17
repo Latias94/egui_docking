@@ -1,11 +1,90 @@
 use eframe::egui::ViewportCommand;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute, WindowEvent,
+    DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerEventFacts, PointerWindowRoute,
+    TouchPhase, WindowEvent,
 };
 
 use super::*;
 use crate::event::NativePointerRouteSnapshot;
+
+#[test]
+fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {
+    let mut native = coordinator();
+    let (root, child_binding) = register_root_and_child(&mut native);
+    let root_window = WindowId::from(11);
+    let child_window = WindowId::from(22);
+    let child = ViewportId::from_hash_of("scrolling-release-child");
+    native
+        .bind_viewport(ViewportId::ROOT, root_window, root)
+        .expect("root viewport binds");
+    native
+        .bind_viewport(child, child_window, child_binding)
+        .expect("child viewport binds");
+
+    let started = NativeWindowEventRecord::for_test(
+        9,
+        child_window,
+        Some(child),
+        Some(child_binding),
+        WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: TouchPhase::Started,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    assert!(matches!(
+        native.pointer_translator.translate(&started, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+
+    let mut redock = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child redock frame begins");
+    redock
+        .frame
+        .dock_root_current(
+            RootId::new(2),
+            DockPlacement::Center(DockAnchor::Item(ItemId::new(1))),
+        )
+        .expect("the complete child root redocks");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child redock settles every surface");
+    let mut report = redock.commit().expect("the child redock commits");
+    let effects = report.take_native_effects();
+    assert!(matches!(
+        effects.as_slice(),
+        [request]
+            if matches!(
+                request.operation(),
+                NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding
+            )
+    ));
+    native
+        .accept_native_effects(effects)
+        .expect("the child release is accepted");
+
+    assert!(
+        native.pointer_translator.references_binding(child_binding),
+        "ReleaseChild cannot replace the provider's terminal scroll edge"
+    );
+    assert!(
+        native
+            .pointer_translator
+            .cancel_destroyed_binding(child_binding)
+            .is_some(),
+        "the later Destroyed callback can still retire the semantic owner"
+    );
+    assert!(
+        native
+            .pointer_translator
+            .reset_destroyed_binding(child_binding)
+            .is_some(),
+        "the following boundary can still close the provider tail"
+    );
+}
 
 #[test]
 fn destroyed_child_route_retires_only_after_tombstone_commit_and_quiescence() {

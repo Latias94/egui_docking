@@ -1129,7 +1129,7 @@ fn pointer_reduction_acknowledges_only_after_core_acceptance() {
 
     assert!(
         native
-            .reduce_next_pointer_event()
+            .reduce_callback_head()
             .expect("core accepts the current pointer binding")
     );
     assert!(

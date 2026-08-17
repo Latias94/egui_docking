@@ -246,6 +246,7 @@ impl NativeCoordinator {
             && !self.deferred_viewports.has_transitional_viewport()
             && !self.effects.has_pending_work()
             && !self.retirements.has_pending_work()
+            && !self.pointer_translator.has_pending_provider_tail()
             && !self.close_control.has_pending_work()
             && !self.focus_control.has_pending_work()
             && !self.input_control.has_pending_work()
@@ -623,6 +624,7 @@ impl NativeCoordinator {
         let mut recorded = false;
         for binding in candidates {
             if self.bridge.references_binding(binding)
+                || self.pointer_translator.references_binding(binding)
                 || self.receivers.references_binding(binding)
                 || self.deferred_viewports.viewport_for(binding).is_some()
                 || self.effects.references_binding(binding)
@@ -779,34 +781,6 @@ impl NativeCoordinator {
         }
     }
 
-    /// Reduces the journal head when it is a pointer event.
-    ///
-    /// The translator is copied before reduction. Smooth-scroll sequence state
-    /// is published only after the core accepts the corresponding input and the
-    /// immutable callback record is acknowledged, so a rejected edge remains
-    /// replayable without advancing the adapter-owned sequence state.
-    pub(crate) fn reduce_next_pointer_event(&mut self) -> Result<bool, NativeRuntimeError> {
-        let Some(record) = self.next_window_event()? else {
-            return Ok(false);
-        };
-        let mut candidate = self.pointer_translator;
-        let work_areas = &self.work_areas;
-        match candidate.translate(&record, |point| work_areas.binding_at(point)) {
-            NativePointerTranslation::NotPointer => Ok(false),
-            NativePointerTranslation::Ignored => {
-                self.acknowledge_window_event(record.ordinal())?;
-                self.pointer_translator = candidate;
-                Ok(true)
-            }
-            NativePointerTranslation::Input(input) => {
-                self.record_pointer(input)?;
-                self.acknowledge_window_event(record.ordinal())?;
-                self.pointer_translator = candidate;
-                Ok(true)
-            }
-        }
-    }
-
     /// Reduces the next callback record into one pending host-frame boundary.
     ///
     /// The mailbox remains the only callback-order authority. Pointer facts,
@@ -849,6 +823,28 @@ impl NativeCoordinator {
             return Ok(false);
         };
         let mut candidate = self.pointer_translator;
+        if matches!(record.event(), winit::event::WindowEvent::Destroyed)
+            && let Some(binding) = record.binding()
+        {
+            if let Some(cancel) = candidate.cancel_destroyed_binding(binding) {
+                self.record_pointer(cancel)?;
+                // Keep the raw callback at the mailbox head while this first
+                // causal boundary commits. Core intentionally requires the
+                // provider reset to arrive in a later pointer prefix.
+                self.pointer_translator = candidate;
+                if !self.bridge.hold_event_for_next_boundary(record.ordinal()) {
+                    return Err(NativeHostProtocolError::WindowEventAcknowledgementMismatch.into());
+                }
+                return Ok(true);
+            }
+            if let Some(reset) = candidate.reset_destroyed_binding(binding) {
+                self.record_pointer(reset)?;
+                // The recorder now owns the replayable reset. Publish it before
+                // later destroyed-sidecar work can fail, so retrying the raw
+                // callback cannot enqueue the same edge twice.
+                self.pointer_translator = candidate;
+            }
+        }
         let work_areas = &self.work_areas;
         match candidate.translate(&record, |point| work_areas.binding_at(point)) {
             NativePointerTranslation::NotPointer => self.reduce_non_pointer_event(&record)?,

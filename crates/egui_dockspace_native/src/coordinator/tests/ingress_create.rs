@@ -9,7 +9,8 @@ use dockspace::runtime::{
 use eframe::NativeViewportPointerPassthroughStatus;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
-    DeviceId, ElementState, MouseButton, PointerEventFacts, PointerWindowRoute, WindowEvent,
+    DeviceId, ElementState, MouseButton, MouseScrollDelta, PointerEventFacts, PointerWindowRoute,
+    TouchPhase, WindowEvent,
 };
 
 use super::*;
@@ -333,6 +334,52 @@ fn request_native_child(
     );
 
     create_bindings[0]
+}
+
+#[test]
+fn destroyed_scroll_resets_without_a_future_pointer_event() {
+    let mut native = tear_off_coordinator();
+    let binding = register_source(&mut native);
+    publish_desktop_authority(&mut native, binding);
+    let receiver = measure_and_present_source(&mut native);
+    let center = receiver.center();
+    let point = PhysicalPoint::new(center.x(), center.y()).expect("receiver center is physical");
+
+    push_window_event(
+        &mut native,
+        70,
+        WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: TouchPhase::Started,
+            facts: pointer_facts(
+                point,
+                PointerWindowRoute::Window(source_window()),
+                PointerWindowRoute::Window(source_window()),
+            ),
+        },
+    );
+    drop(pointer_frame(&mut native, receiver));
+    assert!(native.pointer_translator.references_binding(binding));
+
+    push_window_event(&mut native, 71, WindowEvent::Destroyed);
+    assert!(native.pointer_translator.has_pending_provider_tail());
+    drop(pointer_frame(&mut native, receiver));
+
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the provider reset and destroyed facts record")
+    );
+    assert!(!native.pointer_translator.has_pending_provider_tail());
+    assert!(!native.pointer_translator.references_binding(binding));
+    drop(pointer_frame(&mut native, receiver));
+    assert!(
+        native
+            .next_window_event()
+            .expect("the callback journal remains valid")
+            .is_none()
+    );
 }
 
 #[test]

@@ -1422,6 +1422,19 @@ impl NativeHostBridge {
         matches
     }
 
+    pub(crate) fn hold_event_for_next_boundary(&self, ordinal: u64) -> bool {
+        let mut records = self.lock();
+        let matches = !records.event_boundary_pending
+            && matches!(
+                records.journal.front(),
+                Some(HostRecord::WindowEvent(event)) if event.ordinal() == ordinal
+            );
+        if matches {
+            records.event_boundary_pending = true;
+        }
+        matches
+    }
+
     pub(crate) fn acknowledge_global_focus(&self, expected: NativeGlobalFocusRecord) -> bool {
         let mut records = self.lock();
         let matches = matches!(

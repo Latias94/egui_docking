@@ -6,7 +6,7 @@ use dockspace::runtime::{
     NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
     NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
     NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId,
-    NativeWorkAreaBinding,
+    NativeSurfaceBinding, NativeWorkAreaBinding,
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -18,8 +18,24 @@ const SCROLL_DEVICE_ID: NativeScrollDeviceId = NativeScrollDeviceId::new(1);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NativePointerTranslator {
-    active_scroll: Option<NativeScrollSequenceId>,
+    scroll: NativeScrollState,
     next_scroll_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum NativeScrollState {
+    #[default]
+    Idle,
+    /// One winit phaseful sequence still maps to a live core sequence.
+    Live {
+        sequence: NativeScrollSequenceId,
+        delivery: Option<NativeSurfaceBinding>,
+    },
+    /// The semantic binding retired while provider tail events may still arrive.
+    RetiredTail {
+        sequence: NativeScrollSequenceId,
+        binding: NativeSurfaceBinding,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,6 +46,70 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
+    /// Terminates the semantic owner while preserving provider-tail correlation.
+    pub(crate) fn cancel_destroyed_binding(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativePointerInput> {
+        let NativeScrollState::Live {
+            sequence,
+            delivery: Some(delivery),
+        } = self.scroll
+        else {
+            return None;
+        };
+        if delivery != binding {
+            return None;
+        }
+        self.scroll = NativeScrollState::RetiredTail { sequence, binding };
+        Some(scroll_cancel_input(
+            sequence,
+            NativeScrollCancelReason::BindingRetired,
+        ))
+    }
+
+    pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        matches!(
+            self.scroll,
+            NativeScrollState::Live {
+                delivery: Some(delivery),
+                ..
+            } if delivery == binding
+        ) || matches!(
+            self.scroll,
+            NativeScrollState::RetiredTail {
+                binding: retired,
+                ..
+            } if retired == binding
+        )
+    }
+
+    pub(crate) const fn has_pending_provider_tail(&self) -> bool {
+        matches!(self.scroll, NativeScrollState::RetiredTail { .. })
+    }
+
+    /// Closes one retired provider tail at the next causal boundary.
+    pub(crate) fn reset_destroyed_binding(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativePointerInput> {
+        let NativeScrollState::RetiredTail {
+            sequence,
+            binding: retired,
+        } = self.scroll
+        else {
+            return None;
+        };
+        if retired != binding {
+            return None;
+        }
+        self.scroll = NativeScrollState::Idle;
+        Some(scroll_cancel_input(
+            sequence,
+            NativeScrollCancelReason::ProviderReset,
+        ))
+    }
+
     pub(crate) fn translate(
         &mut self,
         record: &NativeWindowEventRecord,
@@ -131,47 +211,95 @@ impl NativePointerTranslator {
         routes: NativePointerRoutes,
         resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
-        let (phase, should_clear) = match phase {
-            TouchPhase::Started => match self.active_scroll {
-                Some(sequence) => (NativeScrollPhase::Update { sequence, delta }, false),
-                None => {
-                    let Some(sequence) = self.allocate_scroll_sequence() else {
-                        return NativePointerTranslation::Ignored;
-                    };
-                    (
-                        NativeScrollPhase::Begin {
-                            sequence,
-                            delta: Some(delta),
-                        },
-                        false,
-                    )
-                }
-            },
-            TouchPhase::Moved => match self.active_scroll {
-                Some(sequence) => (NativeScrollPhase::Update { sequence, delta }, false),
-                None => (NativeScrollPhase::Discrete { delta }, false),
-            },
-            TouchPhase::Ended => match self.active_scroll {
-                Some(sequence) => (
-                    NativeScrollPhase::End {
+        let delivery = exact_delivery_binding(routes.delivery());
+        if let NativeScrollState::Live {
+            delivery: Some(active),
+            ..
+        } = self.scroll
+            && delivery != Some(active)
+        {
+            // Winit does not carry a scroll sequence token. A callback routed
+            // through another exact binding may be a delayed predecessor tail,
+            // so it cannot mutate or terminate the current sequence.
+            return NativePointerTranslation::Ignored;
+        }
+        let (phase, next_state) = match (self.scroll, phase) {
+            (NativeScrollState::Idle, TouchPhase::Started) => {
+                let Some(sequence) = self.allocate_scroll_sequence() else {
+                    return NativePointerTranslation::Ignored;
+                };
+                (
+                    Some(NativeScrollPhase::Begin {
                         sequence,
                         delta: Some(delta),
-                    },
-                    true,
-                ),
-                None if is_zero_delta(delta) => return NativePointerTranslation::Ignored,
-                None => (NativeScrollPhase::Discrete { delta }, false),
-            },
-            TouchPhase::Cancelled => match self.active_scroll {
-                Some(sequence) => (
-                    NativeScrollPhase::Cancel {
-                        sequence,
-                        reason: NativeScrollCancelReason::PlatformCancelled,
-                    },
-                    true,
-                ),
-                None => return NativePointerTranslation::Ignored,
-            },
+                    }),
+                    NativeScrollState::Live { sequence, delivery },
+                )
+            }
+            (
+                NativeScrollState::Live { sequence, delivery },
+                TouchPhase::Started | TouchPhase::Moved,
+            ) => (
+                Some(NativeScrollPhase::Update { sequence, delta }),
+                NativeScrollState::Live { sequence, delivery },
+            ),
+            (NativeScrollState::Live { sequence, .. }, TouchPhase::Ended) => (
+                Some(NativeScrollPhase::End {
+                    sequence,
+                    delta: Some(delta),
+                }),
+                NativeScrollState::Idle,
+            ),
+            (NativeScrollState::Live { sequence, .. }, TouchPhase::Cancelled) => (
+                Some(NativeScrollPhase::Cancel {
+                    sequence,
+                    reason: NativeScrollCancelReason::PlatformCancelled,
+                }),
+                NativeScrollState::Idle,
+            ),
+            (
+                NativeScrollState::RetiredTail { sequence, .. },
+                TouchPhase::Started | TouchPhase::Moved,
+            ) => (
+                Some(NativeScrollPhase::Cancel {
+                    sequence,
+                    reason: NativeScrollCancelReason::ProviderReset,
+                }),
+                NativeScrollState::Idle,
+            ),
+            (NativeScrollState::RetiredTail { sequence, .. }, TouchPhase::Ended) => (
+                Some(NativeScrollPhase::End {
+                    sequence,
+                    delta: Some(delta),
+                }),
+                NativeScrollState::Idle,
+            ),
+            (NativeScrollState::RetiredTail { sequence, .. }, TouchPhase::Cancelled) => (
+                Some(NativeScrollPhase::Cancel {
+                    sequence,
+                    reason: NativeScrollCancelReason::PlatformCancelled,
+                }),
+                NativeScrollState::Idle,
+            ),
+            (NativeScrollState::Idle, TouchPhase::Moved) => (
+                Some(NativeScrollPhase::Discrete { delta }),
+                NativeScrollState::Idle,
+            ),
+            (NativeScrollState::Idle, TouchPhase::Ended) => {
+                if is_zero_delta(delta) {
+                    (None, NativeScrollState::Idle)
+                } else {
+                    (
+                        Some(NativeScrollPhase::Discrete { delta }),
+                        NativeScrollState::Idle,
+                    )
+                }
+            }
+            (NativeScrollState::Idle, TouchPhase::Cancelled) => (None, NativeScrollState::Idle),
+        };
+        self.scroll = next_state;
+        let Some(phase) = phase else {
+            return NativePointerTranslation::Ignored;
         };
 
         let event = NativeScrollEvent::new(
@@ -180,9 +308,6 @@ impl NativePointerTranslator {
             NativeScrollMomentum::Unknown,
             native_modifiers(facts),
         );
-        if should_clear {
-            self.active_scroll = None;
-        }
         let position = native_position(facts.desktop_position);
         let hover = native_hover(routes.hover());
         NativePointerTranslation::Input(NativePointerInput::new(
@@ -201,9 +326,38 @@ impl NativePointerTranslator {
     fn allocate_scroll_sequence(&mut self) -> Option<NativeScrollSequenceId> {
         let next = self.next_scroll_sequence.checked_add(1)?;
         self.next_scroll_sequence = next;
-        let sequence = NativeScrollSequenceId::new(next);
-        self.active_scroll = Some(sequence);
-        Some(sequence)
+        Some(NativeScrollSequenceId::new(next))
+    }
+}
+
+fn scroll_cancel_input(
+    sequence: NativeScrollSequenceId,
+    reason: NativeScrollCancelReason,
+) -> NativePointerInput {
+    NativePointerInput::new(
+        POINTER_ID,
+        NativePointerEvent::Scrolled(NativeScrollEvent::new(
+            SCROLL_DEVICE_ID,
+            NativeScrollPhase::Cancel { sequence, reason },
+            NativeScrollMomentum::Unknown,
+            NativeScrollModifiers::Unknown,
+        )),
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            None,
+        ),
+        NativePointerOwner::Unknown,
+        NativePointerOwner::Unknown,
+    )
+}
+
+fn exact_delivery_binding(route: NativePointerRouteSnapshot) -> Option<NativeSurfaceBinding> {
+    match route {
+        NativePointerRouteSnapshot::Dock(binding) => Some(binding),
+        NativePointerRouteSnapshot::Unknown
+        | NativePointerRouteSnapshot::None
+        | NativePointerRouteSnapshot::Foreign => None,
     }
 }
 

@@ -960,6 +960,40 @@ fn binding_retirement_waits_for_the_physical_scroll_terminal() {
 }
 
 #[test]
+fn provider_reset_consumes_a_retired_binding_tail() {
+    let mut fixture = ScrollFixture::new();
+    let token = ScrollSequenceToken::new(41);
+    fixture.submit_known(ScrollPhase::Begin, Some(token), Some(line_delta(1.0, 0.0)));
+
+    fixture.submit_known(
+        ScrollPhase::Cancel(ScrollCancelReason::BindingRetired),
+        Some(token),
+        None,
+    );
+
+    let reset = fixture.submit_known(
+        ScrollPhase::Cancel(ScrollCancelReason::ProviderReset),
+        Some(token),
+        None,
+    );
+    assert!(
+        reset.reduced_pointer_edges()[0]
+            .interaction_outcomes()
+            .is_empty(),
+        "provider reset consumes the retired tail without a second semantic terminal"
+    );
+
+    let successor =
+        fixture.submit_known(ScrollPhase::Begin, Some(ScrollSequenceToken::new(42)), None);
+    assert!(matches!(
+        successor.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Began { .. }
+        )]
+    ));
+}
+
+#[test]
 fn framework_reserved_update_releases_the_owned_derivative_until_provider_terminal() {
     let mut fixture = ScrollFixture::new();
     let token = ScrollSequenceToken::new(41);
