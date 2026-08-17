@@ -1201,9 +1201,15 @@ fn validate_splitter_records(
                 id: junction.id(),
             });
         };
+        let expected_operable = expected.id().splitters().into_iter().all(|splitter| {
+            splitters
+                .get(&splitter)
+                .is_some_and(|record| record.operable())
+        });
         if junction.layer() != expected.layer
             || !rect_has_area(junction.hit().rect())
             || junction.hit().rect() != expected.hit
+            || junction.operable() != expected_operable
         {
             return Err(SceneBuildError::InvalidSplitterJunctionRecord {
                 surface: ready.surface,

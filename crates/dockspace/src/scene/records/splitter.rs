@@ -139,6 +139,20 @@ impl SplitterJunctionId {
             .count()
     }
 
+    pub(crate) const fn root(self) -> RootId {
+        if let Some(splitter) = self.north {
+            splitter.root
+        } else if let Some(splitter) = self.east {
+            splitter.root
+        } else if let Some(splitter) = self.south {
+            splitter.root
+        } else if let Some(splitter) = self.west {
+            splitter.root
+        } else {
+            panic!("a splitter junction always has at least three arms")
+        }
+    }
+
     /// Returns every distinct incident splitter in canonical identity order.
     #[must_use]
     pub fn splitters(self) -> Vec<SplitterSceneId> {
@@ -158,6 +172,7 @@ pub struct SplitterJunctionRecord {
     id: SplitterJunctionId,
     hit: HitRegion,
     layer: SceneLayerKey,
+    operable: bool,
 }
 
 /// Structural splitter target resolved from one authoritative presentation plan.
@@ -199,8 +214,18 @@ pub enum SplitterResizeHitError {
 }
 
 impl SplitterJunctionRecord {
-    pub(crate) fn new(id: SplitterJunctionId, hit: HitRegion, layer: SceneLayerKey) -> Self {
-        Self { id, hit, layer }
+    pub(crate) fn new(
+        id: SplitterJunctionId,
+        hit: HitRegion,
+        layer: SceneLayerKey,
+        operable: bool,
+    ) -> Self {
+        Self {
+            id,
+            hit,
+            layer,
+            operable,
+        }
     }
 
     /// Returns the complete directional junction identity.
@@ -219,6 +244,12 @@ impl SplitterJunctionRecord {
     #[must_use]
     pub const fn layer(&self) -> SceneLayerKey {
         self.layer
+    }
+
+    /// Returns whether every incident splitter accepts an atomic resize.
+    #[must_use]
+    pub const fn operable(&self) -> bool {
+        self.operable
     }
 }
 

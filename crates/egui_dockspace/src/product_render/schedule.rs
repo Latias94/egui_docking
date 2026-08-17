@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::model::RootId;
 use dockspace::runtime::{
-    ContainedPaintRecord, PanePaintRecord, SplitterPaintRecord, SurfacePaintPlan,
-    TabBarPaintRecord, TabPaintRecord,
+    ContainedPaintRecord, PanePaintRecord, SplitterJunctionPaintRecord, SplitterPaintRecord,
+    SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord,
 };
 
 #[derive(Default)]
@@ -14,6 +14,7 @@ pub(super) struct RootPaintSchedule<'plan> {
     tab_bars: Vec<TabBarPaintRecord<'plan>>,
     tabs: Vec<TabPaintRecord<'plan>>,
     splitters: Vec<SplitterPaintRecord<'plan>>,
+    splitter_junctions: Vec<SplitterJunctionPaintRecord<'plan>>,
 }
 
 impl<'plan> RootPaintSchedule<'plan> {
@@ -31,6 +32,12 @@ impl<'plan> RootPaintSchedule<'plan> {
 
     pub(super) fn splitters(&self) -> impl Iterator<Item = SplitterPaintRecord<'plan>> + '_ {
         self.splitters.iter().copied()
+    }
+
+    pub(super) fn splitter_junctions(
+        &self,
+    ) -> impl Iterator<Item = SplitterJunctionPaintRecord<'plan>> + '_ {
+        self.splitter_junctions.iter().copied()
     }
 }
 
@@ -83,6 +90,13 @@ impl<'plan> SurfacePaintSchedule<'plan> {
                 .or_default()
                 .splitters
                 .push(splitter);
+        }
+        for junction in plan.splitter_junctions() {
+            roots
+                .entry(junction.root())
+                .or_default()
+                .splitter_junctions
+                .push(junction);
         }
 
         let mut contained = plan

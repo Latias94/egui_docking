@@ -492,6 +492,12 @@ pub struct SplitterJunctionPaintRecord<'plan> {
 }
 
 impl SplitterJunctionPaintRecord<'_> {
+    /// Returns the stable root containing every incident splitter.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.record.id().root()
+    }
+
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
         DockspaceVisualId(VisualIdentity::SplitterJunction(self.record.id()))
@@ -966,6 +972,31 @@ impl<'frame> SurfacePaintPlan<'frame> {
     ) -> Option<DockspaceReceiverDescriptor> {
         let splitter_id = *splitter.record.id();
         self.receiver(PresentationHitRegionKind::SplitterHandle(splitter_id))
+    }
+
+    /// Returns the exact receiver for one atomic splitter junction.
+    #[must_use]
+    pub fn receiver_for_splitter_junction(
+        self,
+        junction: SplitterJunctionPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        self.receiver(PresentationHitRegionKind::SplitterJunction(
+            junction.record.id(),
+        ))
+    }
+
+    /// Returns whether every incident handle accepts one atomic resize gesture.
+    #[must_use]
+    pub fn splitter_junction_operable(self, junction: SplitterJunctionPaintRecord<'frame>) -> bool {
+        junction.record.operable()
+    }
+
+    pub(super) fn splitter_junction_id_operable(self, id: SplitterJunctionId) -> bool {
+        self.plan
+            .splitter_junction_records()
+            .iter()
+            .find(|record| record.id() == id)
+            .is_some_and(SplitterJunctionRecord::operable)
     }
 
     /// Returns the exact blocker receiver for one contained floating surface.

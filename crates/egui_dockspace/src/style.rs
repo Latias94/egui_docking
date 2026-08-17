@@ -223,26 +223,33 @@ impl DockStyle {
 
 impl Default for DockStyle {
     fn default() -> Self {
+        let geometry = DockPresentationConfig::default();
         Self {
-            tab_bar_height: 28.0,
-            tab_group_grip_extent: 28.0,
-            tab_horizontal_padding: 10.0,
-            tab_min_width: 72.0,
-            tab_max_width: 220.0,
-            tab_close_size: 16.0,
-            splitter_thickness: 1.0,
-            splitter_hit_extent: 6.0,
-            splitter_keyboard_step: 16.0,
-            drop_guide_extent: 24.0,
-            drop_guide_gap: 8.0,
-            drop_guide_hit_padding: 4.0,
-            drop_guide_outer_inset: 48.0,
-            dock_fraction: 0.5,
-            floating_title_height: 28.0,
-            floating_border_width: 1.0,
-            floating_resize_extent: 7.0,
-            minimum_pane_size: Vec2::new(80.0, 60.0),
-            minimum_floating_size: Vec2::new(120.0, 120.0),
+            tab_bar_height: geometry.tab_bar_height() as f32,
+            tab_group_grip_extent: geometry.tab_group_grip_extent() as f32,
+            tab_horizontal_padding: geometry.tab_horizontal_padding() as f32,
+            tab_min_width: geometry.tab_min_width() as f32,
+            tab_max_width: geometry.tab_max_width() as f32,
+            tab_close_size: geometry.tab_close_extent() as f32,
+            splitter_thickness: geometry.splitter_thickness() as f32,
+            splitter_hit_extent: geometry.splitter_hit_extent() as f32,
+            splitter_keyboard_step: geometry.splitter_keyboard_step() as f32,
+            drop_guide_extent: geometry.guide_extent() as f32,
+            drop_guide_gap: geometry.guide_gap() as f32,
+            drop_guide_hit_padding: geometry.guide_hit_padding() as f32,
+            drop_guide_outer_inset: geometry.guide_outer_inset() as f32,
+            dock_fraction: geometry.dock_fraction() as f32,
+            floating_title_height: geometry.floating_title_height() as f32,
+            floating_border_width: geometry.floating_border_width() as f32,
+            floating_resize_extent: geometry.floating_resize_extent() as f32,
+            minimum_pane_size: Vec2::new(
+                geometry.minimum_pane_size().width() as f32,
+                geometry.minimum_pane_size().height() as f32,
+            ),
+            minimum_floating_size: Vec2::new(
+                geometry.minimum_floating_size().width() as f32,
+                geometry.minimum_floating_size().height() as f32,
+            ),
             ghost_offset: Vec2::new(12.0, 12.0),
             workspace_fill: Color32::from_rgb(24, 26, 29),
             tab_bar_fill: Color32::from_rgb(31, 34, 38),
@@ -439,14 +446,14 @@ mod tests {
             Err(DockStyleError::GuideHitRegionsOverlap)
         );
 
-        style.drop_guide_gap = 8.0;
+        style.drop_guide_gap = 12.0;
         style.drop_guide_outer_inset = 9.0;
         assert_eq!(
             style.validate(),
             Err(DockStyleError::GuideOuterInsetTooSmall)
         );
 
-        style.drop_guide_outer_inset = 48.0;
+        style.drop_guide_outer_inset = 64.0;
         assert_eq!(style.validate(), Ok(()));
     }
 

@@ -196,10 +196,16 @@ fn compile_splitter_junctions(ready: &mut PresentationPlan) -> Result<(), Geomet
     let candidates = derive_splitter_junction_candidates(ready.splitter_records())?;
     for candidate in candidates {
         if ready.region_is_operable(candidate.hit, candidate.layer) {
+            let operable = candidate.id().splitters().into_iter().all(|splitter| {
+                ready
+                    .splitter_record(splitter)
+                    .is_some_and(SplitterRecord::operable)
+            });
             ready.push_splitter_junction_record(SplitterJunctionRecord::new(
                 candidate.id(),
                 HitRegion::new(candidate.hit),
                 candidate.layer,
+                operable,
             ));
         }
     }

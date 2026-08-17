@@ -1,7 +1,7 @@
 //! Splitter rendering and current-pass pointer gestures.
 
 use dockspace::model::DockspaceAxis;
-use dockspace::runtime::SurfaceSplitterAdjustment;
+use dockspace::runtime::{SplitterJunctionPaintRecord, SurfaceSplitterAdjustment};
 use egui::accesskit::{Action, Orientation, Role};
 use egui::{CursorIcon, EventFilter, Key, Sense};
 
@@ -79,6 +79,59 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSc
         {
             context.push_local_action(action);
         }
+    }
+    for junction in root.splitter_junctions() {
+        paint_junction(context, junction);
+    }
+}
+
+fn paint_junction(context: &mut RenderContext<'_, '_>, junction: SplitterJunctionPaintRecord<'_>) {
+    let Some(hit) = egui_rect(junction.hit_bounds()) else {
+        return;
+    };
+    let id = context.ui.make_persistent_id((
+        context.instance_id,
+        "splitter-junction",
+        junction.visual_id(),
+    ));
+    let operable = context.plan.splitter_junction_operable(junction);
+    let receiver = context.plan.receiver_for_splitter_junction(junction);
+    let response = context.interact_receiver(
+        hit,
+        id,
+        if operable {
+            Sense::drag()
+        } else {
+            Sense::hover()
+        },
+        receiver,
+    );
+    context
+        .ui
+        .ctx()
+        .accesskit_node_builder(response.id, |node| {
+            node.set_role(Role::Splitter);
+            node.set_label("Resize pane grid");
+            node.set_description("Drag to resize rows and columns");
+            if !operable {
+                node.set_disabled();
+            }
+        });
+    if operable && (response.hovered() || response.dragged()) {
+        context.ui.ctx().set_cursor_icon(CursorIcon::AllScroll);
+        context
+            .ui
+            .painter()
+            .rect_filled(hit, 0.0, context.style.splitter_hover_color);
+    }
+    if operable
+        && context.pointer_authority.accepts_local_pointer_actions()
+        && let Some(phase) = gesture_phase(&response)
+        && let Some(action) = context
+            .plan
+            .prepare_splitter_gesture(junction.visual_id(), phase)
+    {
+        context.push_local_action(action);
     }
 }
 

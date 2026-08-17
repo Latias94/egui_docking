@@ -19,15 +19,15 @@ use support::{TestPresentationHost, install_surface_projection, next_plan, publi
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(3);
-const GUIDE_EXTENT: f64 = 24.0;
-const GUIDE_GAP: f64 = 8.0;
-const GUIDE_HIT_PADDING: f64 = 4.0;
+const GUIDE_EXTENT: f64 = 40.0;
+const GUIDE_GAP: f64 = 12.0;
+const GUIDE_HIT_PADDING: f64 = 6.0;
 const GUIDE_HIT_EXTENT: f64 = GUIDE_EXTENT + 2.0 * GUIDE_HIT_PADDING;
 const GUIDE_INNER_OFFSET: f64 = GUIDE_EXTENT + GUIDE_GAP;
 const INNER_GUIDE_REFERENCE_SPAN: f64 =
     3.0 * GUIDE_EXTENT + 2.0 * GUIDE_GAP + 2.0 * GUIDE_HIT_PADDING;
 const OUTER_GUIDE_REFERENCE_SPAN: f64 =
-    2.0 * (48.0 + 2.0 * (GUIDE_EXTENT * 0.5 + GUIDE_HIT_PADDING));
+    2.0 * (64.0 + 2.0 * (GUIDE_EXTENT * 0.5 + GUIDE_HIT_PADDING));
 
 fn bounds() -> LogicalRect {
     LogicalRect::new(0.0, 0.0, 360.0, 260.0).expect("surface bounds are valid")
@@ -46,7 +46,7 @@ fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
     let mut host = TestPresentationHost::new(&mut engine);
     let guide_sized_bounds =
-        LogicalRect::new(0.0, 0.0, 241.0, 140.0).expect("guide-sized bounds are valid");
+        LogicalRect::new(0.0, 0.0, 360.0, 220.0).expect("guide-sized bounds are valid");
     install_surface_projection(&mut engine, &mut host, SURFACE, guide_sized_bounds);
     let ready = next_plan(&engine, SURFACE);
 

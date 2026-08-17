@@ -261,10 +261,10 @@ impl Default for DockPresentationConfigBuilder {
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
             pointer_drag_start_distance: 6.0,
-            guide_extent: 24.0,
-            guide_gap: 8.0,
-            guide_hit_padding: 4.0,
-            guide_outer_inset: 48.0,
+            guide_extent: 40.0,
+            guide_gap: 12.0,
+            guide_hit_padding: 6.0,
+            guide_outer_inset: 64.0,
             dock_fraction: 0.5,
             floating_title_height: 28.0,
             floating_border_width: 1.0,
@@ -676,8 +676,8 @@ mod tests {
             config.pointer_drag_start_distance().to_bits(),
             6.0_f64.to_bits()
         );
-        assert_eq!(config.guide_extent().to_bits(), 24.0_f64.to_bits());
-        assert_eq!(config.guide_hit_padding().to_bits(), 4.0_f64.to_bits());
+        assert_eq!(config.guide_extent().to_bits(), 40.0_f64.to_bits());
+        assert_eq!(config.guide_hit_padding().to_bits(), 6.0_f64.to_bits());
         assert_eq!(
             config.minimum_pane_size().width().to_bits(),
             80.0_f64.to_bits()

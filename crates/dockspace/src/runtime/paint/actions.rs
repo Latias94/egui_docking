@@ -411,13 +411,7 @@ impl SurfacePaintPlan<'_> {
             {
                 SplitterResizeTarget::Handle(id)
             }
-            VisualIdentity::SplitterJunction(id)
-                if self
-                    .plan
-                    .splitter_junction_records()
-                    .iter()
-                    .any(|record| record.id() == id) =>
-            {
+            VisualIdentity::SplitterJunction(id) if self.splitter_junction_id_operable(id) => {
                 SplitterResizeTarget::Junction(id)
             }
             _ => return None,

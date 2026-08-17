@@ -69,6 +69,28 @@ fn split_layout() -> DockspaceLayout {
     .expect("the product split layout is valid")
 }
 
+fn splitter_junction_layout() -> DockspaceLayout {
+    let column = |top, bottom| {
+        DockspaceNode::equal_split(
+            DockspaceAxis::Vertical,
+            [DockspaceNode::tabs([top]), DockspaceNode::tabs([bottom])],
+        )
+        .expect("the product splitter column is valid")
+    };
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(
+            ROOT,
+            DockspaceNode::equal_split(
+                DockspaceAxis::Horizontal,
+                [column(FIRST, SECOND), column(THIRD, FOURTH)],
+            )
+            .expect("the product splitter junction fixture is valid"),
+        ),
+    )])
+    .expect("the product splitter junction layout is valid")
+}
+
 fn contained_layout() -> DockspaceLayout {
     contained_layout_at(
         LogicalRect::new(500.0, 260.0, 240.0, 220.0)
@@ -1053,6 +1075,67 @@ fn default_features_splitter_tracks_pointer_before_release() {
         Some(initial_weights),
         "release commits the transient splitter proposal",
     );
+}
+
+#[test]
+fn default_features_splitter_junction_tracks_both_axes_and_commits_once() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-live-splitter-junction",
+        splitter_junction_layout(),
+    )
+    .build()
+    .expect("the product splitter junction facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let initial = node_rect(&ready.output, Role::Splitter, "Resize pane grid");
+    let source = initial.center();
+    let moved = source + vec2(70.0, 50.0);
+    let before_version = dockspace.version();
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+    let live = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let live_junction = node_rect(&live.output, Role::Splitter, "Resize pane grid");
+
+    assert!(
+        live_junction.center().x > initial.center().x + 35.0
+            && live_junction.center().y > initial.center().y + 25.0,
+        "the atomic junction preview must follow both pointer axes",
+    );
+    assert_eq!(
+        dockspace.version(),
+        before_version,
+        "junction motion remains transient until release",
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved), pointer_button(moved, false)],
+    );
+    assert_ne!(
+        dockspace.version(),
+        before_version,
+        "one junction release commits both axes atomically",
+    );
+    let committed_version = dockspace.version();
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(dockspace.version(), committed_version);
 }
 
 #[test]
