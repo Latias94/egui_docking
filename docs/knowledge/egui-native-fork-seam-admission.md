@@ -15,12 +15,9 @@ The product contract remains simple:
 Baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- egui/eframe fork: the reviewed local seam currently extends the last public
-  revision; no immutable remote revision containing every admitted seam has
-  been published yet. The manifest, lockfile, CI, and documentation must move
-  to one exact revision together before native release evidence is valid.
+- public egui/eframe fork: `80c4d12677f40ccd6ce57c8750bada378e6955b8`
 - upstream winit `0.30.13`: `e9809ef5`
-- public winit fork: `180bfc09743586137fec014ef5543cdde56ce5d0`
+- public winit fork: `250a372736afa662d7fffeae5c86a3287b8356c9`
 
 ## Admitted seams
 

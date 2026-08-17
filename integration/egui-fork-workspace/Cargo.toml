@@ -6,12 +6,12 @@ members = [
 ]
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-eframe = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-egui = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-egui-winit = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-egui_glow = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-emath = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-epaint = { git = "https://github.com/Latias94/egui", rev = "bce1fd04f4259bddb19d2f5da708ae59def3a324" }
-winit = { git = "https://github.com/Latias94/winit", rev = "180bfc09743586137fec014ef5543cdde56ce5d0" }
+ecolor = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+eframe = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+egui = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+egui-wgpu = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+egui-winit = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+egui_glow = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+emath = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+epaint = { git = "https://github.com/Latias94/egui", rev = "80c4d12677f40ccd6ce57c8750bada378e6955b8" }
+winit = { git = "https://github.com/Latias94/winit.git", rev = "250a372736afa662d7fffeae5c86a3287b8356c9" }
