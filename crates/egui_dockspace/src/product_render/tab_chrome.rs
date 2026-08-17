@@ -10,12 +10,12 @@ use egui::{Id, Key, PointerButton, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use super::RenderContext;
 use super::geometry::{accesskit_bounds, egui_rect};
 
-pub(crate) fn paint(context: &mut RenderContext<'_, '_>) {
+pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
     paint_controls(context);
     paint_popup(context);
 }
 
-fn paint_controls(context: &mut RenderContext<'_, '_>) {
+fn paint_controls(context: &mut RenderContext<'_, '_, '_>) {
     let controls = context.plan.tab_strip_controls().collect::<Vec<_>>();
     for control in controls {
         let Some(bounds) = egui_rect(control.bounds()) else {
@@ -58,7 +58,7 @@ fn paint_controls(context: &mut RenderContext<'_, '_>) {
 }
 
 fn paint_control(
-    context: &RenderContext<'_, '_>,
+    context: &RenderContext<'_, '_, '_>,
     control: TabStripControlPaintRecord,
     bounds: Rect,
     hovered: bool,
@@ -112,7 +112,7 @@ fn paint_control(
 }
 
 fn configure_control_accessibility(
-    context: &RenderContext<'_, '_>,
+    context: &RenderContext<'_, '_, '_>,
     control: TabStripControlPaintRecord,
     id: Id,
     bounds: Rect,
@@ -142,7 +142,7 @@ fn configure_control_accessibility(
     });
 }
 
-fn paint_popup(context: &mut RenderContext<'_, '_>) {
+fn paint_popup(context: &mut RenderContext<'_, '_, '_>) {
     let backdrops = context.plan.tab_list_menu_backdrops().collect::<Vec<_>>();
     for backdrop in backdrops {
         paint_backdrop(context, backdrop);
@@ -154,7 +154,10 @@ fn paint_popup(context: &mut RenderContext<'_, '_>) {
     }
 }
 
-fn paint_backdrop(context: &mut RenderContext<'_, '_>, backdrop: TabListMenuBackdropPaintRecord) {
+fn paint_backdrop(
+    context: &mut RenderContext<'_, '_, '_>,
+    backdrop: TabListMenuBackdropPaintRecord,
+) {
     let Some(bounds) = egui_rect(backdrop.bounds()) else {
         return;
     };
@@ -163,12 +166,14 @@ fn paint_backdrop(context: &mut RenderContext<'_, '_>, backdrop: TabListMenuBack
         "tab-list-menu-backdrop",
         backdrop.visual_id(),
     ));
-    let response = context.interact_receiver(
-        bounds,
-        id,
-        Sense::click(),
-        context.plan.receiver_for_tab_list_menu_backdrop(backdrop),
-    );
+    let receiver = context.plan.receiver_for_tab_list_menu_backdrop(backdrop);
+    let scroll_id = context.ui.make_persistent_id((
+        context.instance_id,
+        "tab-list-menu-backdrop-scroll",
+        backdrop.visual_id(),
+    ));
+    context.register_scroll_receiver(scroll_id, receiver);
+    let response = context.interact_receiver(bounds, id, Sense::click(), receiver);
     if context.pointer_authority.accepts_local_pointer_actions()
         && response.clicked_by(PointerButton::Primary)
         && let Some(action) = context.plan.prepare_tab_list_menu_dismiss(backdrop)
@@ -177,7 +182,7 @@ fn paint_backdrop(context: &mut RenderContext<'_, '_>, backdrop: TabListMenuBack
     }
 }
 
-fn paint_menu(context: &mut RenderContext<'_, '_>, menu: TabListMenuPaintRecord<'_>) {
+fn paint_menu(context: &mut RenderContext<'_, '_, '_>, menu: TabListMenuPaintRecord<'_>) {
     let Some(bounds) = egui_rect(menu.bounds()) else {
         return;
     };
@@ -188,12 +193,14 @@ fn paint_menu(context: &mut RenderContext<'_, '_>, menu: TabListMenuPaintRecord<
         context
             .ui
             .make_persistent_id((context.instance_id, "tab-list-menu", menu.visual_id()));
-    let _ = context.interact_receiver(
-        bounds,
-        frame_id,
-        Sense::hover(),
-        context.plan.receiver_for_tab_list_menu_frame(menu),
-    );
+    let frame_receiver = context.plan.receiver_for_tab_list_menu_frame(menu);
+    let frame_scroll_id = context.ui.make_persistent_id((
+        context.instance_id,
+        "tab-list-menu-frame-scroll-blocker",
+        menu.visual_id(),
+    ));
+    context.register_scroll_receiver(frame_scroll_id, frame_receiver);
+    let _ = context.interact_receiver(bounds, frame_id, Sense::hover(), frame_receiver);
     context.ui.painter().rect(
         bounds,
         3.0,
@@ -207,6 +214,14 @@ fn paint_menu(context: &mut RenderContext<'_, '_>, menu: TabListMenuPaintRecord<
         node.set_label("Open tabs");
     });
 
+    let scroll_id = context.ui.make_persistent_id((
+        context.instance_id,
+        "tab-list-menu-scroll",
+        menu.visual_id(),
+    ));
+    let scroll_receiver = context.plan.receiver_for_tab_list_menu_scroll(menu);
+    context.register_scroll_receiver(scroll_id, scroll_receiver);
+
     let rows = menu.rows().collect::<Vec<_>>();
     for row in rows.iter().copied() {
         paint_menu_row(context, menu, row, viewport);
@@ -216,7 +231,7 @@ fn paint_menu(context: &mut RenderContext<'_, '_>, menu: TabListMenuPaintRecord<
 }
 
 fn paint_menu_row(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     menu: TabListMenuPaintRecord<'_>,
     row: TabListMenuRowPaintRecord,
     viewport: Rect,
@@ -305,7 +320,7 @@ fn paint_menu_row(
 }
 
 fn paint_scrollbar(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     menu: TabListMenuPaintRecord<'_>,
     viewport: Rect,
     bounds: Rect,
@@ -322,12 +337,7 @@ fn paint_scrollbar(
         "tab-list-menu-scrollbar",
         menu.visual_id(),
     ));
-    let _ = context.interact_receiver(
-        track,
-        id,
-        Sense::hover(),
-        context.plan.receiver_for_tab_list_menu_scroll(menu),
-    );
+    let _ = context.ui.interact(track, id, Sense::hover());
     context
         .ui
         .painter()
@@ -380,7 +390,7 @@ fn paint_scrollbar(
 }
 
 fn capture_menu_keyboard(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     menu: TabListMenuPaintRecord<'_>,
     rows: &[TabListMenuRowPaintRecord],
 ) {

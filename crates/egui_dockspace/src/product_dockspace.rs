@@ -686,6 +686,8 @@ impl Dockspace {
                 panes,
                 &self.style,
                 product_render::PointerActionAuthority::LocalResponses,
+                #[cfg(feature = "native-render-support")]
+                None,
             );
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;

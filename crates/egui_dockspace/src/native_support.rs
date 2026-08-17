@@ -31,6 +31,7 @@ pub struct NativeSurfacePaint {
     transient_visuals_complete: bool,
     missing_items: BTreeSet<ItemId>,
     receivers: Vec<NativePaintReceiver>,
+    scroll_receivers: Vec<NativeScrollPaintReceiver>,
     semantic_output: Option<DockspaceSemanticOutput>,
     local_actions: Vec<PreparedSurfaceAction>,
     presentation_actions: Vec<PreparedSurfaceAction>,
@@ -39,6 +40,16 @@ pub struct NativeSurfacePaint {
 /// One egui widget identity bound to an exact core receiver in the same pass.
 #[derive(Debug, Clone, Copy)]
 pub struct NativePaintReceiver {
+    viewport_id: egui::ViewportId,
+    cumulative_pass_nr: u64,
+    widget_id: egui::Id,
+    layer_id: egui::LayerId,
+    receiver: DockspaceReceiverDescriptor,
+}
+
+/// One fork-owned scroll identity bound to an exact core receiver in the same pass.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeScrollPaintReceiver {
     viewport_id: egui::ViewportId,
     cumulative_pass_nr: u64,
     widget_id: egui::Id,
@@ -81,6 +92,44 @@ impl NativePaintReceiver {
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
         self.receiver.visual_id()
+    }
+
+    /// Rebinds this paint-time identity to the exact output named by a core query.
+    #[must_use]
+    pub fn bind_for_query(self, query: NativeReceiverQuery) -> Option<PresentedDockReceiver> {
+        query.bind_receiver(&self.receiver)
+    }
+}
+
+impl NativeScrollPaintReceiver {
+    /// Returns the viewport whose completed pass owns this binding.
+    #[must_use]
+    pub const fn viewport_id(self) -> egui::ViewportId {
+        self.viewport_id
+    }
+
+    /// Returns the exact completed-pass generation owning this binding.
+    #[must_use]
+    pub const fn cumulative_pass_nr(self) -> u64 {
+        self.cumulative_pass_nr
+    }
+
+    /// Returns the fork-owned scroll identity.
+    #[must_use]
+    pub const fn widget_id(self) -> egui::Id {
+        self.widget_id
+    }
+
+    /// Returns the exact egui layer containing the scroll route.
+    #[must_use]
+    pub const fn layer_id(self) -> egui::LayerId {
+        self.layer_id
+    }
+
+    /// Returns the stable semantic receiver role.
+    #[must_use]
+    pub const fn role(self) -> DockspaceReceiverRole {
+        self.receiver.role()
     }
 
     /// Rebinds this paint-time identity to the exact output named by a core query.
@@ -140,6 +189,13 @@ impl NativeSurfacePaint {
         self.receivers.iter().copied()
     }
 
+    /// Returns every fork-owned scroll identity bound in paint order.
+    pub fn scroll_receivers(
+        &self,
+    ) -> impl ExactSizeIterator<Item = NativeScrollPaintReceiver> + '_ {
+        self.scroll_receivers.iter().copied()
+    }
+
     /// Returns the exact semantic output represented by this ready paint pass.
     #[must_use]
     pub const fn semantic_output(&self) -> Option<DockspaceSemanticOutput> {
@@ -168,6 +224,7 @@ pub fn paint_surface(
     ui: &mut Ui,
     panes: &mut dyn PaneView,
     style: &DockStyle,
+    scroll_registrar: &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
 ) -> Result<NativeSurfacePaint, DockspaceError> {
     let viewport_id = ui.ctx().viewport_id();
     let cumulative_pass_nr = ui
@@ -191,6 +248,7 @@ pub fn paint_surface(
             transient_visuals_complete: true,
             missing_items: BTreeSet::new(),
             receivers: Vec::new(),
+            scroll_receivers: Vec::new(),
             semantic_output: None,
             local_actions: Vec::new(),
             presentation_actions: Vec::new(),
@@ -205,6 +263,7 @@ pub fn paint_surface(
         panes,
         style,
         product_render::PointerActionAuthority::ExternalJournal,
+        Some(scroll_registrar),
     );
     Ok(NativeSurfacePaint {
         surface,
@@ -218,6 +277,17 @@ pub fn paint_surface(
             .receivers
             .into_iter()
             .map(|binding| NativePaintReceiver {
+                viewport_id,
+                cumulative_pass_nr,
+                widget_id: binding.widget_id,
+                layer_id: binding.layer_id,
+                receiver: binding.receiver,
+            })
+            .collect(),
+        scroll_receivers: painted
+            .scroll_receivers
+            .into_iter()
+            .map(|binding| NativeScrollPaintReceiver {
                 viewport_id,
                 cumulative_pass_nr,
                 widget_id: binding.widget_id,

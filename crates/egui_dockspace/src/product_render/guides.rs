@@ -10,7 +10,7 @@ use crate::guide_paint::{GuideCueDirection, describe_guide_button, paint_guide_b
 use super::RenderContext;
 use super::geometry::egui_rect;
 
-pub(crate) fn paint(context: &mut RenderContext<'_, '_>) {
+pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
     let Some(affordance) = context.plan.drop_affordance() else {
         return;
     };
@@ -21,7 +21,10 @@ pub(crate) fn paint(context: &mut RenderContext<'_, '_>) {
     }
 }
 
-fn paint_target(context: &mut RenderContext<'_, '_>, target: DropAffordanceTargetPaintRecord<'_>) {
+fn paint_target(
+    context: &mut RenderContext<'_, '_, '_>,
+    target: DropAffordanceTargetPaintRecord<'_>,
+) {
     let Some(button) = egui_rect(target.draw_bounds()) else {
         return;
     };

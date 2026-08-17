@@ -1,6 +1,8 @@
 //! Default single-surface renderer over the headless product session.
 
 use std::collections::BTreeSet;
+#[cfg(not(feature = "native-render-support"))]
+use std::marker::PhantomData;
 
 mod actions;
 mod contained;
@@ -41,7 +43,7 @@ impl PointerActionAuthority {
     }
 }
 
-struct RenderContext<'ui, 'plan> {
+struct RenderContext<'ui, 'plan, 'scroll> {
     ui: &'ui mut Ui,
     instance_id: Id,
     plan: SurfacePaintPlan<'plan>,
@@ -52,11 +54,17 @@ struct RenderContext<'ui, 'plan> {
     presentation_actions: &'ui mut Vec<PreparedSurfaceAction>,
     #[cfg(feature = "native-render-support")]
     receivers: &'ui mut Vec<ProductReceiverBinding>,
+    #[cfg(feature = "native-render-support")]
+    scroll_registrar: Option<&'scroll mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId)>,
+    #[cfg(feature = "native-render-support")]
+    scroll_receivers: &'ui mut Vec<ProductScrollReceiverBinding>,
+    #[cfg(not(feature = "native-render-support"))]
+    _scroll_lifetime: PhantomData<&'scroll mut ()>,
     defer_measurement: &'ui mut bool,
     pointer_authority: PointerActionAuthority,
 }
 
-impl RenderContext<'_, '_> {
+impl RenderContext<'_, '_, '_> {
     fn push_preview_gesture_action(&mut self, action: PreparedSurfaceAction) {
         *self.defer_measurement = true;
         self.local_actions.push(action);
@@ -88,11 +96,37 @@ impl RenderContext<'_, '_> {
         }
         response
     }
+
+    fn register_scroll_receiver(
+        &mut self,
+        _id: Id,
+        _receiver: Option<DockspaceReceiverDescriptor>,
+    ) {
+        #[cfg(feature = "native-render-support")]
+        if let (Some(receiver), Some(registrar)) = (_receiver, self.scroll_registrar.as_deref_mut())
+            && let Some(rect) = geometry::egui_rect(receiver.bounds())
+        {
+            let (widget_id, layer_id) = registrar(self.ui, rect, _id);
+            self.scroll_receivers.push(ProductScrollReceiverBinding {
+                widget_id,
+                layer_id,
+                receiver,
+            });
+        }
+    }
 }
 
 #[cfg(feature = "native-render-support")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProductReceiverBinding {
+    pub(crate) widget_id: Id,
+    pub(crate) layer_id: egui::LayerId,
+    pub(crate) receiver: DockspaceReceiverDescriptor,
+}
+
+#[cfg(feature = "native-render-support")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProductScrollReceiverBinding {
     pub(crate) widget_id: Id,
     pub(crate) layer_id: egui::LayerId,
     pub(crate) receiver: DockspaceReceiverDescriptor,
@@ -104,6 +138,8 @@ pub(crate) struct ProductPaintOutput {
     pub(crate) missing_items: BTreeSet<ItemId>,
     #[cfg(feature = "native-render-support")]
     pub(crate) receivers: Vec<ProductReceiverBinding>,
+    #[cfg(feature = "native-render-support")]
+    pub(crate) scroll_receivers: Vec<ProductScrollReceiverBinding>,
     pub(crate) defer_measurement: bool,
     #[cfg(feature = "native-render-support")]
     pub(crate) transient_visuals_complete: bool,
@@ -116,12 +152,17 @@ pub(crate) fn paint_surface(
     panes: &mut dyn PaneView,
     style: &DockStyle,
     pointer_authority: PointerActionAuthority,
+    #[cfg(feature = "native-render-support")] scroll_registrar: Option<
+        &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
+    >,
 ) -> ProductPaintOutput {
     let resources = PaintResources::from_plan(plan, ui, panes, style);
     let mut local_actions = Vec::new();
     let mut presentation_actions = Vec::new();
     #[cfg(feature = "native-render-support")]
     let mut receivers = Vec::new();
+    #[cfg(feature = "native-render-support")]
+    let mut scroll_receivers = Vec::new();
     let mut defer_measurement = false;
     let mut transient_visuals_complete = true;
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
@@ -143,6 +184,12 @@ pub(crate) fn paint_surface(
             presentation_actions: &mut presentation_actions,
             #[cfg(feature = "native-render-support")]
             receivers: &mut receivers,
+            #[cfg(feature = "native-render-support")]
+            scroll_registrar,
+            #[cfg(feature = "native-render-support")]
+            scroll_receivers: &mut scroll_receivers,
+            #[cfg(not(feature = "native-render-support"))]
+            _scroll_lifetime: PhantomData,
             defer_measurement: &mut defer_measurement,
             pointer_authority,
         };
@@ -199,6 +246,8 @@ pub(crate) fn paint_surface(
         missing_items: resources.missing_items().collect(),
         #[cfg(feature = "native-render-support")]
         receivers,
+        #[cfg(feature = "native-render-support")]
+        scroll_receivers,
         defer_measurement,
         #[cfg(feature = "native-render-support")]
         transient_visuals_complete,

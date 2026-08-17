@@ -10,7 +10,7 @@ use super::actions::gesture_phase;
 use super::geometry::egui_rect;
 use super::schedule::RootPaintSchedule;
 
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     for splitter in root.splitters() {
         let Some(draw) = egui_rect(splitter.draw_bounds()) else {
             continue;
@@ -85,7 +85,10 @@ pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSc
     }
 }
 
-fn paint_junction(context: &mut RenderContext<'_, '_>, junction: SplitterJunctionPaintRecord<'_>) {
+fn paint_junction(
+    context: &mut RenderContext<'_, '_, '_>,
+    junction: SplitterJunctionPaintRecord<'_>,
+) {
     let Some(hit) = egui_rect(junction.hit_bounds()) else {
         return;
     };

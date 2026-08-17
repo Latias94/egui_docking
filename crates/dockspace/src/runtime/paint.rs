@@ -913,6 +913,16 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self.receiver(PresentationHitRegionKind::TabGroupGrip(bar_id))
     }
 
+    /// Returns the scroll receiver covering one overflowing tab-strip viewport.
+    #[must_use]
+    pub fn receiver_for_tab_strip_scroll(
+        self,
+        bar: TabBarPaintRecord<'frame>,
+    ) -> Option<DockspaceReceiverDescriptor> {
+        let bar_id = *bar.record.id();
+        self.receiver(PresentationHitRegionKind::TabStripScroll(bar_id))
+    }
+
     /// Returns the exact receiver for one core-owned tab-strip control.
     #[must_use]
     pub fn receiver_for_tab_strip_control(

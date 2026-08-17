@@ -1811,7 +1811,7 @@ impl NativeCoordinator {
         &mut self,
         token: NativeOutputToken,
         output: PaintedSurfaceOutput,
-        paint: &egui_dockspace::native_support::NativeSurfacePaint,
+        paint: &crate::host_frame::NativeSurfacePaint,
     ) -> Result<(), NativeOutputBindingError> {
         let Some(reservation) = self.bridge.output_reservation(token) else {
             return Err(NativeOutputBindingError::new(

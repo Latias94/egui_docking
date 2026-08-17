@@ -70,6 +70,8 @@ pub(crate) enum NativeHostProtocolError {
     OutputBindingFailed(NativeOutputBindingErrorKind),
     #[error("native surface {0} did not paint every transient visual required by its core plan")]
     IncompleteTransientPaint(SurfaceId),
+    #[error("the final egui pass did not preserve its exact scroll receiver identities")]
+    ScrollReceiverIdentityMismatch,
     #[error("native output settlements did not preserve one contiguous context-local sequence")]
     OutputOrderViolation,
     #[error("a native window snapshot contains invalid physical geometry or scale")]
@@ -144,6 +146,7 @@ impl NativeHostProtocolError {
             | Self::PaintedStagingOutputCountMismatch { .. }
             | Self::OutputBindingFailed(_)
             | Self::IncompleteTransientPaint(_)
+            | Self::ScrollReceiverIdentityMismatch
             | Self::WorkAreaIdentityExhausted
             | Self::PresentationAcknowledgementWithoutState
             | Self::PresentationAcknowledgementAlreadyPending

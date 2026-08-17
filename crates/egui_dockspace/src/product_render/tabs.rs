@@ -16,13 +16,13 @@ use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
 use super::schedule::RootPaintSchedule;
 
-pub(crate) fn paint_root(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+pub(crate) fn paint_root(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     paint_panes(context, root);
     paint_tab_bars(context, root);
     paint_tabs(context, root);
 }
 
-fn paint_panes(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_panes(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     for pane in root.panes() {
         let Some(bounds) = egui_rect(pane.bounds()) else {
             continue;
@@ -68,7 +68,7 @@ fn paint_panes(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>
     }
 }
 
-fn paint_tab_bars(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     for bar in root.tab_bars() {
         if let Some(bounds) = egui_rect(bar.bounds()) {
             context
@@ -76,12 +76,19 @@ fn paint_tab_bars(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<
                 .painter()
                 .rect_filled(bounds, 0.0, context.style.tab_bar_fill);
         }
+        let id = context.ui.make_persistent_id((
+            context.instance_id,
+            "tab-strip-scroll",
+            bar.visual_id(),
+        ));
+        let receiver = context.plan.receiver_for_tab_strip_scroll(bar);
+        context.register_scroll_receiver(id, receiver);
         paint_group_grip(context, bar);
     }
 }
 
 fn paint_group_grip(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
 ) {
     let Some(grip) = bar.group_grip_bounds().and_then(egui_rect) else {
@@ -137,7 +144,7 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, style: &DockStyle, active: b
     }
 }
 
-fn paint_tabs(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_tabs(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
     for tab in root.tabs() {
         let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
             continue;
@@ -147,7 +154,7 @@ fn paint_tabs(context: &mut RenderContext<'_, '_>, root: &RootPaintSchedule<'_>)
 }
 
 fn paint_tab(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
 ) {
@@ -203,7 +210,7 @@ fn tab_id(ui: &Ui, instance_id: Id, tab: TabPaintRecord<'_>) -> Id {
 }
 
 fn capture_tab_actions(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
     response: &egui::Response,
@@ -286,7 +293,7 @@ fn capture_tab_actions(
 }
 
 fn paint_close(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     item: ItemId,
     rect: egui::Rect,
     title: &str,

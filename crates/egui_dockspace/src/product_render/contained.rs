@@ -9,7 +9,7 @@ use super::geometry::egui_rect;
 use super::schedule::RootPaintSchedule;
 
 pub(crate) fn paint_background(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
     root: &RootPaintSchedule<'_>,
 ) {
@@ -36,6 +36,14 @@ pub(crate) fn paint_background(
         ),
         StrokeKind::Inside,
     );
+
+    let scroll_id = context.ui.make_persistent_id((
+        context.instance_id,
+        "contained-window-scroll-blocker",
+        contained.visual_id(),
+    ));
+    let scroll_receiver = context.plan.receiver_for_contained_frame(contained);
+    context.register_scroll_receiver(scroll_id, scroll_receiver);
 
     // A contained surface is a foreground receiver even when its pane does not
     // create widgets. Register both egui capture lanes before the pane widgets
@@ -75,7 +83,7 @@ pub(crate) fn paint_background(
 }
 
 pub(crate) fn paint_controls(
-    context: &mut RenderContext<'_, '_>,
+    context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
 ) {
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {

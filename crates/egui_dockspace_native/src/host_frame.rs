@@ -16,6 +16,32 @@ use crate::error::NativeRuntimeError;
 use crate::mailbox::NativeHostBridge;
 use crate::viewport_map::NativeViewportMap;
 
+/// Final-pass paint metadata plus fork-owned scroll identities from that same pass.
+pub(crate) struct NativeSurfacePaint {
+    inner: egui_dockspace::native_support::NativeSurfacePaint,
+    scroll_identities: Vec<egui::WidgetHitIdentity>,
+}
+
+impl std::ops::Deref for NativeSurfacePaint {
+    type Target = egui_dockspace::native_support::NativeSurfacePaint;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for NativeSurfacePaint {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl NativeSurfacePaint {
+    pub(crate) fn scroll_identities(&self) -> &[egui::WidgetHitIdentity] {
+        &self.scroll_identities
+    }
+}
+
 /// Affine native host frame which commits the output barrier and only then
 /// releases later callback records.
 pub(crate) struct NativeHostFrame<'session> {
@@ -64,16 +90,39 @@ impl<'session> NativeHostFrame<'session> {
         ui: &mut egui::Ui,
         panes: &mut dyn PaneView,
         style: &DockStyle,
-    ) -> Result<egui_dockspace::native_support::NativeSurfacePaint, NativeRuntimeError> {
-        egui_dockspace::native_support::paint_surface(
+    ) -> Result<NativeSurfacePaint, NativeRuntimeError> {
+        let mut scroll_identities = Vec::new();
+        let mut register_scroll_candidate = |ui: &egui::Ui, rect: egui::Rect, id: egui::Id| {
+            let identity = ui.register_scroll_hit_candidate(rect, id);
+            scroll_identities.push(identity);
+            (identity.id(), identity.layer_id())
+        };
+        let paint = egui_dockspace::native_support::paint_surface(
             &mut self.frame,
             instance_id,
             surface,
             ui,
             panes,
             style,
+            &mut register_scroll_candidate,
         )
-        .map_err(Into::into)
+        .map_err(NativeRuntimeError::from)?;
+        let receiver_count = paint.scroll_receivers().len();
+        if receiver_count != scroll_identities.len()
+            || !paint
+                .scroll_receivers()
+                .zip(scroll_identities.iter().copied())
+                .all(|(receiver, identity)| {
+                    receiver.widget_id() == identity.id()
+                        && receiver.layer_id() == identity.layer_id()
+                })
+        {
+            return Err(NativeHostProtocolError::ScrollReceiverIdentityMismatch.into());
+        }
+        Ok(NativeSurfacePaint {
+            inner: paint,
+            scroll_identities,
+        })
     }
 
     pub(crate) fn measure_surface(

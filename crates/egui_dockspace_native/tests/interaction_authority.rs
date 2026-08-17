@@ -11,6 +11,9 @@ use eframe::egui::emath::GuiRounding;
 use eframe::egui::{
     Context, Event, Id, InputState, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Ui, vec2,
 };
+use eframe::egui::{
+    WidgetHitIdentity, WidgetScrollDelta, WidgetScrollHit, WidgetScrollHitChallenge,
+};
 use egui_dockspace::{DockStyle, PaneView, native_support};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -40,7 +43,10 @@ struct SurfaceFrameResult {
     second_tab_center: Option<Pos2>,
     second_tab_receiver: Option<DockspaceVisualId>,
     group_grip_center: Option<Pos2>,
+    tab_strip_scroll_center: Option<Pos2>,
     receivers: Vec<native_support::NativePaintReceiver>,
+    scroll_receivers: Vec<native_support::NativeScrollPaintReceiver>,
+    scroll_identities: Vec<WidgetHitIdentity>,
     receiver_generation: Option<(eframe::egui::ViewportId, u64)>,
 }
 
@@ -62,6 +68,16 @@ fn empty_session() -> DockspaceSession {
     .expect("empty native interaction layout validates");
     DockspaceSession::from_layout(layout, DockPolicy::default())
         .expect("empty native interaction session initializes")
+}
+
+fn overflow_session() -> DockspaceSession {
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs((1..=24).map(ItemId::new))),
+    )])
+    .expect("overflow native interaction layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("overflow native interaction session initializes")
 }
 
 fn install_ready_candidate(session: &mut DockspaceSession) {
@@ -98,7 +114,10 @@ fn run_surface_frame(
     let mut second_tab_center = None;
     let mut second_tab_receiver = None;
     let mut group_grip_center = None;
+    let mut tab_strip_scroll_center = None;
     let mut receivers = Vec::new();
+    let mut scroll_receivers = Vec::new();
+    let mut scroll_identities = Vec::new();
     let mut receiver_generation = None;
     let mut output = context.run_ui(input(events), |ui| {
         let dock_rect = ui.available_rect_before_wrap();
@@ -121,7 +140,16 @@ fn run_surface_frame(
             group_grip_center = plan
                 .tab_bars()
                 .find_map(|bar| bar.group_grip_bounds().map(logical_center));
+            tab_strip_scroll_center = plan.tab_bars().find_map(|bar| {
+                plan.receiver_for_tab_strip_scroll(bar)
+                    .map(|receiver| logical_center(receiver.bounds()))
+            });
         }
+        let mut register_scroll_candidate = |ui: &Ui, rect: Rect, id: Id| {
+            let identity = ui.register_scroll_hit_candidate(rect, id);
+            scroll_identities.push(identity);
+            (identity.id(), identity.layer_id())
+        };
         let painted = native_support::paint_surface(
             &mut frame,
             Id::new("native-interaction-authority"),
@@ -129,9 +157,11 @@ fn run_surface_frame(
             ui,
             panes,
             &DockStyle::default(),
+            &mut register_scroll_candidate,
         )
         .expect("native surface paints");
         receivers = painted.receivers().collect();
+        scroll_receivers = painted.scroll_receivers().collect();
         receiver_generation = painted
             .had_ready_plan()
             .then_some((painted.viewport_id(), painted.cumulative_pass_nr()));
@@ -158,7 +188,10 @@ fn run_surface_frame(
         second_tab_center,
         second_tab_receiver,
         group_grip_center,
+        tab_strip_scroll_center,
         receivers,
+        scroll_receivers,
+        scroll_identities,
         receiver_generation,
     }
 }
@@ -337,6 +370,53 @@ fn completed_pass_hit_maps_to_the_exact_tab_group_receiver() {
         })
         .expect("the completed-pass identity has an exact group binding");
     assert_eq!(receiver.role(), DockspaceReceiverRole::TabGroupGrip);
+}
+
+#[test]
+fn completed_pass_scroll_hit_maps_to_the_exact_tab_strip_receiver() {
+    let context = Context::default();
+    let mut session = overflow_session();
+    let mut panes = Panes;
+    install_ready_candidate(&mut session);
+
+    let painted = run_ready_surface_frame(&context, &mut session, &mut panes);
+    let point = painted
+        .tab_strip_scroll_center
+        .expect("the overflowing tab strip exposes a scroll receiver");
+    let (viewport, expected_pass) = painted
+        .receiver_generation
+        .expect("ready paint reports its pass identity");
+    assert_eq!(
+        painted.scroll_receivers.len(),
+        painted.scroll_identities.len(),
+        "every product scroll receiver retains its fork-owned identity"
+    );
+    let (expected_identity, expected_receiver) = painted
+        .scroll_identities
+        .iter()
+        .copied()
+        .zip(painted.scroll_receivers.iter().copied())
+        .find(|(_, receiver)| receiver.role() == DockspaceReceiverRole::TabStripScroll)
+        .expect("one exact tab-strip scroll binding is painted");
+    assert_eq!(expected_receiver.viewport_id(), viewport);
+    assert_eq!(expected_receiver.cumulative_pass_nr(), expected_pass);
+    assert_eq!(expected_receiver.widget_id(), expected_identity.id());
+    assert_eq!(expected_receiver.layer_id(), expected_identity.layer_id());
+
+    let hit = context
+        .scroll_hit_test_last_pass(
+            viewport,
+            point,
+            painted.scroll_identities.as_slice(),
+            WidgetScrollHitChallenge::Spatial {
+                projected_delta: Some(
+                    WidgetScrollDelta::new(0.0, -1.0).expect("test delta is finite"),
+                ),
+            },
+        )
+        .expect("the viewport completed the painted pass");
+    assert_eq!(hit.cumulative_pass_nr(), expected_pass);
+    assert_eq!(hit.hit(), WidgetScrollHit::Candidate(expected_identity));
 }
 
 #[test]
