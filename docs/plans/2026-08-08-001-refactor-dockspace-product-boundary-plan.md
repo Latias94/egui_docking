@@ -296,7 +296,7 @@ This checkpoint records evidence and work ownership only. It does not weaken the
 - **Goal:** Make the default product renderer carry the complete official-egui local product interaction set; U4 removes the remaining legacy path after this slice is proven.
 - **Requirements:** R1, R3, R4, R7.
 - **Dependencies:** U2.
-- **Files:** `crates/egui_dockspace/src/product_dockspace.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace/src/product_render/measurement.rs`, `crates/egui_dockspace/src/builder.rs`, `crates/egui_dockspace/src/response.rs`, `integration/egui-product-harness/tests/product.rs`, `integration/egui-official-harness/tests/interaction.rs`, `crates/egui_dockspace/examples/basic.rs`.
+- **Files:** `crates/egui_dockspace/src/product_dockspace.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace/src/product_render/measurement.rs`, `crates/egui_dockspace/src/builder.rs`, `crates/egui_dockspace/src/product_response.rs`, `integration/egui-product-harness/tests/product.rs`, `integration/egui-official-harness/tests/interaction.rs`, `crates/egui_dockspace/examples/basic.rs`.
 - **Approach:** Measure through core's exact manifest, paint from `SurfacePaintPlan`, and submit opaque prepared actions. Preserve local-response actions across egui multipass, but keep preview acknowledgements final-pass only. Ensure transient splitter/contained resize recompiles current overrides instead of retaining stale geometry. Add the remaining overflow/menu, receiver-descriptor, contained-transform preview, and accessibility actions before deleting their legacy renderer equivalents. During this unit, split measurement/resource ownership, tab/menu actions, split interaction, contained interaction, and overlay painting into modules that own those responsibilities; do not postpone renderer modularization to U10.
 - **Test scenarios:**
   - Tab select/close/reorder, center/four-edge docking, splitter, contained move/resize, Escape, keyboard, and the minimum accessibility matrix work with default features.
@@ -404,7 +404,9 @@ U8 is reserved for a separate future plan and is not part of this plan's executi
 - **Files:** `crates/dockspace/src/engine.rs`, `crates/dockspace/src/frame.rs`, `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/viewport_focus.rs`, `crates/dockspace/src/drop_resolver.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace_native/src/coordinator.rs`, existing domain submodules and focused tests.
 - **Approach:** Define explicit retention manifests and watermarks for effects, close plans, outputs, pointer streams, routes, and tombstones. After quiescence and one authorized compaction, active, unsettled, and detailed terminal records are zero; historical identity is represented only by monotonic frontiers or merged intervals. Remaining record count is bounded by active producers, live surfaces, active streams, and non-contiguous retained intervals, never by the number of completed cycles. Use existing 16/128/1024 structural fixtures and counters to find repeated full scans/clones; optimize confirmed hot paths with indexes, shared immutable maps, or moved values rather than a generic cache/COW framework.
 - **Test scenarios:**
-  - Ten-thousand-cycle lifecycle/close/presentation tests reach zero active/unsettled/detail records after quiescence and one compaction; only documented frontier or merged-interval history remains.
+  - Ten-thousand-cycle effect, close, and presentation tests reach zero active/unsettled/detail records after quiescence and one compaction; only documented frontier or merged-interval history remains.
+  - Ten-thousand completed pointer streams retain no active stream, terminal detail, capture, or gesture owner after provider retirement and compaction.
+  - Ten-thousand destroy/recreate cycles leave no route or tombstone detail after exact binding quiescence; delayed predecessor facts still reject against the successor.
   - Pointer motion does not rebuild or clone every surface output when only one delivery/hover surface is queried.
   - Drop affordance work scales with indexed candidates rather than full workspace clone per visible guide.
   - No new script parses source, computes API digests, or duplicates Cargo/test discovery.
@@ -446,7 +448,9 @@ Run Cargo serially and reuse the repository's normal `target` directories.
 | Core/product behavior | Root workspace | `cargo nextest run --workspace --all-features --all-targets --test-threads=1` | All non-ignored tests, including `dockspace_host_conformance`, pass. |
 | Product downstream | Product harness | `cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --all-features --test-threads=1` | Default/no-backend interaction and persistence cases pass. |
 | Official downstream | Official harness | `cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1` | Official-egui consumer and public API cases pass. |
+| Dependency graph | Root workspace | `cargo tree --workspace --all-features --locked` | No active package or dependency path contains `egui_tiles`, the retired protocol crate, or an egui 0.35 runtime. |
 | Fork/native | Pinned fork workspace | Existing thin Python launcher as the sole native-workspace nextest entry, plus direct fork-internal host-seam tests | Exact pinned revisions, host seam, and native helper tests pass without duplicate suite discovery. |
+| Fork WGPU seam | Pinned egui/eframe checkout | `cargo check --manifest-path .ci/egui-fork/Cargo.toml -p eframe --lib --no-default-features --features wgpu,native-host-seam,x11,wayland --locked -j1` | The WGPU host seam compiles independently of the Glow-only smoke. |
 | Real-window boundary | Single smoke binary | One CI invocation under Ubuntu Xvfb, X11, and Glow with one process timeout | The fixed create-to-quiescence state sequence completes once. |
 | Documentation/API | Publishable crates | Rustdoc, downstream compile fixtures, core `cargo package`, and adapter `cargo package --list` | No private-type links, missing files, or unintended dependencies; full adapter package verification is a post-core-publication release check. |
 | Lint policy | Root and fork-owned changes | Repository CI's correctness/suspicious Clippy policy | No new correctness/suspicious diagnostics; broader warning debt is handled by scoped cleanup, not a surprise global rewrite. |
@@ -467,7 +471,7 @@ Failure in any gate is fixed in the owning implementation unit. A green aggregat
 - Default public APIs do not expose raw nodes, workspace/engine types, scene/drop authority, provider/receipt machinery, or persistence candidates.
 - No active Cargo dependency or production code path uses `egui_tiles`, the retired protocol oracle, the 0.35 hosted-cycle runtime, or test-only presentation authority.
 - Product rendering, host framing, managed-native core, and native coordination have been deepened during their owning implementation units; effect, close, pointer, output, route, and tombstone retention have explicit bounds.
-- Formatting, locked builds, nextest suites, downstream fixtures, fork/native tests, rustdoc, package dry-runs, and the single smoke pass without touching unrelated concurrent changes.
+- Formatting, locked builds, nextest suites, downstream fixtures, fork/native tests, rustdoc, the core package dry-run, the adapter package-list check, and the single smoke pass without touching unrelated concurrent changes. Full adapter package verification remains a post-core-publication release gate.
 - Dead compatibility aliases, duplicate projections/ledgers, obsolete scripts, stale documentation claims, and abandoned migration scaffolding are removed before declaring completion.
 
 ---
