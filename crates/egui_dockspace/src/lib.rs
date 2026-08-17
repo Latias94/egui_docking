@@ -21,6 +21,7 @@ mod guide_paint;
 #[cfg(feature = "native-render-support")]
 #[doc(hidden)]
 pub mod native_support;
+mod pass_settlement;
 mod product_render;
 #[path = "product_response.rs"]
 mod response;

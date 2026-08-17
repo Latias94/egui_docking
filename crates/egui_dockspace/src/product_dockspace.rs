@@ -24,6 +24,7 @@ use crate::builder::DockspaceBuilder;
 use crate::error::DockspaceError;
 use crate::error_detail::DockspaceErrorSource;
 use crate::pane::PaneView;
+use crate::pass_settlement::ProductPassSettlement;
 use crate::product_render;
 use crate::response::DockspaceMutation;
 use crate::response::{
@@ -37,6 +38,7 @@ pub struct Dockspace {
     id: Id,
     session: DockspaceSession,
     style: DockStyle,
+    pass_settlement: ProductPassSettlement,
 }
 
 impl Dockspace {
@@ -57,7 +59,12 @@ impl Dockspace {
         let session =
             DockspaceSession::from_layout_with_presentation_config(layout, policy, presentation)
                 .map_err(DockspaceError::from_detail)?;
-        Ok(Self { id, session, style })
+        Ok(Self {
+            id,
+            session,
+            style,
+            pass_settlement: ProductPassSettlement::default(),
+        })
     }
 
     #[cfg(feature = "serde")]
@@ -78,7 +85,12 @@ impl Dockspace {
             bootstrap,
         )
         .map_err(DockspaceError::from_detail)?;
-        Ok(Self { id, session, style })
+        Ok(Self {
+            id,
+            session,
+            style,
+            pass_settlement: ProductPassSettlement::default(),
+        })
     }
 
     /// Strictly restores one complete product document into a new egui facade.
@@ -114,6 +126,7 @@ impl Dockspace {
             id: Id::new(("egui_dockspace", id_salt)),
             session,
             style,
+            pass_settlement: ProductPassSettlement::default(),
         })
     }
 
@@ -622,6 +635,10 @@ impl Dockspace {
     /// This path deliberately does not fabricate retained renderer or native
     /// pointer authority from callback order.
     ///
+    /// Local actions commit in the current call. Presentation acknowledgements
+    /// are retained only for egui's terminal logical pass and are submitted by
+    /// the next call for the same context and viewport.
+    ///
     /// # Errors
     ///
     /// Returns an error when the session does not contain exactly this surface,
@@ -649,8 +666,15 @@ impl Dockspace {
             return Err(DockspaceErrorSource::SurfaceOutsideRoster { surface }.into());
         }
 
+        for action in self.pass_settlement.take_ready(ui) {
+            frame
+                .submit_surface_action(action)
+                .map_err(DockspaceError::from_detail)?;
+        }
+
         let mut missing = BTreeSet::new();
         let mut defer_measurement = false;
+        let mut presentation_actions = Vec::new();
         let had_plan = if let Some(plan) = frame
             .paint_plan(surface)
             .map_err(DockspaceError::from_detail)?
@@ -665,11 +689,8 @@ impl Dockspace {
             );
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
-            for action in paint
-                .presentation_actions
-                .into_iter()
-                .chain(paint.local_actions)
-            {
+            presentation_actions = paint.presentation_actions;
+            for action in paint.local_actions {
                 frame
                     .submit_surface_action(action)
                     .map_err(DockspaceError::from_detail)?;
@@ -698,6 +719,11 @@ impl Dockspace {
             )?);
         }
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        let needs_presentation_settlement = !presentation_actions.is_empty();
+        self.pass_settlement.stage(ui, presentation_actions);
+        if needs_presentation_settlement {
+            ui.ctx().request_repaint();
+        }
         if !had_plan || report.repaint_surfaces().contains(&surface) {
             ui.ctx().request_repaint();
         }

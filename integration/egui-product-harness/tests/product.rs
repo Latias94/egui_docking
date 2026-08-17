@@ -1,5 +1,8 @@
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
-use egui::{Context, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, vec2};
+use egui::{
+    Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect,
+    RepaintCause, Ui, vec2,
+};
 use egui_dockspace::{
     CloseDecision, ClosePlanTarget, DockStyle, Dockspace, DockspaceActionOutcome,
     DockspaceActionStatus, DockspaceAxis, DockspaceCloseRequest, DockspaceCloseRequestRejection,
@@ -7,6 +10,7 @@ use egui_dockspace::{
     DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId, LogicalRect,
     PaneView, RootId, SurfaceId,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
@@ -18,6 +22,35 @@ const THIRD: ItemId = ItemId::new(3);
 const FOURTH: ItemId = ItemId::new(4);
 
 struct Panes;
+
+#[derive(Default)]
+struct LateDiscardPlugin {
+    remaining: usize,
+    panic_once: bool,
+}
+
+impl egui::plugin::Plugin for LateDiscardPlugin {
+    fn debug_name(&self) -> &'static str {
+        "egui_dockspace_test::late_discard"
+    }
+
+    fn output_hook(&mut self, _context: &Context, output: &mut FullOutput) {
+        if self.panic_once {
+            self.panic_once = false;
+            panic!("late output hook interrupted the egui run");
+        }
+        if self.remaining == 0 {
+            return;
+        }
+        self.remaining -= 1;
+        output
+            .platform_output
+            .request_discard_reasons
+            .push(RepaintCause::new_reason(
+                "discard after dockspace final-pass settlement runs",
+            ));
+    }
+}
 
 impl PaneView for Panes {
     fn title(&self, item: ItemId) -> Option<egui::WidgetText> {
@@ -166,6 +199,27 @@ fn run_frame_with_discard_after_dockspace(
         },
         passes,
     )
+}
+
+fn run_two_discarded_dockspace_passes(
+    context: &Context,
+    dockspace: &mut Dockspace,
+    panes: &mut Panes,
+    events: Vec<Event>,
+) -> usize {
+    let mut passes = 0;
+    let mut output = context.run_ui(input(events), |ui| {
+        passes += 1;
+        if ui.ctx().current_pass_index() < 2 {
+            dockspace
+                .show_single_surface(SURFACE, ui, panes)
+                .expect("the discarded product pass advances");
+        } else {
+            ui.label("terminal pass intentionally omits the dockspace");
+        }
+    });
+    output.textures_delta.clear();
+    passes
 }
 
 struct FrameOutput {
@@ -749,6 +803,12 @@ fn default_features_tab_drag_reorders_across_multipass_discard() {
         vec![Event::PointerMoved(first), pointer_button(first, false)],
     );
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        tab_items(&dockspace),
+        vec![FIRST, SECOND],
+        "the first follow-up only publishes the release-resampled preview",
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
 
     assert_eq!(tab_items(&dockspace), vec![SECOND, FIRST]);
 }
@@ -1285,9 +1345,136 @@ fn default_features_release_waits_for_the_new_preview_to_be_painted() {
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
     assert_eq!(
+        root_split(&dockspace).map(|(axis, _)| axis),
+        Some(DockspaceAxis::Horizontal),
+        "the first follow-up only publishes the newly painted terminal pass",
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
         root_split(&dockspace),
         Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
-        "the pending release commits after the exact bottom preview is painted",
+        "the pending release commits after the terminal preview is settled",
+    );
+}
+
+#[test]
+fn default_features_discarded_preview_cannot_release_a_drag() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-discarded-preview", split_layout())
+        .build()
+        .expect("the product discarded-preview facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let top = Pos2::new(400.0, 40.0);
+    let bottom = Pos2::new(400.0, 560.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(top)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .remaining = 2;
+
+    let passes = run_two_discarded_dockspace_passes(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(bottom)],
+    );
+    assert_eq!(passes, 3, "the fixture must omit dockspace from the final pass");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(bottom), pointer_button(bottom, false)],
+    );
+    assert_eq!(
+        root_split(&dockspace).map(|(axis, _)| axis),
+        Some(DockspaceAxis::Horizontal),
+        "a preview painted only by discarded passes cannot release the drag",
+    );
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    assert_eq!(
+        root_split(&dockspace),
+        Some((DockspaceAxis::Vertical, vec![vec![FIRST], vec![SECOND]],)),
+        "the release settles after a terminal pass paints the exact preview",
+    );
+}
+
+#[test]
+fn default_features_unfinished_egui_run_cannot_settle_preview() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-interrupted-preview", split_layout())
+        .build()
+        .expect("the product interrupted-preview facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = tab_center(&stable.output, "Second");
+    let top = Pos2::new(400.0, 40.0);
+    let bottom = Pos2::new(400.0, 560.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(top)],
+    );
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .panic_once = true;
+    let interrupted = catch_unwind(AssertUnwindSafe(|| {
+        let mut output = context.run_ui(input(vec![Event::PointerMoved(bottom)]), |ui| {
+            dockspace
+                .show_single_surface(SURFACE, ui, &mut panes)
+                .expect("the interrupted product pass advances");
+        });
+        output.textures_delta.clear();
+    }));
+    assert!(interrupted.is_err(), "the late output hook must interrupt the run");
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(bottom), pointer_button(bottom, false)],
+    );
+    assert_eq!(
+        root_split(&dockspace).map(|(axis, _)| axis),
+        Some(DockspaceAxis::Horizontal),
+        "a preview from an unfinished egui run cannot release the drag",
     );
 }
 
