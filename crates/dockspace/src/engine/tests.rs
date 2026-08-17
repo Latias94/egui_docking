@@ -767,7 +767,7 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
     let first = ViewportBinding::new(
         engine.authority_domain,
         WorkspaceEpoch::new(0),
-        SurfaceId::new(7),
+        SOURCE_SURFACE,
         WindowToken::new(7),
         WindowIncarnation::new(1),
     );
@@ -778,6 +778,34 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
         WindowToken::new(8),
         WindowIncarnation::new(1),
     );
+    let retiring_output = engine
+        .presentation_authority
+        .presentation
+        .emit(
+            host,
+            first.surface(),
+            HostPresentationEndpoint::Native(first),
+            HostPresentationOutputPayload::Bootstrap,
+        )
+        .expect("the retiring native binding emits one presentation output");
+    engine
+        .presentation_authority
+        .presentation
+        .reduce_observation(
+            host,
+            &BTreeSet::from([retiring_output.stream()]),
+            HostPresentationObservation::Batch(vec![HostPresentationObservationEntry::new(
+                retiring_output.stream(),
+                HostPresentationStreamObservation::Captured {
+                    generation: HostPresentationCaptureGeneration::new(1),
+                    progress: HostPresentationProgress::Retired {
+                        settled_through: retiring_output.key(),
+                        presented: Authority::Known(None),
+                    },
+                },
+            )]),
+        )
+        .expect("the retiring stream settles before producer quiescence");
     engine
         .viewport
         .record_destroyed_binding_guard_for_test(first, provider);
@@ -819,6 +847,24 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
         "the valid first guard must not be partially removed on failure",
     );
     assert!(
+        engine
+            .presentation_retention_manifest()
+            .retains_stream(retiring_output.stream()),
+        "a failed batch settlement must not partially compact presentation state",
+    );
+    assert_eq!(
+        engine
+            .presentation_authority
+            .presentation
+            .active_surface_scope(first.surface()),
+        Some((
+            retiring_output.stream(),
+            host,
+            HostPresentationEndpoint::Native(first),
+        )),
+        "a failed candidate must not partially retire active presentation ownership",
+    );
+    assert!(
         receipt.through().is_some(),
         "a failed settlement remains affine"
     );
@@ -838,6 +884,12 @@ fn backend_prefix_retirement_is_atomic_and_retries_after_missing_guard() {
             .bindings()
             .destroyed_binding_guards(),
         0,
+    );
+    assert!(
+        !engine
+            .presentation_retention_manifest()
+            .retains_stream(retiring_output.stream()),
+        "the exact binding quiescence also reclaims its settled retiring stream",
     );
     assert!(
         receipt.through().is_none(),

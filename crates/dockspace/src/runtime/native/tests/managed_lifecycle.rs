@@ -283,6 +283,12 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         request: create,
         restore_acknowledgement,
     } = request_native_create();
+    let retained_streams_before = session
+        .engine
+        .runtime_retention_manifest()
+        .presentation_hosts()
+        .retained_stream_states();
+    let capture_generations_before = session.presentation.retained_capture_generation_count();
     let create_ack = match create.accepted() {
         Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) => acknowledgement,
         acknowledgement => panic!("create returned the wrong acknowledgement: {acknowledgement:?}"),
@@ -421,6 +427,89 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
     assert_eq!(
         session.view().item(SECOND_ITEM).map(|item| item.surface()),
         Some(SURFACE)
+    );
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .presentation_hosts()
+            .retained_stream_states(),
+        retained_streams_before + 1,
+        "the admitted child owns one exact presentation stream",
+    );
+    assert_eq!(
+        session.presentation.retained_capture_generation_count(),
+        capture_generations_before + 1,
+        "the runtime sidecar retains the child stream generation",
+    );
+
+    let child_root = session
+        .view()
+        .item(ITEM)
+        .expect("the child still owns the torn-off item")
+        .root();
+    let mut redock = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child redock frame begins");
+    redock
+        .dock_root_current(
+            child_root,
+            crate::model::DockPlacement::Center(crate::model::DockAnchor::Item(SECOND_ITEM)),
+        )
+        .expect("the complete child root redocks into the recovery surface");
+    redock
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the redock frame settles every surface");
+    let mut redock_report = redock.commit().expect("the child redock commits");
+    let release = take_only_native_effect(&mut redock_report);
+    assert!(matches!(
+        release.operation(),
+        NativeEffectOperation::ReleaseChild { binding } if *binding == child_binding
+    ));
+    let close_ack = match release.accepted() {
+        Some(NativeEffectAcknowledgement::Close(acknowledgement)) => acknowledgement,
+        acknowledgement => {
+            panic!("release returned the wrong acknowledgement: {acknowledgement:?}")
+        }
+    };
+    session
+        .report_managed_native_snapshot(
+            [
+                (root_binding, root_window_facts()),
+                (child_binding, NativeWindowFacts::destroyed_after(close_ack)),
+            ],
+            NativeWorkAreaRoster::Exact(vec![work_area(1)]),
+        )
+        .expect("the exact destroyed child roster records");
+    commit_managed_frame(&mut session);
+    session
+        .report_native_binding_quiescence(child_binding)
+        .expect("the retired child binding becomes externally quiescent");
+    commit_managed_frame(&mut session);
+    commit_managed_frame(&mut session);
+
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .bindings()
+            .destroyed_binding_guards(),
+        0,
+        "the committed binding quiescence reclaims its destroyed guard",
+    );
+    assert_eq!(
+        session
+            .engine
+            .runtime_retention_manifest()
+            .presentation_hosts()
+            .retained_stream_states(),
+        retained_streams_before,
+        "the next renderer-quiescent boundary reclaims the retired child presentation stream",
+    );
+    assert_eq!(
+        session.presentation.retained_capture_generation_count(),
+        capture_generations_before,
+        "the sidecar generation disappears after exact core stream compaction",
     );
 }
 

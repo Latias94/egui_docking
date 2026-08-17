@@ -346,9 +346,13 @@ impl DockspaceSession {
         #[cfg(not(feature = "serde"))] _document_restore: Option<()>,
     ) -> Result<DockspaceHostFrame<'_>, DockspaceRuntimeError> {
         self.reconcile_surface_pointer_provider()?;
+        self.presentation
+            .reclaim_quiescent_streams(&mut self.engine, self.presentation_host)?;
         if let Some(native) = self.native.as_mut() {
             native.record_abandoned_effects(&self.abandoned_native_effects)?;
-            native.reclaim_committed_prefix(&mut self.engine)?;
+            let prefix_retirement = native.reclaim_committed_prefix(&mut self.engine);
+            self.presentation.reclaim_compacted_streams(&self.engine);
+            prefix_retirement?;
         }
         let mut prelude = self.engine.begin_host_frame(self.presentation_host)?;
         #[cfg(feature = "serde")]

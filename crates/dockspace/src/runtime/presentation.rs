@@ -369,6 +369,49 @@ pub(super) struct SubmittedPresentationObservation {
 }
 
 impl RuntimePresentationState {
+    pub(super) fn reclaim_quiescent_streams(
+        &mut self,
+        engine: &mut DockEngine,
+        host: crate::presentation_observation::PresentationHostLease,
+    ) -> Result<(), super::DockspaceRuntimeError> {
+        let candidates = self
+            .capture_generations
+            .keys()
+            .copied()
+            .filter(|stream| {
+                !self.pending.contains_key(stream)
+                    && !self.results.contains_key(stream)
+                    && !self.backend_recorded.contains_key(stream)
+            })
+            .collect::<Vec<_>>();
+        let mut quiescences = Vec::new();
+        for stream in candidates {
+            if let Some(quiescence) =
+                engine.try_prepare_presentation_stream_quiescence(host, stream)?
+            {
+                quiescences.push(quiescence);
+            }
+        }
+        if !quiescences.is_empty() {
+            engine.confirm_presentation_stream_quiescence_batch(quiescences)?;
+            self.reclaim_compacted_streams(engine);
+        }
+        Ok(())
+    }
+
+    pub(super) fn reclaim_compacted_streams(&mut self, engine: &DockEngine) {
+        let retained = engine.presentation_retention_manifest();
+        self.capture_generations
+            .retain(|stream, _| retained.retains_stream(*stream));
+        self.backend_recorded
+            .retain(|stream, _| retained.retains_stream(*stream));
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_capture_generation_count(&self) -> usize {
+        self.capture_generations.len()
+    }
+
     fn drain_abandoned(&mut self) {
         for output in self.abandoned.take() {
             let is_pending = self
@@ -696,5 +739,116 @@ impl RuntimePresentationState {
             }
         }
         (surfaces, staging)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{LogicalRect, LogicalSize};
+    use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
+    use crate::ids::{ItemId, RootId, SurfaceId};
+    use crate::model::{DockAnchor, DockPlacement};
+    use crate::policy::DockPolicy;
+    use crate::runtime::{
+        DockspaceSession, NativePointerRoster, NativeReceiverAnswer, SurfaceUnavailableReason,
+        UniformSurfaceMetrics,
+    };
+
+    #[test]
+    fn headless_surface_retirement_reclaims_after_native_enrollment() {
+        let first_surface = SurfaceId::new(1);
+        let second_surface = SurfaceId::new(2);
+        let first_root = RootId::new(1);
+        let second_root = RootId::new(2);
+        let first_item = ItemId::new(1);
+        let second_item = ItemId::new(2);
+        let mut builder = Workspace::builder();
+        let first_tabs = builder.insert_node(Node::tabs([first_item]));
+        let second_tabs = builder.insert_node(Node::tabs([second_item]));
+        builder.set_root(first_root, RootRecord::new(first_tabs));
+        builder.set_root(second_root, RootRecord::new(second_tabs));
+        builder.set_surface(first_surface, SurfacePresentation::with_main(first_root));
+        builder.set_surface(second_surface, SurfacePresentation::with_main(second_root));
+        let mut session = DockspaceSession::from_workspace_for_test(
+            builder.build().expect("the headless workspace validates"),
+            DockPolicy::default(),
+        )
+        .expect("the headless runtime initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("test bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("test minimum validates"),
+            80.0,
+        )
+        .expect("test metrics validate");
+
+        let mut measured = session
+            .begin_host_frame()
+            .expect("the measurement frame begins");
+        for surface in measured.surfaces() {
+            measured
+                .measure_surface(surface, metrics)
+                .expect("each surface measurement stages");
+        }
+        measured.commit().expect("the measurements commit");
+
+        let mut painted = session.begin_host_frame().expect("the paint frame begins");
+        painted
+            .confirm_surface_painted(first_surface)
+            .expect("the first surface paints");
+        painted
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the second surface remains deferred");
+        let mut report = painted.commit().expect("the painted output emits");
+        let output = report
+            .take_painted_outputs()
+            .pop()
+            .expect("the first surface emits one output");
+        session
+            .report_surface_presentation(output, SurfacePresentationResult::Presented)
+            .expect("the exact output presentation records");
+        let mut observed = session
+            .begin_host_frame()
+            .expect("the presentation observation frame begins");
+        observed
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the observation frame settles every surface");
+        observed
+            .commit()
+            .expect("the presentation observation commits");
+        assert_eq!(session.presentation.retained_capture_generation_count(), 1);
+
+        let mut redock = session.begin_host_frame().expect("the redock frame begins");
+        redock
+            .dock_root_current(
+                first_root,
+                DockPlacement::Center(DockAnchor::Item(second_item)),
+            )
+            .expect("the first root redocks into the second surface");
+        redock
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the redock frame settles every surface");
+        redock.commit().expect("the redock commits");
+        assert_eq!(session.presentation.retained_capture_generation_count(), 1);
+
+        session
+            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+            .expect("the managed native provider enrolls after headless painting");
+        let mut reclaimed = session
+            .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+            .expect("the reclamation boundary begins");
+        reclaimed
+            .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+            .expect("the reclamation frame settles every surface");
+        reclaimed.commit().expect("the reclamation frame commits");
+        assert_eq!(session.presentation.retained_capture_generation_count(), 0);
+        assert_eq!(
+            session
+                .engine
+                .runtime_retention_manifest()
+                .presentation_hosts()
+                .retained_stream_states(),
+            0,
+        );
     }
 }

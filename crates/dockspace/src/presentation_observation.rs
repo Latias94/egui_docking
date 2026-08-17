@@ -1163,6 +1163,7 @@ enum PresentationStreamLifecycle {
 enum PresentationStreamRetirementCause {
     EndpointSuperseded,
     SurfaceRemoved,
+    EndpointQuiesced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1689,6 +1690,55 @@ impl PresentationLedger {
         self.streams.get(&stream).map(|state| state.host)
     }
 
+    pub(crate) fn retire_native_binding_streams_for_quiescence(
+        &mut self,
+        host: PresentationHostLease,
+        binding: ViewportBinding,
+    ) -> Result<Vec<HostPresentationStreamId>, PresentationLedgerError> {
+        let streams = self
+            .host(host)?
+            .streams
+            .iter()
+            .copied()
+            .filter(|stream| {
+                self.streams.get(stream).is_some_and(|state| {
+                    state.endpoint == HostPresentationEndpoint::Native(binding)
+                })
+            })
+            .collect::<Vec<_>>();
+        let active = streams
+            .iter()
+            .copied()
+            .filter_map(|stream| {
+                let state = self
+                    .streams
+                    .get(&stream)
+                    .expect("host stream roster must reference detailed state");
+                (state.lifecycle == PresentationStreamLifecycle::Active)
+                    .then_some((state.surface, stream))
+            })
+            .collect::<Vec<_>>();
+        for (surface, stream) in &active {
+            if self.active_streams.get(surface) != Some(stream) {
+                return Err(PresentationLedgerError::ActiveSurfaceOwnerInvariant {
+                    stream: *stream,
+                    surface: *surface,
+                });
+            }
+        }
+        for (surface, stream) in active {
+            let removed = self.active_streams.remove(&surface);
+            debug_assert_eq!(removed, Some(stream));
+            self.streams
+                .get_mut(&stream)
+                .expect("validated native stream must remain present")
+                .lifecycle = PresentationStreamLifecycle::Retiring(
+                PresentationStreamRetirementCause::EndpointQuiesced,
+            );
+        }
+        Ok(streams)
+    }
+
     /// Prepares the one-shot acknowledgement required to reclaim a settled retiring stream.
     ///
     /// The caller must invoke this only after its renderer has drained every path that could
@@ -2107,6 +2157,15 @@ impl PresentationLedger {
                         surface: state.surface,
                     },
                 );
+            }
+            return Ok(());
+        }
+        if retirement == PresentationStreamRetirementCause::EndpointQuiesced {
+            if self.active_streams.get(&state.surface) == Some(&stream) {
+                return Err(PresentationLedgerError::ActiveSurfaceOwnerInvariant {
+                    stream,
+                    surface: state.surface,
+                });
             }
             return Ok(());
         }

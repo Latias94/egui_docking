@@ -93,8 +93,10 @@ impl DockEngine {
     /// # Errors
     ///
     /// Returns an error when the receipt is consumed, belongs to another active
-    /// backend, no longer ends at the exact core commit boundary, or names a
-    /// binding guard that is absent or owned by another platform provider.
+    /// backend, no longer ends at the exact core commit boundary, names a
+    /// binding guard that is absent or owned by another platform provider, or
+    /// references a presentation stream that is not yet terminal and
+    /// unreferenced.
     pub fn settle_backend_ingress_prefix_retirement(
         &mut self,
         receipt: &mut BackendIngressPrefixRetirementReceipt,
@@ -104,13 +106,13 @@ impl DockEngine {
             .backend_ingress
             .commit_prefix_retirement(receipt)
             .map_err(|source| EngineError::BackendIngress { source })?;
-        let provider = receipt
-            .lease()
-            .ok_or(EngineError::BackendIngress {
-                source: BackendIngressError::PrefixRetirementReceiptConsumed,
-            })?
-            .platform_provider();
+        let lease = receipt.lease().ok_or(EngineError::BackendIngress {
+            source: BackendIngressError::PrefixRetirementReceiptConsumed,
+        })?;
+        let provider = lease.platform_provider();
+        let presentation_host = lease.presentation_host();
         let bindings = receipt.binding_quiescences().to_vec();
+        let retained_streams = candidate.retained_presentation_streams();
         for binding in &bindings {
             candidate
                 .viewport
@@ -119,6 +121,23 @@ impl DockEngine {
                     input: candidate.last_input,
                     source,
                 })?;
+            let streams = candidate
+                .presentation_authority
+                .presentation
+                .retire_native_binding_streams_for_quiescence(presentation_host, *binding)
+                .map_err(presentation_ledger_error)?;
+            for stream in streams {
+                let quiescence = candidate
+                    .presentation_authority
+                    .presentation
+                    .prepare_stream_quiescence(presentation_host, stream)
+                    .map_err(presentation_ledger_error)?;
+                candidate
+                    .presentation_authority
+                    .presentation
+                    .compact_quiesced_retiring_stream(quiescence, &retained_streams)
+                    .map_err(presentation_ledger_error)?;
+            }
         }
         candidate.advance_runtime_retention_revision()?;
         receipt
