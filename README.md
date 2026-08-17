@@ -58,12 +58,11 @@ restore candidates are not product interfaces.
 ## egui and native references
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
-native workspace still needs one remotely reachable egui/eframe revision that
-contains every admitted native seam; its checked-in manifest and CI revision
-are not yet release evidence. The event-time Winit fork is pinned at
-`180bfc09743586137fec014ef5543cdde56ce5d0`. The exact egui/eframe revision must
-be updated atomically in the manifest, lockfile, CI, and this document after
-the reviewed local fork commits are authorized for remote publication.
+native workspace uses the reviewed egui/eframe fork revision
+`bce1fd04f4259bddb19d2f5da708ae59def3a324`, which contains every admitted native
+seam. The event-time Winit fork is pinned at
+`180bfc09743586137fec014ef5543cdde56ce5d0`. The manifest, lockfile, CI, and
+this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 

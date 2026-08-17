@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Latias94/egui
-          ref: 7f704e49c5f97da0176027ce7aa92d2e13126c90
+          ref: bce1fd04f4259bddb19d2f5da708ae59def3a324
           path: .ci/egui-fork
           persist-credentials: false
       - name: Check out pinned winit fork
@@ -129,3 +129,10 @@ jobs:
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
+
+      - name: Run one real-window Glow smoke
+        run: >-
+          timeout 90s xvfb-run -a
+          --server-args="-screen 0 1280x1024x24"
+          cargo run --manifest-path integration/egui-native-smoke/Cargo.toml
+          --locked
