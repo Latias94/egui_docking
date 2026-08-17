@@ -72,10 +72,21 @@ pub enum NativePointerEvent {
     StreamEnded,
     /// The provider observed a capture transition.
     CaptureChanged,
-    /// The host explicitly cancelled the stream.
-    StreamCancelled,
+    /// The host terminated the stream abnormally.
+    StreamCancelled(NativePointerCancelReason),
     /// One lossless wheel or trackpad sample.
     Scrolled(NativeScrollEvent),
+}
+
+/// Typed reason why a native host ended one pointer stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePointerCancelReason {
+    /// The physical or virtual input device was removed.
+    DeviceRemoved,
+    /// The platform explicitly cancelled this stream.
+    ExplicitPlatformCancellation,
+    /// The exact native binding which owned this stream retired.
+    BindingRetired,
 }
 
 /// Event-time desktop position authority.
@@ -623,9 +634,9 @@ impl RuntimeNativeState {
             }
             NativePointerEvent::StreamEnded => PointerEdgeKind::StreamEnded,
             NativePointerEvent::CaptureChanged => PointerEdgeKind::CaptureChanged,
-            NativePointerEvent::StreamCancelled => PointerEdgeKind::StreamCancelled(
-                PointerStreamCancelReason::ExplicitPlatformCancellation,
-            ),
+            NativePointerEvent::StreamCancelled(reason) => {
+                PointerEdgeKind::StreamCancelled(native_pointer_cancel_reason(reason))
+            }
             NativePointerEvent::Scrolled(scroll) => {
                 PointerEdgeKind::Scrolled(Self::scroll_edge(scroll)?)
             }
@@ -815,6 +826,18 @@ impl RuntimeNativeState {
             return Err(NativePlatformError::InvalidPointerFacts);
         }
         Ok(())
+    }
+}
+
+const fn native_pointer_cancel_reason(
+    reason: NativePointerCancelReason,
+) -> PointerStreamCancelReason {
+    match reason {
+        NativePointerCancelReason::DeviceRemoved => PointerStreamCancelReason::DeviceRemoved,
+        NativePointerCancelReason::ExplicitPlatformCancellation => {
+            PointerStreamCancelReason::ExplicitPlatformCancellation
+        }
+        NativePointerCancelReason::BindingRetired => PointerStreamCancelReason::BindingRetired,
     }
 }
 

@@ -1037,7 +1037,7 @@ impl NativeCoordinator {
         let Some(record) = self.next_window_event()? else {
             return Ok(false);
         };
-        let mut candidate = self.pointer_translator;
+        let mut candidate = self.pointer_translator.clone();
         if matches!(record.event(), winit::event::WindowEvent::Destroyed)
             && let Some(binding) = record.binding()
         {
@@ -1057,7 +1057,7 @@ impl NativeCoordinator {
                 // The recorder now owns the replayable reset. Publish it before
                 // later destroyed-sidecar work can fail, so retrying the raw
                 // callback cannot enqueue the same edge twice.
-                self.pointer_translator = candidate;
+                self.pointer_translator = candidate.clone();
             }
         }
         let work_areas = &self.work_areas;

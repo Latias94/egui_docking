@@ -35,12 +35,13 @@ use compiler::{
     compile_focus_observation, compile_platform_snapshot, compile_unknown_inventory_snapshot,
 };
 pub use pointer::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
-    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
-    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativePointerRoster, NativePointerState,
+    NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
+    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
+    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
+    NativeScrollSequenceId,
 };
 
 /// Adapter-owned opaque native-window token.

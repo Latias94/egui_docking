@@ -1,3 +1,8 @@
+use dockspace::runtime::{
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerCancelReason,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner,
+};
 use eframe::egui::ViewportCommand;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
@@ -7,6 +12,337 @@ use winit::event::{
 
 use super::*;
 use crate::event::NativePointerRouteSnapshot;
+
+#[test]
+fn destroyed_binding_cancels_pressed_pointer_before_successor_press() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let first_window = WindowId::from(11);
+    let second_window = WindowId::from(22);
+    let second_viewport = ViewportId::from_hash_of("successor-pointer-window");
+    native
+        .bind_viewport(ViewportId::ROOT, first_window, first)
+        .expect("first viewport binds");
+    native
+        .bind_viewport(second_viewport, second_window, second)
+        .expect("successor viewport binds");
+
+    let first_press = NativeWindowEventRecord::for_test(
+        1,
+        first_window,
+        Some(ViewportId::ROOT),
+        Some(first),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(first_press));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the first press enters the native pointer journal")
+    );
+    commit_pending_pointer_frame(&mut native);
+
+    let destroyed = {
+        let mut viewports = native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        NativeWindowEventRecord::for_test_ingress(
+            2,
+            first_window,
+            Some(ViewportId::ROOT),
+            WindowEvent::Destroyed,
+            &mut viewports,
+        )
+    };
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(destroyed));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the binding-retired pointer terminal records first")
+    );
+    assert!(native.pointer_translator.has_pending_provider_tail());
+    commit_pending_pointer_frame(&mut native);
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the retained destroyed callback completes on the next boundary")
+    );
+    assert!(!native.pointer_translator.has_pending_provider_tail());
+    commit_pending_pointer_frame(&mut native);
+
+    let late_release = NativeWindowEventRecord::for_test(
+        3,
+        second_window,
+        Some(second_viewport),
+        Some(second),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(late_release));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the late physical release consumes the cancelled-button tombstone")
+    );
+    commit_pending_pointer_frame(&mut native);
+
+    let successor_press = NativeWindowEventRecord::for_test(
+        4,
+        second_window,
+        Some(second_viewport),
+        Some(second),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    native
+        .bridge
+        .push_record(HostRecord::WindowEvent(successor_press));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the successor press opens a fresh pointer incarnation")
+    );
+    commit_pending_pointer_frame(&mut native);
+
+    assert!(!native.pointer_translator.references_binding(first));
+    assert!(native.pointer_translator.references_binding(second));
+}
+
+#[test]
+fn idle_delivery_does_not_become_a_persistent_pointer_owner() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let moved = NativeWindowEventRecord::for_test(
+        1,
+        WindowId::from(11),
+        Some(ViewportId::ROOT),
+        Some(binding),
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(10.0, 20.0),
+            facts: PointerEventFacts::default(),
+        },
+    );
+
+    assert!(matches!(
+        native.pointer_translator.translate(&moved, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        native
+            .pointer_translator
+            .cancel_destroyed_binding(binding)
+            .is_none(),
+        "an idle delivery route is not a live pointer owner"
+    );
+}
+
+#[test]
+fn released_button_no_longer_keeps_its_press_binding_live() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(11);
+
+    for (ordinal, state) in [(1, ElementState::Pressed), (2, ElementState::Released)] {
+        let record = NativeWindowEventRecord::for_test(
+            ordinal,
+            window,
+            Some(ViewportId::ROOT),
+            Some(binding),
+            WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state,
+                button: MouseButton::Left,
+                facts: PointerEventFacts::default(),
+            },
+        );
+        assert!(matches!(
+            native.pointer_translator.translate(&record, |_| None),
+            NativePointerTranslation::Input(_)
+        ));
+    }
+
+    assert!(!native.pointer_translator.references_binding(binding));
+    assert!(
+        native
+            .pointer_translator
+            .cancel_destroyed_binding(binding)
+            .is_none(),
+        "a normally released button must not synthesize a later cancellation"
+    );
+}
+
+#[test]
+fn pressed_delivery_and_capture_bindings_remain_independent() {
+    let mut native = coordinator();
+    let (delivery, captured) = register_roots(&mut native);
+    let delivery_window = WindowId::from(11);
+    let captured_window = WindowId::from(22);
+    let captured_viewport = ViewportId::from_hash_of("captured-press-owner");
+    native
+        .bind_viewport(ViewportId::ROOT, delivery_window, delivery)
+        .expect("delivery viewport binds");
+    native
+        .bind_viewport(captured_viewport, captured_window, captured)
+        .expect("captured viewport binds");
+
+    let press = NativeWindowEventRecord::for_test_snapshot(
+        1,
+        delivery_window,
+        Some(ViewportId::ROOT),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                capture: PointerWindowRoute::Window(captured_window),
+                ..PointerEventFacts::default()
+            },
+        },
+        &native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    assert!(matches!(
+        native.pointer_translator.translate(&press, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(native.pointer_translator.references_binding(delivery));
+    assert!(native.pointer_translator.references_binding(captured));
+
+    let capture_released = NativeWindowEventRecord::for_test_snapshot(
+        2,
+        delivery_window,
+        Some(ViewportId::ROOT),
+        WindowEvent::PointerCaptureChanged {
+            device_id: DeviceId::dummy(),
+            capture: PointerWindowRoute::None,
+        },
+        &native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    assert!(matches!(
+        native
+            .pointer_translator
+            .translate(&capture_released, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(native.pointer_translator.references_binding(delivery));
+    assert!(!native.pointer_translator.references_binding(captured));
+    assert_eq!(
+        native.pointer_translator.cancel_destroyed_binding(delivery),
+        Some(retired_pointer_input())
+    );
+}
+
+#[test]
+fn capture_retirement_swallows_release_from_unknown_delivery() {
+    let mut native = coordinator();
+    let (captured, _) = register_roots(&mut native);
+    let captured_window = WindowId::from(22);
+    let captured_viewport = ViewportId::from_hash_of("captured-unknown-delivery");
+    native
+        .bind_viewport(captured_viewport, captured_window, captured)
+        .expect("captured viewport binds");
+
+    let unknown_window = WindowId::from(33);
+    let press = NativeWindowEventRecord::for_test_snapshot(
+        1,
+        unknown_window,
+        None,
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            facts: PointerEventFacts {
+                capture: PointerWindowRoute::Window(captured_window),
+                ..PointerEventFacts::default()
+            },
+        },
+        &native
+            .viewports
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    assert!(matches!(
+        native.pointer_translator.translate(&press, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(native.pointer_translator.references_binding(captured));
+    assert_eq!(
+        native.pointer_translator.cancel_destroyed_binding(captured),
+        Some(retired_pointer_input())
+    );
+    assert_eq!(
+        native.pointer_translator.reset_destroyed_binding(captured),
+        None
+    );
+
+    let late_release = NativeWindowEventRecord::for_test(
+        2,
+        unknown_window,
+        None,
+        None,
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    assert_eq!(
+        native.pointer_translator.translate(&late_release, |_| None),
+        NativePointerTranslation::Ignored
+    );
+}
+
+fn retired_pointer_input() -> NativePointerInput {
+    NativePointerInput::new(
+        NativePointerId::new(1),
+        NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            None,
+        ),
+        NativePointerOwner::Unknown,
+        NativePointerOwner::Unknown,
+    )
+}
+
+fn commit_pending_pointer_frame(native: &mut NativeCoordinator) {
+    let mut frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the pending pointer frame begins");
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the pending pointer frame settles every surface");
+    frame.commit().expect("the pending pointer frame commits");
+}
 
 #[test]
 fn release_child_preserves_scroll_correlation_for_the_provider_terminal() {

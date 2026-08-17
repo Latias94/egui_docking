@@ -1,10 +1,10 @@
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerEvent, NativePointerHover,
-    NativePointerId, NativePointerInput, NativePointerOwner, NativeReceiverAnswer,
-    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId,
-    NativeSurfaceBinding, SurfaceUnavailableReason,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerCancelReason,
+    NativePointerEvent, NativePointerHover, NativePointerId, NativePointerInput,
+    NativePointerOwner, NativeReceiverAnswer, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, SurfaceUnavailableReason,
 };
 use eframe::egui::ViewportId;
 use winit::dpi::PhysicalPosition;
@@ -218,6 +218,63 @@ fn destroyed_delivery_binding_resets_before_a_successor_sequence() {
         translator.translate(&successor_update, |_| None),
         NativePointerTranslation::Input(expected_update)
     );
+}
+
+#[test]
+fn destroyed_binding_retires_mouse_and_scroll_before_reuse() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let window = WindowId::from(61);
+    let press = NativeWindowEventRecord::for_test(
+        1,
+        window,
+        Some(ViewportId::ROOT),
+        Some(binding),
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            facts: PointerEventFacts::default(),
+        },
+    );
+    let scroll = phaseful_scroll_record(2, window, binding, TouchPhase::Started, 1.0);
+    let mut translator = NativePointerTranslator::default();
+
+    assert!(matches!(
+        translator.translate(&press, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+    assert!(matches!(
+        translator.translate(&scroll, |_| None),
+        NativePointerTranslation::Input(_)
+    ));
+
+    assert_eq!(
+        translator
+            .cancel_destroyed_binding(binding)
+            .expect("the pressed mouse stream retires first"),
+        NativePointerInput::new(
+            NativePointerId::new(1),
+            NativePointerEvent::StreamCancelled(NativePointerCancelReason::BindingRetired),
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Unknown,
+                NativePointerHover::Unknown,
+                None,
+            ),
+            NativePointerOwner::Unknown,
+            NativePointerOwner::Unknown,
+        )
+    );
+    assert!(
+        translator.cancel_destroyed_binding(binding).is_none(),
+        "the pointer cancellation already terminates its live scroll sequence"
+    );
+    assert!(
+        translator.reset_destroyed_binding(binding).is_none(),
+        "the following boundary clears correlation without a duplicate scroll terminal"
+    );
+    assert!(!translator.has_pending_provider_tail());
+    assert!(!translator.references_binding(binding));
 }
 
 #[test]

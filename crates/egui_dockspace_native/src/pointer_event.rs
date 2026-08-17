@@ -1,12 +1,14 @@
 //! Translation from callback-time winit pointer facts into core native input.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use dockspace::geometry::PhysicalPoint;
 use dockspace::runtime::{
-    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton, NativePointerEvent,
-    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
-    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollSequenceId,
-    NativeSurfaceBinding, NativeWorkAreaBinding,
+    NativeDesktopPointerLocation, NativeDesktopPosition, NativePointerButton,
+    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
+    NativePointerInput, NativePointerOwner, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollSequenceId, NativeSurfaceBinding, NativeWorkAreaBinding,
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -16,10 +18,20 @@ use crate::event::{NativePointerRouteSnapshot, NativePointerRoutes};
 const POINTER_ID: NativePointerId = NativePointerId::new(1);
 const SCROLL_DEVICE_ID: NativeScrollDeviceId = NativeScrollDeviceId::new(1);
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct NativePointerTranslator {
+    mouse: NativeMouseState,
     scroll: NativeScrollState,
     next_scroll_sequence: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NativeMouseState {
+    active_buttons: BTreeSet<NativePointerButton>,
+    button_origins: BTreeMap<NativePointerButton, NativeSurfaceBinding>,
+    cancelled_buttons: BTreeSet<NativePointerButton>,
+    capture: Option<NativeSurfaceBinding>,
+    retired_tail: Option<NativeSurfaceBinding>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -35,6 +47,7 @@ enum NativeScrollState {
     RetiredTail {
         sequence: NativeScrollSequenceId,
         binding: NativeSurfaceBinding,
+        semantic_cancelled_by_pointer: bool,
     },
 }
 
@@ -51,6 +64,18 @@ impl NativePointerTranslator {
         &mut self,
         binding: NativeSurfaceBinding,
     ) -> Option<NativePointerInput> {
+        if self.mouse.cancel(binding) {
+            if let NativeScrollState::Live { sequence, .. } = self.scroll {
+                self.scroll = NativeScrollState::RetiredTail {
+                    sequence,
+                    binding,
+                    semantic_cancelled_by_pointer: true,
+                };
+            }
+            return Some(pointer_cancel_input(
+                NativePointerCancelReason::BindingRetired,
+            ));
+        }
         let NativeScrollState::Live {
             sequence,
             delivery: Some(delivery),
@@ -61,7 +86,11 @@ impl NativePointerTranslator {
         if delivery != binding {
             return None;
         }
-        self.scroll = NativeScrollState::RetiredTail { sequence, binding };
+        self.scroll = NativeScrollState::RetiredTail {
+            sequence,
+            binding,
+            semantic_cancelled_by_pointer: false,
+        };
         Some(scroll_cancel_input(
             sequence,
             NativeScrollCancelReason::BindingRetired,
@@ -69,23 +98,26 @@ impl NativePointerTranslator {
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
-        matches!(
-            self.scroll,
-            NativeScrollState::Live {
-                delivery: Some(delivery),
-                ..
-            } if delivery == binding
-        ) || matches!(
-            self.scroll,
-            NativeScrollState::RetiredTail {
-                binding: retired,
-                ..
-            } if retired == binding
-        )
+        self.mouse.references_binding(binding)
+            || matches!(
+                self.scroll,
+                NativeScrollState::Live {
+                    delivery: Some(delivery),
+                    ..
+                } if delivery == binding
+            )
+            || matches!(
+                self.scroll,
+                NativeScrollState::RetiredTail {
+                    binding: retired,
+                    ..
+                } if retired == binding
+            )
     }
 
     pub(crate) const fn has_pending_provider_tail(&self) -> bool {
-        matches!(self.scroll, NativeScrollState::RetiredTail { .. })
+        self.mouse.has_pending_provider_tail()
+            || matches!(self.scroll, NativeScrollState::RetiredTail { .. })
     }
 
     /// Closes one retired provider tail at the next causal boundary.
@@ -93,9 +125,11 @@ impl NativePointerTranslator {
         &mut self,
         binding: NativeSurfaceBinding,
     ) -> Option<NativePointerInput> {
+        self.mouse.reset_destroyed_binding(binding);
         let NativeScrollState::RetiredTail {
             sequence,
             binding: retired,
+            semantic_cancelled_by_pointer,
         } = self.scroll
         else {
             return None;
@@ -104,6 +138,9 @@ impl NativePointerTranslator {
             return None;
         }
         self.scroll = NativeScrollState::Idle;
+        if semantic_cancelled_by_pointer {
+            return None;
+        }
         Some(scroll_cancel_input(
             sequence,
             NativeScrollCancelReason::ProviderReset,
@@ -188,6 +225,9 @@ impl NativePointerTranslator {
         routes: NativePointerRoutes,
         resolve_work_area: &mut impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
+        if !self.mouse.observe(event, routes) {
+            return NativePointerTranslation::Ignored;
+        }
         let position = native_position(desktop_position);
         let hover = native_hover(routes.hover());
         NativePointerTranslation::Input(NativePointerInput::new(
@@ -223,6 +263,7 @@ impl NativePointerTranslator {
             // so it cannot mutate or terminate the current sequence.
             return NativePointerTranslation::Ignored;
         }
+        self.mouse.observe_routes(routes);
         let (phase, next_state) = match (self.scroll, phase) {
             (NativeScrollState::Idle, TouchPhase::Started) => {
                 let Some(sequence) = self.allocate_scroll_sequence() else {
@@ -328,6 +369,110 @@ impl NativePointerTranslator {
         self.next_scroll_sequence = next;
         Some(NativeScrollSequenceId::new(next))
     }
+}
+
+impl NativeMouseState {
+    fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
+        self.observe_routes(routes);
+        if matches!(
+            event,
+            NativePointerEvent::ButtonReleased(button)
+                | NativePointerEvent::ContactEnded(button)
+                if self.cancelled_buttons.remove(&button)
+        ) {
+            return false;
+        }
+        if self.retired_tail.is_some() {
+            return true;
+        }
+
+        match event {
+            NativePointerEvent::ButtonPressed(button) => {
+                let _ = self.cancelled_buttons.remove(&button);
+                let _ = self.active_buttons.insert(button);
+                if let Some(origin) = exact_delivery_binding(routes.delivery()) {
+                    let _ = self.button_origins.entry(button).or_insert(origin);
+                }
+            }
+            NativePointerEvent::ButtonReleased(button)
+            | NativePointerEvent::ContactEnded(button) => {
+                let _ = self.active_buttons.remove(&button);
+                let _ = self.button_origins.remove(&button);
+            }
+            NativePointerEvent::StreamEnded | NativePointerEvent::StreamCancelled(_) => {
+                self.active_buttons.clear();
+                self.button_origins.clear();
+                self.cancelled_buttons.clear();
+                self.capture = None;
+            }
+            NativePointerEvent::Moved
+            | NativePointerEvent::CaptureChanged
+            | NativePointerEvent::Scrolled(_) => {}
+        }
+        true
+    }
+
+    fn observe_routes(&mut self, routes: NativePointerRoutes) {
+        if self.retired_tail.is_none() {
+            self.capture = updated_binding(self.capture, routes.capture());
+        }
+    }
+
+    fn cancel(&mut self, binding: NativeSurfaceBinding) -> bool {
+        if self.retired_tail.is_some() || !self.references_binding(binding) {
+            return false;
+        }
+        self.cancelled_buttons
+            .extend(self.active_buttons.iter().copied());
+        self.active_buttons.clear();
+        self.button_origins.clear();
+        self.capture = None;
+        self.retired_tail = Some(binding);
+        true
+    }
+
+    fn reset_destroyed_binding(&mut self, binding: NativeSurfaceBinding) {
+        if self.retired_tail == Some(binding) {
+            self.retired_tail = None;
+        }
+    }
+
+    fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
+        self.button_origins
+            .values()
+            .any(|origin| *origin == binding)
+            || self.capture == Some(binding)
+            || self.retired_tail == Some(binding)
+    }
+
+    const fn has_pending_provider_tail(&self) -> bool {
+        self.retired_tail.is_some()
+    }
+}
+
+fn updated_binding(
+    current: Option<NativeSurfaceBinding>,
+    route: NativePointerRouteSnapshot,
+) -> Option<NativeSurfaceBinding> {
+    match route {
+        NativePointerRouteSnapshot::Dock(binding) => Some(binding),
+        NativePointerRouteSnapshot::None | NativePointerRouteSnapshot::Foreign => None,
+        NativePointerRouteSnapshot::Unknown => current,
+    }
+}
+
+fn pointer_cancel_input(reason: NativePointerCancelReason) -> NativePointerInput {
+    NativePointerInput::new(
+        POINTER_ID,
+        NativePointerEvent::StreamCancelled(reason),
+        NativeDesktopPointerLocation::new(
+            NativeDesktopPosition::Unknown,
+            NativePointerHover::Unknown,
+            None,
+        ),
+        NativePointerOwner::Unknown,
+        NativePointerOwner::Unknown,
+    )
 }
 
 fn scroll_cancel_input(
