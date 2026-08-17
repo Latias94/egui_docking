@@ -114,6 +114,13 @@ jobs:
           --features glow,native-host-seam,x11,wayland
           native::host_seam::tests --locked -j1
 
+      - name: Check pinned eframe WGPU host seam
+        run: >-
+          cargo check --manifest-path .ci/egui-fork/Cargo.toml
+          -p eframe --lib --no-default-features
+          --features wgpu,native-host-seam,x11,wayland
+          --locked -j1
+
       - name: Run pinned winit event-model tests
         run: >-
           cargo test --manifest-path .ci/winit-fork/Cargo.toml
