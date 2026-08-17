@@ -11,7 +11,7 @@ use egui::{
 use crate::style::DockStyle;
 
 use super::RenderContext;
-use super::actions::gesture_phase;
+use super::actions::{button_activated, gesture_phase};
 use super::geometry::{accesskit_bounds, egui_rect};
 use super::measurement::TabPaintResource;
 use super::schedule::RootPaintSchedule;
@@ -330,17 +330,7 @@ fn paint_close(
         node.set_label(format!("Close {title}"));
         node.add_action(Action::Click);
     });
-    let accesskit_click = context
-        .ui
-        .input(|input| input.has_accesskit_action_request(id, Action::Click));
-    let keyboard_activation = response.has_focus()
-        && context.ui.input_mut(|input| {
-            input.consume_key(egui::Modifiers::NONE, Key::Enter)
-                || input.consume_key(egui::Modifiers::NONE, Key::Space)
-        });
-    let pointer_activation = context.pointer_authority.accepts_local_pointer_actions()
-        && response.clicked_by(PointerButton::Primary);
-    if (pointer_activation || accesskit_click || keyboard_activation)
+    if button_activated(context.ui, &response, context.pointer_authority)
         && let Some(action) = context.plan.prepare_tab_close(item)
     {
         context.push_local_action(action);

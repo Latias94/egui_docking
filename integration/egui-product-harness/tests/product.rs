@@ -1,7 +1,7 @@
 use egui::accesskit::{Action, ActionRequest, Role, TreeId};
 use egui::{
-    Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect,
-    RepaintCause, Ui, vec2,
+    Context, Event, FullOutput, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, RepaintCause,
+    Ui, vec2,
 };
 use egui_dockspace::{
     CloseDecision, ClosePlanTarget, DockStyle, Dockspace, DockspaceActionOutcome,
@@ -586,6 +586,111 @@ fn default_features_bring_contained_content_into_current_ready_bounds() {
 }
 
 #[test]
+fn default_features_contained_chrome_exposes_focusable_accessibility_controls() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-contained-accessibility", contained_layout())
+        .build()
+        .expect("the product contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (title, title_node) = accesskit_node(&stable.output, Role::TitleBar, "Second");
+    assert!(title_node.supports_action(Action::Focus));
+    let (_, close_node) = accesskit_node(&stable.output, Role::Button, "Close floating Second");
+    assert!(close_node.supports_action(Action::Focus));
+    assert!(close_node.supports_action(Action::Click));
+
+    let focused = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(title, Action::Focus)],
+    );
+    assert_eq!(
+        focused
+            .output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("AccessKit remains enabled")
+            .focus,
+        title,
+    );
+}
+
+#[test]
+fn default_features_contained_close_supports_pointer_accesskit_and_keyboard() {
+    #[derive(Clone, Copy)]
+    enum Activation {
+        Pointer,
+        AccessKit,
+        Keyboard(Key),
+    }
+
+    for (name, activation) in [
+        ("pointer", Activation::Pointer),
+        ("accesskit", Activation::AccessKit),
+        ("enter", Activation::Keyboard(Key::Enter)),
+        ("space", Activation::Keyboard(Key::Space)),
+    ] {
+        let context = Context::default();
+        context.enable_accesskit();
+        let mut dockspace = Dockspace::builder(
+            format!("product-contained-close-{name}"),
+            contained_layout(),
+        )
+        .build()
+        .expect("the product contained facade initializes");
+        let mut panes = Panes;
+
+        let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+        let (close, _) = accesskit_node(&stable.output, Role::Button, "Close floating Second");
+        let point = node_center(&stable.output, Role::Button, "Close floating Second");
+        let activated = match activation {
+            Activation::Pointer => {
+                let _ = run_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    vec![Event::PointerMoved(point), pointer_button(point, true)],
+                );
+                run_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    vec![Event::PointerMoved(point), pointer_button(point, false)],
+                )
+            }
+            Activation::AccessKit => run_frame(
+                &context,
+                &mut dockspace,
+                &mut panes,
+                vec![accesskit_action(close, Action::Click)],
+            ),
+            Activation::Keyboard(key) => {
+                let _ = run_frame(
+                    &context,
+                    &mut dockspace,
+                    &mut panes,
+                    vec![accesskit_action(close, Action::Focus)],
+                );
+                run_frame(&context, &mut dockspace, &mut panes, key_press(key))
+            }
+        };
+
+        let request = activated
+            .close_requests
+            .first()
+            .unwrap_or_else(|| panic!("{name} activation opens one close plan"));
+        assert_eq!(request.plan().items().len(), 1);
+        assert_eq!(request.plan().items()[0].item(), SECOND);
+    }
+}
+
+#[test]
 fn default_features_click_selects_a_tab() {
     let context = Context::default();
     context.enable_accesskit();
@@ -1141,12 +1246,10 @@ fn default_features_splitter_tracks_pointer_before_release() {
 fn default_features_splitter_junction_tracks_both_axes_and_commits_once() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut dockspace = Dockspace::builder(
-        "product-live-splitter-junction",
-        splitter_junction_layout(),
-    )
-    .build()
-    .expect("the product splitter junction facade initializes");
+    let mut dockspace =
+        Dockspace::builder("product-live-splitter-junction", splitter_junction_layout())
+            .build()
+            .expect("the product splitter junction facade initializes");
     let mut panes = Panes;
 
     let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
@@ -1400,7 +1503,10 @@ fn default_features_discarded_preview_cannot_release_a_drag() {
         &mut panes,
         vec![Event::PointerMoved(bottom)],
     );
-    assert_eq!(passes, 3, "the fixture must omit dockspace from the final pass");
+    assert_eq!(
+        passes, 3,
+        "the fixture must omit dockspace from the final pass"
+    );
 
     let _ = run_frame(
         &context,
@@ -1463,7 +1569,10 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
         });
         output.textures_delta.clear();
     }));
-    assert!(interrupted.is_err(), "the late output hook must interrupt the run");
+    assert!(
+        interrupted.is_err(),
+        "the late output hook must interrupt the run"
+    );
 
     let _ = run_frame(
         &context,

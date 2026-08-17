@@ -203,7 +203,7 @@ pub(crate) fn paint_surface(
             contained::paint_background(&mut context, record, root.records());
             tabs::paint_root(&mut context, root.records());
             splitters::paint_root(&mut context, root.records());
-            contained::paint_controls(&mut context, record);
+            contained::paint_controls(&mut context, record, root.records());
         }
 
         tab_chrome::paint(&mut context);

@@ -1,11 +1,12 @@
 //! Contained-floating chrome and local pointer gestures.
 
 use dockspace::runtime::{ContainedPaintRecord, ContainedResizeDirection};
+use egui::accesskit::{Action, Role};
 use egui::{CursorIcon, Sense, Stroke, StrokeKind, pos2};
 
 use super::RenderContext;
-use super::actions::gesture_phase;
-use super::geometry::egui_rect;
+use super::actions::{button_activated, gesture_phase};
+use super::geometry::{accesskit_bounds, egui_rect};
 use super::schedule::RootPaintSchedule;
 
 pub(crate) fn paint_background(
@@ -64,12 +65,7 @@ pub(crate) fn paint_background(
         );
     }
 
-    let label = root
-        .panes()
-        .next()
-        .and_then(dockspace::runtime::PanePaintRecord::selected)
-        .and_then(|item| context.resources.item(item))
-        .map_or("Floating", |resource| resource.title.as_str());
+    let label = title_label(context, root);
     context.ui.painter().text(
         pos2(
             title.min.x + context.style.tab_horizontal_padding,
@@ -85,6 +81,7 @@ pub(crate) fn paint_background(
 pub(crate) fn paint_controls(
     context: &mut RenderContext<'_, '_, '_>,
     contained: ContainedPaintRecord<'_>,
+    root: &RootPaintSchedule<'_>,
 ) {
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
         let id = context.ui.make_persistent_id((
@@ -98,6 +95,13 @@ pub(crate) fn paint_controls(
             Sense::drag(),
             context.plan.receiver_for_contained_title(contained),
         );
+        let label = title_label(context, root);
+        context.ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_role(Role::TitleBar);
+            node.set_bounds(accesskit_bounds(title));
+            node.set_label(label);
+            node.add_action(Action::Focus);
+        });
         if response.hovered() || response.dragged() {
             context.ui.ctx().set_cursor_icon(if response.dragged() {
                 CursorIcon::Grabbing
@@ -127,6 +131,14 @@ pub(crate) fn paint_controls(
             Sense::click(),
             context.plan.receiver_for_contained_close(contained),
         );
+        let label = title_label(context, root);
+        context.ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_role(Role::Button);
+            node.set_bounds(accesskit_bounds(close));
+            node.set_label(format!("Close floating {label}"));
+            node.add_action(Action::Click);
+            node.add_action(Action::Focus);
+        });
         let color = if response.hovered() {
             context.style.tab_active_text_color
         } else {
@@ -148,8 +160,7 @@ pub(crate) fn paint_controls(
             ],
             stroke,
         );
-        if context.pointer_authority.accepts_local_pointer_actions()
-            && response.clicked()
+        if button_activated(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
             context.push_local_action(action);
@@ -191,6 +202,17 @@ pub(crate) fn paint_controls(
             context.push_local_action(action);
         }
     }
+}
+
+fn title_label<'a>(
+    context: &'a RenderContext<'_, '_, '_>,
+    root: &RootPaintSchedule<'_>,
+) -> &'a str {
+    root.panes()
+        .next()
+        .and_then(dockspace::runtime::PanePaintRecord::selected)
+        .and_then(|item| context.resources.item(item))
+        .map_or("Floating", |resource| resource.title.as_str())
 }
 
 const fn resize_cursor(direction: ContainedResizeDirection) -> CursorIcon {

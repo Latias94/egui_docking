@@ -1,9 +1,28 @@
 //! Translation from current-pass egui responses into opaque core actions.
 
 use dockspace::runtime::SurfaceGesturePhase;
-use egui::{PointerButton, Response};
+use egui::accesskit::Action;
+use egui::{Key, PointerButton, Response, Ui};
 
+use super::PointerActionAuthority;
 use super::geometry::logical_point;
+
+pub(super) fn button_activated(
+    ui: &Ui,
+    response: &Response,
+    pointer_authority: PointerActionAuthority,
+) -> bool {
+    let keyboard = response.has_focus()
+        && ui.input_mut(|input| {
+            input.consume_key(egui::Modifiers::NONE, Key::Enter)
+                || input.consume_key(egui::Modifiers::NONE, Key::Space)
+        });
+    let accesskit =
+        ui.input(|input| input.has_accesskit_action_request(response.id, Action::Click));
+    let pointer = pointer_authority.accepts_local_pointer_actions()
+        && response.clicked_by(PointerButton::Primary);
+    pointer || keyboard || accesskit
+}
 
 pub(crate) fn gesture_phase(response: &Response) -> Option<SurfaceGesturePhase> {
     let current = response.interact_pointer_pos().and_then(logical_point);
