@@ -300,10 +300,6 @@ impl DockspaceLayout {
         DockspaceView::new(&self.workspace)
     }
 
-    #[allow(
-        dead_code,
-        reason = "consumed by the product session in the next U2 slice"
-    )]
     pub(crate) fn into_workspace(self) -> Workspace {
         self.workspace
     }

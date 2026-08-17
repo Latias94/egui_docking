@@ -1,10 +1,9 @@
-use dockspace::model::{
-    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
-    ItemId, RootId, SurfaceId,
-};
 use dockspace::policy::DockPolicy;
 use egui::{Context, RawInput, Rect, Ui, vec2};
-use egui_dockspace::{Dockspace, DockspaceActionOutcome, DockspaceActionStatus, PaneView};
+use egui_dockspace::{
+    Dockspace, DockspaceActionOutcome, DockspaceActionStatus, DockspaceAxis, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, PaneView, RootId, SurfaceId,
+};
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
