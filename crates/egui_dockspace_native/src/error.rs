@@ -110,6 +110,52 @@ pub(crate) enum NativeHostProtocolError {
     ApplicationActionOutcomeMissing,
 }
 
+impl NativeHostProtocolError {
+    const fn kind(&self) -> NativeRuntimeErrorKind {
+        match self {
+            Self::OutputTokenUnavailable | Self::RootSurfaceUnavailable(_) => {
+                NativeRuntimeErrorKind::InvalidConfiguration
+            }
+            Self::MultipassLocalActionConflict => NativeRuntimeErrorKind::OperationConflict,
+            Self::NativeEffectResultRejected(kind) => kind.runtime_error_kind(),
+            Self::CallbackRecordPending
+            | Self::WindowEventAcknowledgementMismatch
+            | Self::GlobalFocusAcknowledgementMismatch
+            | Self::ViewportFocusAcknowledgementMismatch
+            | Self::ViewportPointerPassthroughAcknowledgementMismatch
+            | Self::ViewportCreateFailureAcknowledgementMismatch
+            | Self::ViewportVisibilityAcknowledgementMismatch
+            | Self::ViewportRosterAcknowledgementMismatch
+            | Self::ViewportCreateFailureWithoutEffect
+            | Self::OutputAwaitingAttachment
+            | Self::MultipassOutputChanged
+            | Self::OutputOrderViolation
+            | Self::InvalidWindowSnapshot
+            | Self::InvalidWorkAreaRoster
+            | Self::OutputRouteAttachmentFailed
+            | Self::NativeAdmissionRouteChanged(_)
+            | Self::RetiredViewportRouteChanged(_)
+            | Self::NativeCloseCorrelationChanged
+            | Self::NativeFocusCorrelationChanged
+            | Self::NativeInputCorrelationChanged => NativeRuntimeErrorKind::HostProtocol,
+            Self::RootRegistrationRejected(_)
+            | Self::RootViewportBindingFailed
+            | Self::PaintedOutputCountMismatch { .. }
+            | Self::PaintedStagingOutputCountMismatch { .. }
+            | Self::OutputBindingFailed(_)
+            | Self::IncompleteTransientPaint(_)
+            | Self::WorkAreaIdentityExhausted
+            | Self::PresentationAcknowledgementWithoutState
+            | Self::PresentationAcknowledgementAlreadyPending
+            | Self::UnexpectedViewportEffectAcknowledgement
+            | Self::CleanupRelayConflict
+            | Self::NativeInputDispatchChanged
+            | Self::NativeCloseCancellationRejected
+            | Self::ApplicationActionOutcomeMissing => NativeRuntimeErrorKind::Internal,
+        }
+    }
+}
+
 impl NativeRuntimeError {
     /// Returns the stable product-level failure category.
     #[must_use]
@@ -120,7 +166,7 @@ impl NativeRuntimeError {
             | NativeRuntimeErrorSource::StagingPresentation(_) => {
                 NativeRuntimeErrorKind::HostProtocol
             }
-            NativeRuntimeErrorSource::HostProtocol(_) => NativeRuntimeErrorKind::HostProtocol,
+            NativeRuntimeErrorSource::HostProtocol(source) => source.kind(),
             NativeRuntimeErrorSource::Adapter(source) => adapter_error_kind(source.kind()),
         }
     }
@@ -344,3 +390,40 @@ impl std::fmt::Display for NativeOutputBindingError {
 }
 
 impl std::error::Error for NativeOutputBindingError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_protocol_errors_keep_actionable_categories() {
+        let cases = [
+            (
+                NativeHostProtocolError::RootSurfaceUnavailable(SurfaceId::new(1)),
+                NativeRuntimeErrorKind::InvalidConfiguration,
+            ),
+            (
+                NativeHostProtocolError::MultipassLocalActionConflict,
+                NativeRuntimeErrorKind::OperationConflict,
+            ),
+            (
+                NativeHostProtocolError::WindowEventAcknowledgementMismatch,
+                NativeRuntimeErrorKind::HostProtocol,
+            ),
+            (
+                NativeHostProtocolError::ApplicationActionOutcomeMissing,
+                NativeRuntimeErrorKind::Internal,
+            ),
+            (
+                NativeHostProtocolError::NativeEffectResultRejected(
+                    NativeHostErrorKind::Unsupported,
+                ),
+                NativeRuntimeErrorKind::Unsupported,
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(NativeRuntimeError::from(source).kind(), expected);
+        }
+    }
+}

@@ -10,10 +10,7 @@ use crate::pointer_journal::{PointerJournalLedgerError, SurfaceLocalPointerProvi
 use crate::pointer_receiver::PointerReceiverAttemptError;
 use crate::scene_compiler::{PresentationCompilationError, SceneCompilationError};
 
-use super::{
-    DockspaceInteractionError, DockspaceRuntimeErrorKind, NativeHostErrorKind,
-    PresentationObservationError,
-};
+use super::{DockspaceInteractionError, DockspaceRuntimeErrorKind, PresentationObservationError};
 
 pub(super) const fn host_frame_error_kind(error: &CoreHostFrameError) -> DockspaceRuntimeErrorKind {
     use CoreHostFrameError as Error;
@@ -499,21 +496,6 @@ pub(super) const fn interaction_error_kind(
         | DockspaceInteractionError::MeasurementAnswerMismatch
         | DockspaceInteractionError::PointerBatchEmpty
         | DockspaceInteractionError::InvalidScrollSample => DockspaceRuntimeErrorKind::HostProtocol,
-    }
-}
-
-pub(super) const fn native_error_kind(error: NativeHostErrorKind) -> DockspaceRuntimeErrorKind {
-    match error {
-        NativeHostErrorKind::NotEnabled | NativeHostErrorKind::Unsupported => {
-            DockspaceRuntimeErrorKind::Unsupported
-        }
-        NativeHostErrorKind::AlreadyEnabled | NativeHostErrorKind::OperationConflict => {
-            DockspaceRuntimeErrorKind::OperationConflict
-        }
-        NativeHostErrorKind::StaleBinding | NativeHostErrorKind::InvalidFacts => {
-            DockspaceRuntimeErrorKind::HostProtocol
-        }
-        NativeHostErrorKind::Internal => DockspaceRuntimeErrorKind::Internal,
     }
 }
 

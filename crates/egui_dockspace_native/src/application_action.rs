@@ -102,9 +102,8 @@ impl NativeApplicationActions {
         self.result.take()
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub(crate) fn abandon_unsettled(&mut self) {
         self.pending = None;
         self.awaiting = None;
-        self.result = None;
     }
 }

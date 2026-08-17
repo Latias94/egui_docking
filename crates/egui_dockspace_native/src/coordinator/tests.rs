@@ -499,11 +499,11 @@ fn shutdown_preserves_callback_error_when_reduction_fails() {
     native
         .reserve_viewport(failed_viewport, failed_binding)
         .expect("the test viewport route reserves");
-    assert!(native.bridge.reserve_create_for_test(
-        failed_viewport,
-        failed_binding,
-        native_rect(),
-    ));
+    assert!(
+        native
+            .bridge
+            .reserve_create_for_test(failed_viewport, failed_binding, native_rect(),)
+    );
     assert_eq!(
         native
             .bridge
@@ -515,13 +515,10 @@ fn shutdown_preserves_callback_error_when_reduction_fails() {
     let advance = native.advance_shutdown_boundary();
     assert!(!advance.progress);
     assert!(advance.commands.is_empty());
-    assert!(
-        advance
-            .errors
-            .iter()
-            .any(|error| std::error::Error::source(error)
-                .is_some_and(|source| source.to_string().contains("creation failure")))
-    );
+    assert!(advance.errors.iter().any(|error| {
+        std::error::Error::source(error)
+            .is_some_and(|source| source.to_string().contains("creation failure"))
+    }));
 }
 
 #[test]

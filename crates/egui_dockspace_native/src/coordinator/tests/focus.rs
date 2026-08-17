@@ -5,8 +5,7 @@ use eframe::{NativeGlobalFocus as EframeGlobalFocus, NativeViewportFocusStatus};
 
 use super::*;
 use crate::focus_control::{
-    NativeFocusControl, NativeFocusTermination, NativeGlobalFocusRecord,
-    NativeViewportFocusRecord,
+    NativeFocusControl, NativeFocusTermination, NativeGlobalFocusRecord, NativeViewportFocusRecord,
 };
 
 #[test]

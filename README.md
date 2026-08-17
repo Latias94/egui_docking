@@ -14,7 +14,7 @@ The current design and implementation sequence live in
 | --- | --- | --- |
 | `dockspace` | Stable item/root/surface layout, validated atomic actions, core-derived paint and receiver plans, close workflow, optional session-owned persistence, and renderer-neutral native lifecycle semantics | Does not own a renderer, widget tree, animation clock, event loop, or OS window |
 | `egui_dockspace` | Interactive official-egui single-surface docking: tab select/close/reorder, center and edge docking, splitter resize, keyboard and AccessKit actions, and contained move/resize | Does not expose native multi-viewport ownership |
-| `egui_dockspace_native` | Unpublished fork-backed coordinator with remotely pinned seams and one bounded CI real-window Glow smoke covering hidden child creation through exact retirement | The smoke uses product actions for tear-off and redock; broader platform capability coverage and physical cross-window input evidence remain before native multiview is release-ready |
+| `egui_dockspace_native` | Unpublished fork-backed coordinator with a small interactive two-window example and one bounded CI real-window Glow smoke covering hidden child creation through exact retirement | The example uses an explicit product action for tear-off; broader platform capability coverage and physical cross-window input evidence remain before native multiview is release-ready |
 | Open-GPUI | Reference evidence only | No adapter or integration work is in the current plan; any future cutover requires a separate plan |
 
 The repository should therefore be described as a high-correctness docking core
@@ -59,9 +59,9 @@ restore candidates are not product interfaces.
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
 native workspace uses the reviewed egui/eframe fork revision
-`80c4d12677f40ccd6ce57c8750bada378e6955b8`, which contains every admitted native
+`ebef000d99c1897e5dc7c166eeae3edac4e5f070`, which contains every admitted native
 seam. The event-time Winit fork is pinned at
-`250a372736afa662d7fffeae5c86a3287b8356c9`. The manifest, lockfile, CI, and
+`23e8ddc6806a176c63efb80c998a2127faaf03cc`. The manifest, lockfile, CI, and
 this document must continue to move together when the fork advances.
 Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
@@ -93,8 +93,19 @@ python3 scripts/run_egui_fork_harness.py
 ```
 
 The ordinary `crates/egui_dockspace/examples/basic.rs` example exercises the
-default interactive single-surface facade. The unpublished native example is a
-development fixture, not a multiview product demo.
+default interactive single-surface facade. To inspect the fork-backed native
+path, run the separate example. After the root output becomes live it opens the
+Inspector child automatically; the toolbar's **Open Inspector in New Window**
+control remains available as an explicit fallback:
+
+```text
+cargo run --manifest-path integration/egui-fork-workspace/Cargo.toml --package egui_dockspace_native --example basic --locked -j1
+```
+
+This is a bounded development demo of programmatic native tear-off and exact
+child-window lifecycle. Child close requests are cancelled so the demo keeps
+its layout intact. It does not claim that physical cross-window dragging is
+release-ready on every backend.
 
 ## Packaging and release order
 

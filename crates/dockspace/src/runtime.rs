@@ -25,7 +25,7 @@ pub use host_frame::DockspaceHostFrame;
 pub use session::DockspaceSession;
 
 use error_kind::{
-    engine_error_kind, host_frame_error_kind, interaction_error_kind, native_error_kind,
+    engine_error_kind, host_frame_error_kind, interaction_error_kind,
     presentation_observation_error_kind, surface_contribution_prepare_error_kind,
 };
 use native::NativePlatformError;
@@ -524,7 +524,7 @@ impl DockspaceRuntimeError {
             DockspaceRuntimeErrorSource::PresentationObservation(error) => {
                 presentation_observation_error_kind(*error)
             }
-            DockspaceRuntimeErrorSource::Native(error) => native_error_kind(error.kind()),
+            DockspaceRuntimeErrorSource::Native(error) => error.kind().runtime_error_kind(),
             #[cfg(feature = "serde")]
             DockspaceRuntimeErrorSource::Persistence(_) => DockspaceRuntimeErrorKind::Persistence,
         }

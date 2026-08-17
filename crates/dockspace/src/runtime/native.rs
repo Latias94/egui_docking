@@ -577,6 +577,23 @@ pub enum NativeHostErrorKind {
     Internal,
 }
 
+impl NativeHostErrorKind {
+    /// Maps this native-host failure to the stable renderer-neutral category.
+    #[must_use]
+    pub const fn runtime_error_kind(self) -> super::DockspaceRuntimeErrorKind {
+        match self {
+            Self::NotEnabled | Self::Unsupported => super::DockspaceRuntimeErrorKind::Unsupported,
+            Self::AlreadyEnabled | Self::OperationConflict => {
+                super::DockspaceRuntimeErrorKind::OperationConflict
+            }
+            Self::StaleBinding | Self::InvalidFacts => {
+                super::DockspaceRuntimeErrorKind::HostProtocol
+            }
+            Self::Internal => super::DockspaceRuntimeErrorKind::Internal,
+        }
+    }
+}
+
 /// Exact native lifecycle failure retained inside the runtime implementation.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub(super) enum NativePlatformError {

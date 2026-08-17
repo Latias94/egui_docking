@@ -263,20 +263,14 @@ impl<Request> NativeFocusControl<Request> {
         changed
     }
 
-    pub(crate) fn take_callback(
-        &mut self,
-        record: NativeViewportFocusRecord,
-    ) -> Option<Request> {
+    pub(crate) fn take_callback(&mut self, record: NativeViewportFocusRecord) -> Option<Request> {
         self.take_dispatched_if(
             |pending| pending.viewport == record.viewport && pending.window == record.window,
             |state| !matches!(state, PendingNativeFocusState::Queued(_)),
         )
     }
 
-    pub(crate) fn take_observed(
-        &mut self,
-        binding: NativeSurfaceBinding,
-    ) -> Option<Request> {
+    pub(crate) fn take_observed(&mut self, binding: NativeSurfaceBinding) -> Option<Request> {
         self.take_dispatched_if(
             |pending| pending.binding == binding,
             |state| matches!(state, PendingNativeFocusState::AwaitingGlobalFocus(_)),

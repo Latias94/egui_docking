@@ -2,26 +2,33 @@
 
 use std::collections::BTreeMap;
 
+use dockspace::geometry::{LogicalRect, PhysicalRect};
 use dockspace::model::{
-    DockspaceAxis, DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout,
-    ItemId, RootId, SurfaceId,
+    DockspaceActionOutcome, DockspaceAxis, DockspaceContainedLayout, DockspaceLayout,
+    DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, FloatingPresentationId, ItemId,
+    NativeWindowPlacement, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::DockspaceSession;
 use eframe::egui;
-use egui_dockspace::{DockStyle, PaneView};
+use egui_dockspace::{DockStyle, DockspaceActionStatus, PaneView};
 use egui_dockspace_native::NativeDockspaceApp;
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
-const ROOT: RootId = RootId::new(1);
+const MAIN_ROOT: RootId = RootId::new(1);
+const INSPECTOR_ROOT: RootId = RootId::new(2);
+const INSPECTOR_FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
 const OUTLINE: ItemId = ItemId::new(1);
 const EDITOR: ItemId = ItemId::new(2);
 const PREVIEW: ItemId = ItemId::new(3);
+const INSPECTOR: ItemId = ItemId::new(4);
 
 fn main() -> eframe::Result {
-    let session = DockspaceSession::from_layout(example_layout(), DockPolicy::default())
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let session = DockspaceSession::from_layout(example_layout(), policy)
         .expect("the static native example layout is valid");
-    let app = NativeDockspaceApp::new(
+    let dockspace = NativeDockspaceApp::new(
         egui::Id::new("native-dockspace-example"),
         session,
         SURFACE,
@@ -29,7 +36,13 @@ fn main() -> eframe::Result {
         DockStyle::default(),
     )
     .expect("the native coordinator initializes");
-    let native_host = app.native_host_handler();
+    let native_host = dockspace.native_host_handler();
+    let app = NativeExampleApp {
+        dockspace,
+        auto_open: true,
+        action: InspectorActionState::Idle,
+        status: None,
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1100.0, 720.0]),
         native_host: Some(native_host),
@@ -38,8 +51,171 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "egui_dockspace native",
         options,
-        Box::new(|_| Ok(Box::new(app))),
+        Box::new(move |_| Ok(Box::new(app))),
     )
+}
+
+struct NativeExampleApp {
+    dockspace: NativeDockspaceApp<ExamplePanes>,
+    auto_open: bool,
+    action: InspectorActionState,
+    status: Option<String>,
+}
+
+#[derive(Clone, Copy, Default)]
+enum InspectorActionState {
+    #[default]
+    Idle,
+    AwaitingOutcome,
+    AwaitingFirstPresentation(SurfaceId),
+}
+
+impl InspectorActionState {
+    const fn is_pending(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+impl eframe::App for NativeExampleApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if matches!(self.action, InspectorActionState::AwaitingOutcome) {
+            self.collect_action_status();
+        }
+        egui::Panel::top("native-example-controls").show(ui, |ui| {
+            self.show_controls(ui);
+        });
+        egui::CentralPanel::default().show(ui, |ui| {
+            <NativeDockspaceApp<ExamplePanes> as eframe::App>::ui(&mut self.dockspace, ui, frame);
+        });
+    }
+}
+
+impl NativeExampleApp {
+    fn show_controls(&mut self, ui: &mut egui::Ui) {
+        self.finish_first_live_wait();
+        if self.action.is_pending() {
+            self.show_pending_controls(ui);
+            return;
+        }
+        let (inspector_is_contained, inspector_is_detached) = self
+            .dockspace
+            .with_view(|view| {
+                let location = view.item(INSPECTOR);
+                (
+                    location.is_some_and(|item| {
+                        item.surface() == SURFACE && item.contained().is_some()
+                    }),
+                    location.is_some_and(|item| item.surface() != SURFACE),
+                )
+            })
+            .unwrap_or_default();
+        let root_presented = !inspector_is_detached && self.dockspace.is_surface_presented(SURFACE);
+        if self.auto_open && root_presented && inspector_is_contained {
+            self.auto_open = false;
+            self.request_inspector_window();
+        }
+        if self.action.is_pending() {
+            self.show_pending_controls(ui);
+            return;
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Native multiview demo");
+            ui.separator();
+            let enabled = root_presented && inspector_is_contained;
+            if ui
+                .add_enabled(enabled, egui::Button::new("Open Inspector in New Window ↗"))
+                .clicked()
+            {
+                self.request_inspector_window();
+            }
+            if inspector_is_detached {
+                ui.label(
+                    "Inspector is live in a second OS window; close is cancelled in this demo.",
+                );
+            } else if !root_presented {
+                ui.label("Waiting for the root output to be presented…");
+            } else {
+                ui.label(
+                    "The demo opens one native child automatically; the button is the manual path.",
+                );
+            }
+        });
+        if let Some(status) = &self.status {
+            ui.small(status);
+        }
+    }
+
+    fn show_pending_controls(&self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("Native multiview demo");
+            ui.separator();
+            ui.spinner();
+            ui.label("Creating and presenting the native child window…");
+        });
+        if let Some(status) = &self.status {
+            ui.small(status);
+        }
+    }
+
+    fn request_inspector_window(&mut self) {
+        let placement = NativeWindowPlacement::new(
+            PhysicalRect::new(760.0, 120.0, 440.0, 340.0)
+                .expect("the static child placement is valid"),
+        );
+        match self
+            .dockspace
+            .request_tear_off_root(INSPECTOR_ROOT, placement)
+        {
+            Ok(()) => {
+                self.action = InspectorActionState::AwaitingOutcome;
+                self.status = None;
+            }
+            Err(error) => self.status = Some(format!("Could not open native window: {error}")),
+        }
+    }
+
+    fn collect_action_status(&mut self) {
+        let Some(status) = self.dockspace.take_action_status() else {
+            return;
+        };
+        match status {
+            DockspaceActionStatus::Applied(
+                DockspaceActionOutcome::NativeRootTearOffRequested { target_surface, .. },
+            ) => {
+                self.action = InspectorActionState::AwaitingFirstPresentation(target_surface);
+                self.status = Some(
+                    "Native child creation accepted; waiting for first live presentation."
+                        .to_owned(),
+                );
+            }
+            DockspaceActionStatus::Applied(outcome) => {
+                self.action = InspectorActionState::Idle;
+                self.status = Some(format!(
+                    "Unexpected native demo action outcome: {outcome:?}"
+                ));
+            }
+            DockspaceActionStatus::Rejected(reason) => {
+                self.action = InspectorActionState::Idle;
+                self.status = Some(format!("Native child creation was rejected: {reason:?}"));
+            }
+            DockspaceActionStatus::Stale { .. } => {
+                self.action = InspectorActionState::Idle;
+                self.status =
+                    Some("The layout changed before the request committed; try again.".to_owned());
+            }
+        }
+    }
+
+    fn finish_first_live_wait(&mut self) {
+        let InspectorActionState::AwaitingFirstPresentation(surface) = self.action else {
+            return;
+        };
+        if self.dockspace.is_surface_presented(surface) {
+            self.action = InspectorActionState::Idle;
+            self.status = Some("Native child reached its first live presentation.".to_owned());
+        }
+    }
 }
 
 fn example_layout() -> DockspaceLayout {
@@ -47,14 +223,23 @@ fn example_layout() -> DockspaceLayout {
         DockspaceAxis::Horizontal,
         [
             (DockspaceNode::tabs([OUTLINE]), 0.24),
-            (DockspaceNode::central_tabs([EDITOR, PREVIEW]), 0.76),
+            (DockspaceNode::central_tabs([EDITOR]), 0.76),
         ],
     )
     .expect("the static split is valid");
+    let inspector = DockspaceContainedLayout::new(
+        INSPECTOR_FLOATING,
+        DockspaceRootLayout::new(
+            INSPECTOR_ROOT,
+            DockspaceNode::central_tabs([PREVIEW, INSPECTOR]),
+        ),
+        LogicalRect::new(690.0, 90.0, 330.0, 310.0).expect("the static contained rect is valid"),
+    );
     DockspaceLayout::new([DockspaceSurfaceLayout::new(
         SURFACE,
-        DockspaceRootLayout::new(ROOT, root),
-    )])
+        DockspaceRootLayout::new(MAIN_ROOT, root),
+    )
+    .with_contained(inspector)])
     .expect("the static surface is valid")
 }
 
@@ -89,7 +274,15 @@ impl ExamplePanes {
                     PREVIEW,
                     ExamplePane {
                         title: "Preview",
-                        text: "Drag tabs or splitters in this native host.".to_owned(),
+                        text: "This contained root can become a native child window.".to_owned(),
+                    },
+                ),
+                (
+                    INSPECTOR,
+                    ExamplePane {
+                        title: "Inspector",
+                        text: "This root opens automatically in a second OS window; the toolbar is the manual fallback."
+                            .to_owned(),
                     },
                 ),
             ]),

@@ -435,7 +435,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
-        self.application_actions.clear();
+        self.application_actions.abandon_unsettled();
         self.shutdown = Some(NativeShutdownState {
             primary: error,
             cleanup_errors: Vec::new(),
@@ -728,6 +728,35 @@ mod tests {
             first_error
         );
         assert!(state.with_view(|_| ()).is_some());
+    }
+
+    #[test]
+    fn fatal_stop_preserves_a_committed_application_action_result() {
+        let mut state = test_state();
+        let placement = DockPlacement::Center(DockAnchor::Item(ItemId::new(1)));
+        state
+            .request_dock_root(RootId::new(1), placement)
+            .expect("the application action is queued");
+        let _action = state
+            .application_actions
+            .take()
+            .expect("the final root pass takes the pending action");
+        state
+            .application_actions
+            .settle(&[HostInputOutcome::ProductActionRejected(
+                dockspace::model::DockspaceActionRejection::PolicyDenied,
+            )])
+            .expect("the exact product result settles the action");
+
+        state.stop_current_output(NativeHostProtocolError::OutputTokenUnavailable.into());
+
+        assert!(matches!(
+            state.take_action_status(),
+            Some(DockspaceActionStatus::Rejected(
+                dockspace::model::DockspaceActionRejection::PolicyDenied
+            ))
+        ));
+        assert!(!state.application_actions.is_occupied());
     }
 
     #[test]
