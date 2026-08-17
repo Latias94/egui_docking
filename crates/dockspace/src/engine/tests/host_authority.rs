@@ -1,7 +1,9 @@
 //! Host-frame, provider, identity, and presentation authority tests.
 
 use super::*;
-use crate::pointer_journal::SurfaceLocalPointerRetirementDisposition;
+use crate::pointer_journal::{
+    FiniteScrollVector, ScrollModifiers, ScrollMomentum, SurfaceLocalPointerRetirementDisposition,
+};
 use crate::viewport::{CoordinateGeneration, PresentationObservationGeneration};
 
 fn register_test_root_viewport(
@@ -834,6 +836,140 @@ fn local_pointer_journal(
     let committed = edges.last().map_or(previous, PointerEdge::sequence);
     PointerEdgeJournal::new(previous, committed, edges)
         .expect("test pointer journal must be contiguous")
+}
+
+#[test]
+fn surface_local_scroll_batch_refreshes_only_the_changed_surface() {
+    for surface_count in [16_usize, 128, 1_024] {
+        let mut builder = Workspace::builder();
+        for index in 0..surface_count {
+            let identity = u64::try_from(index + 1).expect("surface fixture identity fits u64");
+            let surface = SurfaceId::new(identity);
+            let root = RootId::new(identity);
+            let items = if index == 0 {
+                vec![
+                    ItemId::new(10_001),
+                    ItemId::new(10_002),
+                    ItemId::new(10_003),
+                    ItemId::new(10_004),
+                ]
+            } else {
+                vec![ItemId::new(20_000 + identity)]
+            };
+            let tabs = builder.insert_node(Node::tabs(items));
+            builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+            builder.set_surface(surface, SurfacePresentation::with_main(root));
+        }
+        let surface = SurfaceId::new(1);
+        let mut engine = DockEngine::new(
+            builder.build().expect("scroll scale fixture validates"),
+            DockPolicy::default(),
+        )
+        .expect("scroll scale fixture engine initializes");
+        let host = engine
+            .create_presentation_host()
+            .expect("scroll scale fixture presentation host mints");
+        let measurements = tab_strip_reducer_measurements_for(&engine, surface, false);
+        publish_surface_projection_with_measurements(&mut engine, host, surface, measurements);
+        let projection = engine
+            .interaction_projection(surface)
+            .expect("overflowing tab strip is interactive");
+        let receiver = projection
+            .hit_manifest()
+            .regions()
+            .iter()
+            .find(|region| {
+                matches!(
+                    region.id().kind(),
+                    PresentationHitRegionKind::TabStripScroll(_)
+                )
+            })
+            .expect("overflowing tab strip publishes one scroll receiver");
+        let receiver_id = receiver.id();
+        let point = region_center(receiver);
+        let delivery = PointerReceiverDelivery::new(
+            projection,
+            PointerReceiverDeliveryDisposition::Dock(receiver_id),
+        )
+        .expect("scroll receiver binds the exact presented output");
+        let endpoint = ScrollDeliveryEndpoint::new(
+            host,
+            surface,
+            None,
+            projection.authority().coordinate_generation(),
+        )
+        .expect("logical scroll endpoint matches the presentation host");
+        let provider = engine
+            .create_surface_local_pointer_provider(
+                SurfaceLocalPointerScope::new(host, SurfaceLocalPointerEndpoint::Logical(surface)),
+                PointerEdgeSequence::new(0),
+            )
+            .expect("scroll scale fixture pointer provider mints");
+        let scroll = ScrollEdge::new(
+            ScrollDeviceId::new(1),
+            None,
+            ScrollPhase::Discrete,
+            Some(ScrollDelta::LogicalPoints(
+                FiniteScrollVector::new(-10.0, 0.0).expect("scroll delta is finite"),
+            )),
+            Authority::Known(ScrollMomentum::Direct),
+            Authority::Known(ScrollModifiers::default()),
+            Authority::Known(endpoint),
+        )
+        .expect("discrete scroll edge is structurally valid");
+        let mut frame = begin_test_host_frame(&engine, host);
+
+        crate::drop_resolver::structural_work::reset();
+        for previous in 0..4_u64 {
+            frame
+                .submit_surface_pointer_journal(
+                    &provider,
+                    local_pointer_journal(previous, [(PointerEdgeKind::Scrolled(scroll), point)]),
+                )
+                .expect("scroll segment stages");
+            let candidate = frame
+                .pointer_receiver_candidates()
+                .expect("scroll segment requests receiver evidence")
+                .candidates()[0]
+                .clone();
+            frame
+                .submit_pointer_receiver_receipts(
+                    PointerReceiverReceiptBatch::new([candidate.receipt(
+                        PointerReceiverObservation::Presented(
+                            PresentedPointerReceiverObservation::new([
+                                PointerReceiverProbeReceipt::Delivery(delivery),
+                            ])
+                            .expect("scroll segment answers its delivery probe"),
+                        ),
+                    )])
+                    .expect("scroll segment receipt roster is exact"),
+                )
+                .expect("scroll segment reduces");
+        }
+
+        let work = crate::drop_resolver::structural_work::snapshot();
+        assert_eq!(
+            work.presentation_roster_full_captures, 0,
+            "scroll segments must not rebuild the complete roster for {surface_count} surfaces"
+        );
+        assert_eq!(
+            work.presentation_roster_surface_freezes, 4,
+            "four applied scroll segments freeze only their changed surface for {surface_count} surfaces"
+        );
+
+        complete_host_frame_with_explicit_surface_roster(&engine, &mut frame);
+        let transition = frame
+            .finish(&mut engine)
+            .expect("scroll scale fixture host frame reduces");
+        assert_eq!(transition.reduced_pointer_edges().len(), 4);
+        assert!(transition.reduced_pointer_edges().iter().all(|edge| {
+            matches!(
+                edge.interaction_outcomes(),
+                [InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application))]
+                    if application.receiver() == receiver_id && application.applied_delta() != 0.0
+            )
+        }));
+    }
 }
 
 fn region_center(region: &crate::presentation_hit::PresentationHitRegion) -> LogicalPoint {

@@ -69,6 +69,26 @@ const fn pointer_move_outcome_allows_local_presentation_refresh(
     }
 }
 
+fn record_pointer_scroll_outcome_for_local_presentation_refresh(
+    outcome: &InteractionOutcome,
+    dirty_surfaces: &mut Vec<SurfaceId>,
+) -> bool {
+    match outcome {
+        InteractionOutcome::Scroll(ScrollReductionOutcome::Applied(application)) => {
+            if application.applied_delta() != 0.0 {
+                dirty_surfaces.push(application.receiver().surface());
+            }
+            true
+        }
+        InteractionOutcome::Scroll(
+            ScrollReductionOutcome::Began { .. }
+            | ScrollReductionOutcome::Suppressed { .. }
+            | ScrollReductionOutcome::Terminated { .. },
+        ) => true,
+        _ => false,
+    }
+}
+
 impl CoreHostFramePrelude {
     pub(super) fn new(
         engine: &DockEngine,
@@ -1053,37 +1073,67 @@ impl CoreHostFrame {
         Ok(())
     }
 
+    fn try_refresh_presentation_surfaces(
+        &mut self,
+        dirty_surfaces: impl IntoIterator<Item = SurfaceId>,
+    ) -> bool {
+        let Some((snapshot_changed, projection_changed)) = self
+            .frozen_presentation_roster
+            .try_refresh_surfaces(&self.candidate, dirty_surfaces)
+        else {
+            return false;
+        };
+        self.presentation_snapshot_changed |= snapshot_changed;
+        self.presentation_projection_changed |= projection_changed;
+        true
+    }
+
     fn refresh_presentation_after_pointer_segment(
         &mut self,
         before: PointerPresentationFence,
         reduced: &[crate::transition::ReducedPointerEdge],
     ) -> Result<(), EngineError> {
         let after = PointerPresentationFence::capture(&self.candidate);
-        let can_refresh_locally = before.workspace == after.workspace
-            && before.requirements == after.requirements
-            && reduced.iter().all(|edge| {
-                edge.edge().kind() == PointerEdgeKind::Moved
-                    && edge
-                        .interaction_outcomes()
-                        .iter()
-                        .all(pointer_move_outcome_allows_local_presentation_refresh)
-            });
+        if before.workspace == after.workspace && before.requirements == after.requirements {
+            if reduced.is_empty() && self.try_refresh_presentation_surfaces([]) {
+                return Ok(());
+            }
 
-        if can_refresh_locally {
-            let dirty_surfaces = [
-                before.drag_preview_surface,
-                after.drag_preview_surface,
-                before.contained_preview_surface,
-                after.contained_preview_surface,
-            ]
-            .into_iter()
-            .flatten();
-            if let Some((snapshot_changed, projection_changed)) = self
-                .frozen_presentation_roster
-                .try_refresh_surfaces(&self.candidate, dirty_surfaces)
+            let moved_only = !reduced.is_empty()
+                && reduced.iter().all(|edge| {
+                    edge.edge().kind() == PointerEdgeKind::Moved
+                        && edge
+                            .interaction_outcomes()
+                            .iter()
+                            .all(pointer_move_outcome_allows_local_presentation_refresh)
+                });
+            if moved_only
+                && self.try_refresh_presentation_surfaces(
+                    [
+                        before.drag_preview_surface,
+                        after.drag_preview_surface,
+                        before.contained_preview_surface,
+                        after.contained_preview_surface,
+                    ]
+                    .into_iter()
+                    .flatten(),
+                )
             {
-                self.presentation_snapshot_changed |= snapshot_changed;
-                self.presentation_projection_changed |= projection_changed;
+                return Ok(());
+            }
+
+            let mut dirty_surfaces = Vec::new();
+            let scrolled_only = !reduced.is_empty()
+                && reduced.iter().all(|edge| {
+                    matches!(edge.edge().kind(), PointerEdgeKind::Scrolled(_))
+                        && edge.interaction_outcomes().iter().all(|outcome| {
+                            record_pointer_scroll_outcome_for_local_presentation_refresh(
+                                outcome,
+                                &mut dirty_surfaces,
+                            )
+                        })
+                });
+            if scrolled_only && self.try_refresh_presentation_surfaces(dirty_surfaces) {
                 return Ok(());
             }
         }
