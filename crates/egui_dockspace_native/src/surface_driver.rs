@@ -41,6 +41,16 @@ const fn surface_frame_disposition(
     }
 }
 
+fn request_follow_up_root_cycle(
+    context: &egui::Context,
+    retirement_committed: bool,
+    cycle_progressed: bool,
+) {
+    if retirement_committed || cycle_progressed {
+        context.request_repaint_of(ViewportId::ROOT);
+    }
+}
+
 pub(crate) struct NativeRuntimeState<P> {
     coordinator: NativeCoordinator,
     root_surface: SurfaceId,
@@ -295,6 +305,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let native_close_settled = coordinator.settle_close_control_inputs(report.inputs())?;
         let native_admission_settled =
             coordinator.settle_native_admissions(report.native_admissions())?;
+        let retirement_committed = prepared_retirements.is_some();
         if let Some(prepared_retirements) = prepared_retirements {
             for token in coordinator.commit_retirements(prepared_retirements) {
                 self.pass_actions.abandon(token);
@@ -369,18 +380,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 None => {}
             }
         }
-        if quiescence_recorded
-            || reduced_callback
-            || native_snapshot_applied
-            || native_admission_settled
-            || post_action_repaint
-            || application_action_settled
-            || native_effects_emitted
-            || native_close_settled
-            || native_close_progress
-        {
-            context.request_repaint_of(egui::ViewportId::ROOT);
-        }
+        request_follow_up_root_cycle(
+            &context,
+            retirement_committed,
+            quiescence_recorded
+                || reduced_callback
+                || native_snapshot_applied
+                || native_admission_settled
+                || post_action_repaint
+                || application_action_settled
+                || native_effects_emitted
+                || native_close_settled
+                || native_close_progress,
+        );
         Ok(())
     }
 
@@ -607,6 +619,27 @@ mod tests {
             surface_frame_disposition(true, true, false, false),
             SurfaceFrameDisposition::ConfirmPainted
         );
+    }
+
+    #[test]
+    fn committed_route_retirement_requests_a_follow_up_root_cycle() {
+        let context = egui::Context::default();
+        for _ in 0..8 {
+            if !context.has_requested_repaint_for(&ViewportId::ROOT) {
+                break;
+            }
+            context.begin_pass(egui::RawInput::default());
+            let mut output = context.end_pass();
+            output.textures_delta.clear();
+        }
+        assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+
+        request_follow_up_root_cycle(&context, false, false);
+        assert!(!context.has_requested_repaint_for(&ViewportId::ROOT));
+
+        request_follow_up_root_cycle(&context, true, false);
+
+        assert!(context.has_requested_repaint_for(&ViewportId::ROOT));
     }
 
     #[test]
