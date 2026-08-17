@@ -3616,11 +3616,7 @@ impl ViewportCoordinator {
         let request = if let Some(placement) = placement
             && candidate
                 .capabilities
-                .native_window_lifecycle()
-                .is_supported()
-            && candidate
-                .capabilities
-                .authoritative_inventory()
+                .native_exact_placement_create()
                 .is_supported()
         {
             let replacement = candidate

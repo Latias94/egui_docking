@@ -448,9 +448,10 @@ impl WindowInventoryObservation {
 
 /// Last authoritative member of the provider-owned native-window inventory stream.
 ///
-/// Missing, skipped-generation, or same-generation conflicting envelopes revoke current
-/// authority and require an explicit versioned tombstone before a later known roster may
-/// become authoritative again. Older generations and exact duplicates are inert.
+/// Missing an authoritative envelope, skipping a generation, or reusing a generation for a
+/// conflicting envelope revokes current authority and requires an explicit versioned tombstone
+/// before a later known roster may become authoritative again. Older generations and exact
+/// duplicates are inert.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WindowInventoryObservationStream {
     current: Option<WindowInventoryObservation>,
@@ -467,8 +468,8 @@ impl WindowInventoryObservationStream {
 
     pub(crate) fn observe(&mut self, observation: Option<WindowInventoryObservation>) {
         let Some(observation) = observation else {
+            self.requires_tombstone |= self.current.is_some();
             self.current = None;
-            self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
         match self.last_generation {
@@ -2010,6 +2011,18 @@ mod tests {
             )
         };
         let mut stream = WindowInventoryObservationStream::default();
+
+        stream.observe(Some(tombstone(1)));
+        stream.observe(None);
+        let first_authoritative = known(2, vec![first]);
+        stream.observe(Some(first_authoritative.clone()));
+        assert_eq!(
+            stream.current(),
+            Some(&first_authoritative),
+            "missing capability must not quarantine an inventory that never held authority"
+        );
+
+        stream.reset_for_provider_replacement();
 
         let initial = known(11, vec![second, first]);
         stream.observe(Some(initial.clone()));
