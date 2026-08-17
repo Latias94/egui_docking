@@ -438,20 +438,22 @@ impl<P: PaneView> NativeRuntimeState<P> {
     pub(crate) fn advance_shutdown(
         &mut self,
         context: &egui::Context,
-    ) -> Result<bool, NativeRuntimeError> {
+    ) -> (bool, Vec<NativeRuntimeError>) {
         debug_assert!(
             self.shutdown.is_some(),
             "shutdown advance requires a primary failure"
         );
-        let advance = self.coordinator.advance_shutdown_boundary()?;
-        self.apply_shutdown_advance(context, advance)
+        match self.coordinator.advance_shutdown_boundary() {
+            Ok(advance) => self.apply_shutdown_advance(context, advance),
+            Err(error) => (false, vec![error]),
+        }
     }
 
     fn apply_shutdown_advance(
         &mut self,
         context: &egui::Context,
         advance: NativeShutdownAdvance,
-    ) -> Result<bool, NativeRuntimeError> {
+    ) -> (bool, Vec<NativeRuntimeError>) {
         let root_window = eframe::current_native_output_token()
             .filter(|token| token.viewport_id() == egui::ViewportId::ROOT)
             .map(NativeOutputToken::window_id);
@@ -463,13 +465,14 @@ impl<P: PaneView> NativeRuntimeState<P> {
         context: &egui::Context,
         advance: NativeShutdownAdvance,
         root_window: Option<winit::window::WindowId>,
-    ) -> Result<bool, NativeRuntimeError> {
+    ) -> (bool, Vec<NativeRuntimeError>) {
         let NativeShutdownAdvance {
             progress,
             registrations,
             commands,
             pointer_passthrough,
             abandoned_outputs,
+            mut errors,
         } = advance;
         for token in abandoned_outputs {
             self.pass_actions.abandon(token);
@@ -487,7 +490,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .coordinator
                 .mark_pointer_passthrough_dispatched(command, token)
             {
-                return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
+                errors.push(NativeHostProtocolError::NativeInputDispatchChanged.into());
             }
         }
         if let Some(root_window) = root_window {
@@ -496,15 +499,19 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     NativeShutdownRegistration::Registered(binding)
                         if binding.surface() == self.root_surface =>
                     {
-                        self.coordinator
+                        if self
+                            .coordinator
                             .bind_viewport(egui::ViewportId::ROOT, root_window, binding)
-                            .map_err(|_| NativeHostProtocolError::RootViewportBindingFailed)?;
+                            .is_err()
+                        {
+                            errors.push(NativeHostProtocolError::RootViewportBindingFailed.into());
+                        }
                     }
                     NativeShutdownRegistration::Rejected(surface)
                         if surface == self.root_surface =>
                     {
-                        return Err(
-                            NativeHostProtocolError::RootRegistrationRejected(surface).into()
+                        errors.push(
+                            NativeHostProtocolError::RootRegistrationRejected(surface).into(),
                         );
                     }
                     NativeShutdownRegistration::Registered(_)
@@ -512,7 +519,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 }
             }
         }
-        Ok(progress)
+        (progress, errors)
     }
 
     pub(crate) fn record_cleanup_error(&mut self, error: NativeRuntimeError) {
@@ -762,20 +769,36 @@ mod tests {
         let context = egui::Context::default();
         context.begin_pass(egui::RawInput::default());
 
-        let error = state
-            .apply_shutdown_advance_for_root_window(
-                &context,
-                NativeShutdownAdvance {
-                    progress: true,
-                    registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
-                    commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
-                    pointer_passthrough: None,
-                    abandoned_outputs: Vec::new(),
-                },
-                Some(winit::window::WindowId::from(7)),
-            )
-            .expect_err("the root registration rejection remains observable");
-        assert_eq!(error.kind(), crate::NativeRuntimeErrorKind::HostProtocol);
+        let (progress, errors) = state.apply_shutdown_advance_for_root_window(
+            &context,
+            NativeShutdownAdvance {
+                progress: true,
+                registrations: vec![NativeShutdownRegistration::Rejected(SURFACE)],
+                commands: vec![(egui::ViewportId::ROOT, egui::ViewportCommand::Close)],
+                pointer_passthrough: None,
+                abandoned_outputs: Vec::new(),
+                errors: vec![NativeHostProtocolError::IncompleteTransientPaint(SURFACE).into()],
+            },
+            Some(winit::window::WindowId::from(7)),
+        );
+        assert!(progress);
+        let [committed_error, registration_error] = errors.as_slice() else {
+            panic!("committed and adapter cleanup errors remain ordered")
+        };
+        assert!(
+            committed_error
+                .source()
+                .expect("the committed cleanup error retains its source")
+                .to_string()
+                .contains("transient")
+        );
+        assert!(
+            registration_error
+                .source()
+                .expect("the adapter cleanup error retains its source")
+                .to_string()
+                .contains("registration")
+        );
 
         let mut output = context.end_pass();
         let close_was_queued = output

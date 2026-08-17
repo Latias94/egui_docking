@@ -192,13 +192,10 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
         let (specs, stopped) = {
             let mut state = lock_state(&self.state);
             if state.error().is_some() {
-                let progress = match state.advance_shutdown(&context) {
-                    Ok(progress) => progress,
-                    Err(error) => {
-                        state.record_cleanup_error(error);
-                        false
-                    }
-                };
+                let (progress, cleanup_errors) = state.advance_shutdown(&context);
+                for error in cleanup_errors {
+                    state.record_cleanup_error(error);
+                }
                 state.render_error(ui);
                 if progress {
                     context.request_repaint_of(ViewportId::ROOT);

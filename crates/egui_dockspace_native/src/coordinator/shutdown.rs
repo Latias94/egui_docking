@@ -20,6 +20,7 @@ pub(crate) struct NativeShutdownAdvance {
     pub(crate) commands: Vec<(ViewportId, ViewportCommand)>,
     pub(crate) pointer_passthrough: Option<NativePointerPassthroughCommand>,
     pub(crate) abandoned_outputs: Vec<NativeOutputToken>,
+    pub(crate) errors: Vec<NativeRuntimeError>,
 }
 
 impl NativeCoordinator {
@@ -50,15 +51,29 @@ impl NativeCoordinator {
             .collect();
         let had_inputs = !report.inputs().is_empty();
         let native_snapshot_applied = self.settle_host_frame_inputs(report.inputs());
-        let native_close_settled = self.settle_close_control_inputs(report.inputs())?;
-        let native_admission_settled = self.settle_native_admissions(report.native_admissions())?;
+        let mut errors = Vec::new();
+        let native_close_settled = match self.settle_close_control_inputs(report.inputs()) {
+            Ok(settled) => settled,
+            Err(error) => {
+                errors.push(error);
+                false
+            }
+        };
+        let native_admission_settled =
+            match self.settle_native_admissions(report.native_admissions()) {
+                Ok(settled) => settled,
+                Err(error) => {
+                    errors.push(error);
+                    false
+                }
+            };
         let retirement_committed = prepared_retirements.is_some();
         let abandoned_outputs = prepared_retirements
             .map_or_else(Vec::new, |prepared| self.commit_retirements(prepared));
         let repaint_requested = !report.repaint_surfaces().is_empty();
         let effects = report.take_native_effects();
         let effects_emitted = !effects.is_empty();
-        self.fail_shutdown_effects(effects)?;
+        self.fail_shutdown_effects(effects, &mut errors);
         let commands = self.take_viewport_commands();
         let pointer_passthrough = self.pointer_passthrough_command();
         let commands_pending = !commands.is_empty();
@@ -82,20 +97,23 @@ impl NativeCoordinator {
             commands,
             pointer_passthrough,
             abandoned_outputs,
+            errors,
         })
     }
 
     fn fail_shutdown_effects(
         &mut self,
         requests: Vec<NativeEffectRequest>,
-    ) -> Result<(), NativeRuntimeError> {
+        errors: &mut Vec<NativeRuntimeError>,
+    ) {
         for request in requests {
             let binding = request.operation().binding();
             let result = request.dispatch_failed(NativeDispatchFailure::ProviderStopped);
-            if let Err(error) = self.session.report_native_effect_result(result) {
-                self.retain_or_return_effect_result(binding, error)?;
+            if let Err(error) = self.session.report_native_effect_result(result)
+                && let Err(error) = self.retain_or_return_effect_result(binding, error)
+            {
+                errors.push(error);
             }
         }
-        Ok(())
     }
 }
