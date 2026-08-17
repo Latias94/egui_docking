@@ -1,11 +1,13 @@
+#![cfg(feature = "serde")]
+
 use dockspace::model::{
     DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
     SurfaceId,
 };
 use dockspace::policy::DockPolicy;
 use egui_dockspace::{
-    DockStyle, Dockspace, DockspaceActionStatus, DockspaceDocumentBootstrap,
-    DockspaceDocumentId, DockspaceErrorKind,
+    DockStyle, Dockspace, DockspaceActionStatus, DockspaceDocumentBootstrap, DockspaceDocumentId,
+    DockspaceErrorKind,
 };
 
 const DOCUMENT: DockspaceDocumentId = DockspaceDocumentId::from_bytes([0x42; 16]);

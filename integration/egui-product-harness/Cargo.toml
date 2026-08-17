@@ -8,10 +8,14 @@ edition = "2024"
 rust-version = "1.95"
 publish = false
 
+[features]
+default = []
+serde = ["dockspace/serde", "egui_dockspace/serde"]
+
 [dependencies]
-dockspace = { path = "../../crates/dockspace", features = ["serde"] }
+dockspace = { path = "../../crates/dockspace", default-features = false }
 egui = { version = "=0.36.1", default-features = false, features = ["default_fonts"] }
-egui_dockspace = { path = "../../crates/egui_dockspace", features = ["serde"] }
+egui_dockspace = { path = "../../crates/egui_dockspace", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

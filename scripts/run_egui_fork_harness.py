@@ -21,6 +21,8 @@ def main() -> int:
             "--manifest-path",
             str(manifest),
             "--workspace",
+            "--exclude",
+            "egui-native-smoke",
             "--all-targets",
             "--no-fail-fast",
             "--locked",

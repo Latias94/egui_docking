@@ -80,7 +80,8 @@ and run Cargo serially when the machine is busy.
 cargo fmt --all -- --check
 cargo check --workspace --all-features --all-targets --locked -j1
 cargo nextest run --workspace --all-features --all-targets --test-threads=1
-cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --all-features --test-threads=1
+cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --test-threads=1
+cargo nextest run --manifest-path integration/egui-product-harness/Cargo.toml --features serde --test persistence --test-threads=1
 cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1
 cargo package --package dockspace --all-features --locked -j1
 cargo package --package egui_dockspace --all-features --locked --list

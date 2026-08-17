@@ -78,7 +78,13 @@ jobs:
         run: >-
           cargo nextest run
           --manifest-path integration/egui-product-harness/Cargo.toml
-          --all-targets --locked -j1
+          --test product --locked -j1
+
+      - name: Run product persistence harness
+        run: >-
+          cargo nextest run
+          --manifest-path integration/egui-product-harness/Cargo.toml
+          --features serde --test persistence --locked -j1
 
   fork-native:
     name: Fork-backed native coordinator
@@ -141,13 +147,17 @@ jobs:
         run: >-
           sudo apt-get update &&
           sudo apt-get install --no-install-recommends -y
-          libxkbcommon-x11-0
+          libxkbcommon-x11-0 xvfb
+
+      - name: Build one real-window Glow smoke
+        run: >-
+          cargo build --manifest-path integration/egui-native-smoke/Cargo.toml
+          --locked -j1
 
       - name: Run one real-window Glow smoke
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: >-
-          timeout 90s xvfb-run -a
+          timeout --kill-after=5s 45s xvfb-run -a
           --server-args="-screen 0 1280x1024x24"
-          cargo run --manifest-path integration/egui-native-smoke/Cargo.toml
-          --locked
+          integration/egui-fork-workspace/target/debug/egui-native-smoke

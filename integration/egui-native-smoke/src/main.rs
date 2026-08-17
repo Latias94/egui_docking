@@ -185,14 +185,26 @@ impl SmokeApp {
     }
 
     fn await_first_live(&mut self, context: &egui::Context, target_surface: SurfaceId) {
-        if !self.dockspace.is_surface_presented(target_surface) {
+        if !self.dockspace.is_surface_presented(ROOT_SURFACE)
+            || !self.dockspace.is_surface_presented(target_surface)
+        {
             return;
         }
         let transferred = self.dockspace.with_view(|view| {
-            [CHILD_ITEM, CHILD_DETAIL].into_iter().all(|item| {
-                view.item(item)
-                    .is_some_and(|pane| pane.surface() == target_surface)
-            })
+            let root_is_live = view
+                .surface(ROOT_SURFACE)
+                .and_then(|surface| surface.main_root())
+                .is_some_and(|root| root.id() == MAIN_ROOT);
+            let child_is_live = view
+                .surface(target_surface)
+                .and_then(|surface| surface.main_root())
+                .is_some_and(|root| root.id() == CHILD_ROOT);
+            root_is_live
+                && child_is_live
+                && [CHILD_ITEM, CHILD_DETAIL].into_iter().all(|item| {
+                    view.item(item)
+                        .is_some_and(|pane| pane.surface() == target_surface)
+                })
         });
         if transferred == Some(true) {
             self.queue_redock(context, target_surface);
