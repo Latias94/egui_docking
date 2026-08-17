@@ -380,8 +380,8 @@ U8 is reserved for a separate future plan and is not part of this plan's executi
   - A default consumer cannot name raw graph, node, engine, scene stamp, drop target, provider, receipt, or persistence candidate types.
   - Product serde remains additive with other features and never switches to a different facade.
   - Rustdoc has no links or signatures involving private implementation types.
-  - `cargo package --dry-run` includes required docs/examples and excludes ignored fork/native build artifacts.
-- **Verification:** Product API fixture, official consumer, rustdoc, package dry-runs, and README capability matrix agree.
+  - The core package verifies locally; the adapter package has a complete local file-list check and is compiled by independent downstream harnesses. Full adapter package verification runs after the matching core version is available in the registry.
+- **Verification:** Product API fixture, official consumer, rustdoc, core package verification, adapter package-list check, and README capability matrix agree.
 
 ### U10. Bound retention and verify scale without new infrastructure
 
@@ -436,7 +436,7 @@ Run Cargo serially and reuse the repository's normal `target` directories.
 | Official downstream | Official harness | `cargo nextest run --manifest-path integration/egui-official-harness/Cargo.toml --all-features --test-threads=1` | Official-egui consumer and public API cases pass. |
 | Fork/native | Pinned fork workspace | Existing thin Python launcher as the sole native-workspace nextest entry, plus direct fork-internal host-seam tests | Exact pinned revisions, host seam, and native helper tests pass without duplicate suite discovery. |
 | Real-window boundary | Single smoke binary | One CI invocation under Ubuntu Xvfb, X11, and Glow with one process timeout | The fixed create-to-quiescence state sequence completes once. |
-| Documentation/API | Publishable crates | Rustdoc, downstream compile fixtures, and `cargo package --dry-run` | No private-type links, missing files, or unintended dependencies. |
+| Documentation/API | Publishable crates | Rustdoc, downstream compile fixtures, core `cargo package`, and adapter `cargo package --list` | No private-type links, missing files, or unintended dependencies; full adapter package verification is a post-core-publication release check. |
 | Lint policy | Root and fork-owned changes | Repository CI's correctness/suspicious Clippy policy | No new correctness/suspicious diagnostics; broader warning debt is handled by scoped cleanup, not a surprise global rewrite. |
 | Scale/retention | Focused ordinary Rust tests | Existing 16/128/1024 structural fixtures plus 10k terminal-state soaks | After quiescence and one compaction, active/unsettled/detail counts are zero; remaining history is bounded by active producers/surfaces/streams and merged intervals, not terminal cycle count. No wall-clock threshold or digest gate. |
 

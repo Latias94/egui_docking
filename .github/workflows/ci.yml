@@ -49,10 +49,13 @@ jobs:
           --no-fail-fast --locked
       - name: Run documentation tests
         run: cargo test --doc --workspace --all-features --locked
-      - name: Package publishable crates
+      - name: Package core crate
         run: >-
-          cargo package --workspace --exclude dockspace_host_conformance
-          --all-features --locked -j1
+          cargo package --package dockspace --all-features --locked -j1
+      - name: Check adapter package contents
+        run: >-
+          cargo package --package egui_dockspace --all-features --locked
+          --list
 
   official-egui:
     name: Official egui consumer
