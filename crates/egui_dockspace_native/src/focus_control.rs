@@ -116,11 +116,27 @@ impl NativeViewportFocusRecord {
 }
 
 #[derive(Debug)]
-struct PendingNativeFocus {
+struct PendingNativeFocus<Request> {
     viewport: ViewportId,
     window: WindowId,
     binding: NativeSurfaceBinding,
-    request: NativeEffectRequest,
+    state: PendingNativeFocusState<Request>,
+}
+
+#[derive(Debug)]
+enum PendingNativeFocusState<Request> {
+    Queued(Request),
+    AwaitingCallback(Request),
+    AwaitingGlobalFocus(Request),
+}
+
+#[derive(Debug)]
+pub(crate) enum NativeFocusTermination<Request = NativeEffectRequest> {
+    Queued {
+        viewport: ViewportId,
+        request: Request,
+    },
+    Dispatched(Request),
 }
 
 /// Classification of one callback against the single pending focus command.
@@ -137,12 +153,18 @@ pub(crate) enum NativeFocusResultDisposition {
 }
 
 /// Affine ownership for the one focus command which eframe has not consumed yet.
-#[derive(Debug, Default)]
-pub(crate) struct NativeFocusControl {
-    pending: Option<PendingNativeFocus>,
+#[derive(Debug)]
+pub(crate) struct NativeFocusControl<Request = NativeEffectRequest> {
+    pending: Option<PendingNativeFocus<Request>>,
 }
 
-impl NativeFocusControl {
+impl<Request> Default for NativeFocusControl<Request> {
+    fn default() -> Self {
+        Self { pending: None }
+    }
+}
+
+impl<Request> NativeFocusControl<Request> {
     pub(crate) const fn has_pending_work(&self) -> bool {
         self.pending.is_some()
     }
@@ -152,8 +174,8 @@ impl NativeFocusControl {
         viewport: ViewportId,
         window: WindowId,
         binding: NativeSurfaceBinding,
-        request: NativeEffectRequest,
-    ) -> Result<(), NativeEffectRequest> {
+        request: Request,
+    ) -> Result<(), Request> {
         if self.pending.is_some() {
             return Err(request);
         }
@@ -161,9 +183,31 @@ impl NativeFocusControl {
             viewport,
             window,
             binding,
-            request,
+            state: PendingNativeFocusState::Queued(request),
         });
         Ok(())
+    }
+
+    pub(crate) fn mark_dispatched(&mut self, viewport: ViewportId) -> bool {
+        let Some(mut pending) = self.pending.take() else {
+            return false;
+        };
+        if pending.viewport != viewport {
+            self.pending = Some(pending);
+            return false;
+        }
+        let changed = match pending.state {
+            PendingNativeFocusState::Queued(request) => {
+                pending.state = PendingNativeFocusState::AwaitingCallback(request);
+                true
+            }
+            state => {
+                pending.state = state;
+                false
+            }
+        };
+        self.pending = Some(pending);
+        changed
     }
 
     pub(crate) fn classify(
@@ -173,7 +217,10 @@ impl NativeFocusControl {
         let Some(pending) = &self.pending else {
             return NativeFocusResultDisposition::Unrelated;
         };
-        if pending.viewport != record.viewport || pending.window != record.window {
+        if pending.viewport != record.viewport
+            || pending.window != record.window
+            || matches!(pending.state, PendingNativeFocusState::Queued(_))
+        {
             return NativeFocusResultDisposition::Unrelated;
         }
         if record.binding == Some(pending.binding) {
@@ -188,38 +235,122 @@ impl NativeFocusControl {
         }
     }
 
-    pub(crate) fn take(
-        &mut self,
-        record: NativeViewportFocusRecord,
-    ) -> Option<NativeEffectRequest> {
-        let pending = self.pending.as_ref()?;
-        if pending.viewport != record.viewport || pending.window != record.window {
-            return None;
+    pub(crate) fn mark_requested(&mut self, record: NativeViewportFocusRecord) -> bool {
+        if !matches!(
+            self.classify(record),
+            NativeFocusResultDisposition::Current {
+                status: NativeViewportFocusStatus::Requested,
+                ..
+            }
+        ) {
+            return false;
         }
-        self.pending.take().map(|pending| pending.request)
+        let Some(mut pending) = self.pending.take() else {
+            return false;
+        };
+        let changed = match pending.state {
+            PendingNativeFocusState::AwaitingCallback(request)
+            | PendingNativeFocusState::AwaitingGlobalFocus(request) => {
+                pending.state = PendingNativeFocusState::AwaitingGlobalFocus(request);
+                true
+            }
+            PendingNativeFocusState::Queued(request) => {
+                pending.state = PendingNativeFocusState::Queued(request);
+                false
+            }
+        };
+        self.pending = Some(pending);
+        changed
     }
 
-    pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) -> bool {
+    pub(crate) fn take_callback(
+        &mut self,
+        record: NativeViewportFocusRecord,
+    ) -> Option<Request> {
+        self.take_dispatched_if(
+            |pending| pending.viewport == record.viewport && pending.window == record.window,
+            |state| !matches!(state, PendingNativeFocusState::Queued(_)),
+        )
+    }
+
+    pub(crate) fn take_observed(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<Request> {
+        self.take_dispatched_if(
+            |pending| pending.binding == binding,
+            |state| matches!(state, PendingNativeFocusState::AwaitingGlobalFocus(_)),
+        )
+    }
+
+    fn take_dispatched_if(
+        &mut self,
+        matches_pending: impl FnOnce(&PendingNativeFocus<Request>) -> bool,
+        matches_state: impl FnOnce(&PendingNativeFocusState<Request>) -> bool,
+    ) -> Option<Request> {
+        let pending = self.pending.as_ref()?;
+        if !matches_pending(pending) || !matches_state(&pending.state) {
+            return None;
+        }
+        let pending = self
+            .pending
+            .take()
+            .expect("the inspected focus request remains pending");
+        match pending.state {
+            PendingNativeFocusState::AwaitingCallback(request)
+            | PendingNativeFocusState::AwaitingGlobalFocus(request) => Some(request),
+            PendingNativeFocusState::Queued(_) => {
+                unreachable!("the queued focus state was rejected before extraction")
+            }
+        }
+    }
+
+    pub(crate) fn take_queued_terminal(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeFocusTermination<Request>> {
+        if self.pending.as_ref().is_none_or(|pending| {
+            pending.binding != binding
+                || !matches!(pending.state, PendingNativeFocusState::Queued(_))
+        }) {
+            return None;
+        }
+        let pending = self.pending.take()?;
+        let PendingNativeFocusState::Queued(request) = pending.state else {
+            unreachable!("the queued focus state was checked before extraction")
+        };
+        Some(NativeFocusTermination::Queued {
+            viewport: pending.viewport,
+            request,
+        })
+    }
+
+    pub(crate) fn take_terminal(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Option<NativeFocusTermination<Request>> {
         if self
             .pending
             .as_ref()
-            .is_some_and(|pending| pending.binding == binding)
+            .is_none_or(|pending| pending.binding != binding)
         {
-            self.pending = None;
-            true
-        } else {
-            false
+            return None;
         }
+        let pending = self.pending.take()?;
+        Some(match pending.state {
+            PendingNativeFocusState::Queued(request) => NativeFocusTermination::Queued {
+                viewport: pending.viewport,
+                request,
+            },
+            PendingNativeFocusState::AwaitingCallback(request)
+            | PendingNativeFocusState::AwaitingGlobalFocus(request) => {
+                NativeFocusTermination::Dispatched(request)
+            }
+        })
     }
 
-    pub(crate) fn pending_command(&self) -> Option<(ViewportId, NativeSurfaceBinding)> {
-        self.pending
-            .as_ref()
-            .map(|pending| (pending.viewport, pending.binding))
-    }
-
-    pub(crate) fn cancel_pending(&mut self) {
-        self.pending = None;
+    pub(crate) fn pending_binding(&self) -> Option<NativeSurfaceBinding> {
+        self.pending.as_ref().map(|pending| pending.binding)
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {

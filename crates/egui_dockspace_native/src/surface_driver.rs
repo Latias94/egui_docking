@@ -212,9 +212,13 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let token = eframe::current_native_output_token()
             .ok_or(NativeHostProtocolError::OutputTokenUnavailable)?;
         let coordinator = &mut self.coordinator;
+        let pending_effect_reported = coordinator.try_report_pending_effect_results()?;
         let quiescence_recorded =
             surface == self.root_surface && coordinator.try_report_retirement_quiescence()?;
         let reduced_callback = coordinator.reduce_callback_head()?;
+        if let Some(error) = coordinator.take_callback_error() {
+            return Err(error);
+        }
         let prepared_retirements = if surface == self.root_surface {
             coordinator.prepare_committed_retirements()?
         } else {
@@ -368,6 +372,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 command.enabled(),
             );
             if !coordinator.mark_pointer_passthrough_dispatched(command, token) {
+                let removed = coordinator.fail_pointer_passthrough_dispatch(command);
+                debug_assert!(removed, "the failed dispatch still owns the queued command");
                 return Err(NativeHostProtocolError::NativeInputDispatchChanged.into());
             }
         }
@@ -383,7 +389,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
         request_follow_up_root_cycle(
             &context,
             retirement_committed,
-            quiescence_recorded
+            pending_effect_reported
+                || quiescence_recorded
                 || reduced_callback
                 || native_snapshot_applied
                 || native_admission_settled
@@ -443,10 +450,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             self.shutdown.is_some(),
             "shutdown advance requires a primary failure"
         );
-        match self.coordinator.advance_shutdown_boundary() {
-            Ok(advance) => self.apply_shutdown_advance(context, advance),
-            Err(error) => (false, vec![error]),
-        }
+        let advance = self.coordinator.advance_shutdown_boundary();
+        self.apply_shutdown_advance(context, advance)
     }
 
     fn apply_shutdown_advance(
@@ -490,6 +495,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 .coordinator
                 .mark_pointer_passthrough_dispatched(command, token)
             {
+                let removed = self.coordinator.fail_pointer_passthrough_dispatch(command);
+                debug_assert!(removed, "the failed dispatch still owns the queued command");
                 errors.push(NativeHostProtocolError::NativeInputDispatchChanged.into());
             }
         }

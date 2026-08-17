@@ -409,6 +409,56 @@ fn window_event_outside_all_release_requests_create_without_transferring_source(
 }
 
 #[test]
+fn failed_native_create_retires_the_unmaterialized_binding_after_callback() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let child = request_native_child(&mut native, receiver);
+    let viewport = viewport_id_for(child);
+
+    assert_eq!(
+        native
+            .bridge
+            .record_viewport_create_failure_for_test(viewport),
+        NativeHostWake::RepaintRoot
+    );
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the exact failed create callback records its terminal result")
+    );
+
+    let mut failure = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the failed create boundary begins");
+    failure
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the failed create boundary settles every surface");
+    let mut failure_report = failure
+        .commit()
+        .expect("the failed create boundary commits");
+    native
+        .accept_native_effects(failure_report.take_native_effects())
+        .expect("follow-up native effects retain their exact owner");
+
+    assert!(!native.session.is_current_native_binding(child));
+    assert!(
+        native.session.recognizes_native_binding(child),
+        "the retired binding remains recognized until adapter quiescence"
+    );
+    assert!(
+        native
+            .try_report_retirement_quiescence()
+            .expect("the unmaterialized failed binding becomes quiescent")
+    );
+    assert!(
+        !native.session.recognizes_native_binding(child),
+        "exact adapter quiescence releases the retired binding lifetime"
+    );
+}
+
+#[test]
 fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
     let mut native = tear_off_coordinator();
     let source = register_source(&mut native);
@@ -625,6 +675,41 @@ fn pointer_passthrough_successor_waits_for_the_predecessor_snapshot() {
 }
 
 #[test]
+fn failed_owned_pointer_callback_releases_input_correlation() {
+    let mut native = tear_off_coordinator();
+    let source = register_source(&mut native);
+    publish_desktop_authority(&mut native, source);
+    let receiver = measure_and_present_source(&mut native);
+    let _child = request_native_child(&mut native, receiver);
+    let token = dispatch_pointer_passthrough(&mut native);
+    let record = NativePointerPassthroughRecord::for_test(
+        token,
+        ViewportId::ROOT,
+        source_window(),
+        Some(source),
+        true,
+        NativeViewportPointerPassthroughStatus::Failed,
+    );
+
+    native
+        .bridge
+        .push_record(HostRecord::ViewportPointerPassthrough(record));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the failed owned callback records its terminal result")
+    );
+    assert_eq!(
+        native.input_control.classify(record),
+        NativeInputResultDisposition::Unrelated,
+        "the terminal callback no longer owns an input correlation"
+    );
+    assert!(native.pending_effect_results.is_empty());
+    assert!(native.take_callback_error().is_none());
+    assert!(native.bridge.front_viewport_pointer_passthrough().is_none());
+}
+
+#[test]
 fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
     let mut native = tear_off_coordinator();
     let source = register_source(&mut native);
@@ -646,15 +731,11 @@ fn shutdown_dispatches_the_causal_pointer_restore_after_the_enable_snapshot() {
                 NativeViewportPointerPassthroughStatus::Applied,
             ),
         ));
-    let enable_boundary = native
-        .advance_shutdown_boundary()
-        .expect("shutdown consumes the exact enable callback");
+    let enable_boundary = native.advance_shutdown_boundary();
     assert!(enable_boundary.pointer_passthrough.is_none());
 
     native.bridge.push_viewport_roster(live_roster([source]));
-    let snapshot_boundary = native
-        .advance_shutdown_boundary()
-        .expect("shutdown commits the exact enable observation");
+    let snapshot_boundary = native.advance_shutdown_boundary();
     let restore = snapshot_boundary
         .pointer_passthrough
         .expect("the causal restore becomes dispatchable after the snapshot");
@@ -682,9 +763,7 @@ fn shutdown_cancels_unadmitted_create_without_declaring_a_window() {
     assert!(!native.effects.references_binding(child));
     assert!(!native.bridge.references_binding(child));
 
-    let advance = native
-        .advance_shutdown_boundary()
-        .expect("the provider-stopped create result commits");
+    let advance = native.advance_shutdown_boundary();
     assert!(advance.commands.is_empty());
     assert!(advance.abandoned_outputs.is_empty());
     assert!(!native.session.is_current_native_binding(child));

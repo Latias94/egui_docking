@@ -492,6 +492,39 @@ fn viewport_create_failure_freezes_binding_and_blocks_the_boundary() {
 }
 
 #[test]
+fn shutdown_preserves_callback_error_when_reduction_fails() {
+    let mut native = coordinator();
+    let (_, failed_binding) = register_roots(&mut native);
+    let failed_viewport = ViewportId::from_hash_of("shutdown-partial-create");
+    native
+        .reserve_viewport(failed_viewport, failed_binding)
+        .expect("the test viewport route reserves");
+    assert!(native.bridge.reserve_create_for_test(
+        failed_viewport,
+        failed_binding,
+        native_rect(),
+    ));
+    assert_eq!(
+        native
+            .bridge
+            .record_viewport_create_failure_for_test(failed_viewport),
+        NativeHostWake::RepaintRoot
+    );
+    assert!(native.quarantine_after_fatal().is_empty());
+
+    let advance = native.advance_shutdown_boundary();
+    assert!(!advance.progress);
+    assert!(advance.commands.is_empty());
+    assert!(
+        advance
+            .errors
+            .iter()
+            .any(|error| std::error::Error::source(error)
+                .is_some_and(|source| source.to_string().contains("creation failure")))
+    );
+}
+
+#[test]
 fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
     let mut native = coordinator();
     let (first, second) = register_roots(&mut native);

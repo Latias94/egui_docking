@@ -1,6 +1,6 @@
 //! Thin coordinator between eframe callbacks and the renderer-neutral session.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use dockspace::geometry::PhysicalRect;
@@ -9,11 +9,11 @@ use dockspace::runtime::{
     DockspaceSession, HostInputOutcome, HostWindowToken, NativeCloseDisposition,
     NativeCloseEffectAcknowledgement, NativeCloseState, NativeDispatchFailure,
     NativeEffectAcknowledgement, NativeEffectOperation, NativeEffectRequest, NativeEffectResult,
-    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativePointerInput,
-    NativePointerRoster, NativePresentationEffectAcknowledgement, NativeReceiverAnswer,
-    NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason, NativeWindowFacts,
-    NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput, PaintedSurfaceOutput,
-    SurfacePresentationResult, SurfaceUnavailableReason,
+    NativeEffectSubmissionError, NativeGlobalFocus, NativeHostErrorKind, NativeIndeterminateReason,
+    NativePointerInput, NativePointerRoster, NativePresentationEffectAcknowledgement,
+    NativeReceiverAnswer, NativeReceiverQuery, NativeSurfaceBinding, NativeUnsupportedReason,
+    NativeWindowFacts, NativeWorkAreaBinding, NativeWorkAreaRoster, PaintedNativeStagingOutput,
+    PaintedSurfaceOutput, SurfacePresentationResult, SurfaceUnavailableReason,
 };
 use eframe::{
     NativeHostHandler, NativeHostWake, NativeOutputStatus, NativeOutputToken, NativePhysicalRect,
@@ -28,14 +28,16 @@ use crate::NativeRuntimeError;
 use crate::close_control::NativeCloseControl;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
-    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan, PendingShowEffect,
+    NativeEffectCoordinator, NativeViewportEffectKind, NativeViewportEffectPlan,
 };
 use crate::error::{
     NativeHostProtocolError, NativeOutputBindingError, NativeOutputBindingErrorKind,
     NativeViewportBindingError,
 };
 use crate::event::NativeWindowEventRecord;
-use crate::focus_control::{NativeFocusControl, NativeFocusResultDisposition};
+use crate::focus_control::{
+    NativeFocusControl, NativeFocusResultDisposition, NativeFocusTermination,
+};
 use crate::host_frame::NativeHostFrame;
 use crate::input_control::{
     NativeInputControl, NativeInputResultDisposition, NativePointerPassthroughCommand,
@@ -80,6 +82,8 @@ pub(crate) struct NativeCoordinator {
     deferred_viewports: DeferredViewportDriver,
     receivers: NativeReceiverStore,
     effects: NativeEffectCoordinator,
+    pending_effect_results: VecDeque<PendingNativeEffectResult>,
+    callback_errors: VecDeque<NativeRuntimeError>,
     retirements: NativeRetirementState,
     pointer_translator: NativePointerTranslator,
     work_areas: NativeWorkAreaState,
@@ -87,6 +91,29 @@ pub(crate) struct NativeCoordinator {
     focus_control: NativeFocusControl,
     input_control: NativeInputControl,
     lifecycle_progress: NativeLifecycleProgress,
+}
+
+/// One terminal result which still needs a causal boundary in the core.
+///
+/// A stale result for a retired window lifetime is allowed to be consumed by
+/// the exact binding-quiescence boundary. All other rejected results remain
+/// affine until a later retry succeeds.
+#[derive(Debug)]
+struct PendingNativeEffectResult {
+    result: NativeEffectResult,
+    last_rejection: Option<NativeHostErrorKind>,
+}
+
+impl PendingNativeEffectResult {
+    fn blocks_quiescence(&self, binding: NativeSurfaceBinding) -> bool {
+        self.result.binding().same_window_lifetime(binding)
+            && self.last_rejection != Some(NativeHostErrorKind::StaleBinding)
+    }
+
+    fn can_be_consumed_by_quiescence(&self, binding: NativeSurfaceBinding) -> bool {
+        self.result.binding().same_window_lifetime(binding)
+            && self.last_rejection == Some(NativeHostErrorKind::StaleBinding)
+    }
 }
 
 #[derive(Debug)]
@@ -174,6 +201,8 @@ impl std::fmt::Debug for NativeCoordinator {
             .field("deferred_viewports", &self.deferred_viewports)
             .field("receivers", &self.receivers)
             .field("effects", &self.effects)
+            .field("pending_effect_results", &self.pending_effect_results.len())
+            .field("callback_errors", &self.callback_errors.len())
             .field("retirements", &self.retirements)
             .field("pointer_translator", &self.pointer_translator)
             .field("close_control", &self.close_control)
@@ -208,6 +237,8 @@ impl NativeCoordinator {
             deferred_viewports: DeferredViewportDriver::default(),
             receivers: NativeReceiverStore::default(),
             effects: NativeEffectCoordinator::default(),
+            pending_effect_results: VecDeque::new(),
+            callback_errors: VecDeque::new(),
             retirements: NativeRetirementState::default(),
             pointer_translator: NativePointerTranslator::default(),
             work_areas: NativeWorkAreaState::default(),
@@ -245,6 +276,8 @@ impl NativeCoordinator {
             && self.queued_snapshot.is_none()
             && !self.deferred_viewports.has_transitional_viewport()
             && !self.effects.has_pending_work()
+            && self.pending_effect_results.is_empty()
+            && self.callback_errors.is_empty()
             && !self.retirements.has_pending_work()
             && !self.pointer_translator.has_pending_provider_tail()
             && !self.close_control.has_pending_work()
@@ -423,7 +456,14 @@ impl NativeCoordinator {
     }
 
     pub(crate) fn take_viewport_commands(&mut self) -> Vec<(ViewportId, ViewportCommand)> {
-        self.effects.take_commands()
+        let commands = self.effects.take_commands();
+        for (viewport, command) in &commands {
+            if *command == ViewportCommand::Focus {
+                let marked = self.focus_control.mark_dispatched(*viewport);
+                debug_assert!(marked, "a queued focus command retains its affine request");
+            }
+        }
+        commands
     }
 
     pub(crate) fn pointer_passthrough_command(&self) -> Option<NativePointerPassthroughCommand> {
@@ -436,6 +476,17 @@ impl NativeCoordinator {
         token: NativeViewportPointerPassthroughCommandToken,
     ) -> bool {
         self.input_control.mark_dispatched(command, token)
+    }
+
+    pub(crate) fn fail_pointer_passthrough_dispatch(
+        &mut self,
+        command: NativePointerPassthroughCommand,
+    ) -> bool {
+        let Some(result) = self.input_control.fail_queued_dispatch(command) else {
+            return false;
+        };
+        self.queue_pending_effect_result(result, None);
+        true
     }
 
     /// Classifies one exact deferred callback without reducing core state.
@@ -494,14 +545,14 @@ impl NativeCoordinator {
         let PreparedNativeRetirements { committed, routes } = prepared;
         let abandoned = routes.commit();
         for retirement in &committed {
-            self.pending_presentation_acknowledgements
-                .remove(&retirement.binding());
-            self.effects.remove_show(retirement.binding());
-            self.effects.remove_commands(retirement.binding());
-            self.close_control.retire_binding(retirement.binding());
-            self.focus_control.retire_binding(retirement.binding());
-            self.input_control.retire_binding(retirement.binding());
-            self.receivers.retire_binding(retirement.binding());
+            let binding = retirement.binding();
+            self.pending_presentation_acknowledgements.remove(&binding);
+            self.effects.remove_show(binding);
+            self.terminalize_focus(binding);
+            self.effects.remove_commands(binding);
+            self.close_control.retire_binding(binding);
+            self.retain_retired_input_results(binding);
+            self.receivers.retire_binding(binding);
         }
         for &token in &abandoned {
             self.pending_outputs.remove(&token);
@@ -563,9 +614,21 @@ impl NativeCoordinator {
         &mut self,
         inputs: &[HostInputOutcome],
     ) -> Result<bool, NativeRuntimeError> {
+        let (changed, errors) = self.settle_close_control_inputs_all(inputs);
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(changed),
+        }
+    }
+
+    fn settle_close_control_inputs_all(
+        &mut self,
+        inputs: &[HostInputOutcome],
+    ) -> (bool, Vec<NativeRuntimeError>) {
         let mut matched_request = false;
         let mut close_observation_applied = false;
         let mut close_observation_rejected = false;
+        let mut errors = Vec::new();
         for input in inputs {
             match input {
                 HostInputOutcome::NativePlatformSnapshotApplied { close_requests }
@@ -575,8 +638,8 @@ impl NativeCoordinator {
                         match self.close_control.bind_request(*request) {
                             Ok(matched) => matched_request |= matched,
                             Err(()) => {
-                                return Err(
-                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into()
+                                errors.push(
+                                    NativeHostProtocolError::NativeCloseCorrelationChanged.into(),
                                 );
                             }
                         }
@@ -593,45 +656,73 @@ impl NativeCoordinator {
             .close_control
             .settle_clear(close_observation_applied && !close_observation_rejected);
         if clear_pending && (!close_observation_applied || close_observation_rejected) {
-            return Err(NativeHostProtocolError::NativeCloseCancellationRejected.into());
+            errors.push(NativeHostProtocolError::NativeCloseCancellationRejected.into());
         }
-        Ok(matched_request || clear_pending)
+        (matched_request || clear_pending, errors)
     }
 
     pub(crate) fn settle_native_admissions(
         &mut self,
         admissions: &[NativeSurfaceBinding],
     ) -> Result<bool, NativeRuntimeError> {
+        let (changed, errors) = self.settle_native_admissions_all(admissions);
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(changed),
+        }
+    }
+
+    fn settle_native_admissions_all(
+        &mut self,
+        admissions: &[NativeSurfaceBinding],
+    ) -> (bool, Vec<NativeRuntimeError>) {
         let mut changed = false;
+        let mut errors = Vec::new();
         for binding in admissions {
-            let viewport = self.surface_viewport(binding.surface()).ok_or(
-                NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()),
-            )?;
+            let Some(viewport) = self.surface_viewport(binding.surface()) else {
+                errors.push(
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()).into(),
+                );
+                continue;
+            };
             if self.viewport_binding(viewport) != Some(*binding)
                 || !self.session.is_current_native_binding(*binding)
             {
-                return Err(NativeHostProtocolError::NativeAdmissionRouteChanged(
-                    binding.surface(),
-                )
-                .into());
+                errors.push(
+                    NativeHostProtocolError::NativeAdmissionRouteChanged(binding.surface()).into(),
+                );
+                continue;
             }
             if self.bridge.clear_hidden_render(viewport, *binding) {
                 self.lifecycle_progress.record_first_live_admission();
                 changed = true;
             }
         }
-        Ok(changed)
+        (changed, errors)
     }
 
     pub(crate) fn try_report_retirement_quiescence(&mut self) -> Result<bool, NativeRuntimeError> {
+        let (recorded, errors) = self.try_report_retirement_quiescence_all();
+        match errors.into_iter().next() {
+            Some(error) => Err(error),
+            None => Ok(recorded),
+        }
+    }
+
+    fn try_report_retirement_quiescence_all(&mut self) -> (bool, Vec<NativeRuntimeError>) {
         let candidates = self.retirements.quiescence_candidates().collect::<Vec<_>>();
         let mut recorded = false;
+        let mut errors = Vec::new();
         for binding in candidates {
             if self.bridge.references_binding(binding)
                 || self.pointer_translator.references_binding(binding)
                 || self.receivers.references_binding(binding)
                 || self.deferred_viewports.viewport_for(binding).is_some()
                 || self.effects.references_binding(binding)
+                || self
+                    .pending_effect_results
+                    .iter()
+                    .any(|pending| pending.blocks_quiescence(binding))
                 || self.retirements.references_cleanup(binding)
                 || self.close_control.references_binding(binding)
                 || self.focus_control.references_binding(binding)
@@ -642,15 +733,127 @@ impl NativeCoordinator {
             {
                 continue;
             }
-            self.session.report_native_binding_quiescence(binding)?;
+            if let Err(error) = self.session.report_native_binding_quiescence(binding) {
+                errors.push(error.into());
+                continue;
+            }
             let finished = self.retirements.finish_quiescence(binding);
             debug_assert!(finished, "quiescence candidate remains pending");
             if finished {
+                self.pending_effect_results
+                    .retain(|pending| !pending.can_be_consumed_by_quiescence(binding));
                 self.lifecycle_progress.record_quiescent_retirement();
             }
             recorded = true;
         }
-        Ok(recorded)
+        (recorded, errors)
+    }
+
+    pub(crate) fn try_report_pending_effect_results(&mut self) -> Result<bool, NativeRuntimeError> {
+        let (reported, error) = self.report_pending_effect_results_until_blocked();
+        match error {
+            Some(error) => Err(error),
+            None => Ok(reported),
+        }
+    }
+
+    fn report_pending_effect_results_until_blocked(
+        &mut self,
+    ) -> (bool, Option<NativeRuntimeError>) {
+        let mut reported = false;
+        let mut deferred_stale = VecDeque::new();
+        let pending_count = self.pending_effect_results.len();
+        for _ in 0..pending_count {
+            let Some(mut pending) = self.pending_effect_results.pop_front() else {
+                break;
+            };
+            let binding = pending.result.binding();
+            if pending.last_rejection == Some(NativeHostErrorKind::StaleBinding)
+                && self.retirements.is_quiescence_candidate(binding)
+            {
+                deferred_stale.push_back(pending);
+                continue;
+            }
+            if let Err(error) = self.session.report_native_effect_result(pending.result) {
+                let (kind, result) = error.into_parts();
+                pending.result = result;
+                pending.last_rejection = Some(kind);
+                if kind == NativeHostErrorKind::StaleBinding
+                    && self.retirements.is_quiescence_candidate(binding)
+                {
+                    deferred_stale.push_back(pending);
+                    continue;
+                }
+                self.pending_effect_results.push_front(pending);
+                while let Some(stale) = deferred_stale.pop_back() {
+                    self.pending_effect_results.push_front(stale);
+                }
+                return (
+                    reported,
+                    Some(NativeHostProtocolError::NativeEffectResultRejected(kind).into()),
+                );
+            }
+            reported = true;
+        }
+        while let Some(stale) = deferred_stale.pop_back() {
+            self.pending_effect_results.push_front(stale);
+        }
+        (reported, None)
+    }
+
+    fn queue_pending_effect_result(
+        &mut self,
+        result: NativeEffectResult,
+        last_rejection: Option<NativeHostErrorKind>,
+    ) {
+        self.pending_effect_results
+            .push_back(PendingNativeEffectResult {
+                result,
+                last_rejection,
+            });
+    }
+
+    fn retain_retired_input_results(&mut self, binding: NativeSurfaceBinding) {
+        for result in self.input_control.retire_binding(binding) {
+            self.queue_pending_effect_result(result, None);
+        }
+    }
+
+    fn terminalize_focus(&mut self, binding: NativeSurfaceBinding) {
+        let Some(termination) = self.focus_control.take_terminal(binding) else {
+            return;
+        };
+        self.queue_focus_termination(binding, termination);
+    }
+
+    fn terminalize_queued_focus(&mut self, binding: NativeSurfaceBinding) {
+        let Some(termination) = self.focus_control.take_queued_terminal(binding) else {
+            return;
+        };
+        self.queue_focus_termination(binding, termination);
+    }
+
+    fn queue_focus_termination(
+        &mut self,
+        binding: NativeSurfaceBinding,
+        termination: NativeFocusTermination,
+    ) {
+        let result = match termination {
+            NativeFocusTermination::Queued { viewport, request } => {
+                let removed =
+                    self.effects
+                        .remove_command(viewport, binding, &ViewportCommand::Focus);
+                debug_assert!(
+                    removed,
+                    "a queued focus request retains its viewport command"
+                );
+                request.dispatch_failed(NativeDispatchFailure::ProviderStopped)
+            }
+            NativeFocusTermination::Dispatched(request) => {
+                request.indeterminate(NativeIndeterminateReason::AcknowledgementLost)
+            }
+        };
+        self.queue_pending_effect_result(result, None);
     }
 
     /// Reduces one exact deferred-viewport failure without losing the affine
@@ -661,23 +864,24 @@ impl NativeCoordinator {
         let Some(failure) = self.next_viewport_create_failure()? else {
             return Ok(false);
         };
-        if !self.effects.prepare_failure(failure) {
+        let Some(result) = self.effects.take_failure_result(failure) else {
+            let failure_is_stale = self.viewport_binding(failure.viewport())
+                != Some(failure.binding())
+                || !self.session.is_current_native_binding(failure.binding());
+            if failure_is_stale {
+                self.acknowledge_viewport_create_failure(failure)?;
+                return Ok(true);
+            }
             return Err(NativeHostProtocolError::ViewportCreateFailureWithoutEffect.into());
-        }
-        if let Some(result) = self.effects.take_failure_result(failure)
-            && let Err(error) = self.session.report_native_effect_result(result)
-        {
-            let (kind, result) = error.into_parts();
-            self.effects
-                .restore_failure_result(failure, result)
-                .unwrap_or_else(|_| {
-                    panic!("retryable native effect result lost its exact failure owner")
-                });
-            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
-        }
-        debug_assert!(self.effects.failure_reported(failure));
+        };
+        let callback_error = self.report_callback_terminal_result(result);
         self.acknowledge_viewport_create_failure(failure)?;
-        debug_assert!(self.effects.finish_failure(failure));
+        if let Some((kind, error)) = callback_error
+            && !(kind == NativeHostErrorKind::StaleBinding
+                && self.retirements.is_quiescence_candidate(failure.binding()))
+        {
+            self.callback_errors.push_back(error);
+        }
         Ok(true)
     }
 
@@ -771,6 +975,13 @@ impl NativeCoordinator {
         }
         drop(viewports);
         self.receivers.retire_binding(failure.binding());
+        let retained = self
+            .retirements
+            .begin_unmaterialized_quiescence(failure.binding());
+        debug_assert!(
+            retained || self.retirements.has_quiescence_owner(failure.binding()),
+            "a failed native create retains one exact quiescence owner"
+        );
         Ok(())
     }
 
@@ -866,6 +1077,7 @@ impl NativeCoordinator {
             return Ok(false);
         };
         let disposition = self.input_control.classify(record);
+        let mut callback_error = None;
         match disposition {
             NativeInputResultDisposition::Unrelated => {
                 if record.status() == NativeViewportPointerPassthroughStatus::Applied
@@ -874,10 +1086,9 @@ impl NativeCoordinator {
                     let route = self.exact_window_route_for_binding(binding);
                     if route == Some((record.viewport(), record.window()))
                         && self.session.is_current_native_binding(binding)
+                        && self.input_control.observe_unowned_applied(record)
                     {
-                        if self.input_control.observe_applied(record, None) {
-                            self.bridge.invalidate_viewport_roster();
-                        }
+                        self.bridge.invalidate_viewport_roster();
                     }
                 }
             }
@@ -886,24 +1097,9 @@ impl NativeCoordinator {
                     && self.exact_window_route_for_binding(binding)
                         == Some((record.viewport(), record.window())) =>
             {
-                let request = self
-                    .input_control
-                    .take_request(record)
-                    .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
                 match status {
                     NativeViewportPointerPassthroughStatus::Applied => {
-                        let Some(NativeEffectAcknowledgement::Input(acknowledgement)) =
-                            request.accepted()
-                        else {
-                            return Err(
-                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
-                                    .into(),
-                            );
-                        };
-                        if !self
-                            .input_control
-                            .observe_applied(record, Some(acknowledgement))
-                        {
+                        if !self.input_control.accept_applied(record) {
                             return Err(
                                 NativeHostProtocolError::NativeInputCorrelationChanged.into()
                             );
@@ -911,23 +1107,31 @@ impl NativeCoordinator {
                         self.bridge.invalidate_viewport_roster();
                     }
                     NativeViewportPointerPassthroughStatus::Unsupported => {
-                        self.submit_unsupported_effect(request)?;
-                        debug_assert!(self.input_control.complete_failed(record));
+                        let result = self
+                            .input_control
+                            .take_unsupported_result(record)
+                            .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
+                        callback_error = self.report_callback_terminal_result(result);
                     }
                     NativeViewportPointerPassthroughStatus::Failed => {
-                        self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
-                        debug_assert!(self.input_control.complete_failed(record));
+                        let result = self
+                            .input_control
+                            .take_dispatch_failure_result(
+                                record,
+                                NativeDispatchFailure::AdapterRejected,
+                            )
+                            .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
+                        callback_error = self.report_callback_terminal_result(result);
                     }
                 }
             }
             NativeInputResultDisposition::Current { binding, .. }
             | NativeInputResultDisposition::Stale { binding } => {
-                let request = self
+                let result = self
                     .input_control
-                    .take_request(record)
+                    .take_dispatch_failure_result(record, NativeDispatchFailure::AdapterRejected)
                     .ok_or(NativeHostProtocolError::NativeInputCorrelationChanged)?;
-                self.submit_failed_effect(request, NativeDispatchFailure::AdapterRejected)?;
-                debug_assert!(self.input_control.complete_failed(record));
+                callback_error = self.report_callback_terminal_result(result);
                 debug_assert!(
                     !self.session.is_current_native_binding(binding)
                         || self.exact_window_route_for_binding(binding)
@@ -941,7 +1145,31 @@ impl NativeCoordinator {
                 NativeHostProtocolError::ViewportPointerPassthroughAcknowledgementMismatch.into(),
             );
         }
+        if let Some((_, error)) = callback_error {
+            self.callback_errors.push_back(error);
+        }
         Ok(true)
+    }
+
+    fn report_callback_terminal_result(
+        &mut self,
+        result: NativeEffectResult,
+    ) -> Option<(NativeHostErrorKind, NativeRuntimeError)> {
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            let (kind, result) = error.into_parts();
+            let error = self.retain_rejected_effect_result(kind, result);
+            Some((kind, error))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn take_callback_error(&mut self) -> Option<NativeRuntimeError> {
+        self.callback_errors.pop_front()
+    }
+
+    fn take_callback_errors(&mut self) -> Vec<NativeRuntimeError> {
+        self.callback_errors.drain(..).collect()
     }
 
     fn reduce_next_global_focus(&mut self) -> Result<bool, NativeRuntimeError> {
@@ -954,6 +1182,12 @@ impl NativeCoordinator {
         if !self.bridge.acknowledge_global_focus(record) {
             return Err(NativeHostProtocolError::GlobalFocusAcknowledgementMismatch.into());
         }
+        if let NativeGlobalFocus::Dock(binding) = record.focus()
+            && let Some(request) = self.focus_control.take_observed(binding)
+            && request.accepted().is_some()
+        {
+            return Err(NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into());
+        }
         Ok(true)
     }
 
@@ -963,6 +1197,7 @@ impl NativeCoordinator {
             return Ok(false);
         };
         let disposition = self.focus_control.classify(record);
+        let mut callback_error = None;
         match disposition {
             NativeFocusResultDisposition::Unrelated => {}
             NativeFocusResultDisposition::Current { binding, status }
@@ -974,34 +1209,55 @@ impl NativeCoordinator {
                         .focus_binding_for_event(record.window(), Some(record.viewport()))
                         == Some(binding) =>
             {
-                if status == NativeViewportFocusStatus::AlreadyFocused {
-                    self.session
-                        .report_native_global_focus(NativeGlobalFocus::Dock(binding))?;
-                }
-                let request = self
-                    .focus_control
-                    .take(record)
-                    .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
-                if request.accepted().is_some() {
-                    return Err(
-                        NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement.into(),
-                    );
+                match status {
+                    NativeViewportFocusStatus::AlreadyFocused => {
+                        self.session
+                            .report_native_global_focus(NativeGlobalFocus::Dock(binding))?;
+                        let request = self
+                            .focus_control
+                            .take_callback(record)
+                            .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
+                        if request.accepted().is_some() {
+                            return Err(
+                                NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement
+                                    .into(),
+                            );
+                        }
+                    }
+                    NativeViewportFocusStatus::Requested => {
+                        if !self.focus_control.mark_requested(record) {
+                            return Err(
+                                NativeHostProtocolError::NativeFocusCorrelationChanged.into()
+                            );
+                        }
+                    }
                 }
             }
             NativeFocusResultDisposition::Current { binding, .. }
             | NativeFocusResultDisposition::Stale { binding } => {
                 let request = self
                     .focus_control
-                    .take(record)
+                    .take_callback(record)
                     .ok_or(NativeHostProtocolError::NativeFocusCorrelationChanged)?;
                 let result = request.dispatch_failed(NativeDispatchFailure::AdapterRejected);
-                if let Err(error) = self.session.report_native_effect_result(result) {
-                    self.retain_or_return_effect_result(binding, error)?;
-                }
+                callback_error = self.report_callback_terminal_result(result);
+                debug_assert!(
+                    !self.session.is_current_native_binding(binding)
+                        || self
+                            .viewports
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .focus_binding_for_event(record.window(), Some(record.viewport()))
+                            != Some(binding),
+                    "a current focus callback must take the exact route branch"
+                );
             }
         }
         if !self.bridge.acknowledge_viewport_focus(record) {
             return Err(NativeHostProtocolError::ViewportFocusAcknowledgementMismatch.into());
+        }
+        if let Some((_, error)) = callback_error {
+            self.callback_errors.push_back(error);
         }
         Ok(true)
     }
@@ -1041,22 +1297,30 @@ impl NativeCoordinator {
         if current != Some(record.binding())
             || !self.session.is_current_native_binding(record.binding())
         {
+            let callback_error = self
+                .effects
+                .take_show(record.binding())
+                .and_then(|request| {
+                    self.report_callback_terminal_result(
+                        request.dispatch_failed(NativeDispatchFailure::AdapterRejected),
+                    )
+                });
             self.acknowledge_viewport_visibility(record)?;
+            if let Some((_, error)) = callback_error {
+                self.callback_errors.push_back(error);
+            }
             return Ok(true);
         }
         if !record.visible() {
             self.acknowledge_viewport_visibility(record)?;
             return Ok(true);
         }
-        let Some(pending) = self.effects.take_show(record.binding()) else {
+        let Some(request) = self.effects.take_show(record.binding()) else {
             self.acknowledge_viewport_visibility(record)?;
             return Ok(true);
         };
-        match (record.status(), pending) {
-            (
-                NativeViewportVisibilityStatus::Dispatched,
-                PendingShowEffect::AwaitingDispatch(request),
-            ) => {
+        let callback_error = match record.status() {
+            NativeViewportVisibilityStatus::Dispatched => {
                 let Some(NativeEffectAcknowledgement::Presentation(acknowledgement)) =
                     request.accepted()
                 else {
@@ -1067,35 +1331,18 @@ impl NativeCoordinator {
                 self.pending_presentation_acknowledgements
                     .insert(record.binding(), acknowledgement);
                 self.bridge.invalidate_viewport_roster();
+                None
             }
-            (
-                NativeViewportVisibilityStatus::Unsupported,
-                PendingShowEffect::AwaitingDispatch(request),
-            ) => {
+            NativeViewportVisibilityStatus::Unsupported => {
                 let result = request.unsupported(NativeUnsupportedReason::BackendUnsupported);
-                self.report_or_retain_show_result(record.binding(), result)?;
+                self.report_callback_terminal_result(result)
             }
-            (_, PendingShowEffect::AwaitingUnsupportedReport(result)) => {
-                self.report_or_retain_show_result(record.binding(), result)?;
-            }
-        }
+        };
         self.acknowledge_viewport_visibility(record)?;
-        Ok(true)
-    }
-
-    fn report_or_retain_show_result(
-        &mut self,
-        binding: NativeSurfaceBinding,
-        result: NativeEffectResult,
-    ) -> Result<(), NativeRuntimeError> {
-        if let Err(error) = self.session.report_native_effect_result(result) {
-            let (kind, result) = error.into_parts();
-            self.effects
-                .restore_show_result(binding, result)
-                .map_err(|_| NativeHostProtocolError::UnexpectedViewportEffectAcknowledgement)?;
-            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
+        if let Some((_, error)) = callback_error {
+            self.callback_errors.push_back(error);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn has_pending_presentation_effect(&self, binding: NativeSurfaceBinding) -> bool {
@@ -1680,15 +1927,9 @@ impl NativeCoordinator {
     }
 
     fn cancel_undispatched_control_commands(&mut self) {
-        if let Some(command) = self.input_control.quarantine_cancellable_front() {
-            debug_assert!(self.input_control.cancel_quarantine_candidate(command));
-        }
-        if let Some((viewport, binding)) = self.focus_control.pending_command()
-            && self
-                .effects
-                .remove_command(viewport, binding, &ViewportCommand::Focus)
-        {
-            self.focus_control.cancel_pending();
+        self.input_control.begin_quarantine();
+        if let Some(binding) = self.focus_control.pending_binding() {
+            self.terminalize_queued_focus(binding);
         }
     }
 

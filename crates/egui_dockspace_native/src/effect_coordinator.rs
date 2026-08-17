@@ -59,26 +59,13 @@ impl NativeViewportEffectPlan {
 #[derive(Debug)]
 struct PendingViewportEffect {
     plan: NativeViewportEffectPlan,
-    state: PendingViewportEffectState,
-}
-
-#[derive(Debug)]
-enum PendingViewportEffectState {
-    AwaitingCallback(NativeEffectRequest),
-    FailureResult(NativeEffectResult),
-    FailureReported,
-}
-
-#[derive(Debug)]
-pub(crate) enum PendingShowEffect {
-    AwaitingDispatch(NativeEffectRequest),
-    AwaitingUnsupportedReport(NativeEffectResult),
+    request: NativeEffectRequest,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct NativeEffectCoordinator {
     pending_viewports: BTreeMap<ViewportId, PendingViewportEffect>,
-    pending_shows: BTreeMap<NativeSurfaceBinding, PendingShowEffect>,
+    pending_shows: BTreeMap<NativeSurfaceBinding, NativeEffectRequest>,
     pending_commands: Vec<PendingViewportCommand>,
 }
 
@@ -99,13 +86,7 @@ impl NativeEffectCoordinator {
     pub(crate) fn awaiting_viewport_callbacks(
         &self,
     ) -> impl Iterator<Item = NativeViewportEffectPlan> + '_ {
-        self.pending_viewports.values().filter_map(|pending| {
-            matches!(
-                pending.state,
-                PendingViewportEffectState::AwaitingCallback(_)
-            )
-            .then_some(pending.plan)
-        })
+        self.pending_viewports.values().map(|pending| pending.plan)
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -173,28 +154,15 @@ impl NativeEffectCoordinator {
         if self.pending_shows.contains_key(&binding) {
             return Err(request);
         }
-        self.pending_shows
-            .insert(binding, PendingShowEffect::AwaitingDispatch(request));
+        self.pending_shows.insert(binding, request);
         Ok(())
     }
 
-    pub(crate) fn take_show(&mut self, binding: NativeSurfaceBinding) -> Option<PendingShowEffect> {
-        self.pending_shows.remove(&binding)
-    }
-
-    pub(crate) fn restore_show_result(
+    pub(crate) fn take_show(
         &mut self,
         binding: NativeSurfaceBinding,
-        result: NativeEffectResult,
-    ) -> Result<(), NativeEffectResult> {
-        if self.pending_shows.contains_key(&binding) {
-            return Err(result);
-        }
-        self.pending_shows.insert(
-            binding,
-            PendingShowEffect::AwaitingUnsupportedReport(result),
-        );
-        Ok(())
+    ) -> Option<NativeEffectRequest> {
+        self.pending_shows.remove(&binding)
     }
 
     pub(crate) fn remove_show(&mut self, binding: NativeSurfaceBinding) {
@@ -249,13 +217,8 @@ impl NativeEffectCoordinator {
         if self.pending_viewports.contains_key(&plan.viewport) {
             return Err(request);
         }
-        self.pending_viewports.insert(
-            plan.viewport,
-            PendingViewportEffect {
-                plan,
-                state: PendingViewportEffectState::AwaitingCallback(request),
-            },
-        );
+        self.pending_viewports
+            .insert(plan.viewport, PendingViewportEffect { plan, request });
         Ok(())
     }
 
@@ -272,99 +235,29 @@ impl NativeEffectCoordinator {
             .pending_viewports
             .remove(&viewport)
             .expect("the matching pending viewport effect remains present");
-        match pending.state {
-            PendingViewportEffectState::AwaitingCallback(request) => Some(request),
-            state @ (PendingViewportEffectState::FailureResult(_)
-            | PendingViewportEffectState::FailureReported) => {
-                self.pending_viewports
-                    .insert(viewport, PendingViewportEffect { state, ..pending });
-                None
-            }
-        }
-    }
-
-    pub(crate) fn prepare_failure(&mut self, failure: NativeViewportCreateFailureRecord) -> bool {
-        let Some(pending) = self.pending_viewports.get_mut(&failure.viewport()) else {
-            return false;
-        };
-        if pending.plan.binding != failure.binding() {
-            return false;
-        }
-        let state = std::mem::replace(
-            &mut pending.state,
-            PendingViewportEffectState::FailureReported,
-        );
-        pending.state = match state {
-            PendingViewportEffectState::AwaitingCallback(request) => {
-                PendingViewportEffectState::FailureResult(match failure.kind() {
-                    NativeViewportCreateFailureKind::WindowUnavailable => {
-                        request.dispatch_failed(NativeDispatchFailure::WindowUnavailable)
-                    }
-                    NativeViewportCreateFailureKind::VisibilityUnsupported => {
-                        request.unsupported(NativeUnsupportedReason::BackendUnsupported)
-                    }
-                })
-            }
-            state @ (PendingViewportEffectState::FailureResult(_)
-            | PendingViewportEffectState::FailureReported) => state,
-        };
-        true
+        Some(pending.request)
     }
 
     pub(crate) fn take_failure_result(
         &mut self,
         failure: NativeViewportCreateFailureRecord,
     ) -> Option<NativeEffectResult> {
-        let pending = self.pending_viewports.get_mut(&failure.viewport())?;
+        let pending = self.pending_viewports.get(&failure.viewport())?;
         if pending.plan.binding != failure.binding() {
             return None;
         }
-        let state = std::mem::replace(
-            &mut pending.state,
-            PendingViewportEffectState::FailureReported,
-        );
-        match state {
-            PendingViewportEffectState::FailureResult(result) => Some(result),
-            state @ (PendingViewportEffectState::AwaitingCallback(_)
-            | PendingViewportEffectState::FailureReported) => {
-                pending.state = state;
-                None
-            }
-        }
-    }
-
-    pub(crate) fn restore_failure_result(
-        &mut self,
-        failure: NativeViewportCreateFailureRecord,
-        result: NativeEffectResult,
-    ) -> Result<(), NativeEffectResult> {
-        let Some(pending) = self.pending_viewports.get_mut(&failure.viewport()) else {
-            return Err(result);
-        };
-        if pending.plan.binding != failure.binding()
-            || !matches!(pending.state, PendingViewportEffectState::FailureReported)
-        {
-            return Err(result);
-        }
-        pending.state = PendingViewportEffectState::FailureResult(result);
-        Ok(())
-    }
-
-    pub(crate) fn failure_reported(&self, failure: NativeViewportCreateFailureRecord) -> bool {
-        self.pending_viewports
-            .get(&failure.viewport())
-            .is_some_and(|pending| {
-                pending.plan.binding == failure.binding()
-                    && matches!(pending.state, PendingViewportEffectState::FailureReported)
-            })
-    }
-
-    pub(crate) fn finish_failure(&mut self, failure: NativeViewportCreateFailureRecord) -> bool {
-        if !self.failure_reported(failure) {
-            return false;
-        }
-        self.pending_viewports.remove(&failure.viewport());
-        true
+        let pending = self
+            .pending_viewports
+            .remove(&failure.viewport())
+            .expect("the matching pending viewport effect remains present");
+        Some(match failure.kind() {
+            NativeViewportCreateFailureKind::WindowUnavailable => pending
+                .request
+                .dispatch_failed(NativeDispatchFailure::WindowUnavailable),
+            NativeViewportCreateFailureKind::VisibilityUnsupported => pending
+                .request
+                .unsupported(NativeUnsupportedReason::BackendUnsupported),
+        })
     }
 
     pub(crate) fn remove_unstarted(
@@ -379,19 +272,6 @@ impl NativeEffectCoordinator {
             .pending_viewports
             .remove(&plan.viewport)
             .expect("the matching pending viewport effect remains present");
-        match pending.state {
-            PendingViewportEffectState::AwaitingCallback(request) => Some(request),
-            state @ (PendingViewportEffectState::FailureResult(_)
-            | PendingViewportEffectState::FailureReported) => {
-                self.pending_viewports.insert(
-                    plan.viewport,
-                    PendingViewportEffect {
-                        plan: pending.plan,
-                        state,
-                    },
-                );
-                None
-            }
-        }
+        Some(pending.request)
     }
 }

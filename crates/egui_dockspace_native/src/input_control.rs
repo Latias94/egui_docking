@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use dockspace::runtime::{
-    NativeEffectRequest, NativeInputEffectAcknowledgement, NativeSurfaceBinding,
-    NativeWindowInputState,
+    NativeDispatchFailure, NativeEffectAcknowledgement, NativeEffectRequest, NativeEffectResult,
+    NativeIndeterminateReason, NativeInputEffectAcknowledgement, NativeSurfaceBinding,
+    NativeUnsupportedReason, NativeWindowInputState,
 };
 use eframe::{
     NativeViewportPointerPassthroughCommandToken, NativeViewportPointerPassthroughResult,
@@ -113,9 +114,6 @@ enum PendingNativeInputState {
         request: NativeEffectRequest,
         token: NativeViewportPointerPassthroughCommandToken,
     },
-    ResolvingCallback {
-        token: NativeViewportPointerPassthroughCommandToken,
-    },
     AwaitingSnapshot,
 }
 
@@ -134,8 +132,7 @@ impl PendingNativeInput {
             && self.window == record.window
             && self.enabled == record.enabled
             && match &self.state {
-                PendingNativeInputState::AwaitingCallback { token, .. }
-                | PendingNativeInputState::ResolvingCallback { token } => *token == record.token,
+                PendingNativeInputState::AwaitingCallback { token, .. } => *token == record.token,
                 PendingNativeInputState::Queued(_) | PendingNativeInputState::AwaitingSnapshot => {
                     false
                 }
@@ -175,6 +172,7 @@ pub(crate) enum NativeInputResultDisposition {
 pub(crate) struct NativeInputControl {
     pending: VecDeque<PendingNativeInput>,
     observations: BTreeMap<NativeSurfaceBinding, NativeInputObservation>,
+    quarantined: bool,
 }
 
 impl NativeInputControl {
@@ -270,62 +268,51 @@ impl NativeInputControl {
         }
     }
 
-    pub(crate) fn take_request(
-        &mut self,
-        record: NativePointerPassthroughRecord,
-    ) -> Option<NativeEffectRequest> {
-        if matches!(
-            self.classify(record),
-            NativeInputResultDisposition::Unrelated
-        ) {
-            return None;
+    pub(crate) fn accept_applied(&mut self, record: NativePointerPassthroughRecord) -> bool {
+        let NativeInputResultDisposition::Current { binding, status } = self.classify(record)
+        else {
+            return false;
+        };
+        if status != NativeViewportPointerPassthroughStatus::Applied {
+            return false;
         }
-        let pending = self.pending.front_mut()?;
-        let PendingNativeInputState::AwaitingCallback { request, token } = std::mem::replace(
+        let Some(pending) = self.pending.front_mut() else {
+            return false;
+        };
+        let state = std::mem::replace(
             &mut pending.state,
             PendingNativeInputState::AwaitingSnapshot,
-        ) else {
-            unreachable!("classified callback must retain its affine request")
+        );
+        let PendingNativeInputState::AwaitingCallback { request, token } = state else {
+            pending.state = state;
+            return false;
         };
-        pending.state = PendingNativeInputState::ResolvingCallback { token };
-        Some(request)
+        debug_assert_eq!(token, record.token);
+        let Some(NativeEffectAcknowledgement::Input(acknowledgement)) = request.accepted() else {
+            unreachable!("pointer pass-through effects carry input acknowledgements")
+        };
+        self.observations.insert(
+            binding,
+            NativeInputObservation {
+                state: record.state(),
+                acknowledgement: Some(acknowledgement),
+            },
+        );
+        true
     }
 
-    pub(crate) fn observe_applied(
+    pub(crate) fn observe_unowned_applied(
         &mut self,
         record: NativePointerPassthroughRecord,
-        acknowledgement: Option<NativeInputEffectAcknowledgement>,
     ) -> bool {
         let Some(binding) = record.binding else {
             return false;
         };
-        if let Some(acknowledgement) = acknowledgement {
-            let Some(pending) = self.pending.front_mut() else {
-                return false;
-            };
-            if pending.binding != binding
-                || !matches!(
-                    pending.state,
-                    PendingNativeInputState::ResolvingCallback { .. }
-                )
-                || !pending.matches_callback(record)
-            {
-                return false;
-            }
-            pending.state = PendingNativeInputState::AwaitingSnapshot;
-            self.observations.insert(
-                binding,
-                NativeInputObservation {
-                    state: record.state(),
-                    acknowledgement: Some(acknowledgement),
-                },
-            );
-            return true;
-        }
-        if self
-            .pending
-            .iter()
-            .any(|pending| pending.binding == binding)
+        if record.status != NativeViewportPointerPassthroughStatus::Applied
+            || self
+                .pending
+                .iter()
+                .any(|pending| pending.binding == binding)
         {
             return false;
         }
@@ -339,19 +326,49 @@ impl NativeInputControl {
         true
     }
 
-    pub(crate) fn complete_failed(&mut self, record: NativePointerPassthroughRecord) -> bool {
-        let Some(pending) = self.pending.front() else {
-            return false;
-        };
-        if !matches!(
-            pending.state,
-            PendingNativeInputState::ResolvingCallback { .. }
-        ) || !pending.matches_callback(record)
-        {
-            return false;
+    pub(crate) fn take_unsupported_result(
+        &mut self,
+        record: NativePointerPassthroughRecord,
+    ) -> Option<NativeEffectResult> {
+        self.take_failure_result(record, |request| {
+            request.unsupported(NativeUnsupportedReason::BackendUnsupported)
+        })
+    }
+
+    pub(crate) fn take_dispatch_failure_result(
+        &mut self,
+        record: NativePointerPassthroughRecord,
+        reason: NativeDispatchFailure,
+    ) -> Option<NativeEffectResult> {
+        self.take_failure_result(record, |request| request.dispatch_failed(reason))
+    }
+
+    fn take_failure_result(
+        &mut self,
+        record: NativePointerPassthroughRecord,
+        into_result: impl FnOnce(NativeEffectRequest) -> NativeEffectResult,
+    ) -> Option<NativeEffectResult> {
+        if matches!(
+            self.classify(record),
+            NativeInputResultDisposition::Unrelated
+        ) {
+            return None;
         }
-        self.pending.pop_front();
-        true
+        let pending = self.pending.pop_front()?;
+        if !pending.matches_callback(record) {
+            self.pending.push_front(pending);
+            return None;
+        }
+        match pending {
+            PendingNativeInput {
+                state: PendingNativeInputState::AwaitingCallback { request, .. },
+                ..
+            } => Some(into_result(request)),
+            pending => {
+                self.pending.push_front(pending);
+                None
+            }
+        }
     }
 
     pub(crate) fn settle_snapshot(&mut self, acknowledged: Option<NativeSurfaceBinding>) -> bool {
@@ -384,9 +401,29 @@ impl NativeInputControl {
             .map(|observation| (observation.state, observation.acknowledgement))
     }
 
-    pub(crate) fn retire_binding(&mut self, binding: NativeSurfaceBinding) {
+    pub(crate) fn retire_binding(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> Vec<NativeEffectResult> {
         self.observations.remove(&binding);
-        self.pending.retain(|pending| pending.binding != binding);
+        let mut retained = VecDeque::with_capacity(self.pending.len());
+        let mut results = Vec::new();
+        while let Some(pending) = self.pending.pop_front() {
+            if pending.binding != binding {
+                retained.push_back(pending);
+                continue;
+            }
+            match pending.state {
+                PendingNativeInputState::Queued(request) => {
+                    results.push(request.dispatch_failed(NativeDispatchFailure::ProviderStopped));
+                }
+                PendingNativeInputState::AwaitingCallback { request, .. } => results
+                    .push(request.indeterminate(NativeIndeterminateReason::AcknowledgementLost)),
+                PendingNativeInputState::AwaitingSnapshot => {}
+            }
+        }
+        self.pending = retained;
+        results
     }
 
     pub(crate) fn references_binding(&self, binding: NativeSurfaceBinding) -> bool {
@@ -397,24 +434,46 @@ impl NativeInputControl {
                 .any(|pending| pending.binding == binding)
     }
 
-    pub(crate) fn quarantine_cancellable_front(&self) -> Option<NativePointerPassthroughCommand> {
-        let pending = self.pending.front()?;
-        (pending.enabled && matches!(pending.state, PendingNativeInputState::Queued(_)))
-            .then(|| pending.command())
-    }
-
-    pub(crate) fn cancel_quarantine_candidate(
+    pub(crate) fn fail_queued_dispatch(
         &mut self,
         expected: NativePointerPassthroughCommand,
-    ) -> bool {
+    ) -> Option<NativeEffectResult> {
         let matches = self.pending.front().is_some_and(|pending| {
-            pending.enabled
-                && matches!(pending.state, PendingNativeInputState::Queued(_))
+            matches!(pending.state, PendingNativeInputState::Queued(_))
                 && pending.command() == expected
         });
-        if matches {
-            self.pending.clear();
+        if !matches {
+            return None;
         }
-        matches
+        let pending = self
+            .pending
+            .pop_front()
+            .expect("the exact queued input command was inspected");
+        let PendingNativeInputState::Queued(request) = pending.state else {
+            unreachable!("the exact queued input command retains its affine request")
+        };
+        Some(request.indeterminate(NativeIndeterminateReason::AcknowledgementLost))
+    }
+
+    pub(crate) fn begin_quarantine(&mut self) {
+        self.quarantined = true;
+    }
+
+    pub(crate) fn cancel_quarantined_front(&mut self) -> Option<NativeEffectResult> {
+        let cancellable = self.quarantined
+            && self.pending.front().is_some_and(|pending| {
+                pending.enabled && matches!(pending.state, PendingNativeInputState::Queued(_))
+            });
+        if !cancellable {
+            return None;
+        }
+        let pending = self
+            .pending
+            .pop_front()
+            .expect("the quarantined input command was inspected");
+        let PendingNativeInputState::Queued(request) = pending.state else {
+            unreachable!("the quarantined input command retains its affine request")
+        };
+        Some(request.dispatch_failed(NativeDispatchFailure::ProviderStopped))
     }
 }

@@ -4,7 +4,10 @@ use dockspace::runtime::{
 use eframe::{NativeGlobalFocus as EframeGlobalFocus, NativeViewportFocusStatus};
 
 use super::*;
-use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
+use crate::focus_control::{
+    NativeFocusControl, NativeFocusTermination, NativeGlobalFocusRecord,
+    NativeViewportFocusRecord,
+};
 
 #[test]
 fn global_focus_before_the_first_roster_uses_the_initial_capability_snapshot() {
@@ -171,4 +174,62 @@ fn unrelated_viewport_focus_result_is_acknowledged_without_inventing_focus() {
             .iter()
             .any(|input| matches!(input, HostInputOutcome::NativeFocusObservationApplied))
     );
+}
+
+#[test]
+fn global_focus_completes_only_after_the_requested_callback() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+    let mut focus = NativeFocusControl::<u8>::default();
+    focus
+        .retain(viewport, window, binding, 7)
+        .expect("the test focus request is retained");
+    assert!(focus.mark_dispatched(viewport));
+
+    assert_eq!(
+        focus.take_observed(binding),
+        None,
+        "an older global focus fact cannot complete a command awaiting its dispatch callback"
+    );
+
+    let requested = NativeViewportFocusRecord::for_test(
+        viewport,
+        window,
+        Some(binding),
+        NativeViewportFocusStatus::Requested,
+    );
+    assert!(focus.mark_requested(requested));
+    assert_eq!(focus.take_observed(binding), Some(7));
+}
+
+#[test]
+fn quarantine_cancels_only_an_undispatched_focus_request() {
+    let mut native = coordinator();
+    let (binding, _) = register_roots(&mut native);
+    let viewport = ViewportId::ROOT;
+    let window = WindowId::from(11);
+    let mut focus = NativeFocusControl::<u8>::default();
+    focus
+        .retain(viewport, window, binding, 7)
+        .expect("the queued test focus request is retained");
+    assert!(matches!(
+        focus.take_queued_terminal(binding),
+        Some(NativeFocusTermination::Queued {
+            viewport: queued_viewport,
+            request: 7,
+        }) if queued_viewport == viewport
+    ));
+
+    focus
+        .retain(viewport, window, binding, 9)
+        .expect("the dispatched test focus request is retained");
+    assert!(focus.mark_dispatched(viewport));
+    assert!(focus.take_queued_terminal(binding).is_none());
+    assert!(focus.references_binding(binding));
+    assert!(matches!(
+        focus.take_terminal(binding),
+        Some(NativeFocusTermination::Dispatched(9))
+    ));
 }

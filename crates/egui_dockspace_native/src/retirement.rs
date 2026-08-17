@@ -4,7 +4,7 @@
 //! acknowledgement and the exact eframe route until the operating system
 //! reports destruction and the corresponding core frame commits.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::runtime::{
     NativeCleanupObservation, NativeCloseEffectAcknowledgement, NativeEffectResult,
@@ -128,11 +128,46 @@ impl CommittedRetirement {
 #[derive(Debug, Default)]
 pub(crate) struct NativeRetirementState {
     pending: BTreeMap<NativeSurfaceBinding, PendingRetirement>,
+    unmaterialized: BTreeSet<NativeSurfaceBinding>,
 }
 
 impl NativeRetirementState {
     pub(crate) fn has_pending_work(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.unmaterialized.is_empty()
+    }
+
+    /// Retains a native lifetime which definitively failed before an OS window
+    /// existed. No Destroyed observation is possible for this path, so exact
+    /// adapter quiescence is the only remaining terminal boundary.
+    pub(crate) fn begin_unmaterialized_quiescence(
+        &mut self,
+        binding: NativeSurfaceBinding,
+    ) -> bool {
+        if self.pending_for_lifetime(binding).is_some()
+            || self
+                .unmaterialized
+                .iter()
+                .any(|candidate| candidate.same_window_lifetime(binding))
+        {
+            return false;
+        }
+        self.unmaterialized.insert(binding)
+    }
+
+    pub(crate) fn has_quiescence_owner(&self, binding: NativeSurfaceBinding) -> bool {
+        self.pending_for_lifetime(binding).is_some()
+            || self
+                .unmaterialized
+                .iter()
+                .any(|candidate| candidate.same_window_lifetime(binding))
+    }
+
+    pub(crate) fn is_quiescence_candidate(&self, binding: NativeSurfaceBinding) -> bool {
+        self.unmaterialized.contains(&binding)
+            || self
+                .pending
+                .get(&binding)
+                .is_some_and(|pending| pending.phase == RetirementPhase::RouteRetired)
     }
 
     pub(crate) fn requires_snapshot(&self) -> bool {
@@ -429,12 +464,18 @@ impl NativeRetirementState {
     }
 
     pub(crate) fn quiescence_candidates(&self) -> impl Iterator<Item = NativeSurfaceBinding> + '_ {
-        self.pending.iter().filter_map(|(binding, pending)| {
-            (pending.phase == RetirementPhase::RouteRetired).then_some(*binding)
-        })
+        self.pending
+            .iter()
+            .filter_map(|(binding, pending)| {
+                (pending.phase == RetirementPhase::RouteRetired).then_some(*binding)
+            })
+            .chain(self.unmaterialized.iter().copied())
     }
 
     pub(crate) fn finish_quiescence(&mut self, binding: NativeSurfaceBinding) -> bool {
+        if self.unmaterialized.remove(&binding) {
+            return true;
+        }
         if !self
             .pending
             .get(&binding)

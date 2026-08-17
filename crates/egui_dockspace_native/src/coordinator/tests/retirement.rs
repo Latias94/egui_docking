@@ -382,9 +382,7 @@ fn shutdown_drains_destroyed_child_to_quiescence_without_paint() {
     native.bridge.push_viewport_roster(live_roster([root]));
 
     for phase in ["destroyed", "roster", "route", "quiescence"] {
-        let advance = native
-            .advance_shutdown_boundary()
-            .unwrap_or_else(|error| panic!("shutdown {phase} boundary failed: {error}"));
+        let advance = native.advance_shutdown_boundary();
         assert!(
             advance.progress,
             "shutdown {phase} boundary made no progress"

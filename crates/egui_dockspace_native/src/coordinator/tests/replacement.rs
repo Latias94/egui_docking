@@ -192,9 +192,7 @@ fn shutdown_cancels_unadmitted_replacement_without_retiring_its_predecessor() {
     );
     assert!(!native.session.recognizes_native_binding(predecessor));
 
-    let advance = native
-        .advance_shutdown_boundary()
-        .expect("the provider-stopped replacement result commits");
+    let advance = native.advance_shutdown_boundary();
     assert!(advance.commands.is_empty());
     assert!(advance.abandoned_outputs.is_empty());
     assert!(!native.session.is_current_native_binding(successor));

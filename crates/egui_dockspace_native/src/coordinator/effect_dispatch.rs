@@ -43,22 +43,11 @@ impl NativeCoordinator {
             binding,
             NativeViewportCreateFailureKind::WindowUnavailable,
         );
-        if !self.effects.prepare_failure(failure) {
+        let Some(result) = self.effects.take_failure_result(failure) else {
             return Ok(());
-        }
-        if let Some(result) = self.effects.take_failure_result(failure)
-            && let Err(error) = self.session.report_native_effect_result(result)
-        {
-            let (kind, result) = error.into_parts();
-            self.effects
-                .restore_failure_result(failure, result)
-                .unwrap_or_else(|_| {
-                    panic!("destroyed native effect lost its retryable terminal result")
-                });
-            return Err(NativeHostProtocolError::NativeEffectResultRejected(kind).into());
-        }
-        if self.effects.failure_reported(failure) {
-            debug_assert!(self.effects.finish_failure(failure));
+        };
+        if let Err(error) = self.session.report_native_effect_result(result) {
+            return self.retain_or_return_effect_result(binding, error);
         }
         Ok(())
     }
@@ -79,9 +68,9 @@ impl NativeCoordinator {
         );
         self.deferred_viewports.remove(binding);
         self.effects.remove_show(binding);
+        self.terminalize_focus(binding);
         self.effects.remove_commands(binding);
-        self.focus_control.retire_binding(binding);
-        self.input_control.retire_binding(binding);
+        self.retain_retired_input_results(binding);
         self.receivers.retire_binding(binding);
         for token in self.bridge.retire_deferred_binding(viewport, binding) {
             self.pending_outputs.remove(&token);
@@ -470,14 +459,14 @@ impl NativeCoordinator {
             || !result.can_be_correlated_by_cleanup()
             || !matches!(kind, NativeHostErrorKind::StaleBinding)
         {
-            return Err(Self::fatal_effect_submission(kind, result));
+            return Err(self.retain_rejected_effect_result(kind, result));
         }
         if self.retirements.cleanup_is_terminal(binding) {
             drop(result);
             return Ok(());
         }
         if !self.retirements.can_accept_cleanup_result(binding) {
-            return Err(Self::fatal_effect_submission(kind, result));
+            return Err(self.retain_rejected_effect_result(kind, result));
         }
         match self.retirements.retain_cleanup_result(binding, result) {
             Ok(Some(correlated)) => self.report_cleanup_result(binding, correlated),
@@ -486,19 +475,17 @@ impl NativeCoordinator {
                 Err(NativeHostProtocolError::CleanupRelayConflict.into())
             }
             Err(CleanupResultRetentionError::Occupied(result)) => {
-                Err(Self::fatal_effect_submission(kind, result))
+                Err(self.retain_rejected_effect_result(kind, result))
             }
         }
     }
 
-    fn fatal_effect_submission(
+    pub(super) fn retain_rejected_effect_result(
+        &mut self,
         kind: NativeHostErrorKind,
         result: NativeEffectResult,
     ) -> NativeRuntimeError {
-        // The application treats host-protocol errors as terminal and drops
-        // the whole coordinator/session. Do not expose a misleading recovery
-        // capability whose owning session can no longer make progress.
-        drop(result);
+        self.queue_pending_effect_result(result, Some(kind));
         NativeHostProtocolError::NativeEffectResultRejected(kind).into()
     }
 
