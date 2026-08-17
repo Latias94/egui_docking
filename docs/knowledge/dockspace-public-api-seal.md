@@ -12,9 +12,12 @@ command, transaction, canonicalization, validation, and runtime identity modules
 private under every non-test feature combination. Product construction uses
 `DockspaceLayout`, read access uses `DockspaceView`, mutations use revision-bound
 product actions, and close plus persistence publication pass through the same
-session-owned host frame. Remaining API-seal work belongs to the unpublished
-native adapter and the deferred Open-GPUI cutover; it must not widen the sealed
-core or official-egui product boundary.
+session-owned host frame. The core and official-egui boundary now passes strict
+public rustdoc, the default-feature product consumer, the official-egui
+downstream consumer, core package verification, and the adapter package
+file-list check. Remaining API-seal work belongs to the unpublished native
+adapter; the deferred Open-GPUI cutover is outside the current plan and must not
+widen the sealed core or official-egui product boundary.
 
 ## Goal
 

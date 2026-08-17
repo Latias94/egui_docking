@@ -58,10 +58,13 @@ restore candidates are not product interfaces.
 ## egui and native references
 
 The publishable crates use official egui and eframe `0.36.1`. The excluded
-native workspace pins the graph-neutral egui/eframe fork revision
-`a3c5ee57f4158ef717b5a956bf0d5c4aeda186ed` and the event-time Winit revision
-`180bfc09743586137fec014ef5543cdde56ce5d0`. Remaining fork seams and their
-removal conditions are documented in
+native workspace still needs one remotely reachable egui/eframe revision that
+contains every admitted native seam; its checked-in manifest and CI revision
+are not yet release evidence. The event-time Winit fork is pinned at
+`180bfc09743586137fec014ef5543cdde56ce5d0`. The exact egui/eframe revision must
+be updated atomically in the manifest, lockfile, CI, and this document after
+the reviewed local fork commits are authorized for remote publication.
+Remaining fork seams and their removal conditions are documented in
 [`docs/knowledge/egui-native-fork-seam-admission.md`](docs/knowledge/egui-native-fork-seam-admission.md).
 
 Dear ImGui and `dear-imgui-rs` are behavioral references for frame phases,

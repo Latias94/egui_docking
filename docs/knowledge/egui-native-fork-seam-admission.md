@@ -12,10 +12,13 @@ The product contract remains simple:
 - A seam is removed when upstream exposes an equivalent typed fact, or when the
   native product no longer depends on that fact.
 
-Pinned baselines:
+Baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `a3c5ee57f4158ef717b5a956bf0d5c4aeda186ed`
+- egui/eframe fork: the reviewed local seam currently extends the last public
+  revision; no immutable remote revision containing every admitted seam has
+  been published yet. The manifest, lockfile, CI, and documentation must move
+  to one exact revision together before native release evidence is valid.
 - upstream winit `0.30.13`: `e9809ef5`
 - public winit fork: `180bfc09743586137fec014ef5543cdde56ce5d0`
 
