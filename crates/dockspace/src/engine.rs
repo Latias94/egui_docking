@@ -736,7 +736,7 @@ pub struct CoreHostFrame {
     configuration_inputs: Vec<SequencedInput>,
     staged_presentation_outputs: Vec<StagedPresentationOutput>,
     staged_presentation_output_surfaces: BTreeSet<SurfaceId>,
-    surface_contributions: Vec<PreparedSurfaceContribution>,
+    surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
     presentation_phase_started: bool,
     configuration_phase_started: bool,
     next_causal_ordinal: u64,

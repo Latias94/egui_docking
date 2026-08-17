@@ -433,14 +433,16 @@ impl DockEngine {
         }
         let presentation_attempt = presentation_obligations.attempt();
         let presentation_dispositions = presentation_obligations.dispositions();
-        let submitted_contribution_surfaces = surface_contributions
-            .iter()
-            .map(PreparedSurfaceContribution::surface)
-            .collect::<BTreeSet<_>>();
-        if submitted_contribution_surfaces != presentation_surface_scope {
+        let contribution_roster_matches = surface_contributions.len()
+            == presentation_surface_scope.len()
+            && surface_contributions
+                .keys()
+                .copied()
+                .eq(presentation_surface_scope.iter().copied());
+        if !contribution_roster_matches {
             return Err(EngineError::HostFrameContributionRosterIncomplete {
                 expected: presentation_surface_scope.into_iter().collect(),
-                submitted: submitted_contribution_surfaces.into_iter().collect(),
+                submitted: surface_contributions.keys().copied().collect(),
             });
         }
         let fence = self.host_frame_commit_fence(runtime_retention_revision);
@@ -602,7 +604,7 @@ impl DockEngine {
         presentation_attempt: HostPresentationAttemptId,
         presentation_dispositions: Vec<HostPresentationDispositionOutcome>,
         staged_presentation_outputs: Vec<StagedPresentationOutput>,
-        surface_contributions: Vec<PreparedSurfaceContribution>,
+        surface_contributions: BTreeMap<SurfaceId, PreparedSurfaceContribution>,
     ) -> Result<(DockEngine, EngineTransition), EngineError> {
         let before = self.version;
         let before_presentation_identity = self.presentation_identity;
@@ -634,7 +636,7 @@ impl DockEngine {
             .interaction_authorities();
         let mut changed_contribution_surfaces = BTreeSet::new();
         let mut contribution_outcomes = Vec::with_capacity(surface_contributions.len());
-        for contribution in surface_contributions {
+        for contribution in surface_contributions.into_values() {
             let surface = contribution.surface();
             let outcome = if changed_resize_surfaces.contains(&surface)
                 && !candidate.prepared_surface_matches_resize_projection(

@@ -1031,7 +1031,7 @@ impl CoreHostFrame {
             configuration_inputs: Vec::new(),
             staged_presentation_outputs: Vec::new(),
             staged_presentation_output_surfaces: BTreeSet::new(),
-            surface_contributions: Vec::new(),
+            surface_contributions: BTreeMap::new(),
             presentation_phase_started: false,
             configuration_phase_started: false,
             next_causal_ordinal: 0,
@@ -2273,16 +2273,15 @@ impl CoreHostFrame {
             return self.reject(CoreHostFrameError::SurfaceOutsideRoster { surface });
         }
         self.presentation_phase_started = true;
-        match self
-            .surface_contributions
-            .binary_search_by_key(&surface, PreparedSurfaceContribution::surface)
-        {
-            Ok(_) => self.reject(CoreHostFrameError::DuplicateSurfaceContribution { surface }),
-            Err(index) => {
-                self.surface_contributions.insert(index, contribution);
-                Ok(())
-            }
-        }
+        let std::collections::btree_map::Entry::Vacant(slot) =
+            self.surface_contributions.entry(surface)
+        else {
+            let error = CoreHostFrameError::DuplicateSurfaceContribution { surface };
+            let retained = *self.poison.get_or_insert(error);
+            return Err(retained);
+        };
+        slot.insert(contribution);
+        Ok(())
     }
 
     fn ensure_backend_ingress_complete(&mut self) -> Result<(), CoreHostFrameError> {
@@ -2315,8 +2314,10 @@ impl CoreHostFrame {
 
     /// Returns all surface contributions in canonical surface order.
     #[must_use]
-    pub fn surface_contributions(&self) -> &[PreparedSurfaceContribution] {
-        &self.surface_contributions
+    pub fn surface_contributions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &PreparedSurfaceContribution> {
+        self.surface_contributions.values()
     }
 
     /// Closes this capability's semantic input prefix in place.
@@ -2460,7 +2461,9 @@ impl CoreHostPresentationFrame {
 
     /// Returns contributions staged in canonical surface order.
     #[must_use]
-    pub fn surface_contributions(&self) -> &[PreparedSurfaceContribution] {
+    pub fn surface_contributions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &PreparedSurfaceContribution> {
         self.frame.surface_contributions()
     }
 

@@ -211,7 +211,6 @@ fn complete_surface_contribution_roster(frame: &mut CoreHostFrame) {
     for surface in surfaces {
         if frame
             .surface_contributions()
-            .iter()
             .any(|contribution| contribution.surface() == surface)
         {
             continue;
@@ -258,7 +257,6 @@ fn complete_host_frame_with_current_outputs(_engine: &DockEngine, frame: &mut Co
     for surface in surfaces {
         if frame
             .surface_contributions()
-            .iter()
             .any(|contribution| contribution.surface() == surface)
         {
             continue;

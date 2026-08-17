@@ -1049,7 +1049,6 @@ impl DockspaceHostFrame<'_> {
             || self
                 .frame
                 .surface_contributions()
-                .iter()
                 .any(|contribution| contribution.surface() == surface)
     }
 }

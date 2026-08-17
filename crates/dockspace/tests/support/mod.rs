@@ -678,7 +678,6 @@ pub fn append_host_input(
 pub fn complete_host_frame_with_unavailable(_engine: &DockEngine, frame: &mut CoreHostFrame) {
     let submitted = frame
         .surface_contributions()
-        .iter()
         .map(|contribution| contribution.surface())
         .collect::<BTreeSet<_>>();
     let missing = frame
@@ -716,7 +715,6 @@ pub fn complete_host_frame_with_retained_or_unavailable(
 fn complete_retained_or_unavailable_contributions(frame: &mut CoreHostFrame) {
     let submitted = frame
         .surface_contributions()
-        .iter()
         .map(|contribution| contribution.surface())
         .collect::<BTreeSet<_>>();
     let missing = frame
@@ -772,7 +770,6 @@ pub fn complete_host_frame_with_current_outputs(
         .collect::<BTreeMap<_, _>>();
     let submitted = frame
         .surface_contributions()
-        .iter()
         .map(|contribution| contribution.surface())
         .collect::<BTreeSet<_>>();
     let missing = frame
@@ -841,7 +838,6 @@ pub fn complete_host_frame_with_current_measurements(
 ) {
     let submitted = frame
         .surface_contributions()
-        .iter()
         .map(|contribution| contribution.surface())
         .collect::<BTreeSet<_>>();
     let missing = frame
