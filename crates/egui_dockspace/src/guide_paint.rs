@@ -4,10 +4,10 @@ use egui::{Color32, Painter, Rect, Stroke, StrokeKind, vec2};
 
 use crate::style::DockStyle;
 
-const BUTTON_CORNER_RADIUS: f32 = 3.0;
-const CUE_INSET: f32 = 4.0;
-const CUE_CENTER_EXTENT: f32 = 4.0;
-const CUE_EDGE_EXTENT: f32 = 3.0;
+const BUTTON_CORNER_RADIUS: f32 = 4.0;
+const CUE_INSET: f32 = 5.0;
+const CUE_CENTER_EXTENT: f32 = 5.0;
+const CUE_EDGE_EXTENT: f32 = 4.0;
 pub(crate) const DISABLED_FILL_OPACITY: f32 = 0.35;
 const DISABLED_CUE_OPACITY: f32 = 0.5;
 

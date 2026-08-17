@@ -217,13 +217,6 @@ impl DockStyle {
         if self.drop_guide_outer_inset < guide_hit_half {
             return Err(DockStyleError::GuideOuterInsetTooSmall);
         }
-        let guide_span = 3.0 * self.drop_guide_extent
-            + 2.0 * self.drop_guide_gap
-            + 2.0 * self.drop_guide_hit_padding;
-        if guide_span > self.minimum_pane_size.x || guide_span > self.minimum_pane_size.y {
-            return Err(DockStyleError::GuideClusterExceedsMinimumPane);
-        }
-
         Ok(())
     }
 }
@@ -240,10 +233,10 @@ impl Default for DockStyle {
             splitter_thickness: 1.0,
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
-            drop_guide_extent: 16.0,
-            drop_guide_gap: 4.0,
-            drop_guide_hit_padding: 2.0,
-            drop_guide_outer_inset: 40.0,
+            drop_guide_extent: 24.0,
+            drop_guide_gap: 8.0,
+            drop_guide_hit_padding: 4.0,
+            drop_guide_outer_inset: 48.0,
             dock_fraction: 0.5,
             floating_title_height: 28.0,
             floating_border_width: 1.0,
@@ -306,8 +299,6 @@ pub enum DockStyleError {
     GuideHitRegionsOverlap,
     /// An outer guide button and its hit padding would cross the root boundary.
     GuideOuterInsetTooSmall,
-    /// The complete five-way guide cannot fit inside the configured minimum pane.
-    GuideClusterExceedsMinimumPane,
 }
 
 impl fmt::Display for DockStyleError {
@@ -337,8 +328,6 @@ impl fmt::Display for DockStyleError {
             Self::GuideOuterInsetTooSmall => formatter.write_str(
                 "`drop_guide_outer_inset` must contain half a guide plus its hit padding",
             ),
-            Self::GuideClusterExceedsMinimumPane => formatter
-                .write_str("the complete docking guide must fit inside `minimum_pane_size`"),
         }
     }
 }
@@ -450,19 +439,15 @@ mod tests {
             Err(DockStyleError::GuideHitRegionsOverlap)
         );
 
-        style.drop_guide_gap = 4.0;
+        style.drop_guide_gap = 8.0;
         style.drop_guide_outer_inset = 9.0;
         assert_eq!(
             style.validate(),
             Err(DockStyleError::GuideOuterInsetTooSmall)
         );
 
-        style.drop_guide_outer_inset = 40.0;
-        style.drop_guide_extent = 18.0;
-        assert_eq!(
-            style.validate(),
-            Err(DockStyleError::GuideClusterExceedsMinimumPane)
-        );
+        style.drop_guide_outer_inset = 48.0;
+        assert_eq!(style.validate(), Ok(()));
     }
 
     #[test]

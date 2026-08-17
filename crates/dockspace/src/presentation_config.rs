@@ -67,30 +67,9 @@ pub struct DockPresentationConfig {
 
 impl Default for DockPresentationConfig {
     fn default() -> Self {
-        Self {
-            tab_bar_height: 28.0,
-            tab_strip_scroll_line_extent: 40.0,
-            tab_group_grip_extent: 28.0,
-            tab_horizontal_padding: 10.0,
-            tab_min_width: 72.0,
-            tab_max_width: 220.0,
-            tab_close_extent: 16.0,
-            splitter_thickness: 1.0,
-            splitter_hit_extent: 6.0,
-            splitter_keyboard_step: 16.0,
-            pointer_drag_start_distance: 6.0,
-            guide_extent: 16.0,
-            guide_gap: 4.0,
-            guide_hit_padding: 2.0,
-            guide_outer_inset: 40.0,
-            dock_fraction: 0.5,
-            floating_title_height: 28.0,
-            floating_border_width: 1.0,
-            floating_resize_extent: 7.0,
-            minimum_pane_size: LogicalSize::new(80.0, 60.0).expect("baseline pane size is valid"),
-            minimum_floating_size: LogicalSize::new(120.0, 120.0)
-                .expect("baseline floating size is valid"),
-        }
+        Self::builder()
+            .build()
+            .expect("the baseline presentation configuration is valid")
     }
 }
 
@@ -282,10 +261,10 @@ impl Default for DockPresentationConfigBuilder {
             splitter_hit_extent: 6.0,
             splitter_keyboard_step: 16.0,
             pointer_drag_start_distance: 6.0,
-            guide_extent: 16.0,
-            guide_gap: 4.0,
-            guide_hit_padding: 2.0,
-            guide_outer_inset: 40.0,
+            guide_extent: 24.0,
+            guide_gap: 8.0,
+            guide_hit_padding: 4.0,
+            guide_outer_inset: 48.0,
             dock_fraction: 0.5,
             floating_title_height: 28.0,
             floating_border_width: 1.0,
@@ -697,6 +676,8 @@ mod tests {
             config.pointer_drag_start_distance().to_bits(),
             6.0_f64.to_bits()
         );
+        assert_eq!(config.guide_extent().to_bits(), 24.0_f64.to_bits());
+        assert_eq!(config.guide_hit_padding().to_bits(), 4.0_f64.to_bits());
         assert_eq!(
             config.minimum_pane_size().width().to_bits(),
             80.0_f64.to_bits()

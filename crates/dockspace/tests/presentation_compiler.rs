@@ -19,13 +19,22 @@ use support::{TestPresentationHost, install_surface_projection, next_plan, publi
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(2);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(3);
+const GUIDE_EXTENT: f64 = 24.0;
+const GUIDE_GAP: f64 = 8.0;
+const GUIDE_HIT_PADDING: f64 = 4.0;
+const GUIDE_HIT_EXTENT: f64 = GUIDE_EXTENT + 2.0 * GUIDE_HIT_PADDING;
+const GUIDE_INNER_OFFSET: f64 = GUIDE_EXTENT + GUIDE_GAP;
+const INNER_GUIDE_REFERENCE_SPAN: f64 =
+    3.0 * GUIDE_EXTENT + 2.0 * GUIDE_GAP + 2.0 * GUIDE_HIT_PADDING;
+const OUTER_GUIDE_REFERENCE_SPAN: f64 =
+    2.0 * (48.0 + 2.0 * (GUIDE_EXTENT * 0.5 + GUIDE_HIT_PADDING));
 
 fn bounds() -> LogicalRect {
     LogicalRect::new(0.0, 0.0, 360.0, 260.0).expect("surface bounds are valid")
 }
 
 #[test]
-fn minimum_sized_noncentral_panes_keep_exact_five_way_square_guides() {
+fn ordinary_noncentral_panes_keep_exact_five_way_square_guides() {
     let mut builder = Workspace::builder();
     let left = builder.insert_node(Node::tabs([ItemId::new(10)]));
     let right = builder.insert_node(Node::tabs([ItemId::new(11)]));
@@ -36,9 +45,9 @@ fn minimum_sized_noncentral_panes_keep_exact_five_way_square_guides() {
     let workspace = builder.build().expect("workspace is valid");
     let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
     let mut host = TestPresentationHost::new(&mut engine);
-    let minimum_bounds =
-        LogicalRect::new(0.0, 0.0, 161.0, 88.0).expect("minimum split bounds are valid");
-    install_surface_projection(&mut engine, &mut host, SURFACE, minimum_bounds);
+    let guide_sized_bounds =
+        LogicalRect::new(0.0, 0.0, 241.0, 140.0).expect("guide-sized bounds are valid");
+    install_surface_projection(&mut engine, &mut host, SURFACE, guide_sized_bounds);
     let ready = next_plan(&engine, SURFACE);
 
     for tabs in [left, right] {
@@ -46,7 +55,7 @@ fn minimum_sized_noncentral_panes_keep_exact_five_way_square_guides() {
             .drop_guide_clusters()
             .iter()
             .find(|cluster| cluster.id().scope == DropGuideScope::Inner(tabs))
-            .expect("every minimum-sized noncentral pane keeps its inner guide");
+            .expect("every ordinary noncentral pane keeps its inner guide");
         assert_eq!(cluster.targets().count(), 5);
         for slot in [
             DropGuideSlot::Center,
@@ -56,10 +65,10 @@ fn minimum_sized_noncentral_panes_keep_exact_five_way_square_guides() {
             DropGuideSlot::Edge(Edge::Bottom),
         ] {
             let target = cluster.target(slot).expect("all five slots exist");
-            assert_eq!(target.draw().width(), 16.0);
-            assert_eq!(target.draw().height(), 16.0);
-            assert_eq!(target.target().region().rect().width(), 20.0);
-            assert_eq!(target.target().region().rect().height(), 20.0);
+            assert_eq!(target.draw().width(), GUIDE_EXTENT);
+            assert_eq!(target.draw().height(), GUIDE_EXTENT);
+            assert_eq!(target.target().region().rect().width(), GUIDE_HIT_EXTENT);
+            assert_eq!(target.target().region().rect().height(), GUIDE_HIT_EXTENT);
         }
         let center = cluster
             .target(DropGuideSlot::Center)
@@ -73,8 +82,8 @@ fn minimum_sized_noncentral_panes_keep_exact_five_way_square_guides() {
             .target(DropGuideSlot::Edge(Edge::Top))
             .expect("top exists")
             .draw();
-        assert_eq!(center.x() - left_draw.x(), 20.0);
-        assert_eq!(center.y() - top_draw.y(), 20.0);
+        assert_eq!(center.x() - left_draw.x(), GUIDE_INNER_OFFSET);
+        assert_eq!(center.y() - top_draw.y(), GUIDE_INNER_OFFSET);
     }
 }
 
@@ -174,8 +183,8 @@ fn positive_narrow_and_flat_leaves_keep_complete_compact_guide_semantics() {
         } else {
             surface
         };
-        let inner_scale = (placement.width() / 60.0)
-            .min(placement.height() / 60.0)
+        let inner_scale = (placement.width() / INNER_GUIDE_REFERENCE_SPAN)
+            .min(placement.height() / INNER_GUIDE_REFERENCE_SPAN)
             .min(1.0);
         let center = inner
             .target(DropGuideSlot::Center)
@@ -183,8 +192,11 @@ fn positive_narrow_and_flat_leaves_keep_complete_compact_guide_semantics() {
         assert_eq!(center.target().visual().rect(), placement);
         assert!(rect_contains(placement, center.draw()));
         assert!(rect_contains(placement, center.target().region().rect()));
-        assert_close(center.draw().width(), 16.0 * inner_scale);
-        assert_close(center.target().region().rect().width(), 20.0 * inner_scale);
+        assert_close(center.draw().width(), GUIDE_EXTENT * inner_scale);
+        assert_close(
+            center.target().region().rect().width(),
+            GUIDE_HIT_EXTENT * inner_scale,
+        );
         for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom] {
             let preview = inner
                 .target(DropGuideSlot::Edge(edge))
@@ -211,12 +223,15 @@ fn positive_narrow_and_flat_leaves_keep_complete_compact_guide_semantics() {
             .expect("every positive root keeps an outer cluster");
         assert_eq!(outer.targets().count(), 4);
         assert_compact_cluster_geometry(outer, surface);
-        let outer_scale = (surface.width() / 120.0)
-            .min(surface.height() / 120.0)
+        let outer_scale = (surface.width() / OUTER_GUIDE_REFERENCE_SPAN)
+            .min(surface.height() / OUTER_GUIDE_REFERENCE_SPAN)
             .min(1.0);
         for (_, target) in outer.targets() {
-            assert_close(target.draw().width(), 16.0 * outer_scale);
-            assert_close(target.target().region().rect().width(), 20.0 * outer_scale);
+            assert_close(target.draw().width(), GUIDE_EXTENT * outer_scale);
+            assert_close(
+                target.target().region().rect().width(),
+                GUIDE_HIT_EXTENT * outer_scale,
+            );
         }
 
         install_surface_projection(&mut engine, &mut host, SURFACE, surface);
@@ -310,10 +325,10 @@ fn central_root_compiles_center_only_inner_and_exact_outer_guides() {
     let top = outer
         .target(DropGuideSlot::Edge(Edge::Top))
         .expect("top guide exists");
-    assert_eq!(top.draw().width(), 16.0);
-    assert_eq!(top.draw().height(), 16.0);
-    assert_eq!(top.target().region().rect().width(), 20.0);
-    assert_eq!(top.target().region().rect().height(), 20.0);
+    assert_eq!(top.draw().width(), GUIDE_EXTENT);
+    assert_eq!(top.draw().height(), GUIDE_EXTENT);
+    assert_eq!(top.target().region().rect().width(), GUIDE_HIT_EXTENT);
+    assert_eq!(top.target().region().rect().height(), GUIDE_HIT_EXTENT);
     assert!(matches!(
         top.target().destination(),
         DropDestination::Topology(DockTarget::OuterEdge(target))
