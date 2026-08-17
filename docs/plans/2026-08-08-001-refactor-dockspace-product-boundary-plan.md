@@ -2,7 +2,7 @@
 title: Fearless dockspace product-boundary refactor
 type: refactor
 date: 2026-08-08
-updated_at: 2026-08-16
+updated_at: 2026-08-17
 artifact_contract: ce-unified-plan/v1
 artifact_readiness: implementation-ready
 product_contract_source: ce-plan-bootstrap
@@ -248,6 +248,19 @@ stateDiagram-v2
 
 The repository already contains meaningful evidence for several units: official egui 0.36.1, the reviewed local egui/eframe seam, default product interaction tests, session-owned JSON persistence, removal of the protocol oracle, and no active `egui_tiles` dependency. The native fork is not reproducible release evidence until those local commits are published and every pin is updated atomically. `ce-work` must inspect the current tree and execute only the unmet contract in each unit; it must not replay landed work or use commit SHAs as test gates.
 
+### Execution checkpoint — 2026-08-17
+
+| Unit | Current evidence | Remaining contract |
+| --- | --- | --- |
+| U1 | The publishable crates use the current stable egui/eframe 0.36.1 baseline, and the winit event-time fork is clean at its documented revision. | The egui/eframe seam is five local commits ahead of its remote branch. The fork manifest, lockfile, and CI still name different older revisions. Remote publication remains separately authorized; after publication, update all pins and regenerate the lockfile from a clean checkout in one change. |
+| U2–U6 | Product actions, session-owned persistence, the official-egui renderer, the narrow session boundary, removal of the old protocol bridge, and the renderer-neutral managed-native protocol have substantial direct Rust coverage. | Preserve these as regression dependencies while U7 completes; do not reopen raw graph, candidate, provider, or scene authority. Any newly found contract gap remains owned by its original unit rather than being hidden in the adapter. |
+| U7 | The fork-backed coordinator has one attachment, ordered mailbox, exact binding/output correlation, native effect ownership, fatal/quarantine terminal settlement, retirement/quiescence, and focused ordinary Rust tests. The current native workspace passes locally when explicitly patched to the reviewed local fork. | Publish and pin the reviewed fork, execute the single X11/Glow/Xvfb two-window smoke in CI, and prove clean-checkout Glow/WGPU gates without local path patches. |
+| U8 | Open-GPUI remains reference evidence only. | No code integration in this plan. A future cutover gets a separate plan and must consume the sealed `DockspaceSession` facade. |
+| U9 | The default public facade, rustdoc boundary, product harness, official harness, package ordering, and documentation seal have landed. | Keep the boundary green while U7/U10 change internals; do not widen the facade to ease native integration. |
+| U10 | Presentation-stream reclamation, scroll retirement, contribution ordering, and several native retention paths have focused tests. | Complete the remaining confirmed repeated full-workspace/full-roster hot paths and the documented 10k quiescence soaks without introducing a cache framework, source parser, digest gate, or generalized E2E runner. |
+
+This checkpoint records evidence and work ownership only. It does not weaken the verification contract or the definition of done below.
+
 ### U1. Reproducible egui and fork baseline
 
 - **Goal:** Make the official and fork-backed workspaces reproducible from clean checkouts and remove stale version claims.
@@ -267,7 +280,7 @@ The repository already contains meaningful evidence for several units: official 
 
 - **Goal:** Finish the narrow item/surface facade required by current product adapters without reopening raw graph APIs.
 - **Requirements:** R2, R7, R8.
-- **Dependencies:** U1.
+- **Dependencies:** None. U2 uses the official stable dependency baseline; the separately authorized remote fork publication in U1 gates U7 release evidence, not renderer-neutral product work.
 - **Files:** `crates/dockspace/src/model/`, `crates/dockspace/src/runtime/`, `crates/dockspace/src/document.rs`, `crates/dockspace/src/persistence.rs`, `crates/dockspace/tests/product_actions.rs`, `crates/dockspace/tests/document.rs`, `integration/egui-product-harness/tests/persistence.rs`.
 - **Approach:** Keep one `DockspaceSession` owner. Expose only the selection, close, item/root dock, float/raise/bring-into-view, and placement operations demonstrated by real adapters. All prepared operations retain their creation revision and session authority. Consolidate duplicate document-session validation/capture helpers into the session-owned implementation; cache append-only item identity scope rather than rebuilding it every frame. Keep JSON bytes as the only stable wire format. Restore callbacks validate that an external key is recognized and authorized; they never supply, remap, or swap the persisted numeric `ItemId`. U2 prepares and validates an atomic replacement; U4 publishes it through the session frame boundary.
 - **Test scenarios:**
@@ -387,7 +400,7 @@ U8 is reserved for a separate future plan and is not part of this plan's executi
 
 - **Goal:** Finish the refactor with bounded long-session state and measured structural cost after ownership-bearing modularization has landed in U3, U4, U6, and U7.
 - **Requirements:** R11, R12.
-- **Dependencies:** U3, U4, U6, U7.
+- **Dependencies:** U3, U4, U6. Native-coordinator retention scenarios and the final U10 verification additionally require U7, but core/product structural work may proceed while remote fork publication or the real-window smoke is pending.
 - **Files:** `crates/dockspace/src/engine.rs`, `crates/dockspace/src/frame.rs`, `crates/dockspace/src/runtime.rs`, `crates/dockspace/src/viewport_focus.rs`, `crates/dockspace/src/drop_resolver.rs`, `crates/egui_dockspace/src/product_render/`, `crates/egui_dockspace_native/src/coordinator.rs`, existing domain submodules and focused tests.
 - **Approach:** Define explicit retention manifests and watermarks for effects, close plans, outputs, pointer streams, routes, and tombstones. After quiescence and one authorized compaction, active, unsettled, and detailed terminal records are zero; historical identity is represented only by monotonic frontiers or merged intervals. Remaining record count is bounded by active producers, live surfaces, active streams, and non-contiguous retained intervals, never by the number of completed cycles. Use existing 16/128/1024 structural fixtures and counters to find repeated full scans/clones; optimize confirmed hot paths with indexes, shared immutable maps, or moved values rather than a generic cache/COW framework.
 - **Test scenarios:**
@@ -401,7 +414,6 @@ U8 is reserved for a separate future plan and is not part of this plan's executi
 
 ```mermaid
 flowchart LR
-    U1 --> U2
     U2 --> U3
     U2 --> U4
     U3 --> U4
@@ -417,7 +429,7 @@ flowchart LR
     U3 --> U10
     U4 --> U10
     U6 --> U10
-    U7 --> U10
+    U7 -. native retention and final verification .-> U10
 ```
 
 ---
