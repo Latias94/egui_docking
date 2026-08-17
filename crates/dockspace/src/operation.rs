@@ -518,27 +518,14 @@ fn prepare_transaction_inner(
     let mut outcomes = Vec::with_capacity(commands.len());
 
     for (index, command) in commands.iter().enumerate() {
-        let move_baseline =
-            (index > 0 && matches!(command, WorkspaceCommand::Move { .. })).then(|| {
-                #[cfg(test)]
-                crate::drop_resolver::structural_work::record_multi_command_move_baseline_clone(
-                    &candidate,
-                );
-                candidate.clone()
-            });
         validate_declared_open_item(&item_ledger, command)
             .map_err(|source| TransactionError::Command { index, source })?;
         if let TransactionAuthority::Policy(policy) = authority {
             authorize_workspace_command(&candidate, policy, command)
                 .map_err(|source| TransactionError::Command { index, source })?;
         }
-        let mut applied = apply_command(&mut candidate, command)
+        let applied = apply_command(&mut candidate, command)
             .map_err(|source| TransactionError::Command { index, source })?;
-        if let CommandOutcome::Moved { changed, .. } = &mut applied.outcome {
-            *changed = move_baseline
-                .as_ref()
-                .map_or_else(|| candidate != *workspace, |before| candidate != *before);
-        }
         apply_item_delta(&mut item_ledger, applied.delta)
             .map_err(|source| TransactionError::Command { index, source })?;
         outcomes.push(applied.outcome);
@@ -1373,6 +1360,25 @@ fn move_payload(
         }
     }
 
+    let exact_noop_source = match (payload, target) {
+        (
+            MovePayload::Tabs(source) | MovePayload::Subtree(source),
+            DockTarget::InnerEdge(target),
+        ) if node_move_is_exact_inner_edge_noop(workspace, source, target) => Some(source),
+        _ => None,
+    };
+    if let Some(source) = exact_noop_source {
+        return Ok(AppliedCommand {
+            outcome: CommandOutcome::Moved {
+                items: workspace.collect_items_in_subtree(source.node()),
+                source_root: source.root(),
+                target_root: target_root(target),
+                changed: false,
+            },
+            delta: ItemDelta::None,
+        });
+    }
+
     let detached = detach_payload(workspace, payload)?;
     let source_root = detached.source_root();
     let items = detached.items();
@@ -1387,6 +1393,76 @@ fn move_payload(
         },
         delta: ItemDelta::None,
     })
+}
+
+fn node_move_is_exact_inner_edge_noop(
+    workspace: &Workspace,
+    source: &NodeSource,
+    target: &EdgeTarget,
+) -> bool {
+    if source.root() != target.root() {
+        return false;
+    }
+    let Some(root) = workspace.roots.get(&source.root()) else {
+        return false;
+    };
+    if root
+        .central
+        .is_some_and(|central| workspace.subtree_contains(source.node(), central))
+    {
+        return false;
+    }
+    let Some(source_parent) = workspace.parent_link(source.root(), source.node()) else {
+        return false;
+    };
+    let Some(target_parent) = workspace.parent_link(target.root(), target.node()) else {
+        return false;
+    };
+    if source_parent.parent != target_parent.parent {
+        return false;
+    }
+    let Some(Node::Split {
+        axis,
+        children,
+        weights,
+    }) = workspace.nodes.get(source_parent.parent)
+    else {
+        return false;
+    };
+    if children.len() != weights.len() {
+        return false;
+    }
+    let (target_axis, insert_before) = edge_axis_and_order(target.edge());
+    if *axis != target_axis {
+        return false;
+    }
+
+    let mut simulated_children = children.clone();
+    let mut simulated_weights = weights.clone();
+    if remove_split_child_from_roster(
+        &mut simulated_children,
+        &mut simulated_weights,
+        source_parent.index,
+    )
+    .is_err()
+    {
+        return false;
+    }
+    if split_existing_branch_roster(
+        &mut simulated_children,
+        &mut simulated_weights,
+        target.node(),
+        source.node(),
+        insert_before,
+        target.fraction().get(),
+        target_axis,
+    )
+    .is_err()
+    {
+        return false;
+    }
+
+    simulated_children == *children && simulated_weights == *weights
 }
 
 pub(crate) fn validate_split_resizes(
@@ -2486,6 +2562,14 @@ fn remove_split_child(
     else {
         return Err(CommandError::NodeIsNotSplit { node: parent });
     };
+    remove_split_child_from_roster(children, weights, index)
+}
+
+fn remove_split_child_from_roster(
+    children: &mut Vec<NodeId>,
+    weights: &mut Vec<SplitWeight>,
+    index: usize,
+) -> Result<(), CommandError> {
     if index >= children.len() || index >= weights.len() {
         return Err(CommandError::Invariant {
             stage: "detach indexed split child",
@@ -2692,6 +2776,19 @@ fn split_existing_branch(
     else {
         return Err(CommandError::NodeIsNotSplit { node: parent });
     };
+    split_existing_branch_roster(children, weights, target, payload, before, fraction, axis)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_existing_branch_roster(
+    children: &mut Vec<NodeId>,
+    weights: &mut Vec<SplitWeight>,
+    target: NodeId,
+    payload: NodeId,
+    before: bool,
+    fraction: f32,
+    axis: Axis,
+) -> Result<(), CommandError> {
     let index =
         children
             .iter()
@@ -3215,7 +3312,7 @@ fn edge_axis_and_order(edge: Edge) -> (Axis, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{ContainedRootSource, SurfaceRosterSource};
+    use crate::command::{ContainedRootSource, DockFraction, SurfaceRosterSource};
     use crate::geometry::LogicalRect;
     use crate::graph::{ContainedFloating, Node, RootRecord, WorkspaceBuilder};
     use crate::policy::{
@@ -3327,6 +3424,62 @@ mod tests {
         (workspace, commands)
     }
 
+    fn scaled_edge_move_transaction(
+        command_count: usize,
+    ) -> (Workspace, Vec<WorkspaceCommand>, Vec<bool>) {
+        let mut builder = Workspace::builder();
+        let mut roots = Vec::with_capacity(command_count);
+        for index in 0..command_count {
+            let ordinal = u64::try_from(index).expect("fixture ordinal fits u64");
+            let left = builder.insert_node(Node::tabs([ItemId::new(ordinal * 2 + 1)]));
+            let right = builder.insert_node(Node::tabs([ItemId::new(ordinal * 2 + 2)]));
+            let split = builder.insert_node(
+                Node::split(Axis::Horizontal, [left, right], [0.25, 0.75])
+                    .expect("fixture split is valid"),
+            );
+            let root = RootId::new(10_000 + ordinal);
+            let surface = SurfaceId::new(20_000 + ordinal);
+            builder.set_root(root, RootRecord::new(split));
+            builder.set_surface(surface, SurfacePresentation::with_main(root));
+            roots.push((root, left, right));
+        }
+        let workspace = builder
+            .build()
+            .expect("scaled equivalent-move workspace must be valid");
+        let mut expected_changes = Vec::with_capacity(command_count);
+        let commands = roots
+            .into_iter()
+            .enumerate()
+            .map(|(index, (root, left, right))| {
+                let changed = index % 2 == 1;
+                let reverse = index % 4 >= 2;
+                let (source_node, target_node, edge, original_fraction) = if reverse {
+                    (right, left, Edge::Right, 0.75)
+                } else {
+                    (left, right, Edge::Left, 0.25)
+                };
+                let fraction = if changed { 0.5 } else { original_fraction };
+                expected_changes.push(changed);
+                let payload = workspace
+                    .capture_node_source(root, source_node)
+                    .expect("fixture source exists");
+                let target = workspace
+                    .capture_inner_edge_target(
+                        root,
+                        target_node,
+                        edge,
+                        DockFraction::new(fraction).expect("fixture fraction is valid"),
+                    )
+                    .expect("fixture target exists");
+                WorkspaceCommand::Move {
+                    payload: MovePayload::Tabs(payload),
+                    target: DockTarget::InnerEdge(target),
+                }
+            })
+            .collect();
+        (workspace, commands, expected_changes)
+    }
+
     fn capture_surface_close(
         workspace: &Workspace,
         policy: &DockPolicySnapshot,
@@ -3368,6 +3521,30 @@ mod tests {
             assert_eq!(work.transaction_commands, command_count);
             assert!(work.item_multiset_scans <= 4);
             assert!(work.item_multiset_item_visits <= (command_count + 1) * 4);
+        }
+    }
+
+    #[test]
+    fn multi_moves_use_one_transaction_candidate_clone() {
+        for command_count in [16, 128, 1_024] {
+            let (mut workspace, commands, expected_changes) =
+                scaled_edge_move_transaction(command_count);
+
+            crate::drop_resolver::structural_work::reset();
+            let report = crate::transaction::WorkspaceTransaction::from_commands(commands)
+                .apply(&mut workspace, &default_policy())
+                .expect("mixed moves publish atomically");
+
+            let work = crate::drop_resolver::structural_work::snapshot();
+            assert!(report.changed());
+            assert_eq!(report.outcomes().len(), command_count);
+            for (outcome, expected_changed) in report.outcomes().iter().zip(expected_changes) {
+                assert!(matches!(
+                    outcome,
+                    CommandOutcome::Moved { changed, .. } if *changed == expected_changed
+                ));
+            }
+            assert_eq!(work.workspace_deep_clones.transaction_candidates.calls, 1);
         }
     }
 

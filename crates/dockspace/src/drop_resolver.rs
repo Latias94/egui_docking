@@ -1031,7 +1031,6 @@ pub(crate) mod structural_work {
     pub(crate) struct WorkspaceDeepCloneWork {
         pub(crate) engine_candidates: DeepCloneWork,
         pub(crate) transaction_candidates: DeepCloneWork,
-        pub(crate) multi_command_move_baselines: DeepCloneWork,
     }
 
     /// Explicit whole-engine candidate clone sites.
@@ -1180,14 +1179,6 @@ pub(crate) mod structural_work {
         update(|work| {
             work.workspace_deep_clones
                 .engine_candidates
-                .record(workspace);
-        });
-    }
-
-    pub(crate) fn record_multi_command_move_baseline_clone(workspace: &Workspace) {
-        update(|work| {
-            work.workspace_deep_clones
-                .multi_command_move_baselines
                 .record(workspace);
         });
     }

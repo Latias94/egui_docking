@@ -1272,12 +1272,6 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
         work.workspace_deep_clones.transaction_candidates.volume,
         workspace_volume
     );
-    assert_eq!(
-        work.workspace_deep_clones
-            .multi_command_move_baselines
-            .calls,
-        0
-    );
     assert_eq!(work.transaction_prepares, 1);
     assert_eq!(work.transaction_commands, 1);
     assert_eq!(work.root_fingerprint_builds, 8);
