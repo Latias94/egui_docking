@@ -257,7 +257,7 @@ The repository already contains meaningful evidence for several units: official 
 | U7 | The fork-backed coordinator has one attachment, ordered mailbox, exact binding/output correlation, native effect ownership, fatal/quarantine terminal settlement, retirement/quiescence, and focused ordinary Rust tests. The current native workspace passes locally when explicitly patched to the reviewed local fork. | Publish and pin the reviewed fork, execute the single X11/Glow/Xvfb two-window smoke in CI, and prove clean-checkout Glow/WGPU gates without local path patches. |
 | U8 | Open-GPUI remains reference evidence only. | No code integration in this plan. A future cutover gets a separate plan and must consume the sealed `DockspaceSession` facade. |
 | U9 | The default public facade, rustdoc boundary, product harness, official harness, package ordering, and documentation seal have landed. | Keep the boundary green while U7/U10 change internals; do not widen the facade to ease native integration. |
-| U10 | Presentation-stream reclamation, scroll retirement, contribution ordering, and several native retention paths have focused tests. | Complete the remaining confirmed repeated full-workspace/full-roster hot paths and the documented 10k quiescence soaks without introducing a cache framework, source parser, digest gate, or generalized E2E runner. |
+| U10 | Bounded effect, close, presentation, pointer, route, and tombstone retention now has focused 10k or exact-lifecycle evidence. Confirmed structural hot paths reuse the manifest workspace index, store contributions canonically without quadratic insertion, freeze only referenced pointer outputs, avoid per-move workspace clones, and refresh applied scroll surfaces locally. | Keep these structural counters and compositional retention tests green during the final matrix. Do not add a combined 10k coordinator soak, cache framework, source parser, digest gate, or generalized E2E runner merely to duplicate the existing layered evidence. |
 
 This checkpoint records evidence and work ownership only. It does not weaken the verification contract or the definition of done below.
 
@@ -405,11 +405,12 @@ U8 is reserved for a separate future plan and is not part of this plan's executi
 - **Approach:** Define explicit retention manifests and watermarks for effects, close plans, outputs, pointer streams, routes, and tombstones. After quiescence and one authorized compaction, active, unsettled, and detailed terminal records are zero; historical identity is represented only by monotonic frontiers or merged intervals. Remaining record count is bounded by active producers, live surfaces, active streams, and non-contiguous retained intervals, never by the number of completed cycles. Use existing 16/128/1024 structural fixtures and counters to find repeated full scans/clones; optimize confirmed hot paths with indexes, shared immutable maps, or moved values rather than a generic cache/COW framework.
 - **Test scenarios:**
   - Ten-thousand-cycle effect, close, and presentation tests reach zero active/unsettled/detail records after quiescence and one compaction; only documented frontier or merged-interval history remains.
-  - Ten-thousand completed pointer streams retain no active stream, terminal detail, capture, or gesture owner after provider retirement and compaction.
-  - Ten-thousand destroy/recreate cycles leave no route or tombstone detail after exact binding quiescence; delayed predecessor facts still reject against the successor.
+  - Ten-thousand completed pointer streams retain no active stream, terminal detail, capture, or gesture owner; a separate ten-thousand-provider quiescence soak proves detailed lease retirement compacts to bounded interval history.
+  - Ten-thousand destroyed-binding tombstones compact after exact producer quiescence; one complete managed lifecycle proves route, stream, and sidecar reclamation, while focused ABA tests prove delayed predecessor facts still reject against the successor.
   - Pointer motion does not rebuild or clone every surface output when only one delivery/hover surface is queried.
   - Drop affordance work scales with indexed candidates rather than full workspace clone per visible guide.
   - No new script parses source, computes API digests, or duplicates Cargo/test discovery.
+- **Evidence shape:** Keep long soaks at the state owner which actually retains the records. Compose them with one exact end-to-end lifecycle and focused ABA cases instead of multiplying the full coordinator state machine ten thousand times.
 - **Verification:** Structural counters, retention soak tests, formatting, Clippy policy, and the full test matrix pass with simpler public and internal boundaries.
 
 ### Dependency Sequence
