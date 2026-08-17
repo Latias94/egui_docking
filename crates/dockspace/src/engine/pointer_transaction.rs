@@ -1956,8 +1956,12 @@ impl DockEngine {
         if policy.check_tear_off(TearOffPresentation::Native).is_err() {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
-        if !self.viewport.native_tear_off_capability().is_supported() {
-            let status = match self.viewport.native_tear_off_capability() {
+        if !self
+            .viewport
+            .native_outside_all_tear_off_capability()
+            .is_supported()
+        {
+            let status = match self.viewport.native_outside_all_tear_off_capability() {
                 PlatformCapability::Unknown(_) => PreviewResolutionStatus::NativeCapabilityUnknown,
                 PlatformCapability::Supported | PlatformCapability::Unsupported(_) => {
                     PreviewResolutionStatus::Rejected

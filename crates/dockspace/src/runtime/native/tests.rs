@@ -5,6 +5,7 @@ use crate::geometry::{LogicalRect, LogicalSize, PhysicalRect, ScaleFactor};
 use crate::graph::{Node, RootRecord, SurfacePresentation, Workspace};
 use crate::ids::{ItemId, RootId};
 use crate::intent::{Authority, AuthorityUnavailableReason};
+use crate::platform::PlatformCapability;
 use crate::policy::DockPolicy;
 use crate::runtime::native_effect::{NativeEffectDropQueue, NativeEffectRequest};
 use crate::runtime::{
@@ -25,6 +26,28 @@ fn unknown_focus() -> crate::viewport_focus::FocusObservationEnvelope {
     crate::viewport_focus::unknown_focus_observation(
         crate::viewport_focus::FocusObservationGeneration::new(0),
         AuthorityUnavailableReason::NotReported,
+    )
+}
+
+fn full_managed_capabilities() -> NativeHostCapabilities {
+    [
+        NativeHostCapability::NativeWindowLifecycle,
+        NativeHostCapability::AuthoritativeInventory,
+        NativeHostCapability::HoveredWindow,
+        NativeHostCapability::DesktopPointerPosition,
+        NativeHostCapability::AuthoritativeButtonState,
+        NativeHostCapability::GlobalWindowPlacement,
+        NativeHostCapability::WorkArea,
+        NativeHostCapability::PointerHitTestObservation,
+        NativeHostCapability::PointerHitTestControl,
+        NativeHostCapability::GlobalFocusObservation,
+        NativeHostCapability::WindowActivationControl,
+        NativeHostCapability::CloseCancellation,
+    ]
+    .into_iter()
+    .fold(
+        NativeHostCapabilities::none_supported(),
+        |capabilities, capability| capabilities.with(capability),
     )
 }
 
@@ -90,12 +113,19 @@ fn native_root_session_with_profile(
     )
     .expect("the native test session initializes");
     match profile {
-        NativeHostProfile::ObservedRoots => session
-            .enable_observed_native_roots()
-            .expect("the observed-root provider enrolls"),
-        NativeHostProfile::ManagedDesktop => session
-            .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
-            .expect("the managed provider enrolls"),
+        NativeHostProfile::ObservedRoots => {
+            session
+                .enable_observed_native_roots()
+                .expect("the observed-root provider enrolls");
+        }
+        NativeHostProfile::ManagedDesktop => {
+            session
+                .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
+                .expect("the managed provider enrolls");
+            session
+                .configure_managed_native_capabilities(full_managed_capabilities())
+                .expect("the managed backend capabilities configure");
+        }
     };
     session
         .register_native_root(SURFACE, WINDOW)
@@ -336,9 +366,13 @@ fn live_window_facts_leave_independent_authority_unknown() {
 
 #[test]
 fn unknown_inventory_compilation_does_not_infer_destruction() {
-    let snapshot =
-        compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1, unknown_focus())
-            .expect("the provider compiles an inventory tombstone");
+    let snapshot = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ObservedRoots,
+        None,
+        1,
+        unknown_focus(),
+    )
+    .expect("the provider compiles an inventory tombstone");
     let capabilities = snapshot
         .capability_observation()
         .known_roster()
@@ -405,6 +439,9 @@ fn existing_owned_child_bootstrap_releases_after_exact_live_observation() {
     session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native provider enrolls");
+    session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     session
         .register_native_root(SURFACE, WINDOW)
         .expect("the recovery host registration records");
@@ -748,10 +785,14 @@ fn work_area(token: u64) -> NativeWorkAreaFacts {
 }
 
 #[test]
-fn native_capability_profiles_are_fixed_and_honest() {
-    let observed =
-        compile_unknown_inventory_snapshot(NativeHostProfile::ObservedRoots, 1, unknown_focus())
-            .expect("observed capabilities compile");
+fn native_capability_profiles_are_explicit_and_honest() {
+    let observed = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ObservedRoots,
+        None,
+        1,
+        unknown_focus(),
+    )
+    .expect("observed capabilities compile");
     let observed = observed
         .capability_observation()
         .known_roster()
@@ -769,25 +810,73 @@ fn native_capability_profiles_are_fixed_and_honest() {
     assert!(!observed.window_activation_control().is_supported());
     assert!(!observed.close_cancellation().is_supported());
 
-    let managed =
-        compile_unknown_inventory_snapshot(NativeHostProfile::ManagedDesktop, 1, unknown_focus())
-            .expect("managed capabilities compile");
-    let managed = managed
+    let unattached = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ManagedDesktop,
+        None,
+        1,
+        unknown_focus(),
+    )
+    .expect("unattached managed capabilities compile");
+    let unattached = unattached
         .capability_observation()
         .known_roster()
-        .expect("managed capability roster is exact");
-    assert!(managed.native_window_lifecycle().is_supported());
-    assert!(managed.authoritative_inventory().is_supported());
-    assert!(managed.hovered_window().is_supported());
-    assert!(managed.desktop_pointer_position().is_supported());
-    assert!(managed.authoritative_button_state().is_supported());
-    assert!(managed.global_window_placement().is_supported());
-    assert!(managed.work_area().is_supported());
-    assert!(managed.pointer_hit_test_observation().is_supported());
-    assert!(managed.pointer_hit_test_control().is_supported());
-    assert!(managed.global_focus_observation().is_supported());
-    assert!(managed.window_activation_control().is_supported());
-    assert!(managed.close_cancellation().is_supported());
+        .expect("unattached managed capability roster is exact");
+    assert!(matches!(
+        unattached.native_window_lifecycle(),
+        PlatformCapability::Unknown(_)
+    ));
+    assert!(matches!(
+        unattached.authoritative_inventory(),
+        PlatformCapability::Unknown(_)
+    ));
+
+    let x11_capabilities = NativeHostCapabilities::none_supported()
+        .with(NativeHostCapability::NativeWindowLifecycle)
+        .with(NativeHostCapability::AuthoritativeInventory)
+        .with(NativeHostCapability::DesktopPointerPosition)
+        .with(NativeHostCapability::GlobalWindowPlacement)
+        .with(NativeHostCapability::PointerHitTestObservation)
+        .with(NativeHostCapability::PointerHitTestControl)
+        .with(NativeHostCapability::GlobalFocusObservation)
+        .with(NativeHostCapability::WindowActivationControl)
+        .with(NativeHostCapability::CloseCancellation);
+    let x11 = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ManagedDesktop,
+        Some(x11_capabilities),
+        2,
+        unknown_focus(),
+    )
+    .expect("X11 capabilities compile");
+    let x11 = x11
+        .capability_observation()
+        .known_roster()
+        .expect("X11 capability roster is exact");
+    assert!(x11.native_exact_placement_create().is_supported());
+    assert!(!x11.native_outside_all_tear_off().is_supported());
+    assert!(!x11.hovered_window().is_supported());
+    assert!(!x11.work_area().is_supported());
+
+    let wayland_capabilities = NativeHostCapabilities::none_supported()
+        .with(NativeHostCapability::AuthoritativeInventory)
+        .with(NativeHostCapability::PointerHitTestObservation)
+        .with(NativeHostCapability::PointerHitTestControl)
+        .with(NativeHostCapability::GlobalFocusObservation)
+        .with(NativeHostCapability::CloseCancellation);
+    let wayland = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ManagedDesktop,
+        Some(wayland_capabilities),
+        3,
+        unknown_focus(),
+    )
+    .expect("Wayland capabilities compile");
+    let wayland = wayland
+        .capability_observation()
+        .known_roster()
+        .expect("Wayland capability roster is exact");
+    assert!(!wayland.native_exact_placement_create().is_supported());
+    assert!(!wayland.native_outside_all_tear_off().is_supported());
+    assert!(!wayland.desktop_pointer_position().is_supported());
+    assert!(!wayland.global_window_placement().is_supported());
 }
 
 #[test]

@@ -25,6 +25,7 @@ use eframe::{
 use winit::window::WindowId;
 
 use crate::NativeRuntimeError;
+use crate::capabilities::capabilities_for_backend;
 use crate::close_control::NativeCloseControl;
 use crate::deferred_viewport::{DeferredViewportDriver, DeferredViewportSpec, viewport_id_for};
 use crate::effect_coordinator::{
@@ -1523,6 +1524,8 @@ impl NativeCoordinator {
         roster: &NativeViewportRosterRecord,
         envelope: NativeViewportRosterEnvelope,
     ) -> Result<(), NativeRuntimeError> {
+        self.session
+            .configure_managed_native_capabilities(capabilities_for_backend(roster.backend()))?;
         if let (Ok(mut observations), Ok(frozen_work_areas)) =
             (self.compile_viewport_roster(roster), roster.work_areas())
         {
@@ -1663,7 +1666,10 @@ impl NativeCoordinator {
         &mut self,
         windows: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
         work_areas: NativeWorkAreaRoster,
+        capabilities: dockspace::runtime::NativeHostCapabilities,
     ) -> Result<(), NativeRuntimeError> {
+        self.session
+            .configure_managed_native_capabilities(capabilities)?;
         self.session
             .report_managed_native_snapshot(windows, work_areas)?;
         Ok(())

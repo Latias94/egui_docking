@@ -59,16 +59,16 @@ pub use measurement::{
 };
 pub use native::{
     HostWindowToken, HostWorkAreaToken, NativeCloseState, NativeDesktopPointerLocation,
-    NativeDesktopPosition, NativeGlobalFocus, NativeHostErrorKind, NativePointerButton,
-    NativePointerCancelReason, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativePointerState,
-    NativeProjectedScrollDelta, NativeReceiverAnswer, NativeReceiverPurpose, NativeReceiverQuery,
-    NativeScrollCancelReason, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
-    NativeScrollSequenceId, NativeSurfaceBinding, NativeSurfaceCloseAction,
-    NativeSurfaceCloseRejection, NativeSurfaceCloseRequest, NativeWindowFacts,
-    NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaBinding,
-    NativeWorkAreaFacts, NativeWorkAreaRoster,
+    NativeDesktopPosition, NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability,
+    NativeHostErrorKind, NativePointerButton, NativePointerCancelReason, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativePointerState, NativeProjectedScrollDelta, NativeReceiverAnswer,
+    NativeReceiverPurpose, NativeReceiverQuery, NativeScrollCancelReason, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
+    NativeSurfaceCloseAction, NativeSurfaceCloseRejection, NativeSurfaceCloseRequest,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState,
+    NativeWorkAreaBinding, NativeWorkAreaFacts, NativeWorkAreaRoster,
 };
 pub use native_effect::{
     NativeCleanupCorrelationFailure, NativeCleanupObservation, NativeCloseDisposition,

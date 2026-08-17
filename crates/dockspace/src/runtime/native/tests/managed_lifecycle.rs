@@ -52,6 +52,9 @@ fn joined_document_restore_rebases_after_a_workspace_mutating_native_prefix() {
     target
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native host enrolls");
+    target
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     let prepared = target
         .prepare_document_restore_json(&bytes, |document, key| {
             document == DOCUMENT && matches!(key, "pane:first" | "pane:second")
@@ -772,6 +775,9 @@ fn managed_session_from_workspace(
     session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native provider enrolls");
+    session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     session
         .register_native_root(SURFACE, WINDOW)
         .expect("the root registration records");

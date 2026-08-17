@@ -393,6 +393,11 @@ mod tests {
             .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
         session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .expect("managed native capabilities configure");
+        session
             .register_native_root(SURFACE, HostWindowToken::new(window))
             .expect("native root registration queues");
         let mut frame = session
@@ -529,6 +534,11 @@ mod tests {
         session
             .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
             .expect("managed native host enrolls");
+        session
+            .configure_managed_native_capabilities(crate::capabilities::capabilities_for_backend(
+                eframe::NativeWindowingBackend::Windows,
+            ))
+            .expect("managed native capabilities configure");
         session
             .register_native_root(SURFACE, HostWindowToken::new(101))
             .expect("native root registration queues");

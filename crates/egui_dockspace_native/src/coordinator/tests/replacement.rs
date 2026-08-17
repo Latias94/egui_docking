@@ -64,6 +64,7 @@ fn request_replacement_on_existing_viewport() -> (
                 (predecessor, exact_live_window(1200.0)),
             ],
             NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
         )
         .expect("the exact live roster records");
     measure_ready_surfaces(&mut native);

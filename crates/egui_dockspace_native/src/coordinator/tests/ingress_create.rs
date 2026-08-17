@@ -784,6 +784,7 @@ fn observed_pre_admission_close_emits_and_accepts_compensating_close_without_out
                 (child, NativeWindowFacts::live()),
             ],
             NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
         )
         .expect("the pending child becomes an observed live native window");
     let mut observed = native

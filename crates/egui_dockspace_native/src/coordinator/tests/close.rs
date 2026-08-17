@@ -17,6 +17,7 @@ pub(super) fn observe_close(
                 .into_iter()
                 .map(|binding| (binding, NativeWindowFacts::live())),
             NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
         )
         .expect("the managed capability roster queues");
     native

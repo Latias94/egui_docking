@@ -3228,8 +3228,13 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
-    pub fn native_tear_off_capability(&self) -> PlatformCapability {
-        self.capabilities.native_tear_off()
+    pub fn native_exact_placement_create_capability(&self) -> PlatformCapability {
+        self.capabilities.native_exact_placement_create()
+    }
+
+    #[must_use]
+    pub fn native_outside_all_tear_off_capability(&self) -> PlatformCapability {
+        self.capabilities.native_outside_all_tear_off()
     }
 
     #[must_use]
@@ -3392,7 +3397,10 @@ impl ViewportCoordinator {
                 self.platform_provider() == Some(proof.platform_provider())
                     && self.work_area_generation == proof.work_area_generation()
                     && self.work_areas.contains_key(&proof.work_area())
-                    && self.capabilities.native_tear_off().is_supported()
+                    && self
+                        .capabilities
+                        .native_outside_all_tear_off()
+                        .is_supported()
             }
         }
     }

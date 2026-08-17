@@ -507,7 +507,7 @@ impl ViewportCoordinator {
         &mut self,
         prepared: PreparedNativeCreate,
     ) -> Result<NativeCreateRequest, ViewportCoordinatorError> {
-        let capability = self.native_tear_off_capability();
+        let capability = self.native_exact_placement_create_capability();
         if !capability.is_supported() {
             return Err(ViewportCoordinatorError::NativeCapabilityUnavailable { capability });
         }

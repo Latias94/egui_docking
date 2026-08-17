@@ -132,6 +132,89 @@ pub enum NativeGlobalFocus {
     Unknown,
 }
 
+/// One native-host operation or observation which a managed adapter can support.
+///
+/// Capabilities describe the attached backend contract, not the availability
+/// of one particular event-time fact. A supported capability may still report
+/// an explicit `Unknown` fact at a causal boundary where the backend could not
+/// prove a value.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum NativeHostCapability {
+    /// Runtime-owned native windows can complete the managed lifecycle.
+    NativeWindowLifecycle,
+    /// The host publishes one complete live native-window roster.
+    AuthoritativeInventory,
+    /// Pointer events can identify the native window under the pointer.
+    HoveredWindow,
+    /// Pointer events can carry an event-time desktop position.
+    DesktopPointerPosition,
+    /// The host owns an exact button-state checkpoint and ordered updates.
+    AuthoritativeButtonState,
+    /// Native windows can be created or moved at an explicit desktop rectangle.
+    GlobalWindowPlacement,
+    /// The host can publish exact usable desktop work areas.
+    WorkArea,
+    /// Final rendered docking receivers can be observed exactly.
+    PointerHitTestObservation,
+    /// Native pointer pass-through can be controlled and settled.
+    PointerHitTestControl,
+    /// Native focus events can identify the focused docking window.
+    GlobalFocusObservation,
+    /// Native focus can be requested and causally observed.
+    WindowActivationControl,
+    /// Native close requests can be intercepted and explicitly cancelled.
+    CloseCancellation,
+}
+
+impl NativeHostCapability {
+    const fn bit(self) -> u16 {
+        1_u16 << (self as u8)
+    }
+}
+
+/// Immutable capability roster for one attached managed native backend.
+///
+/// The roster is configured once after the real windowing backend is known.
+/// Omitting a capability means that the backend contract does not support it;
+/// transient missing facts must instead be reported through the corresponding
+/// `Unknown` observation value.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeHostCapabilities {
+    supported: u16,
+}
+
+impl NativeHostCapabilities {
+    /// Creates an exact roster with no optional managed capability enabled.
+    #[must_use]
+    pub const fn none_supported() -> Self {
+        Self { supported: 0 }
+    }
+
+    /// Returns a new roster with one capability enabled.
+    #[must_use]
+    pub const fn with(mut self, capability: NativeHostCapability) -> Self {
+        self.supported |= capability.bit();
+        self
+    }
+
+    /// Returns whether the attached backend supports one capability.
+    #[must_use]
+    pub const fn supports(self, capability: NativeHostCapability) -> bool {
+        self.supported & capability.bit() != 0
+    }
+}
+
+impl core::fmt::Debug for NativeHostCapabilities {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("NativeHostCapabilities")
+            .field("supported", &self.supported)
+            .finish()
+    }
+}
+
 impl NativeWorkAreaFacts {
     /// Creates one exact physical work-area observation.
     #[must_use]
@@ -673,6 +756,12 @@ pub(super) enum NativePlatformError {
     /// An operation was submitted through the wrong native host profile.
     #[error("native operation is unavailable for the enrolled host profile")]
     HostProfileMismatch,
+    /// The attached managed backend changed its immutable capability roster.
+    #[error("managed native backend capability roster changed after attachment")]
+    CapabilityRosterChanged,
+    /// A managed snapshot arrived before the attached backend was identified.
+    #[error("managed native backend capabilities have not been configured")]
+    CapabilityRosterUnavailable,
     /// Focus cannot become authoritative before the managed capability roster exists.
     #[error("native focus authority requires an initial managed platform snapshot")]
     FocusAuthorityUnavailable,
@@ -707,6 +796,7 @@ impl NativePlatformError {
             | Self::IncompleteRoster
             | Self::InvalidWorkAreaRoster
             | Self::InvalidPointerFacts
+            | Self::CapabilityRosterChanged
             | Self::DestroyedSurfaceHasLiveFacts { .. }
             | Self::RetiredSurfaceHasLiveFacts { .. }
             | Self::EffectAcknowledgementBindingMismatch { .. }
@@ -717,7 +807,8 @@ impl NativePlatformError {
             | Self::BindingRosterUnsettled
             | Self::BindingStillLive { .. }
             | Self::BindingNotRetired { .. }
-            | Self::FocusAuthorityUnavailable => NativeHostErrorKind::OperationConflict,
+            | Self::FocusAuthorityUnavailable
+            | Self::CapabilityRosterUnavailable => NativeHostErrorKind::OperationConflict,
             #[cfg(feature = "serde")]
             Self::DocumentRestoreRequiresNativeFrame => NativeHostErrorKind::OperationConflict,
             Self::ReceiverResolverRequired | Self::HostProfileMismatch => {
@@ -733,6 +824,7 @@ impl NativePlatformError {
 #[derive(Debug)]
 pub(super) struct RuntimeNativeState {
     pub(super) profile: NativeHostProfile,
+    managed_capabilities: Option<NativeHostCapabilities>,
     recorder: BackendIngressRecorder,
     pending_prefix_retirement: Option<BackendIngressPrefixRetirementReceipt>,
     snapshot_generation: u64,
@@ -757,6 +849,7 @@ impl RuntimeNativeState {
     fn new(recorder: BackendIngressRecorder, profile: NativeHostProfile) -> Self {
         Self {
             profile,
+            managed_capabilities: None,
             recorder,
             pending_prefix_retirement: None,
             snapshot_generation: 0,
@@ -769,6 +862,21 @@ impl RuntimeNativeState {
             focus_generation: 0,
             focus: NativeGlobalFocus::Unknown,
         }
+    }
+
+    fn configure_managed_capabilities(
+        &mut self,
+        capabilities: NativeHostCapabilities,
+    ) -> Result<(), NativePlatformError> {
+        if self.profile != NativeHostProfile::ManagedDesktop {
+            return Err(NativePlatformError::HostProfileMismatch);
+        }
+        match self.managed_capabilities {
+            None => self.managed_capabilities = Some(capabilities),
+            Some(current) if current == capabilities => {}
+            Some(_) => return Err(NativePlatformError::CapabilityRosterChanged),
+        }
+        Ok(())
     }
 
     pub(super) const fn provider(&self) -> PlatformObservationLease {
@@ -1008,6 +1116,7 @@ impl RuntimeNativeState {
             }))?;
         let snapshot = compile_platform_snapshot(
             self.profile,
+            self.managed_capabilities,
             self.provider(),
             generation,
             focus,
@@ -1036,7 +1145,12 @@ impl RuntimeNativeState {
     ) -> Result<(), NativePlatformError> {
         let generation = self.next_snapshot_generation()?;
         let (focus, focus_update) = self.focus_observation_for_bindings([])?;
-        let snapshot = compile_unknown_inventory_snapshot(self.profile, generation, focus)?;
+        let snapshot = compile_unknown_inventory_snapshot(
+            self.profile,
+            self.managed_capabilities,
+            generation,
+            focus,
+        )?;
         self.recorder
             .record_platform_snapshot(expected_epoch, snapshot)
             .map_err(|_| NativePlatformError::ProtocolInvariant)?;

@@ -750,6 +750,7 @@ fn redocked_external_root_does_not_request_platform_close() {
                 (second, NativeWindowFacts::live()),
             ],
             NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
         )
         .expect("the exact root inventory records");
     let mut inventory = native

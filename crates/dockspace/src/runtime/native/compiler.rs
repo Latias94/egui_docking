@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use super::{
     CompiledNativeWindow, NativeCloseEffectAcknowledgement, NativeCloseFact, NativeCloseState,
-    NativeGlobalFocus, NativeHostProfile, NativeInputFact, NativePlatformError,
-    NativePresentationFact, NativeWindowFacts, NativeWindowLifecycleFact, NativeWorkAreaRoster,
+    NativeGlobalFocus, NativeHostCapabilities, NativeHostCapability, NativeHostProfile,
+    NativeInputFact, NativePlatformError, NativePresentationFact, NativeWindowFacts,
+    NativeWindowLifecycleFact, NativeWorkAreaRoster,
 };
 use crate::intent::{Authority, AuthorityUnavailableReason};
 use crate::platform::{
@@ -58,6 +59,7 @@ pub(super) fn compile_focus_observation(
 
 pub(super) fn compile_unknown_inventory_snapshot(
     profile: NativeHostProfile,
+    managed_capabilities: Option<NativeHostCapabilities>,
     generation: u64,
     focus: FocusObservationEnvelope,
 ) -> Result<PlatformSnapshot, NativePlatformError> {
@@ -66,7 +68,7 @@ pub(super) fn compile_unknown_inventory_snapshot(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(capabilities(profile)),
+            Authority::Known(capabilities(profile, managed_capabilities)),
         ),
         focus,
         WindowInventoryObservation::unknown(
@@ -82,6 +84,7 @@ pub(super) fn compile_unknown_inventory_snapshot(
 
 pub(super) fn compile_platform_snapshot(
     profile: NativeHostProfile,
+    managed_capabilities: Option<NativeHostCapabilities>,
     provider: PlatformObservationLease,
     generation: u64,
     focus: FocusObservationEnvelope,
@@ -145,7 +148,7 @@ pub(super) fn compile_platform_snapshot(
         PlatformSnapshotGeneration::new(generation),
         CapabilityRosterObservation::new(
             CapabilityObservationGeneration::new(generation),
-            Authority::Known(capabilities(profile)),
+            Authority::Known(capabilities(profile, managed_capabilities)),
         ),
         focus,
         WindowInventoryObservation::new(
@@ -160,30 +163,78 @@ pub(super) fn compile_platform_snapshot(
     .map_err(|_| NativePlatformError::ProtocolInvariant)
 }
 
-fn capabilities(profile: NativeHostProfile) -> PlatformCapabilities {
+fn capabilities(
+    profile: NativeHostProfile,
+    managed_capabilities: Option<NativeHostCapabilities>,
+) -> PlatformCapabilities {
     let unsupported = |requirement| {
         PlatformCapability::unsupported(requirement, PlatformCapabilityReason::BackendUnsupported)
     };
-    let managed = |requirement| match profile {
+    let managed = |capability, requirement| match profile {
         NativeHostProfile::ObservedRoots => unsupported(requirement),
-        NativeHostProfile::ManagedDesktop => PlatformCapability::Supported,
+        NativeHostProfile::ManagedDesktop => managed_capabilities.map_or_else(
+            || PlatformCapability::unknown(requirement, PlatformCapabilityReason::NotReported),
+            |capabilities| {
+                if capabilities.supports(capability) {
+                    PlatformCapability::Supported
+                } else {
+                    unsupported(requirement)
+                }
+            },
+        ),
     };
     let mut capabilities = PlatformCapabilities::default();
-    capabilities.set_native_window_lifecycle(managed(PlatformRequirement::NativeWindowLifecycle));
-    capabilities.set_authoritative_inventory(PlatformCapability::Supported);
-    capabilities.set_hovered_window(managed(PlatformRequirement::HoveredWindow));
-    capabilities.set_desktop_pointer_position(managed(PlatformRequirement::DesktopPointerPosition));
-    capabilities
-        .set_authoritative_button_state(managed(PlatformRequirement::AuthoritativeButtonState));
-    capabilities.set_global_window_placement(managed(PlatformRequirement::GlobalWindowPlacement));
-    capabilities.set_work_area(managed(PlatformRequirement::WorkArea));
-    capabilities
-        .set_pointer_hit_test_observation(managed(PlatformRequirement::PointerHitTestObservation));
-    capabilities.set_pointer_hit_test_control(managed(PlatformRequirement::PointerHitTestControl));
-    capabilities.set_global_focus_observation(managed(PlatformRequirement::GlobalFocusObservation));
-    capabilities
-        .set_window_activation_control(managed(PlatformRequirement::WindowActivationControl));
-    capabilities.set_close_cancellation(managed(PlatformRequirement::CloseCancellation));
+    capabilities.set_native_window_lifecycle(managed(
+        NativeHostCapability::NativeWindowLifecycle,
+        PlatformRequirement::NativeWindowLifecycle,
+    ));
+    capabilities.set_authoritative_inventory(match profile {
+        NativeHostProfile::ObservedRoots => PlatformCapability::Supported,
+        NativeHostProfile::ManagedDesktop => managed(
+            NativeHostCapability::AuthoritativeInventory,
+            PlatformRequirement::AuthoritativeInventory,
+        ),
+    });
+    capabilities.set_hovered_window(managed(
+        NativeHostCapability::HoveredWindow,
+        PlatformRequirement::HoveredWindow,
+    ));
+    capabilities.set_desktop_pointer_position(managed(
+        NativeHostCapability::DesktopPointerPosition,
+        PlatformRequirement::DesktopPointerPosition,
+    ));
+    capabilities.set_authoritative_button_state(managed(
+        NativeHostCapability::AuthoritativeButtonState,
+        PlatformRequirement::AuthoritativeButtonState,
+    ));
+    capabilities.set_global_window_placement(managed(
+        NativeHostCapability::GlobalWindowPlacement,
+        PlatformRequirement::GlobalWindowPlacement,
+    ));
+    capabilities.set_work_area(managed(
+        NativeHostCapability::WorkArea,
+        PlatformRequirement::WorkArea,
+    ));
+    capabilities.set_pointer_hit_test_observation(managed(
+        NativeHostCapability::PointerHitTestObservation,
+        PlatformRequirement::PointerHitTestObservation,
+    ));
+    capabilities.set_pointer_hit_test_control(managed(
+        NativeHostCapability::PointerHitTestControl,
+        PlatformRequirement::PointerHitTestControl,
+    ));
+    capabilities.set_global_focus_observation(managed(
+        NativeHostCapability::GlobalFocusObservation,
+        PlatformRequirement::GlobalFocusObservation,
+    ));
+    capabilities.set_window_activation_control(managed(
+        NativeHostCapability::WindowActivationControl,
+        PlatformRequirement::WindowActivationControl,
+    ));
+    capabilities.set_close_cancellation(managed(
+        NativeHostCapability::CloseCancellation,
+        PlatformRequirement::CloseCancellation,
+    ));
     capabilities
 }
 

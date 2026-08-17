@@ -10,6 +10,7 @@
 
 mod app;
 mod application_action;
+mod capabilities;
 mod close_control;
 mod coordinator;
 mod deferred_viewport;

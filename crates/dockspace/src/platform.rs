@@ -190,9 +190,19 @@ impl PlatformCapabilities {
         ),
     );
 
-    /// Returns whether a native create can be observed and placed safely.
+    /// Returns whether a native window can be created at an explicit desktop rectangle.
     #[must_use]
-    pub fn native_tear_off(&self) -> PlatformCapability {
+    pub fn native_exact_placement_create(&self) -> PlatformCapability {
+        combine_required([
+            self.native_window_lifecycle,
+            self.authoritative_inventory,
+            self.global_window_placement,
+        ])
+    }
+
+    /// Returns whether an outside-all pointer drop can create a native window safely.
+    #[must_use]
+    pub fn native_outside_all_tear_off(&self) -> PlatformCapability {
         combine_required([
             self.native_window_lifecycle,
             self.authoritative_inventory,
@@ -1461,8 +1471,8 @@ impl WorkAreaRosterObservationStream {
 
     pub(crate) fn observe(&mut self, observation: Option<WorkAreaRosterObservation>) {
         let Some(observation) = observation else {
+            self.requires_tombstone |= self.current.is_some();
             self.current = None;
-            self.requires_tombstone |= self.last_generation.is_some();
             return;
         };
         match self.last_generation {
@@ -2200,6 +2210,18 @@ mod tests {
         };
         let mut stream = WorkAreaRosterObservationStream::default();
 
+        stream.observe(Some(tombstone(1)));
+        stream.observe(None);
+        let first_known = known(2, vec![area(1)]);
+        stream.observe(Some(first_known.clone()));
+        assert_eq!(
+            stream.current(),
+            Some(&first_known),
+            "an initial unavailable capability does not quarantine the first exact roster"
+        );
+
+        stream.reset_for_provider_replacement();
+
         let initial = known(4, vec![area(1), area(2)]);
         stream.observe(Some(initial.clone()));
         assert_eq!(stream.current(), Some(&initial));
@@ -2272,7 +2294,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            capabilities.native_tear_off(),
+            capabilities.native_outside_all_tear_off(),
             PlatformCapability::Unsupported(issue)
                 if issue.requirement() == PlatformRequirement::AuthoritativeInventory
         ));

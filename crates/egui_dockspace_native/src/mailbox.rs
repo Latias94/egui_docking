@@ -11,7 +11,8 @@ use eframe::{
     NativeOutputResult, NativeOutputToken, NativePhysicalRect, NativeViewportCloseRequest,
     NativeViewportCreateAdmission, NativeViewportCreateAttempt, NativeViewportCreateFailure,
     NativeViewportFocusResult, NativeViewportPointerPassthroughResult, NativeViewportRoster,
-    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot, egui::ViewportId,
+    NativeViewportVisibilityResult, NativeWindowEvent, NativeWindowSnapshot,
+    NativeWindowingBackend, egui::ViewportId,
 };
 
 use crate::close_control::NativeViewportCloseCancellationRecord;
@@ -117,6 +118,7 @@ impl NativeStagingPaintRecord {
 pub(crate) struct NativeViewportRosterRecord {
     observations: Vec<FrozenWindowObservation>,
     work_areas: Result<FrozenWorkAreaRoster, NativeHostProtocolError>,
+    backend: NativeWindowingBackend,
     #[cfg(test)]
     compiled_override: Option<Result<Vec<CompiledWindowObservation>, NativeHostProtocolError>>,
 }
@@ -174,6 +176,7 @@ impl NativeViewportRosterRecord {
         Self {
             observations,
             work_areas: FrozenWorkAreaRoster::capture(roster.work_areas()),
+            backend: roster.backend(),
             #[cfg(test)]
             compiled_override: None,
         }
@@ -185,6 +188,10 @@ impl NativeViewportRosterRecord {
 
     pub(crate) fn work_areas(&self) -> Result<FrozenWorkAreaRoster, NativeHostProtocolError> {
         self.work_areas.clone()
+    }
+
+    pub(crate) const fn backend(&self) -> NativeWindowingBackend {
+        self.backend
     }
 
     #[cfg(test)]
@@ -202,6 +209,11 @@ impl NativeViewportRosterRecord {
         Self {
             observations: Vec::new(),
             work_areas: Ok(FrozenWorkAreaRoster::Unknown),
+            // Coordinator tests model the fully managed desktop contract. The
+            // capability roster is immutable after the first snapshot, so a
+            // deterministic desktop backend keeps later synthetic rosters
+            // compatible with that contract.
+            backend: NativeWindowingBackend::Windows,
             compiled_override: Some(if facts_valid {
                 Ok(observations.into_iter().collect())
             } else {
@@ -218,6 +230,7 @@ impl NativeViewportRosterRecord {
         Self {
             observations: Vec::new(),
             work_areas: Ok(work_areas),
+            backend: NativeWindowingBackend::Windows,
             compiled_override: Some(Ok(observations.into_iter().collect())),
         }
     }

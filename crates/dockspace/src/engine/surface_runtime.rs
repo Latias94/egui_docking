@@ -275,7 +275,7 @@ impl DockEngine {
                 current_epoch: self.version.epoch(),
             });
         }
-        let previous_native = self.viewport.native_tear_off_capability();
+        let previous_native = self.viewport.native_outside_all_tear_off_capability();
         let previous_routing = self.viewport.capabilities().cross_surface_routing();
         let previous_release = self.viewport.capabilities().authoritative_release();
         let interaction_dependencies = self.platform_interaction_dependencies();
@@ -425,7 +425,7 @@ impl DockEngine {
             });
         }
 
-        let previous_native = self.viewport.native_tear_off_capability();
+        let previous_native = self.viewport.native_outside_all_tear_off_capability();
         let previous_routing = self.viewport.capabilities().cross_surface_routing();
         let previous_release = self.viewport.capabilities().authoritative_release();
         let interaction_dependencies = self.platform_interaction_dependencies();

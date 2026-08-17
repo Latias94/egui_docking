@@ -435,7 +435,7 @@ source = "git+https://github.com/Latias94/winit.git?rev=23e8ddc6806a176c63efb80c
 [[package]]
 name = "ecolor"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "bytemuck",
  "emath",
@@ -444,7 +444,7 @@ dependencies = [
 [[package]]
 name = "eframe"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -477,7 +477,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "accesskit",
  "ahash",
@@ -506,7 +506,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -525,7 +525,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "arboard",
  "bytemuck",
@@ -564,7 +564,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "bytemuck",
  "egui",
@@ -583,7 +583,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 [[package]]
 name = "emath"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "bytemuck",
 ]
@@ -591,7 +591,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -615,7 +615,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.36.1"
-source = "git+https://github.com/Latias94/egui?rev=4ce0d3a4f1fa897497b14116dba01d256619c97d#4ce0d3a4f1fa897497b14116dba01d256619c97d"
+source = "git+https://github.com/Latias94/egui?rev=7f45a13771c85bebf0ad2f130e0bc02b41fd6f89#7f45a13771c85bebf0ad2f130e0bc02b41fd6f89"
 
 [[package]]
 name = "equivalent"

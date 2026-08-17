@@ -2949,7 +2949,10 @@ impl DockEngine {
                     && self.platform_provider() == Some(proof.platform_provider())
                     && self.viewport.work_area_generation() == proof.work_area_generation()
                     && self.viewport.work_area(proof.work_area()).is_some()
-                    && self.viewport.native_tear_off_capability().is_supported()
+                    && self
+                        .viewport
+                        .native_outside_all_tear_off_capability()
+                        .is_supported()
             }
             NativePlacementProof::Surface(_) => self.viewport.native_placement_is_current(proof),
         }

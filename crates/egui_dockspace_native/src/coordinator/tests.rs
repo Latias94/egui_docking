@@ -3,7 +3,7 @@ use dockspace::model::{
     DockspaceSurfaceLayout, ItemId, RootId, SurfaceId,
 };
 use dockspace::policy::DockPolicy;
-use dockspace::runtime::{HostInputOutcome, SurfaceUnavailableReason};
+use dockspace::runtime::{HostInputOutcome, NativeHostCapabilities, SurfaceUnavailableReason};
 use eframe::{NativeViewportVisibilityStatus, egui};
 use winit::event::WindowEvent;
 
@@ -21,6 +21,10 @@ mod work_area;
 
 const FIRST_SURFACE: SurfaceId = SurfaceId::new(1);
 const SECOND_SURFACE: SurfaceId = SurfaceId::new(2);
+
+fn test_managed_capabilities() -> NativeHostCapabilities {
+    crate::capabilities::capabilities_for_backend(eframe::NativeWindowingBackend::Windows)
+}
 
 fn native_rect() -> NativePhysicalRect {
     NativePhysicalRect::new(100, 200, 800, 600)
@@ -163,6 +167,7 @@ fn register_root_and_child(
                 (child, NativeWindowFacts::live()),
             ],
             NativeWorkAreaRoster::Unknown,
+            test_managed_capabilities(),
         )
         .expect("the exact live root and child inventory records");
     let mut observed = coordinator

@@ -7,7 +7,8 @@ use dockspace::model::{
 use dockspace::policy::DockPolicy;
 use dockspace::runtime::{
     DockspaceSession, HostFrameReport, HostWindowToken, HostWorkAreaToken,
-    NativeEffectAcknowledgement, NativeEffectOperation, NativePointerRoster, NativeReceiverAnswer,
+    NativeEffectAcknowledgement, NativeEffectOperation, NativeHostCapabilities,
+    NativeHostCapability, NativePointerRoster, NativeReceiverAnswer,
     NativeStagingPresentationPhase, NativeSurfaceBinding, NativeWindowFacts,
     NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
     NativeWorkAreaRoster, SurfacePresentationResult, SurfaceUnavailableReason,
@@ -23,12 +24,31 @@ const CONTAINED: FloatingPresentationId = FloatingPresentationId::new(1);
 const ROOT_WINDOW: HostWindowToken = HostWindowToken::new(1);
 const WORK_AREA: HostWorkAreaToken = HostWorkAreaToken::new(1);
 
+fn managed_capabilities() -> NativeHostCapabilities {
+    [
+        NativeHostCapability::NativeWindowLifecycle,
+        NativeHostCapability::AuthoritativeInventory,
+        NativeHostCapability::GlobalWindowPlacement,
+        NativeHostCapability::WorkArea,
+        NativeHostCapability::PointerHitTestObservation,
+        NativeHostCapability::CloseCancellation,
+    ]
+    .into_iter()
+    .fold(
+        NativeHostCapabilities::none_supported(),
+        |capabilities, capability| capabilities.with(capability),
+    )
+}
+
 #[test]
 fn managed_native_lifecycle_reaches_quiescence_through_the_public_facade() {
     let mut session = session();
     session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed native host enrolls");
+    session
+        .configure_managed_native_capabilities(managed_capabilities())
+        .expect("the managed backend capabilities configure");
     session
         .register_native_root(ROOT_SURFACE, ROOT_WINDOW)
         .expect("the root registration records");

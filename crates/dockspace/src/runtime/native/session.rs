@@ -74,6 +74,25 @@ impl DockspaceSession {
         self.enroll_native_host(NativeHostProfile::ManagedDesktop, Some(checkpoint))
     }
 
+    /// Configures the immutable capabilities of the attached managed backend.
+    ///
+    /// The native coordinator should call this after the real windowing backend
+    /// is known and before publishing its first complete managed snapshot.
+    /// Repeating the same roster is idempotent; changing it during one provider
+    /// lifetime is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for the wrong host profile or a conflicting roster.
+    pub fn configure_managed_native_capabilities(
+        &mut self,
+        capabilities: NativeHostCapabilities,
+    ) -> Result<(), DockspaceRuntimeError> {
+        self.native_state_mut()?
+            .configure_managed_capabilities(capabilities)?;
+        Ok(())
+    }
+
     fn enroll_native_host(
         &mut self,
         profile: NativeHostProfile,
@@ -133,8 +152,9 @@ impl DockspaceSession {
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong host profile, stale or incomplete window
-    /// bindings, or an invalid exact work-area roster.
+    /// Returns an error when capabilities have not been configured, for the
+    /// wrong host profile, stale or incomplete window bindings, or an invalid
+    /// exact work-area roster.
     pub fn report_managed_native_snapshot(
         &mut self,
         observations: impl IntoIterator<Item = (NativeSurfaceBinding, NativeWindowFacts)>,
@@ -144,6 +164,9 @@ impl DockspaceSession {
         let native = self.native_state_mut()?;
         if native.profile != NativeHostProfile::ManagedDesktop {
             return Err(NativePlatformError::HostProfileMismatch.into());
+        }
+        if native.managed_capabilities.is_none() {
+            return Err(NativePlatformError::CapabilityRosterUnavailable.into());
         }
         native.record_snapshot_facts(expected_epoch, observations, work_areas)?;
         Ok(())

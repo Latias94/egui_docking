@@ -13,20 +13,20 @@ use dockspace::runtime::{
     DockspaceDropEligibility, DockspaceHostFrame, DockspaceInteractionError,
     DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceSession, DockspaceVisualKind,
     HostCloseRequestOrigin, HostFrameReport, HostInputOutcome, HostWindowToken, HostWorkAreaToken,
-    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostErrorKind,
-    NativePointerButton, NativePointerEvent, NativePointerHover, NativePointerId,
-    NativePointerInput, NativePointerOwner, NativePointerRoster, NativeReceiverAnswer,
-    NativeReceiverPurpose, NativeScrollDelta, NativeScrollDeviceId, NativeScrollEvent,
-    NativeScrollModifiers, NativeScrollMomentum, NativeScrollPhase, NativeScrollReceiverChallenge,
-    NativeScrollSequenceId, NativeSurfaceBinding, NativeWindowFacts, NativeWindowInputState,
-    NativeWindowPresentationState, NativeWorkAreaFacts, NativeWorkAreaRoster,
-    PresentedDockReceiver, PresentedDockspaceSurface, SurfaceMeasurementAnswer,
-    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
-    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
-    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
-    SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent, SurfaceScrollModifiers,
-    SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId, SurfaceUnavailableReason,
-    TabStripMetrics, UniformSurfaceMetrics,
+    NativeCloseState, NativeDesktopPointerLocation, NativeDesktopPosition, NativeHostCapabilities,
+    NativeHostCapability, NativeHostErrorKind, NativePointerButton, NativePointerEvent,
+    NativePointerHover, NativePointerId, NativePointerInput, NativePointerOwner,
+    NativePointerRoster, NativeReceiverAnswer, NativeReceiverPurpose, NativeScrollDelta,
+    NativeScrollDeviceId, NativeScrollEvent, NativeScrollModifiers, NativeScrollMomentum,
+    NativeScrollPhase, NativeScrollReceiverChallenge, NativeScrollSequenceId, NativeSurfaceBinding,
+    NativeWindowFacts, NativeWindowInputState, NativeWindowPresentationState, NativeWorkAreaFacts,
+    NativeWorkAreaRoster, PresentedDockReceiver, PresentedDockspaceSurface,
+    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
+    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
+    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
+    SurfacePresentationResult, SurfaceScrollDelta, SurfaceScrollDeviceId, SurfaceScrollEvent,
+    SurfaceScrollModifiers, SurfaceScrollMomentum, SurfaceScrollPhase, SurfaceScrollSequenceId,
+    SurfaceUnavailableReason, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -39,6 +39,28 @@ const C: ItemId = ItemId::new(3);
 const X: ItemId = ItemId::new(4);
 const WINDOW: HostWindowToken = HostWindowToken::new(41);
 const SECOND_WINDOW: HostWindowToken = HostWindowToken::new(42);
+
+fn full_managed_capabilities() -> NativeHostCapabilities {
+    [
+        NativeHostCapability::NativeWindowLifecycle,
+        NativeHostCapability::AuthoritativeInventory,
+        NativeHostCapability::HoveredWindow,
+        NativeHostCapability::DesktopPointerPosition,
+        NativeHostCapability::AuthoritativeButtonState,
+        NativeHostCapability::GlobalWindowPlacement,
+        NativeHostCapability::WorkArea,
+        NativeHostCapability::PointerHitTestObservation,
+        NativeHostCapability::PointerHitTestControl,
+        NativeHostCapability::GlobalFocusObservation,
+        NativeHostCapability::WindowActivationControl,
+        NativeHostCapability::CloseCancellation,
+    ]
+    .into_iter()
+    .fold(
+        NativeHostCapabilities::none_supported(),
+        |capabilities, capability| capabilities.with(capability),
+    )
+}
 
 fn ready_window_facts(physical: PhysicalRect, scale: ScaleFactor) -> NativeWindowFacts {
     NativeWindowFacts::live()
@@ -1633,6 +1655,9 @@ fn managed_native_pointer_uses_synchronous_product_receiver_resolution() {
     host.session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed desktop coordinator enrolls");
+    host.session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     let registration = host.register_native_root(SURFACE, WINDOW);
     let binding = match registration.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
@@ -1756,6 +1781,9 @@ fn managed_native_scroll_keeps_delivery_owner_when_hover_position_is_unknown() {
     host.session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed desktop coordinator enrolls");
+    host.session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     let registration = host.register_native_root(SURFACE, WINDOW);
     let binding = match registration.inputs() {
         [HostInputOutcome::NativeSurfaceRegistered { binding }] => *binding,
@@ -1946,6 +1974,9 @@ fn unowned_native_scroll_fails_closed_without_receiver_queries() {
     host.session
         .enable_managed_native_host(NativePointerRoster::Exact(Vec::new()))
         .expect("the managed desktop coordinator enrolls");
+    host.session
+        .configure_managed_native_capabilities(full_managed_capabilities())
+        .expect("the managed backend capabilities configure");
     let exact = PhysicalPoint::new(16.0, 24.0).expect("the desktop point is valid");
     let modifiers = NativeScrollModifiers::Exact {
         shift: false,

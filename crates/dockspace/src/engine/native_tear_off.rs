@@ -46,7 +46,11 @@ impl DockEngine {
                 version: self.version,
             });
         }
-        if !self.viewport.native_tear_off_capability().is_supported() {
+        if !self
+            .viewport
+            .native_exact_placement_create_capability()
+            .is_supported()
+        {
             return Ok(InputOutcome::ProductActionRejected {
                 reason: DockspaceActionRejection::NativeUnavailable,
                 version: self.version,

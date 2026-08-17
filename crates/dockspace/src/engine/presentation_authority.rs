@@ -678,7 +678,10 @@ impl DockEngine {
                 PreviewVisual::Native { .. } => dependencies.native = true,
             }
         } else if drag.native_offer.is_some()
-            && self.viewport.native_tear_off_capability().is_supported()
+            && self
+                .viewport
+                .native_outside_all_tear_off_capability()
+                .is_supported()
         {
             dependencies.native = true;
         }
@@ -746,7 +749,7 @@ impl DockEngine {
         target_authority_lost |= invalidated_scene_bindings
             .iter()
             .any(|binding| dependencies.target_bindings.contains(binding));
-        let current_native = self.viewport.native_tear_off_capability();
+        let current_native = self.viewport.native_outside_all_tear_off_capability();
         if dependencies.native && previous_native.is_supported() && !current_native.is_supported() {
             target_authority_lost = true;
         }
