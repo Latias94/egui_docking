@@ -545,6 +545,55 @@ fn visibility_callbacks_preserve_order_and_ignore_unowned_requests() {
 }
 
 #[test]
+fn reduced_visibility_rearms_a_terminal_roster_after_fatal() {
+    let mut native = coordinator();
+    let (first, second) = register_roots(&mut native);
+    let child = ViewportId::from_hash_of("visibility-terminal-roster");
+    let window = WindowId::from(22);
+    native
+        .bind_viewport(child, window, second)
+        .expect("child viewport binds");
+    native
+        .bridge
+        .push_viewport_roster(live_roster([first, second]));
+    assert!(
+        native
+            .reduce_next_viewport_roster()
+            .expect("the initial exact roster is accepted")
+    );
+    let mut roster_frame = native
+        .begin_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the initial roster boundary begins");
+    roster_frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the initial roster boundary settles every surface");
+    let roster_report = roster_frame
+        .commit()
+        .expect("the initial roster boundary commits");
+    assert!(native.settle_host_frame_inputs(roster_report.inputs()));
+    assert!(!native.bridge.viewport_roster_dirty());
+
+    native.bridge.push_record(HostRecord::ViewportVisibility(
+        NativeViewportVisibilityRecord::for_test(
+            child,
+            window,
+            second,
+            false,
+            NativeViewportVisibilityStatus::Dispatched,
+        ),
+    ));
+    assert!(
+        native
+            .reduce_callback_head()
+            .expect("the visibility callback is reduced before the fatal boundary")
+    );
+    assert!(native.bridge.viewport_roster_dirty());
+
+    assert!(native.quarantine_after_fatal().is_empty());
+    assert!(native.bridge.has_pending_coordinator_work());
+}
+
+#[test]
 fn stale_failure_acknowledgement_cannot_clear_a_successor_create_reservation() {
     let mut native = coordinator();
     let (_, failed_binding) = register_roots(&mut native);

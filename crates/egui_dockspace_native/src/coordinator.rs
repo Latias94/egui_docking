@@ -533,12 +533,13 @@ impl NativeCoordinator {
             "one queued native snapshot has one outcome"
         );
         self.retirements.settle_snapshot(applied && !rejected);
+        let snapshot_applied = applied && !rejected;
         debug_assert!(
             self.bridge
-                .settle_viewport_roster(&queued.roster, applied && !rejected),
+                .settle_viewport_roster(&queued.roster, snapshot_applied),
             "one queued native snapshot settles its exact roster envelope"
         );
-        if applied && !rejected {
+        if snapshot_applied {
             self.work_areas.commit(queued.work_areas, &self.session);
             self.viewports
                 .lock()
@@ -549,9 +550,12 @@ impl NativeCoordinator {
             }
             self.input_control
                 .settle_snapshot(queued.input_acknowledgement);
+            if queued.roster.is_terminal() && self.requires_terminal_snapshot() {
+                self.bridge.require_terminal_roster();
+            }
             true
         } else {
-            false
+            queued.roster.is_terminal()
         }
     }
 
@@ -1028,6 +1032,7 @@ impl NativeCoordinator {
         let Some(record) = self.next_viewport_visibility()? else {
             return Ok(false);
         };
+        self.bridge.invalidate_viewport_roster();
         let current = self
             .viewports
             .lock()
@@ -1653,6 +1658,9 @@ impl NativeCoordinator {
 
     pub(crate) fn quarantine_after_fatal(&mut self) -> Vec<NativeOutputToken> {
         let mut abandoned = self.bridge.quarantine_after_fatal();
+        if self.requires_terminal_snapshot() {
+            self.bridge.require_terminal_roster();
+        }
         for &token in &abandoned {
             self.receivers.abandon(token);
             self.pending_outputs.remove(&token);
@@ -1662,6 +1670,13 @@ impl NativeCoordinator {
         abandoned.sort_unstable();
         abandoned.dedup();
         abandoned
+    }
+
+    fn requires_terminal_snapshot(&self) -> bool {
+        !self.pending_presentation_acknowledgements.is_empty()
+            || self.input_control.requires_snapshot()
+            || self.retirements.requires_snapshot()
+            || self.bridge.viewport_roster_dirty()
     }
 
     fn cancel_undispatched_control_commands(&mut self) {

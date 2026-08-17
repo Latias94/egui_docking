@@ -44,6 +44,26 @@ pub(crate) enum HostRecord {
     },
 }
 
+impl HostRecord {
+    fn requires_terminal_roster(&self) -> bool {
+        match self {
+            Self::ViewportPointerPassthrough(_)
+            | Self::ViewportVisibility(_)
+            | Self::ViewportCreated(_) => true,
+            Self::WindowEvent(event) => {
+                matches!(event.event(), winit::event::WindowEvent::Destroyed)
+            }
+            Self::GlobalFocus(_)
+            | Self::ViewportFocus(_)
+            | Self::ViewportCloseCancelled(_)
+            | Self::ViewportRoster(_)
+            | Self::ViewportCreateFailed(_)
+            | Self::StagingPainted(_)
+            | Self::Output { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NativeViewportCreatedRecord {
     token: NativeOutputToken,
@@ -219,18 +239,79 @@ impl NativeViewportRosterKey {
 pub(crate) struct NativeViewportRosterEnvelope {
     key: NativeViewportRosterKey,
     commit_baseline: bool,
+    terminal_generation: Option<u64>,
 }
 
 impl NativeViewportRosterEnvelope {
-    const fn new(context: u64, roster: NativeViewportRosterRecord, commit_baseline: bool) -> Self {
+    const fn new(
+        context: u64,
+        roster: NativeViewportRosterRecord,
+        commit_baseline: bool,
+        terminal_generation: Option<u64>,
+    ) -> Self {
         Self {
             key: NativeViewportRosterKey::new(context, roster),
             commit_baseline,
+            terminal_generation,
         }
     }
 
     pub(crate) const fn roster(&self) -> &NativeViewportRosterRecord {
         &self.key.roster
+    }
+
+    pub(crate) const fn is_terminal(&self) -> bool {
+        self.terminal_generation.is_some()
+    }
+}
+
+#[derive(Debug, Default)]
+struct TerminalRosterState {
+    required_generation: u64,
+    captured_generation: u64,
+    settled_generation: u64,
+}
+
+impl TerminalRosterState {
+    fn require(&mut self) {
+        self.required_generation = self
+            .required_generation
+            .checked_add(1)
+            .expect("terminal native viewport roster generation exhausted");
+    }
+
+    const fn has_pending(&self) -> bool {
+        self.settled_generation < self.required_generation
+    }
+
+    const fn needs_capture(&self) -> bool {
+        self.captured_generation < self.required_generation
+    }
+
+    fn capture(&mut self) -> Option<u64> {
+        if !self.needs_capture() {
+            return None;
+        }
+        self.captured_generation = self.required_generation;
+        Some(self.captured_generation)
+    }
+
+    const fn can_settle(&self, generation: u64) -> bool {
+        generation != 0
+            && generation > self.settled_generation
+            && generation <= self.captured_generation
+    }
+
+    fn settle(&mut self, generation: u64, applied: bool) -> bool {
+        if !self.can_settle(generation) {
+            return false;
+        }
+        if applied {
+            self.settled_generation = generation;
+        } else if self.captured_generation == generation {
+            self.captured_generation = self.settled_generation;
+        }
+        true
     }
 }
 
@@ -491,31 +572,31 @@ mod tests {
         );
         let mut records = HostRecords::active();
 
-        assert!(records.record_viewport_roster(roster.clone(), false));
-        assert!(!records.record_viewport_roster(roster.clone(), false));
+        assert!(records.record_viewport_roster(roster.clone()));
+        assert!(!records.record_viewport_roster(roster.clone()));
 
         let first = records
             .front_viewport_roster()
             .expect("the queued roster freezes its enqueue context");
         assert!(records.acknowledge_viewport_roster(&first));
-        assert!(!records.record_viewport_roster(roster.clone(), false));
+        assert!(!records.record_viewport_roster(roster.clone()));
         assert!(records.settle_viewport_roster(&first, false));
 
-        assert!(records.record_viewport_roster(roster.clone(), false));
+        assert!(records.record_viewport_roster(roster.clone()));
         let retry = records
             .front_viewport_roster()
             .expect("a rejected roster remains retryable");
         assert!(records.acknowledge_viewport_roster(&retry));
         assert!(records.settle_viewport_roster(&retry, true));
-        assert!(!records.record_viewport_roster(roster.clone(), false));
+        assert!(!records.record_viewport_roster(roster.clone()));
 
         records.invalidate_viewport_roster();
-        assert!(records.record_viewport_roster(roster.clone(), false));
+        assert!(records.record_viewport_roster(roster.clone()));
 
         let mut queued = HostRecords::active();
-        assert!(queued.record_viewport_roster(roster.clone(), false));
+        assert!(queued.record_viewport_roster(roster.clone()));
         queued.invalidate_viewport_roster();
-        assert!(queued.record_viewport_roster(roster, false));
+        assert!(queued.record_viewport_roster(roster));
         assert_eq!(
             queued
                 .journal
@@ -538,7 +619,7 @@ mod tests {
             WindowEvent::Destroyed,
         ));
 
-        assert!(!records.terminal_roster_pending);
+        assert!(!records.terminal_roster.has_pending());
         assert!(records.journal.pop_front().is_some());
         assert!(!records.has_pending_coordinator_work());
 
@@ -550,7 +631,87 @@ mod tests {
             Some(binding),
             WindowEvent::Destroyed,
         ));
-        assert!(records.terminal_roster_pending);
+        assert!(records.terminal_roster.has_pending());
+    }
+
+    #[test]
+    fn quarantine_preserves_an_existing_visibility_roster_obligation() {
+        let (binding, _) = bindings();
+        let mut records = HostRecords::active();
+        assert!(
+            records.record_viewport_visibility(NativeViewportVisibilityRecord::for_test(
+                ViewportId::ROOT,
+                WindowId::from(11),
+                binding,
+                true,
+                eframe::NativeViewportVisibilityStatus::Dispatched,
+            ))
+        );
+        assert!(!records.terminal_roster.has_pending());
+
+        records.quarantine_after_fatal();
+
+        assert!(records.terminal_roster.has_pending());
+    }
+
+    #[test]
+    fn rejected_terminal_roster_is_rearmed_until_applied() {
+        let mut records = HostRecords::active();
+        records.quarantine_after_fatal();
+        records.require_terminal_roster();
+        let roster = NativeViewportRosterRecord::for_test([], true);
+
+        assert!(records.record_terminal_viewport_roster(roster.clone()));
+        assert!(records.terminal_roster.has_pending());
+        let rejected = records
+            .front_viewport_roster()
+            .expect("the terminal roster enters the ordered journal");
+        assert!(records.acknowledge_viewport_roster(&rejected));
+        assert!(records.settle_viewport_roster(&rejected, false));
+        assert!(records.terminal_roster.has_pending());
+
+        assert!(records.record_terminal_viewport_roster(roster));
+        let applied = records
+            .front_viewport_roster()
+            .expect("the rejected terminal roster remains retryable");
+        assert!(records.acknowledge_viewport_roster(&applied));
+        assert!(records.settle_viewport_roster(&applied, true));
+        assert!(!records.terminal_roster.has_pending());
+    }
+
+    #[test]
+    fn fresh_roster_state_is_clean_until_facts_are_invalidated() {
+        let mut records = HostRecords::active();
+
+        assert!(!records.viewport_roster_dirty());
+        records.invalidate_viewport_roster();
+        assert!(records.viewport_roster_dirty());
+    }
+
+    #[test]
+    fn newer_terminal_roster_obligation_survives_an_older_settlement() {
+        let mut records = HostRecords::active();
+        records.quarantine_after_fatal();
+        records.require_terminal_roster();
+        let roster = NativeViewportRosterRecord::for_test([], true);
+
+        assert!(records.record_terminal_viewport_roster(roster.clone()));
+        let first = records
+            .front_viewport_roster()
+            .expect("the first terminal roster enters the ordered journal");
+        assert!(records.acknowledge_viewport_roster(&first));
+
+        records.require_terminal_roster();
+        assert!(records.record_terminal_viewport_roster(roster));
+        assert!(records.settle_viewport_roster(&first, true));
+        assert!(records.terminal_roster.has_pending());
+
+        let second = records
+            .front_viewport_roster()
+            .expect("the newer obligation retains its own roster");
+        assert!(records.acknowledge_viewport_roster(&second));
+        assert!(records.settle_viewport_roster(&second, true));
+        assert!(!records.terminal_roster.has_pending());
     }
 
     #[test]
@@ -641,7 +802,7 @@ mod tests {
                 eframe::NativeViewportPointerPassthroughStatus::Applied,
             )
         ));
-        assert!(records.terminal_roster_pending);
+        assert!(records.terminal_roster.has_pending());
 
         records.freeze();
 
@@ -728,7 +889,7 @@ struct HostRecords {
     last_output_ordinal: u64,
     output_order_invalid: bool,
     event_boundary_pending: bool,
-    terminal_roster_pending: bool,
+    terminal_roster: TerminalRosterState,
 }
 
 impl HostRecords {
@@ -748,7 +909,7 @@ impl HostRecords {
             last_output_ordinal: 0,
             output_order_invalid: false,
             event_boundary_pending: false,
-            terminal_roster_pending: false,
+            terminal_roster: TerminalRosterState::default(),
         }
     }
 
@@ -760,7 +921,7 @@ impl HostRecords {
             || self.in_flight_viewport_roster.is_some()
             || self.output_order_invalid
             || self.event_boundary_pending
-            || self.terminal_roster_pending
+            || self.terminal_roster.has_pending()
     }
 
     fn reserve_output(
@@ -884,6 +1045,9 @@ impl HostRecords {
         if !self.mode.accepts_terminal_callbacks() {
             return false;
         }
+        if matches!(self.mode, HostIngressMode::Quarantined) {
+            self.terminal_roster.require();
+        }
         self.journal
             .push_back(HostRecord::ViewportVisibility(record));
         true
@@ -913,7 +1077,7 @@ impl HostRecords {
             return false;
         }
         if matches!(self.mode, HostIngressMode::Quarantined) {
-            self.terminal_roster_pending = true;
+            self.terminal_roster.require();
         }
         self.journal
             .push_back(HostRecord::ViewportPointerPassthrough(record));
@@ -932,6 +1096,9 @@ impl HostRecords {
             )
         }) {
             return false;
+        }
+        if matches!(self.mode, HostIngressMode::Quarantined) {
+            self.terminal_roster.require();
         }
         self.journal.push_back(HostRecord::ViewportCreated(record));
         true
@@ -1010,9 +1177,13 @@ impl HostRecords {
         if !matches!(self.mode, HostIngressMode::Frozen) {
             self.mode = HostIngressMode::Quarantined;
         }
-        self.terminal_roster_pending |= self.journal.iter().any(|record| {
-            matches!(record, HostRecord::WindowEvent(event) if matches!(event.event(), winit::event::WindowEvent::Destroyed))
-        });
+        if self
+            .journal
+            .iter()
+            .any(HostRecord::requires_terminal_roster)
+        {
+            self.terminal_roster.require();
+        }
         self.output_reservations
             .iter_mut()
             .filter_map(|(token, reservation)| {
@@ -1021,18 +1192,24 @@ impl HostRecords {
             .collect()
     }
 
+    fn require_terminal_roster(&mut self) {
+        self.terminal_roster.require();
+    }
+
     fn accepts_window_event(&self, event: &winit::event::WindowEvent) -> bool {
         self.mode.accepts_window_event(event)
     }
 
     fn record_window_event(&mut self, record: NativeWindowEventRecord) {
-        self.terminal_roster_pending |= matches!(
+        if matches!(
             (self.mode, record.event()),
             (
                 HostIngressMode::Quarantined,
                 winit::event::WindowEvent::Destroyed
             )
-        );
+        ) {
+            self.terminal_roster.require();
+        }
         self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
@@ -1043,23 +1220,32 @@ impl HostRecords {
             .expect("native viewport roster context exhausted");
     }
 
-    fn record_viewport_roster(&mut self, roster: NativeViewportRosterRecord, force: bool) -> bool {
+    fn record_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
         let envelope = NativeViewportRosterEnvelope::new(
             self.roster_context,
             roster,
-            !force && matches!(self.mode, HostIngressMode::Active),
+            matches!(self.mode, HostIngressMode::Active),
+            None,
         );
-        if !force {
-            let already_known = self.committed_viewport_roster.as_ref() == Some(&envelope.key)
-                || self.in_flight_viewport_roster.as_ref() == Some(&envelope.key)
-                || self.journal.iter().any(
-                    |record| matches!(record, HostRecord::ViewportRoster(queued) if queued.key == envelope.key),
-                );
-            if already_known {
-                return false;
-            }
+        let already_known = self.committed_viewport_roster.as_ref() == Some(&envelope.key)
+            || self.in_flight_viewport_roster.as_ref() == Some(&envelope.key)
+            || self.journal.iter().any(
+                |record| matches!(record, HostRecord::ViewportRoster(queued) if queued.key == envelope.key),
+            );
+        if already_known {
+            return false;
         }
         self.journal.push_back(HostRecord::ViewportRoster(envelope));
+        true
+    }
+
+    fn record_terminal_viewport_roster(&mut self, roster: NativeViewportRosterRecord) -> bool {
+        let Some(generation) = self.terminal_roster.capture() else {
+            return false;
+        };
+        self.journal.push_back(HostRecord::ViewportRoster(
+            NativeViewportRosterEnvelope::new(self.roster_context, roster, true, Some(generation)),
+        ));
         true
     }
 
@@ -1072,7 +1258,9 @@ impl HostRecords {
 
     fn acknowledge_viewport_roster(&mut self, expected: &NativeViewportRosterEnvelope) -> bool {
         let matches = self.front_viewport_roster().is_some_and(|front| {
-            front.key == expected.key && front.commit_baseline == expected.commit_baseline
+            front.key == expected.key
+                && front.commit_baseline == expected.commit_baseline
+                && front.terminal_generation == expected.terminal_generation
         });
         if !matches {
             return false;
@@ -1091,20 +1279,36 @@ impl HostRecords {
         expected: &NativeViewportRosterEnvelope,
         applied: bool,
     ) -> bool {
-        if !expected.commit_baseline {
-            return true;
-        }
-        if self.in_flight_viewport_roster.as_ref() != Some(&expected.key) {
+        if expected.commit_baseline
+            && self.in_flight_viewport_roster.as_ref() != Some(&expected.key)
+        {
             return false;
         }
-        let key = self
-            .in_flight_viewport_roster
-            .take()
-            .expect("the exact in-flight roster was checked");
-        if applied {
-            self.committed_viewport_roster = Some(key);
+        if let Some(generation) = expected.terminal_generation
+            && !self.terminal_roster.can_settle(generation)
+        {
+            return false;
+        }
+        if expected.commit_baseline {
+            let key = self
+                .in_flight_viewport_roster
+                .take()
+                .expect("the exact in-flight roster was checked");
+            if applied {
+                self.committed_viewport_roster = Some(key);
+            }
+        }
+        if let Some(generation) = expected.terminal_generation {
+            debug_assert!(self.terminal_roster.settle(generation, applied));
         }
         true
+    }
+
+    fn viewport_roster_dirty(&self) -> bool {
+        self.committed_viewport_roster.as_ref().map_or_else(
+            || self.roster_context != 0,
+            |committed| committed.context != self.roster_context,
+        )
     }
 
     fn record_viewport_close_cancelled(
@@ -1853,11 +2057,10 @@ impl NativeHostBridge {
         if let Some(roster) = roster {
             match records.mode {
                 HostIngressMode::Active => {
-                    records.record_viewport_roster(roster, false);
+                    records.record_viewport_roster(roster);
                 }
-                HostIngressMode::Quarantined if records.terminal_roster_pending => {
-                    records.terminal_roster_pending = false;
-                    records.record_viewport_roster(roster, true);
+                HostIngressMode::Quarantined if records.terminal_roster.needs_capture() => {
+                    records.record_terminal_viewport_roster(roster);
                 }
                 HostIngressMode::Quarantined | HostIngressMode::Frozen => {}
             }
@@ -1867,6 +2070,10 @@ impl NativeHostBridge {
 
     pub(crate) fn invalidate_viewport_roster(&self) {
         self.lock().invalidate_viewport_roster();
+    }
+
+    pub(crate) fn viewport_roster_dirty(&self) -> bool {
+        self.lock().viewport_roster_dirty()
     }
 
     pub(crate) fn output_reservation(&self, token: NativeOutputToken) -> Option<OutputReservation> {
@@ -1922,6 +2129,10 @@ impl NativeHostBridge {
 
     pub(crate) fn quarantine_after_fatal(&self) -> Vec<NativeOutputToken> {
         self.lock().quarantine_after_fatal()
+    }
+
+    pub(crate) fn require_terminal_roster(&self) {
+        self.lock().require_terminal_roster();
     }
 
     fn admit_viewport_create_attempt(
@@ -2021,7 +2232,7 @@ impl NativeHostBridge {
 
     #[cfg(test)]
     pub(crate) fn push_viewport_roster(&self, roster: NativeViewportRosterRecord) {
-        assert!(self.lock().record_viewport_roster(roster, false));
+        assert!(self.lock().record_viewport_roster(roster));
     }
 
     pub(crate) fn callback_boundary_pending(&self) -> bool {

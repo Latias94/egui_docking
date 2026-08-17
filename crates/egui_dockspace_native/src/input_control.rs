@@ -186,6 +186,15 @@ impl NativeInputControl {
                 .any(|observation| observation.acknowledgement.is_some())
     }
 
+    pub(crate) fn requires_snapshot(&self) -> bool {
+        self.observations
+            .values()
+            .any(|observation| observation.acknowledgement.is_some())
+            || self.pending.front().is_some_and(|pending| {
+                matches!(pending.state, PendingNativeInputState::AwaitingSnapshot)
+            })
+    }
+
     pub(crate) fn retain(
         &mut self,
         viewport: ViewportId,

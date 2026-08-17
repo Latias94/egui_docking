@@ -135,6 +135,12 @@ impl NativeRetirementState {
         !self.pending.is_empty()
     }
 
+    pub(crate) fn requires_snapshot(&self) -> bool {
+        self.pending
+            .values()
+            .any(|pending| matches!(pending.phase, RetirementPhase::DestroyedObserved))
+    }
+
     pub(crate) fn can_begin_release(
         &self,
         viewport: ViewportId,
@@ -504,16 +510,19 @@ mod tests {
             state.observe_destroyed(viewport, binding),
             DestroyedObservation::Duplicate
         );
+        assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
         assert!(state.committed_routes().is_empty());
 
         state.mark_snapshot_queued();
         assert!(state.committed_routes().is_empty());
         state.settle_snapshot(false);
+        assert!(state.requires_snapshot());
         assert_eq!(state.destroyed_observations().count(), 1);
 
         state.mark_snapshot_queued();
         state.settle_snapshot(true);
+        assert!(!state.requires_snapshot());
         let committed = state.committed_routes();
         assert_eq!(committed.len(), 1);
         state.commit_routes(&committed);
