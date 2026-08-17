@@ -1088,6 +1088,8 @@ pub(crate) mod structural_work {
         pub(crate) drop_targets_assessed: usize,
         pub(crate) geometric_winners: usize,
         pub(crate) presentation_hit_lookup_comparisons: usize,
+        pub(crate) presentation_roster_full_captures: usize,
+        pub(crate) presentation_roster_surface_freezes: usize,
         pub(crate) item_multiset_scans: usize,
         pub(crate) item_multiset_item_visits: usize,
         pub(crate) transaction_prepares: usize,
@@ -1142,6 +1144,14 @@ pub(crate) mod structural_work {
         PRESENTATION_HIT_LOOKUP_COMPARISONS.with(|comparisons| {
             comparisons.set(comparisons.get() + 1);
         });
+    }
+
+    pub(crate) fn record_presentation_roster_full_capture() {
+        update(|work| work.presentation_roster_full_captures += 1);
+    }
+
+    pub(crate) fn record_presentation_roster_surface_freeze() {
+        update(|work| work.presentation_roster_surface_freezes += 1);
     }
 
     pub(crate) fn record_item_multiset_scan(item_visits: usize) {

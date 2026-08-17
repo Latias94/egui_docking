@@ -1047,6 +1047,7 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             .expect("splitter receipt batch is exact"),
         )
         .expect("splitter press receipt must stage");
+    let work_before_move = crate::drop_resolver::structural_work::snapshot();
     frame
         .submit_surface_pointer_journal(
             &provider,
@@ -1066,6 +1067,17 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
             .expect("splitter move receipt batch is exact"),
         )
         .expect("splitter move receipt must stage");
+    let work_after_move = crate::drop_resolver::structural_work::snapshot();
+    assert_eq!(
+        work_after_move.presentation_roster_full_captures,
+        work_before_move.presentation_roster_full_captures,
+        "one pointer move must not rebuild the complete presentation roster"
+    );
+    assert_eq!(
+        work_after_move.presentation_roster_surface_freezes,
+        work_before_move.presentation_roster_surface_freezes,
+        "a splitter move without a preview-token change needs no surface freeze"
+    );
     frame
         .submit_surface_pointer_journal(
             &provider,
@@ -1115,6 +1127,11 @@ fn real_host_frame_splitter_gesture_has_bounded_clone_work() {
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
 
     let work = crate::drop_resolver::structural_work::snapshot();
+    assert_eq!(
+        work.presentation_roster_full_captures,
+        work_after_move.presentation_roster_full_captures + 1,
+        "the committing release must retain the conservative full-roster path"
+    );
     assert_eq!(work.engine_deep_clones.atomic_candidates.calls, 1);
     assert_eq!(
         work.engine_deep_clones.atomic_candidates.volume,

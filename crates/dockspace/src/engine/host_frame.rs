@@ -9,6 +9,66 @@ enum PointerJournalSubmissionAuthority {
     BackendIngress,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PointerPresentationFence {
+    workspace: WorkspaceVersion,
+    requirements: RequirementRevision,
+    drag_preview_surface: Option<SurfaceId>,
+    contained_preview_surface: Option<SurfaceId>,
+}
+
+impl PointerPresentationFence {
+    fn capture(engine: &DockEngine) -> Self {
+        Self {
+            workspace: engine.version,
+            requirements: engine
+                .presentation_authority
+                .presentation_requirements
+                .revision(),
+            drag_preview_surface: engine
+                .presentation_preview()
+                .map(|preview| preview.visual().surface()),
+            contained_preview_surface: engine
+                .presentation_contained_transform_preview()
+                .map(|preview| preview.surface()),
+        }
+    }
+}
+
+const fn pointer_move_outcome_allows_local_presentation_refresh(
+    outcome: &InteractionOutcome,
+) -> bool {
+    match outcome {
+        InteractionOutcome::DragBegan { .. }
+        | InteractionOutcome::PreviewUpdated { .. }
+        | InteractionOutcome::Cancelled { .. }
+        | InteractionOutcome::ResizeUpdated { .. }
+        | InteractionOutcome::ContainedTransformPreviewUpdated { .. }
+        | InteractionOutcome::Rejected(_) => true,
+        InteractionOutcome::Scroll(_)
+        | InteractionOutcome::CloseRequested { .. }
+        | InteractionOutcome::TabStripControlActivated { .. }
+        | InteractionOutcome::TabListMenuItemSelected { .. }
+        | InteractionOutcome::TabListMenuDismissed { .. }
+        | InteractionOutcome::TabListMenuFrameConsumed { .. }
+        | InteractionOutcome::TabStripScrolled { .. }
+        | InteractionOutcome::TabListMenuScrolled { .. }
+        | InteractionOutcome::TabListMenuFocusMoved { .. }
+        | InteractionOutcome::DragArmed { .. }
+        | InteractionOutcome::PreviewAcknowledged { .. }
+        | InteractionOutcome::DragDelivered { .. }
+        | InteractionOutcome::ReleasePending { .. }
+        | InteractionOutcome::ResizeBegan { .. }
+        | InteractionOutcome::SplitterAdjusted { .. }
+        | InteractionOutcome::ResizeDelivered { .. }
+        | InteractionOutcome::ContainedPlacementApplied { .. }
+        | InteractionOutcome::ContainedTransformBegan { .. }
+        | InteractionOutcome::ContainedTransformPreviewAcknowledged { .. }
+        | InteractionOutcome::ContainedTransformReleasePending { .. }
+        | InteractionOutcome::ContainedTransformDelivered { .. } => false,
+    }
+}
+
 impl CoreHostFramePrelude {
     pub(super) fn new(
         engine: &DockEngine,
@@ -993,6 +1053,44 @@ impl CoreHostFrame {
         Ok(())
     }
 
+    fn refresh_presentation_after_pointer_segment(
+        &mut self,
+        before: PointerPresentationFence,
+        reduced: &[crate::transition::ReducedPointerEdge],
+    ) -> Result<(), EngineError> {
+        let after = PointerPresentationFence::capture(&self.candidate);
+        let can_refresh_locally = before.workspace == after.workspace
+            && before.requirements == after.requirements
+            && reduced.iter().all(|edge| {
+                edge.edge().kind() == PointerEdgeKind::Moved
+                    && edge
+                        .interaction_outcomes()
+                        .iter()
+                        .all(pointer_move_outcome_allows_local_presentation_refresh)
+            });
+
+        if can_refresh_locally {
+            let dirty_surfaces = [
+                before.drag_preview_surface,
+                after.drag_preview_surface,
+                before.contained_preview_surface,
+                after.contained_preview_surface,
+            ]
+            .into_iter()
+            .flatten();
+            if let Some((snapshot_changed, projection_changed)) = self
+                .frozen_presentation_roster
+                .try_refresh_surfaces(&self.candidate, dirty_surfaces)
+            {
+                self.presentation_snapshot_changed |= snapshot_changed;
+                self.presentation_projection_changed |= projection_changed;
+                return Ok(());
+            }
+        }
+
+        self.refresh_presentation_snapshot()
+    }
+
     fn retain_presented_interaction_authority_in_roster(&mut self) {
         let roster = &self.frozen_presentation_roster;
         self.frozen_pointer_outputs
@@ -1632,6 +1730,7 @@ impl CoreHostFrame {
         let Some(segment) = self.pending_pointer_segment.take() else {
             return self.reject(CoreHostFrameError::PointerReceiverReceiptBeforeJournal);
         };
+        let presentation_before = PointerPresentationFence::capture(&self.candidate);
         let protocol = segment.into_prepared(receipts);
         let reduction = self.candidate.reduce_host_pointer_protocol(
             self.tick,
@@ -1661,12 +1760,14 @@ impl CoreHostFrame {
             return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
         }
         self.last_causal_cause = segment_cause.or(self.last_causal_cause);
-        self.reduced_pointer_edges.extend(reduced);
         self.vacancy_ledger.observe_bindings(&self.candidate);
-        if let Err(error) = self.refresh_presentation_snapshot() {
+        if let Err(error) =
+            self.refresh_presentation_after_pointer_segment(presentation_before, &reduced)
+        {
             self.input_prefix_error = Some(error);
             return self.reject(CoreHostFrameError::InputPrefixReductionFailed);
         }
+        self.reduced_pointer_edges.extend(reduced);
         Ok(())
     }
 

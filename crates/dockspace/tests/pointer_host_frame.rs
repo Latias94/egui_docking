@@ -3695,6 +3695,7 @@ fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observe
             .expect("press answers delivery"),
         ),
     );
+    let work_before_move = crate::drop_resolver::structural_work::snapshot();
     submit_pointer_edge_with_observation(
         &mut gesture_frame,
         provider,
@@ -3712,6 +3713,25 @@ fn resolved_journal_preview_commits_only_after_its_exact_presentation_is_observe
             )])
             .expect("move answers hover"),
         ),
+    );
+    let work_after_move = crate::drop_resolver::structural_work::snapshot();
+    assert_eq!(
+        work_after_move.presentation_roster_full_captures,
+        work_before_move.presentation_roster_full_captures,
+        "a preview move must not rebuild the complete presentation roster"
+    );
+    assert_eq!(
+        work_after_move.presentation_roster_surface_freezes,
+        work_before_move.presentation_roster_surface_freezes + 1,
+        "a same-surface preview move freezes only its affected surface"
+    );
+    assert!(gesture_frame.presentation_changed_since_seal());
+    assert!(!gesture_frame.presentation_projection_changed_since_seal());
+    assert!(
+        gesture_frame
+            .view()
+            .presentation_drag_preview(SURFACE)
+            .is_some()
     );
     complete(&engine, &mut gesture_frame);
     let gesture_transition = host.finish(gesture_frame, &mut engine);

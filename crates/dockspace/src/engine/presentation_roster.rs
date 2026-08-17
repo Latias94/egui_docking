@@ -294,6 +294,9 @@ pub(super) struct HostPresentationRoster {
 
 impl HostPresentationRoster {
     pub(super) fn capture(candidate: &DockEngine) -> Result<Self, EngineError> {
+        #[cfg(test)]
+        crate::drop_resolver::structural_work::record_presentation_roster_full_capture();
+
         let suspended_surfaces = candidate
             .viewport
             .suspended_native_presentation_surfaces()
@@ -344,6 +347,47 @@ impl HostPresentationRoster {
             native_staging,
             native_resources,
         })
+    }
+
+    pub(super) fn try_refresh_surfaces(
+        &mut self,
+        candidate: &DockEngine,
+        surfaces: impl IntoIterator<Item = SurfaceId>,
+    ) -> Option<(bool, bool)> {
+        let surfaces = surfaces.into_iter().collect::<BTreeSet<_>>();
+        let mut replacements = Vec::with_capacity(surfaces.len());
+        let mut snapshot_changed = false;
+        let mut projection_changed = false;
+
+        for surface in surfaces {
+            let current = self.surface_output(surface)?;
+            candidate
+                .presentation_authority
+                .presentation_requirements
+                .surface(surface)?;
+            candidate.presentation_authority.scene.surface(surface)?;
+            if candidate
+                .viewport
+                .suspended_native_presentation_surfaces()
+                .any(|candidate| candidate == surface)
+                || candidate
+                    .viewport
+                    .native_staging_presentations()
+                    .any(|presentation| presentation.binding().surface() == surface)
+            {
+                return None;
+            }
+
+            let replacement = Self::freeze_surface(candidate, surface);
+            snapshot_changed |= current != replacement;
+            projection_changed |= !current.same_projection(replacement);
+            replacements.push((surface, replacement));
+        }
+
+        for (surface, replacement) in replacements {
+            self.surfaces.insert(surface, replacement);
+        }
+        Some((snapshot_changed, projection_changed))
     }
 
     pub(super) fn surfaces(&self) -> impl ExactSizeIterator<Item = SurfaceId> + '_ {
@@ -427,6 +471,9 @@ impl HostPresentationRoster {
         candidate: &DockEngine,
         surface: SurfaceId,
     ) -> FrozenSurfacePresentationOutput {
+        #[cfg(test)]
+        crate::drop_resolver::structural_work::record_presentation_roster_surface_freeze();
+
         let scene = candidate
             .presentation_authority
             .scene
