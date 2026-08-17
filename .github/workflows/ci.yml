@@ -126,7 +126,7 @@ jobs:
         run: >-
           cargo test --manifest-path .ci/winit-fork/Cargo.toml
           -p winit --lib --no-default-features
-          --features x11,wayland event::tests --locked -j1
+          --features x11,wayland event::tests -j1
 
       - name: Run pinned native workspace tests
         run: python3 scripts/run_egui_fork_harness.py
