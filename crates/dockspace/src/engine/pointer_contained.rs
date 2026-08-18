@@ -179,76 +179,20 @@ impl DockEngine {
         if let Some(rejection) = self.pending_presentation_transition_gesture_rejection() {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
-        let mut candidate_events = Vec::new();
         let mut activation_changed = false;
-        // A local egui response already owns the current painted chrome. Do
-        // not enqueue a second RaiseContained transaction here: changing the
-        // roster during begin would invalidate the very scene which supplied
-        // the response before the first local preview can be painted. The
-        // journal/native path still raises through its retained transaction.
-        if !matches!(owner, GestureOwner::LocalResponse { .. }) {
+        let needs_raise = prepared.expected_roster.contained().last() != Some(&prepared.floating);
+        if needs_raise {
             let raise = WorkspaceCommand::RaiseContained {
                 source: prepared.source.clone(),
                 floating: prepared.floating,
                 expected_roster: prepared.expected_roster.clone(),
             };
-            let mut workspace = self.clone_workspace_candidate();
-            match WorkspaceTransaction::from_commands([raise]).apply(&mut workspace, policy) {
-                Ok(report) => {
-                    if let Some(surface) =
-                        self.first_workspace_publication_mismatch(&workspace, None, None)
-                    {
-                        return Ok(InteractionOutcome::Rejected(
-                            InteractionRejection::CommandRejected(
-                                CommandError::SurfaceLifecycleFrozen { surface },
-                            ),
-                        ));
-                    }
-                    let changed = report.changed();
-                    let outcomes = report.into_outcomes();
-                    let publication = match self.stage_workspace_publication(workspace, policy) {
-                        Ok(publication) => publication,
-                        Err(source) if source.is_expected_rejection() => {
-                            return Ok(InteractionOutcome::Rejected(
-                                InteractionRejection::CommandRejected(source),
-                            ));
-                        }
-                        Err(source) => {
-                            return Err(EngineError::PointerInteractionInvariant {
-                                cause,
-                                detail: source.to_string(),
-                            });
-                        }
-                    };
-                    self.publish_workspace(publication);
-                    self.reconcile_viewport_focus_authority();
-                    activation_changed = changed;
-                    if changed {
-                        self.advance_revision_caused(cause)?;
-                        candidate_events.extend(outcomes.into_iter().map(|outcome| {
-                            WorkspaceEvent::new_caused(
-                                cause,
-                                self.version,
-                                WorkspaceEventKind::CommandCommitted(outcome),
-                            )
-                        }));
-                    }
-                }
-                Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
-                    let title_drag_policy_rejection =
-                        matches!(prepared.kind, ContainedGestureKind::TitleDrag)
-                            && matches!(&source, CommandError::Policy(_));
-                    if !title_drag_policy_rejection {
-                        return Ok(InteractionOutcome::Rejected(
-                            InteractionRejection::CommandRejected(source),
-                        ));
-                    }
-                }
+            match self.apply_journal_workspace_command(cause, &raise, policy, events)? {
+                Ok((_, changed)) => activation_changed = changed,
                 Err(source) => {
-                    return Err(EngineError::PointerInteractionInvariant {
-                        cause,
-                        detail: source.to_string(),
-                    });
+                    return Ok(InteractionOutcome::Rejected(
+                        InteractionRejection::CommandRejected(source),
+                    ));
                 }
             }
         }
@@ -413,8 +357,6 @@ impl DockEngine {
                 InteractionOutcome::ContainedTransformBegan { session, replaced }
             }
         };
-
-        events.extend(candidate_events);
         Ok(outcome)
     }
 

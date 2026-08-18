@@ -57,6 +57,7 @@ pub struct ContainedRecord {
     floating: FloatingPresentationId,
     root: RootId,
     ordinal: usize,
+    frontmost: bool,
     outer_bounds: LogicalRect,
     inner_bounds: LogicalRect,
     title_bounds: LogicalRect,
@@ -75,6 +76,7 @@ impl ContainedRecord {
         floating: FloatingPresentationId,
         root: RootId,
         ordinal: usize,
+        frontmost: bool,
         outer_bounds: LogicalRect,
         inner_bounds: LogicalRect,
         title_bounds: LogicalRect,
@@ -90,6 +92,7 @@ impl ContainedRecord {
             floating,
             root,
             ordinal,
+            frontmost,
             outer_bounds,
             inner_bounds,
             title_bounds,
@@ -119,6 +122,13 @@ impl ContainedRecord {
     #[must_use]
     pub const fn ordinal(&self) -> usize {
         self.ordinal
+    }
+
+    /// Returns whether this presentation is the frontmost member of the
+    /// complete contained roster, including members clipped from this plan.
+    #[must_use]
+    pub const fn is_frontmost(&self) -> bool {
+        self.frontmost
     }
 
     /// Returns the surface-clipped outer frame bounds.

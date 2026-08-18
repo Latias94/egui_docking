@@ -14,8 +14,8 @@ use dockspace::policy::DockPolicy;
 #[cfg(feature = "serde")]
 use dockspace::runtime::{DockspaceDocumentBootstrap, DockspaceDocumentId};
 use dockspace::runtime::{
-    DockspaceSession, HostFrameReport, PreparedCloseRequest, SurfaceUnavailableReason,
-    WorkspaceVersion,
+    DockspaceSession, HostFrameReport, HostSurfaceCommitStatus, PreparedCloseRequest,
+    SurfaceUnavailableReason, WorkspaceVersion,
 };
 use egui::emath::GuiRounding;
 use egui::{Id, Sense, Ui};
@@ -746,6 +746,18 @@ impl Dockspace {
             )?);
         }
         let report = frame.commit().map_err(DockspaceError::from_detail)?;
+        let recovered_ready = !had_plan
+            && report.surface_commits().iter().any(|commit| {
+                commit.surface() == surface && commit.status() == HostSurfaceCommitStatus::Ready
+            });
+        if recovered_ready {
+            let marker = ui.make_persistent_id((self.id, "ready-surface-discard-frame", surface));
+            product_render::request_discard_once(
+                ui,
+                marker,
+                "egui_dockspace: paint newly ready surface in the terminal pass",
+            );
+        }
         let needs_presentation_settlement =
             !presentation_actions.is_empty() || pane_focus_observation.is_some();
         self.pass_settlement.stage(

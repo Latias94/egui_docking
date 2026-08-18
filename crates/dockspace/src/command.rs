@@ -824,3 +824,28 @@ pub enum CommandOutcome {
     /// An empty root and its presentation were removed.
     EmptyRootRemoved { root: RootId },
 }
+
+impl CommandOutcome {
+    pub(crate) const fn changes_workspace(&self) -> bool {
+        match self {
+            Self::Selected { changed, .. }
+            | Self::Reordered { changed, .. }
+            | Self::Moved { changed, .. }
+            | Self::SplitsResized { changed, .. }
+            | Self::RootRehomed { changed, .. }
+            | Self::ContainedRectUpdated { changed, .. }
+            | Self::ContainedRaised { changed, .. } => *changed,
+            Self::ContainedPresentationUpdated {
+                rect_changed,
+                order_changed,
+                ..
+            } => *rect_changed || *order_changed,
+            Self::Opened { .. }
+            | Self::SurfaceRootCreated { .. }
+            | Self::ContainedRootCreated { .. }
+            | Self::MainRootInstalled { .. }
+            | Self::ContainedPromoted { .. }
+            | Self::EmptyRootRemoved { .. } => true,
+        }
+    }
+}

@@ -2,9 +2,10 @@
 
 use dockspace::runtime::{
     ContainedPaintRecord, ContainedResizeDirection, SurfaceContainedResizeAdjustment,
+    SurfaceGesturePhase,
 };
 use egui::accesskit::{Action, Orientation, Role};
-use egui::{CursorIcon, EventFilter, Key, Sense, pos2};
+use egui::{CursorIcon, EventFilter, Key, Sense};
 
 use crate::style::ResolvedContainedWindowVisuals;
 
@@ -72,17 +73,21 @@ pub(crate) fn paint_background(
         let label = title_label(context, root);
         let title_text_bounds =
             egui_rect(contained.title_drag_bounds()).map_or(title, |drag| drag.intersect(title));
-        context.ui.painter_at(title_text_bounds).text(
-            pos2(
-                title_text_bounds.min.x + f32::from(visuals.title_margin.left),
-                title_text_bounds.center().y,
-            ),
-            egui::Align2::LEFT_CENTER,
+        let title_content_bounds = inset_title_rect(title_text_bounds, visuals.title_margin);
+        context.ui.painter_at(title_content_bounds).text(
+            title_content_bounds.center(),
+            egui::Align2::CENTER_CENTER,
             label,
             egui::TextStyle::Heading.resolve(context.ui.style()),
             visuals.title_text_color,
         );
     }
+}
+
+fn inset_title_rect(rect: egui::Rect, margin: egui::Margin) -> egui::Rect {
+    let min = (rect.min + margin.left_top()).min(rect.max);
+    let max = (rect.max - margin.right_bottom()).max(min);
+    egui::Rect::from_min_max(min, max)
 }
 
 pub(crate) fn paint_controls(
@@ -124,8 +129,12 @@ pub(crate) fn paint_controls(
                 CursorIcon::Grab
             });
         }
-        if context.pointer_authority.accepts_local_pointer_actions()
-            && let Some(phase) = gesture_phase(&response)
+        let phase = context
+            .pointer_authority
+            .accepts_local_pointer_actions()
+            .then(|| gesture_phase(&response))
+            .flatten();
+        if let Some(phase) = phase
             && let Some(action) = context
                 .plan
                 .prepare_contained_title_gesture(contained.floating(), phase)
@@ -135,7 +144,10 @@ pub(crate) fn paint_controls(
                 "egui_dockspace: settle contained drag decoration",
             )
         {
-            context.push_preview_gesture_action(action);
+            if matches!(phase, SurfaceGesturePhase::Begin { .. }) {
+                context.claim_contained_activation(contained);
+            }
+            context.push_preview_gesture_action(action, phase);
         }
     }
 
@@ -253,15 +265,19 @@ pub(crate) fn paint_controls(
                 .ctx()
                 .set_cursor_icon(resize_cursor(resize.direction()));
         }
-        if enabled
-            && context.pointer_authority.accepts_local_pointer_actions()
-            && let Some(phase) = gesture_phase(&response)
+        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
+            .then(|| gesture_phase(&response))
+            .flatten();
+        if let Some(phase) = phase
             && let Some(action) = context.plan.prepare_contained_resize_gesture(
                 contained.floating(),
                 resize.direction(),
                 phase,
             )
         {
+            if matches!(phase, SurfaceGesturePhase::Begin { .. }) {
+                context.claim_contained_activation(contained);
+            }
             context.push_local_action(action);
         }
     }

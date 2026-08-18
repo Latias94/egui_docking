@@ -1981,6 +1981,7 @@ pub(crate) struct ActiveDrag {
     pub(crate) payload: MovePayload,
     pub(crate) source_surface: SurfaceId,
     pub(crate) initial_pointer: Option<LogicalPoint>,
+    pub(crate) current_pointer: Option<LogicalPoint>,
     pub(crate) complete_root: Option<NodeSource>,
     pub(crate) partial_detachable: bool,
     pub(crate) origin: FrozenDragOrigin,
@@ -2613,6 +2614,7 @@ impl InteractionState {
             payload: armed.payload.clone(),
             source_surface: armed.source_surface,
             initial_pointer: armed.initial_pointer,
+            current_pointer: armed.initial_pointer,
             complete_root: armed.complete_root.clone(),
             partial_detachable: armed.partial_detachable,
             origin: armed.origin.clone(),
@@ -2785,6 +2787,15 @@ impl InteractionState {
         session: DragSessionId,
     ) -> Result<bool, InteractionRejection> {
         Ok(self.active_drag_mut(session)?.preview.take().is_some())
+    }
+
+    pub(crate) fn set_drag_current_pointer(
+        &mut self,
+        session: DragSessionId,
+        current: LogicalPoint,
+    ) -> Result<(), InteractionRejection> {
+        self.active_drag_mut(session)?.current_pointer = Some(current);
+        Ok(())
     }
 
     pub(crate) fn clear_drag_feedback(

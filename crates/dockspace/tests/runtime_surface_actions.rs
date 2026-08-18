@@ -27,7 +27,9 @@ const TARGET_SURFACE: SurfaceId = SurfaceId::new(2);
 const ROOT: RootId = RootId::new(1);
 const FLOATING_ROOT: RootId = RootId::new(2);
 const TARGET_ROOT: RootId = RootId::new(3);
+const FRONT_FLOATING_ROOT: RootId = RootId::new(4);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
+const FRONT_FLOATING: FloatingPresentationId = FloatingPresentationId::new(2);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
@@ -147,6 +149,69 @@ fn contained_session(policy: DockPolicy) -> DockspaceSession {
     .expect("contained surface-action layout validates");
     DockspaceSession::from_layout(layout, policy)
         .expect("contained surface-action session initializes")
+}
+
+fn stacked_contained_session() -> DockspaceSession {
+    let rear =
+        LogicalRect::new(120.0, 100.0, 280.0, 220.0).expect("rear contained rectangle validates");
+    let front =
+        LogicalRect::new(440.0, 280.0, 280.0, 220.0).expect("front contained rectangle validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("stacked contained surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("stacked contained surface-action session initializes")
+}
+
+fn stacked_split_contained_session() -> DockspaceSession {
+    let rear =
+        LogicalRect::new(120.0, 100.0, 280.0, 220.0).expect("rear contained rectangle validates");
+    let front =
+        LogicalRect::new(440.0, 280.0, 280.0, 220.0).expect("front contained rectangle validates");
+    let rear_content = DockspaceNode::equal_split(
+        DockspaceAxis::Horizontal,
+        [DockspaceNode::tabs([SECOND]), DockspaceNode::tabs([THIRD])],
+    )
+    .expect("rear contained split validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, rear_content),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("stacked split-contained surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("stacked split-contained surface-action session initializes")
+}
+
+fn contained_roster(session: &DockspaceSession) -> Vec<FloatingPresentationId> {
+    session
+        .view()
+        .surface(SURFACE)
+        .expect("the test surface remains present")
+        .contained()
+        .map(|contained| contained.id())
+        .collect()
 }
 
 fn split_weights(session: &DockspaceSession) -> Vec<f32> {
@@ -905,6 +970,376 @@ fn surface_focus_request_stays_pending_until_an_exact_focused_observation() {
         .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
         .expect("the settled surface is retained");
     settled.commit().expect("settled inspection frame commits");
+}
+
+#[test]
+fn rear_contained_title_press_atomically_raises_without_starting_a_gesture() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained activation frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained activation plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let rear = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("rear contained presentation is painted");
+    let bounds = rear.title_drag_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear title activation point validates");
+    let activate = plan
+        .prepare_contained_activation(FLOATING, point)
+        .expect("rear contained title prepares exact activation");
+    frame
+        .submit_surface_action(activate)
+        .expect("rear contained activation is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained surface measures");
+    frame
+        .commit()
+        .expect("rear contained activation commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(!session.has_active_gesture());
+}
+
+#[test]
+fn rear_contained_pane_press_raises_and_requests_the_exact_selected_pane_focus() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained pane activation frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained pane activation plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let pane = plan
+        .panes()
+        .find(|pane| pane.root() == FLOATING_ROOT && pane.selected() == Some(SECOND))
+        .expect("rear contained selected pane is painted");
+    let bounds = pane.content_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear pane activation point validates");
+    let activate = plan
+        .prepare_contained_activation(FLOATING, point)
+        .expect("rear contained pane prepares exact activation");
+    frame
+        .submit_surface_action(activate)
+        .expect("rear contained pane activation is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained pane surface measures");
+    frame
+        .commit()
+        .expect("rear contained pane activation commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(!session.has_active_gesture());
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("contained pane focus inspection frame begins");
+    let plan = inspection
+        .paint_plan(SURFACE)
+        .expect("contained pane focus plan lookup succeeds")
+        .expect("raised contained pane remains paintable");
+    assert_eq!(
+        plan.pane_focus_request().map(|request| request.item()),
+        Some(SECOND)
+    );
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("contained pane focus inspection retains the current surface");
+    inspection
+        .commit()
+        .expect("contained pane focus inspection commits");
+}
+
+#[test]
+fn rear_contained_title_begin_atomically_raises_and_starts_the_local_drag() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained title gesture frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained paint plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let rear = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("rear contained presentation is painted");
+    let bounds = rear.title_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear title center validates");
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y())
+        .expect("rear title threshold movement validates");
+    let begin = plan
+        .prepare_contained_title_gesture(
+            FLOATING,
+            SurfaceGesturePhase::Begin {
+                initial: point,
+                current: moved,
+            },
+        )
+        .expect("rear contained title prepares a local drag");
+    frame
+        .submit_surface_action(begin)
+        .expect("rear contained title begin is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained surface measures");
+    frame
+        .commit()
+        .expect("rear contained title begin commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(session.has_active_gesture());
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("contained drag feedback inspection frame begins");
+    let plan = inspection
+        .paint_plan(SURFACE)
+        .expect("contained drag feedback plan lookup succeeds")
+        .expect("raised contained candidate remains paintable");
+    assert!(
+        plan.drag_decoration().is_some(),
+        "the raised source remains decorated in the terminal scene"
+    );
+    assert!(
+        plan.drag_preview().is_some(),
+        "the threshold-crossing preview is rebased onto the terminal scene"
+    );
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("drag feedback inspection retains the current surface");
+    inspection
+        .commit()
+        .expect("drag feedback inspection commits");
+}
+
+#[test]
+fn rear_contained_resize_begin_atomically_raises_and_starts_the_local_transform() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained resize gesture frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained paint plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let rear = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("rear contained presentation is painted");
+    let east = rear
+        .resize()
+        .find(|resize| resize.direction() == ContainedResizeDirection::East)
+        .expect("rear contained east resize handle is painted");
+    let bounds = east.hit_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear east resize center validates");
+    let moved = LogicalPoint::new(point.x() + 18.0, point.y())
+        .expect("rear east resize movement validates");
+    let begin = plan
+        .prepare_contained_resize_gesture(
+            FLOATING,
+            ContainedResizeDirection::East,
+            SurfaceGesturePhase::Begin {
+                initial: point,
+                current: moved,
+            },
+        )
+        .expect("rear contained resize prepares a local transform");
+    frame
+        .submit_surface_action(begin)
+        .expect("rear contained resize begin is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained surface measures");
+    frame
+        .commit()
+        .expect("rear contained resize begin commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(session.has_active_gesture());
+}
+
+#[test]
+fn rear_contained_tab_begin_atomically_raises_starts_drag_and_requests_pane_focus() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained tab gesture frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained paint plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let tab = plan
+        .tabs()
+        .find(|tab| tab.item() == SECOND)
+        .expect("rear contained tab is painted");
+    let bounds = tab.drag_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear contained tab center validates");
+    let begin = plan
+        .prepare_tab_gesture(
+            SECOND,
+            SurfaceGesturePhase::Begin {
+                initial: point,
+                current: point,
+            },
+        )
+        .expect("rear contained tab prepares a local drag");
+    frame
+        .submit_surface_action(begin)
+        .expect("rear contained tab begin is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained surface measures");
+    frame
+        .commit()
+        .expect("rear contained tab begin commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(session.has_active_gesture());
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("contained tab focus inspection frame begins");
+    let request = inspection
+        .paint_plan(SURFACE)
+        .expect("focus paint plan lookup succeeds")
+        .expect("raised contained candidate remains paintable")
+        .pane_focus_request()
+        .expect("contained tab activation requests pane focus");
+    assert_eq!(request.surface(), SURFACE);
+    assert_eq!(request.item(), SECOND);
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("focus inspection retains the current surface");
+    inspection
+        .commit()
+        .expect("contained tab focus inspection commits");
+}
+
+#[test]
+fn rear_split_contained_tab_begin_raises_the_complete_root_before_dragging_an_item() {
+    let mut session = stacked_split_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("split-contained tab gesture frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("split-contained paint plan lookup succeeds")
+        .expect("split-contained candidate is paintable");
+    let tab = plan
+        .tabs()
+        .find(|tab| tab.item() == SECOND)
+        .expect("rear split-contained tab is painted");
+    let bounds = tab.drag_bounds();
+    let point = LogicalPoint::new(
+        bounds.x() + bounds.width() * 0.5,
+        bounds.y() + bounds.height() * 0.5,
+    )
+    .expect("rear split-contained tab center validates");
+    let begin = plan
+        .prepare_tab_gesture(
+            SECOND,
+            SurfaceGesturePhase::Begin {
+                initial: point,
+                current: point,
+            },
+        )
+        .expect("rear split-contained tab prepares a local drag");
+    frame
+        .submit_surface_action(begin)
+        .expect("rear split-contained tab begin is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised split-contained surface measures");
+    frame
+        .commit()
+        .expect("rear split-contained tab begin commits atomically");
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+    assert!(session.has_active_gesture());
+}
+
+#[test]
+fn rear_contained_tab_select_atomically_raises_and_requests_pane_focus() {
+    let mut session = stacked_contained_session();
+    install_ready_candidate(&mut session);
+    assert_eq!(contained_roster(&session), [FLOATING, FRONT_FLOATING]);
+    let select = prepare_tab_select(&mut session, SECOND);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained tab selection frame begins");
+    frame
+        .submit_surface_action(select)
+        .expect("rear contained tab selection is accepted");
+    frame
+        .measure_surface(SURFACE, metrics())
+        .expect("raised contained surface measures");
+    frame
+        .commit()
+        .expect("rear contained tab selection commits atomically");
+
+    assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
+
+    let mut inspection = session
+        .begin_host_frame()
+        .expect("contained tab focus inspection frame begins");
+    let request = inspection
+        .paint_plan(SURFACE)
+        .expect("focus paint plan lookup succeeds")
+        .expect("raised contained candidate remains paintable")
+        .pane_focus_request()
+        .expect("contained tab selection requests pane focus");
+    assert_eq!(request.surface(), SURFACE);
+    assert_eq!(request.item(), SECOND);
+    inspection
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("focus inspection retains the current surface");
+    inspection
+        .commit()
+        .expect("contained tab focus inspection commits");
 }
 
 #[test]

@@ -1550,6 +1550,23 @@ impl DockEngine {
                 events,
                 interaction_events,
             ),
+            EngineInput::ActivateLocalContained {
+                expected,
+                scene,
+                floating,
+                point,
+            } => self.reduce_local_contained_activation(
+                input.sequence,
+                focus_causal,
+                *expected,
+                *application_base,
+                *scene,
+                *floating,
+                *point,
+                tick_start.policy,
+                events,
+                interaction_events,
+            ),
             EngineInput::SelectLocalSceneTab {
                 expected,
                 scene,

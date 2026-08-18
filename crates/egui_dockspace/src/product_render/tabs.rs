@@ -1,7 +1,10 @@
 //! Pane and tab rendering over opaque product paint records.
 
 use dockspace::model::ItemId;
-use dockspace::runtime::{SurfaceTabNavigation, TabGroupDragRegionKind, TabPaintRecord};
+use dockspace::runtime::{
+    ContainedPaintRecord, SurfaceGesturePhase, SurfaceTabNavigation, TabGroupDragRegionKind,
+    TabPaintRecord,
+};
 use egui::accesskit::{Action, Role};
 use egui::{
     Align, CursorIcon, EventFilter, Id, Key, Layout, PointerButton, Sense, Stroke, StrokeKind, Ui,
@@ -18,30 +21,46 @@ use super::measurement::TabPaintResource;
 use super::schedule::RootPaintSchedule;
 
 #[derive(Clone, Copy)]
-pub(crate) enum RootVisualContext {
+pub(crate) enum RootVisualContext<'plan> {
     Main,
-    Contained { pane_fill: egui::Color32 },
+    Contained {
+        record: ContainedPaintRecord<'plan>,
+        pane_fill: egui::Color32,
+    },
+}
+
+impl<'plan> RootVisualContext<'plan> {
+    const fn contained(self) -> Option<ContainedPaintRecord<'plan>> {
+        match self {
+            Self::Main => None,
+            Self::Contained { record, .. } => Some(record),
+        }
+    }
+
+    const fn pane_fill(self, workspace_fill: egui::Color32) -> egui::Color32 {
+        match self {
+            Self::Main => workspace_fill,
+            Self::Contained { pane_fill, .. } => pane_fill,
+        }
+    }
 }
 
 pub(crate) fn paint_root(
     context: &mut RenderContext<'_, '_, '_>,
     root: &RootPaintSchedule<'_>,
-    visual_context: RootVisualContext,
+    visual_context: RootVisualContext<'_>,
 ) {
     paint_panes(context, root, visual_context);
-    paint_tab_bars(context, root);
-    paint_tabs(context, root);
+    paint_tab_bars(context, root, visual_context.contained());
+    paint_tabs(context, root, visual_context.contained());
 }
 
 fn paint_panes(
     context: &mut RenderContext<'_, '_, '_>,
     root: &RootPaintSchedule<'_>,
-    visual_context: RootVisualContext,
+    visual_context: RootVisualContext<'_>,
 ) {
-    let pane_fill = match visual_context {
-        RootVisualContext::Main => context.visuals.workspace_fill,
-        RootVisualContext::Contained { pane_fill } => pane_fill,
-    };
+    let pane_fill = visual_context.pane_fill(context.visuals.workspace_fill);
     for pane in root.panes() {
         let paint_omitted = context
             .plan
@@ -60,7 +79,7 @@ fn paint_panes(
             context
                 .ui
                 .make_persistent_id((context.instance_id, "pane-body", pane.visual_id()));
-        let _ = context.interact_receiver(
+        let _response = context.interact_receiver(
             pane_rect,
             pane_id,
             Sense::click_and_drag(),
@@ -104,7 +123,11 @@ fn paint_panes(
     }
 }
 
-fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_tab_bars(
+    context: &mut RenderContext<'_, '_, '_>,
+    root: &RootPaintSchedule<'_>,
+    contained: Option<ContainedPaintRecord<'_>>,
+) {
     for bar in root.tab_bars() {
         let paint_omitted = context
             .plan
@@ -135,13 +158,14 @@ fn paint_tab_bars(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSched
             consume_local_scroll_input(context.ui, scroll);
             context.push_local_action(action);
         }
-        paint_group_drag_regions(context, bar);
+        paint_group_drag_regions(context, bar, contained);
     }
 }
 
 fn paint_group_drag_regions(
     context: &mut RenderContext<'_, '_, '_>,
     bar: dockspace::runtime::TabBarPaintRecord<'_>,
+    contained: Option<ContainedPaintRecord<'_>>,
 ) {
     for region in bar.group_drag_regions() {
         let Some(bounds) = egui_rect(region.bounds()) else {
@@ -181,20 +205,27 @@ fn paint_group_drag_regions(
                 );
             }
         }
-        if context.pointer_authority.accepts_local_pointer_actions()
-            && let Some(phase) = gesture_phase(&response)
-        {
-            if let Some(action) = context
+        let phase = context
+            .pointer_authority
+            .accepts_local_pointer_actions()
+            .then(|| gesture_phase(&response))
+            .flatten();
+        if let Some(phase) = phase
+            && let Some(action) = context
                 .plan
                 .prepare_tab_group_gesture(bar.visual_id(), phase)
-                && context.accept_drag_phase_once(
-                    response.id,
-                    phase,
-                    "egui_dockspace: settle tab-group drag decoration",
-                )
+            && context.accept_drag_phase_once(
+                response.id,
+                phase,
+                "egui_dockspace: settle tab-group drag decoration",
+            )
+        {
+            if matches!(phase, SurfaceGesturePhase::Begin { .. })
+                && let Some(contained) = contained
             {
-                context.push_preview_gesture_action(action);
+                context.claim_contained_activation(contained);
             }
+            context.push_preview_gesture_action(action, phase);
         }
     }
 }
@@ -213,12 +244,16 @@ fn paint_group_grip_icon(ui: &Ui, rect: egui::Rect, stroke: Stroke) {
     }
 }
 
-fn paint_tabs(context: &mut RenderContext<'_, '_, '_>, root: &RootPaintSchedule<'_>) {
+fn paint_tabs(
+    context: &mut RenderContext<'_, '_, '_>,
+    root: &RootPaintSchedule<'_>,
+    contained: Option<ContainedPaintRecord<'_>>,
+) {
     for tab in root.tabs() {
         let Some(resource) = context.resources.tab(tab.visual_id()).cloned() else {
             continue;
         };
-        paint_tab(context, tab, &resource);
+        paint_tab(context, tab, &resource, contained);
     }
 }
 
@@ -226,6 +261,7 @@ fn paint_tab(
     context: &mut RenderContext<'_, '_, '_>,
     tab: TabPaintRecord<'_>,
     resource: &TabPaintResource,
+    contained: Option<ContainedPaintRecord<'_>>,
 ) {
     let Some(visible) = egui_rect(tab.visible_bounds()) else {
         return;
@@ -305,7 +341,15 @@ fn paint_tab(
         operable,
     );
     if operable {
-        capture_tab_actions(context, tab, resource, &response, focused, !source_gap);
+        capture_tab_actions(
+            context,
+            tab,
+            resource,
+            &response,
+            focused,
+            !source_gap,
+            contained,
+        );
     }
 }
 
@@ -320,8 +364,14 @@ fn capture_tab_actions(
     response: &egui::Response,
     focused: bool,
     paint_close_icon: bool,
+    contained: Option<ContainedPaintRecord<'_>>,
 ) {
     let id = response.id;
+    let phase = context
+        .pointer_authority
+        .accepts_local_pointer_actions()
+        .then(|| gesture_phase(response))
+        .flatten();
     let keyboard_activation = focused
         && context.ui.input(|input| {
             input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
@@ -334,9 +384,12 @@ fn capture_tab_actions(
         && response.clicked_by(PointerButton::Primary);
     if pointer_activation || keyboard_activation || accesskit_activation {
         response.request_focus();
-        if !tab.selected()
+        if (!tab.selected() || keyboard_activation || accesskit_activation)
             && let Some(action) = context.plan.prepare_tab_select(tab.item())
         {
+            if pointer_activation && let Some(contained) = contained {
+                context.claim_contained_activation(contained);
+            }
             context.push_local_action(action);
         }
     }
@@ -373,24 +426,26 @@ fn capture_tab_actions(
                 && let Some(target_tab) = context.plan.tabs().find(|tab| tab.item() == target)
             {
                 context.ui.memory_mut(|memory| {
-                    memory.request_focus(tab_id(context.ui, context.instance_id, target_tab))
+                    memory.request_focus(tab_id(context.ui, context.instance_id, target_tab));
                 });
             }
             context.push_local_action(action);
         }
     }
-    if context.pointer_authority.accepts_local_pointer_actions()
-        && let Some(phase) = gesture_phase(response)
+    if let Some(phase) = phase
+        && let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
+        && context.accept_drag_phase_once(
+            response.id,
+            phase,
+            "egui_dockspace: settle tab drag decoration",
+        )
     {
-        if let Some(action) = context.plan.prepare_tab_gesture(tab.item(), phase)
-            && context.accept_drag_phase_once(
-                response.id,
-                phase,
-                "egui_dockspace: settle tab drag decoration",
-            )
+        if matches!(phase, SurfaceGesturePhase::Begin { .. })
+            && let Some(contained) = contained
         {
-            context.push_preview_gesture_action(action);
+            context.claim_contained_activation(contained);
         }
+        context.push_preview_gesture_action(action, phase);
     }
 
     if let Some(close_bounds) = tab.close_bounds().and_then(egui_rect) {

@@ -486,6 +486,53 @@ fn rear_contained_chrome_press_atomically_raises_before_starting_each_gesture() 
 }
 
 #[test]
+fn rear_title_raise_policy_rejection_does_not_arm_but_frontmost_title_skips_raise() {
+    let mut disabled = DockPolicy::default();
+    disabled.set_allow_contained_transform(false);
+
+    let mut rear = fixture(disabled.clone(), true);
+    let (rear_title, rear_press) = contained_title_point(&rear);
+    let rejected = submit_edge(
+        &mut rear,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        rear_press,
+        PointerCaptureOwner::ProviderEndpoint,
+        Some(rear_title),
+    );
+    assert!(matches!(
+        rejected.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::Rejected(_)]
+    ));
+    assert_eq!(
+        rear.engine
+            .workspace()
+            .surface(SURFACE)
+            .expect("rear policy fixture surface remains")
+            .contained,
+        [FLOATING, FRONT]
+    );
+    assert_eq!(rear.engine.interaction().status(), InteractionStatus::Idle);
+
+    let mut frontmost = fixture(disabled, false);
+    let (front_title, front_press) = contained_title_point(&frontmost);
+    let armed = submit_edge(
+        &mut frontmost,
+        PointerEdgeKind::ButtonPressed(PointerButton::Primary),
+        front_press,
+        PointerCaptureOwner::ProviderEndpoint,
+        Some(front_title),
+    );
+    assert!(matches!(
+        armed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::DragArmed { .. }]
+    ));
+    assert!(matches!(
+        frontmost.engine.interaction().status(),
+        InteractionStatus::Armed { .. }
+    ));
+}
+
+#[test]
 fn existing_contained_remains_editable_when_future_creation_is_disabled() {
     let mut policy = DockPolicy::default();
     policy.set_allow_contained_floating(false);

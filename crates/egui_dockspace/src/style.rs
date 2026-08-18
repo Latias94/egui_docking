@@ -205,6 +205,7 @@ impl DockStyle {
     pub(crate) fn resolved_contained_window(
         &self,
         style: &EguiStyle,
+        active: bool,
     ) -> ResolvedContainedWindowVisuals {
         let mut frame = Frame::window(style);
         let title_margin = frame.inner_margin;
@@ -217,9 +218,16 @@ impl DockStyle {
         if let Some(color) = self.visuals.floating_border_color {
             frame.stroke.color = color;
         }
+        let title_fill = self.visuals.floating_title_fill.unwrap_or({
+            if active {
+                style.visuals.widgets.open.weak_bg_fill
+            } else {
+                frame.fill
+            }
+        });
         ResolvedContainedWindowVisuals {
             frame,
-            title_fill: self.visuals.floating_title_fill.unwrap_or(frame.fill),
+            title_fill,
             title_text_color: style.visuals.widgets.noninteractive.fg_stroke.color,
             title_margin,
         }
@@ -526,19 +534,24 @@ mod tests {
             ..DockStyle::default()
         };
 
-        let resolved = dock_style.resolved_contained_window(&egui_style);
+        let inactive = dock_style.resolved_contained_window(&egui_style, false);
+        let active = dock_style.resolved_contained_window(&egui_style, true);
 
-        assert_eq!(resolved.frame.fill, egui_style.visuals.window_fill());
-        assert_eq!(resolved.frame.stroke, egui_style.visuals.window_stroke());
+        assert_eq!(inactive.frame.fill, egui_style.visuals.window_fill());
+        assert_eq!(inactive.frame.stroke, egui_style.visuals.window_stroke());
         assert_eq!(
-            resolved.frame.corner_radius,
+            inactive.frame.corner_radius,
             egui_style.visuals.window_corner_radius
         );
-        assert_eq!(resolved.frame.shadow, egui_style.visuals.window_shadow);
-        assert_eq!(resolved.frame.inner_margin, Margin::ZERO);
-        assert_eq!(resolved.frame.outer_margin, Margin::ZERO);
-        assert_eq!(resolved.title_margin, egui_style.spacing.window_margin);
-        assert_eq!(resolved.title_fill, egui_style.visuals.window_fill());
+        assert_eq!(inactive.frame.shadow, egui_style.visuals.window_shadow);
+        assert_eq!(inactive.frame.inner_margin, Margin::ZERO);
+        assert_eq!(inactive.frame.outer_margin, Margin::ZERO);
+        assert_eq!(inactive.title_margin, egui_style.spacing.window_margin);
+        assert_eq!(inactive.title_fill, egui_style.visuals.window_fill());
+        assert_eq!(
+            active.title_fill,
+            egui_style.visuals.widgets.open.weak_bg_fill
+        );
     }
 
     #[test]

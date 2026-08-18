@@ -107,6 +107,7 @@ pub(crate) fn compile_surface_scene(
         ))?;
     }
 
+    let frontmost_contained = presentation.contained.last().copied();
     for (index, floating) in presentation.contained.iter().copied().enumerate() {
         let record = workspace
             .contained_floating(floating)
@@ -133,6 +134,7 @@ pub(crate) fn compile_surface_scene(
             floating,
             record.root,
             index,
+            Some(floating) == frontmost_contained,
             record.rect,
             bounds,
             minimum,
@@ -1536,6 +1538,7 @@ fn compile_contained_record(
     floating: FloatingPresentationId,
     root: RootId,
     ordinal: usize,
+    frontmost: bool,
     durable_outer: LogicalRect,
     surface_bounds: LogicalRect,
     minimum_size: LogicalSize,
@@ -1567,14 +1570,14 @@ fn compile_contained_record(
     let title_inset_x = config
         .floating_resize_extent()
         .min(durable_title.width() * 0.5);
-    let title_inset_y = config
+    let title_top_inset = config
         .floating_resize_extent()
         .min(durable_title.height() * 0.5);
     let inner_title = LogicalRect::new(
         durable_title.x() + title_inset_x,
-        durable_title.y() + title_inset_y,
+        durable_title.y() + title_top_inset,
         (durable_title.width() - 2.0 * title_inset_x).max(0.0),
-        (durable_title.height() - 2.0 * title_inset_y).max(0.0),
+        (durable_title.height() - title_top_inset).max(0.0),
     )?;
     let has_content = root_has_content(workspace, surface, root)?;
     let durable_close = has_content
@@ -1606,6 +1609,7 @@ fn compile_contained_record(
         floating,
         root,
         ordinal,
+        frontmost,
         outer,
         inner,
         title,

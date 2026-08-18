@@ -624,6 +624,13 @@ impl<'plan> ContainedPaintRecord<'plan> {
         self.record.ordinal()
     }
 
+    /// Returns whether this presentation is frontmost in the complete core
+    /// roster, including contained presentations clipped from this plan.
+    #[must_use]
+    pub const fn is_frontmost(self) -> bool {
+        self.record.is_frontmost()
+    }
+
     #[must_use]
     pub const fn outer_bounds(self) -> LogicalRect {
         self.record.outer_bounds()
@@ -841,6 +848,38 @@ impl<'frame> SurfacePaintPlan<'frame> {
             self.scene,
             floating,
         ))
+    }
+
+    /// Prepares one exact primary-press activation for a rear contained presentation.
+    ///
+    /// The core retains ownership of stacking and pane-focus selection. The
+    /// caller supplies only the current plan's opaque contained identity and
+    /// the surface-logical point observed by its framework response.
+    #[must_use]
+    pub fn prepare_contained_activation(
+        self,
+        floating: FloatingPresentationId,
+        point: LogicalPoint,
+    ) -> Option<super::PreparedSurfaceAction> {
+        let contained = self
+            .plan
+            .contained_records()
+            .iter()
+            .find(|record| record.floating() == floating)?;
+        (!contained.is_frontmost()
+            && contained.outer_bounds().contains(point)
+            && self
+                .plan
+                .point_is_on_authoritative_layer(point, contained.layer()))
+        .then(|| {
+            super::PreparedSurfaceAction::activate_contained(
+                self.authority_domain,
+                self.version,
+                self.scene,
+                floating,
+                point,
+            )
+        })
     }
 
     #[must_use]

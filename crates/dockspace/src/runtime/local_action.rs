@@ -178,6 +178,25 @@ impl PreparedSurfaceAction {
         }
     }
 
+    pub(super) const fn activate_contained(
+        authority_domain: EngineAuthorityDomainId,
+        expected: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        point: LogicalPoint,
+    ) -> Self {
+        Self {
+            authority_domain,
+            expected,
+            surface: scene.surface(),
+            action: SurfaceAction::ActivateContained {
+                scene,
+                floating,
+                point,
+            },
+        }
+    }
+
     pub(super) const fn local_tab_gesture(
         authority_domain: EngineAuthorityDomainId,
         expected: WorkspaceVersion,
@@ -363,6 +382,7 @@ impl PreparedSurfaceAction {
             SurfaceAction::SelectTab { tab, .. } => Some(tab.item),
             SurfaceAction::Close { .. }
             | SurfaceAction::DockBack { .. }
+            | SurfaceAction::ActivateContained { .. }
             | SurfaceAction::TabChrome { .. }
             | SurfaceAction::AdjustSplitter { .. }
             | SurfaceAction::AdjustSplitterJunction { .. }
@@ -398,6 +418,16 @@ impl PreparedSurfaceAction {
                 expected: self.expected,
                 scene,
                 floating,
+            },
+            SurfaceAction::ActivateContained {
+                scene,
+                floating,
+                point,
+            } => EngineInput::ActivateLocalContained {
+                expected: self.expected,
+                scene,
+                floating,
+                point,
             },
             SurfaceAction::TabChrome { scene, action } => EngineInput::ApplyLocalTabChromeAction {
                 expected: self.expected,
@@ -508,6 +538,11 @@ enum SurfaceAction {
         scene: SurfaceSceneStamp,
         floating: crate::ids::FloatingPresentationId,
     },
+    ActivateContained {
+        scene: SurfaceSceneStamp,
+        floating: FloatingPresentationId,
+        point: LogicalPoint,
+    },
     TabChrome {
         scene: SurfaceSceneStamp,
         action: LocalTabChromeAction,
@@ -557,6 +592,7 @@ impl SurfaceAction {
             Self::SelectTab { .. } => "select-tab",
             Self::Close { .. } => "close",
             Self::DockBack { .. } => "dock-back",
+            Self::ActivateContained { .. } => "activate-contained",
             Self::TabChrome { .. } => "tab-chrome",
             Self::LocalTabGesture { .. } => "tab-gesture",
             Self::LocalSplitterGesture { .. } => "splitter-gesture",

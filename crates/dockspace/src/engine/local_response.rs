@@ -43,6 +43,177 @@ impl DockEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn reduce_local_contained_activation(
+        &mut self,
+        input: InputSequence,
+        focus_causal: FocusCausalStamp,
+        expected: WorkspaceVersion,
+        application_base: WorkspaceVersion,
+        scene: SurfaceSceneStamp,
+        floating: crate::ids::FloatingPresentationId,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        if expected != application_base {
+            return Ok(InputOutcome::StaleRejected {
+                expected,
+                accepted_base: application_base,
+            });
+        }
+
+        let (source, expected_roster, selection, focus_item) = {
+            let candidate = match self.local_response_candidate(scene) {
+                Ok(candidate) => candidate,
+                Err(error) => return Ok(self.local_response_rejection(error)),
+            };
+            let Some(contained) = candidate.plan().contained_record(floating) else {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::ContainedTransformPresentationUnavailable {
+                        surface: scene.surface(),
+                        floating,
+                    },
+                ));
+            };
+            if contained.is_frontmost()
+                || !contained.outer_bounds().contains(point)
+                || !candidate
+                    .plan()
+                    .point_is_on_authoritative_layer(point, contained.layer())
+            {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::SemanticReceiverUnavailable {
+                        target: PresentationHitRegionKind::ContainedFrameBlocker(floating),
+                    },
+                ));
+            }
+            let root = contained.root();
+            if self.root_has_pending_presentation_transition(root) {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::PresentationTransitionPending,
+                ));
+            }
+            if self.workspace.presentation_for_root(root)
+                != Some(crate::RootPresentationOwner::Contained {
+                    surface: scene.surface(),
+                    floating,
+                })
+            {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::ContainedTransformPresentationUnavailable {
+                        surface: scene.surface(),
+                        floating,
+                    },
+                ));
+            }
+            let Some(root_record) = self.workspace.root(root) else {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::ContainedTransformPresentationUnavailable {
+                        surface: scene.surface(),
+                        floating,
+                    },
+                ));
+            };
+            let source = match self.workspace.capture_node_source(root, root_record.node) {
+                Ok(source) => source,
+                Err(error) => {
+                    return Ok(
+                        self.local_response_rejection(InteractionRejection::CommandRejected(error))
+                    );
+                }
+            };
+            let expected_roster = match self.workspace.capture_contained_roster(scene.surface()) {
+                Ok(roster) => roster,
+                Err(error) => {
+                    return Ok(
+                        self.local_response_rejection(InteractionRejection::CommandRejected(error))
+                    );
+                }
+            };
+            let hit = match candidate
+                .hit_manifest()
+                .resolve_exclusive(PresentationPointerLane::Click, point)
+            {
+                Ok(hit) => hit.map(|hit| hit.id().kind()),
+                Err(_) => {
+                    return Ok(self.local_response_rejection(
+                        InteractionRejection::SemanticReceiverUnavailable {
+                            target: PresentationHitRegionKind::ContainedFrameBlocker(floating),
+                        },
+                    ));
+                }
+            };
+            let (selection, focus_item) = match hit {
+                Some(PresentationHitRegionKind::TabBody(tab)) if tab.root == root => {
+                    let selection = match self
+                        .workspace
+                        .capture_item_source(tab.root, tab.tabs, tab.item)
+                    {
+                        Ok(source) => Some(source),
+                        Err(error) => {
+                            return Ok(self.local_response_rejection(
+                                InteractionRejection::CommandRejected(error),
+                            ));
+                        }
+                    };
+                    (selection, Some(tab.item))
+                }
+                Some(PresentationHitRegionKind::PaneBody(pane)) if pane.root == root => {
+                    let item = candidate
+                        .plan()
+                        .pane_records()
+                        .iter()
+                        .find(|record| record.id() == pane)
+                        .and_then(crate::scene::PaneRecord::selected);
+                    (None, item)
+                }
+                _ => (None, None),
+            };
+            (source, expected_roster, selection, focus_item)
+        };
+
+        let raise = WorkspaceCommand::RaiseContained {
+            source,
+            floating,
+            expected_roster,
+        };
+        let outcome = if let Some(selection) = selection {
+            self.reduce_local_contained_tab_select(
+                input,
+                raise,
+                WorkspaceCommand::Select { source: selection },
+                policy,
+                events,
+                interaction_events,
+            )?
+        } else {
+            self.reduce_workspace_command(
+                input,
+                expected,
+                application_base,
+                &raise,
+                policy,
+                events,
+                interaction_events,
+            )?
+        };
+        if matches!(&outcome, InputOutcome::CommandProcessed { .. })
+            && let Some(item) = focus_item
+        {
+            let native_guard = self.viewport_focus_binding(scene.surface());
+            let _ = self
+                .viewport_focus
+                .request_local_pane_focus(scene.surface(), item, native_guard, focus_causal)
+                .map_err(|source| EngineError::CausedViewportFocus {
+                    cause: focus_causal.cause(),
+                    source,
+                })?;
+        }
+        Ok(outcome)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_local_scene_tab_select(
         &mut self,
         input: InputSequence,
@@ -62,7 +233,7 @@ impl DockEngine {
             });
         }
 
-        let source = {
+        let (source, raise) = {
             let candidate = match self.local_response_candidate(scene) {
                 Ok(candidate) => candidate,
                 Err(error) => return Ok(self.local_response_rejection(error)),
@@ -89,7 +260,7 @@ impl DockEngine {
                     },
                 ));
             }
-            match self
+            let source = match self
                 .workspace
                 .capture_item_source(tab.root, tab.tabs, tab.item)
             {
@@ -101,18 +272,101 @@ impl DockEngine {
                         },
                     ));
                 }
+            };
+            if self.root_has_pending_presentation_transition(tab.root) {
+                return Ok(self.local_response_rejection(
+                    InteractionRejection::PresentationTransitionPending,
+                ));
             }
+            let raise = match self.workspace.presentation_for_root(tab.root) {
+                Some(crate::RootPresentationOwner::Main { surface })
+                    if surface == scene.surface() =>
+                {
+                    None
+                }
+                Some(crate::RootPresentationOwner::Contained { surface, floating })
+                    if surface == scene.surface() =>
+                {
+                    let Some(contained) = candidate.plan().contained_record(floating) else {
+                        return Ok(self.local_response_rejection(
+                            InteractionRejection::TabGestureSourceUnavailable {
+                                source: TabGestureSource::Item(tab),
+                            },
+                        ));
+                    };
+                    if contained.root() != tab.root || contained.layer() != record.layer() {
+                        return Ok(self.local_response_rejection(
+                            InteractionRejection::TabGestureSourceUnavailable {
+                                source: TabGestureSource::Item(tab),
+                            },
+                        ));
+                    }
+                    if contained.is_frontmost() {
+                        None
+                    } else {
+                        let Some(root) = self.workspace.root(tab.root) else {
+                            return Ok(self.local_response_rejection(
+                                InteractionRejection::TabGestureSourceUnavailable {
+                                    source: TabGestureSource::Item(tab),
+                                },
+                            ));
+                        };
+                        let source = match self.workspace.capture_node_source(tab.root, root.node) {
+                            Ok(source) => source,
+                            Err(error) => {
+                                return Ok(self.local_response_rejection(
+                                    InteractionRejection::CommandRejected(error),
+                                ));
+                            }
+                        };
+                        let expected_roster = match self.workspace.capture_contained_roster(surface)
+                        {
+                            Ok(roster) => roster,
+                            Err(error) => {
+                                return Ok(self.local_response_rejection(
+                                    InteractionRejection::CommandRejected(error),
+                                ));
+                            }
+                        };
+                        Some(WorkspaceCommand::RaiseContained {
+                            source,
+                            floating,
+                            expected_roster,
+                        })
+                    }
+                }
+                _ => {
+                    return Ok(self.local_response_rejection(
+                        InteractionRejection::TabGestureSourceUnavailable {
+                            source: TabGestureSource::Item(tab),
+                        },
+                    ));
+                }
+            };
+            (source, raise)
         };
 
-        let outcome = self.reduce_workspace_command(
-            input,
-            expected,
-            application_base,
-            &WorkspaceCommand::Select { source },
-            policy,
-            events,
-            interaction_events,
-        )?;
+        let selection = WorkspaceCommand::Select { source };
+        let outcome = if let Some(raise) = raise {
+            self.reduce_local_contained_tab_select(
+                input,
+                raise,
+                selection,
+                policy,
+                events,
+                interaction_events,
+            )?
+        } else {
+            self.reduce_workspace_command(
+                input,
+                expected,
+                application_base,
+                &selection,
+                policy,
+                events,
+                interaction_events,
+            )?
+        };
         if matches!(&outcome, InputOutcome::CommandProcessed { .. }) {
             let native_guard = self.viewport_focus_binding(scene.surface());
             let _ = self
@@ -124,6 +378,95 @@ impl DockEngine {
                 })?;
         }
         Ok(outcome)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_local_contained_tab_select(
+        &mut self,
+        input: InputSequence,
+        raise: WorkspaceCommand,
+        selection: WorkspaceCommand,
+        policy: &DockPolicySnapshot,
+        events: &mut Vec<WorkspaceEvent>,
+        interaction_events: &mut Vec<InteractionEvent>,
+    ) -> Result<InputOutcome, EngineError> {
+        let mut workspace = self.clone_workspace_candidate();
+        let report = match WorkspaceTransaction::from_commands([raise, selection])
+            .apply(&mut workspace, policy)
+        {
+            Ok(report) => report,
+            Err(TransactionError::Command { source, .. }) if source.is_expected_rejection() => {
+                return Ok(InputOutcome::CommandRejected {
+                    error: source,
+                    version: self.version,
+                });
+            }
+            Err(source) => return Err(EngineError::Command { input, source }),
+        };
+        if let Some(surface) = self.first_pending_presentation_source_mismatch(
+            &workspace,
+            WorkspacePublicationAuthority::Ordinary,
+        ) {
+            return Ok(InputOutcome::CommandRejected {
+                error: CommandError::SurfaceLifecycleFrozen { surface },
+                version: self.version,
+            });
+        }
+        if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None) {
+            return Ok(InputOutcome::CommandRejected {
+                error: CommandError::SurfaceLifecycleFrozen { surface },
+                version: self.version,
+            });
+        }
+        let changed = report.changed();
+        let outcomes = report.into_outcomes();
+        let selection = outcomes
+            .iter()
+            .find(|outcome| matches!(outcome, CommandOutcome::Selected { .. }))
+            .cloned()
+            .ok_or(EngineError::MissingCommandOutcome { input })?;
+        let publication = match self.stage_workspace_publication(workspace, policy) {
+            Ok(publication) => publication,
+            Err(source) if source.is_expected_rejection() => {
+                return Ok(InputOutcome::CommandRejected {
+                    error: source,
+                    version: self.version,
+                });
+            }
+            Err(source) => {
+                return Err(EngineError::Command {
+                    input,
+                    source: TransactionError::Command { index: 0, source },
+                });
+            }
+        };
+        self.publish_workspace(publication);
+        self.reconcile_viewport_focus_authority();
+        if changed {
+            self.advance_revision(input)?;
+            self.invalidate_transient(
+                input,
+                InteractionCancelReason::WorkspaceChanged,
+                interaction_events,
+            )?;
+            events.extend(
+                outcomes
+                    .into_iter()
+                    .filter(CommandOutcome::changes_workspace)
+                    .map(|outcome| {
+                        WorkspaceEvent::new(
+                            input,
+                            self.version,
+                            WorkspaceEventKind::CommandCommitted(outcome),
+                        )
+                    }),
+            );
+        }
+        Ok(InputOutcome::CommandProcessed {
+            outcome: selection,
+            changed,
+            version: self.version,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -455,6 +798,12 @@ impl DockEngine {
         {
             return Ok(InteractionOutcome::Rejected(rejection));
         }
+        self.interaction
+            .set_drag_current_pointer(session, current)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("local tab drag lost its current pointer after begin: {source:?}"),
+            })?;
         if current != initial {
             let drag = self
                 .interaction
@@ -500,6 +849,12 @@ impl DockEngine {
             })?
             .clone();
         let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
+        self.interaction
+            .set_drag_current_pointer(session, current)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("local tab drag lost its current pointer: {source:?}"),
+            })?;
         self.apply_preview_evaluation(cause, owner, session, evaluation, interaction_events)?
             .ok_or(EngineError::ReductionCauseInvariant {
                 detail: "local tab preview evaluation produced no outcome",
@@ -532,6 +887,12 @@ impl DockEngine {
             })?
             .clone();
         let evaluation = self.resolve_local_tab_preview(cause, &drag, scene, current, policy)?;
+        self.interaction
+            .set_drag_current_pointer(session, current)
+            .map_err(|source| EngineError::PointerInteractionInvariant {
+                cause,
+                detail: format!("local tab release lost its current pointer: {source:?}"),
+            })?;
         if !matches!(evaluation.decision, PreviewDecision::Publish { .. }) {
             return self.cancel_local_tab_release(cause, session, interaction_events);
         }
@@ -669,6 +1030,38 @@ impl DockEngine {
                 ));
             }
         };
+        self.resolve_local_tab_preview_in_candidate(cause, drag, candidate, point, policy)
+    }
+
+    pub(super) fn resolve_local_tab_preview_against_ready_candidate(
+        &self,
+        cause: ReductionCause,
+        drag: &crate::interaction::ActiveDrag,
+        surface: SurfaceId,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+    ) -> Result<PreviewEvaluation, EngineError> {
+        let scene = self
+            .presentation_authority
+            .scene
+            .ready_candidate(surface)
+            .map(crate::scene::SurfacePlanScene::stamp);
+        let Some(scene) = scene else {
+            return Ok(PreviewEvaluation::without_affordance(
+                PreviewDecision::Clear(PreviewResolutionStatus::Unavailable),
+            ));
+        };
+        self.resolve_local_tab_preview(cause, drag, scene, point, policy)
+    }
+
+    fn resolve_local_tab_preview_in_candidate(
+        &self,
+        cause: ReductionCause,
+        drag: &crate::interaction::ActiveDrag,
+        candidate: &crate::scene::SurfacePlanScene,
+        point: LogicalPoint,
+        policy: &DockPolicySnapshot,
+    ) -> Result<PreviewEvaluation, EngineError> {
         let query = resolve_presented_drop(
             candidate.stamp(),
             candidate.plan(),

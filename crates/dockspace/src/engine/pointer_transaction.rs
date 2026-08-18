@@ -2453,9 +2453,18 @@ impl DockEngine {
                 let (Some(presented), Some(durable)) = (presented, durable) else {
                     return Err(InteractionRejection::TabGestureSourceUnavailable { source });
                 };
+                let root_node = self
+                    .workspace
+                    .root(root)
+                    .map(|record| record.node)
+                    .ok_or(InteractionRejection::TabGestureSourceUnavailable { source })?;
                 Some(PreparedContainedTabOrigin {
                     surface,
                     floating,
+                    root_source: self
+                        .workspace
+                        .capture_node_source(root, root_node)
+                        .map_err(InteractionRejection::CommandRejected)?,
                     source_rect: durable.rect,
                     minimum_size: presented.minimum_size(),
                     expected_roster: self
@@ -2594,29 +2603,38 @@ impl DockEngine {
         }
         let mut candidate_events = Vec::new();
         let mut commands = Vec::with_capacity(2);
-        if !matches!(owner, GestureOwner::LocalResponse { .. })
-            && let Some(contained) = &prepared.contained
+        if let Some(contained) = &prepared.contained
+            && contained.expected_roster.contained().last() != Some(&contained.floating)
         {
             commands.push(WorkspaceCommand::RaiseContained {
-                source: prepared.source_node.clone(),
+                source: contained.root_source.clone(),
                 floating: contained.floating,
                 expected_roster: contained.expected_roster.clone(),
             });
         }
         if let TabGestureSource::Item(source) = prepared.source {
-            let selection =
-                match self
-                    .workspace
-                    .capture_item_source(source.root, source.tabs, source.item)
-                {
-                    Ok(source) => source,
-                    Err(error) => {
-                        return Ok(InteractionOutcome::Rejected(
-                            InteractionRejection::CommandRejected(error),
-                        ));
-                    }
-                };
-            commands.push(WorkspaceCommand::Select { source: selection });
+            let already_selected = matches!(
+                self.workspace.nodes.get(source.tabs),
+                Some(Node::Tabs {
+                    selected: Some(selected),
+                    ..
+                }) if *selected == source.item
+            );
+            if !already_selected {
+                let selection =
+                    match self
+                        .workspace
+                        .capture_item_source(source.root, source.tabs, source.item)
+                    {
+                        Ok(source) => source,
+                        Err(error) => {
+                            return Ok(InteractionOutcome::Rejected(
+                                InteractionRejection::CommandRejected(error),
+                            ));
+                        }
+                    };
+                commands.push(WorkspaceCommand::Select { source: selection });
+            }
         }
         if !commands.is_empty() {
             let mut workspace = self.clone_workspace_candidate();
@@ -2636,6 +2654,16 @@ impl DockEngine {
                     });
                 }
             };
+            if let Some(surface) = self.first_pending_presentation_source_mismatch(
+                &workspace,
+                WorkspacePublicationAuthority::Ordinary,
+            ) {
+                return Ok(InteractionOutcome::Rejected(
+                    InteractionRejection::CommandRejected(
+                        crate::error::CommandError::SurfaceLifecycleFrozen { surface },
+                    ),
+                ));
+            }
             if let Some(surface) = self.first_workspace_publication_mismatch(&workspace, None, None)
             {
                 return Ok(InteractionOutcome::Rejected(
@@ -2673,21 +2701,36 @@ impl DockEngine {
                 }));
             }
         }
-        if let TabGestureSource::Item(source) = prepared.source
-            && let Some(binding) = self
+        if let TabGestureSource::Item(source) = prepared.source {
+            if matches!(owner, GestureOwner::LocalResponse { .. }) {
+                let native_guard = self.viewport_focus_binding(prepared.surface);
+                let _ = self
+                    .viewport_focus
+                    .request_local_pane_focus(
+                        prepared.surface,
+                        source.item,
+                        native_guard,
+                        focus_causal,
+                    )
+                    .map_err(|source| EngineError::CausedViewportFocus {
+                        cause: focus_causal.cause(),
+                        source,
+                    })?;
+            } else if let Some(binding) = self
                 .viewport
                 .viewport(prepared.surface)
                 .filter(|record| record.can_accept_activation())
                 .map(crate::viewport_registry::ViewportRecord::binding)
-        {
-            let _ = self.start_viewport_activation(
-                ViewportActivationRequest::pointer_tab_gesture(
-                    binding,
-                    PanelFocus::Item(source.item),
-                ),
-                focus_causal,
-                &mut candidate_events,
-            )?;
+            {
+                let _ = self.start_viewport_activation(
+                    ViewportActivationRequest::pointer_tab_gesture(
+                        binding,
+                        PanelFocus::Item(source.item),
+                    ),
+                    focus_causal,
+                    &mut candidate_events,
+                )?;
+            }
         }
         let payload = match prepared.source {
             TabGestureSource::Item(source) => self

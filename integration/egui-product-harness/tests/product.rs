@@ -18,7 +18,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 const SURFACE: SurfaceId = SurfaceId::new(1);
 const ROOT: RootId = RootId::new(1);
 const FLOATING_ROOT: RootId = RootId::new(2);
+const FRONT_FLOATING_ROOT: RootId = RootId::new(3);
 const FLOATING: FloatingPresentationId = FloatingPresentationId::new(1);
+const FRONT_FLOATING: FloatingPresentationId = FloatingPresentationId::new(2);
 const FIRST: ItemId = ItemId::new(1);
 const SECOND: ItemId = ItemId::new(2);
 const THIRD: ItemId = ItemId::new(3);
@@ -39,6 +41,7 @@ struct Panes;
 
 struct FocusPanes {
     target: egui::Id,
+    target_rect: Cell<Option<Rect>>,
     expose_target: bool,
     target_requests: Cell<usize>,
 }
@@ -47,6 +50,7 @@ impl FocusPanes {
     fn new(id_salt: &'static str, expose_target: bool) -> Self {
         Self {
             target: egui::Id::new((id_salt, "pane-focus-target")),
+            target_rect: Cell::new(None),
             expose_target,
             target_requests: Cell::new(0),
         }
@@ -54,6 +58,12 @@ impl FocusPanes {
 
     fn target_requests(&self) -> usize {
         self.target_requests.get()
+    }
+
+    fn target_rect(&self) -> Rect {
+        self.target_rect
+            .get()
+            .expect("the selected pane published its focus target rectangle")
     }
 }
 
@@ -116,7 +126,8 @@ impl PaneView for FocusPanes {
     fn ui(&mut self, item: ItemId, ui: &mut Ui) {
         if item == SECOND {
             let rect = Rect::from_min_size(ui.available_rect_before_wrap().min, vec2(120.0, 24.0));
-            let _ = ui.interact(rect, self.target, egui::Sense::click());
+            self.target_rect.set(Some(rect));
+            let _ = ui.interact(rect, self.target, egui::Sense::click_and_drag());
         }
         ui.label(format!("Pane {}", item.get()));
     }
@@ -246,6 +257,28 @@ fn contained_layout_at(rect: LogicalRect) -> DockspaceLayout {
         rect,
     ))])
     .expect("the contained product layout is valid")
+}
+
+fn stacked_contained_layout() -> DockspaceLayout {
+    let rear =
+        LogicalRect::new(80.0, 80.0, 300.0, 220.0).expect("the rear contained rectangle is valid");
+    let front = LogicalRect::new(300.0, 240.0, 300.0, 220.0)
+        .expect("the front contained rectangle is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("the stacked contained product layout is valid")
 }
 
 fn input(events: Vec<Event>) -> RawInput {
@@ -741,6 +774,48 @@ fn contained_panes_use_the_egui_window_fill() {
             egui::Shape::Rect(rect) if rect.fill == panel_fill && contained_content(rect)
         )
     }));
+}
+
+#[test]
+fn frontmost_contained_title_uses_the_egui_open_window_visual() {
+    let context = Context::default();
+    let window_fill = egui::Color32::from_rgb(45, 55, 72);
+    let active_title_fill = egui::Color32::from_rgb(121, 77, 148);
+    let mut visuals = egui::Visuals::dark();
+    visuals.window_fill = window_fill;
+    visuals.widgets.open.weak_bg_fill = active_title_fill;
+    context.set_visuals(visuals);
+    let mut dockspace =
+        Dockspace::builder("product-contained-active-title", stacked_contained_layout())
+            .build()
+            .expect("the stacked contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let ready = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let front = dockspace
+        .view()
+        .contained(FRONT_FLOATING)
+        .expect("the front contained window remains present")
+        .rect();
+    let border = dockspace.style().floating_border_width;
+    let title = Rect::from_min_size(
+        Pos2::new(
+            front.min().x() as f32 + border,
+            front.min().y() as f32 + border,
+        ),
+        vec2(
+            front.width() as f32 - 2.0 * border,
+            dockspace.style().floating_title_height,
+        ),
+    );
+
+    assert_eq!(rect_fill_count(&ready.output, active_title_fill), 1);
+    assert!(
+        rect_with_fill(&ready.output, active_title_fill)
+            .is_some_and(|rect| title.contains(rect.center())),
+        "only the core-frontmost contained title receives egui's open-window fill",
+    );
 }
 
 #[test]
@@ -1348,9 +1423,11 @@ fn default_features_click_selects_a_tab() {
 fn default_features_overflow_menu_opens_and_selects_hidden_tab() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut style = DockStyle::default();
-    style.tab_min_width = 220.0;
-    style.tab_max_width = 220.0;
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
     let mut dockspace = Dockspace::builder("product-overflow-menu", overflow_layout())
         .style(style)
         .build()
@@ -1404,9 +1481,11 @@ fn default_features_overflow_menu_opens_and_selects_hidden_tab() {
 fn default_features_overflow_menu_supports_accesskit_and_keyboard() {
     let context = Context::default();
     context.enable_accesskit();
-    let mut style = DockStyle::default();
-    style.tab_min_width = 220.0;
-    style.tab_max_width = 220.0;
+    let style = DockStyle {
+        tab_min_width: 220.0,
+        tab_max_width: 220.0,
+        ..DockStyle::default()
+    };
     let mut dockspace = Dockspace::builder("product-overflow-menu-inputs", overflow_layout())
         .style(style)
         .build()
@@ -1890,21 +1969,118 @@ fn default_features_tab_drag_reorders_across_multipass_discard() {
         passes > 1,
         "the fixture must execute an actual egui multipass"
     );
-    let _ = run_frame(
+    let released = run_frame(
         &context,
         &mut dockspace,
         &mut panes,
         vec![Event::PointerMoved(first), pointer_button(first, false)],
     );
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = accesskit_node(&released.output, Role::Tab, "First");
+    let _ = accesskit_node(&released.output, Role::Tab, "Second");
     assert_eq!(
         tab_items(&dockspace),
-        vec![FIRST, SECOND],
-        "the first follow-up only publishes the release-resampled preview",
+        vec![SECOND, FIRST],
+        "release commits the preview painted by the preceding terminal pass",
     );
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = accesskit_node(&settled.output, Role::Tab, "First");
+    let _ = accesskit_node(&settled.output, Role::Tab, "Second");
+    assert!(settled.output.platform_output.num_completed_passes >= 2);
+    assert_eq!(
+        tab_items(&dockspace),
+        vec![SECOND, FIRST],
+        "the follow-up preserves the already committed exact preview result",
+    );
+}
 
-    assert_eq!(tab_items(&dockspace), vec![SECOND, FIRST]);
+#[test]
+fn rear_contained_selected_tab_press_raises_before_any_drag_motion() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder(
+        "product-contained-first-effective-press",
+        stacked_contained_layout(),
+    )
+    .build()
+    .expect("the stacked contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = node_center(&stable.output, Role::Tab, "Second");
+    let pressed = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+
+    assert!(pressed.output.platform_output.num_completed_passes >= 2);
+    let _ = accesskit_node(&pressed.output, Role::TitleBar, "Second");
+    let _ = accesskit_node(&pressed.output, Role::TitleBar, "Fourth");
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the stacked surface remains present")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        [FRONT_FLOATING, FLOATING],
+        "the selected rear tab raises its complete contained root on the initial press",
+    );
+}
+
+#[test]
+fn rear_contained_child_press_uses_event_time_position_even_when_released_in_the_same_frame() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder(
+        "product-contained-child-first-effective-press",
+        stacked_contained_layout(),
+    )
+    .build()
+    .expect("the stacked contained facade initializes");
+    let mut panes = FocusPanes::new("contained-child-first-effective-press", true);
+
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = run_focus_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = panes.target_rect().center();
+    let released_at = contained_title_point(&dockspace);
+    let (pressed, _) = run_focus_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            Event::PointerMoved(source),
+            pointer_button(source, true),
+            Event::PointerMoved(released_at),
+            pointer_button(released_at, false),
+        ],
+    );
+
+    assert!(pressed.output.platform_output.num_completed_passes >= 2);
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the stacked surface remains present")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        [FRONT_FLOATING, FLOATING],
+        "an application-owned child response still raises its containing presentation",
+    );
+    assert!(
+        panes.target_requests() > 0,
+        "the event-time pane hit publishes the exact pane focus request"
+    );
 }
 
 #[test]
@@ -2819,6 +2995,7 @@ fn default_features_unfinished_egui_run_cannot_settle_preview() {
 #[test]
 fn default_features_contained_resize_commits_a_painted_preview() {
     let context = Context::default();
+    context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-contained-resize", contained_layout())
         .style(instrumented_style())
         .build()
@@ -2877,7 +3054,9 @@ fn default_features_contained_resize_commits_a_painted_preview() {
         ) > 0,
         "the exact contained transform preview must be painted before release settles",
     );
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
+    assert!(settled.output.platform_output.num_completed_passes >= 2);
     let committed = dockspace
         .view()
         .contained(FLOATING)
@@ -2888,8 +3067,54 @@ fn default_features_contained_resize_commits_a_painted_preview() {
 }
 
 #[test]
+fn rear_contained_title_drag_raises_without_a_bootstrap_mask() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-contained-activation-continuity",
+        stacked_contained_layout(),
+    )
+    .build()
+    .expect("the stacked contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let source = node_center(&stable.output, Role::TitleBar, "Second");
+    let moved = source + vec2(24.0, 0.0);
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(source), pointer_button(source, true)],
+    );
+    let dragged = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![Event::PointerMoved(moved)],
+    );
+
+    let _ = accesskit_node(&dragged.output, Role::TitleBar, "Second");
+    let _ = accesskit_node(&dragged.output, Role::TitleBar, "Fourth");
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the stacked surface remains present")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        [FRONT_FLOATING, FLOATING],
+        "the rear contained root raises without replacing the terminal pass with bootstrap paint",
+    );
+}
+
+#[test]
 fn default_features_contained_title_moves_without_a_dock_target() {
     let context = Context::default();
+    context.enable_accesskit();
     let mut dockspace = Dockspace::builder("product-contained-move", contained_layout())
         .style(instrumented_style())
         .build()
@@ -2948,7 +3173,9 @@ fn default_features_contained_title_moves_without_a_dock_target() {
         ) > 0,
         "the contained move preview must be painted before release settles",
     );
-    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let settled = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let _ = accesskit_node(&settled.output, Role::TitleBar, "Second");
+    assert!(settled.output.platform_output.num_completed_passes >= 2);
     let committed = dockspace
         .view()
         .contained(FLOATING)

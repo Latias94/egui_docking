@@ -15,11 +15,11 @@ mod splitters;
 mod tab_chrome;
 mod tabs;
 
-use dockspace::model::ItemId;
+use dockspace::model::{FloatingPresentationId, ItemId};
 use dockspace::runtime::{
-    DockspacePaneFocusObservation, DockspacePaneFocusRequest, DockspacePreviewVisual,
-    DockspaceReceiverDescriptor, PreparedPaneFocusObservation, PreparedSurfaceAction,
-    SurfaceGesturePhase, SurfacePaintPlan,
+    ContainedPaintRecord, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
+    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedPaneFocusObservation,
+    PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintPlan,
 };
 use egui::{Color32, Id, Key, Modifiers, Response, Sense, Stroke, StrokeKind, Ui};
 
@@ -69,6 +69,24 @@ struct RenderContext<'ui, 'plan, 'scroll> {
     _scroll_lifetime: PhantomData<&'scroll mut ()>,
     defer_measurement: &'ui mut bool,
     pointer_authority: PointerActionAuthority,
+    local_primary_presses: Vec<actions::LocalPrimaryPress>,
+    claimed_contained_activations: Vec<FloatingPresentationId>,
+}
+
+pub(crate) fn request_discard_once(ui: &Ui, marker: Id, reason: &'static str) -> bool {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let first = ui.ctx().data_mut(|data| {
+        if data.get_temp::<u64>(marker) == Some(frame) {
+            false
+        } else {
+            data.insert_temp(marker, frame);
+            true
+        }
+    });
+    if first {
+        ui.ctx().request_discard(reason);
+    }
+    first
 }
 
 impl RenderContext<'_, '_, '_> {
@@ -113,8 +131,14 @@ impl RenderContext<'_, '_, '_> {
         }
     }
 
-    fn push_preview_gesture_action(&mut self, action: PreparedSurfaceAction) {
-        *self.defer_measurement = true;
+    fn push_preview_gesture_action(
+        &mut self,
+        action: PreparedSurfaceAction,
+        phase: SurfaceGesturePhase,
+    ) {
+        if !matches!(phase, SurfaceGesturePhase::Begin { .. }) {
+            *self.defer_measurement = true;
+        }
         self.local_actions.push(action);
     }
 
@@ -130,19 +154,64 @@ impl RenderContext<'_, '_, '_> {
         let marker = self
             .ui
             .make_persistent_id((self.instance_id, "drag-begin-frame", widget));
-        let frame = self.ui.ctx().cumulative_frame_nr();
-        let first = self.ui.ctx().data_mut(|data| {
-            if data.get_temp::<u64>(marker) == Some(frame) {
-                false
-            } else {
-                data.insert_temp(marker, frame);
-                true
-            }
-        });
-        if first {
-            self.ui.ctx().request_discard(discard_reason);
+        request_discard_once(self.ui, marker, discard_reason)
+    }
+
+    fn accept_contained_activation_once(
+        &mut self,
+        contained: ContainedPaintRecord<'_>,
+        press: actions::LocalPrimaryPress,
+    ) -> bool {
+        let marker = self.ui.make_persistent_id((
+            self.instance_id,
+            "contained-activation-frame",
+            contained.visual_id(),
+            press.ordinal(),
+        ));
+        request_discard_once(
+            self.ui,
+            marker,
+            "egui_dockspace: settle contained activation",
+        )
+    }
+
+    fn claim_contained_activation(&mut self, contained: ContainedPaintRecord<'_>) {
+        if !self
+            .claimed_contained_activations
+            .contains(&contained.floating())
+        {
+            self.claimed_contained_activations
+                .push(contained.floating());
         }
-        first
+    }
+
+    fn flush_contained_activation(&mut self, contained: ContainedPaintRecord<'_>) {
+        if self
+            .claimed_contained_activations
+            .contains(&contained.floating())
+        {
+            return;
+        }
+        let activation = self
+            .local_primary_presses
+            .iter()
+            .copied()
+            .find_map(|press| {
+                (self.ui.ctx().layer_id_at(press.position()) == Some(self.ui.layer_id()))
+                    .then(|| {
+                        self.plan
+                            .prepare_contained_activation(contained.floating(), press.point())
+                            .map(|action| (press, action))
+                    })
+                    .flatten()
+            });
+        let Some((press, action)) = activation else {
+            return;
+        };
+        if self.accept_contained_activation_once(contained, press) {
+            self.claim_contained_activation(contained);
+            self.push_local_action(action);
+        }
     }
 
     fn push_local_action(&mut self, action: PreparedSurfaceAction) {
@@ -254,6 +323,7 @@ pub(crate) fn paint_surface(
     let mut scroll_receivers = Vec::new();
     let mut defer_measurement = false;
     let mut transient_visuals_complete = true;
+    let local_primary_presses = actions::local_primary_presses(ui, pointer_authority);
     if let Some(bounds) = geometry::egui_rect(plan.bounds()) {
         ui.allocate_rect(bounds, Sense::hover());
         ui.painter()
@@ -285,6 +355,8 @@ pub(crate) fn paint_surface(
             _scroll_lifetime: PhantomData,
             defer_measurement: &mut defer_measurement,
             pointer_authority,
+            local_primary_presses,
+            claimed_contained_activations: Vec::new(),
         };
         for root in schedule.main_roots() {
             tabs::paint_root(&mut context, root, tabs::RootVisualContext::Main);
@@ -293,17 +365,21 @@ pub(crate) fn paint_surface(
 
         for root in schedule.contained_roots() {
             let record = root.contained();
-            let window_visuals = context.style.resolved_contained_window(context.ui.style());
+            let window_visuals = context
+                .style
+                .resolved_contained_window(context.ui.style(), record.is_frontmost());
             contained::paint_background(&mut context, record, root.records(), window_visuals);
             tabs::paint_root(
                 &mut context,
                 root.records(),
                 tabs::RootVisualContext::Contained {
+                    record,
                     pane_fill: window_visuals.frame.fill,
                 },
             );
             splitters::paint_root(&mut context, root.records());
             contained::paint_controls(&mut context, record, root.records());
+            context.flush_contained_activation(record);
         }
 
         tab_chrome::paint(&mut context);

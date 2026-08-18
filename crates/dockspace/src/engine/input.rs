@@ -625,6 +625,17 @@ pub enum EngineInput {
         /// Stable contained presentation exposed by that candidate.
         floating: crate::ids::FloatingPresentationId,
     },
+    /// Raise one rear contained presentation from an exact current-frame press.
+    ActivateLocalContained {
+        /// Workspace version from which the local response was captured.
+        expected: WorkspaceVersion,
+        /// Exact Ready candidate painted by the framework callback.
+        scene: SurfaceSceneStamp,
+        /// Stable contained presentation exposed by that candidate.
+        floating: crate::ids::FloatingPresentationId,
+        /// Exact surface-logical primary press point.
+        point: crate::geometry::LogicalPoint,
+    },
     /// Select one exact tab activated by a current-frame framework response.
     SelectLocalSceneTab {
         /// Workspace version from which the local response was captured.
@@ -893,6 +904,7 @@ impl EngineInput {
             | Self::RequestSceneClose { .. }
             | Self::RequestLocalSceneClose { .. }
             | Self::DockBackLocalContained { .. }
+            | Self::ActivateLocalContained { .. }
             | Self::SelectLocalSceneTab { .. }
             | Self::ApplyLocalTabChromeAction { .. }
             | Self::ActivateSemanticReceiver { .. }

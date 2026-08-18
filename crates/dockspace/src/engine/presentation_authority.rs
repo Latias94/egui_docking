@@ -1751,15 +1751,33 @@ impl DockEngine {
                 }
             }
             InteractionStatus::Dragging { session } => {
-                let affected = self
+                let drag = self
                     .interaction
                     .active_drag(session)
                     .map_err(|source| Self::contribution_invariant(cause, format!("{source:?}")))?
-                    .preview
-                    .as_ref()
-                    .is_some_and(|preview| {
-                        changed_surfaces.contains(&preview.public().token().scene().surface())
-                    });
+                    .clone();
+                let affected = drag.preview.as_ref().is_some_and(|preview| {
+                    changed_surfaces.contains(&preview.public().token().scene().surface())
+                });
+                if matches!(cause, ReductionCause::SurfaceContributionBatch { .. })
+                    && let GestureOwner::LocalResponse { surface } = drag.owner
+                    && surface == drag.source_surface
+                    && changed_surfaces.contains(&surface)
+                    && let Some(current) = drag.current_pointer
+                {
+                    let policy = self.policy_snapshot().clone();
+                    let evaluation = self.resolve_local_tab_preview_against_ready_candidate(
+                        cause, &drag, surface, current, &policy,
+                    )?;
+                    let _ = self.apply_preview_evaluation(
+                        cause,
+                        drag.owner,
+                        session,
+                        evaluation,
+                        interaction_events,
+                    )?;
+                    return Ok(());
+                }
                 if affected {
                     let changed =
                         self.interaction

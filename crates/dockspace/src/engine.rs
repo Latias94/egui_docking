@@ -1853,6 +1853,7 @@ struct PreparedTabGesture {
 struct PreparedContainedTabOrigin {
     surface: crate::ids::SurfaceId,
     floating: crate::ids::FloatingPresentationId,
+    root_source: NodeSource,
     source_rect: crate::geometry::LogicalRect,
     minimum_size: crate::geometry::LogicalSize,
     expected_roster: crate::command::ContainedRosterSource,

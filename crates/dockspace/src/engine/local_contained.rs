@@ -183,16 +183,21 @@ impl DockEngine {
                         });
                     };
                     if current != initial {
-                        let update = self.update_local_contained_transform_at_point(
+                        let update = match self.publish_contained_transform_preview_at_point(
                             cause,
                             owner,
                             session,
-                            floating,
-                            kind,
-                            scene,
                             current,
                             interaction_events,
-                        )?;
+                        )? {
+                            Ok((_, preview)) => {
+                                InteractionOutcome::ContainedTransformPreviewUpdated {
+                                    session,
+                                    preview,
+                                }
+                            }
+                            Err(rejection) => InteractionOutcome::Rejected(rejection),
+                        };
                         if let InteractionOutcome::Rejected(rejection) = update {
                             let _ = self.cancel_contained_transform(
                                 input,

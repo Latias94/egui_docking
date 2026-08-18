@@ -494,6 +494,7 @@ fn rootless_contained_surface_compiles_background_occlusion_and_minimum() {
     assert_eq!(contained.floating(), FLOATING);
     assert_eq!(contained.root(), ROOT);
     assert_eq!(contained.ordinal(), 0);
+    assert!(contained.is_frontmost());
     assert_eq!(
         contained.outer_bounds(),
         LogicalRect::new(20.0, 20.0, 300.0, 220.0).expect("expected outer bounds are valid")
@@ -503,6 +504,16 @@ fn rootless_contained_surface_compiles_background_occlusion_and_minimum() {
     let close = contained
         .close_bounds()
         .expect("the closeable root has a close control");
+    assert_eq!(
+        close.height(),
+        engine.presentation_config().tab_close_extent(),
+        "the north resize lane must not compress the egui-sized close control"
+    );
+    assert_eq!(
+        contained.title_drag_hit().rect().height(),
+        contained.title_bounds().height() - engine.presentation_config().floating_resize_extent(),
+        "only the north resize lane overlaps the title bar"
+    );
     assert!(contained.title_drag_hit().rect().max().x() <= close.x());
     assert_eq!(contained.resize().len(), 8);
     for (index, first) in contained.resize().iter().enumerate() {
@@ -510,6 +521,57 @@ fn rootless_contained_surface_compiles_background_occlusion_and_minimum() {
             assert!(!rects_overlap(first.hit().rect(), second.hit().rect()));
         }
     }
+}
+
+#[test]
+fn visible_contained_record_does_not_claim_frontmost_when_the_real_front_is_clipped() {
+    const REAR_ROOT: RootId = RootId::new(20);
+    const FRONT_ROOT: RootId = RootId::new(21);
+    const REAR_FLOATING: FloatingPresentationId = FloatingPresentationId::new(30);
+    const FRONT_FLOATING: FloatingPresentationId = FloatingPresentationId::new(31);
+
+    let mut builder = Workspace::builder();
+    let rear_tabs = builder.insert_node(Node::tabs([ItemId::new(20)]));
+    let front_tabs = builder.insert_node(Node::tabs([ItemId::new(21)]));
+    builder.set_root(REAR_ROOT, RootRecord::new(rear_tabs));
+    builder.set_root(FRONT_ROOT, RootRecord::new(front_tabs));
+    builder.set_surface(SURFACE, SurfacePresentation::rootless());
+    builder.set_contained_floating(
+        REAR_FLOATING,
+        ContainedFloating::new(
+            REAR_ROOT,
+            LogicalRect::new(20.0, 20.0, 240.0, 180.0).expect("rear rect is valid"),
+        ),
+    );
+    builder
+        .attach_contained(SURFACE, REAR_FLOATING)
+        .expect("rear contained presentation attaches");
+    builder.set_contained_floating(
+        FRONT_FLOATING,
+        ContainedFloating::new(
+            FRONT_ROOT,
+            LogicalRect::new(500.0, 20.0, 240.0, 180.0).expect("front rect is valid"),
+        ),
+    );
+    builder
+        .attach_contained(SURFACE, FRONT_FLOATING)
+        .expect("front contained presentation attaches");
+    let workspace = builder.build().expect("workspace is valid");
+    let mut engine = DockEngine::new(workspace, DockPolicy::default()).expect("engine is valid");
+    let mut host = TestPresentationHost::new(&mut engine);
+    publish_surface(&mut engine, &mut host, SURFACE, bounds());
+    let ready = next_plan(&engine, SURFACE);
+
+    assert_eq!(ready.contained_minimums().len(), 2);
+    let [rear] = ready.contained_records() else {
+        panic!("only the rear contained presentation intersects the surface");
+    };
+    assert_eq!(rear.floating(), REAR_FLOATING);
+    assert_eq!(rear.ordinal(), 0);
+    assert!(
+        !rear.is_frontmost(),
+        "a visible subset must not manufacture a new frontmost authority"
+    );
 }
 
 #[test]
