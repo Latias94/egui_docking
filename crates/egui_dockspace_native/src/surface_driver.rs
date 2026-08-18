@@ -1,7 +1,10 @@
 //! Shared root/child surface driver over one native coordinator.
 
 use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
-use dockspace::runtime::{HostInputOutcome, HostWindowToken, SurfaceUnavailableReason};
+use dockspace::runtime::{
+    DockspaceSubmittedAction, HostFrameReport, HostInputOutcome, HostWindowToken,
+    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceUnavailableReason,
+};
 use eframe::egui::emath::GuiRounding;
 use eframe::egui::{self, Id, ViewportId};
 use eframe::{NativeHostWake, NativeOutputToken, queue_native_viewport_pointer_passthrough};
@@ -262,16 +265,12 @@ impl<P: PaneView> NativeRuntimeState<P> {
         let instance_id = self.instance_id.with(surface.get());
         let style = &self.style;
         let panes = &mut self.panes;
-        let application_actions = &mut self.application_actions;
         let pass_actions = &mut self.pass_actions;
         let root_surface = self.root_surface;
         let mut host_frame = coordinator.begin_resolved_host_frame(&context)?;
         let retain_previous_output = !host_frame.frame.surfaces().contains(&surface);
-        let mut final_paint = None;
+        let mut pass_draft = None;
         let mut painted_output_expected = false;
-        let mut post_action_repaint = false;
-        let mut discarded = false;
-        let mut submitted_application_action = None;
 
         let render_result = if retain_previous_output {
             pass_actions.abandon(token);
@@ -280,46 +279,21 @@ impl<P: PaneView> NativeRuntimeState<P> {
             (|| -> Result<(), NativeRuntimeError> {
                 let dock_rect = ui.available_rect_before_wrap();
                 let popup_rect = context.input(egui::InputState::content_rect).round_ui();
-                let mut paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
-                if context.will_discard() {
-                    pass_actions
-                        .discard_pass(token, &mut paint)
-                        .map_err(map_pass_action_error)?;
-                    discarded = true;
-                    return Ok::<(), NativeRuntimeError>(());
-                }
-
-                let actions = pass_actions
-                    .finish_pass(token, &mut paint)
+                let paint = host_frame.paint_surface(instance_id, surface, ui, panes, style)?;
+                let application_action_ready =
+                    surface == root_surface && self.application_actions.has_queued();
+                let draft = pass_actions
+                    .prepare_pass(token, paint, application_action_ready)
                     .map_err(map_pass_action_error)?;
-                let has_application_action =
-                    surface == root_surface && application_actions.has_queued();
-                let has_actions = actions.has_actions() || has_application_action;
+                let has_actions = pass_actions.pass_has_actions(token, &draft);
                 let disposition = surface_frame_disposition(
-                    paint.had_ready_plan(),
-                    paint.transient_visuals_complete(),
-                    paint.deferred_measurement(),
+                    draft.had_ready_plan(),
+                    draft.transient_visuals_complete(),
+                    draft.deferred_measurement(),
                     has_actions,
                 );
                 if disposition == SurfaceFrameDisposition::RejectIncompletePaint {
                     return Err(NativeHostProtocolError::IncompleteTransientPaint(surface).into());
-                }
-                if has_application_action {
-                    let action = application_actions
-                        .take()
-                        .expect("a checked application action remains pending");
-                    submitted_application_action = Some(host_frame.submit_prepared_action(action)?);
-                }
-                let (presentation_actions, pane_focus_observation, local_actions) =
-                    actions.into_parts();
-                for action in presentation_actions {
-                    host_frame.submit_surface_action(action)?;
-                }
-                if let Some(observation) = pane_focus_observation {
-                    host_frame.submit_pane_focus_observation(observation)?;
-                }
-                for action in local_actions {
-                    host_frame.submit_surface_action(action)?;
                 }
 
                 match disposition {
@@ -332,7 +306,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
                     SurfaceFrameDisposition::Defer => {
                         host_frame
                             .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
-                        post_action_repaint = has_actions;
                     }
                     SurfaceFrameDisposition::Measure => {
                         host_frame
@@ -344,23 +317,16 @@ impl<P: PaneView> NativeRuntimeState<P> {
                         "incomplete transient paint is rejected before submitting surface actions"
                     ),
                 }
-                final_paint = Some(paint);
+                pass_draft = Some(draft);
                 Ok(())
             })()
         };
         render_result?;
-        if discarded {
-            return Ok(NativeSurfaceUpdate::Semantic);
-        }
 
         let mut report = host_frame.commit()?;
-        let submitted_application_outcome = submitted_application_action
-            .and_then(|submitted| report.submitted_action_outcome(submitted));
-        let mut application_action_settled = application_actions
-            .settle(
-                submitted_application_outcome,
-                report.presentation_transitions(),
-            )
+        let mut application_action_settled = self
+            .application_actions
+            .settle(None, report.presentation_transitions())
             .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         let coordinator = &mut self.coordinator;
         let native_snapshot_applied = coordinator.settle_host_frame_inputs(report.inputs());
@@ -378,7 +344,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         }
         let native_effects = report.take_native_effects();
         let mut outputs = report.take_painted_outputs();
-        if painted_output_expected {
+        let painted_output = if painted_output_expected {
             if outputs.len() != 1 {
                 let actual = outputs.len();
                 drop(outputs);
@@ -388,16 +354,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 }
                 .into());
             }
-            let output = outputs.pop().expect("one painted output was checked");
-            let paint = final_paint
-                .as_ref()
-                .expect("a committed painted output has final-pass paint metadata");
-            if let Err(error) = self.coordinator.bind_painted_surface(token, output, paint) {
-                let kind = error.kind();
-                drop(error.into_output());
-                let _ = self.coordinator.abandon_output_token(token);
-                return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
-            }
+            outputs.pop()
         } else {
             if !outputs.is_empty() {
                 let actual = outputs.len();
@@ -408,12 +365,23 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 }
                 .into());
             }
+            None
+        };
+        if retain_previous_output {
             if matches!(
                 self.coordinator.abandon_output_token(token),
                 NativeHostWake::RepaintRoot
             ) {
                 context.request_repaint_of(egui::ViewportId::ROOT);
             }
+        } else {
+            self.pass_actions
+                .stage_pass(
+                    token,
+                    pass_draft.expect("a semantic surface owns pass paint metadata"),
+                    painted_output,
+                )
+                .map_err(map_pass_action_error)?;
         }
 
         let coordinator = &mut self.coordinator;
@@ -423,7 +391,8 @@ impl<P: PaneView> NativeRuntimeState<P> {
             coordinator.drive_close_policy(self.close_policy, self.root_surface);
         let internal_transitions = coordinator.take_internal_presentation_transitions();
         if !internal_transitions.is_empty() {
-            application_action_settled |= application_actions
+            application_action_settled |= self
+                .application_actions
                 .settle_presentation_transitions(&internal_transitions)
                 .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
         }
@@ -460,7 +429,6 @@ impl<P: PaneView> NativeRuntimeState<P> {
                 || reduced_callback
                 || native_snapshot_applied
                 || native_admission_settled
-                || post_action_repaint
                 || internal_action_settled
                 || application_action_settled
                 || native_effects_emitted
@@ -472,6 +440,211 @@ impl<P: PaneView> NativeRuntimeState<P> {
         } else {
             NativeSurfaceUpdate::Semantic
         })
+    }
+
+    pub(crate) fn settle_egui_pass(
+        &mut self,
+        context: &egui::Context,
+        token: NativeOutputToken,
+        discarded: bool,
+    ) -> Result<(), NativeRuntimeError> {
+        if !self.pass_actions.has_staged(token) {
+            return Ok(());
+        }
+        if discarded {
+            self.pass_actions
+                .discard_pass(token)
+                .map_err(map_pass_action_error)?;
+            return Ok(());
+        }
+
+        let final_pass = self
+            .pass_actions
+            .finish_pass(token)
+            .map_err(map_pass_action_error)?
+            .expect("a checked staged native pass remains available");
+        let surface = final_pass.paint_surface();
+        let has_application_action = final_pass.application_action_ready();
+        let has_actions = final_pass.has_actions() || has_application_action;
+        let (
+            presentation_actions,
+            pane_focus_observation,
+            local_actions,
+            application_action_ready,
+            paint,
+            output,
+        ) = final_pass.into_parts();
+        debug_assert_eq!(has_application_action, application_action_ready);
+        if has_actions && output.is_some() {
+            return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
+                expected: 0,
+                actual: 1,
+            }
+            .into());
+        }
+
+        if has_actions {
+            self.commit_terminal_actions(
+                context,
+                token,
+                surface,
+                presentation_actions,
+                pane_focus_observation,
+                local_actions,
+                has_application_action,
+            )?;
+        }
+
+        if let Some(output) = output {
+            if let Err(error) = self.coordinator.bind_painted_surface(token, output, &paint) {
+                let kind = error.kind();
+                drop(error.into_output());
+                let _ = self.coordinator.abandon_output_token(token);
+                return Err(NativeHostProtocolError::OutputBindingFailed(kind).into());
+            }
+        } else if matches!(
+            self.coordinator.abandon_output_token(token),
+            NativeHostWake::RepaintRoot
+        ) {
+            context.request_repaint_of(egui::ViewportId::ROOT);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_terminal_actions(
+        &mut self,
+        context: &egui::Context,
+        token: NativeOutputToken,
+        surface: SurfaceId,
+        presentation_actions: Vec<PreparedSurfaceAction>,
+        pane_focus_observation: Option<PreparedPaneFocusObservation>,
+        local_actions: Vec<PreparedSurfaceAction>,
+        application_action_ready: bool,
+    ) -> Result<(), NativeRuntimeError> {
+        let mut host_frame = self.coordinator.begin_resolved_host_frame(context)?;
+        if !host_frame.frame.surfaces().contains(&surface) {
+            return Err(NativeHostProtocolError::MultipassOutputChanged.into());
+        }
+        let submitted_application_action = if application_action_ready {
+            let action = self
+                .application_actions
+                .take()
+                .ok_or(NativeHostProtocolError::MultipassOutputChanged)?;
+            Some(host_frame.submit_prepared_action(action)?)
+        } else {
+            None
+        };
+        for action in presentation_actions {
+            host_frame.submit_surface_action(action)?;
+        }
+        if let Some(observation) = pane_focus_observation {
+            host_frame.submit_pane_focus_observation(observation)?;
+        }
+        for action in local_actions {
+            host_frame.submit_surface_action(action)?;
+        }
+        host_frame.complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)?;
+        let report = host_frame.commit()?;
+        self.settle_terminal_action_report(
+            context,
+            token,
+            surface,
+            submitted_application_action,
+            report,
+        )
+    }
+
+    fn settle_terminal_action_report(
+        &mut self,
+        context: &egui::Context,
+        token: NativeOutputToken,
+        surface: SurfaceId,
+        submitted_application_action: Option<DockspaceSubmittedAction>,
+        mut report: HostFrameReport,
+    ) -> Result<(), NativeRuntimeError> {
+        let submitted_application_outcome = submitted_application_action
+            .and_then(|submitted| report.submitted_action_outcome(submitted));
+        let _ = self
+            .application_actions
+            .settle(
+                submitted_application_outcome,
+                report.presentation_transitions(),
+            )
+            .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
+        let _ = self.coordinator.settle_host_frame_inputs(report.inputs());
+        let _ = self
+            .coordinator
+            .settle_close_control_inputs(report.inputs())?;
+        let _ = self
+            .coordinator
+            .settle_native_admissions(report.native_admissions())?;
+        if surface == self.root_surface {
+            Self::bind_root_registration(
+                &mut self.coordinator,
+                self.root_surface,
+                token,
+                report.inputs(),
+            )?;
+        }
+        let native_effects = report.take_native_effects();
+        let outputs = report.take_painted_outputs();
+        if !outputs.is_empty() {
+            let actual = outputs.len();
+            drop(outputs);
+            return Err(NativeHostProtocolError::PaintedOutputCountMismatch {
+                expected: 0,
+                actual,
+            }
+            .into());
+        }
+        self.coordinator.accept_native_effects(native_effects)?;
+        let native_close_progress = self
+            .coordinator
+            .drive_close_policy(self.close_policy, self.root_surface);
+        let internal_transitions = self.coordinator.take_internal_presentation_transitions();
+        if !internal_transitions.is_empty() {
+            let _ = self
+                .application_actions
+                .settle_presentation_transitions(&internal_transitions)
+                .map_err(|()| NativeHostProtocolError::ApplicationActionOutcomeMissing)?;
+        }
+        let _ = native_close_progress?;
+        self.dispatch_post_commit(context)?;
+        for repaint_surface in report.repaint_surfaces() {
+            match self.coordinator.repaint_viewport(*repaint_surface) {
+                Some(egui::ViewportId::ROOT) | None if *repaint_surface == self.root_surface => {
+                    context.request_repaint_of(egui::ViewportId::ROOT);
+                }
+                Some(viewport) => context.request_repaint_of(viewport),
+                None => {}
+            }
+        }
+        request_follow_up_root_cycle(context, false, true);
+        Ok(())
+    }
+
+    fn dispatch_post_commit(&mut self, context: &egui::Context) -> Result<(), NativeRuntimeError> {
+        for (viewport, command) in self.coordinator.take_viewport_commands() {
+            context.send_viewport_cmd_to(viewport, command);
+        }
+        let Some(command) = self.coordinator.pointer_passthrough_command() else {
+            return Ok(());
+        };
+        let dispatch = queue_native_viewport_pointer_passthrough(
+            context,
+            command.viewport(),
+            command.enabled(),
+        );
+        if self
+            .coordinator
+            .mark_pointer_passthrough_dispatched(command, dispatch)
+        {
+            return Ok(());
+        }
+        let removed = self.coordinator.fail_pointer_passthrough_dispatch(command);
+        debug_assert!(removed, "the failed dispatch still owns the queued command");
+        Err(NativeHostProtocolError::NativeInputDispatchChanged.into())
     }
 
     fn bind_root_registration(
@@ -508,6 +681,7 @@ impl<P: PaneView> NativeRuntimeState<P> {
         for token in self.coordinator.quarantine_after_fatal() {
             self.pass_actions.abandon(token);
         }
+        self.pass_actions.clear();
         self.application_actions.abandon_unsettled();
         self.shutdown = Some(NativeShutdownState {
             primary: error,

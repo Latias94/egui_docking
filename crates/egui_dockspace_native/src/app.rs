@@ -1,6 +1,6 @@
 //! Thin eframe application over one shared native runtime state.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use dockspace::model::{DockPlacement, DockspaceView, NativeWindowPlacement, RootId, SurfaceId};
 use dockspace::runtime::DockspaceSession;
@@ -208,6 +208,7 @@ impl<P: PaneView + Send + 'static> NativeDockspaceApp<P> {
 
     fn update_root(&self, ui: &mut egui::Ui) {
         let context = ui.ctx().clone();
+        register_pass_settlement::<P>(&context, &self.state);
         let (specs, stopped) = {
             let mut state = lock_state(&self.state);
             if state.error().is_some() {
@@ -262,6 +263,7 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
     ui: &mut egui::Ui,
     class: ViewportClass,
 ) {
+    register_pass_settlement::<P>(ui.ctx(), shared);
     let token = eframe::current_native_output_token();
     let mut state = lock_state(shared);
     if state.error().is_some() {
@@ -315,4 +317,140 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
 
 fn lock_state<P>(state: &Arc<Mutex<P>>) -> MutexGuard<'_, P> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct NativePassSettlementPlugin<P> {
+    states: Vec<Weak<Mutex<NativeRuntimeState<P>>>>,
+}
+
+impl<P> Default for NativePassSettlementPlugin<P> {
+    fn default() -> Self {
+        Self { states: Vec::new() }
+    }
+}
+
+impl<P> NativePassSettlementPlugin<P> {
+    fn register(&mut self, state: Weak<Mutex<NativeRuntimeState<P>>>) {
+        if !self
+            .states
+            .iter()
+            .any(|registered| Weak::ptr_eq(registered, &state))
+        {
+            self.states.push(state);
+        }
+    }
+}
+
+impl<P: PaneView + Send + 'static> egui::plugin::Plugin for NativePassSettlementPlugin<P> {
+    fn debug_name(&self) -> &'static str {
+        "egui_dockspace_native::final_pass_settlement"
+    }
+
+    fn output_hook(&mut self, context: &egui::Context, output: &mut egui::FullOutput) {
+        let Some(token) = eframe::current_native_output_token() else {
+            return;
+        };
+        let discarded = pass_will_repeat(context, output);
+        self.states.retain(|state| {
+            let Some(state) = state.upgrade() else {
+                return false;
+            };
+            let mut state = lock_state(&state);
+            if state.error().is_none()
+                && let Err(error) = state.settle_egui_pass(context, token, discarded)
+            {
+                state.stop_current_output(error);
+                context.request_repaint_of(ViewportId::ROOT);
+            }
+            true
+        });
+    }
+}
+
+fn register_pass_settlement<P: PaneView + Send + 'static>(
+    context: &egui::Context,
+    state: &Arc<Mutex<NativeRuntimeState<P>>>,
+) {
+    context
+        .plugin_or_default::<NativePassSettlementPlugin<P>>()
+        .lock()
+        .register(Arc::downgrade(state));
+}
+
+fn pass_will_repeat(context: &egui::Context, output: &egui::FullOutput) -> bool {
+    output.platform_output.requested_discard()
+        && output.platform_output.num_completed_passes
+            < context.options(|options| options.max_passes.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use eframe::egui;
+
+    use super::pass_will_repeat;
+
+    #[derive(Default)]
+    struct PassProbe {
+        observations: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl egui::plugin::Plugin for PassProbe {
+        fn debug_name(&self) -> &'static str {
+            "egui_dockspace_native::late_discard_probe"
+        }
+
+        fn output_hook(&mut self, context: &egui::Context, output: &mut egui::FullOutput) {
+            self.observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(pass_will_repeat(context, output));
+        }
+    }
+
+    #[test]
+    fn output_hook_observes_a_discard_requested_after_native_ui_returns() {
+        let context = egui::Context::default();
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("native dockspace ui has returned");
+            if ui.ctx().current_pass_index() == 0 {
+                ui.ctx()
+                    .request_discard("outer application requested a later pass");
+            }
+        });
+        output.textures_delta.clear();
+
+        assert_eq!(
+            *observations.lock().unwrap_or_else(PoisonError::into_inner),
+            [true, false],
+            "only the pass followed by another egui pass is discarded"
+        );
+    }
+
+    #[test]
+    fn denied_discard_is_the_terminal_pass() {
+        let context = egui::Context::default();
+        context.options_mut(|options| {
+            options.max_passes = std::num::NonZeroUsize::MIN;
+        });
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        context.plugin_or_default::<PassProbe>().lock().observations = Arc::clone(&observations);
+
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("the only pass is terminal");
+            ui.ctx()
+                .request_discard("the configured pass limit denies this request");
+        });
+        output.textures_delta.clear();
+
+        assert_eq!(
+            *observations.lock().unwrap_or_else(PoisonError::into_inner),
+            [false],
+            "a denied discard must still settle the current output"
+        );
+    }
 }
