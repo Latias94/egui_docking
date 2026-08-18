@@ -15,9 +15,9 @@ The product contract remains simple:
 Baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `a35dd9797cb5bdd31f07815190962feebc1e1333`
+- public egui/eframe fork: `4f86e8daa16265e6ca0593622969958c2f50b31f`
 - upstream winit `0.30.13`: `e9809ef5`
-- public winit fork: `23e8ddc6806a176c63efb80c998a2127faaf03cc`
+- public winit fork: `6105ef864c93c231cad2d76be94054eaf707375a`
 
 ## Admitted seams
 
