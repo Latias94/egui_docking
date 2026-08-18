@@ -15,7 +15,7 @@ The product contract remains simple:
 Baselines:
 
 - upstream egui/eframe `0.36.1`: `4c1f2fae95475a40e524884ebb298bcb1714b08e`
-- public egui/eframe fork: `7f45a13771c85bebf0ad2f130e0bc02b41fd6f89`
+- public egui/eframe fork: `a35dd9797cb5bdd31f07815190962feebc1e1333`
 - upstream winit `0.30.13`: `e9809ef5`
 - public winit fork: `23e8ddc6806a176c63efb80c998a2127faaf03cc`
 

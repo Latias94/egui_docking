@@ -8,6 +8,31 @@ use winit::window::WindowId;
 use crate::viewport_map::NativeViewportMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeWindowEventClass {
+    Pointer,
+    Lifecycle,
+    Other,
+}
+
+impl NativeWindowEventClass {
+    pub(crate) const fn classify(event: &WindowEvent) -> Self {
+        match event {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::PointerCaptureChanged { .. }
+            | WindowEvent::PanGesture { .. } => Self::Pointer,
+            WindowEvent::CloseRequested | WindowEvent::Destroyed => Self::Lifecycle,
+            _ => Self::Other,
+        }
+    }
+
+    pub(crate) const fn is_dockspace_ingress(self) -> bool {
+        !matches!(self, Self::Other)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativePointerRouteSnapshot {
     Unknown,
     None,
@@ -136,6 +161,27 @@ impl NativeWindowEventRecord {
             || self
                 .pointer_routes
                 .is_some_and(|routes| routes.references_binding(binding))
+    }
+
+    pub(crate) fn shares_idle_cursor_lane(&self, newer: &Self) -> bool {
+        let (
+            WindowEvent::CursorMoved {
+                device_id: first_device,
+                ..
+            },
+            WindowEvent::CursorMoved {
+                device_id: newer_device,
+                ..
+            },
+        ) = (&self.event, &newer.event)
+        else {
+            return false;
+        };
+        first_device == newer_device
+            && self.window_id == newer.window_id
+            && self.viewport_id == newer.viewport_id
+            && self.binding == newer.binding
+            && self.pointer_routes == newer.pointer_routes
     }
 
     /// Returns the exact cloned winit event.
@@ -303,5 +349,27 @@ mod tests {
 
         assert_eq!(routes.hover(), NativePointerRouteSnapshot::Unknown);
         assert_eq!(routes.capture(), NativePointerRouteSnapshot::Unknown);
+    }
+
+    #[test]
+    fn event_classification_keeps_only_ordered_dockspace_ingress() {
+        let pointer = WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(1.0, 2.0),
+            facts: PointerEventFacts::default(),
+        };
+
+        assert_eq!(
+            NativeWindowEventClass::classify(&pointer),
+            NativeWindowEventClass::Pointer
+        );
+        assert_eq!(
+            NativeWindowEventClass::classify(&WindowEvent::CloseRequested),
+            NativeWindowEventClass::Lifecycle
+        );
+        assert_eq!(
+            NativeWindowEventClass::classify(&WindowEvent::Focused(true)),
+            NativeWindowEventClass::Other
+        );
     }
 }

@@ -186,6 +186,7 @@ pub(crate) fn paint_placeholder(
             }
         },
         Some(DeferredViewportPaint::Semantic(_)) => "Waiting for semantic dockspace rendering…",
+        Some(DeferredViewportPaint::Retain(_)) => "Retaining the last dockspace frame…",
         Some(DeferredViewportPaint::Waiting) | None => "Waiting for dockspace authority…",
     };
     ui.centered_and_justified(|ui| {

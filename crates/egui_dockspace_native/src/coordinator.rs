@@ -496,8 +496,13 @@ impl NativeCoordinator {
         token: NativeOutputToken,
     ) -> DeferredViewportPaint {
         let disposition = self.bridge.record_deferred_viewport_paint(token);
-        let DeferredViewportPaint::Semantic(binding) = disposition else {
-            return disposition;
+        let binding = match disposition {
+            DeferredViewportPaint::Semantic(binding) | DeferredViewportPaint::Retain(binding) => {
+                binding
+            }
+            DeferredViewportPaint::Created
+            | DeferredViewportPaint::Staging(_)
+            | DeferredViewportPaint::Waiting => return disposition,
         };
         let current = self
             .viewports
@@ -1034,6 +1039,9 @@ impl NativeCoordinator {
         }
         if self.reduce_next_viewport_focus()? {
             return Ok(true);
+        }
+        if self.pointer_translator.can_coalesce_idle_cursor_moves() {
+            self.bridge.coalesce_idle_cursor_prefix();
         }
         let Some(record) = self.next_window_event()? else {
             return Ok(false);

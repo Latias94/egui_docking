@@ -267,6 +267,11 @@ fn render_deferred_viewport<P: PaneView + Send + 'static>(
         DeferredViewportPaint::Created | DeferredViewportPaint::Staging(_) => {
             paint_placeholder(ui, class, Some(disposition));
         }
+        DeferredViewportPaint::Retain(_) => {
+            if !eframe::retain_current_native_output() {
+                paint_placeholder(ui, class, Some(DeferredViewportPaint::Waiting));
+            }
+        }
         DeferredViewportPaint::Waiting => {
             paint_placeholder(ui, class, Some(disposition));
         }

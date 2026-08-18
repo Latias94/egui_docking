@@ -1,6 +1,6 @@
 //! Ordered callback mailbox for the fork-backed native host.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use dockspace::runtime::{NativeStagingPaintRequest, NativeSurfaceBinding};
@@ -17,7 +17,7 @@ use eframe::{
 
 use crate::close_control::NativeViewportCloseCancellationRecord;
 use crate::error::NativeHostProtocolError;
-use crate::event::NativeWindowEventRecord;
+use crate::event::{NativeWindowEventClass, NativeWindowEventRecord};
 use crate::focus_control::{NativeGlobalFocusRecord, NativeViewportFocusRecord};
 use crate::input_control::NativePointerPassthroughRecord;
 use crate::retirement::CommittedRetirement;
@@ -96,6 +96,7 @@ pub(crate) enum DeferredViewportPaint {
     Created,
     Staging(NativeStagingPaintRequest),
     Semantic(NativeSurfaceBinding),
+    Retain(NativeSurfaceBinding),
     Waiting,
 }
 
@@ -443,7 +444,8 @@ mod tests {
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::DockspaceSession;
-    use winit::event::WindowEvent;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, PointerEventFacts, WindowEvent};
     use winit::window::WindowId;
 
     use super::*;
@@ -575,6 +577,96 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn active_mailbox_accepts_only_events_consumed_by_dockspace() {
+        let moved = WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(10.0, 20.0),
+            facts: PointerEventFacts::default(),
+        };
+        let records = HostRecords::active();
+
+        assert!(records.accepts_window_event(&moved));
+        assert!(records.accepts_window_event(&WindowEvent::CloseRequested));
+        assert!(records.accepts_window_event(&WindowEvent::Destroyed));
+        assert!(!records.accepts_window_event(&WindowEvent::Focused(true)));
+    }
+
+    #[test]
+    fn idle_cursor_prefix_keeps_only_the_latest_same_lane_observation() {
+        let (binding, _) = bindings();
+        let window = WindowId::from(11);
+        let mut records = HostRecords::active();
+        for ordinal in 1..=128 {
+            records.record_window_event(NativeWindowEventRecord::for_test(
+                ordinal,
+                window,
+                Some(ViewportId::ROOT),
+                Some(binding),
+                WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(ordinal as f64, 20.0),
+                    facts: PointerEventFacts::default(),
+                },
+            ));
+        }
+
+        assert!(records.coalesce_idle_cursor_prefix());
+        assert_eq!(records.journal.len(), 1);
+        assert!(matches!(
+            records.journal.front(),
+            Some(HostRecord::WindowEvent(event)) if event.ordinal() == 128
+        ));
+    }
+
+    #[test]
+    fn idle_cursor_prefix_crosses_outputs_but_stops_at_other_callbacks() {
+        use IdleCursorPrefixEntry::{Boundary, Cursor, Output};
+
+        assert_eq!(
+            idle_cursor_prefix_latest_index(
+                [Cursor, Output, Cursor, Output, Cursor, Output].into_iter()
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            idle_cursor_prefix_latest_index(
+                [Cursor, Output, Cursor, Boundary, Output, Cursor].into_iter()
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            idle_cursor_prefix_latest_index([Cursor, Output, Output].into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    fn blocked_child_repaints_only_after_the_ordered_boundary_is_clear() {
+        let (binding, _) = bindings();
+        let child = ViewportId::from_hash_of("blocked-semantic-child");
+        let mut records = HostRecords::active();
+        records.record_window_event(NativeWindowEventRecord::for_test(
+            1,
+            WindowId::from(22),
+            Some(child),
+            Some(binding),
+            WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(10.0, 20.0),
+                facts: PointerEventFacts::default(),
+            },
+        ));
+        records.block_semantic_viewport(child);
+
+        records.release_semantic_viewports_if_ready();
+        assert!(records.take_ready_semantic_viewports().is_empty());
+
+        records.journal.pop_front();
+        records.release_semantic_viewports_if_ready();
+        assert_eq!(records.take_ready_semantic_viewports(), vec![child]);
     }
 
     #[test]
@@ -880,9 +972,11 @@ impl HostIngressMode {
     }
 
     fn accepts_window_event(self, event: &winit::event::WindowEvent) -> bool {
-        matches!(self, Self::Active)
-            || matches!(self, Self::Quarantined)
-                && matches!(event, winit::event::WindowEvent::Destroyed)
+        match self {
+            Self::Active => NativeWindowEventClass::classify(event).is_dockspace_ingress(),
+            Self::Quarantined => matches!(event, winit::event::WindowEvent::Destroyed),
+            Self::Frozen => false,
+        }
     }
 }
 
@@ -902,6 +996,8 @@ struct HostRecords {
     last_output_ordinal: u64,
     output_order_invalid: bool,
     event_boundary_pending: bool,
+    blocked_semantic_viewports: BTreeSet<ViewportId>,
+    ready_semantic_viewports: BTreeSet<ViewportId>,
     terminal_roster: TerminalRosterState,
 }
 
@@ -922,6 +1018,8 @@ impl HostRecords {
             last_output_ordinal: 0,
             output_order_invalid: false,
             event_boundary_pending: false,
+            blocked_semantic_viewports: BTreeSet::new(),
+            ready_semantic_viewports: BTreeSet::new(),
             terminal_roster: TerminalRosterState::default(),
         }
     }
@@ -934,6 +1032,8 @@ impl HostRecords {
             || self.in_flight_viewport_roster.is_some()
             || self.output_order_invalid
             || self.event_boundary_pending
+            || !self.blocked_semantic_viewports.is_empty()
+            || !self.ready_semantic_viewports.is_empty()
             || self.terminal_roster.has_pending()
     }
 
@@ -1226,6 +1326,69 @@ impl HostRecords {
         self.journal.push_back(HostRecord::WindowEvent(record));
     }
 
+    fn coalesce_idle_cursor_prefix(&mut self) -> bool {
+        let Some(HostRecord::WindowEvent(first)) = self.journal.front() else {
+            return false;
+        };
+        let Some(latest_cursor_index) =
+            idle_cursor_prefix_latest_index(self.journal.iter().map(|record| match record {
+                HostRecord::WindowEvent(event) if first.shares_idle_cursor_lane(event) => {
+                    IdleCursorPrefixEntry::Cursor
+                }
+                HostRecord::Output { .. } => IdleCursorPrefixEntry::Output,
+                HostRecord::WindowEvent(_)
+                | HostRecord::GlobalFocus(_)
+                | HostRecord::ViewportFocus(_)
+                | HostRecord::ViewportPointerPassthrough(_)
+                | HostRecord::ViewportCloseCancelled(_)
+                | HostRecord::ViewportRoster(_)
+                | HostRecord::ViewportCreateFailed(_)
+                | HostRecord::ViewportVisibility(_)
+                | HostRecord::ViewportCreated(_)
+                | HostRecord::StagingPainted(_) => IdleCursorPrefixEntry::Boundary,
+            }))
+        else {
+            return false;
+        };
+
+        // Keep renderer terminals in their exact callback order. Only obsolete
+        // idle hover observations disappear, allowing an output-separated
+        // `move -> output -> move` backlog to converge without reordering any
+        // retained fact.
+        let mut retained = Vec::new();
+        for index in 0..=latest_cursor_index {
+            let record = self
+                .journal
+                .pop_front()
+                .expect("the scanned cursor prefix remains present");
+            if matches!(record, HostRecord::Output { .. }) || index == latest_cursor_index {
+                retained.push(record);
+            }
+        }
+        for record in retained.into_iter().rev() {
+            self.journal.push_front(record);
+        }
+        true
+    }
+
+    fn block_semantic_viewport(&mut self, viewport: ViewportId) {
+        self.ready_semantic_viewports.remove(&viewport);
+        self.blocked_semantic_viewports.insert(viewport);
+    }
+
+    fn release_semantic_viewports_if_ready(&mut self) {
+        if !self.blocked_semantic_viewports.is_empty() && self.semantic_prelude_ready() {
+            self.ready_semantic_viewports
+                .append(&mut self.blocked_semantic_viewports);
+        }
+    }
+
+    fn take_ready_semantic_viewports(&mut self) -> Vec<ViewportId> {
+        std::mem::take(&mut self.ready_semantic_viewports)
+            .into_iter()
+            .collect()
+    }
+
     fn invalidate_viewport_roster(&mut self) {
         self.roster_context = self
             .roster_context
@@ -1346,6 +1509,8 @@ impl HostRecords {
         viewport: ViewportId,
         binding: NativeSurfaceBinding,
     ) -> Vec<NativeOutputToken> {
+        self.blocked_semantic_viewports.remove(&viewport);
+        self.ready_semantic_viewports.remove(&viewport);
         if self
             .create_reservations
             .get(&viewport)
@@ -1418,6 +1583,27 @@ fn semantic_prelude_ready(
     let mut records = records.peekable();
     records.peek().is_none()
         || (!event_boundary_pending && records.all(|viewport| viewport == Some(ViewportId::ROOT)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdleCursorPrefixEntry {
+    Cursor,
+    Output,
+    Boundary,
+}
+
+fn idle_cursor_prefix_latest_index(
+    entries: impl Iterator<Item = IdleCursorPrefixEntry>,
+) -> Option<usize> {
+    let mut latest_cursor_index = None;
+    for (index, entry) in entries.enumerate() {
+        match entry {
+            IdleCursorPrefixEntry::Cursor => latest_cursor_index = Some(index),
+            IdleCursorPrefixEntry::Output => {}
+            IdleCursorPrefixEntry::Boundary => break,
+        }
+    }
+    latest_cursor_index.filter(|index| *index != 0)
 }
 
 const fn is_next_output_ordinal(previous: u64, current: u64) -> bool {
@@ -2020,10 +2206,23 @@ impl NativeHostBridge {
             };
         }
         let Some(request) = records.staging_requests.get(&token.viewport_id()).copied() else {
-            if records.semantic_prelude_ready()
-                && let Some(binding) = reservation.binding()
-            {
-                return DeferredViewportPaint::Semantic(binding);
+            if let Some(binding) = reservation.binding() {
+                if records.semantic_prelude_ready() {
+                    records
+                        .blocked_semantic_viewports
+                        .remove(&token.viewport_id());
+                    records
+                        .ready_semantic_viewports
+                        .remove(&token.viewport_id());
+                    return DeferredViewportPaint::Semantic(binding);
+                }
+                records.block_semantic_viewport(token.viewport_id());
+                records
+                    .output_reservations
+                    .get_mut(&token)
+                    .expect("the deferred output reservation remains present")
+                    .abandon();
+                return DeferredViewportPaint::Retain(binding);
             }
             records
                 .output_reservations
@@ -2134,6 +2333,11 @@ impl NativeHostBridge {
             };
             records.output_reservations.remove(&result.token());
         }
+        records.release_semantic_viewports_if_ready();
+    }
+
+    pub(crate) fn take_ready_semantic_viewports(&self) -> Vec<ViewportId> {
+        self.lock().take_ready_semantic_viewports()
     }
 
     pub(crate) fn freeze(&self) {
@@ -2250,6 +2454,10 @@ impl NativeHostBridge {
 
     pub(crate) fn callback_boundary_pending(&self) -> bool {
         self.lock().event_boundary_pending
+    }
+
+    pub(crate) fn coalesce_idle_cursor_prefix(&self) -> bool {
+        self.lock().coalesce_idle_cursor_prefix()
     }
 }
 

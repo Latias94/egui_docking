@@ -12,8 +12,10 @@ use dockspace::runtime::{
 };
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
-use crate::event::NativeWindowEventRecord;
-use crate::event::{NativePointerRouteSnapshot, NativePointerRoutes};
+use crate::event::{
+    NativePointerRouteSnapshot, NativePointerRoutes, NativeWindowEventClass,
+    NativeWindowEventRecord,
+};
 
 const POINTER_ID: NativePointerId = NativePointerId::new(1);
 const SCROLL_DEVICE_ID: NativeScrollDeviceId = NativeScrollDeviceId::new(1);
@@ -59,6 +61,10 @@ pub(crate) enum NativePointerTranslation {
 }
 
 impl NativePointerTranslator {
+    pub(crate) fn can_coalesce_idle_cursor_moves(&self) -> bool {
+        self.mouse.is_idle() && matches!(self.scroll, NativeScrollState::Idle)
+    }
+
     /// Terminates the semantic owner while preserving provider-tail correlation.
     pub(crate) fn cancel_destroyed_binding(
         &mut self,
@@ -152,6 +158,9 @@ impl NativePointerTranslator {
         record: &NativeWindowEventRecord,
         mut resolve_work_area: impl FnMut(PhysicalPoint) -> Option<NativeWorkAreaBinding>,
     ) -> NativePointerTranslation {
+        if NativeWindowEventClass::classify(record.event()) != NativeWindowEventClass::Pointer {
+            return NativePointerTranslation::NotPointer;
+        }
         let routes = record
             .pointer_routes()
             .unwrap_or_else(|| NativePointerRoutes::from_binding(record.binding()));
@@ -214,7 +223,7 @@ impl NativePointerTranslator {
                 let facts = winit::event::PointerEventFacts::default();
                 self.scroll(delta, *phase, &facts, routes, &mut resolve_work_area)
             }
-            _ => NativePointerTranslation::NotPointer,
+            _ => unreachable!("pointer event classification and translation must stay aligned"),
         }
     }
 
@@ -372,6 +381,14 @@ impl NativePointerTranslator {
 }
 
 impl NativeMouseState {
+    fn is_idle(&self) -> bool {
+        self.active_buttons.is_empty()
+            && self.button_origins.is_empty()
+            && self.cancelled_buttons.is_empty()
+            && self.capture.is_none()
+            && self.retired_tail.is_none()
+    }
+
     fn observe(&mut self, event: NativePointerEvent, routes: NativePointerRoutes) -> bool {
         self.observe_routes(routes);
         if matches!(
@@ -592,4 +609,34 @@ fn native_modifiers(facts: &winit::event::PointerEventFacts) -> NativeScrollModi
                 command: modifiers.super_key(),
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_cursor_coalescing_stops_for_buttons_and_scroll() {
+        let routes = NativePointerRoutes::from_binding(None);
+        let mut translator = NativePointerTranslator::default();
+        assert!(translator.can_coalesce_idle_cursor_moves());
+
+        assert!(translator.mouse.observe(
+            NativePointerEvent::ButtonPressed(NativePointerButton::Primary),
+            routes
+        ));
+        assert!(!translator.can_coalesce_idle_cursor_moves());
+
+        assert!(translator.mouse.observe(
+            NativePointerEvent::ButtonReleased(NativePointerButton::Primary),
+            routes
+        ));
+        assert!(translator.can_coalesce_idle_cursor_moves());
+
+        translator.scroll = NativeScrollState::Live {
+            sequence: NativeScrollSequenceId::new(1),
+            delivery: None,
+        };
+        assert!(!translator.can_coalesce_idle_cursor_moves());
+    }
 }

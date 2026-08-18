@@ -191,8 +191,12 @@ impl<'session> NativeHostFrame<'session> {
         let report = frame.commit()?;
         bridge.replace_staging_requests(staging_requests);
         bridge.commit_frame_boundary();
+        let mut repaint_viewports = staging_viewports;
+        repaint_viewports.extend(bridge.take_ready_semantic_viewports());
+        repaint_viewports.sort_unstable();
+        repaint_viewports.dedup();
         if let Some(context) = repaint_context {
-            for viewport in staging_viewports {
+            for viewport in repaint_viewports {
                 context.request_repaint_of(viewport);
             }
         }
