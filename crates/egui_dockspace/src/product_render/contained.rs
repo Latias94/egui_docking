@@ -100,6 +100,7 @@ pub(crate) fn paint_controls(
         .drag_decoration()
         .is_some_and(|decoration| decoration.omits_visual(contained.visual_id()));
     if let Some(title) = egui_rect(contained.title_drag_bounds()) {
+        let enabled = contained.title_operable() && context.ui.is_enabled();
         let id = context.ui.make_persistent_id((
             context.instance_id,
             "contained-title",
@@ -108,10 +109,12 @@ pub(crate) fn paint_controls(
         let response = context.interact_receiver(
             title,
             id,
-            Sense::click_and_drag(),
-            context
-                .ui
-                .is_enabled()
+            if enabled {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            },
+            enabled
                 .then(|| context.plan.receiver_for_contained_title(contained))
                 .flatten(),
         );
@@ -120,18 +123,19 @@ pub(crate) fn paint_controls(
             node.set_role(Role::TitleBar);
             node.set_bounds(accesskit_bounds(title));
             node.set_label(label);
+            if !enabled {
+                node.set_disabled();
+            }
         });
-        let locally_dragged = context.response_dragged_locally(&response);
-        if response.hovered() || locally_dragged {
+        let locally_dragged = enabled && context.response_dragged_locally(&response);
+        if enabled && (response.hovered() || locally_dragged) {
             context.ui.ctx().set_cursor_icon(if locally_dragged {
                 CursorIcon::Grabbing
             } else {
                 CursorIcon::Grab
             });
         }
-        let phase = context
-            .pointer_authority
-            .accepts_local_pointer_actions()
+        let phase = (enabled && context.pointer_authority.accepts_local_pointer_actions())
             .then(|| gesture_phase(&response))
             .flatten();
         if let Some(phase) = phase
@@ -152,6 +156,7 @@ pub(crate) fn paint_controls(
     }
 
     if let Some(close) = contained.close_bounds().and_then(egui_rect) {
+        let enabled = contained.close_operable() && context.ui.is_enabled();
         let id = context.ui.make_persistent_id((
             context.instance_id,
             "contained-close",
@@ -160,10 +165,12 @@ pub(crate) fn paint_controls(
         let response = context.interact_receiver(
             close,
             id,
-            Sense::click(),
-            context
-                .ui
-                .is_enabled()
+            if enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+            enabled
                 .then(|| context.plan.receiver_for_contained_close(contained))
                 .flatten(),
         );
@@ -172,6 +179,9 @@ pub(crate) fn paint_controls(
             node.set_role(Role::Button);
             node.set_bounds(accesskit_bounds(close));
             node.set_label(format!("Close floating {label}"));
+            if !enabled {
+                node.set_disabled();
+            }
         });
         if !paint_omitted {
             let visuals = *context.ui.style().interact(&response);
@@ -186,7 +196,8 @@ pub(crate) fn paint_controls(
                 .painter()
                 .line_segment([close.right_top(), close.left_bottom()], stroke);
         }
-        if button_activated(context.ui, &response, context.pointer_authority)
+        if enabled
+            && button_activated(context.ui, &response, context.pointer_authority)
             && let Some(action) = context.plan.prepare_contained_close(contained.floating())
         {
             context.push_local_action(action);
@@ -259,7 +270,7 @@ pub(crate) fn paint_controls(
                 context.push_local_action(action);
             }
         }
-        if response.hovered() || context.response_dragged_locally(&response) {
+        if enabled && (response.hovered() || context.response_dragged_locally(&response)) {
             context
                 .ui
                 .ctx()

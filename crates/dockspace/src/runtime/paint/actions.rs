@@ -406,10 +406,12 @@ impl SurfacePaintPlan<'_> {
         self.plan.contained_records().iter().find(|record| {
             record.floating() == floating
                 && record.transform_operable()
-                && record
-                    .resize()
-                    .iter()
-                    .any(|resize| resize.direction() == direction)
+                && record.resize().iter().any(|resize| {
+                    resize.direction() == direction
+                        && self
+                            .plan
+                            .region_is_operable(resize.hit().rect(), record.layer())
+                })
         })?;
         Some(PreparedSurfaceAction::adjust_contained_resize(
             self.authority_domain,
@@ -520,6 +522,9 @@ impl SurfacePaintPlan<'_> {
             .contained_records()
             .iter()
             .find(|record| record.floating() == floating)?;
+        self.plan
+            .region_is_operable(contained.title_drag_hit().rect(), contained.layer())
+            .then_some(())?;
         Some(PreparedSurfaceAction::local_tab_gesture(
             self.authority_domain,
             self.version,
@@ -575,10 +580,12 @@ impl SurfacePaintPlan<'_> {
         self.plan.contained_records().iter().find(|record| {
             record.floating() == floating
                 && record.transform_operable()
-                && record
-                    .resize()
-                    .iter()
-                    .any(|resize| resize.direction() == direction)
+                && record.resize().iter().any(|resize| {
+                    resize.direction() == direction
+                        && self
+                            .plan
+                            .region_is_operable(resize.hit().rect(), record.layer())
+                })
         })?;
         Some(PreparedSurfaceAction::local_contained_gesture(
             self.authority_domain,

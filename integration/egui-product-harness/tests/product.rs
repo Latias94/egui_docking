@@ -281,6 +281,28 @@ fn stacked_contained_layout() -> DockspaceLayout {
     .expect("the stacked contained product layout is valid")
 }
 
+fn fully_occluded_stacked_contained_layout() -> DockspaceLayout {
+    let rear = LogicalRect::new(220.0, 180.0, 240.0, 180.0)
+        .expect("the rear contained rectangle is valid");
+    let front = LogicalRect::new(180.0, 140.0, 320.0, 260.0)
+        .expect("the front contained rectangle is valid");
+    DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("the fully occluded contained product layout is valid")
+}
+
 fn input(events: Vec<Event>) -> RawInput {
     RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
@@ -1647,6 +1669,110 @@ fn disabled_ui_ignores_delayed_contained_accesskit_actions() {
     assert!(!resize_node.supports_action(Action::Focus));
     assert!(!resize_node.supports_action(Action::Increment));
     assert!(!resize_node.supports_action(Action::Decrement));
+}
+
+#[test]
+fn fully_occluded_rear_contained_chrome_is_accessibility_disabled() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder(
+        "product-fully-occluded-contained-chrome",
+        fully_occluded_stacked_contained_layout(),
+    )
+    .build()
+    .expect("the fully occluded contained facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let (rear_title_id, rear_title) = accesskit_node(&stable.output, Role::TitleBar, "Second");
+    let (rear_close_id, rear_close) =
+        accesskit_node(&stable.output, Role::Button, "Close floating Second");
+    let (_, front_title) = accesskit_node(&stable.output, Role::TitleBar, "Fourth");
+    let (_, front_close) = accesskit_node(&stable.output, Role::Button, "Close floating Fourth");
+    let right_edges = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.role() == Role::Splitter && node.label() == Some("Resize floating right edge")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(right_edges.len(), 2);
+    let (rear_right_id, rear_right) = right_edges
+        .iter()
+        .copied()
+        .min_by(|(_, left), (_, right)| {
+            left.bounds()
+                .expect("the rear resize edge has bounds")
+                .x1
+                .total_cmp(&right.bounds().expect("the front resize edge has bounds").x1)
+        })
+        .expect("the rear resize edge is described");
+    let (_, front_right) = right_edges
+        .iter()
+        .copied()
+        .max_by(|(_, left), (_, right)| {
+            left.bounds()
+                .expect("the rear resize edge has bounds")
+                .x1
+                .total_cmp(&right.bounds().expect("the front resize edge has bounds").x1)
+        })
+        .expect("the front resize edge is described");
+
+    for node in [rear_title, rear_close, rear_right] {
+        assert!(node.is_disabled());
+        assert!(!node.supports_action(Action::Focus));
+    }
+    assert!(!rear_close.supports_action(Action::Click));
+    assert!(!rear_right.supports_action(Action::Increment));
+    assert!(!rear_right.supports_action(Action::Decrement));
+    assert!(!front_title.is_disabled());
+    assert!(!front_close.is_disabled());
+    assert!(front_close.supports_action(Action::Click));
+    assert!(front_right.supports_action(Action::Increment));
+    assert!(front_right.supports_action(Action::Decrement));
+
+    let before_rect = contained_rect(&dockspace);
+    let before_roster = dockspace
+        .view()
+        .surface(SURFACE)
+        .expect("the stacked surface remains present")
+        .contained()
+        .map(|contained| contained.id())
+        .collect::<Vec<_>>();
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![
+            accesskit_action(*rear_right_id, Action::Increment),
+            accesskit_action(rear_title_id, Action::Focus),
+        ],
+    );
+    assert_eq!(contained_rect(&dockspace), before_rect);
+    assert_eq!(
+        dockspace
+            .view()
+            .surface(SURFACE)
+            .expect("the stacked surface remains present")
+            .contained()
+            .map(|contained| contained.id())
+            .collect::<Vec<_>>(),
+        before_roster,
+    );
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(rear_close_id, Action::Click)],
+    );
+    assert!(dockspace.view().contained(FLOATING).is_some());
 }
 
 #[test]

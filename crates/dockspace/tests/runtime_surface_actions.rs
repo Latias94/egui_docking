@@ -176,6 +176,54 @@ fn stacked_contained_session() -> DockspaceSession {
         .expect("stacked contained surface-action session initializes")
 }
 
+fn fully_occluded_stacked_contained_session() -> DockspaceSession {
+    let rear =
+        LogicalRect::new(220.0, 180.0, 240.0, 180.0).expect("rear contained rectangle validates");
+    let front =
+        LogicalRect::new(180.0, 140.0, 320.0, 260.0).expect("front contained rectangle validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("fully occluded contained surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("fully occluded contained surface-action session initializes")
+}
+
+fn partially_occluded_stacked_contained_session() -> DockspaceSession {
+    let rear =
+        LogicalRect::new(200.0, 160.0, 300.0, 220.0).expect("rear contained rectangle validates");
+    let front =
+        LogicalRect::new(360.0, 120.0, 250.0, 300.0).expect("front contained rectangle validates");
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST, THIRD])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        rear,
+    ))
+    .with_contained(DockspaceContainedLayout::new(
+        FRONT_FLOATING,
+        DockspaceRootLayout::new(FRONT_FLOATING_ROOT, DockspaceNode::tabs([FOURTH])),
+        front,
+    ))])
+    .expect("partially occluded contained surface-action layout validates");
+    DockspaceSession::from_layout(layout, DockPolicy::default())
+        .expect("partially occluded contained surface-action session initializes")
+}
+
 fn stacked_split_contained_session() -> DockspaceSession {
     let rear =
         LogicalRect::new(120.0, 100.0, 280.0, 220.0).expect("rear contained rectangle validates");
@@ -1011,6 +1059,112 @@ fn rear_contained_title_press_atomically_raises_without_starting_a_gesture() {
 
     assert_eq!(contained_roster(&session), [FRONT_FLOATING, FLOATING]);
     assert!(!session.has_active_gesture());
+}
+
+#[test]
+fn fully_occluded_rear_contained_chrome_has_no_surface_action_authority() {
+    let mut session = fully_occluded_stacked_contained_session();
+    install_ready_candidate(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("contained occlusion inspection frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("contained occlusion plan lookup succeeds")
+        .expect("stacked contained candidate is paintable");
+    let rear = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("rear contained presentation is painted");
+    let front = plan
+        .contained()
+        .find(|contained| contained.floating() == FRONT_FLOATING)
+        .expect("front contained presentation is painted");
+
+    assert!(!rear.title_operable());
+    assert!(!rear.close_operable());
+    assert!(rear.resize().all(|resize| !resize.operable()));
+    assert!(plan.receiver_for_contained_title(rear).is_none());
+    assert!(plan.receiver_for_contained_close(rear).is_none());
+    assert!(
+        rear.resize()
+            .all(|resize| plan.receiver_for_contained_resize(rear, resize).is_none())
+    );
+    assert!(
+        plan.prepare_contained_title_gesture(
+            FLOATING,
+            SurfaceGesturePhase::Begin {
+                initial: rear.title_drag_bounds().min(),
+                current: rear.title_drag_bounds().min(),
+            },
+        )
+        .is_none()
+    );
+    assert!(plan.prepare_contained_close(FLOATING).is_none());
+    assert!(
+        plan.prepare_contained_resize_adjustment(
+            FLOATING,
+            ContainedResizeDirection::East,
+            SurfaceContainedResizeAdjustment::Increment,
+        )
+        .is_none()
+    );
+
+    assert!(front.title_operable());
+    assert!(front.close_operable());
+    assert!(front.resize().all(|resize| resize.operable()));
+
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("contained occlusion inspection retains the ready candidate");
+    frame
+        .commit()
+        .expect("contained occlusion inspection frame commits");
+}
+
+#[test]
+fn partially_exposed_rear_contained_chrome_retains_only_exposed_authority() {
+    let mut session = partially_occluded_stacked_contained_session();
+    install_ready_candidate(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("partial contained occlusion inspection frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("partial contained occlusion plan lookup succeeds")
+        .expect("partially stacked contained candidate is paintable");
+    let rear = plan
+        .contained()
+        .find(|contained| contained.floating() == FLOATING)
+        .expect("rear contained presentation is painted");
+    let resize = rear
+        .resize()
+        .map(|record| (record.direction(), record.operable()))
+        .collect::<Vec<_>>();
+
+    assert!(rear.title_operable());
+    assert!(!rear.close_operable());
+    assert_eq!(
+        resize.iter().find_map(|(direction, operable)| {
+            (*direction == ContainedResizeDirection::West).then_some(*operable)
+        }),
+        Some(true),
+    );
+    assert_eq!(
+        resize.iter().find_map(|(direction, operable)| {
+            (*direction == ContainedResizeDirection::East).then_some(*operable)
+        }),
+        Some(false),
+    );
+
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("partial contained occlusion inspection retains the ready candidate");
+    frame
+        .commit()
+        .expect("partial contained occlusion inspection frame commits");
 }
 
 #[test]

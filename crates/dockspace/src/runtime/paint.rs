@@ -691,9 +691,22 @@ impl ContainedResizePaintRecord {
 }
 
 /// Read-only contained-floating chrome and transform geometry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ContainedPaintRecord<'plan> {
     record: &'plan ContainedRecord,
+    plan: &'plan PresentationPlan,
+}
+
+impl fmt::Debug for ContainedPaintRecord<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContainedPaintRecord")
+            .field("visual_id", &self.visual_id())
+            .field("outer_bounds", &self.outer_bounds())
+            .field("title_operable", &self.title_operable())
+            .field("close_operable", &self.close_operable())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'plan> ContainedPaintRecord<'plan> {
@@ -754,13 +767,33 @@ impl<'plan> ContainedPaintRecord<'plan> {
         self.record.close_bounds()
     }
 
+    /// Returns whether any authoritative area of the title-drag control remains exposed.
+    #[must_use]
+    pub fn title_operable(self) -> bool {
+        self.plan
+            .region_is_operable(self.record.title_drag_hit().rect(), self.record.layer())
+    }
+
+    /// Returns whether the exact close control exists and remains exposed.
+    #[must_use]
+    pub fn close_operable(self) -> bool {
+        self.record
+            .close_bounds()
+            .is_some_and(|bounds| self.plan.region_is_operable(bounds, self.record.layer()))
+    }
+
     pub fn resize(self) -> impl ExactSizeIterator<Item = ContainedResizePaintRecord> + 'plan {
-        let operable = self.record.transform_operable();
+        let plan = self.plan;
+        let layer = self.record.layer();
+        let transform_operable = self.record.transform_operable();
         self.record
             .resize()
             .iter()
             .copied()
-            .map(move |record| ContainedResizePaintRecord { record, operable })
+            .map(move |record| ContainedResizePaintRecord {
+                operable: transform_operable && plan.region_is_operable(record.hit().rect(), layer),
+                record,
+            })
     }
 
     #[must_use]
@@ -1194,10 +1227,15 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         floating: FloatingPresentationId,
     ) -> Option<super::PreparedSurfaceAction> {
-        self.plan
+        let record = self
+            .plan
             .contained_records()
             .iter()
-            .find(|record| record.floating() == floating && record.close_bounds().is_some())?;
+            .find(|record| record.floating() == floating)?;
+        let close_bounds = record.close_bounds()?;
+        self.plan
+            .region_is_operable(close_bounds, record.layer())
+            .then_some(())?;
         Some(super::PreparedSurfaceAction::dock_back(
             self.authority_domain,
             self.version,
@@ -1350,10 +1388,11 @@ impl<'frame> SurfacePaintPlan<'frame> {
     }
 
     pub fn contained(self) -> impl ExactSizeIterator<Item = ContainedPaintRecord<'frame>> {
+        let plan = self.plan;
         self.plan
             .contained_records()
             .iter()
-            .map(|record| ContainedPaintRecord { record })
+            .map(move |record| ContainedPaintRecord { record, plan })
     }
 
     pub fn drop_guides(self) -> impl ExactSizeIterator<Item = DropGuidePaintRecord<'frame>> {
@@ -1620,6 +1659,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
+        contained.title_operable().then_some(())?;
         let floating = contained.record.floating();
         self.receiver(PresentationHitRegionKind::ContainedTitle(floating))
     }
@@ -1630,6 +1670,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         self,
         contained: ContainedPaintRecord<'frame>,
     ) -> Option<DockspaceReceiverDescriptor> {
+        contained.close_operable().then_some(())?;
         let floating = contained.record.floating();
         self.receiver(PresentationHitRegionKind::ContainedClose(floating))
     }
@@ -1641,6 +1682,7 @@ impl<'frame> SurfacePaintPlan<'frame> {
         contained: ContainedPaintRecord<'frame>,
         resize: ContainedResizePaintRecord,
     ) -> Option<DockspaceReceiverDescriptor> {
+        resize.operable().then_some(())?;
         let floating = contained.record.floating();
         let direction = resize.record.direction();
         self.receiver(PresentationHitRegionKind::ContainedResize {

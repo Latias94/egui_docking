@@ -71,10 +71,10 @@ impl DockEngine {
             .find(|record| {
                 record.floating() == floating
                     && record.transform_operable()
-                    && record
-                        .resize()
-                        .iter()
-                        .any(|resize| resize.direction() == direction)
+                    && record.resize().iter().any(|resize| {
+                        resize.direction() == direction
+                            && plan.region_is_operable(resize.hit().rect(), record.layer())
+                    })
             })
             .ok_or(InteractionRejection::SemanticReceiverUnavailable {
                 target: PresentationHitRegionKind::ContainedResize {
