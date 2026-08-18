@@ -488,7 +488,7 @@ impl DockEngine {
             Err(_) => {
                 let reason = InteractionCancelReason::UnknownTargetAuthority;
                 return Ok(self
-                    .cancel_journal_owner(cause, owner, reason, interaction_events)
+                    .cancel_journal_owner(cause, owner, reason, interaction_events)?
                     .into_iter()
                     .collect());
             }

@@ -130,17 +130,27 @@ impl DockEngine {
             | crate::RootPresentationOwner::Contained { .. } => {}
         }
         let source_binding = source_recovery.binding;
-        let source_is_live = self
-            .viewport
-            .viewport(source_surface)
-            .is_some_and(|record| {
-                record.binding() == source_binding
-                    && record.admission() == ViewportAdmission::Admitted
+        let source_record = self.viewport.viewport(source_surface).filter(|record| {
+            record.binding() == source_binding && record.admission() == ViewportAdmission::Admitted
+        });
+        let Some(source_record) = source_record else {
+            return Err(DockspaceActionRejection::PresentationUnavailable {
+                surface: source_surface,
             });
+        };
+        if source_record.ownership() == ViewportOwnership::RuntimeOwned
+            && !self
+                .viewport
+                .capabilities()
+                .native_window_lifecycle()
+                .is_supported()
+        {
+            return Err(DockspaceActionRejection::NativeUnavailable);
+        }
         let source_presentation = self
             .interaction_authority(source_surface)
             .filter(|authority| authority.binding() == Some(source_binding));
-        let Some(presentation) = source_presentation.filter(|_| source_is_live) else {
+        let Some(presentation) = source_presentation else {
             return Err(DockspaceActionRejection::PresentationUnavailable {
                 surface: source_surface,
             });

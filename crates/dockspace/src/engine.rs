@@ -1711,6 +1711,7 @@ struct PendingDragRelease {
     focus_causal: FocusCausalStamp,
     session: crate::interaction::DragSessionId,
     drag: crate::interaction::ActiveDrag,
+    physical_route: Option<crate::viewport::ViewportBinding>,
     release_decision: PreviewDecision,
     preview: crate::interaction::PreviewToken,
     presentation_outputs: BTreeSet<HostFrameKey>,
@@ -3010,7 +3011,7 @@ impl DockEngine {
                     && self.viewport.work_area(proof.work_area()).is_some()
                     && self
                         .viewport
-                        .native_outside_all_tear_off_capability()
+                        .physical_native_drag_capability()
                         .is_supported()
             }
             NativePlacementProof::Surface(_) => self.viewport.native_placement_is_current(proof),

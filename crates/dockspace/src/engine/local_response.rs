@@ -915,6 +915,7 @@ impl DockEngine {
                 focus_causal,
                 session,
                 drag,
+                None,
                 release_decision,
                 policy,
             );

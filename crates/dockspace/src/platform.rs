@@ -203,12 +203,7 @@ impl PlatformCapabilities {
     /// Returns whether an outside-all pointer drop can create a native window safely.
     #[must_use]
     pub fn native_outside_all_tear_off(&self) -> PlatformCapability {
-        combine_required([
-            self.native_window_lifecycle,
-            self.authoritative_inventory,
-            self.global_window_placement,
-            self.work_area,
-        ])
+        self.physical_native_drag()
     }
 
     /// Returns whether a pointer can be routed across native windows without inference.
@@ -226,6 +221,37 @@ impl PlatformCapabilities {
     #[must_use]
     pub const fn authoritative_release(&self) -> PlatformCapability {
         self.authoritative_button_state
+    }
+
+    /// Returns whether one physical drag can be routed and released across native windows.
+    ///
+    /// Placement support is intentionally absent: existing-window routing needs exact hover,
+    /// desktop position, button/capture authority, rendered hit observations, and controllable
+    /// pointer pass-through. Being able to position a window proves none of those interaction
+    /// facts.
+    #[must_use]
+    pub fn physical_cross_surface_drag(&self) -> PlatformCapability {
+        combine_required([
+            self.cross_surface_routing(),
+            self.authoritative_release(),
+            self.pointer_hit_test_control,
+        ])
+    }
+
+    /// Returns whether a physical outside-all drag can create a native child safely.
+    ///
+    /// This composes the complete cross-surface interaction contract with the independent
+    /// native lifecycle, exact placement, and work-area contract. Programmatic native creation
+    /// continues to use [`Self::native_exact_placement_create`] and does not require pointer
+    /// capabilities.
+    #[must_use]
+    pub fn physical_native_drag(&self) -> PlatformCapability {
+        combine_required([
+            self.physical_cross_surface_drag(),
+            self.native_window_lifecycle,
+            self.global_window_placement,
+            self.work_area,
+        ])
     }
 }
 
@@ -2311,6 +2337,47 @@ mod tests {
             PlatformCapability::Unsupported(issue)
                 if issue.requirement() == PlatformRequirement::AuthoritativeInventory
         ));
+    }
+
+    #[test]
+    fn placement_and_partial_routes_do_not_qualify_a_physical_drag() {
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_hovered_window(PlatformCapability::Supported);
+        capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
+        capabilities.set_global_window_placement(PlatformCapability::Supported);
+        capabilities.set_work_area(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
+
+        assert!(capabilities.native_exact_placement_create().is_supported());
+        assert!(capabilities.cross_surface_routing().is_supported());
+        assert!(matches!(
+            capabilities.physical_cross_surface_drag(),
+            PlatformCapability::Unknown(issue)
+                if issue.requirement() == PlatformRequirement::AuthoritativeButtonState
+        ));
+        assert!(matches!(
+            capabilities.physical_native_drag(),
+            PlatformCapability::Unknown(issue)
+                if issue.requirement() == PlatformRequirement::AuthoritativeButtonState
+        ));
+    }
+
+    #[test]
+    fn physical_cross_surface_drag_does_not_require_window_placement() {
+        let mut capabilities = PlatformCapabilities::default();
+        capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+        capabilities.set_hovered_window(PlatformCapability::Supported);
+        capabilities.set_desktop_pointer_position(PlatformCapability::Supported);
+        capabilities.set_authoritative_button_state(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_observation(PlatformCapability::Supported);
+        capabilities.set_pointer_hit_test_control(PlatformCapability::Supported);
+
+        assert!(capabilities.physical_cross_surface_drag().is_supported());
+        assert!(!capabilities.native_exact_placement_create().is_supported());
+        assert!(!capabilities.physical_native_drag().is_supported());
     }
 
     #[test]

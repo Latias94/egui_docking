@@ -1,7 +1,10 @@
 use super::support;
 
 use dockspace::drop_target::DropTargetId;
-use dockspace::effect::PlatformEffect;
+use dockspace::effect::{
+    DispatchFailureReason, EffectDispatchResult, EffectId, EffectPhase, EffectResult,
+    EffectUnsupportedReason, PlatformEffect,
+};
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
 use dockspace::graph::{Node, RootRecord, SurfacePresentation, Workspace};
@@ -13,9 +16,9 @@ use dockspace::interaction::{
 };
 use dockspace::platform::{
     InputEffectAcknowledgement, ObservedWindow, ObservedWorkArea, PlatformCapabilities,
-    PlatformCapability, PlatformSnapshot, PresentationEffectAcknowledgement,
-    WindowCoordinateObservation, WindowInputObservation, WindowInputState,
-    WindowPresentationObservation, WindowPresentationState,
+    PlatformCapability, PlatformCapabilityReason, PlatformRequirement, PlatformSnapshot,
+    PresentationEffectAcknowledgement, WindowCoordinateObservation, WindowInputObservation,
+    WindowInputState, WindowPresentationObservation, WindowPresentationState,
 };
 use dockspace::pointer_journal::{
     DesktopRouteFact, DesktopWorkAreaRoute, FiniteScrollVector, PointerCaptureOwner, PointerEdge,
@@ -52,6 +55,7 @@ const TARGET_WINDOW: WindowToken = WindowToken::new(20);
 const INPUT_SOURCE: StableInputSourceId = StableInputSourceId::new(0xD0C5);
 const POINTER: PointerId = PointerId::new(7);
 const WORK_AREA: WorkAreaToken = WorkAreaToken::new(1);
+const ACTIVE_DRAG_POINTER_THROUGH: u64 = 3;
 
 const SOURCE_ORIGIN_X: f64 = 0.0;
 const TARGET_ORIGIN_X: f64 = 2_000.0;
@@ -307,6 +311,314 @@ fn publish_native_snapshot_with_geometry_and_work_area_scale(
     ));
 }
 
+fn pointer_passthrough_effect(
+    engine: &DockEngine,
+    binding: ViewportBinding,
+    enabled: bool,
+) -> EffectId {
+    let matching = engine
+        .viewport()
+        .effects()
+        .records()
+        .filter_map(|(effect, record)| {
+            matches!(
+                record.request().effect(),
+                PlatformEffect::SetPointerPassthrough {
+                    binding: actual,
+                    enabled: actual_enabled,
+                    ..
+                } if *actual == binding && *actual_enabled == enabled
+            )
+            .then_some(effect)
+        })
+        .max();
+    matching.unwrap_or_else(|| {
+        let effects = engine
+            .viewport()
+            .effects()
+            .records()
+            .filter_map(|(effect, record)| {
+                matches!(
+                    record.request().effect(),
+                    PlatformEffect::SetPointerPassthrough { .. }
+                )
+                .then_some((effect, record.request().effect(), record.phase()))
+            })
+            .collect::<Vec<_>>();
+        panic!(
+            "pointer pass-through effect for {binding:?} enabled={enabled} is missing; effects={effects:?}"
+        )
+    })
+}
+
+fn publish_pointer_passthrough_confirmation(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    source: ViewportBinding,
+    target: ViewportBinding,
+    pointer_through: u64,
+    effect: EffectId,
+) -> dockspace::transition::EngineTransition {
+    publish_pointer_input_confirmation(
+        engine,
+        host,
+        provider,
+        source,
+        target,
+        pointer_through,
+        WindowInputState::PassThrough,
+        effect,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_pointer_input_confirmation(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    source: ViewportBinding,
+    target: ViewportBinding,
+    pointer_through: u64,
+    source_state: WindowInputState,
+    effect: EffectId,
+) -> dockspace::transition::EngineTransition {
+    let generation = host.next_platform_observation_generation();
+    let coordinate_generation = CoordinateObservationGeneration::new(generation);
+    let presentation_generation = PresentationObservationGeneration::new(generation);
+    let input_generation = InputObservationGeneration::new(generation);
+    let source_window =
+        observed_window(source, coordinate_generation, SOURCE_ORIGIN_X, SOURCE_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                source,
+                input_generation,
+                Authority::Known(source_state),
+                InputEffectAcknowledgement::known(Some(effect)),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                source,
+                presentation_generation,
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ));
+    let target_window =
+        observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                target,
+                input_generation,
+                Authority::Known(WindowInputState::ReceivesInput),
+                InputEffectAcknowledgement::known(None),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                target,
+                presentation_generation,
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ));
+    let windows = vec![source_window, target_window];
+    let work_areas = engine
+        .viewport()
+        .work_areas()
+        .map(|(_, work_area)| work_area)
+        .collect::<Vec<_>>();
+    let snapshot = PlatformSnapshot::new(
+        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        support::known_capability_observation(generation, capabilities()),
+        unknown_focus_observation(
+            FocusObservationGeneration::new(generation),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        support::known_inventory_observation(generation, &windows),
+        windows,
+        Vec::new(),
+        support::known_work_area_observation(generation, work_areas),
+    )
+    .expect("pointer-input confirmation is canonical");
+    let input_sequence = engine
+        .semantic_input_watermark()
+        .expect("native setup published platform input")
+        .checked_next()
+        .expect("test input sequence does not exhaust");
+    let mut frame = host.begin(engine);
+    frame
+        .append_input(
+            INPUT_SOURCE,
+            input_sequence,
+            EngineInput::PublishPlatformSnapshot {
+                provider: host.platform_provider(),
+                expected_epoch: engine.version().epoch(),
+                snapshot,
+            },
+        )
+        .expect("pointer-input confirmation stages");
+    let pointer_through = PointerEdgeSequence::new(pointer_through);
+    frame
+        .submit_pointer_journal(
+            provider,
+            PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                .expect("confirmation frame preserves the pointer watermark"),
+        )
+        .expect("confirmation pointer checkpoint stages");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("confirmation checkpoint has no receiver receipts"),
+        )
+        .expect("confirmation receipts stage");
+    complete(engine, &mut frame);
+    let transition = host.finish(frame, engine);
+    assert!(matches!(
+        engine
+            .viewport()
+            .effects()
+            .record(effect)
+            .map(|record| record.phase()),
+        Some(EffectPhase::ObservedApplied { .. })
+    ));
+    transition
+}
+
+fn report_platform_effect_during_drag(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    pointer_through: u64,
+    effect: EffectId,
+    result: EffectDispatchResult,
+) -> dockspace::transition::EngineTransition {
+    let expected_epoch = engine.version().epoch();
+    let input_sequence = engine
+        .semantic_input_watermark()
+        .expect("native setup published platform input")
+        .checked_next()
+        .expect("test input sequence does not exhaust");
+    let mut frame = host.begin(engine);
+    frame
+        .append_input(
+            INPUT_SOURCE,
+            input_sequence,
+            EngineInput::ReportPlatformEffect {
+                provider: host.platform_provider(),
+                expected_epoch,
+                result: EffectResult::new(effect, expected_epoch, result),
+            },
+        )
+        .expect("pointer pass-through result stages");
+    let pointer_through = PointerEdgeSequence::new(pointer_through);
+    frame
+        .submit_pointer_journal(
+            provider,
+            PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                .expect("effect-result frame preserves the pointer watermark"),
+        )
+        .expect("effect-result pointer checkpoint stages");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("effect-result checkpoint has no receiver receipts"),
+        )
+        .expect("effect-result receipts stage");
+    complete(engine, &mut frame);
+    host.finish(frame, engine)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_capabilities_during_drag(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    source: ViewportBinding,
+    target: ViewportBinding,
+    pointer_through: u64,
+    capabilities: PlatformCapabilities,
+) -> dockspace::transition::EngineTransition {
+    let generation = host.next_platform_observation_generation();
+    let coordinate_generation = CoordinateObservationGeneration::new(generation);
+    let presentation_generation = PresentationObservationGeneration::new(generation);
+    let input_generation = InputObservationGeneration::new(generation);
+    let route_effect = pointer_passthrough_effect(engine, source, true);
+    let source_window =
+        observed_window(source, coordinate_generation, SOURCE_ORIGIN_X, SOURCE_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                source,
+                input_generation,
+                Authority::Known(WindowInputState::PassThrough),
+                InputEffectAcknowledgement::known(Some(route_effect)),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                source,
+                presentation_generation,
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ));
+    let target_window =
+        observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                target,
+                input_generation,
+                Authority::Known(WindowInputState::ReceivesInput),
+                InputEffectAcknowledgement::known(None),
+            ))
+            .with_presentation_observation(WindowPresentationObservation::new(
+                target,
+                presentation_generation,
+                Authority::Known(WindowPresentationState::Visible),
+                PresentationEffectAcknowledgement::known(None),
+            ));
+    let windows = vec![source_window, target_window];
+    let work_areas = engine
+        .viewport()
+        .work_areas()
+        .map(|(_, work_area)| work_area)
+        .collect::<Vec<_>>();
+    let snapshot = PlatformSnapshot::new(
+        dockspace::viewport::PlatformSnapshotGeneration::new(generation),
+        support::known_capability_observation(generation, capabilities),
+        unknown_focus_observation(
+            FocusObservationGeneration::new(generation),
+            AuthorityUnavailableReason::NotReported,
+        ),
+        support::known_inventory_observation(generation, &windows),
+        windows,
+        Vec::new(),
+        support::known_work_area_observation(generation, work_areas),
+    )
+    .expect("capability-only drag snapshot is canonical");
+    let input_sequence = engine
+        .semantic_input_watermark()
+        .expect("native setup published platform input")
+        .checked_next()
+        .expect("test input sequence does not exhaust");
+    let mut frame = host.begin(engine);
+    frame
+        .append_input(
+            INPUT_SOURCE,
+            input_sequence,
+            EngineInput::PublishPlatformSnapshot {
+                provider: host.platform_provider(),
+                expected_epoch: engine.version().epoch(),
+                snapshot,
+            },
+        )
+        .expect("capability-only snapshot stages");
+    let pointer_through = PointerEdgeSequence::new(pointer_through);
+    frame
+        .submit_pointer_journal(
+            provider,
+            PointerEdgeJournal::new(pointer_through, pointer_through, Vec::new())
+                .expect("capability-only frame preserves the pointer watermark"),
+        )
+        .expect("capability-only pointer checkpoint stages");
+    frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::<PointerReceiverReceipt>::new())
+                .expect("empty pointer checkpoint has no receiver receipts"),
+        )
+        .expect("empty pointer checkpoint receipts stage");
+    complete(engine, &mut frame);
+    host.finish(frame, engine)
+}
+
 fn publish_resized_source_snapshot(
     engine: &mut DockEngine,
     host: &mut TestPresentationHost,
@@ -317,7 +629,15 @@ fn publish_resized_source_snapshot(
     let generation = host.next_platform_observation_generation();
     let presentation_generation = PresentationObservationGeneration::new(generation);
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
+    let input_generation = InputObservationGeneration::new(generation);
+    let route_effect = pointer_passthrough_effect(engine, source, true);
     let source_window = observed_window(source, coordinate_generation, SOURCE_ORIGIN_X, 1.25)
+        .with_input_observation(WindowInputObservation::new(
+            source,
+            input_generation,
+            Authority::Known(WindowInputState::PassThrough),
+            InputEffectAcknowledgement::known(Some(route_effect)),
+        ))
         .with_presentation_observation(WindowPresentationObservation::new(
             source,
             presentation_generation,
@@ -326,6 +646,12 @@ fn publish_resized_source_snapshot(
         ));
     let target_window =
         observed_window(target, coordinate_generation, TARGET_ORIGIN_X, TARGET_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                target,
+                input_generation,
+                Authority::Known(WindowInputState::ReceivesInput),
+                InputEffectAcknowledgement::known(None),
+            ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 target,
                 presentation_generation,
@@ -370,8 +696,8 @@ fn publish_resized_source_snapshot(
         .submit_pointer_journal(
             provider,
             PointerEdgeJournal::new(
-                PointerEdgeSequence::new(2),
-                PointerEdgeSequence::new(2),
+                PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+                PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
                 Vec::new(),
             )
             .expect("platform-only frame preserves the provider watermark"),
@@ -422,14 +748,23 @@ fn source_only_native_snapshot(generation: u64, source: ViewportBinding) -> Plat
 }
 
 fn resized_target_native_snapshot(
+    engine: &DockEngine,
     generation: u64,
     source: ViewportBinding,
     target: ViewportBinding,
 ) -> PlatformSnapshot {
     let presentation_generation = PresentationObservationGeneration::new(generation);
     let coordinate_generation = CoordinateObservationGeneration::new(generation);
+    let input_generation = InputObservationGeneration::new(generation);
+    let route_effect = pointer_passthrough_effect(engine, source, true);
     let source_window =
         observed_window(source, coordinate_generation, SOURCE_ORIGIN_X, SOURCE_SCALE)
+            .with_input_observation(WindowInputObservation::new(
+                source,
+                input_generation,
+                Authority::Known(WindowInputState::PassThrough),
+                InputEffectAcknowledgement::known(Some(route_effect)),
+            ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 source,
                 presentation_generation,
@@ -437,6 +772,12 @@ fn resized_target_native_snapshot(
                 PresentationEffectAcknowledgement::known(None),
             ));
     let target_window = observed_window(target, coordinate_generation, TARGET_ORIGIN_X, 1.5)
+        .with_input_observation(WindowInputObservation::new(
+            target,
+            input_generation,
+            Authority::Known(WindowInputState::ReceivesInput),
+            InputEffectAcknowledgement::known(None),
+        ))
         .with_presentation_observation(WindowPresentationObservation::new(
             target,
             presentation_generation,
@@ -1306,6 +1647,60 @@ fn arm_native_drag_with_capture(
     previous: u64,
     capture: Authority<PointerCaptureOwner>,
 ) -> LogicalPoint {
+    let (target_point, enable_effect) = begin_native_drag_with_capture(
+        engine,
+        host,
+        provider,
+        source_binding,
+        target_binding,
+        target_tabs,
+        previous,
+        capture,
+    );
+    let pointer_through = previous + 2;
+    let _ = publish_pointer_passthrough_confirmation(
+        engine,
+        host,
+        provider,
+        source_binding,
+        target_binding,
+        pointer_through,
+        enable_effect,
+    );
+    let transition = submit_active_drag_edge_after(
+        engine,
+        host,
+        provider,
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+        target_binding,
+        target_tabs,
+        target_point,
+        PointerEdgeKind::Moved,
+        capture,
+        pointer_through,
+    );
+    assert!(matches!(
+        transition.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(_),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }]
+    ));
+    target_point
+}
+
+#[allow(clippy::too_many_arguments)]
+fn begin_native_drag_with_capture(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    source_binding: ViewportBinding,
+    target_binding: ViewportBinding,
+    target_tabs: NodeId,
+    previous: u64,
+    capture: Authority<PointerCaptureOwner>,
+) -> (LogicalPoint, EffectId) {
     let source_projection = interaction(engine, SOURCE_SURFACE);
     let target_projection = interaction(engine, TARGET_SURFACE);
     assert_eq!(
@@ -1437,22 +1832,43 @@ fn arm_native_drag_with_capture(
         gesture_transition.reduced_pointer_edges()[0].interaction_outcomes(),
         [InteractionOutcome::DragArmed { .. }]
     ));
-    assert!(matches!(
-        gesture_transition.reduced_pointer_edges()[1].interaction_outcomes(),
-        [
-            InteractionOutcome::DragBegan { .. },
-            InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
-                ..
-            }
-        ]
-    ));
+    let move_outcomes = gesture_transition.reduced_pointer_edges()[1].interaction_outcomes();
+    assert!(
+        matches!(
+            move_outcomes,
+            [
+                InteractionOutcome::DragBegan { .. },
+                InteractionOutcome::PreviewUpdated {
+                    preview: None,
+                    status: PreviewResolutionStatus::Rejected,
+                    ..
+                }
+            ]
+        ),
+        "unconfirmed physical drag produced unexpected outcomes: {move_outcomes:?}; route={:?}; \
+         confirmed={:?}; route_effect={:?}; input={:?}",
+        engine.viewport().drag_source(POINTER),
+        engine.viewport().confirmed_drag_source(POINTER),
+        engine.viewport().drag_route_effect(POINTER),
+        engine
+            .viewport()
+            .viewport(source_binding.surface())
+            .and_then(|record| record.input_observation()),
+    );
     assert!(matches!(
         engine.interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
-    target_point
+    let enable_effect = pointer_passthrough_effect(engine, source_binding, true);
+    assert!(!matches!(
+        engine
+            .viewport()
+            .effects()
+            .record(enable_effect)
+            .map(|record| record.phase()),
+        Some(EffectPhase::ObservedApplied { .. })
+    ));
+    (target_point, enable_effect)
 }
 
 #[test]
@@ -1466,7 +1882,7 @@ fn canonical_native_drag_starts_source_pointer_passthrough_routing() {
         target_tabs,
     } = desktop_native_fixture();
 
-    let _ = arm_native_drag(
+    let (_, effect) = begin_native_drag_with_capture(
         &mut engine,
         &mut host,
         provider,
@@ -1474,18 +1890,190 @@ fn canonical_native_drag_starts_source_pointer_passthrough_routing() {
         target_binding,
         target_tabs,
         0,
+        Authority::Known(PointerCaptureOwner::Native(source_binding)),
     );
 
-    assert!(engine.viewport().effects().records().any(|(_, record)| {
-        matches!(
-            record.request().effect(),
+    assert_eq!(
+        effect,
+        pointer_passthrough_effect(&engine, source_binding, true)
+    );
+    assert!(engine.interaction().preview().is_none());
+}
+
+#[test]
+fn failed_pointer_passthrough_route_cancels_drag_and_requests_restore() {
+    let cases = [
+        EffectDispatchResult::DispatchFailed(DispatchFailureReason::AdapterRejected),
+        EffectDispatchResult::Unsupported(EffectUnsupportedReason::BackendUnsupported),
+    ];
+
+    for result in cases {
+        let DesktopNativeFixture {
+            mut engine,
+            mut host,
+            provider,
+            source_binding,
+            target_binding,
+            target_tabs,
+        } = desktop_native_fixture();
+        let (_, effect) = begin_native_drag_with_capture(
+            &mut engine,
+            &mut host,
+            provider,
+            source_binding,
+            target_binding,
+            target_tabs,
+            0,
+            Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        );
+        let InteractionStatus::Dragging { session } = engine.interaction().status() else {
+            panic!("unconfirmed physical route must retain its drag");
+        };
+
+        let transition =
+            report_platform_effect_during_drag(&mut engine, &mut host, provider, 2, effect, result);
+
+        assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+        assert!(engine.interaction().preview().is_none());
+        assert!(transition.interaction_events().iter().any(|event| matches!(
+            event.kind(),
+            dockspace::interaction::InteractionEventKind::Cancelled {
+                status: InteractionStatus::Dragging { session: cancelled },
+                reason: InteractionCancelReason::PointerRoutingUnavailable,
+            } if *cancelled == session
+        )));
+        assert!(transition.platform_effects().iter().any(|request| matches!(
+            request.effect(),
             PlatformEffect::SetPointerPassthrough {
                 binding,
-                enabled: true,
+                enabled: false,
                 ..
             } if *binding == source_binding
-        )
-    }));
+        )));
+    }
+}
+
+#[test]
+fn routed_physical_drag_cancels_when_release_authority_is_lost() {
+    let cases = [
+        (
+            PlatformCapability::unknown(
+                PlatformRequirement::AuthoritativeButtonState,
+                PlatformCapabilityReason::EnvironmentUnavailable,
+            ),
+            InteractionCancelReason::NativeCapabilityUnknown,
+        ),
+        (
+            PlatformCapability::unsupported(
+                PlatformRequirement::AuthoritativeButtonState,
+                PlatformCapabilityReason::BackendUnsupported,
+            ),
+            InteractionCancelReason::NativeCapabilityUnavailable,
+        ),
+    ];
+
+    for (release_capability, expected_reason) in cases {
+        let ActiveNativeDragFixture {
+            mut engine,
+            mut host,
+            provider,
+            source_binding,
+            target_binding,
+            ..
+        } = active_native_drag();
+        let InteractionStatus::Dragging { session } = engine.interaction().status() else {
+            panic!("fixture must start one routed physical drag");
+        };
+        assert!(engine.interaction().preview().is_some());
+
+        let mut reduced = capabilities();
+        reduced.set_authoritative_button_state(release_capability);
+        let transition = publish_capabilities_during_drag(
+            &mut engine,
+            &mut host,
+            provider,
+            source_binding,
+            target_binding,
+            ACTIVE_DRAG_POINTER_THROUGH,
+            reduced,
+        );
+
+        assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+        assert!(engine.interaction().preview().is_none());
+        assert!(transition.interaction_events().iter().any(|event| matches!(
+            event.kind(),
+            dockspace::interaction::InteractionEventKind::Cancelled {
+                status: InteractionStatus::Dragging { session: cancelled },
+                reason,
+            } if *cancelled == session && *reason == expected_reason
+        )));
+    }
+}
+
+#[test]
+fn native_preview_cancels_when_exact_window_placement_is_lost() {
+    let ActiveNativeDragFixture {
+        mut engine,
+        mut host,
+        provider,
+        source_binding,
+        target_binding,
+        ..
+    } = active_native_drag();
+    let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
+    let journal = pointer_edge_journal(
+        ACTIVE_DRAG_POINTER_THROUGH,
+        PointerEdgeKind::Moved,
+        PointerEdgeLocation::Desktop {
+            route: outside_all_route(&engine, outside),
+        },
+        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+    );
+    let mut frame = host.begin(&engine);
+    frame
+        .submit_pointer_journal(provider, journal)
+        .expect("outside-all move stages");
+    frame
+        .submit_pointer_receiver_receipts(unknown_receipts(&frame))
+        .expect("outside-all move has no widget receiver");
+    complete(&engine, &mut frame);
+    let moved = host.finish(frame, &mut engine);
+    assert!(matches!(
+        moved.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(preview),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }] if matches!(preview.visual(), PreviewVisual::Native { .. })
+    ));
+    let InteractionStatus::Dragging { session } = engine.interaction().status() else {
+        panic!("outside-all preview must retain the routed drag");
+    };
+
+    let mut reduced = capabilities();
+    reduced.set_global_window_placement(PlatformCapability::unsupported(
+        PlatformRequirement::GlobalWindowPlacement,
+        PlatformCapabilityReason::EnvironmentUnavailable,
+    ));
+    let transition = publish_capabilities_during_drag(
+        &mut engine,
+        &mut host,
+        provider,
+        source_binding,
+        target_binding,
+        ACTIVE_DRAG_POINTER_THROUGH + 1,
+        reduced,
+    );
+
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert!(engine.interaction().preview().is_none());
+    assert!(transition.interaction_events().iter().any(|event| matches!(
+        event.kind(),
+        dockspace::interaction::InteractionEventKind::Cancelled {
+            status: InteractionStatus::Dragging { session: cancelled },
+            reason: InteractionCancelReason::NativeCapabilityUnavailable,
+        } if *cancelled == session
+    )));
 }
 
 struct ReincarnatedNativeDragFixture {
@@ -1550,6 +2138,17 @@ fn reincarnated_native_drag() -> ReincarnatedNativeDragFixture {
             PointerEdgeSequence::new(0),
         )
         .expect("A2 desktop-global provider is admitted");
+    let restore_effect = pointer_passthrough_effect(&engine, source_binding, false);
+    let _ = publish_pointer_input_confirmation(
+        &mut engine,
+        &mut host,
+        provider,
+        source_binding,
+        target_binding,
+        0,
+        WindowInputState::ReceivesInput,
+        restore_effect,
+    );
     let target_point = arm_native_drag(
         &mut engine,
         &mut host,
@@ -1606,7 +2205,7 @@ fn submit_active_drag_edge(
     kind: PointerEdgeKind,
     capture: Authority<PointerCaptureOwner>,
 ) -> dockspace::transition::EngineTransition {
-    submit_active_drag_edge_with_delivery(
+    submit_active_drag_edge_after(
         engine,
         host,
         provider,
@@ -1616,6 +2215,7 @@ fn submit_active_drag_edge(
         target_point,
         kind,
         capture,
+        ACTIVE_DRAG_POINTER_THROUGH,
     )
 }
 
@@ -1631,6 +2231,33 @@ fn submit_active_drag_edge_with_delivery(
     kind: PointerEdgeKind,
     capture: Authority<PointerCaptureOwner>,
 ) -> dockspace::transition::EngineTransition {
+    submit_active_drag_edge_after(
+        engine,
+        host,
+        provider,
+        delivery,
+        target_binding,
+        target_tabs,
+        target_point,
+        kind,
+        capture,
+        ACTIVE_DRAG_POINTER_THROUGH,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_active_drag_edge_after(
+    engine: &mut DockEngine,
+    host: &mut TestPresentationHost,
+    provider: PointerInputLease,
+    delivery: Authority<PointerEventDeliveryOwner>,
+    target_binding: ViewportBinding,
+    target_tabs: NodeId,
+    target_point: LogicalPoint,
+    kind: PointerEdgeKind,
+    capture: Authority<PointerCaptureOwner>,
+    previous: u64,
+) -> dockspace::transition::EngineTransition {
     let projection = interaction(engine, TARGET_SURFACE);
     let (target_region, expected_point) = center_drop_point(projection, target_tabs);
     assert_eq!(target_point, expected_point);
@@ -1641,11 +2268,12 @@ fn submit_active_drag_edge_with_delivery(
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(previous + 1);
     let journal = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(previous),
+        sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             kind,
             PointerEdgeLocation::Desktop { route },
@@ -1696,7 +2324,7 @@ fn native_preview_placement_for_work_area_scale(work_area_scale: f64) -> Physica
     } = active_native_drag_with_work_area_scale(work_area_scale);
     let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
     let journal = pointer_edge_journal(
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
@@ -1712,13 +2340,17 @@ fn native_preview_placement_for_work_area_scale(work_area_scale: f64) -> Physica
         .expect("outside-all move has no widget receiver");
     complete(&engine, &mut frame);
     let transition = host.finish(frame, &mut engine);
-    assert!(matches!(
-        transition.reduced_pointer_edges()[0].interaction_outcomes(),
-        [InteractionOutcome::PreviewUpdated {
-            status: PreviewResolutionStatus::Resolved,
-            ..
-        }]
-    ));
+    let outcomes = transition.reduced_pointer_edges()[0].interaction_outcomes();
+    assert!(
+        matches!(
+            outcomes,
+            [InteractionOutcome::PreviewUpdated {
+                status: PreviewResolutionStatus::Resolved,
+                ..
+            }]
+        ),
+        "outside-all move at work-area scale {work_area_scale} produced unexpected outcomes: {outcomes:?}"
+    );
 
     match engine
         .interaction()
@@ -1771,7 +2403,7 @@ fn native_preview_rejects_when_the_post_move_recovery_host_would_disappear() {
     );
     let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
     let journal = pointer_edge_journal(
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
@@ -1813,7 +2445,7 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
     let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
 
     let move_journal = pointer_edge_journal(
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
@@ -1845,7 +2477,7 @@ fn desktop_global_journal_requests_native_create_after_painted_outside_all_previ
         .expect("outside-all move publishes a native preview")
         .acknowledgement();
     let release_journal = pointer_edge_journal_with_delivery(
-        3,
+        ACTIVE_DRAG_POINTER_THROUGH + 1,
         PointerEdgeKind::ButtonReleased(PointerButton::Primary),
         PointerEdgeLocation::Desktop {
             route: outside_all_route(&engine, outside),
@@ -1925,7 +2557,7 @@ fn desktop_global_journal_unknown_work_area_clears_native_preview_without_fallba
     let before = engine.workspace().clone();
     let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
     let journal = pointer_edge_journal(
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop {
             route: outside_all_route_with_work_area(
@@ -1986,7 +2618,7 @@ fn desktop_global_journal_stale_work_area_generation_cannot_authorize_native_pre
         )),
     );
     let journal = pointer_edge_journal(
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         PointerEdgeKind::Moved,
         PointerEdgeLocation::Desktop { route },
         Authority::Known(PointerCaptureOwner::Native(source_binding)),
@@ -2093,6 +2725,73 @@ fn unknown_capture_with_exact_source_delivery_reaches_release_pending() {
     ));
     assert_eq!(engine.workspace(), &before);
     assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+}
+
+#[test]
+fn native_release_pending_cancels_nonfatally_when_lifecycle_capability_is_lost() {
+    let ActiveNativeDragFixture {
+        mut engine,
+        mut host,
+        provider,
+        source_binding,
+        target_binding,
+        ..
+    } = active_native_drag();
+    let outside = PhysicalPoint::new(1_000.0, 700.0).expect("outside-all point is finite");
+    let journal = pointer_edge_journal(
+        ACTIVE_DRAG_POINTER_THROUGH,
+        PointerEdgeKind::ButtonReleased(PointerButton::Primary),
+        PointerEdgeLocation::Desktop {
+            route: outside_all_route(&engine, outside),
+        },
+        Authority::Known(PointerCaptureOwner::Native(source_binding)),
+    );
+    let mut frame = host.begin(&engine);
+    frame
+        .submit_pointer_journal(provider, journal)
+        .expect("outside-all release stages");
+    frame
+        .submit_pointer_receiver_receipts(unknown_receipts(&frame))
+        .expect("outside-all release has no widget receiver");
+    complete(&engine, &mut frame);
+    let released = host.finish(frame, &mut engine);
+    assert!(matches!(
+        released.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::PreviewUpdated {
+                preview: Some(preview),
+                status: PreviewResolutionStatus::Resolved,
+                ..
+            },
+            InteractionOutcome::ReleasePending { .. }
+        ] if matches!(preview.visual(), PreviewVisual::Native { .. })
+    ));
+    assert!(engine.pending_release_preview().is_some());
+
+    let mut reduced = capabilities();
+    reduced.set_native_window_lifecycle(PlatformCapability::unsupported(
+        PlatformRequirement::NativeWindowLifecycle,
+        PlatformCapabilityReason::BackendUnsupported,
+    ));
+    let transition = publish_capabilities_during_drag(
+        &mut engine,
+        &mut host,
+        provider,
+        source_binding,
+        target_binding,
+        ACTIVE_DRAG_POINTER_THROUGH + 1,
+        reduced,
+    );
+
+    assert!(engine.pending_release_preview().is_none());
+    assert_eq!(engine.interaction().status(), InteractionStatus::Idle);
+    assert!(transition.interaction_events().iter().any(|event| matches!(
+        event.kind(),
+        dockspace::interaction::InteractionEventKind::Cancelled {
+            status: InteractionStatus::Idle,
+            reason: InteractionCancelReason::NativeCapabilityUnavailable,
+        }
+    )));
 }
 
 #[test]
@@ -2307,7 +3006,7 @@ fn capture_change_to_another_current_native_window_cancels_desktop_drag() {
         &mut engine,
         &mut host,
         provider,
-        2,
+        ACTIVE_DRAG_POINTER_THROUGH,
         target_binding,
         TARGET_ORIGIN_X,
         TARGET_SCALE,
@@ -2373,24 +3072,25 @@ fn capture_acquisition_from_unowned_state_is_retained_until_explicit_loss() {
         InteractionStatus::Armed { .. }
     ));
 
-    let moved = submit_active_drag_edge(
+    let moved = submit_active_drag_edge_after(
         &mut engine,
         &mut host,
         provider,
-        source_binding,
+        Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
         target_binding,
         target_tabs,
         target_point,
         PointerEdgeKind::Moved,
         Authority::Known(PointerCaptureOwner::Native(source_binding)),
+        2,
     );
     assert!(matches!(
         moved.reduced_pointer_edges()[0].interaction_outcomes(),
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
+                preview: None,
+                status: PreviewResolutionStatus::Rejected,
                 ..
             }
         ]
@@ -2445,9 +3145,9 @@ fn stale_native_capture_after_binding_reincarnation_cancels_without_reducing_lat
     );
     let mut frame = host.begin(&engine);
     for (previous, kind) in [
-        (2, PointerEdgeKind::CaptureChanged),
-        (3, PointerEdgeKind::Moved),
-        (4, PointerEdgeKind::ButtonReleased(PointerButton::Primary)),
+        (3, PointerEdgeKind::CaptureChanged),
+        (4, PointerEdgeKind::Moved),
+        (5, PointerEdgeKind::ButtonReleased(PointerButton::Primary)),
     ] {
         frame
             .submit_pointer_journal(
@@ -2489,6 +3189,17 @@ fn stale_native_capture_after_binding_reincarnation_cancels_without_reducing_lat
     assert!(engine.interaction().preview().is_none());
     assert_eq!(engine.pointer_provider(), Some(provider));
 
+    let restore_effect = pointer_passthrough_effect(&engine, source_binding, false);
+    let _ = publish_pointer_input_confirmation(
+        &mut engine,
+        &mut host,
+        provider,
+        source_binding,
+        target_binding,
+        6,
+        WindowInputState::ReceivesInput,
+        restore_effect,
+    );
     let _ = arm_native_drag(
         &mut engine,
         &mut host,
@@ -2496,7 +3207,7 @@ fn stale_native_capture_after_binding_reincarnation_cancels_without_reducing_lat
         source_binding,
         target_binding,
         target_tabs,
-        5,
+        6,
     );
 }
 
@@ -2521,11 +3232,12 @@ fn assert_stale_native_capture_semantic_edge_cancels(kind: PointerEdgeKind) {
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let journal = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             kind,
             PointerEdgeLocation::Desktop { route },
@@ -2660,11 +3372,12 @@ fn unknown_capture_authority_does_not_cancel_a_current_native_drag() {
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let journal = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        sequence,
         vec![PointerEdge::new(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             PointerEdgeKind::CaptureChanged,
             PointerEdgeLocation::Desktop { route },
@@ -2730,11 +3443,12 @@ fn source_coordinate_change_retains_journal_drag_but_requires_fresh_source_prese
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let blocked_move = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             PointerEdgeKind::Moved,
             PointerEdgeLocation::Desktop {
@@ -2809,11 +3523,12 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let release = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             PointerEdgeLocation::Desktop {
@@ -2825,7 +3540,8 @@ fn target_coordinate_change_precedes_journal_release_and_blocks_delivery() {
     )
     .expect("stale release remains provider-contiguous input");
     let generation = host.next_platform_observation_generation();
-    let snapshot = resized_target_native_snapshot(generation, source_binding, target_binding);
+    let snapshot =
+        resized_target_native_snapshot(&engine, generation, source_binding, target_binding);
     let source_sequence = engine
         .semantic_input_watermark()
         .expect("native setup published platform input")
@@ -3404,8 +4120,8 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                preview: Some(_),
-                status: PreviewResolutionStatus::Resolved,
+                preview: None,
+                status: PreviewResolutionStatus::Rejected,
                 ..
             }
         ]
@@ -3414,10 +4130,40 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
         engine.interaction().status(),
         InteractionStatus::Dragging { .. }
     ));
+    let enable_effect = pointer_passthrough_effect(&engine, *source_binding, true);
+    let _ = publish_pointer_passthrough_confirmation(
+        &mut engine,
+        &mut host,
+        provider,
+        *source_binding,
+        *target_binding,
+        2,
+        enable_effect,
+    );
+    let routed = submit_active_drag_edge_after(
+        &mut engine,
+        &mut host,
+        provider,
+        Authority::Known(PointerEventDeliveryOwner::Native(*source_binding)),
+        *target_binding,
+        target_tabs,
+        target_point,
+        PointerEdgeKind::Moved,
+        Authority::Known(PointerCaptureOwner::Native(*source_binding)),
+        2,
+    );
+    assert!(matches!(
+        routed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            preview: Some(_),
+            status: PreviewResolutionStatus::Resolved,
+            ..
+        }]
+    ));
 
     let empty = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(2),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
         Vec::new(),
     )
     .expect("empty journal preserves the provider watermark");
@@ -3446,11 +4192,12 @@ fn desktop_global_journal_uses_target_native_route_for_cross_surface_drop() {
         TARGET_SCALE,
         target_point,
     );
+    let release_sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let release_journal = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        release_sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            release_sequence,
             POINTER,
             PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             PointerEdgeLocation::Desktop {
@@ -3543,11 +4290,12 @@ fn platform_destruction_before_release_prevents_stale_cross_window_drop() {
         TARGET_SCALE,
         target_point,
     );
+    let sequence = PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH + 1);
     let release = PointerEdgeJournal::new(
-        PointerEdgeSequence::new(2),
-        PointerEdgeSequence::new(3),
+        PointerEdgeSequence::new(ACTIVE_DRAG_POINTER_THROUGH),
+        sequence,
         vec![PointerEdge::new_with_delivery(
-            PointerEdgeSequence::new(3),
+            sequence,
             POINTER,
             PointerEdgeKind::ButtonReleased(PointerButton::Primary),
             PointerEdgeLocation::Desktop {

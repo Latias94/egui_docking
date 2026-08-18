@@ -275,9 +275,9 @@ impl DockEngine {
                 current_epoch: self.version.epoch(),
             });
         }
-        let previous_native = self.viewport.native_outside_all_tear_off_capability();
-        let previous_routing = self.viewport.capabilities().cross_surface_routing();
-        let previous_release = self.viewport.capabilities().authoritative_release();
+        let previous_physical_native_drag = self.viewport.physical_native_drag_capability();
+        let previous_physical_cross_surface_drag =
+            self.viewport.physical_cross_surface_drag_capability();
         let interaction_dependencies = self.platform_interaction_dependencies();
         let version_before_actions = self.version;
         let transition = self
@@ -363,9 +363,8 @@ impl DockEngine {
             &interaction_dependencies,
             version_before_actions,
             &transition,
-            previous_native,
-            previous_routing,
-            previous_release,
+            previous_physical_native_drag,
+            previous_physical_cross_surface_drag,
             &invalidated_scene_authorities.bindings,
         ) {
             PlatformInteractionReconciliation::Preserve => {}
@@ -425,9 +424,9 @@ impl DockEngine {
             });
         }
 
-        let previous_native = self.viewport.native_outside_all_tear_off_capability();
-        let previous_routing = self.viewport.capabilities().cross_surface_routing();
-        let previous_release = self.viewport.capabilities().authoritative_release();
+        let previous_physical_native_drag = self.viewport.physical_native_drag_capability();
+        let previous_physical_cross_surface_drag =
+            self.viewport.physical_cross_surface_drag_capability();
         let interaction_dependencies = self.platform_interaction_dependencies();
         let version_before_actions = self.version;
         let transition = self
@@ -485,9 +484,8 @@ impl DockEngine {
             &interaction_dependencies,
             version_before_actions,
             &transition,
-            previous_native,
-            previous_routing,
-            previous_release,
+            previous_physical_native_drag,
+            previous_physical_cross_surface_drag,
             &invalidated_scene_authorities.bindings,
         ) {
             PlatformInteractionReconciliation::Preserve => {}
@@ -1338,6 +1336,7 @@ impl DockEngine {
         provider: PlatformObservationLease,
         expected_epoch: crate::ids::WorkspaceEpoch,
         result: EffectResult,
+        interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<InputOutcome, EngineError> {
         if let Some(rejected) = self.platform_provider_rejection(provider) {
             return Ok(rejected);
@@ -1364,6 +1363,24 @@ impl DockEngine {
                         PlatformEffect::RequestFocus { .. }
                     )
                 });
+        let active_drag_route_failed = matches!(
+            result.result(),
+            EffectDispatchResult::DispatchFailed(_) | EffectDispatchResult::Unsupported(_)
+        ) && match self.interaction.status() {
+            InteractionStatus::Dragging { session } => {
+                self.interaction
+                    .active_drag(session)
+                    .ok()
+                    .and_then(|drag| drag.owner.pointer_if_physical())
+                    .and_then(|pointer| self.viewport.drag_route_effect(pointer))
+                    == Some(result.effect())
+            }
+            InteractionStatus::Idle
+            | InteractionStatus::Pressed { .. }
+            | InteractionStatus::Armed { .. }
+            | InteractionStatus::Resizing { .. }
+            | InteractionStatus::ContainedTransforming { .. } => false,
+        };
         let transition = if expected_epoch == self.version.epoch() {
             self.viewport
                 .report_effect_from(provider, expected_epoch, result)
@@ -1375,6 +1392,13 @@ impl DockEngine {
             self.viewport_focus
                 .report_platform_focus_effect(result.effect(), result.result())
         });
+        if transition == EffectTransition::Applied && active_drag_route_failed {
+            self.cancel_active_interaction_preserving_scene(
+                input,
+                InteractionCancelReason::PointerRoutingUnavailable,
+                interaction_events,
+            )?;
+        }
         if transition == EffectTransition::Applied
             && let Some((request, edge, resolution)) = native_close
         {

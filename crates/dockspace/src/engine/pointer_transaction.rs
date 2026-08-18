@@ -135,7 +135,7 @@ impl DockEngine {
                 GestureOwner::Stream(stream),
                 interaction_reason,
                 interaction_events,
-            ) {
+            )? {
                 outcomes.push(outcome);
             }
         }
@@ -499,7 +499,12 @@ impl DockEngine {
                         .expect("journal gestures retain their pointer stream")
                         .lease()
                         .scope();
-                    if provider_scope == PointerProviderScope::DesktopGlobal {
+                    if provider_scope == PointerProviderScope::DesktopGlobal
+                        && self
+                            .viewport
+                            .physical_cross_surface_drag_capability()
+                            .is_supported()
+                    {
                         let _ = self
                             .viewport
                             .begin_drag_routing(owner.pointer(), source_surface)
@@ -698,15 +703,15 @@ impl DockEngine {
             outcomes.push(outcome);
         }
         if !capture_authorized {
-            if capture_unavailable
-                && let Some(outcome) = self.cancel_journal_owner(
+            if capture_unavailable {
+                if let Some(outcome) = self.cancel_journal_owner(
                     cause,
                     owner,
                     InteractionCancelReason::CaptureAuthorityUnavailable,
                     interaction_events,
-                )
-            {
-                outcomes.push(outcome);
+                )? {
+                    outcomes.push(outcome);
+                }
             }
             return Ok(outcomes);
         }
@@ -757,7 +762,7 @@ impl DockEngine {
                         owner,
                         InteractionCancelReason::SceneUnavailable,
                         interaction_events,
-                    ) {
+                    )? {
                         outcomes.push(outcome);
                     }
                     return Ok(outcomes);
@@ -792,7 +797,7 @@ impl DockEngine {
                 }
                 if let Some(reason) = terminal_reason {
                     if let Some(outcome) =
-                        self.cancel_journal_owner(cause, owner, reason, interaction_events)
+                        self.cancel_journal_owner(cause, owner, reason, interaction_events)?
                     {
                         outcomes.push(outcome);
                     }
@@ -808,6 +813,11 @@ impl DockEngine {
                             return Ok(outcomes);
                         }
                     };
+                    let physical_route = drag
+                        .owner
+                        .pointer_if_physical()
+                        .and_then(|pointer| self.viewport.drag_source(pointer))
+                        .filter(|binding| binding.surface() == drag.source_surface);
                     let _ = self
                         .viewport
                         .end_drag_routing(owner.pointer())
@@ -824,6 +834,7 @@ impl DockEngine {
                             focus_causal,
                             session,
                             drag,
+                            physical_route,
                             release_decision,
                             policy,
                         )?);
@@ -1473,6 +1484,7 @@ impl DockEngine {
         focus_causal: FocusCausalStamp,
         session: crate::interaction::DragSessionId,
         drag: crate::interaction::ActiveDrag,
+        physical_route: Option<crate::viewport::ViewportBinding>,
         release_decision: PreviewDecision,
         policy: &DockPolicySnapshot,
     ) -> Result<InteractionOutcome, EngineError> {
@@ -1498,6 +1510,7 @@ impl DockEngine {
             focus_causal,
             session,
             drag,
+            physical_route,
             release_decision,
             preview,
             presentation_outputs: BTreeSet::new(),
@@ -1874,6 +1887,14 @@ impl DockEngine {
                 PreviewDecision::Clear(PreviewResolutionStatus::UnknownAuthority),
             ));
         }
+        if presentation.surface() != drag.source_surface {
+            let capability = self.viewport.physical_cross_surface_drag_capability();
+            if !capability.is_supported() || !self.physical_drag_has_route(drag) {
+                return Ok(PreviewEvaluation::without_affordance(
+                    PreviewDecision::Clear(Self::physical_drag_preview_status(capability)),
+                ));
+            }
+        }
         Self::validate_journal_desktop_presentation(edge, desktop_route, authority)?;
         let winner = presentation
             .hit_manifest()
@@ -2027,17 +2048,9 @@ impl DockEngine {
         if policy.check_tear_off(TearOffPresentation::Native).is_err() {
             return Ok(PreviewDecision::Clear(PreviewResolutionStatus::Rejected));
         }
-        if !self
-            .viewport
-            .native_outside_all_tear_off_capability()
-            .is_supported()
-        {
-            let status = match self.viewport.native_outside_all_tear_off_capability() {
-                PlatformCapability::Unknown(_) => PreviewResolutionStatus::NativeCapabilityUnknown,
-                PlatformCapability::Supported | PlatformCapability::Unsupported(_) => {
-                    PreviewResolutionStatus::Rejected
-                }
-            };
+        let capability = self.viewport.physical_native_drag_capability();
+        if !capability.is_supported() || !self.physical_drag_has_route(drag) {
+            let status = Self::physical_drag_preview_status(capability);
             return Ok(PreviewDecision::Clear(status));
         }
         let Some(reservation) = drag.journal_presentation_reservation else {
@@ -2176,6 +2189,23 @@ impl DockEngine {
         })
     }
 
+    fn physical_drag_has_route(&self, drag: &crate::interaction::ActiveDrag) -> bool {
+        drag.owner
+            .pointer_if_physical()
+            .and_then(|pointer| self.viewport.confirmed_drag_source(pointer))
+            .is_some_and(|binding| binding.surface() == drag.source_surface)
+    }
+
+    fn physical_drag_preview_status(capability: PlatformCapability) -> PreviewResolutionStatus {
+        match capability {
+            PlatformCapability::Unknown(_) => PreviewResolutionStatus::NativeCapabilityUnknown,
+            PlatformCapability::Unsupported(_) => {
+                PreviewResolutionStatus::NativeCapabilityUnavailable
+            }
+            PlatformCapability::Supported => PreviewResolutionStatus::Rejected,
+        }
+    }
+
     fn resolve_journal_local_contained_candidate(
         &self,
         cause: ReductionCause,
@@ -2306,7 +2336,7 @@ impl DockEngine {
                 }))
             }
             PreviewDecision::Cancel(reason) => {
-                Ok(self.cancel_journal_owner(cause, owner, reason, interaction_events))
+                self.cancel_journal_owner(cause, owner, reason, interaction_events)
             }
         }
     }
@@ -2971,5 +3001,24 @@ impl DockEngine {
             ));
         }
         Ok(reduced)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::{PlatformCapabilityReason, PlatformRequirement};
+
+    #[test]
+    fn unsupported_physical_drag_capability_has_a_typed_preview_status() {
+        let capability = PlatformCapability::unsupported(
+            PlatformRequirement::PointerHitTestControl,
+            PlatformCapabilityReason::BackendUnsupported,
+        );
+
+        assert_eq!(
+            DockEngine::physical_drag_preview_status(capability),
+            PreviewResolutionStatus::NativeCapabilityUnavailable
+        );
     }
 }

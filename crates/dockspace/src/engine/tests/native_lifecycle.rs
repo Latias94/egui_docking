@@ -1041,7 +1041,6 @@ fn background_native_window_snapshot_with_focus(
     focus_control: bool,
     focused: GlobalFocusedWindow,
 ) -> PlatformSnapshot {
-    const WORK_AREA: WorkAreaToken = WorkAreaToken::new(93);
     let mut capabilities = PlatformCapabilities::default();
     capabilities.set_native_window_lifecycle(PlatformCapability::Supported);
     capabilities.set_authoritative_inventory(PlatformCapability::Supported);
@@ -1051,6 +1050,25 @@ fn background_native_window_snapshot_with_focus(
     if focus_control {
         capabilities.set_window_activation_control(PlatformCapability::Supported);
     }
+    background_native_window_snapshot_with_capabilities(
+        fixture,
+        request,
+        presentation,
+        generation,
+        focused,
+        capabilities,
+    )
+}
+
+fn background_native_window_snapshot_with_capabilities(
+    fixture: &mut BackgroundFixture,
+    request: crate::frame::NativeCreateRequest,
+    presentation: WindowPresentationState,
+    generation: u64,
+    focused: GlobalFocusedWindow,
+    capabilities: PlatformCapabilities,
+) -> PlatformSnapshot {
+    const WORK_AREA: WorkAreaToken = WorkAreaToken::new(93);
     let source = ObservedWindow::new(background_source_binding(fixture))
         .with_coordinate_observation(WindowCoordinateObservation::new(
             background_source_binding(fixture),
@@ -2702,6 +2720,100 @@ fn product_native_main_dock_back_uses_bound_recovery_after_target_presentation()
             outcome: Some(DockspaceActionOutcome::RootFloated { .. }),
         } if *actual_root == root && *actual_target == target_surface
     )));
+}
+
+#[test]
+fn runtime_owned_native_main_dock_back_requires_window_lifecycle_capability() {
+    const NATIVE_SURFACE: SurfaceId = SurfaceId::new(93);
+
+    let mut policy = DockPolicy::default();
+    policy.set_allow_native_surfaces(true);
+    let mut fixture = background_fixture(policy);
+    let root = RootId::new(94);
+    let request = install_pending_native_root_reservation(&mut fixture, root);
+    let _ = fixture.engine.viewport.take_new_effects();
+    let _ = advance_pending_native_root_to_first_live(&mut fixture, request);
+    let target_surface = fixture
+        .engine
+        .bound_surface_recoveries
+        .get(&NATIVE_SURFACE)
+        .expect("first-live native surface retains its recovery obligation")
+        .obligation
+        .target()
+        .host_surface();
+    let target_measurements =
+        surface_measurements(&fixture.engine, target_surface, background_bounds());
+    let _ = publish_surface_projection_with_output(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        target_surface,
+        target_measurements,
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .viewport()
+            .viewport(NATIVE_SURFACE)
+            .map(crate::viewport_registry::ViewportRecord::ownership),
+        Some(ViewportOwnership::RuntimeOwned)
+    );
+
+    let mut capabilities = PlatformCapabilities::default();
+    capabilities.set_native_window_lifecycle(PlatformCapability::unsupported(
+        crate::platform::PlatformRequirement::NativeWindowLifecycle,
+        crate::platform::PlatformCapabilityReason::BackendUnsupported,
+    ));
+    capabilities.set_authoritative_inventory(PlatformCapability::Supported);
+    capabilities.set_global_window_placement(PlatformCapability::Supported);
+    capabilities.set_work_area(PlatformCapability::Supported);
+    capabilities.set_global_focus_observation(PlatformCapability::Supported);
+    let snapshot = background_native_window_snapshot_with_capabilities(
+        &mut fixture,
+        request,
+        WindowPresentationState::Visible,
+        5,
+        GlobalFocusedWindow::Foreign,
+        capabilities,
+    );
+    let provider = test_platform_provider(&mut fixture.engine);
+    let expected_epoch = fixture.engine.version().epoch();
+    submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::PublishPlatformSnapshot {
+            provider,
+            expected_epoch,
+            snapshot,
+        },
+    )
+    .expect("lifecycle capability downgrade must reduce nonfatally");
+    let version = fixture.engine.version();
+
+    let rejected = submit_test_input(
+        &mut fixture.engine,
+        fixture.presentation_host,
+        EngineInput::DockBackRoot {
+            expected: version,
+            root,
+        },
+    )
+    .expect("runtime-owned dock-back must return a typed rejection");
+
+    assert!(matches!(
+        rejected.reduced_inputs()[0].outcome(),
+        InputOutcome::ProductActionRejected {
+            reason: DockspaceActionRejection::NativeUnavailable,
+            version: actual,
+        } if *actual == version
+    ));
+    assert_eq!(fixture.engine.version(), version);
+    assert!(fixture.engine.pending_presentation_rehome.is_none());
+    assert_eq!(
+        fixture.engine.workspace().presentation_for_root(root),
+        Some(crate::RootPresentationOwner::Main {
+            surface: NATIVE_SURFACE,
+        })
+    );
 }
 
 #[test]

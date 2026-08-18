@@ -94,27 +94,27 @@ impl DockEngine {
         observed: Authority<PointerEventDeliveryOwner>,
         interaction_events: &mut Vec<InteractionEvent>,
     ) -> Result<(bool, Option<InteractionOutcome>), EngineError> {
-        Ok(match self.journal_delivery_action_gate(owner, observed)? {
-            JournalCaptureActionGate::Authorized => (true, None),
-            JournalCaptureActionGate::Unavailable => (
+        match self.journal_delivery_action_gate(owner, observed)? {
+            JournalCaptureActionGate::Authorized => Ok((true, None)),
+            JournalCaptureActionGate::Unavailable => Ok((
                 false,
                 self.cancel_journal_owner(
                     cause,
                     owner,
                     InteractionCancelReason::DeliveryAuthorityUnavailable,
                     interaction_events,
-                ),
-            ),
-            JournalCaptureActionGate::Lost => (
+                )?,
+            )),
+            JournalCaptureActionGate::Lost => Ok((
                 false,
                 self.cancel_journal_owner(
                     cause,
                     owner,
                     InteractionCancelReason::DeliveryOwnerLost,
                     interaction_events,
-                ),
-            ),
-        })
+                )?,
+            )),
+        }
     }
 
     fn journal_capture_action_gate(
@@ -215,7 +215,7 @@ impl DockEngine {
                     owner,
                     InteractionCancelReason::CaptureLost,
                     interaction_events,
-                ),
+                )?,
             )),
         }
     }
@@ -251,7 +251,7 @@ impl DockEngine {
                     owner,
                     InteractionCancelReason::CaptureLost,
                     interaction_events,
-                )
+                )?
                 .into_iter()
                 .collect());
         }
@@ -400,14 +400,28 @@ impl DockEngine {
         owner: GestureOwner,
         reason: InteractionCancelReason,
         interaction_events: &mut Vec<InteractionEvent>,
-    ) -> Option<InteractionOutcome> {
-        let status = self.interaction.cancel_owner(owner)?;
+    ) -> Result<Option<InteractionOutcome>, EngineError> {
+        if self.interaction.active_stream() != owner.stream() {
+            return Ok(None);
+        }
+        self.viewport
+            .end_drag_routing(owner.pointer())
+            .map_err(|source| EngineError::Viewport {
+                input: self.last_input,
+                source,
+            })?;
+        let status =
+            self.interaction
+                .cancel_owner(owner)
+                .ok_or(EngineError::ReductionCauseInvariant {
+                    detail: "active journal stream could not cancel its exact gesture owner",
+                })?;
         interaction_events.push(InteractionEvent::new_caused(
             cause,
             self.version,
             InteractionEventKind::Cancelled { status, reason },
         ));
-        Some(InteractionOutcome::Cancelled { status, reason })
+        Ok(Some(InteractionOutcome::Cancelled { status, reason }))
     }
 
     pub(super) fn cancel_retired_pointer_owner(

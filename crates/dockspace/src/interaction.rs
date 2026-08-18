@@ -956,11 +956,13 @@ pub enum InteractionCancelReason {
     UnknownTargetAuthority,
     /// A foreign native window authoritatively blocked the pointer route.
     OpaquePointerBlocker,
+    /// The source window could not enter the pass-through state required by a physical route.
+    PointerRoutingUnavailable,
     /// The primary release did not deliver to the exact pressed Click-lane receiver.
     ClickReceiverMismatch,
-    /// Native tear-off capability became non-authoritative.
+    /// Physical native-window drag capability became non-authoritative.
     NativeCapabilityUnknown,
-    /// Native tear-off capability became authoritatively unavailable.
+    /// Physical native-window drag capability became authoritatively unavailable.
     NativeCapabilityUnavailable,
     /// Native placement proof no longer matches current window facts.
     NativePlacementUnavailable,
@@ -1263,6 +1265,8 @@ pub enum PreviewResolutionStatus {
     OpaqueBlocker,
     /// Native capability is temporarily non-authoritative.
     NativeCapabilityUnknown,
+    /// The platform explicitly cannot support the required native interaction.
+    NativeCapabilityUnavailable,
     /// The offered native placement no longer matches current route or work-area facts.
     NativePlacementUnavailable,
 }

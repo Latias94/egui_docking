@@ -135,7 +135,7 @@ impl PointerPassthroughEvidence {
             .filter(|observation| observation.known_state().is_some())
     }
 
-    fn authoritative_state(self) -> Option<WindowInputState> {
+    pub(super) fn authoritative_state(self) -> Option<WindowInputState> {
         self.authoritative_observation()
             .and_then(WindowInputObservation::known_state)
     }

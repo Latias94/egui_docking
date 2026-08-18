@@ -808,23 +808,23 @@ fn request_native_create() -> PendingNativeCreate {
         ))
         .expect("the exact outside-all move records");
 
-    let mut preview = session
+    let mut route = session
         .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
         .expect("the native drag frame begins");
     assert!(
-        preview
+        route
             .paint_plan(SURFACE)
             .expect("the source plan resolves")
             .expect("the source remains paintable")
             .drag_preview()
-            .is_some(),
-        "the outside-all move must expose a core-owned native preview"
+            .is_none(),
+        "an unconfirmed pointer route must not expose a native preview"
     );
-    preview
+    route
         .confirm_surface_painted(SURFACE)
-        .expect("the exact preview is painted");
-    let mut preview_report = preview.commit().expect("the preview frame commits");
-    let enable = take_only_native_effect(&mut preview_report);
+        .expect("the route-request frame is painted");
+    let mut route_report = route.commit().expect("the route-request frame commits");
+    let enable = take_only_native_effect(&mut route_report);
     assert!(matches!(
         enable.operation(),
         NativeEffectOperation::SetPointerPassthrough {
@@ -836,7 +836,7 @@ fn request_native_create() -> PendingNativeCreate {
         Some(NativeEffectAcknowledgement::Input(acknowledgement)) => acknowledgement,
         acknowledgement => panic!("pointer enable returned {acknowledgement:?}"),
     };
-    present_surface_outputs(&mut session, &mut preview_report);
+    present_surface_outputs(&mut session, &mut route_report);
     session
         .report_managed_native_snapshot(
             [(
@@ -850,6 +850,38 @@ fn request_native_create() -> PendingNativeCreate {
         )
         .expect("the exact enabled input observation records");
     commit_managed_frame(&mut session);
+
+    session
+        .record_native_pointer(NativePointerInput::new(
+            pointer,
+            NativePointerEvent::Moved,
+            NativeDesktopPointerLocation::new(
+                NativeDesktopPosition::Exact(outside),
+                NativePointerHover::OutsideAll,
+                Some(work_area_binding),
+            ),
+            NativePointerOwner::Native(root_binding),
+            NativePointerOwner::Native(root_binding),
+        ))
+        .expect("the confirmed outside-all move records");
+    let mut preview = session
+        .begin_native_host_frame(|query| receiver_answer(query, source_receiver))
+        .expect("the confirmed native preview frame begins");
+    assert!(
+        preview
+            .paint_plan(SURFACE)
+            .expect("the confirmed source plan resolves")
+            .expect("the confirmed source remains paintable")
+            .drag_preview()
+            .is_some(),
+        "the confirmed outside-all move must expose a core-owned native preview"
+    );
+    preview
+        .confirm_surface_painted(SURFACE)
+        .expect("the exact native preview is painted");
+    let mut preview_report = preview.commit().expect("the native preview frame commits");
+    assert!(preview_report.take_native_effects().is_empty());
+    present_surface_outputs(&mut session, &mut preview_report);
 
     session
         .record_native_pointer(NativePointerInput::new(

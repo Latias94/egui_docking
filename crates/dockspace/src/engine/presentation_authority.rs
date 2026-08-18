@@ -616,7 +616,40 @@ impl DockEngine {
                 }
             }
         }
+        if let Some(pending) = &self.pending_drag_release {
+            self.collect_pending_drag_release_platform_dependencies(pending, &mut dependencies);
+        }
         dependencies
+    }
+
+    fn collect_pending_drag_release_platform_dependencies(
+        &self,
+        pending: &PendingDragRelease,
+        dependencies: &mut PlatformInteractionDependencies,
+    ) {
+        if let Some(binding) = pending.physical_route {
+            dependencies.owner_bindings.insert(binding);
+            dependencies.routed = true;
+        } else {
+            self.insert_current_viewport_binding(
+                &mut dependencies.owner_bindings,
+                pending.drag.source_surface,
+            );
+        }
+        if let FrozenDragOrigin::Contained(origin) = &pending.drag.origin {
+            self.insert_current_viewport_binding(&mut dependencies.owner_bindings, origin.surface);
+        }
+        if let PreviewDecision::Publish { visual, .. } = &pending.release_decision {
+            match visual {
+                PreviewVisual::Dock { surface, .. } | PreviewVisual::Contained { surface, .. } => {
+                    self.insert_current_viewport_binding(
+                        &mut dependencies.target_bindings,
+                        *surface,
+                    );
+                }
+                PreviewVisual::Native { .. } => dependencies.native = true,
+            }
+        }
     }
 
     fn collect_armed_platform_dependencies(
@@ -655,6 +688,7 @@ impl DockEngine {
             .and_then(|pointer| self.viewport.drag_source(pointer))
         {
             dependencies.owner_bindings.insert(binding);
+            dependencies.routed = true;
         } else if let Some(surface) = self.payload_surface(&drag.payload) {
             self.insert_current_viewport_binding(&mut dependencies.owner_bindings, surface);
         }
@@ -680,7 +714,7 @@ impl DockEngine {
         } else if drag.native_offer.is_some()
             && self
                 .viewport
-                .native_outside_all_tear_off_capability()
+                .physical_native_drag_capability()
                 .is_supported()
         {
             dependencies.native = true;
@@ -707,9 +741,8 @@ impl DockEngine {
         dependencies: &PlatformInteractionDependencies,
         version_before_actions: WorkspaceVersion,
         transition: &crate::frame::ViewportFrameTransition,
-        previous_native: PlatformCapability,
-        previous_routing: PlatformCapability,
-        previous_release: PlatformCapability,
+        previous_physical_native_drag: PlatformCapability,
+        previous_physical_cross_surface_drag: PlatformCapability,
         invalidated_scene_bindings: &BTreeSet<crate::viewport::ViewportBinding>,
     ) -> PlatformInteractionReconciliation {
         let mut target_authority_lost = false;
@@ -745,28 +778,34 @@ impl DockEngine {
             .iter()
             .any(|binding| dependencies.owner_bindings.contains(binding));
         target_authority_lost |= owner_scene_authority_lost;
-        end_routing |= owner_scene_authority_lost;
         target_authority_lost |= invalidated_scene_bindings
             .iter()
             .any(|binding| dependencies.target_bindings.contains(binding));
-        let current_native = self.viewport.native_outside_all_tear_off_capability();
-        if dependencies.native && previous_native.is_supported() && !current_native.is_supported() {
-            target_authority_lost = true;
+        let current_physical_native_drag = self.viewport.physical_native_drag_capability();
+        if dependencies.native
+            && previous_physical_native_drag.is_supported()
+            && !current_physical_native_drag.is_supported()
+        {
+            if let Some(reason) =
+                Self::physical_drag_capability_loss_reason(current_physical_native_drag)
+            {
+                return PlatformInteractionReconciliation::Cancel(reason);
+            }
         }
         if dependencies.native && transition.work_areas_changed() {
             target_authority_lost = true;
         }
-        let current_routing = self.viewport.capabilities().cross_surface_routing();
-        if dependencies.routed && previous_routing.is_supported() && !current_routing.is_supported()
+        let current_physical_cross_surface_drag =
+            self.viewport.physical_cross_surface_drag_capability();
+        if dependencies.routed
+            && previous_physical_cross_surface_drag.is_supported()
+            && !current_physical_cross_surface_drag.is_supported()
         {
-            target_authority_lost = true;
-            end_routing = true;
-        }
-        let current_release = self.viewport.capabilities().authoritative_release();
-        if dependencies.routed && previous_release.is_supported() && !current_release.is_supported()
-        {
-            target_authority_lost = true;
-            end_routing = true;
+            if let Some(reason) =
+                Self::physical_drag_capability_loss_reason(current_physical_cross_surface_drag)
+            {
+                return PlatformInteractionReconciliation::Cancel(reason);
+            }
         }
         if target_authority_lost {
             PlatformInteractionReconciliation::ClearDragFeedback {
@@ -777,6 +816,20 @@ impl DockEngine {
             PlatformInteractionReconciliation::Cancel(InteractionCancelReason::WorkspaceChanged)
         } else {
             PlatformInteractionReconciliation::Preserve
+        }
+    }
+
+    fn physical_drag_capability_loss_reason(
+        capability: PlatformCapability,
+    ) -> Option<InteractionCancelReason> {
+        match capability {
+            PlatformCapability::Unknown(_) => {
+                Some(InteractionCancelReason::NativeCapabilityUnknown)
+            }
+            PlatformCapability::Unsupported(_) => {
+                Some(InteractionCancelReason::NativeCapabilityUnavailable)
+            }
+            PlatformCapability::Supported => None,
         }
     }
 

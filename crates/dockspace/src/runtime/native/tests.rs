@@ -1006,6 +1006,44 @@ fn native_capability_profiles_are_explicit_and_honest() {
         PlatformCapability::Unknown(_)
     ));
 
+    let windows_capabilities = NativeHostCapabilities::none_supported()
+        .with(NativeHostCapability::NativeWindowLifecycle)
+        .with(NativeHostCapability::AuthoritativeInventory)
+        .with(NativeHostCapability::HoveredWindow)
+        .with(NativeHostCapability::DesktopPointerPosition)
+        .with(NativeHostCapability::GlobalWindowPlacement)
+        .with(NativeHostCapability::WorkArea)
+        .with(NativeHostCapability::PointerHitTestObservation)
+        .with(NativeHostCapability::PointerHitTestControl)
+        .with(NativeHostCapability::GlobalFocusObservation)
+        .with(NativeHostCapability::WindowActivationControl)
+        .with(NativeHostCapability::CloseCancellation);
+    let windows = compile_unknown_inventory_snapshot(
+        NativeHostProfile::ManagedDesktop,
+        Some(windows_capabilities),
+        2,
+        unknown_focus(),
+    )
+    .expect("Windows capabilities compile");
+    let windows = windows
+        .capability_observation()
+        .known_roster()
+        .expect("Windows capability roster is exact");
+    assert!(windows.native_exact_placement_create().is_supported());
+    assert!(windows.cross_surface_routing().is_supported());
+    assert!(matches!(
+        windows.physical_cross_surface_drag(),
+        PlatformCapability::Unsupported(issue)
+            if issue.requirement()
+                == crate::platform::PlatformRequirement::AuthoritativeButtonState
+    ));
+    assert!(matches!(
+        windows.physical_native_drag(),
+        PlatformCapability::Unsupported(issue)
+            if issue.requirement()
+                == crate::platform::PlatformRequirement::AuthoritativeButtonState
+    ));
+
     let x11_capabilities = NativeHostCapabilities::none_supported()
         .with(NativeHostCapability::NativeWindowLifecycle)
         .with(NativeHostCapability::AuthoritativeInventory)
@@ -1019,7 +1057,7 @@ fn native_capability_profiles_are_explicit_and_honest() {
     let x11 = compile_unknown_inventory_snapshot(
         NativeHostProfile::ManagedDesktop,
         Some(x11_capabilities),
-        2,
+        3,
         unknown_focus(),
     )
     .expect("X11 capabilities compile");
@@ -1029,6 +1067,8 @@ fn native_capability_profiles_are_explicit_and_honest() {
         .expect("X11 capability roster is exact");
     assert!(x11.native_exact_placement_create().is_supported());
     assert!(!x11.native_outside_all_tear_off().is_supported());
+    assert!(!x11.physical_cross_surface_drag().is_supported());
+    assert!(!x11.physical_native_drag().is_supported());
     assert!(!x11.hovered_window().is_supported());
     assert!(!x11.work_area().is_supported());
 
@@ -1041,7 +1081,7 @@ fn native_capability_profiles_are_explicit_and_honest() {
     let wayland = compile_unknown_inventory_snapshot(
         NativeHostProfile::ManagedDesktop,
         Some(wayland_capabilities),
-        3,
+        4,
         unknown_focus(),
     )
     .expect("Wayland capabilities compile");
@@ -1051,6 +1091,8 @@ fn native_capability_profiles_are_explicit_and_honest() {
         .expect("Wayland capability roster is exact");
     assert!(!wayland.native_exact_placement_create().is_supported());
     assert!(!wayland.native_outside_all_tear_off().is_supported());
+    assert!(!wayland.physical_cross_surface_drag().is_supported());
+    assert!(!wayland.physical_native_drag().is_supported());
     assert!(!wayland.desktop_pointer_position().is_supported());
     assert!(!wayland.global_window_placement().is_supported());
 }

@@ -430,6 +430,15 @@ fn source_window(fixture: &Fixture) -> ObservedWindow {
     )
 }
 
+fn source_receives_input_window(fixture: &Fixture) -> ObservedWindow {
+    observed_window(
+        known_source_binding(fixture),
+        CoordinateObservationGeneration::new(1),
+        0.0,
+        WindowInputState::ReceivesInput,
+    )
+}
+
 fn host_window(fixture: &Fixture) -> ObservedWindow {
     host_window_at_coordinate_generation(fixture, CoordinateObservationGeneration::new(1))
 }
@@ -807,13 +816,17 @@ fn current_platform_snapshot(
                 Authority::Unknown(_) => continue,
             };
             if window.binding() == binding {
+                let acknowledged_effect = window
+                    .input_observation()
+                    .map(WindowInputObservation::acknowledged_effect)
+                    .unwrap_or(InputEffectAcknowledgement::known(None));
                 *window = window
                     .clone()
                     .with_input_observation(WindowInputObservation::new(
                         binding,
                         InputObservationGeneration::new(fixture.input_generation),
                         Authority::Known(state),
-                        InputEffectAcknowledgement::known(None),
+                        acknowledged_effect,
                     ));
             }
         }
@@ -1072,6 +1085,10 @@ struct ActiveJournalDrag {
 }
 
 fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJournalDrag {
+    publish_windows!(
+        fixture,
+        vec![source_receives_input_window(fixture), host_window(fixture)],
+    );
     publish_scene(fixture);
     let source_binding = known_source_binding(fixture);
     let source_projection = fixture
@@ -1190,11 +1207,25 @@ fn arm_journal_drag(fixture: &mut Fixture, source: NativeDragSource) -> ActiveJo
         outcomes => panic!("journal source press must arm one drag, got {outcomes:?}"),
     };
     fixture.pointer_sequence += 1;
-    ActiveJournalDrag {
+    let drag = ActiveJournalDrag {
         provider,
         session,
         source_binding,
-    }
+    };
+    let began = move_journal_drag_outside(fixture, drag);
+    assert!(matches!(
+        began.reduced_pointer_edges()[0].interaction_outcomes(),
+        [
+            InteractionOutcome::DragBegan { .. },
+            InteractionOutcome::PreviewUpdated {
+                status: PreviewResolutionStatus::Rejected,
+                preview: None,
+                ..
+            }
+        ]
+    ));
+    confirm_journal_drag_route(fixture, drag);
+    drag
 }
 
 fn move_journal_drag_outside(fixture: &mut Fixture, drag: ActiveJournalDrag) -> EngineTransition {
@@ -1241,6 +1272,84 @@ fn move_journal_drag_outside(fixture: &mut Fixture, drag: ActiveJournalDrag) -> 
     let transition = fixture.presentation_host.finish(frame, &mut fixture.engine);
     fixture.pointer_sequence += 1;
     transition
+}
+
+fn confirm_journal_drag_route(fixture: &mut Fixture, drag: ActiveJournalDrag) {
+    let enable_effect = pointer_passthrough_effect(fixture, drag.source_binding, true);
+    publish_pointer_input_confirmation(
+        fixture,
+        drag.source_binding,
+        WindowInputState::PassThrough,
+        enable_effect,
+    );
+}
+
+fn settle_journal_drag_route_restore(fixture: &mut Fixture, source_binding: ViewportBinding) {
+    let restore_effect = pointer_passthrough_effect(fixture, source_binding, false);
+    publish_pointer_input_confirmation(
+        fixture,
+        source_binding,
+        WindowInputState::ReceivesInput,
+        restore_effect,
+    );
+}
+
+fn pointer_passthrough_effect(
+    fixture: &Fixture,
+    binding: ViewportBinding,
+    enabled: bool,
+) -> EffectId {
+    fixture
+        .engine
+        .viewport()
+        .effects()
+        .records()
+        .filter_map(|(effect, record)| {
+            matches!(
+                record.request().effect(),
+                PlatformEffect::SetPointerPassthrough {
+                    binding: actual_binding,
+                    enabled: actual_enabled,
+                    ..
+                } if *actual_binding == binding && *actual_enabled == enabled
+            )
+            .then_some(effect)
+        })
+        .max()
+        .unwrap_or_else(|| {
+            panic!("pointer pass-through effect for {binding:?} enabled={enabled} must exist")
+        })
+}
+
+fn publish_pointer_input_confirmation(
+    fixture: &mut Fixture,
+    source_binding: ViewportBinding,
+    state: WindowInputState,
+    effect: EffectId,
+) {
+    let generation = fixture.input_generation + 1;
+    let source = observed_window(
+        source_binding,
+        CoordinateObservationGeneration::new(1),
+        0.0,
+        state,
+    )
+    .with_input_observation(WindowInputObservation::new(
+        source_binding,
+        InputObservationGeneration::new(generation),
+        Authority::Known(state),
+        InputEffectAcknowledgement::known(Some(effect)),
+    ));
+    publish_windows!(fixture, vec![source, host_window(fixture)]);
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(effect)
+            .map(|record| record.phase()),
+        Some(EffectPhase::ObservedApplied { .. })
+    ));
 }
 
 fn move_journal_drag_to_surface(
@@ -1400,14 +1509,11 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
     let moved = move_journal_drag_outside(fixture, drag);
     assert!(matches!(
         moved.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::DragBegan { .. },
-            InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Resolved,
-                preview: Some(_),
-                ..
-            }
-        ]
+        [InteractionOutcome::PreviewUpdated {
+            status: PreviewResolutionStatus::Resolved,
+            preview: Some(_),
+            ..
+        }]
     ));
 
     let outside =
@@ -1486,6 +1592,7 @@ fn request_native_create(fixture: &mut Fixture, source: NativeDragSource) -> Nat
             .retire_pointer_provider(drag.provider)
             .expect("an idle pointer provider must retire after native release");
     }
+    settle_journal_drag_route_restore(fixture, drag.source_binding);
     assert!(
         fixture
             .engine
@@ -3294,14 +3401,11 @@ fn unrelated_viewport_fact_loss_does_not_cancel_a_source_owned_drag() {
     let moved = move_journal_drag_outside(&mut fixture, drag);
     assert!(matches!(
         moved.reduced_pointer_edges()[0].interaction_outcomes(),
-        [
-            InteractionOutcome::DragBegan { .. },
-            InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Resolved,
-                preview: Some(_),
-                ..
-            }
-        ]
+        [InteractionOutcome::PreviewUpdated {
+            status: PreviewResolutionStatus::Resolved,
+            preview: Some(_),
+            ..
+        }]
     ));
     let preview = fixture
         .engine
@@ -3499,8 +3603,19 @@ fn source_coordinate_change_preserves_drag_and_other_surface_scene() {
     assert_eq!(fixture.engine.workspace(), &before);
 
     publish_scene(&mut fixture);
-    move_journal_drag_to_surface(&mut fixture, drag, SURFACE_HOST, 900.0, 1.0);
-    assert!(fixture.engine.interaction().preview().is_some());
+    let recovered = move_journal_drag_to_surface(&mut fixture, drag, SURFACE_HOST, 900.0, 1.0);
+    assert!(
+        fixture.engine.interaction().preview().is_some(),
+        "fresh source scene did not recover the preview: outcomes={:?}, route={:?}, effect={:?}, input={:?}",
+        recovered.reduced_pointer_edges()[0].interaction_outcomes(),
+        fixture.engine.viewport().drag_source(POINTER),
+        fixture.engine.viewport().drag_route_effect(POINTER),
+        fixture
+            .engine
+            .viewport()
+            .viewport(SURFACE_SOURCE)
+            .and_then(|record| record.input_observation()),
+    );
 }
 
 #[test]

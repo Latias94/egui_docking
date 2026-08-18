@@ -1301,7 +1301,13 @@ impl DockEngine {
                 provider,
                 expected_epoch,
                 result,
-            } => self.reduce_platform_effect(input.sequence, *provider, *expected_epoch, *result),
+            } => self.reduce_platform_effect(
+                input.sequence,
+                *provider,
+                *expected_epoch,
+                *result,
+                interaction_events,
+            ),
             EngineInput::ActivateViewport { expected, request } => self.reduce_viewport_activation(
                 *expected,
                 *request,

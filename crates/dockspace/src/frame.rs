@@ -58,8 +58,8 @@ use crate::intent::{NativePlacementProof, PointerId};
 use crate::platform::{
     CapabilityRosterObservationStream, ObservedWorkArea, PlatformCapabilities, PlatformCapability,
     PlatformSnapshot, WindowCloseObservation, WindowCloseState, WindowInputObservation,
-    WindowInventoryObservationStream, WindowPresentationObservation, WindowPresentationState,
-    WorkAreaRosterObservationStream,
+    WindowInputState, WindowInventoryObservationStream, WindowPresentationObservation,
+    WindowPresentationState, WorkAreaRosterObservationStream,
 };
 use crate::platform_provider::{
     PlatformObservationAuthority, PlatformObservationAuthorityError, PlatformObservationLease,
@@ -3238,6 +3238,16 @@ impl ViewportCoordinator {
     }
 
     #[must_use]
+    pub fn physical_cross_surface_drag_capability(&self) -> PlatformCapability {
+        self.capabilities.physical_cross_surface_drag()
+    }
+
+    #[must_use]
+    pub fn physical_native_drag_capability(&self) -> PlatformCapability {
+        self.capabilities.physical_native_drag()
+    }
+
+    #[must_use]
     pub const fn capability_generation(&self) -> CapabilityGeneration {
         self.capability_generation
     }
@@ -3397,10 +3407,7 @@ impl ViewportCoordinator {
                 self.platform_provider() == Some(proof.platform_provider())
                     && self.work_area_generation == proof.work_area_generation()
                     && self.work_areas.contains_key(&proof.work_area())
-                    && self
-                        .capabilities
-                        .native_outside_all_tear_off()
-                        .is_supported()
+                    && self.capabilities.physical_native_drag().is_supported()
             }
         }
     }
@@ -3435,6 +3442,33 @@ impl ViewportCoordinator {
     #[must_use]
     pub(crate) fn drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
         self.pointer_passthrough.drag_source(pointer)
+    }
+
+    #[must_use]
+    pub(crate) fn confirmed_drag_source(&self, pointer: PointerId) -> Option<ViewportBinding> {
+        let binding = self.pointer_passthrough.drag_source(pointer)?;
+        let evidence = self.pointer_passthrough_evidence(binding);
+        if evidence.authoritative_state() != Some(WindowInputState::PassThrough) {
+            return None;
+        }
+        let attempts = self.pointer_passthrough.effect_attempts(binding);
+        if attempts.restore().is_some() {
+            return None;
+        }
+        attempts
+            .enable()
+            .is_some_and(|effect| {
+                self.effects.record(effect).is_some_and(|record| {
+                    matches!(record.phase(), EffectPhase::ObservedApplied { .. })
+                })
+            })
+            .then_some(binding)
+    }
+
+    #[must_use]
+    pub(crate) fn drag_route_effect(&self, pointer: PointerId) -> Option<EffectId> {
+        let binding = self.pointer_passthrough.drag_source(pointer)?;
+        self.pointer_passthrough.effect_attempts(binding).enable()
     }
 
     pub(crate) fn end_drag_routing(

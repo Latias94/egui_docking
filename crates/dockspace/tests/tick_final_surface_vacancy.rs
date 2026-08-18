@@ -4,7 +4,7 @@ use dockspace::close::CloseDecision;
 use dockspace::command::{
     ContainedPosition, RootContent, RootPresentationTarget, WorkspaceCommand,
 };
-use dockspace::effect::PlatformEffect;
+use dockspace::effect::{EffectPhase, PlatformEffect};
 use dockspace::engine::{CoreHostFrame, DockEngine, EngineInput};
 use dockspace::frame::{BindingRetirementStatus, NativeCreatePhase, NativeCreateRequest};
 use dockspace::geometry::{LogicalPoint, LogicalRect, PhysicalPoint, PhysicalRect, ScaleFactor};
@@ -149,6 +149,19 @@ impl NativeVacancyFixture {
         &mut self,
         native: Option<(NativeCreateRequest, WindowPresentationState)>,
     ) -> PlatformSnapshot {
+        self.snapshot_with_source_input(
+            native,
+            WindowInputState::ReceivesInput,
+            InputEffectAcknowledgement::known(None),
+        )
+    }
+
+    fn snapshot_with_source_input(
+        &mut self,
+        native: Option<(NativeCreateRequest, WindowPresentationState)>,
+        source_state: WindowInputState,
+        acknowledged_effect: InputEffectAcknowledgement,
+    ) -> PlatformSnapshot {
         self.observation_generation += 1;
         let generation = self.observation_generation;
         let source_binding = self
@@ -161,8 +174,8 @@ impl NativeVacancyFixture {
             .with_input_observation(WindowInputObservation::new(
                 source_binding,
                 InputObservationGeneration::new(generation),
-                Authority::Known(WindowInputState::PassThrough),
-                InputEffectAcknowledgement::known(None),
+                Authority::Known(source_state),
+                acknowledged_effect,
             ))
             .with_presentation_observation(WindowPresentationObservation::new(
                 source_binding,
@@ -621,11 +634,119 @@ fn start_pending_native_create(fixture: &mut NativeVacancyFixture) -> NativeCrea
         [
             InteractionOutcome::DragBegan { .. },
             InteractionOutcome::PreviewUpdated {
-                status: PreviewResolutionStatus::Resolved,
-                preview: Some(_),
+                status: PreviewResolutionStatus::Rejected,
+                preview: None,
                 ..
             }
         ]
+    ));
+    fixture.pointer_sequence += 1;
+
+    let enable_effect = fixture
+        .engine
+        .viewport()
+        .effects()
+        .records()
+        .filter_map(|(effect, record)| {
+            matches!(
+                record.request().effect(),
+                PlatformEffect::SetPointerPassthrough {
+                    binding,
+                    enabled: true,
+                    ..
+                } if *binding == source_binding
+            )
+            .then_some(effect)
+        })
+        .max()
+        .expect("physical drag requests source pointer pass-through");
+    let snapshot = fixture.snapshot_with_source_input(
+        None,
+        WindowInputState::PassThrough,
+        InputEffectAcknowledgement::known(Some(enable_effect)),
+    );
+    let expected_epoch = fixture.engine.version().epoch();
+    let platform_provider = fixture.presentation_host.platform_provider();
+    let mut confirmation_frame = fixture.presentation_host.begin(&fixture.engine);
+    let mut input_stream =
+        support::TestInputStream::resume(&fixture.engine, NATIVE_PLATFORM_SOURCE);
+    input_stream
+        .append(
+            &mut confirmation_frame,
+            EngineInput::PublishPlatformSnapshot {
+                provider: platform_provider,
+                expected_epoch,
+                snapshot,
+            },
+        )
+        .expect("pointer pass-through confirmation stages");
+    let pointer_sequence = PointerEdgeSequence::new(fixture.pointer_sequence);
+    confirmation_frame
+        .submit_pointer_journal(
+            pointer_provider,
+            PointerEdgeJournal::new(pointer_sequence, pointer_sequence, Vec::new())
+                .expect("confirmation preserves the pointer watermark"),
+        )
+        .expect("confirmation pointer checkpoint stages");
+    confirmation_frame
+        .submit_pointer_receiver_receipts(
+            PointerReceiverReceiptBatch::new(Vec::new())
+                .expect("confirmation has no pointer receiver receipts"),
+        )
+        .expect("confirmation receipt checkpoint stages");
+    support::complete_host_frame_with_retained_or_unavailable(
+        &fixture.engine,
+        &mut confirmation_frame,
+    );
+    let confirmed = fixture
+        .presentation_host
+        .finish(confirmation_frame, &mut fixture.engine);
+    assert!(matches!(
+        confirmed.reduced_inputs()[0].outcome(),
+        InputOutcome::PlatformSnapshotPublished { .. }
+    ));
+    assert!(matches!(
+        fixture
+            .engine
+            .viewport()
+            .effects()
+            .record(enable_effect)
+            .map(|record| record.phase()),
+        Some(EffectPhase::ObservedApplied { .. })
+    ));
+
+    let mut routed_move_frame = fixture.presentation_host.begin(&fixture.engine);
+    routed_move_frame
+        .submit_pointer_journal(
+            pointer_provider,
+            pointer_journal(
+                fixture.pointer_sequence,
+                PointerEdgeKind::Moved,
+                PointerEdgeLocation::Desktop {
+                    route: outside_all_route(fixture, outside),
+                },
+                Authority::Known(PointerEventDeliveryOwner::Native(source_binding)),
+                Authority::Known(PointerCaptureOwner::Native(source_binding)),
+            ),
+        )
+        .expect("confirmed outside-all move stages");
+    routed_move_frame
+        .submit_pointer_receiver_receipts(unknown_receiver_receipts(&routed_move_frame))
+        .expect("confirmed outside-all move receiver facts stage");
+    support::complete_host_frame_with_retained_or_unavailable(
+        &fixture.engine,
+        &mut routed_move_frame,
+    );
+    let routed = fixture
+        .presentation_host
+        .finish(routed_move_frame, &mut fixture.engine);
+    assert!(matches!(
+        routed.reduced_pointer_edges()[0].interaction_outcomes(),
+        [InteractionOutcome::PreviewUpdated {
+            status: PreviewResolutionStatus::Resolved,
+            preview: Some(_),
+            ..
+        }]
     ));
     fixture.pointer_sequence += 1;
 
