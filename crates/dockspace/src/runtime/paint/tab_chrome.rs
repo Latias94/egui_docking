@@ -1,7 +1,7 @@
 //! Tab-strip controls and popup paint records.
 
 use crate::geometry::LogicalRect;
-use crate::ids::{ItemId, SurfaceId};
+use crate::ids::{ItemId, RootId, SurfaceId};
 use crate::scene::{
     TabListMenuBackdropRecord, TabListMenuRecord, TabListMenuRowRecord, TabStripControlRecord,
 };
@@ -27,6 +27,11 @@ pub struct TabStripControlPaintRecord {
 }
 
 impl TabStripControlPaintRecord {
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.record.id().bar().root
+    }
+
     #[must_use]
     pub const fn visual_id(self) -> DockspaceVisualId {
         DockspaceVisualId(VisualIdentity::TabStripControl(self.record.id()))

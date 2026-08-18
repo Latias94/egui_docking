@@ -1237,6 +1237,239 @@ fn default_features_contained_dock_back_supports_pointer_accesskit_and_keyboard(
 }
 
 #[test]
+fn presentation_menu_floats_and_docks_back_with_truthful_native_availability() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-presentation-menu", layout())
+        .build()
+        .expect("the presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (menu, menu_node) = accesskit_node(&stable.output, Role::Button, "Presentation commands");
+    assert!(!menu_node.is_disabled());
+
+    let _sizing = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (float, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
+    let (_, native_node) = accesskit_node(&opened.output, Role::MenuItem, "Move to New Window");
+    let (_, dock_back_node) = accesskit_node(&opened.output, Role::MenuItem, "Dock Back");
+    assert!(
+        !float_node.is_disabled(),
+        "{float_node:#?}; description={:?}",
+        float_node.description()
+    );
+    assert!(native_node.is_disabled());
+    assert!(dock_back_node.is_disabled());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(float, Action::Click)],
+    );
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND)
+            .and_then(|item| item.contained())
+            .is_some(),
+        "Float must move the complete root into an egui-native contained window",
+    );
+
+    let floating = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (menu, _) = accesskit_node(&floating.output, Role::Button, "Presentation commands");
+    let _sizing = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (_, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
+    let (dock_back, dock_back_node) = accesskit_node(&opened.output, Role::MenuItem, "Dock Back");
+    assert!(float_node.is_disabled());
+    assert!(!dock_back_node.is_disabled());
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(dock_back, Action::Click)],
+    );
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND)
+            .and_then(|item| item.contained())
+            .is_none(),
+        "Dock Back must recover the complete root into the dockspace",
+    );
+}
+
+#[test]
+fn discarded_presentation_menu_activation_commits_exactly_once() {
+    let context = Context::default();
+    context.enable_accesskit();
+    context.options_mut(|options| {
+        options.max_passes = 4.try_into().expect("four is non-zero");
+    });
+    let mut dockspace = Dockspace::builder("product-discarded-presentation-menu", layout())
+        .build()
+        .expect("the multipass presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (menu, _) = accesskit_node(&stable.output, Role::Button, "Presentation commands");
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let opened = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (float, float_node) = accesskit_node(&opened.output, Role::MenuItem, "Float");
+    assert!(!float_node.is_disabled());
+
+    context
+        .plugin_or_default::<LateDiscardPlugin>()
+        .lock()
+        .remaining = 2;
+    let passes = run_two_discarded_dockspace_passes(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(float, Action::Click)],
+    );
+    assert_eq!(passes, 3, "the terminal pass intentionally omits dockspace");
+    let surface = dockspace
+        .view()
+        .surface(SURFACE)
+        .expect("the logical surface remains present");
+    assert_eq!(
+        surface.contained().count(),
+        1,
+        "discarded passes must retain the local command once without replaying it"
+    );
+    assert!(surface.main_root().is_none());
+}
+
+#[test]
+fn disabled_ui_does_not_open_or_activate_presentation_commands() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let mut dockspace = Dockspace::builder("product-disabled-presentation-menu", layout())
+        .build()
+        .expect("the disabled presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let (menu, _) = accesskit_node(&stable.output, Role::Button, "Presentation commands");
+    let disabled = run_disabled_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(menu, Action::Click)],
+    );
+    let (_, node) = accesskit_node(&disabled.output, Role::Button, "Presentation commands");
+    assert!(node.is_disabled());
+    assert!(!node.supports_action(Action::Click));
+    assert!(
+        dockspace
+            .view()
+            .item(SECOND)
+            .and_then(|item| item.contained())
+            .is_none(),
+        "a delayed accessibility click must not float content through a disabled Ui",
+    );
+
+    let after = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tree = after
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    assert!(
+        tree.nodes
+            .iter()
+            .all(|(_, node)| node.role() != Role::MenuItem),
+        "the disabled anchor must not leave its popup open",
+    );
+}
+
+#[test]
+fn fully_occluded_main_presentation_menu_is_accessibility_disabled() {
+    let context = Context::default();
+    context.enable_accesskit();
+    let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+        SURFACE,
+        DockspaceRootLayout::new(ROOT, DockspaceNode::central_tabs([FIRST])),
+    )
+    .with_contained(DockspaceContainedLayout::new(
+        FLOATING,
+        DockspaceRootLayout::new(FLOATING_ROOT, DockspaceNode::tabs([SECOND])),
+        LogicalRect::new(620.0, 0.0, 180.0, 180.0)
+            .expect("the occluding contained rectangle is valid"),
+    ))])
+    .expect("the presentation-menu occlusion layout is valid");
+    let mut dockspace = Dockspace::builder("product-occluded-presentation-menu", layout)
+        .build()
+        .expect("the occluded presentation-menu facade initializes");
+    let mut panes = Panes;
+
+    let _ = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let stable = run_frame(&context, &mut dockspace, &mut panes, Vec::new());
+    let tree = stable
+        .output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit is enabled");
+    let anchors = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.role() == Role::Button && node.label() == Some("Presentation commands")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(anchors.len(), 2);
+    let (occluded_id, occluded) = anchors
+        .iter()
+        .copied()
+        .find(|(_, node)| node.is_disabled())
+        .expect("the main anchor under the front contained window is disabled");
+    assert!(!occluded.supports_action(Action::Click));
+    assert!(
+        anchors.iter().any(|(_, node)| !node.is_disabled()),
+        "the front contained title keeps its own command menu operable",
+    );
+
+    let _ = run_frame(
+        &context,
+        &mut dockspace,
+        &mut panes,
+        vec![accesskit_action(*occluded_id, Action::Click)],
+    );
+    assert!(
+        dockspace
+            .view()
+            .item(FIRST)
+            .and_then(|item| item.contained())
+            .is_none(),
+        "an occluded main command anchor must not execute through the front window",
+    );
+}
+
+#[test]
 fn disabled_ui_ignores_delayed_contained_accesskit_actions() {
     let context = Context::default();
     context.enable_accesskit();

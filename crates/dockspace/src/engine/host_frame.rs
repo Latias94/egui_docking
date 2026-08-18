@@ -577,6 +577,13 @@ impl<'frame> HostFrameView<'frame> {
         self.engine.root_is_bound_native_main(root)
     }
 
+    pub(crate) fn native_main_recovery_surface(
+        &self,
+        root: RootId,
+    ) -> Result<Option<SurfaceId>, crate::model::DockspaceActionRejection> {
+        self.engine.native_main_float_target(root)
+    }
+
     /// Returns the exact semantic requirement manifest visible to this frame.
     #[must_use]
     pub const fn presentation_requirements(&self) -> &'frame SceneRequirementManifest {

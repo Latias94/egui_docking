@@ -4,6 +4,7 @@ use crate::geometry::PhysicalPoint;
 use crate::graph::ContainedFloating;
 use crate::model::{DockAnchor, DockPlacement, FloatingPresentationId};
 use crate::runtime::{
+    DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
     DockspaceReceiverDescriptor, HostFrameReport, NativeEffectAcknowledgement,
     NativeEffectOperation, NativeStagingPresentationPhase, NativeWindowPlacement,
 };
@@ -445,18 +446,76 @@ fn managed_native_tear_off_reaches_first_live_through_the_public_runtime() {
         capture_generations_before + 1,
         "the runtime sidecar retains the child stream generation",
     );
+    let child_root = session
+        .view()
+        .item(ITEM)
+        .expect("the child still owns the torn-off item")
+        .root();
+    let mut availability = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the child presentation-command frame begins");
+    let child_plan = availability
+        .paint_plan(child_binding.surface())
+        .expect("the child presentation-command plan resolves")
+        .expect("the child presentation-command plan is ready");
+    let float = child_plan
+        .presentation_command(child_root, DockspacePresentationCommandKind::Float)
+        .expect("the child float availability resolves")
+        .expect("the native child owns the torn-off root");
+    assert_eq!(
+        float.unavailable_reason(),
+        Some(DockspacePresentationCommandUnavailable::Action(
+            crate::model::DockspaceActionRejection::PresentationUnavailable { surface: SURFACE }
+        )),
+        "the child must not prepare contained recovery before its host has exact presentation authority"
+    );
+    let move_to_new_window = child_plan
+        .presentation_command(
+            child_root,
+            DockspacePresentationCommandKind::MoveToNewWindow,
+        )
+        .expect("the child promotion availability resolves")
+        .expect("the native child owns the torn-off root");
+    assert_eq!(
+        move_to_new_window.unavailable_reason(),
+        Some(DockspacePresentationCommandUnavailable::AlreadyNative)
+    );
+    availability
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the child presentation-command frame settles every surface");
+    availability
+        .commit()
+        .expect("the child presentation-command frame commits");
+
     let _ = paint_and_present_all_native_surfaces(&mut session);
+    let mut steady_availability = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("the steady child presentation-command frame begins");
+    let steady_child_plan = steady_availability
+        .paint_plan(child_binding.surface())
+        .expect("the steady child presentation-command plan resolves")
+        .expect("the steady child presentation-command plan is ready");
+    let steady_float = steady_child_plan
+        .presentation_command(child_root, DockspacePresentationCommandKind::Float)
+        .expect("the steady child float availability resolves")
+        .expect("the native child still owns the torn-off root");
+    assert!(
+        steady_float.is_ready(),
+        "a managed child may recover into its presented host as contained content: {:?}",
+        steady_float.unavailable_reason()
+    );
+    steady_availability
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("the steady child presentation-command frame settles every surface");
+    steady_availability
+        .commit()
+        .expect("the steady child presentation-command frame commits");
     assert!(
         session.engine.interaction_projection(SURFACE).is_some(),
         "recovery scene after complete presentation: {:?}",
         session.engine.scene().surface(SURFACE),
     );
 
-    let child_root = session
-        .view()
-        .item(ITEM)
-        .expect("the child still owns the torn-off item")
-        .root();
     let mut redock = session
         .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
         .expect("the child redock frame begins");
@@ -865,6 +924,42 @@ fn managed_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {
     builder.set_root(ROOT, RootRecord::new(tabs).with_central(tabs));
     builder.set_surface(SURFACE, SurfacePresentation::with_main(ROOT));
     managed_session_from_workspace(builder.build().expect("the tear-off workspace validates"))
+}
+
+#[test]
+fn registered_root_window_menu_allows_contained_float_and_child_promotion() {
+    const MAIN_ROOT: RootId = RootId::new(2);
+
+    let (mut session, _) = programmatic_tear_off_session();
+    let mut frame = session
+        .begin_native_host_frame(|_| NativeReceiverAnswer::Unknown)
+        .expect("native presentation-command inspection frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("native main paint plan resolves")
+        .expect("native main paint plan is ready");
+
+    for kind in [
+        DockspacePresentationCommandKind::Float,
+        DockspacePresentationCommandKind::MoveToNewWindow,
+    ] {
+        let command = plan
+            .presentation_command(MAIN_ROOT, kind)
+            .expect("native presentation-command availability resolves")
+            .expect("the native main root belongs to this surface");
+        assert!(
+            command.is_ready(),
+            "registered root-window command {kind:?} unexpectedly unavailable: {:?}",
+            command.unavailable_reason()
+        );
+    }
+
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("native presentation-command inspection settles the surface");
+    frame
+        .commit()
+        .expect("native presentation-command inspection commits");
 }
 
 fn programmatic_tear_off_session() -> (DockspaceSession, NativeSurfaceBinding) {

@@ -79,6 +79,30 @@ impl DockEngine {
         Ok(Some(target.host_surface()))
     }
 
+    pub(super) fn native_main_float_target(
+        &self,
+        root: RootId,
+    ) -> Result<Option<SurfaceId>, DockspaceActionRejection> {
+        let owner = self
+            .workspace
+            .presentation_for_root(root)
+            .ok_or(DockspaceActionRejection::RootUnavailable { root })?;
+        let crate::RootPresentationOwner::Main { surface } = owner else {
+            return Ok(None);
+        };
+        let Some(bound) = self.bound_surface_recoveries.get(&surface) else {
+            return Ok(None);
+        };
+        let host = bound.obligation.target().host_surface();
+        if host == surface {
+            return Err(DockspaceActionRejection::Conflict);
+        }
+        if self.workspace.surface(host).is_none() {
+            return Err(DockspaceActionRejection::PresentationUnavailable { surface: host });
+        }
+        Ok(Some(host))
+    }
+
     fn native_presentation_rehome_source(
         &self,
         root: RootId,

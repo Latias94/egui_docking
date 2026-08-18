@@ -97,6 +97,7 @@ pub(crate) fn compile_surface_scene(
             fraction,
             tab_strip_states,
             resize_overrides,
+            true,
             &mut ready,
         )?;
     } else {
@@ -126,7 +127,7 @@ pub(crate) fn compile_surface_scene(
         if intersect_rect(bounds, record.rect)?.is_none() {
             continue;
         }
-        let contained = compile_contained_record(
+        let (contained, presentation_menu_anchor) = compile_contained_record(
             workspace,
             policy,
             config,
@@ -142,6 +143,7 @@ pub(crate) fn compile_surface_scene(
         )?;
         let content = contained.content_bounds();
         ready.push_contained_record(contained);
+        ready.push_presentation_menu_anchor_record(presentation_menu_anchor);
         if rect_has_area(content) {
             compile_root(
                 workspace,
@@ -158,6 +160,7 @@ pub(crate) fn compile_surface_scene(
                 fraction,
                 tab_strip_states,
                 resize_overrides,
+                false,
                 &mut ready,
             )?;
         }
@@ -255,6 +258,282 @@ pub(crate) fn compile_surface_measurements(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn select_presentation_menu_tab_bar(
+    workspace: &Workspace,
+    requirements: &SurfaceRequirements,
+    measurements: AuthoritativeSurfaceMeasurements<'_>,
+    config: &DockPresentationConfig,
+    surface: SurfaceId,
+    root: RootId,
+    root_node: NodeId,
+    central: Option<NodeId>,
+    root_bounds: LogicalRect,
+    node_rects: &BTreeMap<NodeId, LogicalRect>,
+) -> Result<Option<NodeId>, SceneCompilationError> {
+    let visible_layout =
+        |tabs| -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
+            let id = TabBarSceneId { root, tabs };
+            let requirement = requirements
+                .tab_bar(id)
+                .ok_or(SceneCompilationError::MissingTabBarRequirement { id })?;
+            if requirement.policy().visibility() == TabBarVisibility::Hidden {
+                return Ok(None);
+            }
+            let projected = node_rects
+                .get(&tabs)
+                .copied()
+                .ok_or(SceneCompilationError::MissingNodeProjection { root, node: tabs })?;
+            let bounds = clip_rect(projected, root_bounds)?;
+            let bar = LogicalRect::new(
+                bounds.x(),
+                bounds.y(),
+                bounds.width(),
+                config.tab_bar_height().min(bounds.height()),
+            )?;
+            if !rect_has_area(bar) {
+                return Ok(None);
+            }
+            let items = match workspace.node(tabs) {
+                Some(Node::Tabs { items, .. }) => items,
+                Some(Node::Split { .. }) => return Ok(None),
+                None => {
+                    return Err(SceneCompilationError::MissingNode {
+                        surface,
+                        root,
+                        node: tabs,
+                    });
+                }
+            };
+            let strip_key = TabStripKey::new(surface, id);
+            let strip = measurements
+                .tab_strip(strip_key)
+                .ok_or(SceneCompilationError::MissingTabStripMeasurement { key: strip_key })?;
+            tab_strip_optional_chrome_layout(bar, items.len(), strip, config, true).map(Some)
+        };
+
+    let mut compacted_fallback = None;
+    if let Some(central) = central
+        && let Some(layout) = visible_layout(central)?
+    {
+        compacted_fallback = Some(central);
+        if layout.presentation_menu_bounds.is_some() {
+            return Ok(Some(central));
+        }
+    }
+
+    let mut pending = vec![root_node];
+    let mut visited = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if !visited.insert(node) {
+            return Err(SceneCompilationError::RepeatedNode {
+                surface,
+                root,
+                node,
+            });
+        }
+        match workspace
+            .node(node)
+            .ok_or(SceneCompilationError::MissingNode {
+                surface,
+                root,
+                node,
+            })? {
+            Node::Tabs { .. } => {
+                let Some(layout) = visible_layout(node)? else {
+                    continue;
+                };
+                compacted_fallback.get_or_insert(node);
+                if layout.presentation_menu_bounds.is_some() {
+                    return Ok(Some(node));
+                }
+            }
+            Node::Split { children, .. } => pending.extend(children.iter().rev().copied()),
+        }
+    }
+    Ok(compacted_fallback)
+}
+
+fn tab_presentation_menu_anchor(
+    bar: LogicalRect,
+    has_group_grip: bool,
+    requested_group_extent: f64,
+    leading_reserved: f64,
+    trailing_reserved: f64,
+    minimum_tab_extent: f64,
+    minimum_anchor_extent: f64,
+) -> Result<Option<LogicalRect>, GeometryError> {
+    if bar.height() < minimum_anchor_extent {
+        return Ok(None);
+    }
+    let content_left = (bar.x() + leading_reserved).min(bar.max().x());
+    let content_right = (bar.max().x() - trailing_reserved).max(content_left);
+    let available = (content_right - content_left).max(0.0);
+    let group_extent = if has_group_grip {
+        requested_group_extent.min(available)
+    } else {
+        0.0
+    };
+    let tab_extent = if has_group_grip {
+        minimum_tab_extent
+    } else {
+        0.0
+    };
+    let maximum_width = (available - group_extent - tab_extent).max(0.0);
+    let width = bar.height().min(maximum_width);
+    (width >= minimum_anchor_extent && minimum_anchor_extent > 0.0)
+        .then(|| LogicalRect::new(content_right - width, bar.y(), width, bar.height()))
+        .transpose()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TabStripOptionalChromeLayout {
+    pub(super) group_extent: f64,
+    pub(super) presentation_menu_bounds: Option<LogicalRect>,
+    pub(super) viewport: LogicalRect,
+    pub(super) controls: Option<TabStripControlLayout>,
+}
+
+fn tab_strip_optional_chrome_candidate(
+    bar: LogicalRect,
+    item_count: usize,
+    strip: crate::scene_manifest::TabStripMetrics,
+    config: &DockPresentationConfig,
+    group_extent: f64,
+    include_presentation_menu: bool,
+    include_overflow_controls: bool,
+) -> Result<Option<TabStripOptionalChromeLayout>, SceneCompilationError> {
+    let presentation_menu_bounds = if include_presentation_menu {
+        tab_presentation_menu_anchor(
+            bar,
+            item_count > 0,
+            group_extent,
+            strip.leading_reserved(),
+            strip.trailing_reserved(),
+            config.tab_min_width(),
+            config.tab_close_extent(),
+        )?
+    } else {
+        None
+    };
+    if include_presentation_menu && presentation_menu_bounds.is_none() {
+        return Ok(None);
+    }
+
+    let presentation_menu_extent = presentation_menu_bounds.map_or(0.0, LogicalRect::width);
+    let content_x = bar.x() + group_extent + strip.leading_reserved();
+    let base_viewport_width = (bar.width()
+        - group_extent
+        - strip.leading_reserved()
+        - strip.trailing_reserved()
+        - presentation_menu_extent)
+        .max(0.0);
+    let item_count_u32 =
+        u32::try_from(item_count).map_err(|_| SceneCompilationError::GeometryCountOverflow)?;
+    let minimum_total = config.tab_min_width() * f64::from(item_count_u32);
+    let overflowing = item_count > 0 && minimum_total > base_viewport_width;
+    let controls = if overflowing && include_overflow_controls {
+        match strip.controls().filter(|metrics| !metrics.is_empty()) {
+            Some(metrics) => {
+                tab_strip_control_layout(content_x, bar, base_viewport_width, metrics)?
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    if overflowing
+        && include_overflow_controls
+        && strip.controls().is_some_and(|metrics| !metrics.is_empty())
+        && controls.is_none()
+    {
+        return Ok(None);
+    }
+    let reserved_leading = controls
+        .as_ref()
+        .map_or(0.0, |layout| layout.reserved_leading);
+    let reserved_trailing = controls
+        .as_ref()
+        .map_or(0.0, |layout| layout.reserved_trailing);
+    let viewport = LogicalRect::new(
+        content_x + reserved_leading,
+        bar.y(),
+        (base_viewport_width - reserved_leading - reserved_trailing).max(0.0),
+        bar.height(),
+    )?;
+    if item_count > 0 && viewport.width() < config.tab_min_width() {
+        return Ok(None);
+    }
+    Ok(Some(TabStripOptionalChromeLayout {
+        group_extent,
+        presentation_menu_bounds,
+        viewport,
+        controls,
+    }))
+}
+
+pub(super) fn tab_strip_optional_chrome_layout(
+    bar: LogicalRect,
+    item_count: usize,
+    strip: crate::scene_manifest::TabStripMetrics,
+    config: &DockPresentationConfig,
+    include_presentation_menu: bool,
+) -> Result<TabStripOptionalChromeLayout, SceneCompilationError> {
+    let group_extent = if item_count == 0 {
+        0.0
+    } else {
+        config.tab_group_grip_extent().min(bar.height())
+    };
+    let (candidates, candidate_count) = if include_presentation_menu {
+        (
+            [
+                (group_extent, true, true),
+                (group_extent, false, true),
+                (group_extent, false, false),
+                (0.0, true, true),
+                (0.0, false, true),
+                (0.0, true, false),
+                (0.0, false, false),
+            ],
+            7,
+        )
+    } else {
+        (
+            [
+                (group_extent, false, true),
+                (group_extent, false, false),
+                (0.0, false, true),
+                (0.0, false, false),
+                (0.0, false, false),
+                (0.0, false, false),
+                (0.0, false, false),
+            ],
+            4,
+        )
+    };
+    for (group_extent, menu, include_overflow_controls) in
+        candidates.into_iter().take(candidate_count)
+    {
+        if let Some(layout) = tab_strip_optional_chrome_candidate(
+            bar,
+            item_count,
+            strip,
+            config,
+            group_extent,
+            menu,
+            include_overflow_controls,
+        )? {
+            return Ok(layout);
+        }
+    }
+    Ok(TabStripOptionalChromeLayout {
+        group_extent: 0.0,
+        presentation_menu_bounds: None,
+        viewport: LogicalRect::new(bar.x(), bar.y(), 0.0, bar.height())?,
+        controls: None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_root(
     workspace: &Workspace,
     workspace_index: &WorkspaceIndex,
@@ -270,6 +549,7 @@ fn compile_root(
     fraction: DockFraction,
     tab_strip_states: &TabStripStateStore,
     resize_overrides: &[SplitWeightOverride<'_>],
+    publish_presentation_menu_in_tab_bar: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let root_record = workspace
@@ -300,6 +580,23 @@ fn compile_root(
         metrics,
         &root_overrides,
     )?;
+    let presentation_menu_tabs = publish_presentation_menu_in_tab_bar
+        .then(|| {
+            select_presentation_menu_tab_bar(
+                workspace,
+                requirements,
+                measurements,
+                config,
+                surface,
+                root,
+                root_record.node,
+                root_record.central,
+                bounds,
+                &projection.node_rects,
+            )
+        })
+        .transpose()?
+        .flatten();
 
     for (node, projected) in &projection.node_rects {
         let rect = clip_rect(*projected, bounds)?;
@@ -328,6 +625,7 @@ fn compile_root(
                 fraction,
                 tab_strip_states,
                 root_record.node == *node && root_record.central == Some(*node),
+                presentation_menu_tabs == Some(*node),
                 ready,
             )?,
             Node::Split {
@@ -475,6 +773,7 @@ fn compile_tabs_leaf(
     fraction: DockFraction,
     tab_strip_states: &TabStripStateStore,
     root_central: bool,
+    presentation_menu_anchor: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let bar_id = TabBarSceneId { root, tabs };
@@ -504,6 +803,7 @@ fn compile_tabs_leaf(
             selected,
             layer,
             tab_strip_states,
+            presentation_menu_anchor,
             ready,
         )?;
     }
@@ -559,6 +859,7 @@ fn compile_tab_strip(
     selected: Option<crate::ids::ItemId>,
     layer: SceneLayerKey,
     tab_strip_states: &TabStripStateStore,
+    presentation_menu_anchor: bool,
     ready: &mut PresentationPlan,
 ) -> Result<(), SceneCompilationError> {
     let interaction = requirement.policy().interaction();
@@ -570,21 +871,21 @@ fn compile_tab_strip(
     let strip = measurements
         .tab_strip(strip_key)
         .ok_or(SceneCompilationError::MissingTabStripMeasurement { key: strip_key })?;
-    let group_extent = if items.is_empty() {
-        0.0
-    } else {
-        config
-            .tab_group_grip_extent()
-            .min(bar.height())
-            .min(bar.width())
-    };
+    let chrome = tab_strip_optional_chrome_layout(
+        bar,
+        items.len(),
+        strip,
+        config,
+        presentation_menu_anchor,
+    )?;
+    let presentation_menu_bounds = chrome.presentation_menu_bounds;
+    let group_extent = chrome.group_extent;
     let group_grip_bounds = if group_extent > 0.0 {
         let grip = LogicalRect::new(bar.x(), bar.y(), group_extent, bar.height())?;
         Some(grip)
     } else {
         None
     };
-    let leading_reserved = strip.leading_reserved();
     let mut desired_widths = Vec::with_capacity(items.len());
     let mut content_widths = Vec::with_capacity(items.len());
     let mut close_allowed = Vec::with_capacity(items.len());
@@ -611,34 +912,9 @@ fn compile_tab_strip(
         close_allowed.push(item_close_allowed);
     }
 
-    let viewport_x = bar.x() + group_extent + leading_reserved;
-    let base_viewport_width =
-        (bar.width() - group_extent - leading_reserved - strip.trailing_reserved()).max(0.0);
-    let minimum_total = config.tab_min_width()
-        * f64::from(
-            u32::try_from(items.len()).map_err(|_| SceneCompilationError::GeometryCountOverflow)?,
-        );
-    let overflowing = !items.is_empty() && minimum_total > base_viewport_width;
-    let controls = if overflowing {
-        match strip.controls().filter(|metrics| !metrics.is_empty()) {
-            Some(metrics) => {
-                tab_strip_control_layout(viewport_x, bar, base_viewport_width, metrics)?
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
-    let reserved_leading = controls
-        .as_ref()
-        .map_or(0.0, |layout| layout.reserved_leading);
-    let reserved_trailing = controls
-        .as_ref()
-        .map_or(0.0, |layout| layout.reserved_trailing);
-    let viewport_x = viewport_x + reserved_leading;
-    let viewport_width = (base_viewport_width - reserved_leading - reserved_trailing).max(0.0);
-    let viewport = LogicalRect::new(viewport_x, bar.y(), viewport_width, bar.height())?;
-    let control_rects = controls.map(|layout| layout.rects);
+    let viewport = chrome.viewport;
+    let viewport_width = viewport.width();
+    let control_rects = chrome.controls.map(|layout| layout.rects);
     let menu_geometry = if control_rects
         .as_ref()
         .is_some_and(|rects| rects[2].is_some())
@@ -756,6 +1032,13 @@ fn compile_tab_strip(
         menu_geometry,
         layer,
     ));
+    if presentation_menu_anchor {
+        let host = PresentationMenuAnchorHost::TabBar(bar_id);
+        ready.push_presentation_menu_anchor_record(match presentation_menu_bounds {
+            Some(bounds) => PresentationMenuAnchorRecord::ready(root, host, bounds, layer),
+            None => PresentationMenuAnchorRecord::compacted(root, host, layer),
+        });
+    }
 
     if let Some([backward, forward, menu]) = control_rects {
         let enabled = interaction == TabBarInteraction::Enabled;
@@ -1543,7 +1826,7 @@ fn compile_contained_record(
     surface_bounds: LogicalRect,
     minimum_size: LogicalSize,
     layer: SceneLayerKey,
-) -> Result<ContainedRecord, SceneCompilationError> {
+) -> Result<(ContainedRecord, PresentationMenuAnchorRecord), SceneCompilationError> {
     let border = config
         .floating_border_width()
         .min(durable_outer.width() * 0.5)
@@ -1584,11 +1867,13 @@ fn compile_contained_record(
         .then(|| contained_close_rect(inner_title, config))
         .transpose()?
         .filter(|rect| rect_has_area(*rect));
-    let durable_title_drag = if let Some(close) = durable_close {
+    let durable_presentation_menu =
+        contained_presentation_menu_rect(inner_title, durable_close, config)?;
+    let durable_title_drag = if let Some(control) = durable_presentation_menu.or(durable_close) {
         LogicalRect::new(
             inner_title.x(),
             inner_title.y(),
-            (close.x() - config.tab_horizontal_padding() - inner_title.x()).max(0.0),
+            (control.x() - config.tab_horizontal_padding() - inner_title.x()).max(0.0),
             inner_title.height(),
         )?
     } else {
@@ -1602,10 +1887,14 @@ fn compile_contained_record(
         .map(|close| clip_rect(close, surface_bounds))
         .transpose()?
         .filter(|close| rect_has_area(*close));
+    let presentation_menu = durable_presentation_menu
+        .map(|anchor| clip_rect(anchor, surface_bounds))
+        .transpose()?
+        .filter(|anchor| rect_has_area(*anchor));
     let title_drag = clip_rect(durable_title_drag, surface_bounds)?;
     let transform_operable =
         crate::operation::contained_transform_operable(workspace, policy, surface, root)?;
-    Ok(ContainedRecord::new(
+    let contained = ContainedRecord::new(
         floating,
         root,
         ordinal,
@@ -1624,7 +1913,13 @@ fn compile_contained_record(
         )?,
         minimum_size,
         layer,
-    ))
+    );
+    let host = PresentationMenuAnchorHost::ContainedTitle(floating);
+    let presentation_menu = match presentation_menu {
+        Some(bounds) => PresentationMenuAnchorRecord::ready(root, host, bounds, layer),
+        None => PresentationMenuAnchorRecord::compacted(root, host, layer),
+    };
+    Ok((contained, presentation_menu))
 }
 
 fn root_has_content(
@@ -1680,6 +1975,38 @@ fn contained_close_rect(
         size,
         size,
     )
+}
+
+fn contained_presentation_menu_rect(
+    title: LogicalRect,
+    close: Option<LogicalRect>,
+    config: &DockPresentationConfig,
+) -> Result<Option<LogicalRect>, GeometryError> {
+    let minimum = config.tab_close_extent().min(title.height());
+    if minimum <= 0.0 {
+        return Ok(None);
+    }
+    let desired = minimum.min(title.width());
+    let padding = config.tab_horizontal_padding();
+    let (right, size) = if let Some(close) = close {
+        let available = (close.x() - title.x()).max(0.0);
+        let size = desired.min(available);
+        let gap = padding.min((available - size).max(0.0));
+        (close.x() - gap, size)
+    } else {
+        let outer = padding.min((title.width() - desired).max(0.0));
+        (title.max().x() - outer, desired)
+    };
+    (size >= minimum)
+        .then(|| {
+            LogicalRect::new(
+                right - size,
+                title.y() + (title.height() - size) * 0.5,
+                size,
+                size,
+            )
+        })
+        .transpose()
 }
 
 fn contained_resize_records(

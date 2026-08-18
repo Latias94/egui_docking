@@ -61,12 +61,13 @@ use crate::viewport_registry::ViewportLifecycle;
 
 pub use self::records::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
-    PaneRecord, PaneSceneId, SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection,
-    SplitterJunctionId, SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError,
-    SplitterResizeTarget, SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord,
-    TabGroupDragRegionKind, TabGroupDragRegionRecord, TabListMenuBackdropRecord,
-    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
-    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
+    PaneRecord, PaneSceneId, PresentationMenuAnchorHost, PresentationMenuAnchorRecord,
+    SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId,
+    SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError, SplitterResizeTarget,
+    SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord, TabGroupDragRegionKind,
+    TabGroupDragRegionRecord, TabListMenuBackdropRecord, TabListMenuGeometryAvailability,
+    TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
+    TabStripMemberRecord, TabStripMemberVisibility,
 };
 pub(crate) use self::records::{PresentationLayoutFacts, RootLayoutFacts};
 pub use crate::drop_target::SceneLayerKey;
@@ -202,6 +203,7 @@ pub struct PresentationPlan {
     tab_strip_control_records: Vec<TabStripControlRecord>,
     tab_list_menu_records: Vec<TabListMenuRecord>,
     tab_list_menu_backdrop_records: Vec<TabListMenuBackdropRecord>,
+    presentation_menu_anchor_records: Vec<PresentationMenuAnchorRecord>,
     splitter_gap_records: Vec<SplitterGapRecord>,
     splitter_records: Vec<SplitterRecord>,
     splitter_junction_records: Vec<SplitterJunctionRecord>,
@@ -272,6 +274,7 @@ impl PresentationPlan {
             tab_strip_control_records: Vec::new(),
             tab_list_menu_records: Vec::new(),
             tab_list_menu_backdrop_records: Vec::new(),
+            presentation_menu_anchor_records: Vec::new(),
             splitter_gap_records: Vec::new(),
             splitter_records: Vec::new(),
             splitter_junction_records: Vec::new(),
@@ -371,6 +374,13 @@ impl PresentationPlan {
 
     pub(crate) fn push_tab_list_menu_backdrop_record(&mut self, record: TabListMenuBackdropRecord) {
         self.tab_list_menu_backdrop_records.push(record);
+    }
+
+    pub(crate) fn push_presentation_menu_anchor_record(
+        &mut self,
+        record: PresentationMenuAnchorRecord,
+    ) {
+        self.presentation_menu_anchor_records.push(record);
     }
 
     pub(crate) fn push_splitter_gap_record(&mut self, record: SplitterGapRecord) {
@@ -543,6 +553,12 @@ impl PresentationPlan {
     #[must_use]
     pub fn tab_list_menu_backdrop_records(&self) -> &[TabListMenuBackdropRecord] {
         &self.tab_list_menu_backdrop_records
+    }
+
+    /// Returns one core-selected presentation command menu anchor per visible root.
+    #[must_use]
+    pub fn presentation_menu_anchor_records(&self) -> &[PresentationMenuAnchorRecord] {
+        &self.presentation_menu_anchor_records
     }
 
     /// Returns one exact availability record for every structural splitter gap.
@@ -847,6 +863,12 @@ pub enum SceneBuildError {
     DuplicateContainedRecord {
         /// Repeated contained presentation identity.
         floating: FloatingPresentationId,
+    },
+    /// A root published more than one presentation command menu anchor.
+    #[error("scene contains duplicate presentation menu anchors for root {root}")]
+    DuplicatePresentationMenuAnchor {
+        /// Root with repeated anchor records.
+        root: RootId,
     },
     /// A contained minimum measurement identity was repeated.
     #[error("scene contains duplicate minimum measurement for contained floating {floating}")]
@@ -1243,6 +1265,20 @@ pub enum SceneBuildError {
         surface: SurfaceId,
         /// Invalid contained presentation identity.
         floating: FloatingPresentationId,
+    },
+    /// The root-scoped presentation menu anchor roster was incomplete or unexpected.
+    #[error("presentation menu anchor record set is incomplete or unexpected on surface {surface}")]
+    PresentationMenuAnchorRecordSetMismatch {
+        /// Surface whose anchor roster was invalid.
+        surface: SurfaceId,
+    },
+    /// A presentation command menu anchor was structurally or geometrically invalid.
+    #[error("presentation menu anchor for root {root} is invalid on surface {surface}")]
+    InvalidPresentationMenuAnchor {
+        /// Surface receiving the invalid anchor.
+        surface: SurfaceId,
+        /// Root named by the invalid anchor.
+        root: RootId,
     },
     /// A root selected for compilation was absent from the indexed presentation forest.
     #[error("compiled root {root} is unavailable on surface {surface}")]

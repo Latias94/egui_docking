@@ -2,6 +2,7 @@
 
 mod contained;
 mod layout;
+mod presentation;
 mod splitter;
 mod tab;
 
@@ -10,6 +11,7 @@ pub(crate) use layout::{PresentationLayoutFacts, RootLayoutFacts};
 pub use contained::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
 };
+pub use presentation::{PresentationMenuAnchorHost, PresentationMenuAnchorRecord};
 pub use splitter::{
     SplitterGapPresentation, SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId,
     SplitterJunctionRecord, SplitterRecord, SplitterResizeHitError, SplitterResizeTarget,

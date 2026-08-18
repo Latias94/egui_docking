@@ -88,15 +88,16 @@ pub use paint::{
     DockspaceContainedTransformPreview, DockspaceDragDecoration, DockspaceDragPreview,
     DockspaceDragSourceKind, DockspaceDropDirection, DockspaceDropEligibility, DockspaceGuideScope,
     DockspacePaintLayer, DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceReceiverRole,
-    DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
+    DockspacePresentationMenuAnchorKind, DockspacePreviewVisual, DockspaceReceiverDescriptor,
+    DockspaceReceiverRole, DockspaceSemanticOutput, DockspaceVisualId, DockspaceVisualKind,
     DropAffordanceClusterPaintRecord, DropAffordancePaintRecord, DropAffordanceTargetPaintRecord,
     DropGuidePaintRecord, DropGuideTargetPaintRecord, PanePaintRecord,
-    PresentationCommandPaintRecord, SplitterGapVisibility, SplitterJunctionPaintRecord,
-    SplitterPaintRecord, StructuralSplitterGapStatus, SurfacePaintPlan, TabBarPaintRecord,
-    TabGroupDragRegionKind, TabGroupDragRegionPaintRecord, TabListMenuBackdropPaintRecord,
-    TabListMenuPaintRecord, TabListMenuRowPaintRecord, TabPaintRecord, TabStripControlKind,
-    TabStripControlPaintRecord, TabStripMemberPaintRecord, TabStripMemberVisibility,
+    PresentationCommandPaintRecord, PresentationMenuAnchorPaintRecord, SplitterGapVisibility,
+    SplitterJunctionPaintRecord, SplitterPaintRecord, StructuralSplitterGapStatus,
+    SurfacePaintPlan, TabBarPaintRecord, TabGroupDragRegionKind, TabGroupDragRegionPaintRecord,
+    TabListMenuBackdropPaintRecord, TabListMenuPaintRecord, TabListMenuRowPaintRecord,
+    TabPaintRecord, TabStripControlKind, TabStripControlPaintRecord, TabStripMemberPaintRecord,
+    TabStripMemberVisibility,
 };
 #[cfg(feature = "serde")]
 pub use persistence::{

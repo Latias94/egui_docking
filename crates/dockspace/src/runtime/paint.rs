@@ -17,9 +17,10 @@ use crate::presentation_hit::{
 use crate::presentation_observation::SurfacePresentationOutputTicket;
 pub use crate::scene::TabGroupDragRegionKind;
 use crate::scene::{
-    ContainedRecord, ContainedResizeRecord, PresentationPlan, SplitterGapPresentation,
-    SplitterGapRecord, SplitterJunctionDirection, SplitterJunctionId, SplitterJunctionRecord,
-    SplitterRecord, SplitterSceneId, SurfaceScene, TabBarSceneId, TabSceneId,
+    ContainedRecord, ContainedResizeRecord, PresentationMenuAnchorHost,
+    PresentationMenuAnchorRecord, PresentationPlan, SplitterGapPresentation, SplitterGapRecord,
+    SplitterJunctionDirection, SplitterJunctionId, SplitterJunctionRecord, SplitterRecord,
+    SplitterSceneId, SurfaceScene, TabBarSceneId, TabSceneId,
 };
 use crate::tab_strip::{PopupRoutingRevision, TabListMenuSessionId, TabStripControlId};
 
@@ -103,6 +104,7 @@ enum VisualIdentity {
         session: TabListMenuSessionId,
         revision: PopupRoutingRevision,
     },
+    PresentationMenuAnchor(RootId),
     Splitter(SplitterSceneId),
     SplitterGap(SplitterSceneId),
     SplitterJunction(SplitterJunctionId),
@@ -133,6 +135,8 @@ pub enum DockspaceVisualKind {
     TabListMenuRow,
     /// One full-surface popup backdrop.
     TabListMenuBackdrop,
+    /// One root-scoped presentation command menu anchor.
+    PresentationMenuAnchor,
     /// One ordinary splitter.
     Splitter,
     /// One structural splitter gap, including collapsed gaps.
@@ -175,6 +179,9 @@ impl DockspaceVisualId {
             VisualIdentity::TabListMenu(_) => DockspaceVisualKind::TabListMenu,
             VisualIdentity::TabListMenuRow { .. } => DockspaceVisualKind::TabListMenuRow,
             VisualIdentity::TabListMenuBackdrop { .. } => DockspaceVisualKind::TabListMenuBackdrop,
+            VisualIdentity::PresentationMenuAnchor(..) => {
+                DockspaceVisualKind::PresentationMenuAnchor
+            }
             VisualIdentity::Splitter(_) => DockspaceVisualKind::Splitter,
             VisualIdentity::SplitterGap(_) => DockspaceVisualKind::SplitterGap,
             VisualIdentity::SplitterJunction(_) => DockspaceVisualKind::SplitterJunction,
@@ -578,6 +585,92 @@ pub struct ContainedResizePaintRecord {
     operable: bool,
 }
 
+/// Product-facing chrome host of one root presentation command menu anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DockspacePresentationMenuAnchorKind {
+    /// The sole core-selected tab bar of a main or native-main root.
+    TabBar,
+    /// The title chrome of a contained-floating root.
+    ContainedTitle,
+}
+
+/// Opaque read-only root presentation command menu anchor.
+#[derive(Clone, Copy)]
+pub struct PresentationMenuAnchorPaintRecord<'plan> {
+    record: &'plan PresentationMenuAnchorRecord,
+    bounds: LogicalRect,
+    operable: bool,
+}
+
+impl fmt::Debug for PresentationMenuAnchorPaintRecord<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PresentationMenuAnchorPaintRecord")
+            .field("visual_id", &self.visual_id())
+            .field("kind", &self.kind())
+            .field("bounds", &self.bounds())
+            .field("layer", &self.layer())
+            .field("operable", &self.operable())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PresentationMenuAnchorPaintRecord<'_> {
+    /// Returns the stable visual identity of this root-scoped control.
+    #[must_use]
+    pub const fn visual_id(self) -> DockspaceVisualId {
+        DockspaceVisualId(VisualIdentity::PresentationMenuAnchor(self.record.root()))
+    }
+
+    /// Returns the stable root whose commands this anchor opens.
+    #[must_use]
+    pub const fn root(self) -> RootId {
+        self.record.root()
+    }
+
+    /// Returns whether this anchor belongs to tab or contained-title chrome.
+    #[must_use]
+    pub const fn kind(self) -> DockspacePresentationMenuAnchorKind {
+        match self.record.host() {
+            PresentationMenuAnchorHost::TabBar(_) => DockspacePresentationMenuAnchorKind::TabBar,
+            PresentationMenuAnchorHost::ContainedTitle(_) => {
+                DockspacePresentationMenuAnchorKind::ContainedTitle
+            }
+        }
+    }
+
+    /// Returns the opaque visual identity of the chrome hosting this anchor.
+    #[must_use]
+    pub const fn host_visual_id(self) -> DockspaceVisualId {
+        match self.record.host() {
+            PresentationMenuAnchorHost::TabBar(bar) => {
+                DockspaceVisualId(VisualIdentity::TabBar(bar))
+            }
+            PresentationMenuAnchorHost::ContainedTitle(floating) => {
+                DockspaceVisualId(VisualIdentity::Contained(floating))
+            }
+        }
+    }
+
+    /// Returns the exact core-reserved draw and response bounds.
+    #[must_use]
+    pub const fn bounds(self) -> LogicalRect {
+        self.bounds
+    }
+
+    /// Returns the roster-derived paint layer.
+    #[must_use]
+    pub const fn layer(self) -> DockspacePaintLayer {
+        DockspacePaintLayer::from_core(self.record.layer())
+    }
+
+    /// Returns whether any authoritative area of this exact control remains exposed.
+    #[must_use]
+    pub const fn operable(self) -> bool {
+        self.operable
+    }
+}
+
 impl ContainedResizePaintRecord {
     #[must_use]
     pub const fn direction(self) -> ContainedResizeDirection {
@@ -697,7 +790,8 @@ pub enum DockspacePresentationCommandKind {
 pub enum DockspacePresentationCommandUnavailable {
     /// The root is already presented as contained floating content.
     AlreadyContained,
-    /// The root is already the main presentation of a managed native child.
+    /// The root is already the main presentation of a managed native child and cannot be
+    /// promoted into another child window.
     AlreadyNative,
     /// Core rejected the product action for its existing stable reason.
     Action(DockspaceActionRejection),
@@ -983,22 +1077,35 @@ impl<'frame> SurfacePaintPlan<'frame> {
 
         let action = match kind {
             DockspacePresentationCommandKind::Float => {
-                let rect =
-                    match self
-                        .candidate
-                        .default_contained_float_rect(root, self.surface, self.plan)
-                    {
-                        Ok(rect) => rect,
+                let target_surface = match self.candidate.native_main_recovery_surface(root) {
+                    Ok(Some(surface)) => surface,
+                    Ok(None) => self.surface,
+                    Err(reason) => {
+                        return Ok(Some(unavailable(
+                            DockspacePresentationCommandUnavailable::Action(reason),
+                        )));
+                    }
+                };
+                let rect = if target_surface == self.surface {
+                    match self.candidate.default_contained_float_rect(
+                        root,
+                        target_surface,
+                        self.plan,
+                    ) {
+                        Ok(rect) => Some(rect),
                         Err(reason) => {
                             return Ok(Some(unavailable(
                                 DockspacePresentationCommandUnavailable::Action(reason),
                             )));
                         }
-                    };
+                    }
+                } else {
+                    None
+                };
                 ProductAction::FloatRoot {
                     root,
-                    surface: self.surface,
-                    rect: Some(rect),
+                    surface: target_surface,
+                    rect,
                 }
             }
             DockspacePresentationCommandKind::DockBack => ProductAction::DockBackRoot { root },
@@ -1168,6 +1275,24 @@ impl<'frame> SurfacePaintPlan<'frame> {
             .tab_bar_records()
             .iter()
             .map(|record| TabBarPaintRecord { record })
+    }
+
+    /// Returns one exact core-selected presentation menu anchor per visible root.
+    pub fn presentation_menu_anchors(
+        self,
+    ) -> impl Iterator<Item = PresentationMenuAnchorPaintRecord<'frame>> {
+        self.plan
+            .presentation_menu_anchor_records()
+            .iter()
+            .filter_map(|record| {
+                record
+                    .ready_bounds()
+                    .map(|bounds| PresentationMenuAnchorPaintRecord {
+                        record,
+                        bounds,
+                        operable: self.plan.region_is_operable(bounds, record.layer()),
+                    })
+            })
     }
 
     pub fn tab_strip_controls(

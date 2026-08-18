@@ -710,7 +710,8 @@ impl Dockspace {
                 product_render::PointerActionAuthority::LocalResponses,
                 #[cfg(feature = "native-render-support")]
                 None,
-            );
+            )
+            .map_err(DockspaceError::from_detail)?;
             missing.extend(paint.missing_items);
             defer_measurement = paint.defer_measurement;
             presentation_actions = paint.presentation_actions;

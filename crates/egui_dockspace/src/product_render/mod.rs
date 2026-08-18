@@ -10,6 +10,7 @@ mod drag_feedback;
 mod geometry;
 mod guides;
 mod measurement;
+mod presentation_menu;
 mod schedule;
 mod splitters;
 mod tab_chrome;
@@ -18,8 +19,8 @@ mod tabs;
 use dockspace::model::{FloatingPresentationId, ItemId};
 use dockspace::runtime::{
     ContainedPaintRecord, DockspacePaneFocusObservation, DockspacePaneFocusRequest,
-    DockspacePreviewVisual, DockspaceReceiverDescriptor, PreparedPaneFocusObservation,
-    PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintPlan,
+    DockspacePreviewVisual, DockspaceReceiverDescriptor, DockspaceRuntimeError,
+    PreparedPaneFocusObservation, PreparedSurfaceAction, SurfaceGesturePhase, SurfacePaintPlan,
 };
 use egui::{Color32, Id, Key, Modifiers, Response, Sense, Stroke, StrokeKind, Ui};
 
@@ -310,7 +311,7 @@ pub(crate) fn paint_surface(
     #[cfg(feature = "native-render-support")] scroll_registrar: Option<
         &mut dyn FnMut(&Ui, egui::Rect, Id) -> (Id, egui::LayerId),
     >,
-) -> ProductPaintOutput {
+) -> Result<ProductPaintOutput, DockspaceRuntimeError> {
     let visuals = style.resolved_visuals(ui.visuals());
     let resources = PaintResources::from_plan(plan, ui, panes, style);
     let pane_focus_request = plan.pane_focus_request();
@@ -361,6 +362,10 @@ pub(crate) fn paint_surface(
         for root in schedule.main_roots() {
             tabs::paint_root(&mut context, root, tabs::RootVisualContext::Main);
             splitters::paint_root(&mut context, root);
+            tab_chrome::paint_controls(&mut context, root.tab_strip_controls());
+            if let Some(anchor) = root.presentation_menu_anchor() {
+                presentation_menu::paint(&mut context, anchor)?;
+            }
         }
 
         for root in schedule.contained_roots() {
@@ -378,11 +383,15 @@ pub(crate) fn paint_surface(
                 },
             );
             splitters::paint_root(&mut context, root.records());
+            tab_chrome::paint_controls(&mut context, root.records().tab_strip_controls());
             contained::paint_controls(&mut context, record, root.records());
+            if let Some(anchor) = root.records().presentation_menu_anchor() {
+                presentation_menu::paint(&mut context, anchor)?;
+            }
             context.flush_contained_activation(record);
         }
 
-        tab_chrome::paint(&mut context);
+        tab_chrome::paint_popups(&mut context);
 
         let drag_preview_required = context.plan.drag_preview().is_some();
         let drag_preview_painted = paint_preview(context.ui, context.plan, context.visuals);
@@ -452,7 +461,7 @@ pub(crate) fn paint_surface(
         });
     #[cfg(not(feature = "native-render-support"))]
     let _ = transient_visuals_complete;
-    ProductPaintOutput {
+    Ok(ProductPaintOutput {
         local_actions,
         presentation_actions,
         pane_focus_observation,
@@ -465,7 +474,7 @@ pub(crate) fn paint_surface(
         defer_measurement,
         #[cfg(feature = "native-render-support")]
         transient_visuals_complete,
-    }
+    })
 }
 
 fn paint_preview(ui: &Ui, plan: SurfacePaintPlan<'_>, visuals: ResolvedDockVisuals) -> bool {

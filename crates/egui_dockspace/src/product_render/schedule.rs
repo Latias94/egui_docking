@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dockspace::model::RootId;
 use dockspace::runtime::{
-    ContainedPaintRecord, PanePaintRecord, SplitterJunctionPaintRecord, SplitterPaintRecord,
-    SurfacePaintPlan, TabBarPaintRecord, TabPaintRecord,
+    ContainedPaintRecord, PanePaintRecord, PresentationMenuAnchorPaintRecord,
+    SplitterJunctionPaintRecord, SplitterPaintRecord, SurfacePaintPlan, TabBarPaintRecord,
+    TabPaintRecord, TabStripControlPaintRecord,
 };
 
 #[derive(Default)]
@@ -15,6 +16,8 @@ pub(super) struct RootPaintSchedule<'plan> {
     tabs: Vec<TabPaintRecord<'plan>>,
     splitters: Vec<SplitterPaintRecord<'plan>>,
     splitter_junctions: Vec<SplitterJunctionPaintRecord<'plan>>,
+    tab_strip_controls: Vec<TabStripControlPaintRecord>,
+    presentation_menu_anchor: Option<PresentationMenuAnchorPaintRecord<'plan>>,
 }
 
 impl<'plan> RootPaintSchedule<'plan> {
@@ -38,6 +41,18 @@ impl<'plan> RootPaintSchedule<'plan> {
         &self,
     ) -> impl Iterator<Item = SplitterJunctionPaintRecord<'plan>> + '_ {
         self.splitter_junctions.iter().copied()
+    }
+
+    pub(super) fn tab_strip_controls(
+        &self,
+    ) -> impl Iterator<Item = TabStripControlPaintRecord> + '_ {
+        self.tab_strip_controls.iter().copied()
+    }
+
+    pub(super) const fn presentation_menu_anchor(
+        &self,
+    ) -> Option<PresentationMenuAnchorPaintRecord<'plan>> {
+        self.presentation_menu_anchor
     }
 }
 
@@ -97,6 +112,19 @@ impl<'plan> SurfacePaintSchedule<'plan> {
                 .or_default()
                 .splitter_junctions
                 .push(junction);
+        }
+        for control in plan.tab_strip_controls() {
+            roots
+                .entry(control.root())
+                .or_default()
+                .tab_strip_controls
+                .push(control);
+        }
+        for anchor in plan.presentation_menu_anchors() {
+            roots
+                .entry(anchor.root())
+                .or_default()
+                .presentation_menu_anchor = Some(anchor);
         }
 
         let mut contained = plan

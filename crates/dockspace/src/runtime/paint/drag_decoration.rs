@@ -257,6 +257,7 @@ fn visual_belongs_to_tabs_leaf(visual: DockspaceVisualId, pane: PaneSceneId) -> 
             let bar = session.key().bar();
             bar.root == pane.root && bar.tabs == pane.tabs
         }
+        VisualIdentity::PresentationMenuAnchor(_) => false,
         VisualIdentity::DragSource { .. }
         | VisualIdentity::Splitter(_)
         | VisualIdentity::SplitterGap(_)
@@ -304,6 +305,7 @@ fn visual_belongs_to_subtree(
             bar.root == root
                 && (complete_root || subtree_contains_node(fingerprint, source, bar.tabs))
         }
+        VisualIdentity::PresentationMenuAnchor(candidate) => candidate == root && complete_root,
         VisualIdentity::Splitter(splitter) | VisualIdentity::SplitterGap(splitter) => {
             splitter.root == root
                 && (complete_root || subtree_contains_node(fingerprint, source, splitter.split))

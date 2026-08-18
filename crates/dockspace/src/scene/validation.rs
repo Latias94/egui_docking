@@ -238,6 +238,14 @@ fn validate_semantic_uniqueness(ready: &PresentationPlan) -> Result<(), SceneBui
     ) {
         return Err(SceneBuildError::DuplicateContainedRecord { floating });
     }
+    if let Some(root) = stable_duplicate(
+        ready
+            .presentation_menu_anchor_records
+            .iter()
+            .map(|record| record.root()),
+    ) {
+        return Err(SceneBuildError::DuplicatePresentationMenuAnchor { root });
+    }
     if let Some(floating) = stable_duplicate(
         ready
             .contained_minimums
@@ -384,6 +392,7 @@ fn validate_ready_semantics(
     validate_contained_records(ready, workspace, workspace_index)?;
     let expected_panes = expected_pane_records(ready, workspace, workspace_index)?;
     validate_pane_and_tab_records(ready, workspace, workspace_index, policy, &expected_panes)?;
+    validate_presentation_menu_anchors(ready, workspace)?;
     validate_splitter_records(ready, workspace, workspace_index, policy)?;
     Ok(())
 }
@@ -471,6 +480,175 @@ fn validate_contained_records(
         }
     }
     Ok(())
+}
+
+fn validate_presentation_menu_anchors(
+    ready: &PresentationPlan,
+    workspace: &Workspace,
+) -> Result<(), SceneBuildError> {
+    let presentation =
+        workspace
+            .surface(ready.surface)
+            .ok_or(SceneBuildError::UnexpectedSceneSurface {
+                surface: ready.surface,
+            })?;
+    let mut expected = BTreeMap::new();
+    if let Some(root) = presentation.main_root
+        && canonical_presentation_menu_tab_bar(ready, workspace, root)?.is_some()
+    {
+        expected.insert(root, None);
+    }
+    expected.extend(ready.contained_records.iter().map(|record| {
+        (
+            record.root(),
+            Some(PresentationMenuAnchorHost::ContainedTitle(
+                record.floating(),
+            )),
+        )
+    }));
+
+    if ready.presentation_menu_anchor_records.len() != expected.len() {
+        return Err(SceneBuildError::PresentationMenuAnchorRecordSetMismatch {
+            surface: ready.surface,
+        });
+    }
+    for anchor in &ready.presentation_menu_anchor_records {
+        let root = anchor.root();
+        let Some(expected_host) = expected.get(&root).copied() else {
+            return Err(SceneBuildError::InvalidPresentationMenuAnchor {
+                surface: ready.surface,
+                root,
+            });
+        };
+        if expected_host.is_some_and(|expected_host| expected_host != anchor.host()) {
+            return Err(SceneBuildError::InvalidPresentationMenuAnchor {
+                surface: ready.surface,
+                root,
+            });
+        }
+        let valid = match anchor.host() {
+            PresentationMenuAnchorHost::TabBar(bar_id) => ready
+                .tab_bar_records
+                .iter()
+                .find(|bar| *bar.id() == bar_id)
+                .is_some_and(|bar| {
+                    if bar_id.root != root || anchor.layer() != bar.layer() {
+                        return false;
+                    }
+                    match (anchor.ready_bounds(), anchor.ready_hit()) {
+                        (None, None) => true,
+                        (Some(bounds), Some(hit)) => {
+                            hit.rect() == bounds
+                                && rect_has_area(bounds)
+                                && rect_contains(bar.bounds(), bounds)
+                                && !rects_overlap_with_area(bar.viewport(), bounds)
+                                && bar
+                                    .group_grip_bounds()
+                                    .is_none_or(|grip| !rects_overlap_with_area(grip, bounds))
+                                && bar.group_drag().is_none_or(|group| {
+                                    group.regions().all(|region| {
+                                        !rects_overlap_with_area(region.bounds(), bounds)
+                                    })
+                                })
+                                && ready
+                                    .tab_strip_control_records
+                                    .iter()
+                                    .filter(|control| control.id().bar() == bar_id)
+                                    .all(|control| {
+                                        !rects_overlap_with_area(control.bounds(), bounds)
+                                    })
+                        }
+                        (None, Some(_)) | (Some(_), None) => false,
+                    }
+                }),
+            PresentationMenuAnchorHost::ContainedTitle(floating) => ready
+                .contained_records
+                .iter()
+                .find(|contained| contained.floating() == floating)
+                .is_some_and(|contained| {
+                    if contained.root() != root || anchor.layer() != contained.layer() {
+                        return false;
+                    }
+                    match (anchor.ready_bounds(), anchor.ready_hit()) {
+                        (None, None) => true,
+                        (Some(bounds), Some(hit)) => {
+                            hit.rect() == bounds
+                                && rect_has_area(bounds)
+                                && rect_contains(contained.title_bounds(), bounds)
+                                && !rects_overlap_with_area(
+                                    contained.title_drag_hit().rect(),
+                                    bounds,
+                                )
+                                && contained
+                                    .close_bounds()
+                                    .is_none_or(|close| !rects_overlap_with_area(close, bounds))
+                        }
+                        (None, Some(_)) | (Some(_), None) => false,
+                    }
+                }),
+        };
+        if !valid {
+            return Err(SceneBuildError::InvalidPresentationMenuAnchor {
+                surface: ready.surface,
+                root,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn canonical_presentation_menu_tab_bar(
+    ready: &PresentationPlan,
+    workspace: &Workspace,
+    root: RootId,
+) -> Result<Option<TabBarSceneId>, SceneBuildError> {
+    let root_record = workspace
+        .root(root)
+        .ok_or(SceneBuildError::CompiledRootUnavailable {
+            surface: ready.surface,
+            root,
+        })?;
+    let is_compiled = |tabs| {
+        ready
+            .tab_bar_records
+            .iter()
+            .any(|bar| *bar.id() == TabBarSceneId { root, tabs })
+    };
+    if let Some(central) = root_record.central
+        && is_compiled(central)
+    {
+        return Ok(Some(TabBarSceneId {
+            root,
+            tabs: central,
+        }));
+    }
+
+    let mut pending = vec![root_record.node];
+    let mut visited = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if !visited.insert(node) {
+            return Err(SceneBuildError::CompiledRootUnavailable {
+                surface: ready.surface,
+                root,
+            });
+        }
+        match workspace.node(node) {
+            Some(Node::Tabs { .. }) if is_compiled(node) => {
+                return Ok(Some(TabBarSceneId { root, tabs: node }));
+            }
+            Some(Node::Tabs { .. }) => {}
+            Some(Node::Split { children, .. }) => {
+                pending.extend(children.iter().rev().copied());
+            }
+            None => {
+                return Err(SceneBuildError::CompiledRootUnavailable {
+                    surface: ready.surface,
+                    root,
+                });
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn expected_pane_records(
@@ -726,7 +904,7 @@ fn validate_pane_and_tab_records(
             });
         };
         let group_grip_matches = match bar.group_grip_bounds() {
-            None => items.is_empty(),
+            None => true,
             Some(grip) => {
                 !items.is_empty()
                     && rect_has_area(grip)
@@ -740,7 +918,7 @@ fn validate_pane_and_tab_records(
         let group_interaction_matches = match bar.interaction() {
             TabBarInteraction::Disabled => bar.group_drag().is_none(),
             TabBarInteraction::Enabled => match (bar.group_grip_bounds(), bar.group_drag()) {
-                (None, None) => items.is_empty(),
+                (None, None) => true,
                 (Some(grip), Some(group)) => {
                     let leading = group.leading_grip();
                     let expected_trailing_start = bar
@@ -1300,6 +1478,9 @@ fn canonicalize_ready(
     ready
         .contained_records
         .sort_unstable_by_key(|record| record.ordinal());
+    ready
+        .presentation_menu_anchor_records
+        .sort_unstable_by_key(|record| record.root());
     ready
         .contained_minimums
         .sort_unstable_by_key(|measurement| measurement.floating());

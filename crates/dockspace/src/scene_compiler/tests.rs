@@ -30,6 +30,314 @@ fn policy_snapshot() -> DockPolicySnapshot {
     DockPolicy::default().snapshot(policy_revision())
 }
 
+fn positive_rect_overlap(left: LogicalRect, right: LogicalRect) -> bool {
+    left.x() < right.max().x()
+        && right.x() < left.max().x()
+        && left.y() < right.max().y()
+        && right.y() < left.max().y()
+}
+
+fn compile_default_ready_plan(
+    workspace: &Workspace,
+    surface: SurfaceId,
+    bounds: LogicalRect,
+) -> PresentationPlan {
+    let policy = policy_snapshot();
+    let config = DockPresentationConfig::default();
+    let draft = derive_scene_requirement_draft(
+        authority_domain(),
+        workspace,
+        version(),
+        PresentationConfigRevision::new(7),
+        &policy,
+        RequirementRevision::new(9),
+        &surface_revisions([surface]),
+    )
+    .expect("requirements should derive");
+    let requirements = draft.surface(surface).expect("surface should exist");
+    let mut measurements = SurfaceMeasurements::new(requirements.ticket());
+    measurements
+        .set_bounds(requirements.bounds(), Measurement::Measured(bounds))
+        .expect("bounds answer is unique");
+    let minimum = LogicalSize::new(0.0, 0.0).expect("minimum should be valid");
+    for key in requirements.pane_minimums() {
+        measurements
+            .insert_pane_minimum(key, Measurement::Measured(minimum))
+            .expect("pane answer is unique");
+    }
+    for key in requirements.tab_intrinsics() {
+        measurements
+            .insert_tab_intrinsic(
+                key,
+                Measurement::Measured(TabIntrinsic::new(56.0).expect("intrinsic should be valid")),
+            )
+            .expect("tab answer is unique");
+    }
+    let control_extent = config.tab_bar_height();
+    let controls = TabStripControlMetrics::new(0.0)
+        .expect("control spacing should be valid")
+        .with_scroll_backward(
+            TabStripControlMetric::new(control_extent, TabStripControlPlacement::OverlayLeading)
+                .expect("backward control should be valid"),
+        )
+        .with_scroll_forward(
+            TabStripControlMetric::new(control_extent, TabStripControlPlacement::OverlayTrailing)
+                .expect("forward control should be valid"),
+        )
+        .with_tab_list_menu(
+            TabStripControlMetric::new(control_extent, TabStripControlPlacement::ReservedTrailing)
+                .expect("menu control should be valid"),
+        );
+    for key in requirements.tab_strips() {
+        measurements
+            .insert_tab_strip(
+                key,
+                Measurement::Measured(
+                    TabStripMetrics::new(0.0, 0.0)
+                        .expect("strip should be valid")
+                        .with_controls(controls),
+                ),
+            )
+            .expect("strip answer is unique");
+    }
+    let manifest = draft
+        .finalize(PopupPlaneRequirement::default())
+        .expect("inactive requirements should finalize");
+    let plan = compile_surface_measurements(
+        workspace,
+        version(),
+        &policy,
+        &config,
+        &manifest,
+        &measurements,
+        &TabStripStateStore::default(),
+        &[],
+    )
+    .expect("complete measurements should compile");
+    PresentationPlanValidator::new(workspace, &policy)
+        .expect("validator should initialize")
+        .validate_and_canonicalize(plan)
+        .expect("compiled plan should validate")
+}
+
+#[test]
+fn main_presentation_menu_anchor_prefers_the_visible_central_tab_bar() {
+    let surface = SurfaceId::new(801);
+    let root = RootId::new(802);
+    let mut builder = Workspace::builder();
+    let first = builder.insert_node(Node::tabs([ItemId::new(803)]));
+    let central = builder.insert_node(Node::tabs([ItemId::new(804)]));
+    let split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [first, central]).expect("split should be valid"),
+    );
+    builder.set_root(root, RootRecord::new(split).with_central(central));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("bounds should be valid"),
+    );
+    let [anchor] = plan.presentation_menu_anchor_records() else {
+        panic!("one main root should publish one presentation menu anchor")
+    };
+
+    assert_eq!(anchor.root(), root);
+    assert_eq!(
+        anchor.host(),
+        PresentationMenuAnchorHost::TabBar(TabBarSceneId {
+            root,
+            tabs: central,
+        })
+    );
+    let bar = plan
+        .tab_bar_records()
+        .iter()
+        .find(|bar| {
+            *bar.id()
+                == TabBarSceneId {
+                    root,
+                    tabs: central,
+                }
+        })
+        .expect("central tab bar should be compiled");
+    let anchor_bounds = anchor
+        .ready_bounds()
+        .expect("the wide central bar should publish usable menu chrome");
+    assert!(rect_contains(bar.bounds(), anchor_bounds));
+    assert!(!positive_rect_overlap(bar.viewport(), anchor_bounds));
+    assert!(
+        bar.group_drag()
+            .into_iter()
+            .flat_map(|group| group.regions())
+            .all(|region| !positive_rect_overlap(region.bounds(), anchor_bounds))
+    );
+}
+
+#[test]
+fn main_presentation_menu_anchor_falls_back_to_left_to_right_dfs_order() {
+    let surface = SurfaceId::new(811);
+    let root = RootId::new(812);
+    let mut builder = Workspace::builder();
+    let structurally_smaller_right = builder.insert_node(Node::tabs([ItemId::new(813)]));
+    let visual_left = builder.insert_node(Node::tabs([ItemId::new(814)]));
+    let split = builder.insert_node(
+        Node::equal_split(Axis::Horizontal, [visual_left, structurally_smaller_right])
+            .expect("split should be valid"),
+    );
+    builder.set_root(root, RootRecord::new(split));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("bounds should be valid"),
+    );
+    let [anchor] = plan.presentation_menu_anchor_records() else {
+        panic!("one main root should publish one presentation menu anchor")
+    };
+
+    assert_eq!(
+        anchor.host(),
+        PresentationMenuAnchorHost::TabBar(TabBarSceneId {
+            root,
+            tabs: visual_left,
+        })
+    );
+}
+
+#[test]
+fn main_presentation_menu_anchor_falls_back_when_the_central_bar_cannot_host_it() {
+    let surface = SurfaceId::new(819);
+    let root = RootId::new(820);
+    let mut builder = Workspace::builder();
+    let wide = builder.insert_node(Node::tabs([ItemId::new(821)]));
+    let narrow_central = builder.insert_node(Node::tabs([ItemId::new(822)]));
+    let split = builder.insert_node(
+        Node::split(Axis::Horizontal, [wide, narrow_central], [0.9, 0.1])
+            .expect("weighted split should be valid"),
+    );
+    builder.set_root(root, RootRecord::new(split).with_central(narrow_central));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("bounds should be valid"),
+    );
+    let [anchor] = plan.presentation_menu_anchor_records() else {
+        panic!("the wider fallback bar should publish the presentation menu anchor")
+    };
+
+    assert_eq!(
+        anchor.host(),
+        PresentationMenuAnchorHost::TabBar(TabBarSceneId { root, tabs: wide })
+    );
+    assert!(anchor.is_ready());
+}
+
+#[test]
+fn narrow_main_tab_bar_preserves_an_interactive_tab_before_the_presentation_menu() {
+    let surface = SurfaceId::new(815);
+    let root = RootId::new(816);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(817), ItemId::new(818)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::with_main(root));
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 100.0, 100.0).expect("bounds should be valid"),
+    );
+
+    let [anchor] = plan.presentation_menu_anchor_records() else {
+        panic!("the compact root must retain one explicit menu availability record")
+    };
+    assert!(
+        !anchor.is_ready(),
+        "compact chrome must mark the optional menu unavailable before consuming the last usable tab"
+    );
+    assert!(
+        plan.tab_records().iter().any(|tab| {
+            let drag = tab.drag_hit().rect();
+            drag.width() > 0.0 && drag.height() > 0.0 && tab.close_bounds().is_some()
+        }),
+        "at least one tab must retain positive drag and close interaction geometry"
+    );
+    let bar = plan
+        .tab_bar_records()
+        .iter()
+        .find(|bar| *bar.id() == TabBarSceneId { root, tabs })
+        .expect("the compact tab bar should still be compiled");
+    assert!(
+        bar.group_grip_bounds().is_some(),
+        "optional menu chrome must compact before the primary group-drag affordance"
+    );
+}
+
+#[test]
+fn contained_presentation_menu_anchor_owns_the_title_partition_exclusively() {
+    let surface = SurfaceId::new(821);
+    let root = RootId::new(822);
+    let floating = FloatingPresentationId::new(823);
+    let mut builder = Workspace::builder();
+    let tabs = builder.insert_node(Node::tabs([ItemId::new(824)]));
+    builder.set_root(root, RootRecord::new(tabs).with_central(tabs));
+    builder.set_surface(surface, SurfacePresentation::rootless());
+    builder.set_contained_floating(
+        floating,
+        ContainedFloating::new(
+            root,
+            LogicalRect::new(40.0, 30.0, 320.0, 240.0).expect("floating rect should be valid"),
+        ),
+    );
+    builder
+        .attach_contained(surface, floating)
+        .expect("surface should exist");
+    let workspace = builder.build().expect("fixture should validate");
+
+    let plan = compile_default_ready_plan(
+        &workspace,
+        surface,
+        LogicalRect::new(0.0, 0.0, 640.0, 360.0).expect("bounds should be valid"),
+    );
+    let [anchor] = plan.presentation_menu_anchor_records() else {
+        panic!("one contained root should publish one presentation menu anchor")
+    };
+    let contained = plan
+        .contained_record(floating)
+        .expect("contained chrome should be compiled");
+
+    assert_eq!(anchor.root(), root);
+    assert_eq!(
+        anchor.host(),
+        PresentationMenuAnchorHost::ContainedTitle(floating)
+    );
+    let anchor_bounds = anchor
+        .ready_bounds()
+        .expect("the contained title should publish usable menu chrome");
+    assert!(rect_contains(contained.title_bounds(), anchor_bounds));
+    assert!(!positive_rect_overlap(
+        contained.title_drag_hit().rect(),
+        anchor_bounds
+    ));
+    assert!(
+        contained
+            .close_bounds()
+            .is_none_or(|close| !positive_rect_overlap(close, anchor_bounds))
+    );
+    assert!(
+        plan.presentation_menu_anchor_records()
+            .iter()
+            .all(|anchor| !matches!(anchor.host(), PresentationMenuAnchorHost::TabBar(_)))
+    );
+}
+
 #[test]
 fn selected_tab_reveal_preserves_visible_offsets_and_moves_only_as_needed() {
     assert_eq!(reveal_tab_range(40.0, 200.0, 100.0, 50.0, 90.0), 40.0);
@@ -847,8 +1155,17 @@ fn menu_only_control_compiles_as_an_exact_scene_subset() {
         .iter()
         .find(|record| *record.id() == bar)
         .expect("compiled bar exists");
+    let anchor = plan
+        .presentation_menu_anchor_records()
+        .iter()
+        .find(|anchor| anchor.root() == bar.id().root)
+        .expect("main root presentation anchor exists");
+    let anchor_bounds = anchor
+        .ready_bounds()
+        .expect("menu-only layout should retain usable presentation chrome");
     assert_eq!(bar.viewport().max().x(), control.bounds().x());
-    assert_eq!(control.bounds().max().x(), bar.bounds().max().x());
+    assert_eq!(control.bounds().max().x(), anchor_bounds.x());
+    assert_eq!(anchor_bounds.max().x(), bar.bounds().max().x());
 }
 
 #[test]

@@ -2040,6 +2040,9 @@ mod tests {
         for record in plan.contained_records().iter().cloned() {
             measured.push_contained_record(record);
         }
+        for record in plan.presentation_menu_anchor_records().iter().copied() {
+            measured.push_presentation_menu_anchor_record(record);
+        }
         for minimum in plan.contained_minimums().iter().copied() {
             measured.push_contained_minimum(minimum);
         }
@@ -3541,13 +3544,16 @@ mod tests {
         let root = RootId::new(112);
         let moved = ItemId::new(113);
         let mut builder = Workspace::builder();
-        let source_tabs = builder.insert_node(Node::tabs([moved]));
-        let target_tabs = builder.insert_node(Node::tabs([ItemId::new(114), ItemId::new(115)]));
+        let source_tabs = builder.insert_node(Node::tabs([moved, ItemId::new(116)]));
+        let target_tabs = builder.insert_node(Node::tabs_with_selection(
+            [ItemId::new(114), ItemId::new(115)],
+            Some(ItemId::new(115)),
+        ));
         let split = builder.insert_node(
-            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.25, 0.75])
+            Node::split(Axis::Horizontal, [source_tabs, target_tabs], [0.8, 0.2])
                 .expect("weighted tab-gap layout must be valid"),
         );
-        builder.set_root(root, RootRecord::new(split));
+        builder.set_root(root, RootRecord::new(split).with_central(target_tabs));
         builder.set_surface(surface, SurfacePresentation::with_main(root));
         let workspace = builder
             .build()
@@ -3559,8 +3565,21 @@ mod tests {
             surface,
             root,
             tabs: target_tabs,
-            index: 1,
+            index: 2,
         };
+        assert!(
+            plan.presentation_menu_anchor_records()
+                .iter()
+                .any(|anchor| {
+                    anchor.host()
+                        == crate::scene::PresentationMenuAnchorHost::TabBar(
+                            crate::scene::TabBarSceneId {
+                                root,
+                                tabs: target_tabs,
+                            },
+                        )
+                })
+        );
         let target = plan
             .drop_targets()
             .iter()
@@ -3619,6 +3638,133 @@ mod tests {
                 .expect("future tab-gap marker must be valid");
 
         assert_ne!(stale_visual, expected);
+        assert_eq!(resolved.visual().rect(), expected);
+    }
+
+    #[test]
+    fn future_tab_gap_preview_reselects_the_menu_host_after_the_old_host_is_pruned() {
+        let surface = SurfaceId::new(121);
+        let root = RootId::new(122);
+        let moved = ItemId::new(123);
+        let mut builder = Workspace::builder();
+        let old_host = builder.insert_node(Node::tabs([moved]));
+        let target_tabs = builder.insert_node(Node::tabs_with_selection(
+            [ItemId::new(124), ItemId::new(125)],
+            Some(ItemId::new(125)),
+        ));
+        let trailing_tabs = builder.insert_node(Node::tabs([ItemId::new(126)]));
+        let split = builder.insert_node(
+            Node::split(
+                Axis::Horizontal,
+                [old_host, target_tabs, trailing_tabs],
+                [0.2, 0.14, 0.66],
+            )
+            .expect("weighted menu-host layout must be valid"),
+        );
+        builder.set_root(root, RootRecord::new(split));
+        builder.set_surface(surface, SurfacePresentation::with_main(root));
+        let workspace = builder.build().expect("menu-host fixture must be valid");
+        let engine = DockEngine::new(workspace.clone(), DockPolicy::default())
+            .expect("menu-host preview engine must be valid");
+        let plan = compile_fixture_surface_plan(&engine, surface, rect());
+        assert!(
+            plan.presentation_menu_anchor_records()
+                .iter()
+                .any(|anchor| {
+                    anchor.host()
+                        == crate::scene::PresentationMenuAnchorHost::TabBar(
+                            crate::scene::TabBarSceneId {
+                                root,
+                                tabs: old_host,
+                            },
+                        )
+                })
+        );
+
+        let target_id = DropTargetId::TabGap {
+            surface,
+            root,
+            tabs: target_tabs,
+            index: 2,
+        };
+        let target = plan
+            .drop_targets()
+            .iter()
+            .find(|target| target.id() == target_id)
+            .expect("the narrow target strip must expose its trailing gap");
+        let hit = target.region().rect();
+        let point = LogicalPoint::new(hit.x() + hit.width() * 0.5, hit.y() + hit.height() * 0.5)
+            .expect("tab-gap midpoint must be finite");
+        let source = MovePayload::Item(
+            workspace
+                .capture_item_source(root, old_host, moved)
+                .expect("source item must be current"),
+        );
+        let scene = seal_workspace(&workspace, plan);
+        let resolved = resolve_drop(
+            &scene,
+            &workspace,
+            &DockPolicySnapshot::default(),
+            session(),
+            source,
+            None,
+            surface,
+            point,
+        )
+        .expect("candidate menu-host resolution must remain valid");
+        let DropResolution::Resolved(resolved) = resolved.resolution() else {
+            panic!("the exact trailing tab gap must resolve");
+        };
+
+        let mut committed = workspace.clone();
+        WorkspaceTransaction::from_commands([resolved.command().clone()])
+            .apply(&mut committed, &DockPolicySnapshot::default())
+            .expect("the prevalidated menu-host command must commit");
+        let committed_engine = DockEngine::new(committed, DockPolicy::default())
+            .expect("the committed menu-host workspace must remain valid");
+        let committed_plan = compile_fixture_surface_plan(&committed_engine, surface, rect());
+        assert!(
+            committed_plan
+                .presentation_menu_anchor_records()
+                .iter()
+                .any(|anchor| {
+                    anchor.host()
+                        == crate::scene::PresentationMenuAnchorHost::TabBar(
+                            crate::scene::TabBarSceneId {
+                                root,
+                                tabs: target_tabs,
+                            },
+                        )
+                        && anchor.is_ready()
+                }),
+            "candidate anchors: {:?}; bars: {:?}",
+            committed_plan.presentation_menu_anchor_records(),
+            committed_plan.tab_bar_records(),
+        );
+        let bar = committed_plan
+            .tab_bar_records()
+            .iter()
+            .find(|bar| bar.id().root == root && bar.id().tabs == target_tabs)
+            .expect("the target tab bar must survive menu-host reselection");
+        let inserted = bar
+            .members()
+            .iter()
+            .find(|member| member.tab().item == moved)
+            .expect("the future strip must contain the moved item")
+            .full_bounds();
+        let marker_width = resolved.visual().rect().width().min(bar.viewport().width());
+        let marker_x = (inserted.x() - marker_width * 0.5).clamp(
+            bar.viewport().x(),
+            (bar.viewport().max().x() - marker_width).max(bar.viewport().x()),
+        );
+        let expected = LogicalRect::new(
+            marker_x,
+            bar.viewport().y(),
+            marker_width,
+            bar.viewport().height(),
+        )
+        .expect("candidate-aware tab-gap marker must be valid");
+
         assert_eq!(resolved.visual().rect(), expected);
     }
 

@@ -1161,7 +1161,7 @@ fn strip_scroll_controls_align_the_adjacent_partial_tab_and_stop_at_boundaries()
         .presentation_authority
         .tab_strip_states
         .state_mut(key)
-        .set_scroll_offset(36.0)
+        .set_scroll_offset(48.0)
         .expect("test scroll must be valid");
     let measurements = tab_strip_reducer_measurements(&backward, true);
     let plan = compile_tab_strip_reducer_plan(&backward, &measurements);
@@ -1201,7 +1201,7 @@ fn strip_scroll_controls_align_the_adjacent_partial_tab_and_stop_at_boundaries()
         .presentation_authority
         .tab_strip_states
         .state_mut(forward_key)
-        .set_scroll_offset(36.0)
+        .set_scroll_offset(48.0)
         .expect("test scroll must be valid");
     let measurements = tab_strip_reducer_measurements(&forward, true);
     let plan = compile_tab_strip_reducer_plan(&forward, &measurements);

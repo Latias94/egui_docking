@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use super::surface::{
     allocate_tab_widths, pane_outer_minimum, reveal_tab_range, subtree_minimum,
-    tab_strip_control_layout,
+    tab_strip_optional_chrome_layout,
 };
 use crate::RootPresentationOwner;
 use crate::command::{MovePayload, TabTarget};
@@ -202,14 +202,24 @@ pub(crate) fn project_future_tab_gap_visual(
     let strip = target_facts
         .tab_strip(strip_key)
         .ok_or(FutureLayoutProjectionError::TabStripMeasurementUnavailable { key: strip_key })?;
-    let group_extent = if items.is_empty() {
-        0.0
-    } else {
-        config
-            .tab_group_grip_extent()
-            .min(bar.height())
-            .min(bar.width())
-    };
+    let include_presentation_menu = matches!(
+        candidate.presentation_for_root(target.root()),
+        Some(RootPresentationOwner::Main { surface }) if surface == target.surface()
+    ) && future_presentation_menu_tab_bar(
+        candidate,
+        policy,
+        target_facts,
+        target.surface(),
+        target.root(),
+        projection,
+    )? == Some(target.tabs());
+    let chrome = tab_strip_optional_chrome_layout(
+        bar,
+        items.len(),
+        strip,
+        config,
+        include_presentation_menu,
+    )?;
     let mut desired_widths = Vec::with_capacity(items.len());
     for item in items.iter().copied() {
         let intrinsic = candidate_tab_intrinsic(
@@ -232,36 +242,7 @@ pub(crate) fn project_future_tab_gap_visual(
         );
     }
 
-    let content_x = bar.x() + group_extent + strip.leading_reserved();
-    let base_viewport_width =
-        (bar.width() - group_extent - strip.leading_reserved() - strip.trailing_reserved())
-            .max(0.0);
-    let count =
-        u32::try_from(items.len()).map_err(|_| FutureLayoutProjectionError::TabCountOverflow)?;
-    let overflowing =
-        !items.is_empty() && config.tab_min_width() * f64::from(count) > base_viewport_width;
-    let controls = if overflowing {
-        match strip.controls().filter(|metrics| !metrics.is_empty()) {
-            Some(metrics) => {
-                tab_strip_control_layout(content_x, bar, base_viewport_width, metrics)?
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
-    let reserved_leading = controls
-        .as_ref()
-        .map_or(0.0, |layout| layout.reserved_leading);
-    let reserved_trailing = controls
-        .as_ref()
-        .map_or(0.0, |layout| layout.reserved_trailing);
-    let viewport = LogicalRect::new(
-        content_x + reserved_leading,
-        bar.y(),
-        (base_viewport_width - reserved_leading - reserved_trailing).max(0.0),
-        bar.height(),
-    )?;
+    let viewport = chrome.viewport;
     if viewport.width() <= 0.0 {
         return Err(FutureLayoutProjectionError::TargetTabBarUnrepresentable {
             root: target.root(),
@@ -330,6 +311,93 @@ pub(crate) fn project_future_tab_gap_visual(
         marker_width,
         viewport.height(),
     )?)
+}
+
+fn future_presentation_menu_tab_bar(
+    candidate: &Workspace,
+    policy: &DockPolicySnapshot,
+    target_facts: &PresentationLayoutFacts,
+    surface: crate::ids::SurfaceId,
+    root: RootId,
+    projection: &LayoutProjection,
+) -> Result<Option<NodeId>, FutureLayoutProjectionError> {
+    let root_record = candidate
+        .root(root)
+        .ok_or(FutureLayoutProjectionError::MissingRoot { root })?;
+    let config = target_facts.config();
+    let central = root_record.central;
+    let visible_layout = |tabs| -> Result<
+        Option<super::surface::TabStripOptionalChromeLayout>,
+        FutureLayoutProjectionError,
+    > {
+        let Some(Node::Tabs { items, .. }) = candidate.node(tabs) else {
+            return Ok(None);
+        };
+        let rule = candidate.pane_local_target_rule(root, tabs, central == Some(tabs))?;
+        let tab_bar = policy.tab_bar_policy(DockTabBarPolicyRequest::new(surface, Some(rule)));
+        if tab_bar.visibility() == TabBarVisibility::Hidden {
+            return Ok(None);
+        }
+        let node_bounds = projection
+            .node_rects
+            .get(&tabs)
+            .copied()
+            .ok_or(FutureLayoutProjectionError::MissingNodeProjection { root, node: tabs })?;
+        let bar = LogicalRect::new(
+            node_bounds.x(),
+            node_bounds.y(),
+            node_bounds.width(),
+            config.tab_bar_height().min(node_bounds.height()),
+        )?;
+        if bar.width() <= 0.0 || bar.height() <= 0.0 {
+            return Ok(None);
+        }
+        let key = TabStripKey::new(surface, TabBarSceneId { root, tabs });
+        let strip = target_facts
+            .tab_strip(key)
+            .ok_or(FutureLayoutProjectionError::TabStripMeasurementUnavailable { key })?;
+        Ok(Some(tab_strip_optional_chrome_layout(
+            bar,
+            items.len(),
+            strip,
+            config,
+            true,
+        )?))
+    };
+
+    let mut compacted_fallback = None;
+    if let Some(central) = central
+        && let Some(layout) = visible_layout(central)?
+    {
+        compacted_fallback = Some(central);
+        if layout.presentation_menu_bounds.is_some() {
+            return Ok(Some(central));
+        }
+    }
+
+    let mut pending = vec![root_record.node];
+    let mut visited = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if !visited.insert(node) {
+            return Err(FutureLayoutProjectionError::RepeatedNode { root, node });
+        }
+        match candidate
+            .node(node)
+            .ok_or(FutureLayoutProjectionError::MissingNode { root, node })?
+        {
+            Node::Tabs { .. } => {
+                let Some(layout) = visible_layout(node)? else {
+                    continue;
+                };
+                compacted_fallback.get_or_insert(node);
+                if layout.presentation_menu_bounds.is_some() {
+                    return Ok(Some(node));
+                }
+            }
+            Node::Split { children, .. } => pending.extend(children.iter().rev().copied()),
+        }
+    }
+    Ok(compacted_fallback)
 }
 
 fn candidate_tab_intrinsic(
@@ -484,8 +552,6 @@ pub(crate) enum FutureLayoutProjectionError {
     PayloadContainsNoItems,
     #[error("drag payload item {item} vanished from the candidate target")]
     PayloadItemMissing { item: ItemId },
-    #[error("tab count exceeds the supported geometry domain")]
-    TabCountOverflow,
     #[error("future tab-strip width sum is non-finite")]
     NonFiniteTabStripWidth,
     #[error("source and target outputs were compiled with different presentation configs")]

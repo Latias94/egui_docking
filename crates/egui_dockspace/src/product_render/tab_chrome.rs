@@ -11,13 +11,21 @@ use super::RenderContext;
 use super::actions::{LocalScrollAxis, consume_local_scroll_input, local_scroll_input};
 use super::geometry::{accesskit_bounds, egui_rect};
 
-pub(crate) fn paint(context: &mut RenderContext<'_, '_, '_>) {
-    paint_controls(context);
+pub(crate) fn paint_controls(
+    context: &mut RenderContext<'_, '_, '_>,
+    controls: impl IntoIterator<Item = TabStripControlPaintRecord>,
+) {
+    paint_control_records(context, controls);
+}
+
+pub(crate) fn paint_popups(context: &mut RenderContext<'_, '_, '_>) {
     paint_popup(context);
 }
 
-fn paint_controls(context: &mut RenderContext<'_, '_, '_>) {
-    let controls = context.plan.tab_strip_controls().collect::<Vec<_>>();
+fn paint_control_records(
+    context: &mut RenderContext<'_, '_, '_>,
+    controls: impl IntoIterator<Item = TabStripControlPaintRecord>,
+) {
     for control in controls {
         let Some(bounds) = egui_rect(control.bounds()) else {
             continue;

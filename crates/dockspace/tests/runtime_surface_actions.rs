@@ -11,16 +11,16 @@ use crate::policy::{
 use crate::runtime::{
     ContainedResizeDirection, DockspaceDragSourceKind, DockspacePaneFocusObservation,
     DockspacePresentationCommandKind, DockspacePresentationCommandUnavailable,
-    DockspaceReceiverDescriptor, DockspaceReceiverRole, DockspaceRuntimeErrorKind,
-    DockspaceSession, DockspaceVisualId, HostCloseRequestOrigin, HostInputOutcome,
-    PreparedSurfaceAction, SurfaceContainedResizeAdjustment, SurfaceGesturePhase,
-    SurfaceMeasurementAnswer, SurfaceMeasurementRequest, SurfacePointerButton,
-    SurfacePointerCancelReason, SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId,
-    SurfacePointerInput, SurfacePointerPosition, SurfacePointerReceiverFacts,
-    SurfacePresentationResult, SurfaceSplitterAdjustment, SurfaceTabNavigation,
-    SurfaceUnavailableReason, TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind,
-    TabStripControlMetric, TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics,
-    UniformSurfaceMetrics,
+    DockspacePresentationMenuAnchorKind, DockspaceReceiverDescriptor, DockspaceReceiverRole,
+    DockspaceRuntimeErrorKind, DockspaceSession, DockspaceVisualId, DockspaceVisualKind,
+    HostCloseRequestOrigin, HostInputOutcome, PreparedSurfaceAction,
+    SurfaceContainedResizeAdjustment, SurfaceGesturePhase, SurfaceMeasurementAnswer,
+    SurfaceMeasurementRequest, SurfacePointerButton, SurfacePointerCancelReason,
+    SurfacePointerCapture, SurfacePointerEvent, SurfacePointerId, SurfacePointerInput,
+    SurfacePointerPosition, SurfacePointerReceiverFacts, SurfacePresentationResult,
+    SurfaceSplitterAdjustment, SurfaceTabNavigation, SurfaceUnavailableReason,
+    TabGroupDragRegionKind, TabListMenuMetrics, TabStripControlKind, TabStripControlMetric,
+    TabStripControlMetrics, TabStripControlPlacement, TabStripMetrics, UniformSurfaceMetrics,
 };
 
 const SURFACE: SurfaceId = SurfaceId::new(1);
@@ -1401,6 +1401,61 @@ fn exact_contained_close_action_docks_the_root_back_without_closing_content() {
     ));
     assert!(session.view().contained(FLOATING).is_none());
     assert!(session.view().item(SECOND).is_some());
+}
+
+#[test]
+fn candidate_paint_plan_exposes_opaque_presentation_menu_anchors() {
+    let mut session = contained_session(DockPolicy::default());
+    install_ready_candidate(&mut session);
+
+    let mut frame = session
+        .begin_host_frame()
+        .expect("presentation-anchor paint frame begins");
+    let plan = frame
+        .paint_plan(SURFACE)
+        .expect("paint plan lookup succeeds")
+        .expect("contained candidate is paintable");
+    let anchors = plan.presentation_menu_anchors().collect::<Vec<_>>();
+
+    assert_eq!(anchors.len(), 2);
+    let main = anchors
+        .iter()
+        .copied()
+        .find(|anchor| anchor.root() == ROOT)
+        .expect("main root anchor is exposed");
+    assert_eq!(main.kind(), DockspacePresentationMenuAnchorKind::TabBar);
+    assert_eq!(
+        main.visual_id().kind(),
+        DockspaceVisualKind::PresentationMenuAnchor
+    );
+    assert_eq!(main.host_visual_id().kind(), DockspaceVisualKind::TabBar);
+    assert!(main.bounds().width() > 0.0 && main.bounds().height() > 0.0);
+    assert!(main.operable());
+    let main_debug = format!("{main:?}");
+    assert!(!main_debug.contains("RootId"));
+    assert!(!main_debug.contains("NodeId"));
+    assert!(!main_debug.contains("TabBarSceneId"));
+
+    let contained = anchors
+        .iter()
+        .copied()
+        .find(|anchor| anchor.root() == FLOATING_ROOT)
+        .expect("contained root anchor is exposed");
+    assert_eq!(
+        contained.kind(),
+        DockspacePresentationMenuAnchorKind::ContainedTitle
+    );
+    assert_eq!(
+        contained.host_visual_id().kind(),
+        DockspaceVisualKind::Contained
+    );
+    assert!(contained.bounds().width() > 0.0 && contained.bounds().height() > 0.0);
+    assert!(contained.operable());
+
+    frame
+        .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+        .expect("anchor inspection retains the ready candidate");
+    frame.commit().expect("anchor inspection frame commits");
 }
 
 #[test]

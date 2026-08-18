@@ -30,11 +30,12 @@ use crate::policy::{
 use crate::presentation_config::{DockPresentationConfig, PresentationConfigRevision};
 use crate::scene::{
     ContainedMinimumMeasurement, ContainedRecord, ContainedResizeDirection, ContainedResizeRecord,
-    PaneRecord, PaneSceneId, PresentationPlan, RootLayoutFacts, SceneBuildError,
-    SplitterGapPresentation, SplitterGapRecord, SplitterJunctionRecord, SplitterRecord,
-    SplitterSceneId, TabBarRecord, TabBarSceneId, TabGroupDragRecord, TabListMenuBackdropRecord,
-    TabListMenuGeometryAvailability, TabListMenuRecord, TabListMenuRowRecord, TabRecord,
-    TabSceneId, TabStripControlRecord, TabStripMemberRecord, TabStripMemberVisibility,
+    PaneRecord, PaneSceneId, PresentationMenuAnchorHost, PresentationMenuAnchorRecord,
+    PresentationPlan, RootLayoutFacts, SceneBuildError, SplitterGapPresentation, SplitterGapRecord,
+    SplitterJunctionRecord, SplitterRecord, SplitterSceneId, TabBarRecord, TabBarSceneId,
+    TabGroupDragRecord, TabListMenuBackdropRecord, TabListMenuGeometryAvailability,
+    TabListMenuRecord, TabListMenuRowRecord, TabRecord, TabSceneId, TabStripControlRecord,
+    TabStripMemberRecord, TabStripMemberVisibility,
 };
 use crate::scene_manifest::{
     AuthoritativeSurfaceMeasurements, ManifestBuildError, ManifestMeasurementError,

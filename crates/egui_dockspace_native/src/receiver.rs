@@ -359,7 +359,8 @@ fn logical_pos(point: LogicalPoint) -> Option<egui::Pos2> {
 mod tests {
     use dockspace::geometry::{LogicalRect, LogicalSize, PhysicalPoint, PhysicalRect, ScaleFactor};
     use dockspace::model::{
-        DockspaceLayout, DockspaceNode, DockspaceRootLayout, DockspaceSurfaceLayout, ItemId, RootId,
+        DockspaceContainedLayout, DockspaceLayout, DockspaceNode, DockspaceRootLayout,
+        DockspaceSurfaceLayout, FloatingPresentationId, ItemId, RootId,
     };
     use dockspace::policy::DockPolicy;
     use dockspace::runtime::{
@@ -465,6 +466,242 @@ mod tests {
         fn ui(&mut self, _item: ItemId, ui: &mut Ui) {
             ui.allocate_rect(ui.max_rect(), Sense::hover());
         }
+    }
+
+    #[test]
+    fn presentation_menu_hit_blocks_native_docking_receivers() {
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                RootId::new(1),
+                DockspaceNode::central_tabs([ItemId::new(1)]),
+            ),
+        )])
+        .expect("presentation-menu receiver layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("presentation-menu receiver session initializes");
+        let metrics = UniformSurfaceMetrics::new(
+            LogicalRect::new(0.0, 0.0, 640.0, 480.0).expect("surface bounds validate"),
+            LogicalSize::new(32.0, 24.0).expect("surface minimum validates"),
+            96.0,
+        )
+        .expect("surface metrics validate");
+        let mut measured = session
+            .begin_host_frame()
+            .expect("presentation-menu measurement frame begins");
+        measured
+            .measure_surface(SURFACE, metrics)
+            .expect("presentation-menu surface measures");
+        measured
+            .commit()
+            .expect("presentation-menu measurement commits");
+
+        let context = egui::Context::default();
+        let mut panes = TestPanes;
+        let mut anchor_point = None;
+        let mut painted = None;
+        let mut full_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 480.0),
+                )),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session
+                    .begin_host_frame()
+                    .expect("presentation-menu paint frame begins");
+                let plan = frame
+                    .paint_plan(SURFACE)
+                    .expect("presentation-menu paint plan resolves")
+                    .expect("presentation-menu paint plan is ready");
+                let anchor = plan
+                    .presentation_menu_anchors()
+                    .next()
+                    .expect("main root publishes one presentation-menu anchor");
+                let bounds = anchor.bounds();
+                let center = LogicalPoint::new(
+                    bounds.x() + bounds.width() * 0.5,
+                    bounds.y() + bounds.height() * 0.5,
+                )
+                .expect("presentation-menu anchor center validates");
+                anchor_point = logical_pos(center);
+                let mut register_scroll_candidate = |ui: &Ui, rect: Rect, id: Id| {
+                    let identity = ui.register_scroll_hit_candidate(rect, id);
+                    (identity.id(), identity.layer_id())
+                };
+                let paint = native_support::paint_surface(
+                    &mut frame,
+                    Id::new("native-presentation-menu"),
+                    SURFACE,
+                    ui,
+                    &mut panes,
+                    &DockStyle::default(),
+                    &mut register_scroll_candidate,
+                )
+                .expect("native presentation-menu surface paints");
+                frame
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .expect("presentation-menu paint frame settles");
+                frame
+                    .commit()
+                    .expect("presentation-menu paint frame commits");
+                painted = Some(paint);
+            },
+        );
+        full_output.textures_delta.clear();
+
+        let painted = painted.expect("presentation-menu paint result is retained");
+        let hit = context
+            .hit_test_last_pass(
+                egui::ViewportId::ROOT,
+                anchor_point.expect("presentation-menu anchor center is available"),
+            )
+            .expect("completed pass publishes one hit snapshot");
+        assert_eq!(hit.cumulative_pass_nr(), painted.cumulative_pass_nr());
+        let identity = hit
+            .click()
+            .expect("presentation-menu anchor wins click hit testing");
+        assert!(
+            painted.receivers().all(|receiver| {
+                receiver.widget_id() != identity.id() || receiver.layer_id() != identity.layer_id()
+            }),
+            "the adapter-owned menu must remain outside the core docking receiver roster so the native resolver answers Blocked instead of clicking through",
+        );
+    }
+
+    #[test]
+    fn front_contained_chrome_blocks_a_background_tab_strip_control() {
+        let main_root = RootId::new(1);
+        let contained_root = RootId::new(2);
+        let contained = FloatingPresentationId::new(1);
+        let contained_rect =
+            LogicalRect::new(0.0, 0.0, 640.0, 180.0).expect("contained receiver bounds validate");
+        let layout = DockspaceLayout::new([DockspaceSurfaceLayout::new(
+            SURFACE,
+            DockspaceRootLayout::new(
+                main_root,
+                DockspaceNode::central_tabs((1..=24).map(ItemId::new)),
+            ),
+        )
+        .with_contained(DockspaceContainedLayout::new(
+            contained,
+            DockspaceRootLayout::new(contained_root, DockspaceNode::tabs([ItemId::new(100)])),
+            contained_rect,
+        ))])
+        .expect("overlapping receiver layout validates");
+        let mut session = DockspaceSession::from_layout(layout, DockPolicy::default())
+            .expect("overlapping receiver session initializes");
+        let context = egui::Context::default();
+        let instance_id = Id::new("native-overlapping-tab-control");
+        let mut panes = TestPanes;
+        let style = DockStyle::default();
+        let mut measured_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 480.0),
+                )),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session
+                    .begin_host_frame()
+                    .expect("overlapping receiver measurement frame begins");
+                native_support::measure_surface(
+                    &mut frame,
+                    SURFACE,
+                    ui,
+                    ui.available_rect_before_wrap(),
+                    ui.max_rect(),
+                    &panes,
+                    &style,
+                )
+                .expect("overlapping receiver surface measures");
+                frame
+                    .commit()
+                    .expect("overlapping receiver measurement commits");
+            },
+        );
+        measured_output.textures_delta.clear();
+        let mut control_point = None;
+        let mut background_control_id = None;
+        let mut painted = None;
+        let mut full_output = context.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(640.0, 480.0),
+                )),
+                ..RawInput::default()
+            },
+            |ui| {
+                let mut frame = session
+                    .begin_host_frame()
+                    .expect("overlapping receiver paint frame begins");
+                let plan = frame
+                    .paint_plan(SURFACE)
+                    .expect("overlapping receiver paint plan resolves")
+                    .expect("overlapping receiver paint plan is ready");
+                let control = plan
+                    .tab_strip_controls()
+                    .find(|control| control.root() == main_root)
+                    .expect("the overflowing main strip publishes one control");
+                let hit_bounds = control.hit_bounds();
+                let point = LogicalPoint::new(
+                    hit_bounds.x() + hit_bounds.width() * 0.5,
+                    hit_bounds.y() + hit_bounds.height() * 0.5,
+                )
+                .expect("background control center validates");
+                assert!(
+                    contained_rect.contains(point),
+                    "the foreground contained window must cover the background control"
+                );
+                control_point = logical_pos(point);
+                background_control_id = Some(ui.make_persistent_id((
+                    instance_id,
+                    "tab-strip-control",
+                    control.visual_id(),
+                )));
+                let mut register_scroll_candidate = |ui: &Ui, rect: Rect, id: Id| {
+                    let identity = ui.register_scroll_hit_candidate(rect, id);
+                    (identity.id(), identity.layer_id())
+                };
+                let paint = native_support::paint_surface(
+                    &mut frame,
+                    instance_id,
+                    SURFACE,
+                    ui,
+                    &mut panes,
+                    &style,
+                    &mut register_scroll_candidate,
+                )
+                .expect("overlapping native surface paints");
+                frame
+                    .complete_unpainted_surfaces(SurfaceUnavailableReason::Deferred)
+                    .expect("overlapping receiver paint frame settles");
+                frame
+                    .commit()
+                    .expect("overlapping receiver paint frame commits");
+                painted = Some(paint);
+            },
+        );
+        full_output.textures_delta.clear();
+
+        let painted = painted.expect("overlapping receiver paint result is retained");
+        let hit = context
+            .hit_test_last_pass(
+                egui::ViewportId::ROOT,
+                control_point.expect("background control point is available"),
+            )
+            .expect("completed pass publishes one hit snapshot");
+        assert_eq!(hit.cumulative_pass_nr(), painted.cumulative_pass_nr());
+        assert_ne!(
+            hit.click().map(|identity| identity.id()),
+            background_control_id,
+            "foreground contained chrome must win over the background strip control"
+        );
     }
 
     #[test]

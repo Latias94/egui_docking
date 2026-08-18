@@ -272,7 +272,8 @@ pub fn paint_surface(
         style,
         product_render::PointerActionAuthority::ExternalJournal,
         Some(scroll_registrar),
-    );
+    )
+    .map_err(DockspaceError::from_detail)?;
     Ok(NativeSurfacePaint {
         surface,
         viewport_id,
